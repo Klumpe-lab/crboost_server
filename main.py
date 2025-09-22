@@ -3,7 +3,8 @@ import socket
 import argparse
 from pathlib import Path
 
-# NEW: Import FastAPI and StaticFiles
+# Import uvicorn to run the server
+import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
@@ -11,19 +12,27 @@ from nicegui import ui
 from backend import CryoBoostBackend
 from ui import build_ui
 
-# NEW: Create a FastAPI app instance
-app = FastAPI()
+def setup_app():
+    """Configures and returns the FastAPI app."""
+    app = FastAPI()
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# NEW: Manually "mount" the static directory.
-# This tells FastAPI that any request to "/static/..." should serve a file from the "static" folder.
-app.mount("/static", StaticFiles(directory="static"), name="static")
+    # Link to Google Font and our external stylesheet
+    ui.add_head_html('''
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+        <link rel="stylesheet" href="/static/main.css">
+    ''')
+    
+    backend = CryoBoostBackend(Path.cwd())
+    build_ui(backend)
 
-def parse_arguments():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='CryoBoost Server')
-    parser.add_argument('--port', type=int, default=8081, help='Port to run server on')
-    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind to')
-    return parser.parse_args()
+    # This call configures NiceGUI but does NOT run the server.
+    # We remove all the arguments like title, host, port, etc.
+    ui.run_with(app, title="CryoBoost Server")
+
+    return app
 
 def get_local_ip():
     """Get the local IP address"""
@@ -36,20 +45,16 @@ def get_local_ip():
     except Exception:
         return "localhost"
 
-def main():
-    """Main function"""
-    args = parse_arguments()
-    
-    # Link to Google Font and our external stylesheet (this part is unchanged)
-    ui.add_head_html('''
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-        <link rel="stylesheet" href="/static/main.css">
-    ''')
-    
-    backend = CryoBoostBackend(Path.cwd())
-    build_ui(backend)
+# Main execution block
+if __name__ in {"__main__", "__mp_main__"}:
+    # Set up the app
+    app = setup_app()
+
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='CryoBoost Server')
+    parser.add_argument('--port', type=int, default=8081, help='Port to run server on')
+    parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind to')
+    args = parser.parse_args()
 
     local_ip = get_local_ip()
     hostname = socket.gethostname()
@@ -62,14 +67,5 @@ def main():
     print(f"  ssh -L 8081:localhost:{args.port} your_user@{hostname}")
     print("-" * 30)
 
-    # UPDATED: Use ui.run_with() to attach NiceGUI to our custom FastAPI app
-    ui.run_with(
-        app,
-        host=args.host, 
-        port=args.port, 
-        title="CryoBoost Server", 
-        reload=False
-    )
-
-if __name__ in {"__main__", "__mp_main__"}:
-    main()
+    # Use uvicorn to run the FastAPI app
+    uvicorn.run(app, host=args.host, port=args.port)
