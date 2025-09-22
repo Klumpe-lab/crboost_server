@@ -1,20 +1,218 @@
 #!/usr/bin/env python3
 """
-CryoBoost Test Server - Smart Port Handling
-Automatically finds available ports and handles command line arguments
+CryoBoost Server - Main Application
+Multi-tab interface with Setup and Schema Editor
 """
 
 import os
 import sys
 import socket
 import argparse
+import subprocess
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI
 from nicegui import ui
 
-click_count = 0
-server_dir = Path.cwd()
+# Backend logic class
+class CryoBoostBackend:
+    def __init__(self, server_dir):
+        self.server_dir = Path(server_dir)
+        self.job_definitions = [
+            {"job_type": "importmovies", "input_job_type": None},
+            {"job_type": "fsMotionAndCtf", "input_job_type": "importmovies"},
+            {"job_type": "filtertilts", "input_job_type": "fsMotionAndCtf"},
+            {"job_type": "filtertiltsinter", "input_job_type": "filtertilts"},
+            {"job_type": "aligntiltsWarp", "input_job_type": "fsMotionAndCtf"},
+            {"job_type": "tsCtf", "input_job_type": "aligntiltsWarp"},
+            {"job_type": "tsReconstruct", "input_job_type": "tsCtf"},
+            {"job_type": "denoisetrain", "input_job_type": "tsReconstruct"},
+            {"job_type": "denoisepredict", "input_job_type": "tsReconstruct"},
+            {"job_type": "templatematching", "input_job_type": "tsReconstruct"},
+            {"job_type": "subtomogExtr", "input_job_type": "tsReconstruct"}
+        ]
+        self.selected_jobs = []
+    
+    async def run_slurm_command(self, command):
+        """Execute a SLURM command and return output"""
+        try:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode == 0:
+                return {
+                    "success": True,
+                    "output": stdout.decode(),
+                    "error": None
+                }
+            else:
+                return {
+                    "success": False,
+                    "output": stdout.decode() if stdout else "",
+                    "error": stderr.decode()
+                }
+        except Exception as e:
+            return {
+                "success": False,
+                "output": "",
+                "error": str(e)
+            }
+
+# Global backend instance
+backend = None
+
+# FastAPI app
+app = FastAPI(title="CryoBoost Server")
+
+@app.get("/api/slurm-info")
+async def get_slurm_info():
+    """API endpoint to get SLURM info"""
+    result = await backend.run_slurm_command("sinfo")
+    return result
+
+@app.get("/api/job-definitions")
+async def get_job_definitions():
+    """Get available job definitions"""
+    return {"jobs": backend.job_definitions}
+
+@app.get("/api/selected-jobs")
+async def get_selected_jobs():
+    """Get currently selected jobs"""
+    return {"selected": backend.selected_jobs}
+
+@app.post("/api/add-job/{job_index}")
+async def add_job(job_index: int):
+    """Add a job to the selected list"""
+    if 0 <= job_index < len(backend.job_definitions):
+        job = backend.job_definitions[job_index]
+        if job not in backend.selected_jobs:
+            backend.selected_jobs.append(job)
+    return {"selected": backend.selected_jobs}
+
+@app.post("/api/remove-job/{job_index}")
+async def remove_job(job_index: int):
+    """Remove a job from the selected list"""
+    if 0 <= job_index < len(backend.selected_jobs):
+        backend.selected_jobs.pop(job_index)
+    return {"selected": backend.selected_jobs}
+
+# UI Components
+def create_setup_page():
+    """Create the Setup page"""
+    with ui.column().classes('w-full p-4'):
+        ui.label('Workflow Setup').classes('text-2xl font-bold mb-4')
+        
+        with ui.card().classes('w-full max-w-2xl'):
+            ui.label('SLURM Cluster Information').classes('text-lg font-semibold mb-2')
+            
+            # SLURM info display
+            output_area = ui.textarea(
+                label='Cluster Status',
+                value='Click "Get SLURM Info" to view cluster status...'
+            ).classes('w-full h-64').props('readonly')
+            
+            async def get_slurm_info():
+                output_area.value = "Loading..."
+                result = await backend.run_slurm_command("sinfo")
+                
+                if result["success"]:
+                    output_area.value = result["output"]
+                else:
+                    error_msg = result["error"] if result["error"] else "Unknown error"
+                    output_area.value = f"Error executing sinfo:\n{error_msg}"
+            
+            ui.button(
+                'Get SLURM Info',
+                on_click=get_slurm_info
+            ).classes('mt-2')
+
+def create_schema_editor():
+    """Create the Schema Editor page"""
+    with ui.column().classes('w-full p-4'):
+        ui.label('Schema Editor').classes('text-2xl font-bold mb-4')
+        
+        with ui.row().classes('w-full gap-4'):
+            # Available jobs (left side)
+            with ui.card().classes('flex-1'):
+                ui.label('Available Jobs').classes('text-lg font-semibold mb-2')
+                
+                available_container = ui.column().classes('w-full')
+                
+                def refresh_available_jobs():
+                    available_container.clear()
+                    for i, job in enumerate(backend.job_definitions):
+                        with available_container:
+                            with ui.row().classes('w-full items-center justify-between p-2 border rounded'):
+                                with ui.column().classes('flex-1'):
+                                    ui.label(f"Job Type: {job['job_type']}").classes('font-medium')
+                                    input_type = job['input_job_type'] if job['input_job_type'] else 'None'
+                                    ui.label(f"Input: {input_type}").classes('text-sm text-gray-600')
+                                
+                                ui.button(
+                                    '+',
+                                    on_click=lambda j=i: add_job_to_selected(j)
+                                ).classes('w-8 h-8')
+                
+                def add_job_to_selected(job_index):
+                    job = backend.job_definitions[job_index]
+                    if job not in backend.selected_jobs:
+                        backend.selected_jobs.append(job)
+                        refresh_selected_jobs()
+                
+                refresh_available_jobs()
+            
+            # Selected jobs (right side)
+            with ui.card().classes('flex-1'):
+                ui.label('Selected Jobs').classes('text-lg font-semibold mb-2')
+                
+                selected_container = ui.column().classes('w-full')
+                
+                def refresh_selected_jobs():
+                    selected_container.clear()
+                    for i, job in enumerate(backend.selected_jobs):
+                        with selected_container:
+                            with ui.row().classes('w-full items-center justify-between p-2 border rounded bg-blue-50'):
+                                with ui.column().classes('flex-1'):
+                                    ui.label(f"Job Type: {job['job_type']}").classes('font-medium')
+                                    input_type = job['input_job_type'] if job['input_job_type'] else 'None'
+                                    ui.label(f"Input: {input_type}").classes('text-sm text-gray-600')
+                                
+                                ui.button(
+                                    '-',
+                                    on_click=lambda j=i: remove_job_from_selected(j)
+                                ).classes('w-8 h-8')
+                
+                def remove_job_from_selected(job_index):
+                    if 0 <= job_index < len(backend.selected_jobs):
+                        backend.selected_jobs.pop(job_index)
+                        refresh_selected_jobs()
+                
+                refresh_selected_jobs()
+
+# Main UI
+@ui.page('/')
+def main_page():
+    """Main page with tabs"""
+    ui.colors(primary='#1976d2')
+    
+    with ui.column().classes('w-full'):
+        ui.label('CryoBoost Server').classes('text-3xl font-bold text-center text-primary mb-4')
+        
+        with ui.tabs().classes('w-full') as tabs:
+            setup_tab = ui.tab('Setup')
+            schema_tab = ui.tab('Schema Editor')
+        
+        with ui.tab_panels(tabs, value=setup_tab).classes('w-full'):
+            with ui.tab_panel(setup_tab):
+                create_setup_page()
+            
+            with ui.tab_panel(schema_tab):
+                create_schema_editor()
 
 def find_free_port(start_port=8080, max_attempts=100):
     """Find a free port starting from start_port"""
@@ -47,197 +245,58 @@ def get_local_ip():
     except:
         return "localhost"
 
-def get_cluster_safe_ports():
-    """Get a list of ports that are typically safe to use on clusters"""
-    # Common safe port ranges for user applications on clusters
-    safe_ranges = [
-        range(8000, 8100),   # Common web app range
-        range(9000, 9100),   # Alternative web range
-        range(3000, 3100),   # Node.js style
-        range(5000, 5100),   # Flask style
-        range(7000, 7100),   # Custom apps
-    ]
-    
-    safe_ports = []
-    for port_range in safe_ranges:
-        safe_ports.extend(list(port_range))
-    
-    return safe_ports
-
-# Create FastAPI app
-app = FastAPI(title="CryoBoost Test Server")
-
-# FastAPI routes
-@app.get("/api/status")
-async def get_status():
-    return {
-        "status": "running",
-        "server_directory": str(server_dir),
-        "click_count": click_count
-    }
-
-def write_hello_world():
-    """Write hello world file with timestamp"""
-    global click_count
-    click_count += 1
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    filepath = server_dir / "hello_world.txt"
-    content = f"Hello World! (Click #{click_count})\nWritten at: {timestamp}\nServer directory: {server_dir}\n"
-    
-    try:
-        with open(filepath, "w") as f:
-            f.write(content)
-        
-        ui.notify(f"✅ File written successfully! Click #{click_count}", type="positive")
-        print(f"✅ File written: {filepath}")
-        return True
-        
-    except Exception as e:
-        ui.notify(f"❌ Error writing file: {str(e)}", type="negative")
-        print(f"❌ Error writing file: {e}")
-        return False
-
-def check_file():
-    filepath = server_dir / "hello_world.txt"
-    if filepath.exists():
-        with open(filepath, 'r') as f:
-            content = f.read()
-        ui.notify(f"📄 File exists! Size: {len(content)} chars", type="info")
-        print(f"📄 File exists: {filepath}")
-    else:
-        ui.notify("❌ File does not exist yet", type="warning")
-        print("❌ hello_world.txt not found")
-
-def show_running_services():
-    """Show what's currently running on common ports"""
-    common_ports = [8080, 8000, 8888, 3000, 5000, 9000]
-    print("\n🔍 Port usage check:")
-    for port in common_ports:
-        status = "IN USE" if is_port_in_use(port) else "FREE"
-        print(f"   Port {port}: {status}")
-
-# NiceGUI Interface
-@ui.page('/ui')
-def ui_page():
-    """Main UI page"""
-    ui.colors(primary='#1976d2')
-    
-    with ui.column().classes('w-full max-w-md mx-auto mt-10 gap-4'):
-        ui.label('🧪 CryoBoost Test Server').classes('text-3xl font-bold text-center text-primary')
-        ui.separator()
-        
-        with ui.card().classes('w-full p-4'):
-            ui.label('Server Information').classes('text-lg font-semibold')
-            ui.label(f'📁 Directory: {server_dir}').classes('text-sm text-gray-600')
-            ui.label(f'🔢 Click count: {click_count}').classes('text-sm text-gray-600')
-        
-        ui.button(
-            '✍️ Write Hello World File', 
-            on_click=write_hello_world,
-            color='primary'
-        ).classes('w-full h-12 text-lg')
-        
-        ui.button(
-            '🔍 Check If File Exists', 
-            on_click=check_file,
-            color='secondary'
-        ).classes('w-full')
-        
-        with ui.expansion('📋 Instructions', icon='help').classes('w-full'):
-            ui.markdown("""
-            **How to test:**
-            1. Click "Write Hello World File" 
-            2. Check your server directory for `hello_world.txt`
-            3. Use "Check If File Exists" to verify
-            
-            **Available endpoints:**
-            - This UI: `/ui`
-            - API Status: `/api/status` 
-            - API Docs: `/docs`
-            """)
-
 def parse_arguments():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='CryoBoost Test Server')
-    parser.add_argument('--port', type=int, default=None, 
-                        help='Port to run the server on (default: auto-detect)')
+    parser = argparse.ArgumentParser(description='CryoBoost Server')
+    parser.add_argument('--port', type=int, default=8081, 
+                        help='Port to run the server on (default: 8081)')
     parser.add_argument('--host', type=str, default='0.0.0.0',
                         help='Host to bind to (default: 0.0.0.0)')
     parser.add_argument('--find-port', action='store_true',
-                        help='Automatically find a free port')
-    parser.add_argument('--show-ports', action='store_true',
-                        help='Show current port usage and exit')
+                        help='Automatically find a free port if specified port is in use')
     
     return parser.parse_args()
 
 def main():
-    """Main function with smart port handling"""
-    args = parse_arguments()
+    """Main function"""
+    global backend
     
-    if args.show_ports:
-        show_running_services()
-        return
+    args = parse_arguments()
+    backend = CryoBoostBackend(Path.cwd())
     
     local_ip = get_local_ip()
     
-    # Smart port selection
-    if args.port:
-        # User specified a port
-        if is_port_in_use(args.port):
-            print(f"❌ Port {args.port} is already in use!")
-            print("🔍 Checking alternative ports...")
-            show_running_services()
-            
-            if args.find_port:
-                port = find_free_port(args.port)
-                print(f"✅ Found free port: {port}")
-            else:
-                print("💡 Use --find-port to automatically find a free port, or choose a different port")
-                return
+    # Port selection logic
+    if is_port_in_use(args.port):
+        if args.find_port:
+            port = find_free_port(args.port)
+            print(f"Port {args.port} in use, using {port} instead")
         else:
-            port = args.port
+            print(f"Error: Port {args.port} is already in use")
+            print("Use --find-port to automatically find a free port")
+            return
     else:
-        # Auto-select a safe port
-        print("🔍 Auto-selecting a free port...")
-        safe_ports = get_cluster_safe_ports()
-        
-        port = None
-        for candidate_port in safe_ports:
-            if not is_port_in_use(candidate_port):
-                port = candidate_port
-                break
-        
-        if port is None:
-            print("❌ Could not find any free ports in safe ranges")
-            port = find_free_port(8080)  # Last resort
-        
-        print(f"✅ Selected port: {port}")
+        port = args.port
     
-    print(f"\n🚀 Starting CryoBoost Test Server...")
-    print(f"📁 Server directory: {server_dir}")
-    print(f"🐍 Python version: {sys.version}")
-    
-    print(f"\n🌐 Server URLs:")
-    print(f"   📱 Main UI:      http://localhost:{port}/ui")
-    print(f"   📱 Network UI:   http://{local_ip}:{port}/ui")
-    print(f"   🔌 API Status:   http://localhost:{port}/api/status")
-    print(f"   📚 API Docs:     http://localhost:{port}/docs")
-    print(f"\n⏳ Starting server on {args.host}:{port}...")
+    print(f"CryoBoost Server Starting")
+    print(f"Server directory: {backend.server_dir}")
+    print(f"Python version: {sys.version.split()[0]}")
+    print(f"")
+    print(f"Access URLs:")
+    print(f"  Local:   http://localhost:{port}")
+    print(f"  Network: http://{local_ip}:{port}")
+    print(f"  API:     http://localhost:{port}/docs")
+    print(f"")
+    print(f"SSH Tunnel command:")
+    print(f"  ssh -L 8080:localhost:{port} username@{socket.gethostname()}")
+    print(f"")
     
     try:
         ui.run_with(app)
-        
-        # Start with uvicorn for explicit control
         import uvicorn
-        uvicorn.run(app, host=args.host, port=port, log_level="info")
-        
+        uvicorn.run(app, host=args.host, port=port, log_level="warning")
     except Exception as e:
-        print(f"❌ Error starting server: {e}")
-        print("\n🔧 Troubleshooting tips:")
-        print("   - Try a different port with --port <number>")
-        print("   - Check what's using ports with --show-ports")
-        print("   - Use --find-port to auto-find a free port")
+        print(f"Error starting server: {e}")
 
 if __name__ == "__main__":
     main()
