@@ -9,7 +9,7 @@ class CryoBoostBackend:
         self.active_jobs = {}
 
     async def run_shell_command(self, command: str, cwd: Path = None):
-        """Execute a shell command and return output."""
+        # ... (this function is unchanged)
         try:
             process = await asyncio.create_subprocess_shell(
                 command,
@@ -26,20 +26,15 @@ class CryoBoostBackend:
             return {"success": False, "output": "", "error": str(e)}
 
     async def get_slurm_info(self):
-        """Fetches SLURM sinfo."""
+        # ... (this function is unchanged)
         return await self.run_shell_command("sinfo")
 
     async def submit_slurm_job(self, script_path: Path, output_dir: Path, partition: str, gpus: str):
-        """
-        Submits a generic SLURM job with a specified output directory.
-        """
+        # ... (this function is unchanged)
         if not script_path.exists():
             return {"success": False, "error": f"Script not found: {script_path}"}
         
-        # Create the output directory for logs
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Define log file paths
         log_out_path = output_dir / f"job_%j.out"
         log_err_path = output_dir / f"job_%j.err"
 
@@ -65,7 +60,7 @@ class CryoBoostBackend:
         internal_job_id = str(uuid.uuid4())
         job_info = {
             "slurm_id": slurm_job_id,
-            "status": "SUBMITTED",
+            "status": "PENDING", # Default status is now PENDING
             "log_file": output_dir / f"job_{slurm_job_id}.out",
             "log_content": f"Submitted job {slurm_job_id} to partition '{partition}'. Waiting for output...\n"
         }
@@ -76,12 +71,9 @@ class CryoBoostBackend:
         return {"success": True, "internal_job_id": internal_job_id, "slurm_job_id": slurm_job_id}
 
     async def submit_test_gpu_job(self):
-        """Submits the specific test GPU job."""
+        # ... (this function is unchanged)
         script_path = self.jobs_dir / 'test_gpu_job.sh'
-        
-        # Each test job gets its own directory
         output_dir = self.server_dir / 'test_job_outputs' / f'test_{uuid.uuid4().hex[:8]}'
-
         return await self.submit_slurm_job(
             script_path=script_path,
             output_dir=output_dir,
@@ -90,34 +82,48 @@ class CryoBoostBackend:
         )
 
     async def track_job_logs(self, internal_job_id: str):
+        """
+        Periodically checks job status via squeue and reads new log output
+        in a non-blocking way.
+        """
         job_info = self.active_jobs.get(internal_job_id)
         if not job_info: return
 
+        slurm_id = job_info['slurm_id']
         log_file = job_info["log_file"]
-        
-        while not log_file.exists():
-            await asyncio.sleep(2)
+        last_read_position = 0
+        terminal_states = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL"}
 
-        job_info["status"] = "RUNNING"
-        
-        try:
-            with open(log_file, 'r', encoding='utf-8') as f:
-                while True:
-                    squeue_result = await self.run_shell_command(f"squeue -j {job_info['slurm_id']}")
-                    
-                    line = f.readline()
-                    if not line:
-                        # If no new line, check if the job is still running
-                        if str(job_info['slurm_id']) not in squeue_result['output']:
-                            job_info["status"] = "COMPLETED"
-                            break
-                        await asyncio.sleep(2) # Wait for new content
-                        continue
-                    
-                    job_info["log_content"] += line
-        except Exception as e:
-            job_info["log_content"] += f"\n--- ERROR READING LOG FILE: {e} ---\n"
-            job_info["status"] = "ERROR"
+        while True:
+            # 1. Get job status from squeue
+            squeue_cmd = f"squeue -j {slurm_id} -h -o %T"
+            status_result = await self.run_shell_command(squeue_cmd)
+            
+            current_status = ""
+            if status_result["success"] and status_result["output"].strip():
+                current_status = status_result["output"].strip()
+                job_info["status"] = current_status
+            else:
+                # If job is no longer in squeue, it's likely finished
+                job_info["status"] = "COMPLETED" 
+
+            # 2. Read new log content without blocking
+            if log_file.exists():
+                try:
+                    with open(log_file, 'r', encoding='utf-8') as f:
+                        f.seek(last_read_position)
+                        new_content = f.read()
+                        if new_content:
+                            job_info["log_content"] += new_content
+                            last_read_position = f.tell()
+                except Exception as e:
+                    job_info["log_content"] += f"\n--- ERROR READING LOG: {e} ---\n"
+
+            # 3. Exit loop if job is in a terminal state
+            if job_info["status"] in terminal_states:
+                break
+
+            await asyncio.sleep(2) # Non-blocking sleep
 
     def get_job_log(self, internal_job_id: str):
         return self.active_jobs.get(internal_job_id)
