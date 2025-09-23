@@ -1,0 +1,220 @@
+
+
+# Job = in which job this parameter should be changed (job name or all)
+# Parameter = original name (as in job.star file)
+# Alias = new parameter name that should be displayed
+#
+submission:
+  - HeadNode: artem.kushner@cbe.vbc.ac.at
+    SshCommand: "ssh -X"
+    #Environment: "source /programs/sbgrid.shrc && source /groups/klumpe/software/Setup/relion_5_LG.sh"
+    Environment: "source /programs/sbgrid.shrc && source /groups/klumpe/software/Setup/relion_5_LG.sh && export RELION_QSUB_COMMAND=sbatch"
+    #Environment: "source /programs/sbgrid.shrc && source /groups/klumpe/software/Setup/relion_5_LG.sh &&  module load build-env/f2022 && module load relion/5.0-beta-de830-foss-2022b && export PYTHONPATH=${EBROOTRELION}/lib/python:$PYTHONPATH"
+    ClusterStatus: sinfo
+    Helpssh: ""
+    HelpConflict: ""
+local:
+    Environment: "source /opt/CryoBoost/.cbenv"  # This is for inside container
+
+
+#submission:
+#  - HeadNode: cbe.vbc.ac.at 
+#    SshCommand: "ssh -Y"
+#    Environment: "source /programs/sbgrid.shrc; source /groups/klumpe/software/Setup/relion_5_LG.sh; source /groups/klumpe/software/Setup/CryoBoost/.cbenv"
+#    CalusterStatus: sinfo
+#    Helpssh: c-wing-wiki.biochem.mpg.de/wiki/index.php/Ssh-keygen
+#    HelpConflict: "Testing VBC installation"
+#local:
+#    Environment: "source /groups/klumpe/software/Setup/relion_5_LG.sh; source /groups/klumpe/software/Setup/CryoBoost/.cbenv"
+
+
+
+
+aliases:
+  - Job: all
+    Parameter: qsubscript
+    Alias: Submission Script
+  - Job: all
+    Parameter: qsub_extra1
+    Alias: NrNodes 
+  - Job: all
+    Parameter: qsub_extra2
+    Alias: MPIperNode
+  - Job: all
+    Parameter: qsub_extra3
+    Alias: PartionName  
+  - Job: all
+    Parameter: qsub_extra4
+    Alias: NrGPU
+  - Job: all
+    Parameter: qsub_extra5
+    Alias: MemoryRAM  
+
+# parameters have different names in header/mdoc than in Relion --> make compatible
+# key = parameter name in header/mdoc file
+# value = parameter name in config_aliases file (code uses that name directly to find the correct entry, avoids additional loops)
+
+meta_data:
+
+  header:
+    - EER_number: eer grouping
+
+  mdoc:
+    - ImageSize: x dimensions
+    - ImageSize: y dimensions
+    - PixelSpacing: Pixel in A
+    - Voltage: kV
+
+
+# save the parameters that are exclusively based on the microscope used so they can automatically be filled in
+# parameter-aliases are used for parameter names
+
+microscopes:
+  TitanKrios5:
+    - invert_tiltAngles: "No"
+    - invert_defocusHandness: "Yes"
+  TitanKrios4:
+    - invert_tiltAngles: "No"
+    - invert_defocusHandness: "Yes"  
+  TitanKrios3:
+    - invert_tiltAngles: "No"
+    - invert_defocusHandness: "Yes"  
+  TitanKriosCoreFacK3:
+    - invert_tiltAngles: "No"
+    - invert_defocusHandness: "No"  
+
+star_file:
+
+  importmovies: importmovies/tilt_series.star
+  motioncorr: motioncorr/corrected_tilt_series.star
+  ctffind: ctffind/tilt_series_ctf.star
+  analysetilts: feature_analysis/feature_analysis.star
+  filtertilts: filtertilts/tiltseries_filtered.star
+  filtertiltsInter: filtertilts/tiltseries_filtered.star
+  aligntilts: aligntilts/aligned_tilt_series.star
+  reconstructionsplit: reconstructionsplit/tomograms.star
+  reconstructionfull: reconstructionfull/tomograms.star
+  denoisetrain:   reconstruction/tomograms.star   #is not the result but the reconstruction is used as result   
+  denoisepredict: denoise/tomograms.star #maybe switch to reconstruction
+  fsMotionAndCtf: fsMotionAndCtf/fs_motion_and_ctf.star
+  aligntiltsWarp: aligntiltsWarp/aligned_tilt_series.star
+  tsCtf: tsCtf/ts_ctf_tilt_series.star
+  tsReconstruct: tsReconstruct/tomograms.star
+  templatematching: templatematching/tomograms.star
+  tmextractcand: tmextractcand/optimisation_set.star
+  subtomoExtraction: subtomoExtraction/optimisation_set.star
+
+computing:
+  QueSize: 
+      large: 5
+      medium: 3  
+      small: 1
+
+  # CPU partition - no GPUs
+  c:
+      NrGPU: 0
+      NrCPU: 22
+      RAM: 75G
+      VRAM: 0G
+
+  # High memory partition
+  m:
+      NrGPU: 0  
+      NrCPU: 76
+      RAM: 1400G
+      VRAM: 0G
+      
+  # GPU partitions CBE
+  g-p100:
+      NrGPU: 8      # 8 P100s per node
+      NrCPU: 14     # 14 CPUs per node
+      RAM: 174G     # 174GB RAM per node
+      VRAM: 12G     # ~12GB per P100 GPU
+      
+  g-v100:
+      NrGPU: 4      # 4 V100s per node
+      NrCPU: 30     # 30 CPUs per node  
+      RAM: 169G     # 169GB RAM per node
+      VRAM: 32G     # ~32GB per V100 GPU
+      
+  g-a100:
+      NrGPU: 4      # 4 A100s per node
+      NrCPU: 30     # 30 CPUs per node
+      RAM: 355G     # 355GB RAM per node
+      VRAM: 80G     # ~80GB per A100 GPU
+
+
+#This controls resource sharing when multiple jobs run on the same node librw.py:163-165 :
+#CPU-PerGPU: 6 - Reserves 6 CPU cores per GPU when node sharing is enabled
+#ApplyTo: [p.hpcl9, p.hpcl93] - Lists which partitions support node sharing
+#For your cluster, update the ApplyTo list with your actual partition names that support shared node usage.
+  NODE-Sharing:
+    CPU-PerGPU: 6
+    ApplyTo:
+     - p.hpcl9
+     - p.hpcl93
+
+
+#This categorizes jobs by their computational requirements librw.py:141-148 . The system uses this to automatically calculate appropriate resource allocations:
+#    CPU-MPI - Pure CPU jobs using MPI parallelization
+#    GPU-OneProcess - Single GPU process jobs
+#    GPU-OneProcessOneGPU - Jobs that use exactly one GPU
+#    GPU-ThreadsOneNode - GPU jobs with threading on single node
+#    CPU-2MPIThreads - CPU jobs with 2 MPI processes and threading
+#    GPU-MultProcess - Multi-process GPU jobs
+  JOBTypesCompute:
+      CPU-MPI:
+       - motioncorr
+       - ctffind
+      GPU-OneProcess: 
+        - aligntiltsWarp
+        - fsMotionAndCtf
+        - tsCtf
+        - tsReconstruct
+        - templatematching
+        - tmextractcand
+      GPU-OneProcessOneGPU:
+        - denoisetrain
+        - denoisepredict
+      GPU-ThreadsOneNode:      
+        - filtertilts
+      CPU-2MPIThreads:
+        - reconstructionsplit
+        - reconstructionfull
+        - subtomoExtraction
+      GPU-MultProcess:
+        - aligntilts
+
+          
+#This provides higher-level job categorization for workflow management librw.py:1006-1010 :
+    #ParticleJobs - Jobs that work with particle data
+    #Noise2NoiseFilterJobs - Deep learning denoising jobs
+    #These are used for scheme filtering and workflow logic
+  JOBTypesApplication:    
+      ParticleJobs:
+        - templatematching
+        - tmextractcand
+        - subtomoExtraction
+      Noise2NoiseFilterJobs:
+       - denoisetrain
+       - denoisepredict  
+
+#Sets maximum node limits for specific job types librw.py:167-172 . For example, motioncorr is limited to 4 nodes maximum.
+  JOBMaxNodes:
+        motioncorr:
+         - 4          
+
+#Controls how many concurrent jobs can run per GPU/device on each partition librw.py:222-223 . This is partition-specific, so you'll need to:
+#Replace partition names (p.hpcl9, p.hpcl8, etc.) with your cluster's partition names
+#Adjust the numbers based on your GPU memory and performance characteristics
+  JOBsPerDevice: 
+        fsMotionAndCtf:
+            g: 2
+        aligntiltsWarp:
+            g: 1
+        tsCtf:
+            g: 2
+        tsReconstruct:
+            g: 2
+filepath: 
+   removePatternFromPath: 'gpfs\\d{2}/lv\\d{2}/fileset\\d{2}' 

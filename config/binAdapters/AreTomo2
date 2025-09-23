@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Collect arguments into an array: 'WarpTools' is the first element
+cmd="$*"
+#module load gcccore/12.2.0
+#module load cuda/12.3.0
+
+
+#echo $@
+#echo $cmd
+# Debug print (optional)
+# printf 'DEBUG: apptainer run ... %q ' "${cmd[@]}"
+# echo
+
+# Run in the container using apptainer run and the full command
+#apptainer run --nv /groups/klumpe/software/linux_warp/linux_warp.sif "${cmd}"
+
+#/programs/x86_64-linux/system/sbgrid_bin/AreTomo2 ${cmd}
+#/programs/x86_64-linux/system/sbgrid_bin/AreTomo2_1.0.0_Cuda118 ${cmd}
+
+echo ">>> Sven's AreTomo2 adapter."
+#/users/sven.klumpe/software/AreTomo2/AreTomo2_1.0.0_Cuda118 ${cmd}
+/groups/klumpe/software/Setup/AreTomo2/AreTomo2-1.0.0/AreTomo2 ${cmd}
+#/programs/x86_64-linux/system/sbgrid_bin/AreTomo ${cmd}
