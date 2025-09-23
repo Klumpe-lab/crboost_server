@@ -1,1 +1,8 @@
 **venv
+**auth
+**auth/** 
+__pycache__/**
+__pycache__
+.nicegui/**
+.nicegui
+user_jobs

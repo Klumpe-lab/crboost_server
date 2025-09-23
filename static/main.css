@@ -1,5 +1,15 @@
 body { 
     font-family: 'IBM Plex Mono', monospace;
     font-size: 14px;
-    background-color: #f8f9fa; /* A light grey background for a softer look */
+    background-color: #f8f9fa;
+}
+.primary-button {
+    background-color: #cfe1ee !important; 
+    color: white !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.primary-button:hover {
+    background-color: #959595 !important;
 }
