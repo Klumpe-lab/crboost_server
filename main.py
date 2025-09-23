@@ -88,7 +88,7 @@ def setup_app():
     auth_service = AuthService()
     create_ui_router(backend, auth_service)
 
-    ui.run_with(app, title="CryoBoost Server", storage_secret="A_REALLY_SECRET_KEY_CHANGE_ME")
+    ui.run_with(app, title="CryoBoost Server", storage_secret="This needs to be an environment variable eventually")
 
     return app
 
