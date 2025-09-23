@@ -6,3 +6,5 @@ __pycache__
 .nicegui/**
 .nicegui
 user_jobs
+projects/**
+projects

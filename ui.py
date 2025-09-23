@@ -1,3 +1,5 @@
+# ui.py (Updated)
+
 from nicegui import ui, app
 from backend import CryoBoostBackend
 from auth import AuthService
@@ -14,22 +16,17 @@ STATUS_MAP = {
 }
 
 def create_ui_router(backend: CryoBoostBackend, auth: AuthService):
-    """
-    This function acts as a router. It displays the login page
-    or the main content based on the user's authentication status.
-    """
     @ui.page('/')
     async def main_page():
         if not app.storage.user.get('authenticated'):
             create_login_page(auth)
             return
-
         username = app.storage.user.get('username')
         user = User(username=username)
         await create_main_ui(backend, user)
 
 def create_login_page(auth: AuthService):
-    """Builds the UI for the styled login form."""
+    """(This function is unchanged)"""
     async def attempt_login():
         username = username_input.value
         password = password_input.value
@@ -40,17 +37,101 @@ def create_login_page(auth: AuthService):
             ui.notify('Invalid username or password', type='negative')
 
     with ui.column().classes('w-full h-screen items-center justify-center gap-y-2'):
-        ui.label('').classes('text-6xl') # the logo willl go here
+        ui.label('').classes('text-6xl')
         ui.label('CryoBoost Server').classes('text-3xl font-bold')
-        ui.label('Headnode-centric implementation of cryoboost (THIS IS ALL wrok in progress!)').classes('text-gray-500')
-
+        ui.label('Headnode-centric implementation of cryoboost (WORK IN PROGRESS)').classes('text-gray-500')
         with ui.card().classes('w-full max-w-sm p-8 mt-4'):
             username_input = ui.input('Username').props('outlined dense').classes('w-full').on('keydown.enter', attempt_login)
             password_input = ui.input('Password', password=True, password_toggle_button=True).props('outlined dense').classes('w-full').on('keydown.enter', attempt_login)
             ui.button('Log In', on_click=attempt_login).classes('w-full primary-button mt-4')
 
+def logout():
+    app.storage.user.clear()
+    ui.navigate.to('/')
+
+    
+
+
+async def create_projects_page(backend: CryoBoostBackend, user: User):
+    ui.label('Project Management').classes('text-2xl font-semibold mb-4')
+
+    # State to hold project info after creation
+    app.storage.user['current_project'] = None
+
+    async def handle_create_and_schedule():
+        name = project_name.value
+        selected_jobs = job_selection.value # Use the new variable name
+        if not name or not selected_jobs:
+            ui.notify('Project name and at least one job must be selected.', type='negative')
+            return
+
+        spinner.visible = True
+        create_button.disable()
+        
+        result = await backend.create_project_with_custom_scheme(user, name, selected_jobs)
+        
+        spinner.visible = False
+        create_button.enable()
+        
+        if result['success']:
+            ui.notify(result['message'], type='positive')
+            app.storage.user['current_project'] = result['project_info']
+            run_controls.refresh()
+        else:
+            ui.notify(f"Error: {result['error']}", type='negative', multi_line=True, close_button=True)
+
+    async def handle_run_pipeline():
+        project_info = app.storage.user.get('current_project')
+        if not project_info:
+            ui.notify('No project has been created and scheduled yet.', type='negative')
+            return
+        
+        run_button.disable()
+        ui.notify(f"Starting pipeline '{project_info['scheme_name']}'...", type='info')
+        result = await backend.start_scheduled_pipeline(project_info['path'], project_info['scheme_name'])
+        
+        if result['success']:
+            ui.notify('Pipeline start command issued successfully!', type='positive')
+        else:
+            ui.notify(f"Error starting pipeline: {result['error']}", type='negative')
+            run_button.enable()
+
+    with ui.card().classes('w-full'):
+        ui.label('1. Configure and Create Project').classes('text-lg font-medium')
+        ui.separator()
+        
+        project_name = ui.input('Project Name', placeholder='e.g., dataset_01_warp').classes('w-full')
+        
+        # Fetch available jobs from the backend to populate the checklist
+        available_jobs = await backend.get_available_jobs()
+        
+        # FIX: Replaced the incorrect ui.checkbox with the correct ui.select element,
+        # styled to look like checkboxes.
+        job_selection = ui.select(
+            available_jobs, 
+            multiple=True, 
+            value=available_jobs, 
+            label='Select Jobs for Pipeline:'
+        ).props('checkboxes')
+
+        with ui.row().classes('w-full items-center mt-4'):
+            create_button = ui.button('Create Project & Schedule Jobs', on_click=handle_create_and_schedule)
+            spinner = ui.spinner('dots', size='lg', color='primary').classes('ml-4')
+            spinner.set_visibility(False)
+
+    @ui.refreshable
+    def run_controls():
+        project_info = app.storage.user.get('current_project')
+        if project_info:
+            with ui.card().classes('w-full mt-8'):
+                ui.label('2. Execute Pipeline').classes('text-lg font-medium')
+                ui.separator()
+                ui.label(f"Project '{project_info['project_name']}' is scheduled and ready to run.")
+                global run_button 
+                run_button = ui.button('Run Scheduled Pipeline', on_click=handle_run_pipeline).props('icon=play_arrow color=positive')
+
+    run_controls()
 async def create_main_ui(backend: CryoBoostBackend, user: User):
-    """(This function is unchanged)"""
     with ui.header().classes('bg-white text-gray-800 shadow-sm p-4'):
         with ui.row().classes('w-full items-center justify-between'):
             ui.label(f'CryoBoost Server').classes('text-xl font-semibold')
@@ -58,38 +139,38 @@ async def create_main_ui(backend: CryoBoostBackend, user: User):
                 ui.label(f'Welcome, {user.username}!').classes('mr-4')
                 ui.button('Logout', on_click=logout, icon='logout').props('flat dense')
     
-    with ui.row().classes('w-full p-8'):
+    with ui.row().classes('w-full p-8 gap-8'):
         with ui.tabs().props('vertical').classes('w-48') as tabs:
-            setup_tab = ui.tab('Setup')
+            # NEW: Added a dedicated Projects tab
+            projects_tab = ui.tab('Projects')
             jobs_tab = ui.tab('Job Status')
+            info_tab = ui.tab('Cluster Info')
         
-        with ui.tab_panels(tabs, value=setup_tab).classes('w-full'):
-            with ui.tab_panel(setup_tab):
-                create_setup_page(backend)
+        with ui.tab_panels(tabs, value=projects_tab).classes('w-full'):
+            with ui.tab_panel(projects_tab):
+                await create_projects_page(backend, user) # NEW page
             with ui.tab_panel(jobs_tab):
                 await create_jobs_page(backend, user)
+            with ui.tab_panel(info_tab):
+                create_info_page(backend)
 
-def logout():
-    """(This function is unchanged)"""
-    app.storage.user.clear()
-    ui.navigate.to('/')
 
-def create_setup_page(backend: CryoBoostBackend):
-    """(This function is unchanged)"""
+def create_info_page(backend: CryoBoostBackend):
     ui.label('SLURM Cluster Information').classes('text-lg font-medium mb-4')
     output_area = ui.log().classes('w-full h-96 border rounded-md p-2 bg-gray-50')
     async def get_info():
-        output_area.push("Loading...")
+        output_area.push("Loading sinfo...")
         result = await backend.get_slurm_info()
         output_area.clear()
         output_area.push(result["output"] if result["success"] else result["error"])
     ui.button('Get SLURM Info', on_click=get_info).classes('mt-4')
 
+
 async def create_jobs_page(backend: CryoBoostBackend, user: User):
     """(This function is unchanged)"""
     with ui.column().classes('w-full'):
         with ui.row().classes('w-full justify-between items-center mb-4'):
-            ui.label('Job Management').classes('text-lg font-medium')
+            ui.label('Individual Job Management').classes('text-lg font-medium')
             ui.button('Submit Test GPU Job', on_click=lambda: submit_and_track_job(backend, user, job_tabs, job_tab_panels))
         
         with ui.tabs().classes('w-full') as job_tabs:
@@ -149,4 +230,4 @@ def create_job_tab(backend: CryoBoostBackend, user: User, job: Job, job_tabs, jo
                 refresh_button.disable()
             if manual_refresh:
                 ui.notify('Logs refreshed!', type='positive', timeout=1000)
-    timer = ui.timer(interval=2, callback=update_log_display, active=True)
+    timer = ui.timer(interval=5, callback=update_log_display, active=True)
