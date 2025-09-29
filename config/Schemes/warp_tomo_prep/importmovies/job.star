@@ -5,7 +5,7 @@ data_job
 
 _rlnJobTypeLabel             relion.importtomo
 _rlnJobIsContinue                       1
-_rlnJobIsTomo                           0
+_rlnJobIsTomo                           1
  
 
 # version 50001
