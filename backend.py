@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from models import Job, User
+import pandas as pd
 
 # Import the new services
 from services.project_service import ProjectService
@@ -25,62 +26,56 @@ class CryoBoostBackend:
 
     # --- NEW UI-FACING METHODS FOR DYNAMIC WORKFLOW ---
 
+
     async def get_available_jobs(self) -> List[str]:
         """Scans the scheme template directory to find available job types."""
-        # For now, we hardcode the warp_tomo_prep scheme
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
         if not template_path.is_dir():
             return []
-        
-        # Return sorted list of folder names that are jobs, excluding scheme.star
         jobs = sorted([p.name for p in template_path.iterdir() if p.is_dir()])
         return jobs
 
-    async def create_project_with_custom_scheme(self, user: User, project_name: str, selected_jobs: List[str]):
+    # --- NEW, REFACTORED WORKFLOW METHOD ---
+    async def create_project_and_scheme(self, user: User, project_name: str, selected_jobs: List[str]):
         """
-        Creates a project with a dynamically generated scheme based on user's job selection.
+        The new primary function for project creation.
+        1. Creates the directory structure and imports data.
+        2. Creates a custom scheme from the selected jobs.
+        IT DOES NOT schedule or run any jobs.
         """
         # === Hardcoded paths and parameters - MODIFY THESE AS NEEDED ===
         projects_base_dir = self.server_dir / "projects"
         project_dir = projects_base_dir / user.username / project_name
         base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
-        # The new scheme will be named after the project
         scheme_name = f"scheme_{project_name}"
-        user_params = {"angpix": "1.35", "dose_rate": "1.5"}
+        user_params = {"angpix": "1.35", "dose_rate": "1.5"} # Example params
         # =============================================================
 
         if project_dir.exists():
             return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
 
-        # 1. Create Project and Import Data
+        # Step 1. Create Project directory structure and Import Data
         prefix = datetime.now().strftime("%Y%m%d_%H%M_")
-        create_result = await self.project_service.create_new_project(
+        create_result = await self.project_service.create_project_structure(
             project_dir, movies_glob, mdocs_glob, prefix
         )
         if not create_result["success"]:
             return create_result
 
-        # 2. Dynamically create a custom scheme for the selected jobs
-        # This is a new method we'll add to the orchestrator service
+        # Step 2. Create the custom scheme on disk from the selected jobs
         scheme_result = await self.pipeline_orchestrator.create_custom_scheme(
             project_dir, scheme_name, base_template_path, selected_jobs, user_params
         )
         if not scheme_result["success"]:
             return scheme_result
-
-        # 3. Schedule the jobs from the new custom scheme
-        schedule_result = await self.pipeline_orchestrator.schedule_all_jobs(project_dir, scheme_name)
-        if not schedule_result["success"]:
-            return schedule_result
+        
+        # REMOVED: No more scheduling. The process stops here.
+        # schedule_result = await self.pipeline_orchestrator.schedule_all_jobs(...)
 
         return {
-            "success": True, 
-            "message": "Project created and jobs scheduled successfully. Ready to run.",
-            "project_info": {
-                "path": str(project_dir),
-                "scheme_name": scheme_name,
-                "project_name": project_name
-            }
+            "success": True,
+            "message": f"Project '{project_name}' created successfully on disk.",
+            "project_path": str(project_dir)
         }
 
     async def start_scheduled_pipeline(self, project_path: str, scheme_name: str):
@@ -234,3 +229,83 @@ class CryoBoostBackend:
     def get_user_jobs(self, user: User) -> List[Job]:
         """(This function is unchanged)"""
         return [job for job in self.active_jobs.values() if job.owner == user.username]
+
+    async def schedule_pipeline(self, user: User, project_path: str, scheme_name: str):
+        """
+        Initializes the Relion project and schedules all jobs from the specified scheme.
+        """
+        project_dir = Path(project_path)
+        if not project_dir.is_dir():
+            return {"success": False, "error": f"Project path not found: {project_path}"}
+
+        # The custom scheme was created inside the project directory
+        scheme_dir = project_dir / "Schemes" / scheme_name
+        if not scheme_dir.is_dir():
+            return {"success": False, "error": f"Scheme directory not found: {scheme_dir}"}
+            
+        scheme_star_path = scheme_dir / "scheme.star"
+        if not scheme_star_path.exists():
+            return {"success": False, "error": "scheme.star not found!"}
+        
+        scheme_data = self.pipeline_orchestrator.star_handler.read(scheme_star_path)
+        edges_df = scheme_data.get('scheme_edges')
+        if edges_df is None or edges_df.empty:
+            return {"success": False, "error": "Scheme file has no job edges."}
+        
+        # This reads the jobs in the correct, user-defined order from START to EXIT
+        job_names = edges_df['rlnSchemeEdgeOutputNodeName'].iloc[0:-1].tolist()
+        
+        if not job_names:
+            return {"success": False, "error": "No valid jobs found in the scheme file."}
+
+        # Call the corrected orchestrator method... (the rest of the function is the same)
+        return await self.pipeline_orchestrator.initialize_and_schedule_pipeline(
+            project_dir, scheme_dir, job_names
+        )
+    
+        
+
+    async def start_pipeline(self, user: User, project_path: str, scheme_name: str):
+        """
+        Executes the pre-scheduled pipeline.
+        """
+        project_dir = Path(project_path)
+        if not project_dir.is_dir():
+            return {"success": False, "error": f"Project path not found: {project_path}"}
+        command = "relion_pipeliner --RunJobs"
+        return await self.pipeline_orchestrator.start_pipeline(project_dir, command)
+        
+    # In backend.py, add this method inside the CryoBoostBackend class
+    async def get_pipeline_progress(self, project_path: str):
+        """Reads the pipeline star file and returns the progress status."""
+        pipeline_star = Path(project_path) / "default_pipeline.star"
+        if not pipeline_star.exists():
+            return {"status": "not_found"}
+
+        try:
+            # Use the star_handler from your existing orchestrator service
+            data = self.pipeline_orchestrator.star_handler.read(pipeline_star)
+            processes = data.get('pipeline_processes', pd.DataFrame())
+            
+            if processes.empty:
+                return {"status": "ok", "total": 0, "completed": 0, "running": 0, "failed": 0, "is_complete": True}
+
+            total = len(processes)
+            succeeded = (processes['rlnPipeLineProcessStatusLabel'] == 'Succeeded').sum()
+            running = (processes['rlnPipeLineProcessStatusLabel'] == 'Running').sum()
+            failed = (processes['rlnPipeLineProcessStatusLabel'] == 'Failed').sum()
+            
+            # Pipeline is complete if no jobs are currently running and it's not the initial empty state
+            is_complete = (running == 0 and total > 0)
+
+            return {
+                "status": "ok",
+                "total": total,
+                "completed": int(succeeded),
+                "running": int(running),
+                "failed": int(failed),
+                "is_complete": is_complete,
+            }
+        except Exception as e:
+            print(f"[BACKEND] Error reading pipeline progress for {project_path}: {e}")
+            return {"status": "error", "message": str(e)}

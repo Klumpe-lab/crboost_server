@@ -5,7 +5,7 @@ data_job
 
 _rlnJobTypeLabel             relion.importtomo
 _rlnJobIsContinue                       1
-_rlnJobIsTomo                           1
+_rlnJobIsTomo                           0
  
 
 # version 50001
@@ -32,12 +32,12 @@ flip_tiltseries_hand         No
 do_queue         No 
 queuename    openmpi 
 qsub     sbatch 
-qsubscript          qsub/qsub_cbe_warp.sh
+    qsubscript          qsub/qsub_cbe_warp.sh
 min_dedicated          1 
 other_args         "" 
-qsub_extra1       auto 
-qsub_extra2       170G 
+qsub_extra1          3 
+qsub_extra2          3 
 qsub_extra3       auto 
 qsub_extra4       auto 
-qsub_extra5      
+qsub_extra5       auto
  

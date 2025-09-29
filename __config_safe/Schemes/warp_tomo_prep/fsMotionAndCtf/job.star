@@ -5,7 +5,7 @@ data_job
 
 _rlnJobTypeLabel             relion.external
 _rlnJobIsContinue                       0
-_rlnJobIsTomo                           1
+_rlnJobIsTomo                           0
  
 # version 30001
 
