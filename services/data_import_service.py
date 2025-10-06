@@ -57,7 +57,7 @@ class DataImportService:
                     f.write(f"[ZValue = {z_value}]\n")
                 for key, value in section.items():
                     f.write(f"{key} = {value}\n")
-                f.write("\n") # Add a newline for separation
+                f.write("\n")
 
     async def setup_project_data(
         self,
@@ -93,22 +93,18 @@ class DataImportService:
                     original_movie_name = Path(section['SubFramePath'].replace('\\', '/')).name
                     prefixed_movie_name = f"{import_prefix}{original_movie_name}"
                     
-                    # Update the SubFramePath in the parsed data
                     section['SubFramePath'] = prefixed_movie_name
 
-                    # Create symlink to the raw movie file
                     source_movie_path = source_movie_dir / original_movie_name
                     link_path = frames_dir / prefixed_movie_name
                     
                     if not source_movie_path.exists():
-                        # Log or handle missing movie files
                         print(f"Warning: Source movie not found: {source_movie_path}")
                         continue
 
                     if not link_path.exists():
                         os.symlink(source_movie_path.resolve(), link_path)
 
-                # Write the new, modified mdoc file
                 new_mdoc_path = mdoc_dir / f"{import_prefix}{mdoc_path.name}"
                 self._write_mdoc(parsed_mdoc, new_mdoc_path)
             

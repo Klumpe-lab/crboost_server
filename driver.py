@@ -15,7 +15,6 @@ from pathlib import Path
 from fastapi import FastAPI
 from nicegui import ui
 
-# Backend logic class
 class CryoBoostBackend:
     def __init__(self, server_dir):
         self.server_dir = Path(server_dir)
@@ -63,10 +62,8 @@ class CryoBoostBackend:
                 "error": str(e)
             }
 
-# Global backend instance
 backend = None
 
-# FastAPI app
 app = FastAPI(title="CryoBoost Server")
 
 @app.get("/api/slurm-info")
@@ -101,7 +98,6 @@ async def remove_job(job_index: int):
         backend.selected_jobs.pop(job_index)
     return {"selected": backend.selected_jobs}
 
-# UI Components
 def create_setup_page():
     """Create the Setup page"""
     with ui.column().classes('w-full p-4'):
@@ -110,7 +106,6 @@ def create_setup_page():
         with ui.card().classes('w-full max-w-2xl'):
             ui.label('SLURM Cluster Information').classes('text-lg font-semibold mb-2')
             
-            # SLURM info display
             output_area = ui.textarea(
                 label='Cluster Status',
                 value='Click "Get SLURM Info" to view cluster status...'
@@ -137,7 +132,6 @@ def create_schema_editor():
         ui.label('Schema Editor').classes('text-2xl font-bold mb-4')
         
         with ui.row().classes('w-full gap-4'):
-            # Available jobs (left side)
             with ui.card().classes('flex-1'):
                 ui.label('Available Jobs').classes('text-lg font-semibold mb-2')
                 
@@ -166,7 +160,6 @@ def create_schema_editor():
                 
                 refresh_available_jobs()
             
-            # Selected jobs (right side)
             with ui.card().classes('flex-1'):
                 ui.label('Selected Jobs').classes('text-lg font-semibold mb-2')
                 

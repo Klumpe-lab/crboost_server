@@ -29,7 +29,6 @@ class ProjectService:
             project_dir.mkdir(parents=True, exist_ok=True)
             (project_dir / "Schemes").mkdir(exist_ok=True)
             
-            # --- NEW: Add these two steps to match the old libpipe.py ---
             (project_dir / "Logs").mkdir(exist_ok=True)
             
             qsub_template_path = Path.cwd() / "config" / "qsub"
