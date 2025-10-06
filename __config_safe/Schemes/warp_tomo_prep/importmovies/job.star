@@ -29,7 +29,7 @@ dose_is_per_movie_frame         No
 tilt_axis_angle        -95 
 mtf_file         "" 
 flip_tiltseries_hand         No 
-do_queue         No 
+do_queue         Yes 
 queuename    openmpi 
 qsub     sbatch 
 qsubscript          qsub/qsub_cbe_warp.sh
