@@ -1,6 +1,7 @@
 # backend.py
 
 import asyncio
+import os
 import shutil
 import uuid
 from datetime import datetime
@@ -14,12 +15,17 @@ from services.pipeline_orchestrator_service import PipelineOrchestratorService
 
 movies_glob = "/users/artem.kushner/dev/001_CopiaTestSet/frames/*.eer"
 mdocs_glob = "/users/artem.kushner/dev/001_CopiaTestSet/mdoc/*.mdoc"
-
 HARDCODED_USER = User(username="artem.kushner")
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
         self.server_dir = server_dir
+        relion_python_path = self.server_dir / "relion_python_env" / "bin" / "python"
+        if relion_python_path.exists():
+            os.environ['RELION_PYTHON_EXECUTABLE'] = str(relion_python_path)
+            print(f"[BACKEND] Using Relion Python: {relion_python_path}")
+        else:
+            print(f"[BACKEND] WARNING: Relion Python environment not found at {relion_python_path}")
         self.jobs_dir = self.server_dir / 'jobs'
         self.active_jobs: Dict[str, Job] = {}
         self.project_service = ProjectService(self)
