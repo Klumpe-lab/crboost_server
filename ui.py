@@ -118,6 +118,7 @@ def create_job_tab(backend: CryoBoostBackend, user: User, job: Job, job_tabs, jo
     timer = ui.timer(interval=5, callback=update_log_display, active=True)
 
 
+
 def build_projects_tab(backend: CryoBoostBackend, user: User):
     
     state = {
@@ -181,8 +182,19 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
                 progress_message.text = f"Progress: {completed}/{total} completed ({running} running, {failed} failed)"
             if progress.get('is_complete') and total > 0:
                 msg = f"Pipeline finished with {failed} failures." if failed > 0 else "Pipeline completed successfully."
+                
+                # --- START OF FIX ---
+                # REMOVED: The failing ui.run_sync(...) call.
+                
+                # REPLACEMENT: Update the existing pipeline_status label directly.
+                # This is safe to do from a background task.
                 pipeline_status.set_text(msg)
-                ui.notification(message=msg, type='warning' if failed > 0 else 'positive')
+                if failed > 0:
+                    pipeline_status.classes(add='text-red-500', remove='text-green-500')
+                else:
+                    pipeline_status.classes(add='text-green-500', remove='text-red-500')
+                # --- END OF FIX ---
+                
                 stop_button.props('disabled')
                 run_button.props(remove='disabled')
                 break
@@ -190,6 +202,8 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
         print("[UI] Pipeline monitoring stopped.")
 
     async def handle_run_pipeline():
+        # Reset status color on new run
+        pipeline_status.classes(remove='text-red-500 text-green-500')
         run_button.props('loading')
         pipeline_status.set_text("Starting pipeline...")
         progress_bar.classes(remove='hidden').value = 0
@@ -240,7 +254,6 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
                 active_project_label = ui.label('No active project').classes('text-sm font-mono')
             pipeline_status = ui.label('Create and configure a project first.').classes('text-sm text-gray-600 my-3')
             with ui.row().classes('gap-2 mb-3'):
-                # REMOVED schedule_button as it's not used in the current flow
                 run_button = ui.button('RUN PIPELINE', on_click=handle_run_pipeline, icon='play_arrow').props('disabled')
                 stop_button = ui.button('STOP PIPELINE', on_click=handle_stop_pipeline, icon='stop').props('disabled')
 
