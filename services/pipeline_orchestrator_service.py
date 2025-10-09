@@ -146,8 +146,11 @@ class PipelineOrchestratorService:
         for i, job_name in enumerate(job_names):
             print(f"--- Scheduling Job {i+1}/{len(job_names)}: {job_name} ---")
             template_job_star_path = (project_dir / "Schemes" / scheme_name / job_name / "job.star").resolve()
+            
+            # Use containerized relion_pipeliner
             command_add = f"relion_pipeliner --addJobFromStar {template_job_star_path}"
-            result_add = await self.backend.run_shell_command(command_add, cwd=project_dir)
+            result_add = await self.backend.run_shell_command(command_add, cwd=project_dir, use_container=True)
+            
             if not result_add["success"]:
                 return {"success": False, "error": f"Failed to add job {job_name}: {result_add.get('error')}"}
 
@@ -192,15 +195,14 @@ class PipelineOrchestratorService:
 
 
         print("--- Starting relion_schemer to manage workflow execution ---")
-        
         scheme_folder_name = scheme_name.split('/')[-1].rstrip('/')
         
-        # This is the key - run schemer in the background to manage the workflow
+        # Use containerized relion_schemer
         run_command = f"relion_schemer --scheme {scheme_folder_name} --run --verb 2"
         
         try:
             process = await asyncio.create_subprocess_shell(
-                run_command,
+                self.backend._run_containerized_relion(run_command, project_dir),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=project_dir
