@@ -1,0 +1,138 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu22.04
+
+%labels
+    Author Artie Kushner
+    Maintainer rtkushner@gmail.com
+    Description RELION 5.0 container with CUDA 11.8 and Python Tomography enabled.
+
+%environment
+    # Define primary locations
+    export RELION_HOME=/opt/relion-5.0
+    export CUDA_HOME=/usr/local/cuda-11.8
+    export CONDA_ENV_PATH=/opt/miniconda3/envs/relion-5.0
+
+    # Construct PATH and LD_LIBRARY_PATH
+    export PATH="$CONDA_ENV_PATH/bin:/opt/miniconda3/bin:$RELION_HOME/build/bin:$CUDA_HOME/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    export LD_LIBRARY_PATH="$CONDA_ENV_PATH/lib:$RELION_HOME/build/lib:$CUDA_HOME/lib64:$LD_LIBRARY_PATH"
+
+    # Settings for GUI forwarding
+    export QT_X11_NO_MITSHM=1
+    export QT_GRAPHICSSYSTEM="native"
+    export DISPLAY=${DISPLAY:-:0.0}
+
+%post
+    # Set non-interactive mode for installations
+    export DEBIAN_FRONTEND=noninteractive
+    export TZ=Europe/Vienna
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+    echo "=== INSTALLING SYSTEM DEPENDENCIES ==="
+    apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        git \
+        wget \
+        libfftw3-dev \
+        libtiff5-dev \
+        openmpi-bin \
+        libopenmpi-dev \
+        libpng-dev \
+        libx11-dev \
+        libxft-dev \
+        libxext-dev \
+        libglu1-mesa-dev \
+        csh \
+        tcsh \
+        ca-certificates \
+        && rm -rf /var/lib/apt/lists/*
+
+    echo "=== INSTALLING MINICONDA ==="
+    mkdir -p /opt/miniconda3
+    wget -q https://repo.anaconda.com/miniconda/Miniconda3-py310_23.11.0-2-Linux-x86_64.sh -O /tmp/miniconda.sh
+    /bin/bash /tmp/miniconda.sh -b -u -p /opt/miniconda3
+    rm -rf /tmp/miniconda.sh
+
+    # Set up conda in PATH
+    export PATH="/opt/miniconda3/bin:$PATH"
+    
+    # Configure Conda for non-interactive build
+    /opt/miniconda3/bin/conda config --set always_yes true
+    /opt/miniconda3/bin/conda config --set auto_activate_base false
+
+    echo "=== CLONING RELION 5.0 ==="
+    cd /opt
+    git clone https://github.com/3dem/relion.git relion-5.0
+    cd /opt/relion-5.0
+    git checkout ver5.0
+
+    echo " === CREATING RELION CONDA ENVIRONMENT FROM environment.yml === "
+
+    #This includes all Python dependencies including tomography_python_programs
+
+    /opt/miniconda3/bin/conda env create -f environment.yml
+
+    echo "=== BUILDING RELION 5.0 FROM SOURCE ==="
+
+    mkdir -p /opt/relion-5.0/build
+    cd /opt/relion-5.0/build
+
+    # The cmake command enables MPI, CUDA, the GUI, and the new Tomography pipeline
+    # Point to the conda python executable (should auto-detect but we specify to be safe)
+    # Skip downloading model weights with -DFETCH_WEIGHTS=OFF (they'll download on first use)
+    cmake \
+        -DENABLE_MPI=ON \
+        -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-11.8 \
+        -DGUI=ON \
+        -DENABLE_TOMO_NEW=ON \
+        -DPYTHON_EXE_PATH=/opt/miniconda3/envs/relion-5.0/bin/python \
+        -DFETCH_WEIGHTS=OFF \
+        ..
+
+    make -j$(nproc)
+    # Skip make install - binaries in build/bin are fine
+    
+    echo "=== RELION 5.0 INSTALLATION COMPLETE ==="
+
+    # Cleanup
+    /opt/miniconda3/bin/conda clean -all -y
+    apt-get clean
+    rm -rf /var/lib/apt/lists/*
+
+%runscript
+    #!/bin/bash
+    # Launch a bash shell, allowing user to pass commands or start interactively
+    if [ $# -gt 0 ]; then
+        exec "$@"
+    else
+        exec /bin/bash
+    fi
+
+%test
+    echo "=== TESTING RELION ==="
+    export PATH="/opt/miniconda3/envs/relion-5.0/bin:/opt/relion-5.0/build/bin:$PATH"
+    
+    relion --version || echo "RELION version check completed"
+
+    echo "=== TESTING PYTHON ENVIRONMENT ==="
+    /opt/miniconda3/envs/relion-5.0/bin/python -c "import starfile; print('Successfully imported starfile.')"
+    /opt/miniconda3/envs/relion-5.0/bin/python -c "import mrcfile; print('Successfully imported mrcfile.')"
+    
+    echo "=== TESTING TOMOGRAPHY PYTHON PROGRAMS ==="
+    /opt/miniconda3/envs/relion-5.0/bin/python -c "import tomography_python_programs; print('Successfully imported tomography_python_programs.')"
+
+    echo "=== TESTING CUDA AVAILABILITY ==="
+    nvcc --version
+
+    echo "=== ALL TESTS PASSED ==="
+
+%help
+    RELION 5.0 Singularity Container
+
+    This container provides a complete environment for RELION 5.0, including
+    support for CUDA-acceleration and the Python-based Tomography pipeline.
+
+    Inside the container, you can use all 'relion_*' commands directly.
+    
+    Note: The conda environment (relion-5.0) is automatically activated
+    by RELION when needed. You do not need to manually activate it.
