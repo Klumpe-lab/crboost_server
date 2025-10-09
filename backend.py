@@ -15,21 +15,45 @@ from services.pipeline_orchestrator_service import PipelineOrchestratorService
 
 movies_glob = "/users/artem.kushner/dev/001_CopiaTestSet/frames/*.eer"
 mdocs_glob = "/users/artem.kushner/dev/001_CopiaTestSet/mdoc/*.mdoc"
+
 HARDCODED_USER = User(username="artem.kushner")
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
+
+        relion_bin_path = "/users/artem.kushner/dev/relion/build/bin"
+        os.environ['PATH'] = f"{relion_bin_path}:{os.environ['PATH']}"
         self.server_dir = server_dir
-        relion_python_path = self.server_dir / "relion_python_env" / "bin" / "python"
-        if relion_python_path.exists():
-            os.environ['RELION_PYTHON_EXECUTABLE'] = str(relion_python_path)
-            print(f"[BACKEND] Using Relion Python: {relion_python_path}")
-        else:
-            print(f"[BACKEND] WARNING: Relion Python environment not found at {relion_python_path}")
         self.jobs_dir = self.server_dir / 'jobs'
         self.active_jobs: Dict[str, Job] = {}
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
+
+        # --- DELETED ---
+        # No more hardcoded python paths or environment manipulation.
+        # We assume the environment is correct when the app starts.
+        # Add to backend.py
+
+    async def debug_container_environment(self, project_dir: Path):
+        """Debug what environment the container is actually using"""
+        test_commands = [
+            "which python",
+            "python --version", 
+            "python -c \"import sys; print(sys.path)\"",
+            "python -c \"import numpy; print(numpy.__file__)\"",
+            "python -c \"import tomography_python_programs; print('SUCCESS: tomography_python_programs imported')\"",
+            "echo $PATH",
+            "echo $PYTHONPATH"
+        ]
+        
+        for cmd in test_commands:
+            print(f"\n=== Testing: {cmd} ===")
+            result = await self.run_shell_command(cmd, cwd=project_dir, use_container=True)
+            print(f"Success: {result['success']}")
+            if result['success']:
+                print(f"Output: {result['output']}")
+            else:
+                print(f"Error: {result['error']}")
 
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
@@ -37,6 +61,54 @@ class CryoBoostBackend:
             return []
         jobs = sorted([p.name for p in template_path.iterdir() if p.is_dir()])
         return jobs
+    # backend.py - Add this method to CryoBoostBackend class
+    # Add this to your backend.py
+
+    def _get_container_binds(self, cwd: Path) -> List[str]:
+        """Get appropriate bind mounts for the container."""
+        binds = [
+            str(cwd or self.server_dir),  # Working directory
+            str(Path.home()),  # Home directory
+            "/tmp",  # Temp directory
+            "/scratch",  # Scratch space if available
+        ]
+        
+        # Add any project-specific paths
+        projects_dir = self.server_dir / "projects"
+        if projects_dir.exists():
+            binds.append(str(projects_dir))
+        
+        # Add config directory
+        config_dir = Path.cwd() / "config"
+        if config_dir.exists():
+            binds.append(str(config_dir))
+        
+        return list(set(binds))  # Remove duplicates
+    def _run_containerized_relion(self, command: str, cwd: Path = None, additional_binds: List[str] = None):
+        """Run a Relion command with forced clean environment."""
+        container_path = "/groups/klumpe/software/Setup/cryoboost_containers/relion5.0_tomo.sif"
+        
+        binds = self._get_container_binds(cwd)
+        if additional_binds:
+            binds.extend(additional_binds)
+        
+        bind_args = " ".join([f"--bind {bind}" for bind in binds])
+        
+        # Force clean environment and use container's conda environment
+        clean_command = f"""
+        unset PYTHONPATH
+        unset PYTHONHOME
+        export PATH="/opt/miniconda3/envs/relion-5.0/bin:/opt/miniconda3/bin:/opt/relion-5.0/build/bin:/usr/local/cuda-11.8/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        {command}
+        """
+        
+        import shlex
+        wrapped_command = f"bash -c {shlex.quote(clean_command)}"
+        
+        full_command = f"apptainer exec {bind_args} {container_path} {wrapped_command}"
+        
+        print(f"[CONTAINER CLEAN] Command: {full_command}")
+        return full_command
 
     async def create_project_and_scheme(self, project_name: str, selected_jobs: List[str]):
         projects_base_dir = self.server_dir / "projects"
@@ -62,12 +134,17 @@ class CryoBoostBackend:
         if not scheme_result["success"]:
             return scheme_result
         
+        # In backend.py - Update the project initialization part
+
         print(f"[BACKEND] Initializing Relion project non-blockingly in {project_dir}...")
         pipeline_star_path = project_dir / "default_pipeline.star"
-        
+
+        # Use containerized relion
         init_command = "relion --tomo --do_projdir ."
+        container_init_command = self._run_containerized_relion(init_command, project_dir)
+
         process = await asyncio.create_subprocess_shell(
-            init_command,
+            container_init_command,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             cwd=project_dir
@@ -95,21 +172,51 @@ class CryoBoostBackend:
             "project_path": str(project_dir)
         }
 
-    async def run_shell_command(self, command: str, cwd: Path = None):
+    async def run_shell_command(self, command: str, cwd: Path = None, use_container: bool = False):
+        """Runs a shell command, optionally containerized."""
         try:
+            # FIXED: Better container detection that includes Python commands
+            should_containerize = (
+                use_container and 
+                any(cmd in command for cmd in ['relion', 'relion_', 'python', 'conda'])
+            )
+            
+            if should_containerize:
+                print(f"[DEBUG] Containerizing command: {command}")
+                container_command = self._run_containerized_relion(command, cwd)
+                final_command = container_command
+                print(f"[DEBUG] Final container command: {final_command}")
+            else:
+                final_command = command
+                print(f"[SHELL] Running natively: {final_command}")
+            
             process = await asyncio.create_subprocess_shell(
-                command,
+                final_command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd or self.server_dir
             )
-            stdout, stderr = await process.communicate()
-            if process.returncode == 0:
-                return {"success": True, "output": stdout.decode(), "error": None}
-            else:
-                return {"success": False, "output": stdout.decode(), "error": stderr.decode()}
+            
+            # Add timeout to prevent hanging
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120.0)
+                
+                print(f"[DEBUG] Process completed with return code: {process.returncode}")
+                if process.returncode == 0:
+                    return {"success": True, "output": stdout.decode(), "error": None}
+                else:
+                    return {"success": False, "output": stdout.decode(), "error": stderr.decode()}
+                    
+            except asyncio.TimeoutError:
+                print(f"[ERROR] Command timed out after 120 seconds: {final_command}")
+                process.terminate()
+                await process.wait()
+                return {"success": False, "output": "", "error": "Command execution timed out"}
+                
         except Exception as e:
+            print(f"[ERROR] Exception in run_shell_command: {e}")
             return {"success": False, "output": "", "error": str(e)}
+
 
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
@@ -218,3 +325,7 @@ class CryoBoostBackend:
         except Exception as e:
             print(f"[BACKEND] Error reading pipeline progress for {project_path}: {e}")
             return {"status": "error", "message": str(e)}
+
+    # --- DELETED ---
+    # The run_relion_command wrapper is no longer necessary, as run_shell_command
+    # now correctly uses the inherited environment.
