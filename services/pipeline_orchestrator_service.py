@@ -138,60 +138,17 @@ class PipelineOrchestratorService:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
+    # services/pipeline_orchestrator_service.py (REPLACE schedule_and_run_manually method)
+
     async def schedule_and_run_manually(self, project_dir: Path, scheme_name: str, job_names: List[str]):
+        """Simply run the schemer - it will handle all job creation and scheduling."""
+        
         pipeline_star_path = project_dir / "default_pipeline.star"
         if not pipeline_star_path.exists():
             return {"success": False, "error": "Cannot start: default_pipeline.star not found."}
 
-        last_job_output_star = ""
-        first_job_directory = ""
-
-        for i, job_name in enumerate(job_names):
-            print(f"--- Scheduling Job {i+1}/{len(job_names)}: {job_name} ---")
-            template_job_star_path = (project_dir / "Schemes" / scheme_name / job_name / "job.star").resolve()
-            
-            command_add = f"relion_pipeliner --addJobFromStar {template_job_star_path}"
-            result_add = await self.backend.run_shell_command(command_add, cwd=project_dir, use_container=True)
-            
-            if not result_add["success"]:
-                return {"success": False, "error": f"Failed to add job {job_name}: {result_add.get('error')}"}
-
-            await asyncio.sleep(0.5)
-            pipeline_data = self.star_handler.read(pipeline_star_path)
-            last_process = pipeline_data['pipeline_processes'].iloc[-1]
-            job_run_dir_name = last_process['rlnPipeLineProcessName']
-            job_run_dir = project_dir / job_run_dir_name
-            if i == 0:
-                first_job_directory = job_run_dir_name
-
-            run_job_star_path = job_run_dir / "job.star"
-
-            if i > 0 and last_job_output_star:
-                print(f"Modifying '{run_job_star_path.name}' for I/O linking...")
-                job_data = self.star_handler.read(run_job_star_path)
-                params_df = job_data['joboptions_values']
-                input_param_name = next((p for p in ['in_mics', 'in_mic', 'in_parts', 'in_tomos', 'in_tiltseries'] if p in params_df['rlnJobOptionVariable'].values), None)
-
-                if input_param_name:
-                    params_df.loc[params_df['rlnJobOptionVariable'] == input_param_name, 'rlnJobOptionValue'] = last_job_output_star
-                    job_data['joboptions_values'] = params_df
-                    self.star_handler.write(job_data, run_job_star_path)
-                    print(f"Updated '{input_param_name}' to '{last_job_output_star}'")
-            
-            output_filename = self.config_service.get_job_output_filename(job_name)
-            if output_filename:
-                last_job_output_star = str(Path(job_run_dir_name) / output_filename.lstrip('/'))
-                print(f"Registered output for {job_name} as: {last_job_output_star}")
-            else:
-                print(f"Warning: No output filename configured for job type {job_name}")
-                last_job_output_star = ""
-
-        if not first_job_directory:
-            return {"success": False, "error": "Could not determine the first job to run."}
-
         print("--- Starting relion_schemer to manage workflow execution ---")
         scheme_folder_name = scheme_name.split('/')[-1].rstrip('/')
-        
         run_command = f"relion_schemer --scheme {scheme_folder_name} --run --verb 2"
         
         try:
@@ -204,7 +161,6 @@ class PipelineOrchestratorService:
             
             self.active_schemer_process = process
             print(f"[ORCHESTRATOR] relion_schemer started with PID: {process.pid}")
-            
             asyncio.create_task(self._monitor_schemer(process, project_dir))
             
             return {"success": True, "message": f"Workflow started (PID: {process.pid})", "pid": process.pid}
