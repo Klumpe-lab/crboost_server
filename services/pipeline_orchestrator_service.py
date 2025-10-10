@@ -1,6 +1,5 @@
 # In services/pipeline_orchestrator_service.py (REPLACE THE ENTIRE FILE)
 
-
 import asyncio
 import shutil
 import pandas as pd
@@ -21,48 +20,53 @@ class PipelineOrchestratorService:
 
     async def create_custom_scheme(self, project_dir, new_scheme_name, base_template_path, selected_jobs, user_params):
         try:
-            print(f"[DEBUG] Creating scheme: project_dir={project_dir}")
-            print(f"[DEBUG] new_scheme_name={new_scheme_name}")
-            print(f"[DEBUG] base_template_path={base_template_path}")
-            print(f"[DEBUG] selected_jobs={selected_jobs}")
-            
             new_scheme_dir = project_dir / "Schemes" / new_scheme_name
-            print(f"[DEBUG] new_scheme_dir={new_scheme_dir}")
-            
             new_scheme_dir.mkdir(parents=True, exist_ok=True)
-            print(f"[DEBUG] Scheme directory created: {new_scheme_dir.exists()}")
 
-            # Copy job directories
+            base_scheme_name = base_template_path.name  # This will be "warp_tomo_prep"
+
+            # Copy and modify job directories
             for job_name in selected_jobs:
                 source_job_dir = base_template_path / job_name
                 dest_job_dir = new_scheme_dir / job_name
-                print(f"[DEBUG] Copying {source_job_dir} -> {dest_job_dir}")
-                print(f"[DEBUG] Source exists: {source_job_dir.exists()}")
-                
                 if dest_job_dir.exists():
                     shutil.rmtree(dest_job_dir)
                 shutil.copytree(source_job_dir, dest_job_dir)
-                print(f"[DEBUG] Copied: {dest_job_dir.exists()}")
-
 
                 job_star_path = dest_job_dir / "job.star"
                 if job_star_path.exists():
                     job_data = self.star_handler.read(job_star_path)
+
+                    # --- NEW ROBUST FIX: Find and replace all lingering references ---
+                    print(f"[ORCHESTRATOR] Replacing '{base_scheme_name}' with '{new_scheme_name}' in {job_name}/job.star")
+                    for block_name, block_data in job_data.items():
+                        if isinstance(block_data, pd.DataFrame):
+                            for col in block_data.select_dtypes(include=['object']):
+                                if block_data[col].str.contains(base_scheme_name).any():
+                                    block_data[col] = block_data[col].str.replace(base_scheme_name, new_scheme_name, regex=False)
+                        elif isinstance(block_data, dict):
+                            for key, value in block_data.items():
+                                if isinstance(value, str):
+                                    block_data[key] = value.replace(base_scheme_name, new_scheme_name)
+                    # --- END OF FIX ---
+                    
+                    # Update user-defined parameters
                     if 'joboptions_values' in job_data:
                         params_df = job_data['joboptions_values']
                         for key, value in user_params.items():
                             if key in params_df['rlnJobOptionVariable'].values:
                                 params_df.loc[params_df['rlnJobOptionVariable'] == key, 'rlnJobOptionValue'] = str(value)
                         job_data['joboptions_values'] = params_df
-                        self.star_handler.write(job_data, job_star_path)
+                    
+                    self.star_handler.write(job_data, job_star_path)
 
+            # Create the main scheme.star file
             scheme_general_data = {
-                'rlnSchemeName': [f'Schemes/{new_scheme_name}/'],  # Note the trailing slash!
+                'rlnSchemeName': [f'Schemes/{new_scheme_name}/'],
                 'rlnSchemeCurrentNodeName': ['WAIT'],
             }
             scheme_general_df = pd.DataFrame(scheme_general_data)
 
-            # Add scheme_floats block (CRITICAL - was missing)
             scheme_floats_data = {
                 'rlnSchemeFloatVariableName': ['do_at_most', 'maxtime_hr', 'wait_sec'],
                 'rlnSchemeFloatVariableValue': [500.0, 48.0, 180.0],
@@ -70,7 +74,6 @@ class PipelineOrchestratorService:
             }
             scheme_floats_df = pd.DataFrame(scheme_floats_data)
 
-            # Add scheme_operators block (CRITICAL - was missing)
             scheme_operators_data = {
                 'rlnSchemeOperatorName': ['EXIT', 'EXIT_maxtime', 'WAIT'],
                 'rlnSchemeOperatorType': ['exit', 'exit_maxtime', 'wait'],
@@ -80,45 +83,42 @@ class PipelineOrchestratorService:
             }
             scheme_operators_df = pd.DataFrame(scheme_operators_data)
 
-            # Fix scheme_jobs - add proper columns and empty execution paths
             scheme_jobs_data = {
                 'rlnSchemeJobNameOriginal': selected_jobs,
                 'rlnSchemeJobName': selected_jobs,
                 'rlnSchemeJobMode': ['continue'] * len(selected_jobs),
-                'rlnSchemeJobHasStarted': [0] * len(selected_jobs)  # 0 = not started
+                'rlnSchemeJobHasStarted': [0] * len(selected_jobs)
             }
             scheme_jobs_df = pd.DataFrame(scheme_jobs_data)
 
-            # Fix scheme_edges - add all required columns
             edges = []
             edges.append({'rlnSchemeEdgeInputNodeName': 'WAIT', 
-                        'rlnSchemeEdgeOutputNodeName': 'EXIT_maxtime',
-                        'rlnSchemeEdgeIsFork': 0,
-                        'rlnSchemeEdgeOutputNodeNameIfTrue': 'undefined',
-                        'rlnSchemeEdgeBooleanVariable': 'undefined'})
+                          'rlnSchemeEdgeOutputNodeName': 'EXIT_maxtime',
+                          'rlnSchemeEdgeIsFork': 0,
+                          'rlnSchemeEdgeOutputNodeNameIfTrue': 'undefined',
+                          'rlnSchemeEdgeBooleanVariable': 'undefined'})
             
             edges.append({'rlnSchemeEdgeInputNodeName': 'EXIT_maxtime',
-                        'rlnSchemeEdgeOutputNodeName': selected_jobs[0],
-                        'rlnSchemeEdgeIsFork': 0,
-                        'rlnSchemeEdgeOutputNodeNameIfTrue': 'undefined', 
-                        'rlnSchemeEdgeBooleanVariable': 'undefined'})
+                          'rlnSchemeEdgeOutputNodeName': selected_jobs[0],
+                          'rlnSchemeEdgeIsFork': 0,
+                          'rlnSchemeEdgeOutputNodeNameIfTrue': 'undefined', 
+                          'rlnSchemeEdgeBooleanVariable': 'undefined'})
 
             for i in range(len(selected_jobs) - 1):
                 edges.append({'rlnSchemeEdgeInputNodeName': selected_jobs[i],
-                            'rlnSchemeEdgeOutputNodeName': selected_jobs[i+1],
-                            'rlnSchemeEdgeIsFork': 0,
-                            'rlnSchemeEdgeOutputNodeNameIfTrue': 'undefined',
-                            'rlnSchemeEdgeBooleanVariable': 'undefined'})
+                              'rlnSchemeEdgeOutputNodeName': selected_jobs[i+1],
+                              'rlnSchemeEdgeIsFork': 0,
+                              'rlnSchemeEdgeOutputNodeNameIfTrue': 'undefined',
+                              'rlnSchemeEdgeBooleanVariable': 'undefined'})
 
             edges.append({'rlnSchemeEdgeInputNodeName': selected_jobs[-1],
-                        'rlnSchemeEdgeOutputNodeName': 'EXIT',
-                        'rlnSchemeEdgeIsFork': 0,
-                        'rlnSchemeEdgeOutputNodeNameIfTrue': 'undefined',
-                        'rlnSchemeEdgeBooleanVariable': 'undefined'})
+                          'rlnSchemeEdgeOutputNodeName': 'EXIT',
+                          'rlnSchemeEdgeIsFork': 0,
+                          'rlnSchemeEdgeOutputNodeNameIfTrue': 'undefined',
+                          'rlnSchemeEdgeBooleanVariable': 'undefined'})
 
             scheme_edges_df = pd.DataFrame(edges)
 
-            # Create the complete scheme.star with ALL required blocks
             scheme_star_data = {
                 'scheme_general': scheme_general_df,
                 'scheme_floats': scheme_floats_df,
@@ -133,6 +133,9 @@ class PipelineOrchestratorService:
 
             return {"success": True}
         except Exception as e:
+            print(f"[ORCHESTRATOR] ERROR creating custom scheme: {e}")
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
 
     async def schedule_and_run_manually(self, project_dir: Path, scheme_name: str, job_names: List[str]):
@@ -147,7 +150,6 @@ class PipelineOrchestratorService:
             print(f"--- Scheduling Job {i+1}/{len(job_names)}: {job_name} ---")
             template_job_star_path = (project_dir / "Schemes" / scheme_name / job_name / "job.star").resolve()
             
-            # Use containerized relion_pipeliner
             command_add = f"relion_pipeliner --addJobFromStar {template_job_star_path}"
             result_add = await self.backend.run_shell_command(command_add, cwd=project_dir, use_container=True)
             
@@ -176,28 +178,20 @@ class PipelineOrchestratorService:
                     self.star_handler.write(job_data, run_job_star_path)
                     print(f"Updated '{input_param_name}' to '{last_job_output_star}'")
             
-            # --- START OF FIX for path joining ---
             output_filename = self.config_service.get_job_output_filename(job_name)
             if output_filename:
-                # Use pathlib to join paths correctly, preventing double slashes.
-                # Also, strip any leading slashes from the config filename.
                 last_job_output_star = str(Path(job_run_dir_name) / output_filename.lstrip('/'))
                 print(f"Registered output for {job_name} as: {last_job_output_star}")
             else:
                 print(f"Warning: No output filename configured for job type {job_name}")
                 last_job_output_star = ""
-            # --- END OF FIX ---
 
         if not first_job_directory:
             return {"success": False, "error": "Could not determine the first job to run."}
 
-        # This command is correct from our last fix.
-
-
         print("--- Starting relion_schemer to manage workflow execution ---")
         scheme_folder_name = scheme_name.split('/')[-1].rstrip('/')
         
-        # Use containerized relion_schemer
         run_command = f"relion_schemer --scheme {scheme_folder_name} --run --verb 2"
         
         try:
@@ -208,11 +202,9 @@ class PipelineOrchestratorService:
                 cwd=project_dir
             )
             
-            # Store the process so we can monitor it
             self.active_schemer_process = process
             print(f"[ORCHESTRATOR] relion_schemer started with PID: {process.pid}")
             
-            # Start monitoring in background
             asyncio.create_task(self._monitor_schemer(process, project_dir))
             
             return {"success": True, "message": f"Workflow started (PID: {process.pid})", "pid": process.pid}
@@ -220,25 +212,10 @@ class PipelineOrchestratorService:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def _monitor_pipeline(self, process):
-        """Monitors the stdout and stderr of the running pipeline process."""
-        print(f"[MONITOR] Starting to monitor pipeline PID {process.pid}")
-        stdout, stderr = await process.communicate()
-        if stdout:
-            print(f"[MONITOR] Pipeline stdout:\n{stdout.decode(errors='ignore')}")
-        if stderr:
-            print(f"[MONITOR] Pipeline stderr:\n{stderr.decode(errors='ignore')}")
-        
-        if process.returncode == 0:
-            print(f"[MONITOR] Pipeline completed successfully.")
-        else:
-            print(f"[MONITOR] Pipeline failed with return code {process.returncode}")
-
     async def _monitor_schemer(self, process, project_dir):
         """Monitor the relion_schemer process and pipeline progress"""
         print(f"[MONITOR] Starting to monitor relion_schemer PID {process.pid}")
         
-        # Monitor both stdout and stderr
         async def read_stream(stream, callback):
             while True:
                 line = await stream.readline()
@@ -248,7 +225,6 @@ class PipelineOrchestratorService:
         
         def handle_stdout(line):
             print(f"[SCHEMER] {line}")
-            # You can parse this for job submission/completion messages
             
         def handle_stderr(line):
             print(f"[SCHEMER-ERR] {line}")
@@ -258,6 +234,5 @@ class PipelineOrchestratorService:
             read_stream(process.stderr, handle_stderr)
         )
         
-        # Wait for process to complete
         await process.wait()
         print(f"[MONITOR] relion_schemer completed with return code: {process.returncode}")
