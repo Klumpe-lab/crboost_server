@@ -13,13 +13,16 @@ import pandas as pd
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 
-movies_glob = "/users/artem.kushner/dev/001_CopiaTestSet/frames/*.eer"
-mdocs_glob = "/users/artem.kushner/dev/001_CopiaTestSet/mdoc/*.mdoc"
-
 HARDCODED_USER = User(username="artem.kushner")
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
+        # --- NEW: Load container path from environment variable ---
+        self.relion_container_path = os.getenv("CRYOBOOST_RELION_CONTAINER")
+        if not self.relion_container_path:
+            raise ValueError("CRITICAL: CRYOBOOST_RELION_CONTAINER environment variable is not set.")
+        if not Path(self.relion_container_path).exists():
+             print(f"WARNING: Container path does not exist: {self.relion_container_path}")
 
         relion_bin_path = "/users/artem.kushner/dev/relion/build/bin"
         os.environ['PATH'] = f"{relion_bin_path}:{os.environ['PATH']}"
@@ -28,11 +31,6 @@ class CryoBoostBackend:
         self.active_jobs: Dict[str, Job] = {}
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
-
-        # --- DELETED ---
-        # No more hardcoded python paths or environment manipulation.
-        # We assume the environment is correct when the app starts.
-        # Add to backend.py
 
     async def debug_container_environment(self, project_dir: Path):
         """Debug what environment the container is actually using"""
@@ -61,8 +59,6 @@ class CryoBoostBackend:
             return []
         jobs = sorted([p.name for p in template_path.iterdir() if p.is_dir()])
         return jobs
-    # backend.py - Add this method to CryoBoostBackend class
-    # Add this to your backend.py
 
     def _get_container_binds(self, cwd: Path) -> List[str]:
         """Get appropriate bind mounts for the container."""
@@ -84,9 +80,11 @@ class CryoBoostBackend:
             binds.append(str(config_dir))
         
         return list(set(binds))  # Remove duplicates
+
     def _run_containerized_relion(self, command: str, cwd: Path = None, additional_binds: List[str] = None):
         """Run a Relion command with forced clean environment."""
-        container_path = "/groups/klumpe/software/Setup/cryoboost_containers/relion5.0_tomo.sif"
+        # --- MODIFIED: Use the path from self.relion_container_path ---
+        container_path = self.relion_container_path
         
         binds = self._get_container_binds(cwd)
         if additional_binds:
@@ -110,7 +108,10 @@ class CryoBoostBackend:
         print(f"[CONTAINER CLEAN] Command: {full_command}")
         return full_command
 
-    async def create_project_and_scheme(self, project_name: str, selected_jobs: List[str]):
+    # --- MODIFIED: Added movies_glob and mdocs_glob parameters and integrated data import ---
+    async def create_project_and_scheme(
+        self, project_name: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
+    ):
         projects_base_dir = self.server_dir / "projects"
         project_dir = projects_base_dir / HARDCODED_USER.username / project_name
         base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
@@ -120,13 +121,15 @@ class CryoBoostBackend:
         if project_dir.exists():
             return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
 
-        project_dir.mkdir(parents=True, exist_ok=True)
-        (project_dir / "qsub").mkdir(exist_ok=True)
+        # --- NEW: Delegate directory creation and data import to ProjectService ---
+        import_prefix = f"{project_name}_"
+        structure_result = await self.project_service.create_project_structure(
+            project_dir, movies_glob, mdocs_glob, import_prefix
+        )
+        if not structure_result["success"]:
+            return structure_result
         
-        qsub_source_dir = Path.cwd() / "config" / "qsub"
-        qsub_dest_dir = project_dir / "qsub"
-        shutil.copytree(qsub_source_dir, qsub_dest_dir, dirs_exist_ok=True)
-        print(f"[BACKEND] Copied submission scripts to {qsub_dest_dir}")
+        print(f"[BACKEND] Project structure and data import successful.")
 
         scheme_result = await self.pipeline_orchestrator.create_custom_scheme(
             project_dir, scheme_name, base_template_path, selected_jobs, user_params
@@ -134,8 +137,6 @@ class CryoBoostBackend:
         if not scheme_result["success"]:
             return scheme_result
         
-        # In backend.py - Update the project initialization part
-
         print(f"[BACKEND] Initializing Relion project non-blockingly in {project_dir}...")
         pipeline_star_path = project_dir / "default_pipeline.star"
 
@@ -175,7 +176,6 @@ class CryoBoostBackend:
     async def run_shell_command(self, command: str, cwd: Path = None, use_container: bool = False):
         """Runs a shell command, optionally containerized."""
         try:
-            # FIXED: Better container detection that includes Python commands
             should_containerize = (
                 use_container and 
                 any(cmd in command for cmd in ['relion', 'relion_', 'python', 'conda'])
@@ -183,9 +183,7 @@ class CryoBoostBackend:
             
             if should_containerize:
                 print(f"[DEBUG] Containerizing command: {command}")
-                container_command = self._run_containerized_relion(command, cwd)
-                final_command = container_command
-                print(f"[DEBUG] Final container command: {final_command}")
+                final_command = self._run_containerized_relion(command, cwd)
             else:
                 final_command = command
                 print(f"[SHELL] Running natively: {final_command}")
@@ -197,7 +195,6 @@ class CryoBoostBackend:
                 cwd=cwd or self.server_dir
             )
             
-            # Add timeout to prevent hanging
             try:
                 stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120.0)
                 
@@ -217,7 +214,7 @@ class CryoBoostBackend:
             print(f"[ERROR] Exception in run_shell_command: {e}")
             return {"success": False, "output": "", "error": str(e)}
 
-
+    # ... (the rest of the backend.py file remains the same)
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
 
@@ -325,7 +322,3 @@ class CryoBoostBackend:
         except Exception as e:
             print(f"[BACKEND] Error reading pipeline progress for {project_path}: {e}")
             return {"status": "error", "message": str(e)}
-
-    # --- DELETED ---
-    # The run_relion_command wrapper is no longer necessary, as run_shell_command
-    # now correctly uses the inherited environment.
