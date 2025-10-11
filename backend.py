@@ -15,7 +15,6 @@ HARDCODED_USER = User(username="artem.kushner")
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
-        # --- NEW: Load container path from environment variable ---
         self.relion_container_path = os.getenv("CRYOBOOST_RELION_CONTAINER")
         if not self.relion_container_path:
             raise ValueError("CRITICAL: CRYOBOOST_RELION_CONTAINER environment variable is not set.")
@@ -83,17 +82,13 @@ class CryoBoostBackend:
                 "/groups", "/programs", "/software",
             ]
 
-            # --- NEW: Binds for X11 GUI Forwarding ---
             x11_authority = Path.home() / ".Xauthority"
             x11_socket = Path("/tmp/.X11-unix")
             
-            # Add X11 binds if they exist on the host
             if x11_authority.exists():
-                # Map host's .Xauthority to the one fakeroot expects
                 binds.append(f"{x11_authority}:{x11_authority}:ro")
             if x11_socket.exists():
                 binds.append(str(x11_socket))
-            # --- END OF NEW SECTION ---
 
             print("[DEBUG] Checking for HPC bind paths...")
             for path_str in hpc_binds:
@@ -107,73 +102,53 @@ class CryoBoostBackend:
             return list(set(binds))
 
     def _run_containerized_relion(self, command: str, cwd: Path = None, additional_binds: List[str] = None):
-            """
-            Builds and returns the EXACT apptainer command string based on the user's
-            provided working shell script template. No cleverness, no dynamic checks.
-            """
-            import os
-            import shlex
+        """
+        Builds and returns the EXACT apptainer command string based on the user's
+        provided working shell script template.
+        """
+        import os
+        import shlex
 
-            container_path = self.relion_container_path
-            home_dir = str(Path.home())
-            # Use a default for DISPLAY to be safe, as the script does.
-            display_var = os.getenv('DISPLAY', ':0.0')
+        container_path = self.relion_container_path
+        home_dir = str(Path.home())
+        display_var = os.getenv('DISPLAY', ':0.0')
 
-            # --- Start of hardcoded template from working_proj_initiation.sh ---
-            
-            # A simple list of all arguments, copied from your script.
-            # The '-B' shorthand is replaced with the explicit '--bind' for clarity.
-            args = [
-                "apptainer", "exec",
-                "--fakeroot",
-                
-                # --- Core directories ---
-                f"--bind {cwd}",
-                f"--bind {home_dir}",
-                f"--bind {self.server_dir / 'projects'}",
-                f"--bind {Path.cwd() / 'config'}",
-                "--bind /scratch",
-                "--bind /programs",
-                "--bind /groups",
-                "--bind /software",
+        SLURM_BIN_DIR = "/usr/bin" # <-- CORRECTED PATH
 
-                # --- X11 Forwarding (Exact paths from your script) ---
-                f"--env DISPLAY={display_var}",
-                "--bind /tmp/.X11-unix/:/tmp/.X11-unix",
-                f"--bind {home_dir}/.Xauthority:/root/.Xauthority:ro",
+        args = [
+            "apptainer", "exec", "--fakeroot",
+            f"--bind {cwd}", f"--bind {home_dir}", f"--bind {self.server_dir / 'projects'}",
+            f"--bind {Path.cwd() / 'config'}", "--bind /scratch-cbe", "--bind /programs",
+            "--bind /groups", "--bind /software",
+   
+            # You must bind the host's /usr/bin so the container can find sbatch, squeue, etc.
+            "--bind /usr/bin:/usr/bin",
+            f"--env DISPLAY={display_var}",
+            "--bind /tmp/.X11-unix/:/tmp/.X11-unix",
+            f"--bind {home_dir}/.Xauthority:/root/.Xauthority:ro",
+            "--bind /usr/lib64/slurm:/usr/lib64/slurm",
+            "--bind /usr/lib64/slurm/libslurmfull.so:/usr/lib64/slurm/libslurmfull.so",
+            "--bind /run/munge:/run/munge",
+            "--bind /usr/bin/munge:/usr/bin/munge",
+            "--bind /usr/bin/unmunge:/usr/bin/unmunge",
+            "--bind /etc/passwd:/etc/passwd:ro",
+            "--bind /etc/group:/etc/group:ro",
+        ]
 
-                # --- Slurm and Munge (Exact paths from your script) ---
-                "--bind /usr/lib64/slurm:/usr/lib64/slurm",
-                "--bind /usr/lib64/slurm/libslurmfull.so:/usr/lib64/slurm/libslurmfull.so",
-                "--bind /run/munge:/run/munge",
-                "--bind /usr/bin/munge:/usr/bin/munge",
-                "--bind /usr/bin/unmunge:/usr/bin/unmunge",
+        args.append(container_path)
 
-                # --- User mapping ---
-                "--bind /etc/passwd:/etc/passwd:ro",
-                "--bind /etc/group:/etc/group:ro",
-            ]
-
-            # The container image path
-            args.append(container_path)
-
-            # --- The command to run inside the container ---
-            inner_command = f"""
-            unset PYTHONPATH
-            unset PYTHONHOME
-            export PATH="/opt/miniconda3/envs/relion-5.0/bin:/opt/miniconda3/bin:/opt/relion-5.0/build/bin:/usr/local/cuda-11.8/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            {command}
-            """
-            
-            wrapped_command = f"bash -c {shlex.quote(inner_command)}"
-            args.append(wrapped_command)
-
-            full_command = " ".join(args)
-            # --- End of hardcoded template ---
-
-            print(f"[CONTAINER TEMPLATE] Command: {full_command}")
-            return full_command
-
+        inner_command = f"""
+        unset PYTHONPATH
+        unset PYTHONHOME
+        export PATH="{SLURM_BIN_DIR}:/opt/miniconda3/envs/relion-5.0/bin:/opt/miniconda3/bin:/opt/relion-5.0/build/bin:/usr/local/cuda-11.8/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        {command}
+        """
+        
+        wrapped_command = f"bash -c {shlex.quote(inner_command)}"
+        args.append(wrapped_command)
+        full_command = " ".join(args)
+        print(f"[CONTAINER TEMPLATE] Command: {full_command}")
+        return full_command
     async def create_project_and_scheme(
             self, project_name: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
         ):

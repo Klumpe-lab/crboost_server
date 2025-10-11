@@ -1,5 +1,6 @@
 Bootstrap: docker
-From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu22.04
+# CHANGED: Switched from ubuntu22.04 to ubuntu20.04 for better host library compatibility
+From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu20.04
 
 %labels
     Author Artie Kushner
@@ -45,6 +46,9 @@ From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu22.04
         csh \
         tcsh \
         ca-certificates \
+        libtinfo5 \
+        munge \
+        libmunge-dev \
         && rm -rf /var/lib/apt/lists/*
 
     echo "=== INSTALLING MINICONDA ==="
@@ -55,7 +59,7 @@ From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu22.04
 
     # Set up conda in PATH
     export PATH="/opt/miniconda3/bin:$PATH"
-    
+
     # Configure Conda for non-interactive build
     /opt/miniconda3/bin/conda config --set always_yes true
     /opt/miniconda3/bin/conda config --set auto_activate_base false
@@ -67,13 +71,10 @@ From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu22.04
     git checkout ver5.0
 
     echo " === CREATING RELION CONDA ENVIRONMENT FROM environment.yml === "
-
-    #This includes all Python dependencies including tomography_python_programs
-
+    # This includes all Python dependencies including tomography_python_programs
     /opt/miniconda3/bin/conda env create -f environment.yml
 
     echo "=== BUILDING RELION 5.0 FROM SOURCE ==="
-
     mkdir -p /opt/relion-5.0/build
     cd /opt/relion-5.0/build
 
@@ -91,7 +92,7 @@ From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu22.04
 
     make -j$(nproc)
     # Skip make install - binaries in build/bin are fine
-    
+
     echo "=== RELION 5.0 INSTALLATION COMPLETE ==="
 
     # Cleanup
@@ -111,13 +112,13 @@ From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu22.04
 %test
     echo "=== TESTING RELION ==="
     export PATH="/opt/miniconda3/envs/relion-5.0/bin:/opt/relion-5.0/build/bin:$PATH"
-    
+
     relion --version || echo "RELION version check completed"
 
     echo "=== TESTING PYTHON ENVIRONMENT ==="
     /opt/miniconda3/envs/relion-5.0/bin/python -c "import starfile; print('Successfully imported starfile.')"
     /opt/miniconda3/envs/relion-5.0/bin/python -c "import mrcfile; print('Successfully imported mrcfile.')"
-    
+
     echo "=== TESTING TOMOGRAPHY PYTHON PROGRAMS ==="
     /opt/miniconda3/envs/relion-5.0/bin/python -c "import tomography_python_programs; print('Successfully imported tomography_python_programs.')"
 
@@ -133,6 +134,6 @@ From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu22.04
     support for CUDA-acceleration and the Python-based Tomography pipeline.
 
     Inside the container, you can use all 'relion_*' commands directly.
-    
+
     Note: The conda environment (relion-5.0) is automatically activated
     by RELION when needed. You do not need to manually activate it.
