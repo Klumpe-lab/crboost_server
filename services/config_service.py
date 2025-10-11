@@ -1,12 +1,10 @@
-# services/config_service.py (Corrected again for forgiveness)
+# services/config_service.py (updated)
 
 import yaml
 from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
-
-# --- Pydantic Models for your specific conf.yaml ---
+from typing import List, Dict, Any, Optional, Union
 
 class SubmissionConfig(BaseModel):
     HeadNode: str
@@ -30,14 +28,19 @@ class ComputingPartition(BaseModel):
     RAM: str
     VRAM: str
 
+class NodeSharingConfig(BaseModel):
+    CPU_PerGPU: int = Field(alias='CPU-PerGPU')
+    ApplyTo: List[str]
+
 class ComputingConfig(BaseModel):
     QueSize: Dict[str, int]
-    NODE_Sharing: Dict[str, Any] = Field(alias='NODE-Sharing')
+    NODE_Sharing: NodeSharingConfig = Field(alias='NODE-Sharing')
     JOBTypesCompute: Dict[str, List[str]]
     JOBTypesApplication: Dict[str, List[str]]
     JOBMaxNodes: Dict[str, List[int]]
     JOBsPerDevice: Dict[str, Dict[str, int]]
     
+    # Make all partitions optional with safe defaults
     c: Optional[ComputingPartition] = None
     m: Optional[ComputingPartition] = None
     g: Optional[ComputingPartition] = None
@@ -46,38 +49,39 @@ class ComputingConfig(BaseModel):
     g_a100: Optional[ComputingPartition] = Field(None, alias='g-a100')
 
 class Config(BaseModel):
-    """The root model for the entire conf.yaml file."""
     submission: List[SubmissionConfig]
     local: LocalConfig
     aliases: List[Alias]
     meta_data: Dict[str, List[Dict[str, str]]]
     microscopes: Dict[str, List[Dict[str, str]]]
     
-    # FIX: Made the star_file field optional to prevent startup crash.
-    star_file: Optional[Dict[str, str]] = Field(None, alias='star_file')
+    # Make star_file more flexible
+    star_file: Optional[Dict[str, str]] = None
     
     computing: ComputingConfig
     filepath: Dict[str, str]
 
-# --- Service Implementation ---
+    class Config:
+        extra = 'ignore'  # Ignore extra fields
 
 class ConfigService:
-    """A singleton service to load and provide access to the application config."""
-    _config: Config = None
-
     def __init__(self, config_path: Path):
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found at: {config_path}")
+        
         with open(config_path, 'r') as f:
             data = yaml.safe_load(f)
+        
+        # Handle missing or problematic fields
+        if 'star_file' not in data:
+            data['star_file'] = {}
+        
         self._config = Config(**data)
 
     def get_config(self) -> Config:
         return self._config
 
     def get_job_output_filename(self, job_type: str) -> Optional[str]:
-        """Gets the standard output STAR file name for a given job type."""
-        # Add a check to ensure star_file was loaded before trying to access it.
         if not self._config.star_file:
             return None
         base_job_type = job_type.split('_')[0]
@@ -85,6 +89,5 @@ class ConfigService:
 
 @lru_cache()
 def get_config_service(config_path: str = "config/conf.yaml") -> ConfigService:
-    """Factory function to get the single instance of the ConfigService."""
     path = Path.cwd() / config_path
     return ConfigService(path)

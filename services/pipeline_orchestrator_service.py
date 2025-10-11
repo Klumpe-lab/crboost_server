@@ -18,6 +18,46 @@ class PipelineOrchestratorService:
         self.star_handler = StarfileService()
         self.config_service = get_config_service()
 
+    # In services/pipeline_orchestrator_service.py (add this method)
+
+    async def _generate_run_submit_script(self, job_dir: Path, job_type: str, command: str):
+        """Generate the run_submit.script with proper computing parameters"""
+        from .computing_service import ComputingService
+        
+        computing_service = ComputingService()
+        default_partition = computing_service.get_default_partition(job_type)
+        comp_params = computing_service.get_computing_params(job_type, default_partition)
+        
+        # Read the qsub template
+        qsub_template_path = Path.cwd() / "config" / "qsub" / "qsub_cbe_warp.sh"
+        with open(qsub_template_path, 'r') as f:
+            template_content = f.read()
+        
+        # Replace placeholders
+        script_content = template_content.replace("XXXcommandXXX", command)
+        script_content = script_content.replace("XXXthreadsXXX", str(comp_params.get("nr_threads", 8)))
+        
+        # Replace extra parameters
+        for i in range(1, 6):
+            placeholder = f"XXXextra{i}XXX"
+            param_name = f"qsub_extra{i}"
+            if param_name in comp_params:
+                script_content = script_content.replace(placeholder, str(comp_params[param_name]))
+            else:
+                # Remove the line if parameter not found
+                import re
+                script_content = re.sub(f".*{placeholder}.*\n?", "", script_content)
+        
+        # Set output files
+        script_content = script_content.replace("XXXoutfileXXX", f"{job_dir}/run.out")
+        script_content = script_content.replace("XXXerrfileXXX", f"{job_dir}/run.err")
+        
+        # Write the script
+        run_script_path = job_dir / "run_submit.script"
+        with open(run_script_path, 'w') as f:
+            f.write(script_content)
+        
+        return run_script_path
     async def create_custom_scheme(self, project_dir, new_scheme_name, base_template_path, selected_jobs, user_params):
         try:
             new_scheme_dir = project_dir / "Schemes" / new_scheme_name
@@ -138,7 +178,6 @@ class PipelineOrchestratorService:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
-    # services/pipeline_orchestrator_service.py (REPLACE schedule_and_run_manually method)
 
     async def schedule_and_run_manually(self, project_dir: Path, scheme_name: str, job_names: List[str]):
         """Simply run the schemer - it will handle all job creation and scheduling."""
@@ -163,6 +202,7 @@ class PipelineOrchestratorService:
             print(f"[ORCHESTRATOR] relion_schemer started with PID: {process.pid}")
             asyncio.create_task(self._monitor_schemer(process, project_dir))
             
+            await self.debug_job_creation(project_dir)
             return {"success": True, "message": f"Workflow started (PID: {process.pid})", "pid": process.pid}
             
         except Exception as e:
@@ -192,3 +232,33 @@ class PipelineOrchestratorService:
         
         await process.wait()
         print(f"[MONITOR] relion_schemer completed with return code: {process.returncode}")
+    # services/pipeline_orchestrator_service.py (add this method for debugging)
+
+    async def debug_job_creation(self, project_dir: Path):
+        """Debug what happens when relion_schemer creates jobs"""
+        print(f"[DEBUG] Checking project directory: {project_dir}")
+        
+        # Check if qsub templates exist
+        qsub_dir = project_dir / "qsub"
+        if qsub_dir.exists():
+            print(f"[DEBUG] Qsub directory exists with files: {list(qsub_dir.glob('*.sh'))}")
+        else:
+            print("[DEBUG] Qsub directory does not exist!")
+        
+        # Check what happens when schemer runs
+        scheme_name = "scheme_extras"  # You'll need to get this dynamically
+        scheme_dir = project_dir / "Schemes" / scheme_name
+        
+        print(f"[DEBUG] Scheme directory: {scheme_dir}")
+        if scheme_dir.exists():
+            for job_dir in scheme_dir.iterdir():
+                if job_dir.is_dir():
+                    print(f"[DEBUG] Job template: {job_dir.name}")
+                    job_star = job_dir / "job.star"
+                    if job_star.exists():
+                        job_data = self.star_handler.read(job_star)
+                        if 'joboptions_values' in job_data:
+                            params = job_data['joboptions_values']
+                            qsub_script = params[params['rlnJobOptionVariable'] == 'qsubscript']['rlnJobOptionValue'].values
+                            if len(qsub_script) > 0:
+                                print(f"[DEBUG] Job {job_dir.name} uses qsub script: {qsub_script[0]}")
