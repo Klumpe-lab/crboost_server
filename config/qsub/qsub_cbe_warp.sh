@@ -14,14 +14,14 @@ echo "--- SLURM JOB START ---"
 echo "Node: $(hostname)"
 
 
-#module load build-env/f2022
-module load miniconda3/24.7.1-0
-#module load gcc/11.3.0
-#module load cuda/12.3.0
+# #module load build-env/f2022
+# module load miniconda3/24.7.1-0
+# #module load gcc/11.3.0
+# #module load cuda/12.3.0
 
-SATELLITE_ACTIVATE_SCRIPT="/groups/klumpe/software/Setup/cryoboost_satellite_repo/activate_satellite_repo.sh"
-echo "--- Sourcing Application Environment from ${SATELLITE_ACTIVATE_SCRIPT} ---"
-source "${SATELLITE_ACTIVATE_SCRIPT}" 
+# SATELLITE_ACTIVATE_SCRIPT="/groups/klumpe/software/Setup/cryoboost_satellite_repo/activate_satellite_repo.sh"
+# echo "--- Sourcing Application Environment from ${SATELLITE_ACTIVATE_SCRIPT} ---"
+# source "${SATELLITE_ACTIVATE_SCRIPT}" 
 
 XXXcommandXXX
 
