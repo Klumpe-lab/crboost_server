@@ -4,117 +4,113 @@ from pathlib import Path
 from .config_service import get_config_service
 
 class ContainerService:
-    """
-    A centralized service to wrap commands for execution inside Apptainer containers.
-    """
     def __init__(self):
         config_data = get_config_service().get_config()
+        self.container_paths = config_data.containers or {}
         
-        self.container_paths = config_data.containers
-        if self.container_paths is None:
-            print("⚠️ WARNING: 'containers' section not found in conf.yaml. Container wrapping will be disabled.")
-            self.container_paths = {}
-
-        self.command_to_container_key = {
+        self.tool_to_container = {
             "WarpTools": "warp_aretomo",
-            "AreTomo": "warp_aretomo",
-            "cryoCARE_predict.py": "cryocare",
+            "AreTomo": "warp_aretomo", 
+            "cryoCARE_extract_train_data.py": "cryocare",
             "cryoCARE_train.py": "cryocare",
+            "cryoCARE_predict.py": "cryocare",
+            "pytom_extract_candidates.py": "pytom",
+            "pytom_match_template.py": "pytom", 
+            "pytom_merge_stars.py": "pytom",
+            "relion": "relion",
         }
 
-    def create_wrapper_script(self, project_dir: Path, tool_name: str) -> Path:
+    # In container_service.py - replace the command building section:
+
+    def wrap_command(self, command: str, project_dir: Path) -> str:
         """
-        Creates a wrapper script for a containerized tool.
-        
-        Args:
-            project_dir: The project directory
-            tool_name: The tool to wrap (e.g., 'WarpTools')
-            
-        Returns:
-            Path to the created wrapper script
+        Convert a raw command to a direct container execution with proper path handling
+        Returns a single-line command for STAR file compatibility
         """
-        container_key = self.command_to_container_key.get(tool_name)
-        if not container_key:
-            raise ValueError(f"Unknown tool: {tool_name}")
+        parts = command.strip().split()
+        if not parts:
+            return command
             
-        container_path = self.container_paths.get(container_key)
-        if not container_path:
-            raise ValueError(f"Container path for '{container_key}' not found in config")
+        tool_name = parts[0]
+        container_key = self.tool_to_container.get(tool_name)
         
-        # Create wrappers directory in project
-        wrappers_dir = project_dir / ".cryoboost_wrappers"
-        wrappers_dir.mkdir(exist_ok=True)
-        
-        wrapper_path = wrappers_dir / tool_name
+        if not container_key or container_key not in self.container_paths:
+            return command
+            
+        container_path = self.container_paths[container_key]
         project_dir_abs = str(project_dir.resolve())
         
-        # Write the wrapper script
-        wrapper_content = f"""#!/bin/bash
-        # Auto-generated wrapper for {tool_name}
+        # ===== CONTAINER-SPECIFIC BINDING STRATEGY =====
+        # Common binds for all containers - mount the SPECIFIC project directory
+        binds = [
+            f"{project_dir_abs}",
+            "/users/artem.kushner/dev/001_CopiaTestSet:/users/artem.kushner/dev/001_CopiaTestSet:ro"
+        ]
+        
+        # Container-specific additional binds
+        if container_key == "relion":
+            # Relion needs slurm access to submit jobs
+            binds.extend([
+                "/usr/bin:/usr/bin",
+                "/usr/lib64/slurm:/usr/lib64/slurm", 
+                "/run/munge:/run/munge",
+                "/tmp/.X11-unix:/tmp/.X11-unix",
+                f"{Path.home()}/.Xauthority:/root/.Xauthority:ro"
+            ])
+        
+        # ===== BUILD CONTAINER COMMAND =====
+        bind_args = []
+        for bind in binds:
+            bind_args.extend(["-B", bind])
+        
+        # Build a single-line command for STAR file compatibility
+        container_cmd = [
+            "apptainer", "run",
+            "--cleanenv",
+            "--no-home",
+            *bind_args,
+            container_path,
+            "bash", "-c",
+            f"'{command}'"  # Use single quotes for the inner command
+        ]
+        
+        # Clean environment variables
+        clean_env_vars = [
+            "SINGULARITY_BIND", "APPTAINER_BIND", 
+            "SINGULARITY_BINDPATH", "APPTAINER_BINDPATH",
+            "SINGULARITY_NAME", "APPTAINER_NAME", 
+            "SINGULARITY_CONTAINER", "APPTAINER_CONTAINER",
+            "SINGULARITYENV_APPEND_PATH", "APPTAINERENV_APPEND_PATH", 
+            "LD_PRELOAD", "SINGULARITY_TMPDIR", "APPTAINER_TMPDIR", 
+            "XDG_RUNTIME_DIR", "DISPLAY", "XAUTHORITY"
+        ]
+        
+        clean_env_cmd = "unset " + " ".join(clean_env_vars)
+        
+        # Essential environment variables
+        essential_env = {
+            'PATH': '/usr/bin:/bin',
+            'HOME': str(Path.home()),
+            'USER': 'artem.kushner',
+            'LANG': 'en_US.UTF-8',
+            'LC_ALL': 'en_US.UTF-8',
+            'PWD': project_dir_abs,
+        }
+        
+        env_vars = " ".join([f"{k}='{v}'" for k, v in essential_env.items()])
+        
+        # Build final single-line command
+        full_command = f"{clean_env_cmd} && env -i {env_vars} {' '.join(container_cmd)}"
+        
+        print(f"✅ [CONTAINER] Wrapped {tool_name} using {container_key} container")
+        print(f"✅ [CONTAINER] Project dir: {project_dir_abs}")
+        return full_command
 
-        # Clean ALL container-related environment variables
-        unset LD_PRELOAD
-        unset SINGULARITY_BINDPATH
-        unset APPTAINER_BINDPATH
-        unset SINGULARITY_BIND
-        unset APPTAINER_BIND
-        unset SINGULARITYENV_APPEND_PATH
-        unset APPTAINERENV_APPEND_PATH
-
-        # Configuration
-        CONTAINER="{container_path}"
-        PROJECT_DIR="{project_dir_abs}"
-        DATA_DIR="/users/artem.kushner/dev/001_CopiaTestSet"
-
-        # Execute in container
-        apptainer run \\
-            --cleanenv \\
-            --no-home \\
-            -B "$PROJECT_DIR" \\
-            -B "$DATA_DIR":"$DATA_DIR":ro \\
-            --pwd "$(pwd)" \\
-            "$CONTAINER" \\
-            {tool_name} "$@"
-        """
-        
-        wrapper_path.write_text(wrapper_content)
-        wrapper_path.chmod(0o755)  # Make executable
-        
-        print(f"✅ Created wrapper script: {wrapper_path}")
-        return wrapper_path
-    def wrap(self, command_string: str, project_dir: Path = None) -> str:
-        """
-        Returns a command that uses the wrapper script instead of direct apptainer call.
-        
-        Args:
-            command_string: The raw command, e.g., "WarpTools create_settings ..."
-            project_dir: The absolute path to the project directory
-            
-        Returns:
-            Command string that calls the wrapper script
-        """
-        first_word = command_string.strip().split()[0]
-        container_key = self.command_to_container_key.get(first_word)
-
-        if not container_key:
-            return command_string
-        
-        if project_dir is None:
-            raise ValueError("project_dir must be provided for containerized commands")
-        
-        # Create the wrapper script
-        wrapper_path = self.create_wrapper_script(project_dir, first_word)
-        
-        # Replace the tool name in the command with the wrapper path
-        wrapped_command = command_string.replace(first_word, str(wrapper_path), 1)
-        
-        return wrapped_command
-
-# Singleton instance for easy access
-container_service_instance = None
+# Singleton instance
+_container_service = None
 
 def get_container_service() -> ContainerService:
-    global container_service_instance
-    if container_service_instance is None:
-        container_service_instance = ContainerService()
-    return container_service_instance
+    global _container_service
+    if _container_service is None:
+        _container_service = ContainerService()
+    return _container_service

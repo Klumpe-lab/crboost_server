@@ -218,6 +218,7 @@ computing:
             g: 2
 filepath: 
    removePatternFromPath: 'gpfs\\d{2}/lv\\d{2}/fileset\\d{2}' 
+   projects_base_dir: "projects" # Default relative path
 
 
 containers:
