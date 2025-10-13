@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 
 from .starfile_service import StarfileService
 from .config_service import get_config_service
+from .container_service import get_container_service # Import the new service
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
@@ -15,18 +16,28 @@ if TYPE_CHECKING:
 class PipelineOrchestratorService:
     """
     Orchestrates the creation and execution of Relion pipelines.
-    This service now correctly places the entire generated command into `fn_exe`.
+    
+    This service is responsible for:
+    1.  Creating custom pipeline schemes from templates.
+    2.  Building raw, executable commands for tools like WarpTools.
+    3.  Using the ContainerService to wrap these raw commands into full,
+        containerized `apptainer` calls.
+    4.  Injecting the final containerized commands into the `fn_exe` field
+        of the job.star files.
+    5.  Scheduling and monitoring the pipeline execution via `relion_schemer`.
     """
     
     def __init__(self, backend_instance: 'CryoBoostBackend'):
         self.backend = backend_instance
         self.star_handler = StarfileService()
         self.config_service = get_config_service()
+        self.container_service = get_container_service() # Instantiate the new service
         self.active_schemer_process: Optional[asyncio.subprocess.Process] = None
 
     def _build_warp_fs_motion_ctf_command(self, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
         """
-        Builds the direct WarpTools command string for Frame Series Motion & CTF Correction.
+        Builds the RAW WarpTools command string for Frame Series Motion & CTF Correction.
+        This method does NOT know about containers; it only builds the tool's command.
         """
         print("🚀 [BUILDER] Building fsMotionAndCtf command...")
         
@@ -82,15 +93,18 @@ class PipelineOrchestratorService:
             run_main_parts.append("--c_use_sum")
 
         full_command = " && ".join([" ".join(create_settings_parts), " ".join(run_main_parts)])
-        print(f"✅ [BUILDER] Generated command: {full_command}")
+        print(f"✅ [BUILDER] Generated raw command: {full_command}")
         return full_command
 
     def _build_warp_ts_alignment_command(self, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
+        """
+        [PLACEHOLDER] Builds the raw WarpTools command for Tilt Series Alignment.
+        """
         print("⚠️ [BUILDER] tsAlignment command builder is not yet implemented.")
         return "echo 'tsAlignment job not implemented yet'; exit 1;"
 
     def _build_command_for_job(self, job_name: str, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
-        """Dispatcher function to call the correct command builder based on the job name."""
+        """Dispatcher function to call the correct raw command builder based on the job name."""
         job_builders = {
             'fsMotionAndCtf': self._build_warp_fs_motion_ctf_command,
             'tsAlignment': self._build_warp_ts_alignment_command,
@@ -101,7 +115,6 @@ class PipelineOrchestratorService:
         if builder:
             return builder(params, user_params)
         else:
-            # This is the message that caused the original error. It will now be correctly quoted.
             return f"echo 'ERROR: Job type \"{job_name}\" does not have a direct command builder yet.'; exit 1;"
 
     async def create_custom_scheme(self, project_dir: Path, new_scheme_name: str, base_template_path: Path, selected_jobs: List[str], user_params: Dict[str, Any]):
@@ -139,18 +152,22 @@ class PipelineOrchestratorService:
                         param_value = params_dict.get(value_key)
                         params_dict[param_name] = param_value
                 
-                direct_command = self._build_command_for_job(job_name, params_dict, user_params)
+                # 1. Build the raw command string (e.g., "WarpTools ...")
+                raw_command = self._build_command_for_job(job_name, params_dict, user_params)
 
-                # 🎯 FIX: Assign the entire command string to `fn_exe` and clear `other_args`.
-                # The `starfile` library will automatically handle quoting the command string.
-                params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = direct_command
+                # 2. Wrap the raw command using the ContainerService to get the full apptainer call.
+                final_containerized_command = self.container_service.wrap(raw_command, project_dir)
+                
+                # 3. Assign the full, final command to `fn_exe`.
+                params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = final_containerized_command
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'other_args', 'rlnJobOptionValue'] = ''
 
-                # Clean up now-redundant `paramX` entries for clarity.
+                # 4. Clean up now-redundant `paramX` entries.
                 params_to_remove = [f'param{i}_{s}' for i in range(1, 11) for s in ['label', 'value']]
                 cleanup_mask = ~params_df['rlnJobOptionVariable'].isin(params_to_remove)
                 job_data['joboptions_values'] = params_df[cleanup_mask].reset_index(drop=True)
 
+                # Update scheme name references throughout the file.
                 print(f"Updating scheme name from '{base_scheme_name}' to '{new_scheme_name}' in {job_name}/job.star")
                 for block_name, block_data in job_data.items():
                     if isinstance(block_data, pd.DataFrame):
@@ -160,7 +177,7 @@ class PipelineOrchestratorService:
                 
                 self.star_handler.write(job_data, job_star_path)
 
-            # --- Create the main scheme.star file (logic unchanged) ---
+            # --- Create the main scheme.star file (logic is unchanged) ---
             scheme_general_df = pd.DataFrame({'rlnSchemeName': [f'Schemes/{new_scheme_name}/'], 'rlnSchemeCurrentNodeName': ['WAIT']})
             scheme_floats_df = pd.DataFrame({
                 'rlnSchemeFloatVariableName': ['do_at_most', 'maxtime_hr', 'wait_sec'],

@@ -218,3 +218,10 @@ computing:
             g: 2
 filepath: 
    removePatternFromPath: 'gpfs\\d{2}/lv\\d{2}/fileset\\d{2}' 
+
+
+containers:
+  warp_aretomo: /groups/klumpe/software/Setup/cryoboost_containers/warp_aretomo1.0.0_cuda11.8_glibc2.31.sif
+  cryocare: /groups/klumpe/software/Setup/cryoboost_containers/cryocare.sif
+  pytom: /groups/klumpe/software/Setup/cryoboost_containers/pytom.sif
+  relion: /groups/klumpe/software/Setup/cryoboost_containers/relion5.0_tomo.sif

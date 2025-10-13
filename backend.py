@@ -116,7 +116,7 @@ class CryoBoostBackend:
         SLURM_BIN_DIR = "/usr/bin" # <-- CORRECTED PATH
 
         args = [
-            "apptainer", "exec", "--fakeroot",
+            "apptainer", "exec",
             f"--bind {cwd}", f"--bind {home_dir}", f"--bind {self.server_dir / 'projects'}",
             f"--bind {Path.cwd() / 'config'}", "--bind /scratch-cbe", "--bind /programs",
             "--bind /groups", "--bind /software",
