@@ -13,6 +13,7 @@
 echo "--- SLURM JOB START ---"
 echo "Node: $(hostname)"
 echo "Working directory: $(pwd)"
+ml load cuda/11.8.0
 
 # Clean container environment variables that might be inherited from parent container
 unset SINGULARITY_BIND APPTAINER_BIND SINGULARITY_BINDPATH APPTAINER_BINDPATH
