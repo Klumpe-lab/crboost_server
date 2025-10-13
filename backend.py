@@ -35,7 +35,7 @@ class CryoBoostBackend:
             self.projects_base_dir = self.server_dir / projects_path
         
         self.projects_base_dir.mkdir(parents=True, exist_ok=True)
-        print(f"✅ [BACKEND] Using projects base directory: {self.projects_base_dir}")
+        print(f" [BACKEND] Using projects base directory: {self.projects_base_dir}")
         
         self.jobs_dir = self.server_dir / 'jobs'
         self.active_jobs: Dict[str, Job] = {}
@@ -126,7 +126,7 @@ class CryoBoostBackend:
         home_dir = str(Path.home())
         display_var = os.getenv('DISPLAY', ':0.0')
 
-        SLURM_BIN_DIR = "/usr/bin" # <-- CORRECTED PATH
+        SLURM_BIN_DIR = "/usr/bin" 
 
         args = [
             "apptainer", "exec",
@@ -187,10 +187,9 @@ class CryoBoostBackend:
                 
             print(f"[BACKEND] Project structure and data import successful.")
 
-            # --- MODIFIED: Pass raw_data_dir to the orchestrator ---
             scheme_result = await self.pipeline_orchestrator.create_custom_scheme(
                 project_dir, scheme_name, base_template_path, selected_jobs, user_params,
-                raw_data_dir=raw_data_dir  # Pass the new parameter here
+                raw_data_dir=raw_data_dir 
             )
             if not scheme_result["success"]:
                 return scheme_result
@@ -198,13 +197,10 @@ class CryoBoostBackend:
             print(f"[BACKEND] Initializing Relion project non-blockingly in {project_dir}...")
             pipeline_star_path = project_dir / "default_pipeline.star"
 
-            # --- THE ONLY CHANGE IS ON THIS LINE ---
             init_command = "unset DISPLAY && relion --tomo --do_projdir ."
-            # --- THIS FORCES THE GUI TO NOT LAUNCH ---
             
             container_init_command = self._run_containerized_relion(init_command, project_dir)
 
-            # We still need the async logic to run it in the background
             process = await asyncio.create_subprocess_shell(
                 container_init_command,
                 stdout=asyncio.subprocess.PIPE,
@@ -212,7 +208,6 @@ class CryoBoostBackend:
                 cwd=project_dir
             )
             
-            # We can now wait for the process to finish on its own
             try:
                 stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
                 if process.returncode != 0:
@@ -274,7 +269,6 @@ class CryoBoostBackend:
             print(f"[ERROR] Exception in run_shell_command: {e}")
             return {"success": False, "output": "", "error": str(e)}
 
-    # ... (the rest of the backend.py file remains the same)
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
 

@@ -34,7 +34,6 @@ class StarfileService:
             starfile.write(data, path, overwrite=True)
         except Exception as e:
             print(f"[STARFILE ERROR] Failed to write {path}: {e}")
-            # Fallback: try without escaping
             starfile.write(data, path, overwrite=True)
 
     def _escape_star_data(self, data_dict: Dict[str, Any]) -> Dict[str, Any]:

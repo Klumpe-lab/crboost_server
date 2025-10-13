@@ -8,7 +8,7 @@ from typing import Dict, Any, List, Optional
 
 from .starfile_service import StarfileService
 from .config_service import get_config_service
-from .container_service import get_container_service # Import the new service
+from .container_service import get_container_service
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
@@ -31,13 +31,13 @@ class PipelineOrchestratorService:
         self.backend = backend_instance
         self.star_handler = StarfileService()
         self.config_service = get_config_service()
-        self.container_service = get_container_service() # Instantiate the new service
+        self.container_service = get_container_service() 
         self.active_schemer_process: Optional[asyncio.subprocess.Process] = None
 
     def _build_warp_fs_motion_ctf_command(self, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
         frame_folder = "../../frames"
         output_settings_file = "./warp_frameseries.settings"
-        folder_processing = "./warp_frameseries" # Use ./ for clarity
+        folder_processing = "./warp_frameseries" 
 
         create_settings_parts = [
             "WarpTools create_settings",
@@ -49,8 +49,6 @@ class PipelineOrchestratorService:
             f"--eer_ngroups -{params.get('eer_fractions', 32)}",
         ]
 
-
-        # Part 2: `WarpTools fs_motion_and_ctf`
         voltage = user_params.get('voltage', 300)
         cs = user_params.get('cs', 2.7)
         amplitude = user_params.get('amplitude', 0.07)
@@ -81,18 +79,10 @@ class PipelineOrchestratorService:
 
         full_command = " && ".join([" ".join(create_settings_parts), " ".join(run_main_parts)])
         
-        print(f"✅ [BUILDER] Generated raw command: {full_command}")
         return full_command
 
     def _build_warp_ts_alignment_command(self, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
-        """
-        [PLACEHOLDER] Builds the raw WarpTools command for Tilt Series Alignment.
-        """
-        print("⚠️ [BUILDER] tsAlignment command builder is not yet implemented.")
         return "echo 'tsAlignment job not implemented yet'; exit 1;"
-
-    # In the _build_command_for_job method, replace the container wrapping:
-
 
     def _build_command_for_job(self, job_name: str, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
         """Dispatcher function to call the correct raw command builder"""
@@ -104,9 +94,7 @@ class PipelineOrchestratorService:
         builder = job_builders.get(job_name)
         
         if builder:
-            # --- MODIFIED: This function should ONLY return the RAW command ---
             raw_command = builder(params, user_params)
-            # return self.container_service.wrap_command(raw_command, self.backend.server_dir) # REMOVE THIS LINE
             return raw_command
         else:
             return f"echo 'ERROR: Job type \"{job_name}\" not implemented'; exit 1;"
@@ -148,28 +136,22 @@ class PipelineOrchestratorService:
                         param_value = params_dict.get(value_key)
                         params_dict[param_name] = param_value
                 
-                # 1. Build the raw command string (e.g., "WarpTools ...")
                 raw_command = self._build_command_for_job(job_name, params_dict, user_params)
 
-                # 2. Wrap the raw command using the ContainerService.
-                # NO wrapper script needed here anymore!
                 final_containerized_command = self.container_service.wrap_command(
                     command=raw_command,
                     project_dir=project_dir,
                     raw_data_dir=raw_data_dir
                 )
                 
-                # 3. Assign the final, clean container command to `fn_exe`.
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = final_containerized_command
 
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'other_args', 'rlnJobOptionValue'] = ''
 
-                # 4. Clean up now-redundant `paramX` entries.
                 params_to_remove = [f'param{i}_{s}' for i in range(1, 11) for s in ['label', 'value']]
                 cleanup_mask = ~params_df['rlnJobOptionVariable'].isin(params_to_remove)
                 job_data['joboptions_values'] = params_df[cleanup_mask].reset_index(drop=True)
 
-                # Update scheme name references throughout the file.
                 print(f"Updating scheme name from '{base_scheme_name}' to '{new_scheme_name}' in {job_name}/job.star")
                 for block_name, block_data in job_data.items():
                     if isinstance(block_data, pd.DataFrame):
@@ -179,7 +161,6 @@ class PipelineOrchestratorService:
                 
                 self.star_handler.write(job_data, job_star_path)
 
-            # --- Create the main scheme.star file (logic is unchanged) ---
             scheme_general_df = pd.DataFrame({'rlnSchemeName': [f'Schemes/{new_scheme_name}/'], 'rlnSchemeCurrentNodeName': ['WAIT']})
             scheme_floats_df = pd.DataFrame({
                 'rlnSchemeFloatVariableName': ['do_at_most', 'maxtime_hr', 'wait_sec'],
@@ -220,11 +201,11 @@ class PipelineOrchestratorService:
 
             scheme_star_path = new_scheme_dir / "scheme.star"
             self.star_handler.write(scheme_star_data, scheme_star_path)
-            print(f"✅ Created complete scheme file at: {scheme_star_path}")
+            print(f" Created complete scheme file at: {scheme_star_path}")
 
             return {"success": True}
         except Exception as e:
-            print(f"❌ ERROR creating custom scheme: {e}")
+            print(f" ERROR creating custom scheme: {e}")
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
@@ -275,5 +256,5 @@ class PipelineOrchestratorService:
         )
         
         await process.wait()
-        print(f"🏁 [MONITOR] relion_schemer PID {process.pid} completed with return code: {process.returncode}")
+        print(f" [MONITOR] relion_schemer PID {process.pid} completed with return code: {process.returncode}")
         self.active_schemer_process = None
