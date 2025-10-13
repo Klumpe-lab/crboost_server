@@ -103,8 +103,10 @@ class PipelineOrchestratorService:
         print("⚠️ [BUILDER] tsAlignment command builder is not yet implemented.")
         return "echo 'tsAlignment job not implemented yet'; exit 1;"
 
+    # In the _build_command_for_job method, replace the container wrapping:
+
     def _build_command_for_job(self, job_name: str, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
-        """Dispatcher function to call the correct raw command builder based on the job name."""
+        """Dispatcher function to call the correct raw command builder"""
         job_builders = {
             'fsMotionAndCtf': self._build_warp_fs_motion_ctf_command,
             'tsAlignment': self._build_warp_ts_alignment_command,
@@ -113,9 +115,11 @@ class PipelineOrchestratorService:
         builder = job_builders.get(job_name)
         
         if builder:
-            return builder(params, user_params)
+            raw_command = builder(params, user_params)
+            # Wrap the entire command for container execution
+            return self.container_service.wrap_command(raw_command, self.backend.server_dir)
         else:
-            return f"echo 'ERROR: Job type \"{job_name}\" does not have a direct command builder yet.'; exit 1;"
+            return f"echo 'ERROR: Job type \"{job_name}\" not implemented'; exit 1;"
 
     async def create_custom_scheme(self, project_dir: Path, new_scheme_name: str, base_template_path: Path, selected_jobs: List[str], user_params: Dict[str, Any]):
         try:
@@ -156,7 +160,7 @@ class PipelineOrchestratorService:
                 raw_command = self._build_command_for_job(job_name, params_dict, user_params)
 
                 # 2. Wrap the raw command using the ContainerService to get the full apptainer call.
-                final_containerized_command = self.container_service.wrap(raw_command, project_dir)
+                final_containerized_command = self.container_service.wrap_command(raw_command, project_dir)
                 
                 # 3. Assign the full, final command to `fn_exe`.
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = final_containerized_command
