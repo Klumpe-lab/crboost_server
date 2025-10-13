@@ -42,7 +42,9 @@ class PipelineOrchestratorService:
         print("🚀 [BUILDER] Building fsMotionAndCtf command...")
         
         # Part 1: `WarpTools create_settings`
-        frame_folder = "../../frames"
+        frame_folder = "frames"      # NEW AND CORRECT
+        
+        # The output file is created in the CWD (project root), which is messy but will work.
         frame_extension = "*.eer"
         output_settings_file = "./warp_frameseries.settings" # Relative to the job's output dir
         
@@ -105,6 +107,7 @@ class PipelineOrchestratorService:
 
     # In the _build_command_for_job method, replace the container wrapping:
 
+
     def _build_command_for_job(self, job_name: str, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
         """Dispatcher function to call the correct raw command builder"""
         job_builders = {
@@ -115,13 +118,16 @@ class PipelineOrchestratorService:
         builder = job_builders.get(job_name)
         
         if builder:
+            # --- MODIFIED: This function should ONLY return the RAW command ---
             raw_command = builder(params, user_params)
-            # Wrap the entire command for container execution
-            return self.container_service.wrap_command(raw_command, self.backend.server_dir)
+            # return self.container_service.wrap_command(raw_command, self.backend.server_dir) # REMOVE THIS LINE
+            return raw_command
         else:
             return f"echo 'ERROR: Job type \"{job_name}\" not implemented'; exit 1;"
 
-    async def create_custom_scheme(self, project_dir: Path, new_scheme_name: str, base_template_path: Path, selected_jobs: List[str], user_params: Dict[str, Any]):
+
+    async def create_custom_scheme(self, project_dir: Path, new_scheme_name: str, base_template_path: Path, selected_jobs: List[str], user_params: Dict[str, Any], raw_data_dir: Path):
+     
         try:
             new_scheme_dir = project_dir / "Schemes" / new_scheme_name
             new_scheme_dir.mkdir(parents=True, exist_ok=True)
@@ -159,11 +165,17 @@ class PipelineOrchestratorService:
                 # 1. Build the raw command string (e.g., "WarpTools ...")
                 raw_command = self._build_command_for_job(job_name, params_dict, user_params)
 
+
                 # 2. Wrap the raw command using the ContainerService to get the full apptainer call.
-                final_containerized_command = self.container_service.wrap_command(raw_command, project_dir)
+                final_containerized_command = self.container_service.wrap_command(
+                    command=raw_command,
+                    project_dir=project_dir,
+                    raw_data_dir=raw_data_dir
+                )
                 
                 # 3. Assign the full, final command to `fn_exe`.
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = final_containerized_command
+                
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'other_args', 'rlnJobOptionValue'] = ''
 
                 # 4. Clean up now-redundant `paramX` entries.

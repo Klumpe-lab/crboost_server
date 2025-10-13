@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from models import Job, User
 import pandas as pd
 
+from services.config_service import get_config_service
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 
@@ -24,6 +25,18 @@ class CryoBoostBackend:
         relion_bin_path = "/users/artem.kushner/dev/relion/build/bin"
         os.environ['PATH'] = f"{relion_bin_path}:{os.environ['PATH']}"
         self.server_dir = server_dir
+        config = get_config_service(str(self.server_dir / "config/conf.yaml")).get_config()
+        projects_base_str = config.filepath.get("projects_base_dir", "projects")
+        projects_path = Path(projects_base_str)
+
+        if projects_path.is_absolute():
+            self.projects_base_dir = projects_path
+        else:
+            self.projects_base_dir = self.server_dir / projects_path
+        
+        self.projects_base_dir.mkdir(parents=True, exist_ok=True)
+        print(f"✅ [BACKEND] Using projects base directory: {self.projects_base_dir}")
+        
         self.jobs_dir = self.server_dir / 'jobs'
         self.active_jobs: Dict[str, Job] = {}
         self.project_service = ProjectService(self)
@@ -152,14 +165,14 @@ class CryoBoostBackend:
     async def create_project_and_scheme(
             self, project_name: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
         ):
-            projects_base_dir = self.server_dir / "projects"
-            project_dir = projects_base_dir / HARDCODED_USER.username / project_name
+            project_dir = self.projects_base_dir / HARDCODED_USER.username / project_name
             base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
             scheme_name = f"scheme_{project_name}"
             user_params = {"angpix": "1.35", "dose_rate": "1.5"}
 
             if project_dir.exists():
-                return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
+                    return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
+
 
             import_prefix = f"{project_name}_"
             structure_result = await self.project_service.create_project_structure(
@@ -170,8 +183,14 @@ class CryoBoostBackend:
             
             print(f"[BACKEND] Project structure and data import successful.")
 
+            raw_data_dir = Path(movies_glob).parent.resolve()
+                
+            print(f"[BACKEND] Project structure and data import successful.")
+
+            # --- MODIFIED: Pass raw_data_dir to the orchestrator ---
             scheme_result = await self.pipeline_orchestrator.create_custom_scheme(
-                project_dir, scheme_name, base_template_path, selected_jobs, user_params
+                project_dir, scheme_name, base_template_path, selected_jobs, user_params,
+                raw_data_dir=raw_data_dir  # Pass the new parameter here
             )
             if not scheme_result["success"]:
                 return scheme_result

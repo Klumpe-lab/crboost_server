@@ -1,6 +1,7 @@
 # services/container_service.py
 
 from pathlib import Path
+import shlex
 from .config_service import get_config_service
 
 class ContainerService:
@@ -22,10 +23,9 @@ class ContainerService:
 
     # In container_service.py - replace the command building section:
 
-    def wrap_command(self, command: str, project_dir: Path) -> str:
+    def wrap_command(self, command: str, project_dir: Path, raw_data_dir: Path) -> str:
         """
-        Convert a raw command to a direct container execution with proper path handling
-        Returns a single-line command for STAR file compatibility
+        Converts a raw command to a direct container execution with proper path handling.
         """
         parts = command.strip().split()
         if not parts:
@@ -39,17 +39,15 @@ class ContainerService:
             
         container_path = self.container_paths[container_key]
         project_dir_abs = str(project_dir.resolve())
+        raw_data_dir_abs = str(raw_data_dir.resolve())
         
         # ===== CONTAINER-SPECIFIC BINDING STRATEGY =====
-        # Common binds for all containers - mount the SPECIFIC project directory
         binds = [
             f"{project_dir_abs}",
-            "/users/artem.kushner/dev/001_CopiaTestSet:/users/artem.kushner/dev/001_CopiaTestSet:ro"
+            f"{raw_data_dir_abs}:{raw_data_dir_abs}:ro"
         ]
         
-        # Container-specific additional binds
         if container_key == "relion":
-            # Relion needs slurm access to submit jobs
             binds.extend([
                 "/usr/bin:/usr/bin",
                 "/usr/lib64/slurm:/usr/lib64/slurm", 
@@ -59,19 +57,20 @@ class ContainerService:
             ])
         
         # ===== BUILD CONTAINER COMMAND =====
-        bind_args = []
-        for bind in binds:
-            bind_args.extend(["-B", bind])
+        # --- THIS IS THE CORRECTED LINE ---
+        bind_args = [item for bind in binds for item in ('-B', bind)]
         
-        # Build a single-line command for STAR file compatibility
-        container_cmd = [
+        quoted_inner_command = shlex.quote(command)
+
+        container_cmd_parts = [
             "apptainer", "run",
+            "--nv", 
             "--cleanenv",
             "--no-home",
             *bind_args,
             container_path,
             "bash", "-c",
-            f"'{command}'"  # Use single quotes for the inner command
+            quoted_inner_command
         ]
         
         # Clean environment variables
@@ -86,24 +85,24 @@ class ContainerService:
         ]
         
         clean_env_cmd = "unset " + " ".join(clean_env_vars)
-        
-        # Essential environment variables
+            
+            # Essential environment variables
         essential_env = {
             'PATH': '/usr/bin:/bin',
             'HOME': str(Path.home()),
-            'USER': 'artem.kushner',
+            'USER': 'artem.kushner', # NOTE: You might want to make this dynamic later
             'LANG': 'en_US.UTF-8',
             'LC_ALL': 'en_US.UTF-8',
-            'PWD': project_dir_abs,
+            'PWD': project_dir_abs, # This tells the container where to start
         }
         
         env_vars = " ".join([f"{k}='{v}'" for k, v in essential_env.items()])
         
-        # Build final single-line command
-        full_command = f"{clean_env_cmd} && env -i {env_vars} {' '.join(container_cmd)}"
+        full_command = f"{clean_env_cmd} && env -i {env_vars} {' '.join(container_cmd_parts)}"
         
         print(f"✅ [CONTAINER] Wrapped {tool_name} using {container_key} container")
         print(f"✅ [CONTAINER] Project dir: {project_dir_abs}")
+        print(f"✅ [CONTAINER] Raw data dir bound: {raw_data_dir_abs}")
         return full_command
 
 # Singleton instance
