@@ -35,30 +35,20 @@ class PipelineOrchestratorService:
         self.active_schemer_process: Optional[asyncio.subprocess.Process] = None
 
     def _build_warp_fs_motion_ctf_command(self, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
-        """
-        Builds the RAW WarpTools command string for Frame Series Motion & CTF Correction.
-        This method does NOT know about containers; it only builds the tool's command.
-        """
-        print("🚀 [BUILDER] Building fsMotionAndCtf command...")
-        
-        # Part 1: `WarpTools create_settings`
-        frame_folder = "frames"      # NEW AND CORRECT
-        
-        # The output file is created in the CWD (project root), which is messy but will work.
-        frame_extension = "*.eer"
-        output_settings_file = "./warp_frameseries.settings" # Relative to the job's output dir
-        
+        frame_folder = "../../frames"
+        output_settings_file = "./warp_frameseries.settings"
+        folder_processing = "./warp_frameseries" # Use ./ for clarity
+
         create_settings_parts = [
             "WarpTools create_settings",
             f"--folder_data {frame_folder}",
-            f"--extension '{frame_extension}'",
-            f"--folder_processing warp_frameseries",
+            f"--extension '*.eer'",
+            f"--folder_processing {folder_processing}",
             f"--output {output_settings_file}",
             f"--angpix {user_params.get('angpix', 1.35)}",
+            f"--eer_ngroups -{params.get('eer_fractions', 32)}",
         ]
-        
-        if 'eer_fractions' in params:
-            create_settings_parts.append(f"--eer_ngroups -{params['eer_fractions']}")
+
 
         # Part 2: `WarpTools fs_motion_and_ctf`
         voltage = user_params.get('voltage', 300)
@@ -76,25 +66,21 @@ class PipelineOrchestratorService:
             f"--m_range_min {m_min}",
             f"--m_range_max {m_max}",
             f"--m_bfac {params.get('m_bfac', -500)}",
-            f"--c_grid {params.get('c_grid', '1x1x1')}",
+            f"--c_grid {params.get('c_grid', '2x2x1')}",
             f"--c_window {params.get('c_window', 512)}",
             f"--c_range_min {c_min}",
             f"--c_range_max {c_max}",
             f"--c_defocus_min {defocus_min}",
             f"--c_defocus_max {defocus_max}",
-            f"--c_voltage {voltage}",
-            f"--c_cs {cs}",
-            f"--c_amplitude {amplitude}",
+            f"--c_voltage {user_params.get('voltage', 300)}",
+            f"--c_cs {user_params.get('cs', 2.7)}",
+            f"--c_amplitude {user_params.get('amplitude', 0.07)}",
             f"--perdevice {params.get('perdevice', 1)}",
             "--out_averages",
         ]
 
-        if params.get('out_average_halves', False):
-            run_main_parts.append("--out_average_halves")
-        if params.get('c_use_sum', False):
-            run_main_parts.append("--c_use_sum")
-
         full_command = " && ".join([" ".join(create_settings_parts), " ".join(run_main_parts)])
+        
         print(f"✅ [BUILDER] Generated raw command: {full_command}")
         return full_command
 
@@ -165,17 +151,17 @@ class PipelineOrchestratorService:
                 # 1. Build the raw command string (e.g., "WarpTools ...")
                 raw_command = self._build_command_for_job(job_name, params_dict, user_params)
 
-
-                # 2. Wrap the raw command using the ContainerService to get the full apptainer call.
+                # 2. Wrap the raw command using the ContainerService.
+                # NO wrapper script needed here anymore!
                 final_containerized_command = self.container_service.wrap_command(
                     command=raw_command,
                     project_dir=project_dir,
                     raw_data_dir=raw_data_dir
                 )
                 
-                # 3. Assign the full, final command to `fn_exe`.
+                # 3. Assign the final, clean container command to `fn_exe`.
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = final_containerized_command
-                
+
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'other_args', 'rlnJobOptionValue'] = ''
 
                 # 4. Clean up now-redundant `paramX` entries.

@@ -12,17 +12,29 @@
 
 echo "--- SLURM JOB START ---"
 echo "Node: $(hostname)"
-echo "Working directory: $(pwd)"
-ml load cuda/11.8.0
 
-# Clean container environment variables that might be inherited from parent container
-unset SINGULARITY_BIND APPTAINER_BIND SINGULARITY_BINDPATH APPTAINER_BINDPATH
-unset SINGULARITY_NAME APPTAINER_NAME SINGULARITY_CONTAINER APPTAINER_CONTAINER
-unset SINGULARITYENV_APPEND_PATH APPTAINERENV_APPEND_PATH LD_PRELOAD
-unset SINGULARITY_TMPDIR APPTAINER_TMPDIR XDG_RUNTIME_DIR
-unset DISPLAY XAUTHORITY
+# --- DYNAMIC WORKING DIRECTORY LOGIC ---
+# Relion provides the full path for the output file in XXXoutfileXXX.
+# We use the 'dirname' command to get the directory part of that path.
+# This is the guaranteed correct job output directory (e.g., External/job002/).
+JOB_DIR=$(dirname "XXXoutfileXXX")
 
-# Execute the containerized command
+echo "Original CWD: $(pwd)"
+echo "Target Job Directory: ${JOB_DIR}"
+
+# Change to the job's specific output directory before doing anything else.
+cd "${JOB_DIR}"
+echo "New CWD: $(pwd)"
+
+# --- STANDARD ENVIRONMENT SETUP ---
+echo "Purging and loading modules..."
+module --force purge
+module load build-env/f2022
+module load cuda/11.8.0
+
+# Execute the containerized command provided by Relion.
+# This command will now run from within the correct job directory.
+echo "Executing Command..."
 XXXcommandXXX
 
 EXIT_CODE=$?
