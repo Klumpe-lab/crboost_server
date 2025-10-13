@@ -58,6 +58,7 @@ class Config(BaseModel):
     # Make star_file more flexible
     star_file: Optional[Dict[str, str]] = None
     
+    containers: Optional[Dict[str, str]] = None # Add this line
     computing: ComputingConfig
     filepath: Dict[str, str]
 

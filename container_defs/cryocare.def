@@ -1,0 +1,88 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu20.04
+
+%environment
+    export PATH="/opt/miniconda3/envs/cryocare/bin:$PATH"
+    export CUDA_HOME="/usr/local/cuda"
+    export LD_LIBRARY_PATH="/opt/miniconda3/envs/cryocare/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+
+%post
+    # Set non-interactive mode
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Install system dependencies
+    apt-get update && apt-get install -y \
+        wget \
+        git \
+        build-essential \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Install Miniconda
+    cd /opt
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+    bash miniconda.sh -b -p /opt/miniconda3
+    rm miniconda.sh
+    export PATH="/opt/miniconda3/bin:$PATH"
+
+    # === YOUR WORKING ToS METHOD (UNCHANGED) ===
+    # Using your original, proven method to accept the ToS.
+    conda init bash
+    conda config --set always_yes true
+    conda config --add channels conda-forge
+    conda config --set channel_priority strict
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+    # === THOROUGH CRYO-CARE INSTALLATION (WITH TENSORFLOW) ===
+    # 1. Create the environment with the correct CUDA toolkit from the docs
+    conda create -n cryocare python=3.8 cudatoolkit=11.0 cudnn=8.0 -y
+
+    # 2. Explicitly install the correct TensorFlow version
+    conda run -n cryocare pip install tensorflow==2.4
+
+    # 3. Install cryoCARE and other dependencies
+    conda run -n cryocare pip install cryoCARE mrcfile tifffile
+
+    # 4. Verify the complete installation
+    conda run -n cryocare python -c "import tensorflow; print('TensorFlow OK'); import cryocare; print('CryoCARE OK')"
+
+    # Clean up conda cache
+    conda clean -all -y
+
+%runscript
+    #!/bin/bash
+    export PATH="/opt/miniconda3/bin:$PATH"
+    . /opt/miniconda3/etc/profile.d/conda.sh
+    conda activate cryocare
+    
+    if [ $# -eq 0 ]; then
+        echo "CryoCARE container ready. Available commands:"
+        echo "  cryoCARE_extract_train_data.py"
+        echo "  cryoCARE_train.py" 
+        echo "  cryoCARE_predict.py"
+        /bin/bash
+    else
+        exec "$@"
+    fi
+
+%test
+    echo "Testing cryoCARE installation..."
+    export PATH="/opt/miniconda3/bin:$PATH"
+    . /opt/miniconda3/etc/profile.d/conda.sh
+    conda activate cryocare
+    python -c "import cryocare; print('CryoCARE version:', cryocare.__version__)"
+    which cryoCARE_extract_train_data.py
+    which cryoCARE_train.py
+    which cryoCARE_predict.py
+
+%help
+    This container provides cryoCARE for cryo-EM denoising.
+    
+    Usage:
+      apptainer run container.sif                   # Interactive shell
+      apptainer exec container.sif cryoCARE_train.py # Run specific command
+
+%labels
+    Author YourName
+    Version 1.0.0
+    Description CryoCARE container for cryo-EM denoising
