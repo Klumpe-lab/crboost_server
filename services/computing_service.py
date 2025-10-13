@@ -1,4 +1,6 @@
-# services/computing_service.py - Add debug logging
+
+from typing import Any, Dict
+
 
 class ComputingService:
     def get_computing_params(self, job_type: str, partition: str, do_node_sharing: bool = True) -> Dict[str, Any]:
@@ -42,8 +44,6 @@ class ComputingService:
 
         print(f"[COMPUTING DEBUG] Partition setup: {partition_setup}")
         
-        # Rest of the method remains the same...
-        # Get alias mappings
         part_name_alias = self._get_alias_reverse(job_type, "PartionName") or "qsub_extra3"
         nodes_alias = self._get_alias_reverse(job_type, "NrNodes") or "qsub_extra1"
         gpu_alias = self._get_alias_reverse(job_type, "NrGPU") or "qsub_extra4"
@@ -55,7 +55,6 @@ class ComputingService:
         comp_params = {}
         comp_params[part_name_alias] = partition
         
-        # Handle node sharing
         node_sharing = conf_comp.NODE_Sharing
         memory_ram = partition_setup.RAM
         if do_node_sharing and partition in node_sharing.ApplyTo:

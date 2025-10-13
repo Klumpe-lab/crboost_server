@@ -7,7 +7,6 @@ from backend import CryoBoostBackend
 from models import User, Job
 from typing import List
 
-# --- NEW: Import the official file picker component ---
 from local_file_picker import local_file_picker
 
 HARDCODED_USER = User(username="artem.kushner")
@@ -20,7 +19,6 @@ STATUS_MAP = {
     "TIMEOUT": ("red", "TO"),
 }
 
-# --- DELETED: The old custom file_picker function is no longer needed ---
 
 def create_ui_router(backend: CryoBoostBackend):
     @ui.page('/')
@@ -28,7 +26,6 @@ def create_ui_router(backend: CryoBoostBackend):
         await create_main_ui(backend, HARDCODED_USER)
 
 async def create_main_ui(backend: CryoBoostBackend, user: User):
-    # This function remains the same
     with ui.header().classes('bg-white text-gray-800 shadow-sm p-4'):
         with ui.row().classes('w-full items-center justify-between'):
             ui.label('CryoBoost Server').classes('text-xl font-semibold')
@@ -50,7 +47,6 @@ async def create_main_ui(backend: CryoBoostBackend, user: User):
                 create_info_page(backend)
 
 def create_info_page(backend: CryoBoostBackend):
-    # This function remains the same
     ui.label('SLURM Cluster Information').classes('text-lg font-medium mb-4')
     output_area = ui.log().classes('w-full h-96 border rounded-md p-2 bg-gray-50')
     async def get_info():
@@ -61,7 +57,6 @@ def create_info_page(backend: CryoBoostBackend):
     ui.button('Get SLURM Info', on_click=get_info).classes('mt-4')
 
 async def create_jobs_page(backend: CryoBoostBackend, user: User):
-    # This function remains the same
     with ui.column().classes('w-full'):
         with ui.row().classes('w-full justify-between items-center mb-4'):
             ui.label('Individual Job Management').classes('text-lg font-medium')
@@ -81,7 +76,6 @@ async def create_jobs_page(backend: CryoBoostBackend, user: User):
                 job_tabs.set_value(user_jobs[-1].internal_id)
 
 async def submit_and_track_job(backend: CryoBoostBackend, user: User, job_tabs, job_tab_panels):
-    # This function remains the same
     result = await backend.submit_test_gpu_job()
     if not result['success']:
         ui.notify(f"Job submission failed: {result['error']}", type='negative')
@@ -94,7 +88,6 @@ async def submit_and_track_job(backend: CryoBoostBackend, user: User, job_tabs, 
     job_tabs.set_value(job.internal_id)
 
 def create_job_tab(backend: CryoBoostBackend, user: User, job: Job, job_tabs, job_tab_panels):
-    # This function remains the same
     with job_tabs:
         new_tab = ui.tab(name=job.internal_id, label=f'Job {job.slurm_id}')
     
@@ -126,7 +119,6 @@ def create_job_tab(backend: CryoBoostBackend, user: User, job: Job, job_tabs, jo
                 ui.notify('Logs refreshed!', type='positive', timeout=1000)
     timer = ui.timer(interval=5, callback=update_log_display, active=True)
 
-# In ui.py, replace the build_projects_tab function.
 
 def build_projects_tab(backend: CryoBoostBackend, user: User):
     state = {
@@ -191,7 +183,6 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
             ui.notify(f"Error: {result.get('error', 'Unknown')}", type='negative')
 
     async def _monitor_pipeline_progress():
-        # This function remains the same
         while state["current_project_path"] and not stop_button.props.get('disabled'):
             progress = await backend.get_pipeline_progress(state["current_project_path"])
             if not progress or progress.get('status') != 'ok':
@@ -216,7 +207,6 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
         print("[UI] Pipeline monitoring stopped.")
 
     async def handle_run_pipeline():
-        # This function remains the same
         pipeline_status.classes(remove='text-red-500 text-green-500')
         run_button.props('loading')
         pipeline_status.set_text("Starting pipeline...")
@@ -243,7 +233,6 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
             progress_message.classes('hidden')
 
     async def handle_stop_pipeline():
-        # This function remains the same
         ui.notify("Stop functionality not fully implemented yet.", type="warning")
         pipeline_status.set_text("Pipeline stopped by user.")
         stop_button.props('disabled')
@@ -255,18 +244,13 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
         with ui.card().classes('w-full p-4'):
             ui.label('1. Configure and Create Project').classes('text-lg font-semibold mb-2')
             project_name_input = ui.input('Project Name', placeholder='e.g., my_first_dataset').classes('w-full')
-            
-            # --- MODIFIED: On-click handlers now perform validation ---
-            
             async def choose_movie_dir():
                 result = await local_file_picker('~', mode='directory', glob_pattern_annotation='*.eer')
                 if result:
                     selected_dir = Path(result[0])
                     glob_pattern = '*.eer'
-                    # Check if any matching files exist
                     if not any(selected_dir.glob(glob_pattern)):
                         ui.notify(f"Warning: No '{glob_pattern}' files found in this directory.", type='warning')
-                    # Set the input value with the appended glob pattern
                     movies_path_input.set_value(str(selected_dir / glob_pattern))
             
             async def choose_mdoc_dir():

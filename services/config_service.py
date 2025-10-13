@@ -55,10 +55,9 @@ class Config(BaseModel):
     meta_data: Dict[str, List[Dict[str, str]]]
     microscopes: Dict[str, List[Dict[str, str]]]
     
-    # Make star_file more flexible
     star_file: Optional[Dict[str, str]] = None
     
-    containers: Optional[Dict[str, str]] = None # Add this line
+    containers: Optional[Dict[str, str]] = None 
     computing: ComputingConfig
     filepath: Dict[str, str]
 
@@ -73,7 +72,6 @@ class ConfigService:
         with open(config_path, 'r') as f:
             data = yaml.safe_load(f)
         
-        # Handle missing or problematic fields
         if 'star_file' not in data:
             data['star_file'] = {}
         
