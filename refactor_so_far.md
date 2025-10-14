@@ -7,7 +7,7 @@ The biggest change so far has of course been the switch from [the collection-of-
 - centralize certain parts of the logic that were spread across _stages of the job preparation_.
 
 
-## Some paint points in slightly more detail:
+## Some pain points in slightly more detail:
 
 The points below very loosely refer to the red stars on the "dataflow" schematic attached. I really apologize about the "figure quality" here. Maybe it's helpful.
 
