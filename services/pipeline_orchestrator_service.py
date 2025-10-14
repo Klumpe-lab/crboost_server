@@ -235,7 +235,6 @@ class PipelineOrchestratorService:
             return {"success": False, "error": str(e)}
 
     async def _monitor_schemer(self, process: asyncio.subprocess.Process, project_dir: Path):
-        print(f"👀 [MONITOR] Starting to watch relion_schemer PID {process.pid}")
         
         async def read_stream(stream, callback):
             while True:
