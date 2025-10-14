@@ -9,7 +9,7 @@ The biggest change so far has of course been the switch from [the collection-of-
 
 ## Some pain points in slightly more detail:
 
-The points below very loosely refer to the red stars on the "dataflow" schematic attached. I really apologize about the "figure quality" here. Maybe it's helpful.
+The points below very loosely refer to the red stars on the "dataflow" schematic attached (open image in new tab against white background if your GitHub is black background). I apologize about the "figure quality" here, but maybe it's helpful.
 
 
 ![Cryoboost old](./cryooboost_refactor_old.png)
