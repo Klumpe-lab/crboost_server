@@ -49,7 +49,7 @@ Not doing the  `fn_exe`/`XXXcommandXXX` feint allows to cut out the need for spe
 
 - binary case: address the job-specific command to the binary tool directly.
 
-- container case: adress the job-specifc command to the "binary" tool. Then the[  container_service will wrap ](./services/container_service.py#20-75) that command into the argument-mapping and enviroment-isolating "prelude" and pass it onto the correct container. This eliminates the need for special "adapter" files. Rather, it's the same damn thing, just subsumed into python, where it'll be a little more comfortable to implement the logic of whether a given tool is a binary or a container.
+- container case: adress the job-specifc command to the "binary" tool. Then the  container_service will wrap [./services/container_service.py#20-75](https://github.com/Klumpe-lab/crboost_server/blob/cdd87b938665f237ce17418ddce765c3ef8ec123/services/container_service.py#L25-L75) that command into the argument-mapping and enviroment-isolating "prelude" and pass it onto the correct container. This eliminates the need for special "adapter" files. Rather, it's the same damn thing, just subsumed into python, where it'll be a little more comfortable to implement the logic of whether a given tool is a binary or a container.
 
 That is, it currently looks like this:
 ```yaml
