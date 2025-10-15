@@ -45,11 +45,38 @@ Solution: forego outsourcing of the command construction (via `fn_exe`/`XXXcomma
 
 ### 6. The upshot of 2,4 and 5
 
-Not doing the  `fn_exe`/`XXXcommandXXX` feint allows to cut out the need for special wrappers altogether and type invocations to the tool specific containers directly. The idea here is that the user would be able to specify in [ conf.yaml whether their relion and external tools ]([./config/conf.yaml#224-226](https://github.com/Klumpe-lab/crboost_server/blob/5738b054bd9a95dc5f218e2f2bd8ecb86d935273/config/conf.yaml#L224-L228)) are each provided by them as a binary ("flat" setup) on the system OR a container. Depending on this -- the final job invocation would then either:
+Not doing the  `fn_exe`/`XXXcommandXXX` feint allows to cut out the need for special wrappers altogether and type invocations to the tool specific containers directly. The idea here is that the user would be able to specify in conf.yaml whether their relion and external tools [([./config/conf.yaml#224-226](https://github.com/Klumpe-lab/crboost_server/blob/5738b054bd9a95dc5f218e2f2bd8ecb86d935273/config/conf.yaml#L224-L228))](https://github.com/Klumpe-lab/crboost_server/blob/58316f5238d497f9f47ef5fa624b2cc11317c0ee/config/conf.yaml#L224-L228) are each provided by them as a binary ("flat" setup) on the system OR a container. Depending on this -- the final job invocation would then either:
 
 - binary case: address the job-specific command to the binary tool directly.
 
 - container case: adress the job-specifc command to the "binary" tool. Then the[  container_service will wrap ](./services/container_service.py#20-75) that command into the argument-mapping and enviroment-isolating "prelude" and pass it onto the correct container. This eliminates the need for special "adapter" files. Rather, it's the same damn thing, just subsumed into python, where it'll be a little more comfortable to implement the logic of whether a given tool is a binary or a container.
+
+That is, it currently looks like this:
+```yaml
+containers:
+  warp_aretomo: /groups/klumpe/software/Setup/cryoboost_containers/warp_aretomo1.0.0_cuda11.8_glibc2.31.sif
+  cryocare: /groups/klumpe/software/Setup/cryoboost_containers/cryocare.sif
+  pytom: /groups/klumpe/software/Setup/cryoboost_containers/pytom.sif
+  relion: /groups/klumpe/software/Setup/cryoboost_containers/relion5.0_tomo.sif
+```
+
+but should eventually look like this (for example:
+```
+tools:
+  warp:
+    binary: true
+    container: false
+    path: /groups/joeschmoe/WarpTools
+  relion:
+     binary: false
+     container: true
+     path: /groups/klumpe/software/Setup/cryoboost_containers/relion5.0_tomo.sif
+  cryocare:
+    binary: true
+    container: false
+    path: /opt/CryoCare/cryocare_virtual_env/bin/cryocare
+# etc...
+```
 
 
 
