@@ -19,6 +19,35 @@ STATUS_MAP = {
     "TIMEOUT": ("red", "TO"),
 }
 
+def create_path_input_with_picker(label: str, mode: str, glob_pattern: str = '', default_value: str = '') -> ui.input:
+    """A factory for creating a text input with a file/folder picker button."""
+    async def _pick_path():
+        start_dir = Path(path_input.value).parent if path_input.value and Path(path_input.value).exists() else '~'
+        result = await local_file_picker(
+            start_dir,
+            mode=mode,
+            glob_pattern_annotation=glob_pattern or None
+        )
+        if result:
+            selected_path = Path(result[0])
+            if mode == 'directory' and glob_pattern:
+                path_input.set_value(str(selected_path / glob_pattern))
+            else:
+                path_input.set_value(str(selected_path))
+
+    with ui.row().classes('w-full items-center no-wrap'):
+        hint = f"Provide a path to a {mode}"
+        if glob_pattern:
+            hint = f"Provide a glob pattern, e.g., /path/to/files/{glob_pattern}"
+
+        path_input = ui.input(label=label, value=default_value) \
+                       .classes('flex-grow') \
+                       .props(f'hint="{hint}"')
+
+        ui.button(icon='folder', on_click=_pick_path).props('flat dense')
+
+    return path_input
+
 
 def create_ui_router(backend: CryoBoostBackend):
     @ui.page('/')
@@ -37,7 +66,7 @@ async def create_main_ui(backend: CryoBoostBackend, user: User):
             projects_tab = ui.tab('Projects')
             jobs_tab = ui.tab('Job Status')
             info_tab = ui.tab('Cluster Info')
-        
+
         with ui.tab_panels(tabs, value=projects_tab).classes('w-full'):
             with ui.tab_panel(projects_tab):
                 build_projects_tab(backend, user)
@@ -61,10 +90,10 @@ async def create_jobs_page(backend: CryoBoostBackend, user: User):
         with ui.row().classes('w-full justify-between items-center mb-4'):
             ui.label('Individual Job Management').classes('text-lg font-medium')
             ui.button('Submit Test GPU Job', on_click=lambda: submit_and_track_job(backend, user, job_tabs, job_tab_panels))
-        
+
         with ui.tabs().classes('w-full') as job_tabs:
             pass
-            
+
         with ui.tab_panels(job_tabs, value=None).classes('w-full mt-4 border rounded-md') as job_tab_panels:
             user_jobs = backend.get_user_jobs()
             if not user_jobs:
@@ -90,7 +119,7 @@ async def submit_and_track_job(backend: CryoBoostBackend, user: User, job_tabs, 
 def create_job_tab(backend: CryoBoostBackend, user: User, job: Job, job_tabs, job_tab_panels):
     with job_tabs:
         new_tab = ui.tab(name=job.internal_id, label=f'Job {job.slurm_id}')
-    
+
     with job_tab_panels:
         with ui.tab_panel(new_tab):
             with ui.row().classes('w-full justify-between items-center'):
@@ -99,7 +128,7 @@ def create_job_tab(backend: CryoBoostBackend, user: User, job: Job, job_tabs, jo
                     color, label = STATUS_MAP.get(job.status, ("gray", job.status))
                     status_badge = ui.badge(label, color=color).props('outline')
                     refresh_button = ui.button(icon='refresh', on_click=lambda: update_log_display(True)).props('flat round dense')
-            
+
             log_output = ui.log(max_lines=1000).classes('w-full h-screen border rounded-md bg-gray-50 p-2 mt-2')
             log_output.push(job.log_content)
 
@@ -153,19 +182,24 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
 
     async def handle_create_project():
         name = project_name_input.value
+        project_location = project_location_input.value
         movies_glob = movies_path_input.value
         mdocs_glob = mdocs_path_input.value
 
-        if not all([name, movies_glob, mdocs_glob, state["selected_jobs"]]):
-            ui.notify("Project name, data paths, and at least one job are required.", type='negative')
+        if not all([name, project_location, movies_glob, mdocs_glob, state["selected_jobs"]]):
+            ui.notify("Project name, project location, data paths, and at least one job are required.", type='negative')
             return
-            
+
         create_button.props('loading')
-        
+
         result = await backend.create_project_and_scheme(
-            name, state["selected_jobs"], movies_glob, mdocs_glob
+            project_name=name,
+            project_base_path=project_location,
+            selected_jobs=state["selected_jobs"],
+            movies_glob=movies_glob,
+            mdocs_glob=mdocs_glob
         )
-        
+
         create_button.props(remove='loading')
         if result.get("success"):
             state["current_project_path"] = result["project_path"]
@@ -176,6 +210,7 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
             run_button.props(remove='disabled')
 
             project_name_input.disable()
+            project_location_input.disable()
             movies_path_input.disable()
             mdocs_path_input.disable()
             create_button.disable()
@@ -193,13 +228,13 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
                 progress_message.text = f"Progress: {completed}/{total} completed ({running} running, {failed} failed)"
             if progress.get('is_complete') and total > 0:
                 msg = f"Pipeline finished with {failed} failures." if failed > 0 else "Pipeline completed successfully."
-                
+
                 pipeline_status.set_text(msg)
                 if failed > 0:
                     pipeline_status.classes(add='text-red-500', remove='text-green-500')
                 else:
                     pipeline_status.classes(add='text-green-500', remove='text-red-500')
-                
+
                 stop_button.props('disabled')
                 run_button.props(remove='disabled')
                 break
@@ -212,11 +247,19 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
         pipeline_status.set_text("Starting pipeline...")
         progress_bar.classes(remove='hidden').value = 0
         progress_message.classes(remove='hidden').set_text("Pipeline is starting...")
-        
+
+        # Collect all necessary paths to pass to the backend for container binding
+        required_paths = [
+            project_location_input.value,
+            movies_path_input.value,
+            mdocs_path_input.value,
+        ]
+
         result = await backend.start_pipeline(
-            state["current_project_path"], 
-            state["current_scheme_name"],
-            state["selected_jobs"]
+            project_path=state["current_project_path"],
+            scheme_name=state["current_scheme_name"],
+            selected_jobs=state["selected_jobs"],
+            required_paths=required_paths
         )
         run_button.props(remove='loading')
         if result.get("success"):
@@ -244,37 +287,28 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
         with ui.card().classes('w-full p-4'):
             ui.label('1. Configure and Create Project').classes('text-lg font-semibold mb-2')
             project_name_input = ui.input('Project Name', placeholder='e.g., my_first_dataset').classes('w-full')
-            async def choose_movie_dir():
-                result = await local_file_picker('~', mode='directory', glob_pattern_annotation='*.eer')
-                if result:
-                    selected_dir = Path(result[0])
-                    glob_pattern = '*.eer'
-                    if not any(selected_dir.glob(glob_pattern)):
-                        ui.notify(f"Warning: No '{glob_pattern}' files found in this directory.", type='warning')
-                    movies_path_input.set_value(str(selected_dir / glob_pattern))
-            
-            async def choose_mdoc_dir():
-                result = await local_file_picker('~', mode='directory', glob_pattern_annotation='*.mdoc')
-                if result:
-                    selected_dir = Path(result[0])
-                    glob_pattern = '*.mdoc'
-                    if not any(selected_dir.glob(glob_pattern)):
-                        ui.notify(f"Warning: No '{glob_pattern}' files found in this directory.", type='warning')
-                    mdocs_path_input.set_value(str(selected_dir / glob_pattern))
 
-            with ui.row().classes('w-full items-center no-wrap'):
-                movies_path_input = ui.input(
-                    label='Movie Files Path/Glob', 
-                    value='/users/artem.kushner/dev/001_CopiaTestSet/frames/*.eer'
-                ).classes('flex-grow').props('hint="Provide a glob pattern, e.g., /path/to/frames/*.eer"')
-                ui.button(icon='folder', on_click=choose_movie_dir).props('flat dense')
+            # NEW: Project location input using the factory
+            project_location_input = create_path_input_with_picker(
+                label='Project Location',
+                mode='directory',
+                default_value='~/cryoboost_projects'
+            )
 
-            with ui.row().classes('w-full items-center no-wrap'):
-                mdocs_path_input = ui.input(
-                    label='MDOC Files Path/Glob', 
-                    value='/users/artem.kushner/dev/001_CopiaTestSet/mdoc/*.mdoc'
-                ).classes('flex-grow').props('hint="Provide a glob pattern, e.g., /path/to/mdoc/*.mdoc"')
-                ui.button(icon='folder', on_click=choose_mdoc_dir).props('flat dense')
+            # REFACTORED: Movie and MDOC inputs using the factory
+            movies_path_input = create_path_input_with_picker(
+                label='Movie Files Path/Glob',
+                mode='directory',
+                glob_pattern='*.eer',
+                default_value='/users/artem.kushner/dev/001_CopiaTestSet/frames/*.eer'
+            )
+
+            mdocs_path_input = create_path_input_with_picker(
+                label='MDOC Files Path/Glob',
+                mode='directory',
+                glob_pattern='*.mdoc',
+                default_value='/users/artem.kushner/dev/001_CopiaTestSet/mdoc/*.mdoc'
+            )
 
             job_status_label = ui.label('No jobs added yet.').classes('text-sm text-gray-600 my-2')
             with ui.expansion('Add Job to Pipeline', icon='add').classes('w-full'):
@@ -283,7 +317,7 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
                     ui.button('ADD', on_click=handle_add_job).classes('bg-green-500 text-white')
             selected_jobs_container = ui.column().classes('w-full mt-2 gap-1')
             create_button = ui.button('CREATE PROJECT', on_click=handle_create_project).classes('bg-blue-500 text-white mt-4')
-            
+
         with ui.card().classes('w-full p-4'):
             ui.label('2. Schedule and Execute Pipeline').classes('text-lg font-semibold mb-2')
             with ui.row():

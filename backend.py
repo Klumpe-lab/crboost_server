@@ -11,57 +11,18 @@ import pandas as pd
 from services.config_service import get_config_service
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
+from services.container_service import get_container_service
 
 HARDCODED_USER = User(username="artem.kushner")
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
-        self.relion_container_path = os.getenv("CRYOBOOST_RELION_CONTAINER")
-        if not self.relion_container_path:
-            raise ValueError("CRITICAL: CRYOBOOST_RELION_CONTAINER environment variable is not set.")
-        if not Path(self.relion_container_path).exists():
-             print(f"WARNING: Container path does not exist: {self.relion_container_path}")
-
-        relion_bin_path = "/users/artem.kushner/dev/relion/build/bin"
-        os.environ['PATH'] = f"{relion_bin_path}:{os.environ['PATH']}"
         self.server_dir = server_dir
-        config = get_config_service(str(self.server_dir / "config/conf.yaml")).get_config()
-        projects_base_str = config.filepath.get("projects_base_dir", "projects")
-        projects_path = Path(projects_base_str)
-
-        if projects_path.is_absolute():
-            self.projects_base_dir = projects_path
-        else:
-            self.projects_base_dir = self.server_dir / projects_path
-        
-        self.projects_base_dir.mkdir(parents=True, exist_ok=True)
-        print(f" [BACKEND] Using projects base directory: {self.projects_base_dir}")
-        
         self.jobs_dir = self.server_dir / 'jobs'
         self.active_jobs: Dict[str, Job] = {}
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
-
-    async def debug_container_environment(self, project_dir: Path):
-        """Debug what environment the container is actually using"""
-        test_commands = [
-            "which python",
-            "python --version", 
-            "python -c \"import sys; print(sys.path)\"",
-            "python -c \"import numpy; print(numpy.__file__)\"",
-            "python -c \"import tomography_python_programs; print('SUCCESS: tomography_python_programs imported')\"",
-            "echo $PATH",
-            "echo $PYTHONPATH"
-        ]
-        
-        for cmd in test_commands:
-            print(f"\n=== Testing: {cmd} ===")
-            result = await self.run_shell_command(cmd, cwd=project_dir, use_container=True)
-            print(f"Success: {result['success']}")
-            if result['success']:
-                print(f"Output: {result['output']}")
-            else:
-                print(f"Error: {result['error']}")
+        self.container_service = get_container_service()
 
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
@@ -69,176 +30,89 @@ class CryoBoostBackend:
             return []
         jobs = sorted([p.name for p in template_path.iterdir() if p.is_dir()])
         return jobs
-
-    def _get_container_binds(self, cwd: Path) -> List[str]:
-            """Get appropriate bind mounts for the container, including HPC and X11."""
-            binds = [
-                str(cwd or self.server_dir),  # Working directory
-                str(Path.home()),            # Home directory
-                "/tmp",                      # Temp directory
-                "/scratch",                  # Scratch space if available
-            ]
-            
-            # Add project-specific and config paths
-            projects_dir = self.server_dir / "projects"
-            if projects_dir.exists():
-                binds.append(str(projects_dir))
-                
-            config_dir = Path.cwd() / "config"
-            if config_dir.exists():
-                binds.append(str(config_dir))
-
-            # HPC integration binds for Slurm
-            hpc_binds = [
-                "/usr/bin", "/usr/lib64/slurm", "/run/munge",
-                "/etc/passwd", "/etc/group",
-                "/groups", "/programs", "/software",
-            ]
-
-            x11_authority = Path.home() / ".Xauthority"
-            x11_socket = Path("/tmp/.X11-unix")
-            
-            if x11_authority.exists():
-                binds.append(f"{x11_authority}:{x11_authority}:ro")
-            if x11_socket.exists():
-                binds.append(str(x11_socket))
-
-            print("[DEBUG] Checking for HPC bind paths...")
-            for path_str in hpc_binds:
-                path = Path(path_str)
-                if path.exists():
-                    if "passwd" in path_str or "group" in path_str:
-                        binds.append(f"{path_str}:{path_str}:ro")
-                    else:
-                        binds.append(path_str)
-                
-            return list(set(binds))
-
-    def _run_containerized_relion(self, command: str, cwd: Path = None, additional_binds: List[str] = None):
-        """
-        Builds and returns the EXACT apptainer command string based on the user's
-        provided working shell script template.
-        """
-        import os
-        import shlex
-
-        container_path = self.relion_container_path
-        home_dir = str(Path.home())
-        display_var = os.getenv('DISPLAY', ':0.0')
-
-        SLURM_BIN_DIR = "/usr/bin" 
-
-        args = [
-            "apptainer", "exec",
-            f"--bind {cwd}", f"--bind {home_dir}", f"--bind {self.server_dir / 'projects'}",
-            f"--bind {Path.cwd() / 'config'}", "--bind /scratch-cbe", "--bind /programs",
-            "--bind /groups", "--bind /software",
-   
-            # You must bind the host's /usr/bin so the container can find sbatch, squeue, etc.
-            "--bind /usr/bin:/usr/bin",
-            f"--env DISPLAY={display_var}",
-            "--bind /tmp/.X11-unix/:/tmp/.X11-unix",
-            f"--bind {home_dir}/.Xauthority:/root/.Xauthority:ro",
-            "--bind /usr/lib64/slurm:/usr/lib64/slurm",
-            "--bind /usr/lib64/slurm/libslurmfull.so:/usr/lib64/slurm/libslurmfull.so",
-            "--bind /run/munge:/run/munge",
-            "--bind /usr/bin/munge:/usr/bin/munge",
-            "--bind /usr/bin/unmunge:/usr/bin/unmunge",
-            "--bind /etc/passwd:/etc/passwd:ro",
-            "--bind /etc/group:/etc/group:ro",
-        ]
-
-        args.append(container_path)
-
-        inner_command = f"""
-        unset PYTHONPATH
-        unset PYTHONHOME
-        export PATH="{SLURM_BIN_DIR}:/opt/miniconda3/envs/relion-5.0/bin:/opt/miniconda3/bin:/opt/relion-5.0/build/bin:/usr/local/cuda-11.8/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        {command}
-        """
-        
-        wrapped_command = f"bash -c {shlex.quote(inner_command)}"
-        args.append(wrapped_command)
-        full_command = " ".join(args)
-        print(f"[CONTAINER TEMPLATE] Command: {full_command}")
-        return full_command
+    
     async def create_project_and_scheme(
-            self, project_name: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
-        ):
-            project_dir = self.projects_base_dir / HARDCODED_USER.username / project_name
-            base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
-            scheme_name = f"scheme_{project_name}"
-            user_params = {"angpix": "1.35", "dose_rate": "1.5"}
+        self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
+    ):
+        project_dir = Path(project_base_path).expanduser() / project_name
+        base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+        scheme_name = f"scheme_{project_name}"
+        user_params = {"angpix": "1.35", "dose_rate": "1.5"}
 
-            if project_dir.exists():
-                    return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
+        if project_dir.exists():
+            return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
 
+        import_prefix = f"{project_name}_"
+        structure_result = await self.project_service.create_project_structure(
+            project_dir, movies_glob, mdocs_glob, import_prefix
+        )
+        if not structure_result["success"]:
+            return structure_result
+        
+        print(f"[BACKEND] Project structure and data import successful.")
+        
+        # Collect all unique parent directories for container binding
+        additional_bind_paths = {
+            str(Path(project_base_path).expanduser().resolve()),
+            str(Path(movies_glob).parent.resolve()),
+            str(Path(mdocs_glob).parent.resolve())
+        }
+        
+        scheme_result = await self.pipeline_orchestrator.create_custom_scheme(
+            project_dir, scheme_name, base_template_path, selected_jobs, user_params,
+            additional_bind_paths=list(additional_bind_paths)
+        )
+        if not scheme_result["success"]:
+            return scheme_result
+        
+        print(f"[BACKEND] Initializing Relion project in {project_dir}...")
+        pipeline_star_path = project_dir / "default_pipeline.star"
 
-            import_prefix = f"{project_name}_"
-            structure_result = await self.project_service.create_project_structure(
-                project_dir, movies_glob, mdocs_glob, import_prefix
-            )
-            if not structure_result["success"]:
-                return structure_result
-            
-            print(f"[BACKEND] Project structure and data import successful.")
+        init_command = "unset DISPLAY && relion --tomo --do_projdir ."
+        
+        container_init_command = self.container_service.wrap_command(
+            command=init_command,
+            cwd=project_dir,
+            additional_binds=list(additional_bind_paths)
+        )
 
-            raw_data_dir = Path(movies_glob).parent.resolve()
-                
-            print(f"[BACKEND] Project structure and data import successful.")
-
-            scheme_result = await self.pipeline_orchestrator.create_custom_scheme(
-                project_dir, scheme_name, base_template_path, selected_jobs, user_params,
-                raw_data_dir=raw_data_dir 
-            )
-            if not scheme_result["success"]:
-                return scheme_result
-            
-            print(f"[BACKEND] Initializing Relion project non-blockingly in {project_dir}...")
-            pipeline_star_path = project_dir / "default_pipeline.star"
-
-            init_command = "unset DISPLAY && relion --tomo --do_projdir ."
-            
-            container_init_command = self._run_containerized_relion(init_command, project_dir)
-
-            process = await asyncio.create_subprocess_shell(
-                container_init_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=project_dir
-            )
-            
-            try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
-                if process.returncode != 0:
-                    print(f"[RELION INIT ERROR] {stderr.decode()}")
-            except asyncio.TimeoutError:
-                print("[ERROR] Relion project initialization timed out.")
-                process.kill()
-                await process.wait()
-
-            print(f"[BACKEND] Relion project initialization finished.")
-
-            if not pipeline_star_path.exists():
-                return {"success": False, "error": f"Failed to create default_pipeline.star."}
-
-            return {
-                "success": True,
-                "message": f"Project '{project_name}' created and initialized successfully.",
-                "project_path": str(project_dir)
-            }
-
-    async def run_shell_command(self, command: str, cwd: Path = None, use_container: bool = False):
-        """Runs a shell command, optionally containerized."""
+        process = await asyncio.create_subprocess_shell(
+            container_init_command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=project_dir
+        )
+        
         try:
-            should_containerize = (
-                use_container and 
-                any(cmd in command for cmd in ['relion', 'relion_', 'python', 'conda'])
-            )
-            
-            if should_containerize:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
+            if process.returncode != 0:
+                print(f"[RELION INIT ERROR] {stderr.decode()}")
+        except asyncio.TimeoutError:
+            print("[ERROR] Relion project initialization timed out.")
+            process.kill()
+            await process.wait()
+
+        print(f"[BACKEND] Relion project initialization finished.")
+
+        if not pipeline_star_path.exists():
+            return {"success": False, "error": f"Failed to create default_pipeline.star."}
+
+        return {
+            "success": True,
+            "message": f"Project '{project_name}' created and initialized successfully.",
+            "project_path": str(project_dir)
+        }
+
+    async def run_shell_command(self, command: str, cwd: Path = None, use_container: bool = False, additional_binds: List[str] = None):
+        """Runs a shell command, optionally using the centralized container service."""
+        try:
+            if use_container:
                 print(f"[DEBUG] Containerizing command: {command}")
-                final_command = self._run_containerized_relion(command, cwd)
+                final_command = self.container_service.wrap_command(
+                    command=command,
+                    cwd=cwd or self.server_dir,
+                    additional_binds=additional_binds or []
+                )
             else:
                 final_command = command
                 print(f"[SHELL] Running natively: {final_command}")
@@ -271,6 +145,142 @@ class CryoBoostBackend:
 
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
+
+    async def debug_container_environment(self, project_dir: Path):
+        """Debug what environment the container is actually using"""
+        test_commands = [
+            # Test basic container recognition
+            "relion --version",
+            "relion_python_tomo_import --help",
+            "WarpTools --help",
+            
+            # Now test Python inside container
+            "relion_python_tomo_import --help && which python",
+            "relion_python_tomo_import --help && python -c \"import sys; print(sys.executable)\"",
+            
+            # Test if we can import the required modules
+            "relion_python_tomo_import --help && python -c \"import mdocfile; print('mdocfile OK')\"",
+            "relion_python_tomo_import --help && python -c \"import pandas; print('pandas OK')\"",
+            
+            # Test the actual import command that's failing
+            f"cd {project_dir} && relion_python_tomo_import SerialEM --tilt-image-movie-pattern './frames/*.eer' --mdoc-file-pattern './mdoc/*.mdoc' --help"
+        ]
+        
+        print(f"\n=== DEBUG CONTAINER ENVIRONMENT ===")
+        print(f"Project dir: {project_dir}")
+        
+        for i, cmd in enumerate(test_commands):
+            print(f"\n--- Test {i+1}: {cmd} ---")
+            result = await self.run_shell_command(cmd, cwd=project_dir, use_container=True)
+            print(f"Success: {result['success']}")
+            if result['success']:
+                print(f"Output: {result['output']}...")  # First 500 chars
+            else:
+                print(f"Error: {result['error']}...")  # First 500 chars
+    async def start_pipeline(self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]):
+        project_dir = Path(project_path)
+        if not project_dir.is_dir():
+            return {"success": False, "error": f"Project path not found: {project_path}"}
+        
+        bind_paths = {str(Path(p).parent.resolve()) for p in required_paths if p}
+        bind_paths.add(str(project_dir.parent.resolve()))
+            
+        return await self.pipeline_orchestrator.schedule_and_run_manually(
+            project_dir, scheme_name, selected_jobs, additional_bind_paths=list(bind_paths)
+        )
+
+    # def _get_container_binds(self, cwd: Path) -> List[str]:
+    #         """Get appropriate bind mounts for the container, including HPC and X11."""
+    #         binds = [
+    #             str(cwd or self.server_dir),  # Working directory
+    #             str(Path.home()),            # Home directory
+    #             "/tmp",                      # Temp directory
+    #             "/scratch",                  # Scratch space if available
+    #         ]
+            
+    #         # Add project-specific and config paths
+    #         projects_dir = self.server_dir / "projects"
+    #         if projects_dir.exists():
+    #             binds.append(str(projects_dir))
+                
+    #         config_dir = Path.cwd() / "config"
+    #         if config_dir.exists():
+    #             binds.append(str(config_dir))
+
+    #         # HPC integration binds for Slurm
+    #         hpc_binds = [
+    #             "/usr/bin", "/usr/lib64/slurm", "/run/munge",
+    #             "/etc/passwd", "/etc/group",
+    #             "/groups", "/programs", "/software",
+    #         ]
+
+    #         x11_authority = Path.home() / ".Xauthority"
+    #         x11_socket = Path("/tmp/.X11-unix")
+            
+    #         if x11_authority.exists():
+    #             binds.append(f"{x11_authority}:{x11_authority}:ro")
+    #         if x11_socket.exists():
+    #             binds.append(str(x11_socket))
+
+    #         print("[DEBUG] Checking for HPC bind paths...")
+    #         for path_str in hpc_binds:
+    #             path = Path(path_str)
+    #             if path.exists():
+    #                 if "passwd" in path_str or "group" in path_str:
+    #                     binds.append(f"{path_str}:{path_str}:ro")
+    #                 else:
+    #                     binds.append(path_str)
+                
+    #         return list(set(binds))
+
+    # def _run_containerized_relion(self, command: str, cwd: Path = None, additional_binds: List[str] = None):
+    #     """
+    #     Builds and returns the EXACT apptainer command string based on the user's
+    #     provided working shell script template.
+    #     """
+    #     import os
+    #     import shlex
+
+    #     container_path = self.relion_container_path
+    #     home_dir = str(Path.home())
+    #     display_var = os.getenv('DISPLAY', ':0.0')
+
+    #     SLURM_BIN_DIR = "/usr/bin" 
+
+    #     args = [
+    #         "apptainer", "exec",
+    #         f"--bind {cwd}", f"--bind {home_dir}", f"--bind {self.server_dir / 'projects'}",
+    #         f"--bind {Path.cwd() / 'config'}", "--bind /scratch-cbe", "--bind /programs",
+    #         "--bind /groups", "--bind /software",
+   
+    #         # You must bind the host's /usr/bin so the container can find sbatch, squeue, etc.
+    #         "--bind /usr/bin:/usr/bin",
+    #         f"--env DISPLAY={display_var}",
+    #         "--bind /tmp/.X11-unix/:/tmp/.X11-unix",
+    #         f"--bind {home_dir}/.Xauthority:/root/.Xauthority:ro",
+    #         "--bind /usr/lib64/slurm:/usr/lib64/slurm",
+    #         "--bind /usr/lib64/slurm/libslurmfull.so:/usr/lib64/slurm/libslurmfull.so",
+    #         "--bind /run/munge:/run/munge",
+    #         "--bind /usr/bin/munge:/usr/bin/munge",
+    #         "--bind /usr/bin/unmunge:/usr/bin/unmunge",
+    #         "--bind /etc/passwd:/etc/passwd:ro",
+    #         "--bind /etc/group:/etc/group:ro",
+    #     ]
+
+    #     args.append(container_path)
+
+    #     inner_command = f"""
+    #     unset PYTHONPATH
+    #     unset PYTHONHOME
+    #     export PATH="{SLURM_BIN_DIR}:/opt/miniconda3/envs/relion-5.0/bin:/opt/miniconda3/bin:/opt/relion-5.0/build/bin:/usr/local/cuda-11.8/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    #     {command}
+    #     """
+        
+    #     wrapped_command = f"bash -c {shlex.quote(inner_command)}"
+    #     args.append(wrapped_command)
+    #     full_command = " ".join(args)
+    #     print(f"[CONTAINER TEMPLATE] Command: {full_command}")
+    #     return full_command
 
     async def submit_test_gpu_job(self):
         script_path = self.jobs_dir / 'test_gpu_job.sh'
@@ -336,15 +346,6 @@ class CryoBoostBackend:
 
     def get_user_jobs(self) -> List[Job]:
         return [job for job in self.active_jobs.values() if job.owner == HARDCODED_USER.username]
-
-    async def start_pipeline(self, project_path: str, scheme_name: str, selected_jobs: List[str]):
-        project_dir = Path(project_path)
-        if not project_dir.is_dir():
-            return {"success": False, "error": f"Project path not found: {project_path}"}
-            
-        return await self.pipeline_orchestrator.schedule_and_run_manually(
-            project_dir, scheme_name, selected_jobs
-        )
 
     async def get_pipeline_progress(self, project_path: str):
         pipeline_star = Path(project_path) / "default_pipeline.star"
