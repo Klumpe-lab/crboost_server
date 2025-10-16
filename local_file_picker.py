@@ -8,7 +8,7 @@ class local_file_picker(ui.dialog):
 
     def __init__(self, directory: str, *,
                  upper_limit: Optional[str] = ...,
-                 mode: str = 'directory',  # NEW: 'directory' or 'file'
+                 mode: str = 'directory', 
                  glob_pattern_annotation: str = None) -> None:
         """Enhanced Local File Picker
 

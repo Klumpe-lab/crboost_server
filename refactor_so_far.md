@@ -12,7 +12,7 @@ The biggest change so far has of course been the switch from [the collection-of-
 The points below very loosely refer to the red stars on the "dataflow" schematic attached (open image in new tab against white background if your GitHub is black background). I apologize about the "figure quality" here, but maybe it's helpful.
 
 
-![Cryoboost old](./cryooboost_refactor_old.png)
+![Cryoboost old](./docs/cryooboost_refactor_old.png)
 
 ### 1. Injection of additional per-need parameters per job into the pipeline (things of the form `qsub_extra1-10`).
 
@@ -83,4 +83,4 @@ tools:
 [ Container Def Files are provided here. ](./container_defs/)
 
 
-![cryoboost_new](./cryooboost_refactor_new_rough.png)
+![cryoboost_new](./docs/cryooboost_refactor_new_rough.png)
