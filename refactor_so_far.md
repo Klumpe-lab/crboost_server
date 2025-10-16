@@ -45,7 +45,7 @@ Solution: forego outsourcing of the command construction (via `fn_exe`/`XXXcomma
 
 ### 6. The upshot of 2,4 and 5
 
-Not doing the  `fn_exe`/`XXXcommandXXX` feint allows to cut out the need for special wrappers altogether and type invocations to the tool specific containers directly. The idea here is that the user would be able to specify in conf.yaml whether their relion and external tools [([./config/conf.yaml#224-226](https://github.com/Klumpe-lab/crboost_server/blob/5738b054bd9a95dc5f218e2f2bd8ecb86d935273/config/conf.yaml#L224-L228))](https://github.com/Klumpe-lab/crboost_server/blob/58316f5238d497f9f47ef5fa624b2cc11317c0ee/config/conf.yaml#L224-L228) are each provided by them as a binary ("flat" setup) on the system OR a container. Depending on this -- the final job invocation would then either:
+Not doing the  `fn_exe`/`XXXcommandXXX` feint allows to cut out the need for special adapters altogether and type invocations to the tool specific containers directly. The idea here is that the user would be able to specify in conf.yaml whether their relion and external tools [([./config/conf.yaml#224-226](https://github.com/Klumpe-lab/crboost_server/blob/5738b054bd9a95dc5f218e2f2bd8ecb86d935273/config/conf.yaml#L224-L228))](https://github.com/Klumpe-lab/crboost_server/blob/58316f5238d497f9f47ef5fa624b2cc11317c0ee/config/conf.yaml#L224-L228) are each provided by them as a binary ("flat" setup) on the system OR a container. Depending on this -- the final job invocation would then either:
 
 - binary case: address the job-specific command to the binary tool directly.
 
