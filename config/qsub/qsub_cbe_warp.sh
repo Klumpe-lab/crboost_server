@@ -13,10 +13,6 @@
 echo "--- SLURM JOB START ---"
 echo "Node: $(hostname)"
 
-# --- DYNAMIC WORKING DIRECTORY LOGIC ---
-# Relion provides the full path for the output file in XXXoutfileXXX.
-# We use the 'dirname' command to get the directory part of that path.
-# This is the guaranteed correct job output directory (e.g., External/job002/).
 JOB_DIR=$(dirname "XXXoutfileXXX")
 
 echo "Original CWD: $(pwd)"
@@ -26,8 +22,8 @@ echo "Target Job Directory: ${JOB_DIR}"
 cd "${JOB_DIR}"
 echo "New CWD: $(pwd)"
 
-# --- STANDARD ENVIRONMENT SETUP ---
-echo "Purging and loading modules..."
+# # --- STANDARD ENVIRONMENT SETUP ---
+# echo "Purging and loading modules..."
 module --force purge
 module load build-env/f2022
 module load cuda/11.8.0
