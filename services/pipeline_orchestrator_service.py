@@ -34,6 +34,7 @@ class PipelineOrchestratorService:
         self.container_service = get_container_service() 
         self.active_schemer_process: Optional[asyncio.subprocess.Process] = None
 
+
     def _build_warp_fs_motion_ctf_command(self, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
         frame_folder = "../../frames"
         output_settings_file = "./warp_frameseries.settings"
@@ -100,8 +101,7 @@ class PipelineOrchestratorService:
             return f"echo 'ERROR: Job type \"{job_name}\" not implemented'; exit 1;"
 
 
-    async def create_custom_scheme(self, project_dir: Path, new_scheme_name: str, base_template_path: Path, selected_jobs: List[str], user_params: Dict[str, Any], raw_data_dir: Path):
-     
+    async def create_custom_scheme(self, project_dir: Path, new_scheme_name: str, base_template_path: Path, selected_jobs: List[str], user_params: Dict[str, Any], additional_bind_paths: List[str]):
         try:
             new_scheme_dir = project_dir / "Schemes" / new_scheme_name
             new_scheme_dir.mkdir(parents=True, exist_ok=True)
@@ -128,24 +128,21 @@ class PipelineOrchestratorService:
                     index=params_df.rlnJobOptionVariable
                 ).to_dict()
 
-                for i in range(1, 11):
-                    label_key = f'param{i}_label'
-                    value_key = f'param{i}_value'
-                    if label_key in params_dict and params_dict.get(label_key):
-                        param_name = params_dict[label_key]
-                        param_value = params_dict.get(value_key)
-                        params_dict[param_name] = param_value
-                
-                raw_command = self._build_command_for_job(job_name, params_dict, user_params)
-
+                raw_command = self._build_command_for_job(job_name, {}, user_params)
+                # In pipeline_orchestrator_service.py, in create_custom_scheme method
+                # After this line:
                 final_containerized_command = self.container_service.wrap_command(
                     command=raw_command,
-                    project_dir=project_dir,
-                    raw_data_dir=raw_data_dir
+                    cwd=project_dir,
+                    additional_binds=additional_bind_paths
                 )
+
+                # Add debug:
+                print(f"[DEBUG] Command for {job_name}:")
+                print(f"Raw: {raw_command}")
+                print(f"Containerized: {final_containerized_command}")
                 
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = final_containerized_command
-
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'other_args', 'rlnJobOptionValue'] = ''
 
                 params_to_remove = [f'param{i}_{s}' for i in range(1, 11) for s in ['label', 'value']]
@@ -210,30 +207,33 @@ class PipelineOrchestratorService:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
-    async def schedule_and_run_manually(self, project_dir: Path, scheme_name: str, selected_jobs: List[str]):
-        pipeline_star_path = project_dir / "default_pipeline.star"
-        if not pipeline_star_path.exists():
-            return {"success": False, "error": "Cannot start: default_pipeline.star not found."}
+    async def schedule_and_run_manually(self, project_dir: Path, scheme_name: str, selected_jobs: List[str], additional_bind_paths: List[str]):
+            pipeline_star_path = project_dir / "default_pipeline.star"
+            if not pipeline_star_path.exists():
+                return {"success": False, "error": "Cannot start: default_pipeline.star not found."}
 
-        print("--- Starting relion_schemer with direct-command jobs ---")
-        run_command = f"relion_schemer --scheme {scheme_name} --run --verb 2"
-        
-        try:
-            process = await asyncio.create_subprocess_shell(
-                self.backend._run_containerized_relion(run_command, project_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=project_dir
+            # The `unset DISPLAY` handles the non-GUI case for the schemer.
+            run_command = f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --verb 2"
+            
+            # Reverted: No more `enable_gui` flag.
+            full_run_command = self.container_service.wrap_command(
+                command=run_command,
+                cwd=project_dir,
+                additional_binds=additional_bind_paths
             )
             
-            self.active_schemer_process = process
-            print(f"Pipeline started. `relion_schemer` PID: {process.pid}")
-            asyncio.create_task(self._monitor_schemer(process, project_dir))
-            
-            return {"success": True, "message": f"Workflow started (PID: {process.pid})", "pid": process.pid}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
+            try:
+                process = await asyncio.create_subprocess_shell(
+                    full_run_command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=project_dir
+                )
+                self.active_schemer_process = process
+                asyncio.create_task(self._monitor_schemer(process, project_dir))
+                return {"success": True, "message": f"Workflow started (PID: {process.pid})", "pid": process.pid}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
     async def _monitor_schemer(self, process: asyncio.subprocess.Process, project_dir: Path):
         
         async def read_stream(stream, callback):
