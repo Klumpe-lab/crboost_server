@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 
  
 # services/pipeline_orchestrator_service.py
-
 class PipelineOrchestratorService:
     """
     Orchestrates the creation and execution of Relion pipelines.
@@ -141,7 +140,6 @@ class PipelineOrchestratorService:
 
     def _build_warp_ts_alignment_command(self, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
         """Build WarpTools tilt series alignment command"""
-        # This would be similar structure but for tilt series alignment
         return "echo 'tsAlignment job not fully implemented yet'; exit 1;"
 
     def _build_command_for_job(self, job_name: str, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
