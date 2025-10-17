@@ -4,18 +4,27 @@ import asyncio
 import os
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from models import Job, User
 import pandas as pd
+# Add to CryoBoostBackend class in backend.py
+
+import yaml
+import subprocess
+import glob
+import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from services.config_service import get_config_service
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
+from services.setup_service import SetupService
 
 HARDCODED_USER = User(username="artem.kushner")
 
 class CryoBoostBackend:
+
     def __init__(self, server_dir: Path):
         self.server_dir = server_dir
         self.jobs_dir = self.server_dir / 'jobs'
@@ -23,6 +32,7 @@ class CryoBoostBackend:
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
+        self.setup_service = SetupService(server_dir)  # NEW SERVICE
 
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
@@ -151,7 +161,6 @@ class CryoBoostBackend:
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
 
-    # In your debug_container_environment method:
 
     async def debug_container_environment(self, project_dir: Path):
         """Debug what environment the container is actually using"""
@@ -208,7 +217,6 @@ class CryoBoostBackend:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-
     async def start_pipeline(self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]):
         project_dir = Path(project_path)
         if not project_dir.is_dir():
@@ -222,99 +230,6 @@ class CryoBoostBackend:
         return await self._run_relion_schemer(
             project_dir, scheme_name, additional_bind_paths=list(bind_paths)
         )
-
-    # def _get_container_binds(self, cwd: Path) -> List[str]:
-    #         """Get appropriate bind mounts for the container, including HPC and X11."""
-    #         binds = [
-    #             str(cwd or self.server_dir),  # Working directory
-    #             str(Path.home()),            # Home directory
-    #             "/tmp",                      # Temp directory
-    #             "/scratch",                  # Scratch space if available
-    #         ]
-            
-    #         # Add project-specific and config paths
-    #         projects_dir = self.server_dir / "projects"
-    #         if projects_dir.exists():
-    #             binds.append(str(projects_dir))
-                
-    #         config_dir = Path.cwd() / "config"
-    #         if config_dir.exists():
-    #             binds.append(str(config_dir))
-
-    #         # HPC integration binds for Slurm
-    #         hpc_binds = [
-    #             "/usr/bin", "/usr/lib64/slurm", "/run/munge",
-    #             "/etc/passwd", "/etc/group",
-    #             "/groups", "/programs", "/software",
-    #         ]
-
-    #         x11_authority = Path.home() / ".Xauthority"
-    #         x11_socket = Path("/tmp/.X11-unix")
-            
-    #         if x11_authority.exists():
-    #             binds.append(f"{x11_authority}:{x11_authority}:ro")
-    #         if x11_socket.exists():
-    #             binds.append(str(x11_socket))
-
-    #         print("[DEBUG] Checking for HPC bind paths...")
-    #         for path_str in hpc_binds:
-    #             path = Path(path_str)
-    #             if path.exists():
-    #                 if "passwd" in path_str or "group" in path_str:
-    #                     binds.append(f"{path_str}:{path_str}:ro")
-    #                 else:
-    #                     binds.append(path_str)
-                
-    #         return list(set(binds))
-
-    # def _run_containerized_relion(self, command: str, cwd: Path = None, additional_binds: List[str] = None):
-    #     """
-    #     Builds and returns the EXACT apptainer command string based on the user's
-    #     provided working shell script template.
-    #     """
-    #     import os
-    #     import shlex
-
-    #     container_path = self.relion_container_path
-    #     home_dir = str(Path.home())
-    #     display_var = os.getenv('DISPLAY', ':0.0')
-
-    #     SLURM_BIN_DIR = "/usr/bin" 
-
-    #     args = [
-    #         "apptainer", "exec",
-    #         f"--bind {cwd}", f"--bind {home_dir}", f"--bind {self.server_dir / 'projects'}",
-    #         f"--bind {Path.cwd() / 'config'}", "--bind /scratch-cbe", "--bind /programs",
-    #         "--bind /groups", "--bind /software",
-   
-    #         # You must bind the host's /usr/bin so the container can find sbatch, squeue, etc.
-    #         "--bind /usr/bin:/usr/bin",
-    #         f"--env DISPLAY={display_var}",
-    #         "--bind /tmp/.X11-unix/:/tmp/.X11-unix",
-    #         f"--bind {home_dir}/.Xauthority:/root/.Xauthority:ro",
-    #         "--bind /usr/lib64/slurm:/usr/lib64/slurm",
-    #         "--bind /usr/lib64/slurm/libslurmfull.so:/usr/lib64/slurm/libslurmfull.so",
-    #         "--bind /run/munge:/run/munge",
-    #         "--bind /usr/bin/munge:/usr/bin/munge",
-    #         "--bind /usr/bin/unmunge:/usr/bin/unmunge",
-    #         "--bind /etc/passwd:/etc/passwd:ro",
-    #         "--bind /etc/group:/etc/group:ro",
-    #     ]
-
-    #     args.append(container_path)
-
-    #     inner_command = f"""
-    #     unset PYTHONPATH
-    #     unset PYTHONHOME
-    #     export PATH="{SLURM_BIN_DIR}:/opt/miniconda3/envs/relion-5.0/bin:/opt/miniconda3/bin:/opt/relion-5.0/build/bin:/usr/local/cuda-11.8/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    #     {command}
-    #     """
-        
-    #     wrapped_command = f"bash -c {shlex.quote(inner_command)}"
-    #     args.append(wrapped_command)
-    #     full_command = " ".join(args)
-    #     print(f"[CONTAINER TEMPLATE] Command: {full_command}")
-    #     return full_command
 
     async def submit_test_gpu_job(self):
         script_path = self.jobs_dir / 'test_gpu_job.sh'
@@ -435,3 +350,114 @@ class CryoBoostBackend:
         await process.wait()
         print(f" [MONITOR] relion_schemer PID {process.pid} completed with return code: {process.returncode}")
         self.active_schemer_process = None
+
+    async def get_eer_frames_per_tilt(self, eer_file_path: str) -> int:
+        """Extract number of frames per tilt from EER file"""
+        try:
+            # Use header command to get EER metadata
+            command = f"header {eer_file_path}"
+            result = await self.run_shell_command(command)
+            
+            if result["success"]:
+                output = result["output"]
+                # Parse the output to find frames per tilt
+                for line in output.split('\n'):
+                    if "Number of columns, rows, sections" in line:
+                        parts = line.split('.')[-1].strip().split()
+                        if len(parts) >= 3:
+                            return int(parts[2])
+            return None
+        except Exception as e:
+            print(f"Error getting EER frames: {e}")
+            return None
+
+    async def parse_mdoc_metadata(self, mdoc_path: str) -> Dict[str, Any]:
+        """Parse mdoc file for microscope and acquisition parameters"""
+        try:
+            metadata = {}
+            mdoc_files = glob.glob(mdoc_path)
+            if not mdoc_files:
+                return {}
+                
+            with open(mdoc_files[0], 'r') as f:
+                content = f.read()
+                
+                # Extract basic metadata
+                if 'PixelSpacing = ' in content:
+                    metadata['pixel_size'] = float(content.split('PixelSpacing = ')[1].split('\n')[0])
+                    
+                if 'ExposureDose = ' in content:
+                    metadata['dose_per_tilt'] = float(content.split('ExposureDose = ')[1].split('\n')[0])
+                    
+                if 'ImageSize = ' in content:
+                    metadata['image_size'] = content.split('ImageSize = ')[1].split('\n')[0].replace(' ', 'x')
+                    
+                if 'Voltage = ' in content:
+                    metadata['voltage'] = float(content.split('Voltage = ')[1].split('\n')[0])
+                    
+                # Try to find tilt axis angle
+                if 'Tilt axis angle = ' in content:
+                    metadata['tilt_axis'] = float(content.split('Tilt axis angle = ')[1].split(',')[0])
+                elif 'RotationAngle = ' in content:
+                    # Alternative location for tilt axis
+                    lines = content.split('\n')
+                    for line in lines:
+                        if 'RotationAngle = ' in line:
+                            metadata['tilt_axis'] = abs(float(line.split('RotationAngle = ')[1]))
+                            break
+                            
+            return metadata
+        except Exception as e:
+            print(f"Error parsing mdoc: {e}")
+            return {}
+
+    async def validate_setup_parameters(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate the tomogram setup parameters"""
+        validation_result = {
+            "valid": True,
+            "warnings": [],
+            "errors": []
+        }
+        
+        # Validate required parameters
+        required_params = ['pixel_size', 'dose_per_tilt', 'voltage']
+        for param in required_params:
+            if not params.get(param):
+                validation_result["valid"] = False
+                validation_result["errors"].append(f"Missing required parameter: {param}")
+        
+        # Validate numeric ranges
+        if params.get('pixel_size'):
+            pix_size = float(params['pixel_size'])
+            if pix_size < 0.5 or pix_size > 10:
+                validation_result["warnings"].append(f"Pixel size {pix_size} seems unusual")
+                
+        if params.get('voltage'):
+            voltage = float(params['voltage'])
+            if voltage not in [200, 300]:
+                validation_result["warnings"].append(f"Voltage {voltage} kV is non-standard")
+        
+        return validation_result
+
+    async def apply_setup_to_project(self, project_path: str, setup_params: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply the setup parameters to a project"""
+        try:
+            # This would integrate with your existing project creation
+            # but with the additional setup parameters
+            
+            # Store setup parameters in project configuration
+            config_path = Path(project_path) / "setup_config.yaml"
+            
+            with open(config_path, 'w') as f:
+                yaml.dump(setup_params, f)
+                
+            return {
+                "success": True,
+                "message": "Setup parameters applied successfully",
+                "config_path": str(config_path)
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to apply setup: {str(e)}"
+            }

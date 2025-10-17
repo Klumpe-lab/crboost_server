@@ -330,3 +330,287 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
             progress_message = ui.label('').classes('text-sm text-gray-600 hidden')
 
     asyncio.create_task(_load_available_jobs())
+
+import glob
+import math
+from pathlib import Path
+from typing import Dict, Any
+
+# Add after create_ui_router function
+def create_setup_page(backend: CryoBoostBackend, user: User):
+    """Create the comprehensive tomogram setup page"""
+    
+    state = {
+        "microscope_params": {},
+        "tilt_series_params": {},
+        "reconstruction_params": {},
+        "container_settings": {},
+        "auto_detected_values": {}
+    }
+    
+    async def auto_detect_metadata():
+        """Auto-detect metadata from mdoc and EER files"""
+        movies_path = movies_glob_input.value
+        mdocs_path = mdocs_glob_input.value
+        
+        if not movies_path or not mdocs_path:
+            ui.notify("Please provide both movies and mdoc paths first", type='warning')
+            return
+            
+        # Auto-detect from mdoc files
+        mdoc_files = glob.glob(mdocs_path)
+        if mdoc_files:
+            try:
+                # Parse first mdoc file for basic metadata
+                with open(mdoc_files[0], 'r') as f:
+                    content = f.read()
+                    
+                    # Extract pixel size
+                    if 'PixelSpacing = ' in content:
+                        pix_size = float(content.split('PixelSpacing = ')[1].split('\n')[0])
+                        pixel_size_input.set_value(str(pix_size))
+                        
+                    # Extract dose per tilt
+                    if 'ExposureDose = ' in content:
+                        dose = float(content.split('ExposureDose = ')[1].split('\n')[0])
+                        dose_per_tilt_input.set_value(str(dose * 1.5))  # Adjust factor
+                        
+                    # Extract image size
+                    if 'ImageSize = ' in content:
+                        img_size = content.split('ImageSize = ')[1].split('\n')[0].replace(' ', 'x')
+                        image_size_input.set_value(img_size)
+                        
+            except Exception as e:
+                ui.notify(f"Error reading mdoc: {e}", type='negative')
+        
+        # Auto-detect EER settings
+        eer_files = glob.glob(movies_path)
+        if eer_files and eer_files[0].endswith('.eer'):
+            try:
+                frames_per_tilt = await backend.get_eer_frames_per_tilt(eer_files[0])
+                if frames_per_tilt:
+                    total_dose = float(dose_per_tilt_input.value) if dose_per_tilt_input.value else 3.0
+                    target_dose_per_frame = 0.3  # Default target
+                    
+                    # Calculate optimal grouping
+                    dose_per_frame = total_dose / frames_per_tilt
+                    num_frames_to_group = math.floor(target_dose_per_frame / dose_per_frame)
+                    
+                    eer_grouping_input.set_value(str(num_frames_to_group))
+                    state["auto_detected_values"]["frames_per_tilt"] = frames_per_tilt
+                    state["auto_detected_values"]["dose_per_frame"] = dose_per_frame
+                    
+            except Exception as e:
+                ui.notify(f"Error analyzing EER: {e}", type='negative')
+    
+    def calculate_eer_grouping():
+        """Recalculate EER grouping based on current parameters"""
+        if not dose_per_tilt_input.value or not eer_grouping_input.value:
+            return
+            
+        try:
+            total_dose = float(dose_per_tilt_input.value)
+            current_grouping = int(eer_grouping_input.value)
+            frames_per_tilt = state["auto_detected_values"].get("frames_per_tilt", 40)  # Default
+            
+            dose_per_rendered_frame = (total_dose / frames_per_tilt) * current_grouping
+            rendered_frames = math.floor(frames_per_tilt / current_grouping)
+            lost_frames = frames_per_tilt - (rendered_frames * current_grouping)
+            
+            eer_info_label.set_text(
+                f"Grouping: {current_grouping} frames → {rendered_frames} rendered frames, "
+                f"{lost_frames} lost frames ({lost_frames/frames_per_tilt*100:.1f}%)"
+            )
+            
+        except Exception as e:
+            print(f"Error calculating EER grouping: {e}")
+    
+    with ui.column().classes('w-full p-6 gap-6'):
+        ui.label('Tomogram Setup & Data Import').classes('text-2xl font-bold text-gray-800')
+        
+        # Data Import Section
+        with ui.card().classes('w-full p-6'):
+            ui.label('1. Data Import Configuration').classes('text-lg font-semibold mb-4')
+            
+            with ui.grid(columns=2).classes('w-full gap-4'):
+                movies_glob_input = create_path_input_with_picker(
+                    label='Movie Files (EER/TIF)',
+                    mode='directory',
+                    glob_pattern='*.eer',
+                    default_value='/users/artem.kushner/dev/001_CopiaTestSet/frames/*.eer'
+                )
+                
+                mdocs_glob_input = create_path_input_with_picker(
+                    label='MDOC Files',
+                    mode='directory', 
+                    glob_pattern='*.mdoc',
+                    default_value='/users/artem.kushner/dev/001_CopiaTestSet/mdoc/*.mdoc'
+                )
+            
+            with ui.row().classes('w-full justify-between items-center mt-4'):
+                ui.button('Auto-detect Metadata', on_click=auto_detect_metadata, icon='search') \
+                  .props('outline')
+                
+                detection_status = ui.label('Ready to detect metadata').classes('text-sm text-gray-600')
+        
+        # Microscope Parameters
+        with ui.card().classes('w-full p-6'):
+            ui.label('2. Microscope Parameters').classes('text-lg font-semibold mb-4')
+            
+            with ui.grid(columns=3).classes('w-full gap-4'):
+                pixel_size_input = ui.input(
+                    label='Pixel Size (Å)',
+                    placeholder='e.g., 1.35'
+                ).props('type=number step=0.01')
+                
+                voltage_input = ui.input(
+                    label='Voltage (kV)',
+                    placeholder='e.g., 300'
+                ).props('type=number')
+                
+                cs_input = ui.input(
+                    label='Spherical Aberration (mm)',
+                    placeholder='e.g., 2.7'
+                ).props('type=number step=0.1')
+            
+            with ui.grid(columns=2).classes('w-full gap-4 mt-2'):
+                amplitude_contrast_input = ui.input(
+                    label='Amplitude Contrast',
+                    placeholder='e.g., 0.1'
+                ).props('type=number step=0.01')
+                
+                dose_per_tilt_input = ui.input(
+                    label='Dose per Tilt (e⁻/Å²)',
+                    placeholder='e.g., 3.0'
+                ).props('type=number step=0.1')
+        
+        # Tilt Series Parameters
+        with ui.card().classes('w-full p-6'):
+            ui.label('3. Tilt Series Parameters').classes('text-lg font-semibold mb-4')
+            
+            with ui.grid(columns=2).classes('w-full gap-4'):
+                tilt_axis_input = ui.input(
+                    label='Tilt Axis Angle (°)',
+                    placeholder='e.g., 82.5'
+                ).props('type=number step=0.1')
+                
+                image_size_input = ui.input(
+                    label='Image Size (WxH)',
+                    placeholder='e.g., 4096x4096'
+                )
+            
+            with ui.expansion('Advanced Tilt Series Settings', icon='settings').classes('w-full mt-4'):
+                with ui.column().classes('w-full gap-4 p-4 bg-gray-50 rounded-lg'):
+                    ui.label('EER Frame Processing').classes('text-md font-medium')
+                    
+                    with ui.grid(columns=2).classes('w-full gap-4'):
+                        eer_grouping_input = ui.input(
+                            label='EER Frames to Group',
+                            placeholder='e.g., 5'
+                        ).props('type=number')
+                        
+                        target_dose_input = ui.input(
+                            label='Target Dose per Frame (e⁻/Å²)',
+                            placeholder='e.g., 0.3'
+                        ).props('type=number step=0.01')
+                    
+                    eer_info_label = ui.label('').classes('text-sm text-blue-600')
+                    
+                    ui.button('Calculate Optimal Grouping', on_click=calculate_eer_grouping, icon='calculate') \
+                      .props('outline')
+        
+        # Reconstruction Parameters
+        with ui.card().classes('w-full p-6'):
+            ui.label('4. Reconstruction Parameters').classes('text-lg font-semibold mb-4')
+            
+            with ui.grid(columns=3).classes('w-full gap-4'):
+                rec_pixel_size_input = ui.input(
+                    label='Reconstruction Pixel Size (Å)',
+                    placeholder='e.g., 5.4'
+                ).props('type=number step=0.01')
+                
+                tomogram_size_input = ui.input(
+                    label='Tomogram Size (XYZ)',
+                    placeholder='e.g., 1024x1024x512'
+                )
+                
+                sample_thickness_input = ui.input(
+                    label='Sample Thickness (nm)',
+                    placeholder='e.g., 300'
+                ).props('type=number')
+            
+            with ui.grid(columns=2).classes('w-full gap-4 mt-2'):
+                alignment_method_select = ui.select(
+                    label='Alignment Method',
+                    options=['AreTomo', 'IMOD', 'Warp'],
+                    value='AreTomo'
+                )
+                
+                patch_size_input = ui.input(
+                    label='Patch Size (Alignment)',
+                    placeholder='e.g., 800'
+                ).props('type=number')
+        
+        # Container & Tool Settings
+        with ui.card().classes('w-full p-6'):
+            ui.label('5. Container & Tool Configuration').classes('text-lg font-semibold mb-4')
+            
+            with ui.grid(columns=2).classes('w-full gap-4'):
+                container_runtime_select = ui.select(
+                    label='Container Runtime',
+                    options=['apptainer', 'singularity', 'docker'],
+                    value='apptainer'
+                )
+                
+                gpu_mode_toggle = ui.toggle(
+                    ['CPU Only', 'GPU Accelerated'], 
+                    value='GPU Accelerated'
+                )
+            
+            with ui.expansion('Advanced Container Settings', icon='settings').classes('w-full mt-4'):
+                with ui.column().classes('w-full gap-4 p-4 bg-gray-50 rounded-lg'):
+                    with ui.grid(columns=2).classes('w-full gap-4'):
+                        bind_paths_input = ui.input(
+                            label='Additional Bind Paths',
+                            placeholder='/scratch,/groups,/software'
+                        )
+                        
+                        memory_limit_input = ui.input(
+                            label='Memory Limit (GB)',
+                            placeholder='e.g., 32'
+                        ).props('type=number')
+        
+        # Action Buttons
+        with ui.row().classes('w-full justify-end gap-4 mt-6'):
+            ui.button('Save Configuration', icon='save').props('outline')
+            ui.button('Validate Setup', icon='check_circle', color='primary')
+            ui.button('Apply to Project', icon='play_arrow', color='positive')
+    
+    # Connect events
+    dose_per_tilt_input.on('change', calculate_eer_grouping)
+    eer_grouping_input.on('change', calculate_eer_grouping)
+
+# Update the main UI to include the setup tab
+async def create_main_ui(backend: CryoBoostBackend, user: User):
+    with ui.header().classes('bg-white text-gray-800 shadow-sm p-4'):
+        with ui.row().classes('w-full items-center justify-between'):
+            ui.label('CryoBoost Server').classes('text-xl font-semibold')
+            with ui.row().classes('items-center'):
+                ui.label(f'User: {user.username}').classes('mr-4')
+
+    with ui.row().classes('w-full p-8 gap-8'):
+        with ui.tabs().props('vertical').classes('w-48') as tabs:
+            setup_tab = ui.tab('Tomogram Setup')  # NEW TAB
+            projects_tab = ui.tab('Projects')
+            jobs_tab = ui.tab('Job Status')
+            info_tab = ui.tab('Cluster Info')
+
+        with ui.tab_panels(tabs, value=setup_tab).classes('w-full'):  # Default to setup tab
+            with ui.tab_panel(setup_tab):
+                create_setup_page(backend, user)  # NEW PAGE
+            with ui.tab_panel(projects_tab):
+                build_projects_tab(backend, user)
+            with ui.tab_panel(jobs_tab):
+                await create_jobs_page(backend, user)
+            with ui.tab_panel(info_tab):
+                create_info_page(backend)
