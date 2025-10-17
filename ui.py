@@ -288,14 +288,12 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
             ui.label('1. Configure and Create Project').classes('text-lg font-semibold mb-2')
             project_name_input = ui.input('Project Name', placeholder='e.g., my_first_dataset').classes('w-full')
 
-            # NEW: Project location input using the factory
             project_location_input = create_path_input_with_picker(
                 label='Project Location',
                 mode='directory',
-                default_value='~/cryoboost_projects'
+                default_value='/users/artem.kushner/dev/crboost_server/projects'
             )
 
-            # REFACTORED: Movie and MDOC inputs using the factory
             movies_path_input = create_path_input_with_picker(
                 label='Movie Files Path/Glob',
                 mode='directory',

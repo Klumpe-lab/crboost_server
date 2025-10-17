@@ -27,10 +27,10 @@ async def setup_app():
     backend = CryoBoostBackend(Path.cwd())
     create_ui_router(backend) 
 
-    # Run debug immediately
-    print("=== RUNNING CONTAINER DEBUG ===")
-    await backend.debug_container_environment(Path("/users/artem.kushner/cryoboost_projects/nu6"))
-    print("=== DEBUG COMPLETE ===")
+    # # Run debug immediately
+    # print("=== RUNNING CONTAINER DEBUG ===")
+    # await backend.debug_container_environment(Path("/users/artem.kushner/cryoboost_projects/nu6"))
+    # print("=== DEBUG COMPLETE ===")
 
     ui.run_with(app, title="CryoBoost Server")
     return app

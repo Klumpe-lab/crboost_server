@@ -24,12 +24,10 @@ echo "New CWD: $(pwd)"
 
 # # --- STANDARD ENVIRONMENT SETUP ---
 # echo "Purging and loading modules..."
-module --force purge
-module load build-env/f2022
-module load cuda/11.8.0
+# module --force purge
+# module load build-env/f2022
+# module load cuda/11.8.0
 
-# Execute the containerized command provided by Relion.
-# This command will now run from within the correct job directory.
 echo "Executing Command..."
 XXXcommandXXX
 
