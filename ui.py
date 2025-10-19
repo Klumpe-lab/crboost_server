@@ -7,17 +7,9 @@ from nicegui import ui
 
 from backend import CryoBoostBackend
 from local_file_picker import local_file_picker
-from models import Job, User
+from models import  User
 
 HARDCODED_USER = User(username="artem.kushner")
-STATUS_MAP = {
-    "PENDING": ("orange", "PD"),
-    "RUNNING": ("green", "R"),
-    "COMPLETED": ("blue", "CG"),
-    "FAILED": ("red", "F"),
-    "CANCELLED": ("gray", "CA"),
-    "TIMEOUT": ("red", "TO"),
-}
 
 
 def create_path_input_with_picker(label: str, mode: str, glob_pattern: str = '', default_value: str = '') -> ui.input:
@@ -96,7 +88,6 @@ async def create_main_ui(backend: CryoBoostBackend, user: User):
             with ui.tabs().classes('w-1/2') as tabs:
                 setup_tab = ui.tab('Tomogram Setup')
                 projects_tab = ui.tab('Projects')
-                jobs_tab = ui.tab('Job Status')
                 info_tab = ui.tab('Cluster Info')
 
             ui.label(f'User: {user.username}').classes('text-xs')
@@ -107,8 +98,6 @@ async def create_main_ui(backend: CryoBoostBackend, user: User):
             create_setup_page(backend, user)
         with ui.tab_panel(projects_tab):
             build_projects_tab(backend, user)
-        with ui.tab_panel(jobs_tab):
-            await create_jobs_page(backend, user)
         with ui.tab_panel(info_tab):
             create_info_page(backend)
 
@@ -127,75 +116,8 @@ def create_info_page(backend: CryoBoostBackend):
     asyncio.create_task(get_info())
 
 
-async def create_jobs_page(backend: CryoBoostBackend, user: User):
-    with ui.column().classes('w-full'):
-        with ui.row().classes('w-full justify-between items-center mb-2'):
-            ui.label('Individual Job Management').classes('text-xs font-medium uppercase')
-            ui.button('Submit Test GPU Job',
-                      on_click=lambda: submit_and_track_job(backend, user, job_tabs, job_tab_panels)).props('dense')
-
-        with ui.tabs().classes('w-full') as job_tabs:
-            pass
-
-        with ui.tab_panels(job_tabs, value=None).classes('w-full mt-2 border rounded-md') as job_tab_panels:
-            user_jobs = backend.get_user_jobs()
-            if not user_jobs:
-                with ui.tab_panel('placeholder').classes('items-center justify-center'):
-                    ui.label('No jobs submitted yet.').classes('text-gray-500')
-            else:
-                for job in user_jobs:
-                    create_job_tab(backend, user, job, job_tabs, job_tab_panels)
-                job_tabs.set_value(user_jobs[-1].internal_id)
 
 
-async def submit_and_track_job(backend: CryoBoostBackend, user: User, job_tabs, job_tab_panels):
-    result = await backend.submit_test_gpu_job()
-    if not result['success']:
-        ui.notify(f"Job submission failed: {result['error']}", type='negative')
-        return
-    job = result['job']
-    ui.notify(f"Submitted job {job.slurm_id}", type='positive')
-    if 'placeholder' in job_tab_panels:
-        job_tab_panels.clear()
-        job_tabs.clear()
-    create_job_tab(backend, user, job, job_tabs, job_tab_panels)
-    job_tabs.set_value(job.internal_id)
-
-
-def create_job_tab(backend: CryoBoostBackend, user: User, job: Job, job_tabs, job_tab_panels):
-    with job_tabs:
-        new_tab = ui.tab(name=job.internal_id, label=f'Job {job.slurm_id}')
-
-    with job_tab_panels:
-        with ui.tab_panel(new_tab).classes('p-2'):
-            with ui.row().classes('w-full justify-between items-center'):
-                ui.label(f'Tracking logs for Job ID: {job.slurm_id}').classes('text-xs font-medium')
-                with ui.row().classes('items-center gap-2'):
-                    color, label = STATUS_MAP.get(job.status, ("gray", job.status))
-                    status_badge = ui.badge(label, color=color).props('outline')
-                    refresh_button = ui.button(icon='refresh', on_click=lambda: update_log_display(True)).props(
-                        'flat round dense')
-
-            log_output = ui.log(max_lines=1000).classes(
-                'w-full h-screen border rounded-md bg-gray-50 p-2 mt-2 text-xs')
-            log_output.push(job.log_content)
-
-    def update_log_display(manual_refresh=False):
-        job_info = backend.get_job_log(job.internal_id)
-        if job_info:
-            log_output.clear()
-            log_output.push(job_info.log_content)
-            status_text = job_info.status
-            color, label = STATUS_MAP.get(status_text, ("gray", status_text))
-            status_badge.text = label
-            status_badge.color = color
-            if status_text in {"COMPLETED", "FAILED", "CANCELLED"}:
-                timer.deactivate()
-                refresh_button.disable()
-            if manual_refresh:
-                ui.notify('Logs refreshed!', type='positive', timeout=1000)
-
-    timer = ui.timer(interval=5, callback=update_log_display, active=True)
 
 
 def build_projects_tab(backend: CryoBoostBackend, user: User):

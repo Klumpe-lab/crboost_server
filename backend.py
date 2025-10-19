@@ -5,7 +5,7 @@ import os
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
-from models import Job, User
+from models import  User
 import pandas as pd
 # Add to CryoBoostBackend class in backend.py
 
@@ -27,8 +27,6 @@ class CryoBoostBackend:
 
     def __init__(self, server_dir: Path):
         self.server_dir = server_dir
-        self.jobs_dir = self.server_dir / 'jobs'
-        self.active_jobs: Dict[str, Job] = {}
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
@@ -113,8 +111,6 @@ class CryoBoostBackend:
                 "message": f"Project '{project_name}' created and initialized successfully.",
                 "project_path": str(project_dir)
             }
-
-
 
     async def run_shell_command(self, command: str, cwd: Path = None, 
                             tool_name: str = None, additional_binds: List[str] = None):
@@ -230,71 +226,6 @@ class CryoBoostBackend:
         return await self._run_relion_schemer(
             project_dir, scheme_name, additional_bind_paths=list(bind_paths)
         )
-
-    async def submit_test_gpu_job(self):
-        script_path = self.jobs_dir / 'test_gpu_job.sh'
-        output_dir = self.server_dir / 'user_jobs' / HARDCODED_USER.username / f'test_{uuid.uuid4().hex[:8]}'
-        return await self.submit_slurm_job(script_path, output_dir, "g", "--gpus=1")
-
-    async def submit_slurm_job(self, script_path: Path, output_dir: Path, partition: str, gpus: str):
-        if not script_path.exists():
-            return {"success": False, "error": f"Script not found: {script_path}"}
-        
-        output_dir.mkdir(parents=True, exist_ok=True)
-        log_out_path = output_dir / f"job_%j.out"
-        log_err_path = output_dir / f"job_%j.err"
-        command = f"sbatch --partition={partition} {gpus} --output={log_out_path} --error={log_err_path} {script_path}"
-        
-        result = await self.run_shell_command(command, cwd=output_dir)
-        if not result["success"]:
-            return result
-        
-        try:
-            slurm_job_id = int(result['output'].strip().split()[-1])
-        except (ValueError, IndexError):
-            return {"success": False, "error": f"Could not parse SLURM job ID from: {result['output']}"}
-        
-        job = Job(
-            owner=HARDCODED_USER.username,
-            slurm_id=slurm_job_id,
-            log_file=output_dir / f"job_{slurm_job_id}.out",
-            log_content=f"Submitted job {slurm_job_id}. Waiting for output...\n"
-        )
-        self.active_jobs[job.internal_id] = job
-        asyncio.create_task(self.track_job_logs(job.internal_id))
-        return {"success": True, "job": job}
-
-    async def track_job_logs(self, internal_job_id: str):
-        job = self.active_jobs.get(internal_job_id)
-        if not job: return
-        terminal_states = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "NODE_FAIL"}
-        last_read_position = 0
-        while True:
-            status_result = await self.run_shell_command(f"squeue -j {job.slurm_id} -h -o %T")
-            job.status = status_result["output"].strip() if status_result["success"] and status_result["output"].strip() else "COMPLETED"
-            
-            if job.log_file.exists():
-                try:
-                    with open(job.log_file, 'r', encoding='utf-8') as f:
-                        f.seek(last_read_position)
-                        new_content = f.read()
-                        if new_content:
-                            job.log_content += new_content
-                            last_read_position = f.tell()
-                except Exception as e:
-                    job.log_content += f"\n--- ERROR READING LOG: {e} ---\n"
-            if job.status in terminal_states:
-                break
-            await asyncio.sleep(5)
-
-    def get_job_log(self, internal_job_id: str) -> Optional[Job]:
-        job = self.active_jobs.get(internal_job_id)
-        if job and job.owner == HARDCODED_USER.username:
-            return job
-        return None
-
-    def get_user_jobs(self) -> List[Job]:
-        return [job for job in self.active_jobs.values() if job.owner == HARDCODED_USER.username]
 
     async def get_pipeline_progress(self, project_path: str):
         pipeline_star = Path(project_path) / "default_pipeline.star"
