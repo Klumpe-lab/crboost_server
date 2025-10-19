@@ -204,6 +204,9 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
         "current_project_path": None,
         "current_scheme_name": None,
     }
+    
+    # Store references to log displays
+    job_log_displays = {}
 
     async def _load_available_jobs():
         job_types = await backend.get_available_jobs()
@@ -292,6 +295,121 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
             await asyncio.sleep(5)
         print("[UI] Pipeline monitoring stopped.")
 
+    async def create_pipeline_job_tabs():
+        """Create tabs for each pipeline job"""
+        if not state["current_project_path"] or not state["selected_jobs"]:
+            return
+            
+        # Clear existing tabs
+        pipeline_job_tabs.clear()
+        pipeline_job_panels.clear()
+        job_log_displays.clear()
+        
+        # Create a tab for each job
+        for idx, job_name in enumerate(state["selected_jobs"], 1):
+            with pipeline_job_tabs:
+                tab = ui.tab(f'{job_name} (job{idx:03d})')
+            
+            with pipeline_job_panels:
+                with ui.tab_panel(tab).classes('p-2'):
+                    # Create split view for stdout and stderr
+                    with ui.grid(columns=2).classes('w-full gap-2'):
+                        # Stdout column
+                        with ui.column().classes('w-full'):
+                            with ui.row().classes('w-full justify-between items-center mb-1'):
+                                ui.label('run.out (stdout)').classes('text-xs font-medium')
+                                refresh_btn_out = ui.button(icon='refresh').props('flat round dense size=xs')
+                            out_log = ui.log(max_lines=500).classes(
+                                'w-full h-64 border rounded-md bg-gray-50 p-2 text-xs font-mono'
+                            )
+                        
+                        # Stderr column  
+                        with ui.column().classes('w-full'):
+                            with ui.row().classes('w-full justify-between items-center mb-1'):
+                                ui.label('run.err (stderr)').classes('text-xs font-medium')
+                                refresh_btn_err = ui.button(icon='refresh').props('flat round dense size=xs')
+                            err_log = ui.log(max_lines=500).classes(
+                                'w-full h-64 border rounded-md bg-red-50 p-2 text-xs font-mono'
+                            )
+                    
+                    # Store references
+                    job_log_displays[job_name] = {
+                        'stdout': out_log,
+                        'stderr': err_log,
+                        'idx': idx
+                    }
+                    
+                    # Set up refresh button handlers
+                    async def refresh_this_job(job=job_name, idx=idx):
+                        await refresh_job_logs(job, idx)
+                    
+                    refresh_btn_out.on('click', refresh_this_job)
+                    refresh_btn_err.on('click', refresh_this_job)
+        
+        # Select first tab
+        if state["selected_jobs"]:
+            pipeline_job_tabs.set_value(f'{state["selected_jobs"][0]} (job001)')
+
+    async def refresh_job_logs(job_name: str, job_idx: int):
+        """Refresh logs for a specific job"""
+        if not state["current_project_path"]:
+            return
+            
+        logs = await backend.get_pipeline_job_logs(
+            state["current_project_path"], 
+            job_name, 
+            str(job_idx)
+        )
+        
+        if job_name in job_log_displays:
+            display = job_log_displays[job_name]
+            
+            # Update stdout
+            display['stdout'].clear()
+            if logs['stdout']:
+                display['stdout'].push(logs['stdout'])
+            else:
+                display['stdout'].push("No output yet...")
+            
+            # Update stderr
+            display['stderr'].clear() 
+            if logs['stderr']:
+                display['stderr'].push(logs['stderr'])
+            else:
+                display['stderr'].push("No errors...")
+            
+            ui.notify(f"Refreshed logs for {job_name}", type='positive', timeout=1000)
+
+    async def auto_refresh_all_logs():
+        """Auto-refresh all job logs periodically"""
+        # Track last content to avoid unnecessary updates
+        last_content = {}
+        
+        while state["current_project_path"] and job_log_displays:
+            for job_name, display in job_log_displays.items():
+                logs = await backend.get_pipeline_job_logs(
+                    state["current_project_path"],
+                    job_name,
+                    str(display['idx'])
+                )
+                
+                # Initialize tracking for this job if needed
+                if job_name not in last_content:
+                    last_content[job_name] = {'stdout': '', 'stderr': ''}
+                
+                # Update stdout if changed
+                if logs['stdout'] != last_content[job_name]['stdout']:
+                    display['stdout'].clear()
+                    display['stdout'].push(logs['stdout'] or "No output yet...")
+                    last_content[job_name]['stdout'] = logs['stdout']
+                
+                # Update stderr if changed
+                if logs['stderr'] != last_content[job_name]['stderr']:
+                    display['stderr'].clear()
+                    display['stderr'].push(logs['stderr'] or "No errors...")
+                    last_content[job_name]['stderr'] = logs['stderr']
+            
+            await asyncio.sleep(5)  # Auto-refresh every 10 seconds
     async def handle_run_pipeline():
         pipeline_status.classes(remove='text-red-500 text-green-500')
         run_button.props('loading')
@@ -318,6 +436,12 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
             pipeline_status.set_text(f"Pipeline running (PID: {pid})")
             run_button.props('disabled')
             stop_button.props(remove='disabled')
+            
+            # Create the job monitoring tabs after pipeline starts
+            await create_pipeline_job_tabs()
+            # Start auto-refresh
+            asyncio.create_task(auto_refresh_all_logs())
+            # Start monitoring progress
             asyncio.create_task(_monitor_pipeline_progress())
         else:
             pipeline_status.set_text(f"Failed to start: {result.get('error', 'Unknown')}")
@@ -373,13 +497,22 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
                 active_project_label = ui.label('No active project').classes('text-xs')
             pipeline_status = ui.label('Create and configure a project first.').classes('text-xs text-gray-600 my-1')
             with ui.row().classes('gap-2'):
+                # Note: handle_run_pipeline is connected directly here, not the wrapper
                 run_button = ui.button('RUN', on_click=handle_run_pipeline, icon='play_arrow').props('disabled dense')
                 stop_button = ui.button('STOP', on_click=handle_stop_pipeline, icon='stop').props('disabled dense')
             progress_bar = ui.linear_progress(value=0, show_value=False).classes('hidden w-full')
             progress_message = ui.label('').classes('text-xs text-gray-600 hidden')
 
-    asyncio.create_task(_load_available_jobs())
+        ui.separator()
+        
+        with ui.column().classes('w-full gap-2'):
+            ui.label('3. Pipeline Job Monitoring').classes('text-xs font-semibold uppercase tracking-wider')
+            
+            # Container for job tabs
+            pipeline_job_tabs = ui.tabs().classes('w-full')
+            pipeline_job_panels = ui.tab_panels(pipeline_job_tabs).classes('w-full mt-2')
 
+    asyncio.create_task(_load_available_jobs())
 
 def create_setup_page(backend: CryoBoostBackend, user: User):
     state = {

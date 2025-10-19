@@ -4,7 +4,7 @@ import asyncio
 import os
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from models import Job, User
 import pandas as pd
 # Add to CryoBoostBackend class in backend.py
@@ -461,3 +461,68 @@ class CryoBoostBackend:
                 "success": False,
                 "error": f"Failed to apply setup: {str(e)}"
             }
+
+    #--------- Pipeline tracking
+    
+    
+    # Add to CryoBoostBackend class in backend.py
+
+    async def get_pipeline_job_logs(self, project_path: str, job_type: str, job_number: str) -> Dict[str, str]:
+        """Get the run.out and run.err contents for a specific pipeline job"""
+        project_dir = Path(project_path)
+        
+        # Map job types to their directory names
+        job_dir_map = {
+            'importmovies': 'Import',
+            'fsMotionAndCtf': 'External',
+            'tsAlignment': 'External'  # Add more as needed
+        }
+        
+        job_dir_name = job_dir_map.get(job_type, 'External')
+        job_path = project_dir / job_dir_name / f"job{job_number.zfill(3)}"
+        
+        logs = {
+            'stdout': '',
+            'stderr': '',
+            'exists': False,
+            'path': str(job_path)
+        }
+        
+        if not job_path.exists():
+            return logs
+        
+        logs['exists'] = True
+        
+        # Read run.out
+        out_file = job_path / 'run.out'
+        if out_file.exists():
+            try:
+                with open(out_file, 'r', encoding='utf-8') as f:
+                    logs['stdout'] = f.read()
+            except Exception as e:
+                logs['stdout'] = f"Error reading run.out: {e}"
+        
+        # Read run.err
+        err_file = job_path / 'run.err'
+        if err_file.exists():
+            try:
+                with open(err_file, 'r', encoding='utf-8') as f:
+                    logs['stderr'] = f.read()
+            except Exception as e:
+                logs['stderr'] = f"Error reading run.err: {e}"
+        
+        return logs
+
+    async def monitor_pipeline_jobs(self, project_path: str, selected_jobs: List[str]) -> AsyncGenerator:
+        """Monitor all pipeline jobs and yield updates"""
+        while True:
+            job_statuses = []
+            for idx, job_type in enumerate(selected_jobs, 1):
+                logs = await self.get_pipeline_job_logs(project_path, job_type, str(idx))
+                job_statuses.append({
+                    'job_type': job_type,
+                    'job_number': idx,
+                    'logs': logs
+                })
+            yield job_statuses
+            await asyncio.sleep(5)  # Poll every 5 seconds
