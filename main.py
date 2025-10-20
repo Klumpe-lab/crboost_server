@@ -4,12 +4,13 @@ import socket
 import argparse
 from pathlib import Path
 
+from ui.main_ui import create_ui_router
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from nicegui import ui
 
-from ui import create_ui_router
+# from ui import create_ui_router
 from backend import CryoBoostBackend
 
 async def setup_app():
