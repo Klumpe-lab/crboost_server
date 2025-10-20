@@ -30,7 +30,7 @@ class CryoBoostBackend:
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
-        self.setup_service = SetupService(server_dir)  # NEW SERVICE
+        self.setup_service = SetupService(server_dir)  
 
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
@@ -54,12 +54,10 @@ class CryoBoostBackend:
             structure_result = await self.project_service.create_project_structure(
                 project_dir, movies_glob, mdocs_glob, import_prefix
             )
+
             if not structure_result["success"]:
                 return structure_result
             
-            print(f"[BACKEND] Project structure and data import successful.")
-            
-            # Collect all unique parent directories for container binding
             additional_bind_paths = {
                 str(Path(project_base_path).expanduser().resolve()),
                 str(Path(movies_glob).parent.resolve()),
