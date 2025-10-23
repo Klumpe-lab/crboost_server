@@ -1,13 +1,10 @@
-# backend.py
-
 import asyncio
 import os
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
-from models import  User
+from models import User
 import pandas as pd
-# Add to CryoBoostBackend class in backend.py
 
 import yaml
 import subprocess
@@ -19,7 +16,8 @@ from services.config_service import get_config_service
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
-from services.setup_service import SetupService
+# from services.setup_service import SetupService  # <-- DEPRECATED
+from services.parameters_service import get_parameter_manager # <-- NEW
 
 HARDCODED_USER = User(username="artem.kushner")
 
@@ -30,7 +28,8 @@ class CryoBoostBackend:
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
-        self.setup_service = SetupService(server_dir)  
+        # self.setup_service = SetupService(server_dir) # <-- REMOVED
+        self.parameter_manager = get_parameter_manager() # <-- NEW
 
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
@@ -40,146 +39,163 @@ class CryoBoostBackend:
         return jobs
     
     async def create_project_and_scheme(
-            self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
-        ):
-            project_dir = Path(project_base_path).expanduser() / project_name
-            base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
-            scheme_name = f"scheme_{project_name}"
-            user_params = {"angpix": "1.35", "dose_rate": "1.5"}
+                self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
+            ):
+                project_dir = Path(project_base_path).expanduser() / project_name
+                base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+                scheme_name = f"scheme_{project_name}"
+                
+                # --- THIS IS THE KEY CHANGE ---
+                # Was: user_params = {"angpix": "1.35", "dose_rate": "1.5"}
+                # Now: Pulls from the centralized, UI-updated ParameterManager
+                user_params = self.parameter_manager.get_legacy_user_params_dict()
+                # --- END KEY CHANGE ---
 
-            if project_dir.exists():
-                return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
+                if project_dir.exists():
+                    return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
 
-            import_prefix = f"{project_name}_"
-            structure_result = await self.project_service.create_project_structure(
-                project_dir, movies_glob, mdocs_glob, import_prefix
-            )
+                import_prefix = f"{project_name}_"
+                structure_result = await self.project_service.create_project_structure(
+                    project_dir, movies_glob, mdocs_glob, import_prefix
+                )
 
-            if not structure_result["success"]:
-                return structure_result
-            
-            additional_bind_paths = {
-                str(Path(project_base_path).expanduser().resolve()),
-                str(Path(movies_glob).parent.resolve()),
-                str(Path(mdocs_glob).parent.resolve())
-            }
-            
-            scheme_result = await self.pipeline_orchestrator.create_custom_scheme(
-                project_dir, scheme_name, base_template_path, selected_jobs, user_params,
-                additional_bind_paths=list(additional_bind_paths)
-            )
-            if not scheme_result["success"]:
-                return scheme_result
-            
-            print(f"[BACKEND] Initializing Relion project in {project_dir}...")
-            pipeline_star_path = project_dir / "default_pipeline.star"
+                if not structure_result["success"]:
+                    return structure_result
+                
+                # --- NEW: Save the project_params.json file ---
+                try:
+                    params_json_path = project_dir / "project_params.json"
+                    self.parameter_manager.save_state_to_json(params_json_path)
+                    print(f"[BACKEND] Saved consolidated parameters to {params_json_path}")
+                except Exception as e:
+                    print(f"[WARN] Could not save project_params.json: {e}")
+                # --- END NEW ---
+                    
+                additional_bind_paths = {
+                    str(Path(project_base_path).expanduser().resolve()),
+                    str(Path(movies_glob).parent.resolve()),
+                    str(Path(mdocs_glob).parent.resolve())
+                }
+                
+                scheme_result = await self.pipeline_orchestrator.create_custom_scheme(
+                    project_dir, scheme_name, base_template_path, selected_jobs, user_params,
+                    additional_bind_paths=list(additional_bind_paths)
+                )
+                if not scheme_result["success"]:
+                    return scheme_result
+                
+                print(f"[BACKEND] Initializing Relion project in {project_dir}...")
+                pipeline_star_path = project_dir / "default_pipeline.star"
 
-            init_command = "unset DISPLAY && relion --tomo --do_projdir ."
-            
-            container_init_command = self.container_service.wrap_command_for_tool(
-                command=init_command,
-                cwd=project_dir,
-                tool_name="relion",  # Explicitly specify the tool
-                additional_binds=list(additional_bind_paths)
-            )
+                init_command = "unset DISPLAY && relion --tomo --do_projdir ."
+                
+                container_init_command = self.container_service.wrap_command_for_tool(
+                    command=init_command,
+                    cwd=project_dir,
+                    tool_name="relion",  # Explicitly specify the tool
+                    additional_binds=list(additional_bind_paths)
+                )
 
-            process = await asyncio.create_subprocess_shell(
-                container_init_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=project_dir
-            )
-            
-            try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
-                if process.returncode != 0:
-                    print(f"[RELION INIT ERROR] {stderr.decode()}")
-            except asyncio.TimeoutError:
-                print("[ERROR] Relion project initialization timed out.")
-                process.kill()
-                await process.wait()
+                process = await asyncio.create_subprocess_shell(
+                    container_init_command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=project_dir
+                )
+                
+                try:
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
+                    if process.returncode != 0:
+                        print(f"[RELION INIT ERROR] {stderr.decode()}")
+                except asyncio.TimeoutError:
+                    print("[ERROR] Relion project initialization timed out.")
+                    process.kill()
+                    await process.wait()
 
-            print(f"[BACKEND] Relion project initialization finished.")
+                print(f"[BACKEND] Relion project initialization finished.")
 
-            if not pipeline_star_path.exists():
-                return {"success": False, "error": f"Failed to create default_pipeline.star."}
+                if not pipeline_star_path.exists():
+                    return {"success": False, "error": f"Failed to create default_pipeline.star."}
 
-            return {
-                "success": True,
-                "message": f"Project '{project_name}' created and initialized successfully.",
-                "project_path": str(project_dir)
-            }
+                return {
+                    "success": True,
+                    "message": f"Project '{project_name}' created and initialized successfully.",
+                    "project_path": str(project_dir)
+                }
+    async def get_initial_parameters(self) -> Dict[str, Any]:
+            """Get the default parameters to populate the UI"""
+            return self.parameter_manager.get_state_as_dict()
+
+    async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
+        """Run mdoc autodetection and return the updated state"""
+        print(f"[BACKEND] Autodetecting from {mdocs_glob}")
+        self.parameter_manager.autodetect_from_mdoc(mdocs_glob)
+        return self.parameter_manager.get_state_as_dict()
+        
+    async def update_parameter(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a single parameter in the central state"""
+        try:
+            param_name = payload.get("param_name")
+            value = payload.get("value")
+            if param_name:
+                print(f"[BACKEND] Updating {param_name} -> {value}")
+                self.parameter_manager.update_parameter_from_ui(param_name, value)
+                return {"success": True}
+        except Exception as e:
+            print(f"[ERROR] update_parameter failed: {e}")
+            return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Invalid payload"}
 
     async def run_shell_command(self, command: str, cwd: Path = None, 
-                            tool_name: str = None, additional_binds: List[str] = None):
-        """Runs a shell command, optionally using specified tool's container."""
-        try:
-            if tool_name:
-                print(f"[DEBUG] Running command with tool: {tool_name}")
-                final_command = self.container_service.wrap_command_for_tool(
-                    command=command,
-                    cwd=cwd or self.server_dir,
-                    tool_name=tool_name,
-                    additional_binds=additional_binds or []
-                )
-            else:
-                final_command = command
-                print(f"[SHELL] Running natively: {final_command}")
-            
-            process = await asyncio.create_subprocess_shell(
-                final_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd or self.server_dir
-            )
-            
+                                tool_name: str = None, additional_binds: List[str] = None):
+            """Runs a shell command, optionally using specified tool's container."""
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120.0)
-                
-                print(f"[DEBUG] Process completed with return code: {process.returncode}")
-                if process.returncode == 0:
-                    return {"success": True, "output": stdout.decode(), "error": None}
+                if tool_name:
+                    print(f"[DEBUG] Running command with tool: {tool_name}")
+                    final_command = self.container_service.wrap_command_for_tool(
+                        command=command,
+                        cwd=cwd or self.server_dir,
+                        tool_name=tool_name,
+                        additional_binds=additional_binds or []
+                    )
                 else:
-                    return {"success": False, "output": stdout.decode(), "error": stderr.decode()}
-                    
-            except asyncio.TimeoutError:
-                print(f"[ERROR] Command timed out after 120 seconds: {final_command}")
-                process.terminate()
-                await process.wait()
-                return {"success": False, "output": "", "error": "Command execution timed out"}
+                    final_command = command
+                    print(f"[SHELL] Running natively: {final_command}")
                 
-        except Exception as e:
-            print(f"[ERROR] Exception in run_shell_command: {e}")
-            return {"success": False, "output": "", "error": str(e)}
+                process = await asyncio.create_subprocess_shell(
+                    final_command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd or self.server_dir
+                )
+                
+                try:
+                    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120.0)
+                    
+                    print(f"[DEBUG] Process completed with return code: {process.returncode}")
+                    if process.returncode == 0:
+                        return {"success": True, "output": stdout.decode(), "error": None}
+                    else:
+                        return {"success": False, "output": stdout.decode(), "error": stderr.decode()}
+                        
+                except asyncio.TimeoutError:
+                    print(f"[ERROR] Command timed out after 120 seconds: {final_command}")
+                    process.terminate()
+                    await process.wait()
+                    return {"success": False, "output": "", "error": "Command execution timed out"}
+                    
+            except Exception as e:
+                print(f"[ERROR] Exception in run_shell_command: {e}")
+                return {"success": False, "output": "", "error": str(e)}
 
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
 
 
-    async def debug_container_environment(self, project_dir: Path):
-        """Debug what environment the container is actually using"""
-        test_commands = [
-            # Test with explicit tools
-            ("relion --version", "relion"),
-            ("relion_python_tomo_import --help", "relion_import"),
-            ("WarpTools --help", "warptools"),
-            
-            # Test Python inside container using tools
-            ("python -c \"import sys; print(sys.executable)\"", "relion"),
-            ("python -c \"import mdocfile; print('mdocfile OK')\"", "relion_import"),
-        ]
-        
-        print(f"\n=== DEBUG CONTAINER ENVIRONMENT ===")
-        print(f"Project dir: {project_dir}")
-        
-        for cmd, tool in test_commands:
-            print(f"\n--- Testing with tool '{tool}': {cmd} ---")
-            result = await self.run_shell_command(cmd, cwd=project_dir, tool_name=tool)
-            print(f"Success: {result['success']}")
-            if result['success']:
-                print(f"Output: {result['output'][:500]}...")
-            else:
-                print(f"Error: {result['error'][:500]}...")
+
+
+
+
     async def _run_relion_schemer(self, project_dir: Path, scheme_name: str, additional_bind_paths: List[str]):
         """Run relion_schemer to execute the pipeline scheme"""
         try:
@@ -280,13 +296,17 @@ class CryoBoostBackend:
         print(f" [MONITOR] relion_schemer PID {process.pid} completed with return code: {process.returncode}")
         self.active_schemer_process = None
 
+
+
+
+
     async def get_eer_frames_per_tilt(self, eer_file_path: str) -> int:
         """Extract number of frames per tilt from EER file"""
         try:
             # Use header command to get EER metadata
             command = f"header {eer_file_path}"
             result = await self.run_shell_command(command)
-            
+
             if result["success"]:
                 output = result["output"]
                 # Parse the output to find frames per tilt
@@ -300,99 +320,6 @@ class CryoBoostBackend:
             print(f"Error getting EER frames: {e}")
             return None
 
-    async def parse_mdoc_metadata(self, mdoc_path: str) -> Dict[str, Any]:
-        """Parse mdoc file for microscope and acquisition parameters"""
-        try:
-            metadata = {}
-            mdoc_files = glob.glob(mdoc_path)
-            if not mdoc_files:
-                return {}
-                
-            with open(mdoc_files[0], 'r') as f:
-                content = f.read()
-                
-                # Extract basic metadata
-                if 'PixelSpacing = ' in content:
-                    metadata['pixel_size'] = float(content.split('PixelSpacing = ')[1].split('\n')[0])
-                    
-                if 'ExposureDose = ' in content:
-                    metadata['dose_per_tilt'] = float(content.split('ExposureDose = ')[1].split('\n')[0])
-                    
-                if 'ImageSize = ' in content:
-                    metadata['image_size'] = content.split('ImageSize = ')[1].split('\n')[0].replace(' ', 'x')
-                    
-                if 'Voltage = ' in content:
-                    metadata['voltage'] = float(content.split('Voltage = ')[1].split('\n')[0])
-                    
-                # Try to find tilt axis angle
-                if 'Tilt axis angle = ' in content:
-                    metadata['tilt_axis'] = float(content.split('Tilt axis angle = ')[1].split(',')[0])
-                elif 'RotationAngle = ' in content:
-                    # Alternative location for tilt axis
-                    lines = content.split('\n')
-                    for line in lines:
-                        if 'RotationAngle = ' in line:
-                            metadata['tilt_axis'] = abs(float(line.split('RotationAngle = ')[1]))
-                            break
-                            
-            return metadata
-        except Exception as e:
-            print(f"Error parsing mdoc: {e}")
-            return {}
-
-    async def validate_setup_parameters(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate the tomogram setup parameters"""
-        validation_result = {
-            "valid": True,
-            "warnings": [],
-            "errors": []
-        }
-        
-        # Validate required parameters
-        required_params = ['pixel_size', 'dose_per_tilt', 'voltage']
-        for param in required_params:
-            if not params.get(param):
-                validation_result["valid"] = False
-                validation_result["errors"].append(f"Missing required parameter: {param}")
-        
-        # Validate numeric ranges
-        if params.get('pixel_size'):
-            pix_size = float(params['pixel_size'])
-            if pix_size < 0.5 or pix_size > 10:
-                validation_result["warnings"].append(f"Pixel size {pix_size} seems unusual")
-                
-        if params.get('voltage'):
-            voltage = float(params['voltage'])
-            if voltage not in [200, 300]:
-                validation_result["warnings"].append(f"Voltage {voltage} kV is non-standard")
-        
-        return validation_result
-
-    async def apply_setup_to_project(self, project_path: str, setup_params: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply the setup parameters to a project"""
-        try:
-            # This would integrate with your existing project creation
-            # but with the additional setup parameters
-            
-            # Store setup parameters in project configuration
-            config_path = Path(project_path) / "setup_config.yaml"
-            
-            with open(config_path, 'w') as f:
-                yaml.dump(setup_params, f)
-                
-            return {
-                "success": True,
-                "message": "Setup parameters applied successfully",
-                "config_path": str(config_path)
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to apply setup: {str(e)}"
-            }
-
-    #--------- Pipeline tracking
-    
     
     # Add to CryoBoostBackend class in backend.py
 
