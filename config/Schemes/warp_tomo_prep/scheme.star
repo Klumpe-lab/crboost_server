@@ -18,7 +18,7 @@ _rlnSchemeFloatVariableResetValue #3
 do_at_most   500.000000   500.000000 
 maxtime_hr    48.000000    48.000000 
   wait_sec   180.000000   180.000000 
- 
+  
 
 # version 50001
 

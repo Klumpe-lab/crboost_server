@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
+import asyncio
 import socket
 import argparse
 from pathlib import Path
 
+from ui.main_ui import create_ui_router
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from nicegui import ui
 
-from ui import create_ui_router
+# from ui import create_ui_router
 from backend import CryoBoostBackend
 
-def setup_app():
+async def setup_app():
     """Configures and returns the FastAPI app."""
     app = FastAPI()
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -26,9 +28,12 @@ def setup_app():
     backend = CryoBoostBackend(Path.cwd())
     create_ui_router(backend) 
 
+    # # Run debug immediately
+    # print("=== RUNNING CONTAINER DEBUG ===")
+    # await backend.debug_container_environment(Path("/users/artem.kushner/cryoboost_projects/nu6"))
+    # print("=== DEBUG COMPLETE ===")
+
     ui.run_with(app, title="CryoBoost Server")
-
-
     return app
 
 def get_local_ip():
@@ -44,7 +49,8 @@ def get_local_ip():
 
 if __name__ in {"__main__", "__mp_main__"}:
     
-    app = setup_app()
+    # Run the async setup
+    app = asyncio.run(setup_app())
 
     parser = argparse.ArgumentParser(description='CryoBoost Server')
     parser.add_argument('--port', type=int, default=8081, help='Port to run server on')
