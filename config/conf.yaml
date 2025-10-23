@@ -186,7 +186,7 @@ computing:
         - aligntilts
 
           
-#This provides higher-level job categorization for workflow management librw.py:1006-1010 :
+  #This provides higher-level job categorization for workflow management librw.py:1006-1010 :
     #ParticleJobs - Jobs that work with particle data
     #Noise2NoiseFilterJobs - Deep learning denoising jobs
     #These are used for scheme filtering and workflow logic
@@ -199,14 +199,9 @@ computing:
        - denoisetrain
        - denoisepredict  
 
-#Sets maximum node limits for specific job types librw.py:167-172 . For example, motioncorr is limited to 4 nodes maximum.
   JOBMaxNodes:
         motioncorr:
          - 4          
-
-#Controls how many concurrent jobs can run per GPU/device on each partition librw.py:222-223 . This is partition-specific, so you'll need to:
-#Replace partition names (p.hpcl9, p.hpcl8, etc.) with your cluster's partition names
-#Adjust the numbers based on your GPU memory and performance characteristics
   JOBsPerDevice: 
         fsMotionAndCtf:
             g: 2
