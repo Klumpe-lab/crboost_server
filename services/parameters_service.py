@@ -8,8 +8,6 @@ from enum import Enum
 from pathlib import Path
 from functools import lru_cache
 
-# --- Service Imports ---
-from services.config_service import get_config_service, Config
 
 # Note: We are NOT using JobParams/ImportMoviesParams for now
 # to respect the constraint of not changing the pipeline_orchestrator's
@@ -18,7 +16,6 @@ from services.config_service import get_config_service, Config
 
 T = TypeVar('T')
 
-# (Parameter, FloatParam, IntParam, etc. classes remain IDENTICAL to your draft)
 class Parameter(BaseModel, Generic[T]):
     """
     A strongly-typed parameter with validation constraints.
@@ -58,7 +55,6 @@ StrParam = Parameter[str]
 BoolParam = Parameter[bool]
 PathParam = Parameter[Optional[Path]]
 
-# (Enums: MicroscopeType, Partition, AlignmentMethod remain IDENTICAL)
 class MicroscopeType(str, Enum):
     KRIOS_G3 = "Krios_G3"
     KRIOS_G4 = "Krios_G4"
@@ -78,7 +74,6 @@ class AlignmentMethod(str, Enum):
     IMOD = "IMOD"
     RELION = "Relion"
 
-# (RawMdocData class remains IDENTICAL)
 class RawMdocData(BaseModel):
     """Exactly what we read from mdoc files"""
     pixel_spacing: float
@@ -94,7 +89,6 @@ class RawMdocData(BaseModel):
         parts = self.image_size_str.split('x')
         return (int(parts[0]), int(parts[1]))
 
-# (PipelineState class remains IDENTICAL)
 class PipelineState(BaseModel):
     """
     Central parameter state with strongly-typed, validated parameters.
@@ -332,31 +326,45 @@ class PipelineState(BaseModel):
         
         return issues
 
-
 class ParameterManager:
     """Manages pipeline parameters with type safety and validation"""
     
     def __init__(self):
         self.state: Optional[PipelineState] = None
-        self.config_service = get_config_service()
-        self._initialize_state_from_config(self.config_service.get_config())
 
-    def _initialize_state_from_config(self, config: Config):
+        # Import here to avoid circular dependency
+        from services.config_service import get_config_service
+        self.config_service = get_config_service()
+        self._initialize_state_from_config()
+
+    def _initialize_state_from_config(self):
         """Initialize the default PipelineState from conf.yaml"""
         self.state = PipelineState()
         
-        # Apply computing defaults
+        # Get default computing params from config service
         try:
-            # Try to find the first defined GPU partition for defaults
-            gpu_part_name = next(p for p in ['g', 'g_v100', 'g_a100'] if getattr(config.computing, p, None))
-            gpu_part = getattr(config.computing, gpu_part_name)
+            computing_defaults = self.config_service.get_default_computing_params()
             
-            self.state.update_parameter("default_partition", Partition(gpu_part_name.replace('_', '-')))
-            self.state.update_parameter("default_gpu_count", gpu_part.NrGPU)
-            self.state.update_parameter("default_memory_gb", int(gpu_part.RAM.replace('G', '')))
-            self.state.update_parameter("default_threads", gpu_part.NrCPU)
-        except (StopIteration, AttributeError, ValueError) as e:
-            print(f"[WARN] Could not parse default computing config from conf.yaml: {e}. Using model defaults.")
+            # Map partition string to enum
+            partition_map = {
+                'g': Partition.GPU,
+                'g-v100': Partition.GPU_V100,
+                'g-a100': Partition.GPU_A100,
+                'c': Partition.CPU,
+                'm': Partition.MEMORY
+            }
+            
+            partition_enum = partition_map.get(computing_defaults['partition'], Partition.GPU)
+            
+            self.state.update_parameter("default_partition", partition_enum)
+            self.state.update_parameter("default_gpu_count", computing_defaults['gpu_count'])
+            self.state.update_parameter("default_memory_gb", computing_defaults['memory_gb'])
+            self.state.update_parameter("default_threads", computing_defaults['cpu_count'])
+            
+            print(f"[PARAMS] Initialized computing defaults from config: {computing_defaults}")
+        except Exception as e:
+            print(f"[WARN] Could not parse computing defaults from conf.yaml: {e}. Using model defaults.")
+
 
         # Apply microscope defaults (e.g., from 'Krios_G3')
         try:
@@ -365,6 +373,77 @@ class ParameterManager:
             pass 
         except Exception as e:
             print(f"[WARN] Could not parse microscope defaults from conf.yaml: {e}")
+
+    def get_unified_config_dict(self) -> Dict[str, Any]:
+        """
+        Export EVERYTHING as one unified configuration dict.
+        This includes pipeline params AND computing config.
+        """
+        if not self.state:
+            self._initialize_state_from_config()
+        
+        # Start with the full state
+        unified = json.loads(self.state.json())
+        
+        # Add metadata
+        unified['_metadata'] = {
+            'config_version': '1.0',
+            'created_by': 'CryoBoost Parameter Manager',
+            'parameter_sources': self._get_parameter_sources()
+        }
+        
+        # Add computing config from config_service
+        unified['computing_config'] = {
+            'default_partition': self.state.default_partition.value.value,
+            'default_gpu_count': self.state.default_gpu_count.value,
+            'default_memory_gb': self.state.default_memory_gb.value,
+            'default_threads': self.state.default_threads.value,
+        }
+        
+        return unified
+    
+
+    
+    def load_unified_config(self, path: Path):
+            """Load a previously saved unified configuration"""
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                
+                # Remove metadata before loading into state
+                data.pop('_metadata', None)
+                data.pop('computing_config', None)  # This is derived from other params
+                
+                self.state = PipelineState(**data)
+                print(f"[PARAMS] Loaded unified config from {path}")
+            except Exception as e:
+                print(f"[ERROR] Failed to load unified config from {path}: {e}")
+
+    def save_unified_config(self, path: Path):
+        """
+        Save the complete unified configuration to JSON.
+        This is the ONE file that represents the entire parameter state.
+        """
+        if not self.state:
+            print("[WARN] No state to save.")
+            return
+            
+        try:
+            unified_config = self.get_unified_config_dict()
+            path.write_text(json.dumps(unified_config, indent=2))
+            print(f"[PARAMS] Saved unified config to {path}")
+        except Exception as e:
+            print(f"[ERROR] Failed to save unified config to {path}: {e}")
+            
+    def _get_parameter_sources(self) -> Dict[str, str]:
+        """Track where each parameter value came from"""
+        sources = {}
+        if self.state:
+            for field_name in self.state.__fields__.keys():
+                param = getattr(self.state, field_name)
+                if isinstance(param, Parameter) and param.source:
+                    sources[field_name] = param.source
+        return sources
 
     def _parse_mdoc(self, mdoc_path: Path) -> Dict[str, Any]:
         """
@@ -494,7 +573,7 @@ class ParameterManager:
     def get_state_as_dict(self) -> Dict[str, Any]:
         """Return the current state as a serializable dict"""
         if not self.state:
-            self._initialize_state_from_config(self.config_service.get_config())
+            self._initialize_state_from_config()
         return json.loads(self.state.json()) # Use json to handle complex types
 
     def update_parameter_from_ui(self, param_name: str, value: Any):
@@ -508,16 +587,6 @@ class ParameterManager:
             print(f"[ERROR] Failed to update parameter {param_name} with value {value}: {e}")
             # Optionally re-raise or return an error status
 
-    def save_state_to_json(self, path: Path):
-        """Save the current PipelineState to a JSON file"""
-        if self.state:
-            try:
-                path.write_text(self.state.json(indent=2))
-                print(f"[PARAMS] Saved state to {path}")
-            except Exception as e:
-                print(f"[ERROR] Failed to save state to {path}: {e}")
-        else:
-            print("[WARN] No state to save.")
             
     def get_legacy_user_params_dict(self) -> Dict[str, Any]:
         """
@@ -548,6 +617,7 @@ class ParameterManager:
             # Add other common params
             "eer_fractions": str(s.eer_fractions_per_frame.value) if s.eer_fractions_per_frame else "32",
         }
+
 
 @lru_cache()
 def get_parameter_manager() -> ParameterManager:

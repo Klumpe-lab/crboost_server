@@ -1,6 +1,7 @@
 import asyncio
 import glob
 import math
+from pathlib import Path
 from nicegui import ui
 from backend import CryoBoostBackend
 from models import User
@@ -211,9 +212,6 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
             if not all([name, project_location, movies_glob, mdocs_glob, state["selected_jobs"]]):
                 ui.notify("Project name, project location, data paths, and at least one job are required.", type='negative')
                 return
-
-            # Parameters are already synced to backend via on_change handlers
-            # The backend will call parameter_manager.get_legacy_user_params_dict()
             
             create_button.props('loading')
 
@@ -229,6 +227,11 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
             if result.get("success"):
                 state["current_project_path"] = result["project_path"]
                 state["current_scheme_name"] = f"scheme_{name}"
+                
+                # Verify params were saved
+                if result.get("params_saved"):
+                    ui.notify(f"Parameters saved to {Path(result['params_saved']).name}", type='positive')
+                
                 ui.notify(result["message"], type='positive')
                 active_project_label.set_text(name)
                 pipeline_status.set_text("Project created. Ready to run.")
