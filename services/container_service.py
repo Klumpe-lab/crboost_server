@@ -5,9 +5,10 @@ import shlex
 from typing import List
 from .config_service import get_config_service
 from .tool_service import get_tool_service
-import shlex  # Make sure this import is at the top of your file
+import shlex 
 
 class ContainerService:
+
     def __init__(self):
         config_data = get_config_service().get_config()
         self.container_paths = config_data.containers or {}
@@ -78,14 +79,19 @@ class ContainerService:
         cmd_parts.extend(bind_args)
         cmd_parts.append(container_path)
 
-        # CRITICAL: Use the EXACT same pattern as the old working version
-        # This creates a single argument: "bash -c 'command'"
         wrapped_command = f"bash -c {shlex.quote(command)}"
         cmd_parts.append(wrapped_command)
 
         apptainer_cmd = " ".join(cmd_parts)
-        
-        # Environment cleanup
+
+        # With this (matching your old working code):
+        inner_command_quoted = shlex.quote(command)
+
+        # Build as a proper list
+        cmd_parts.extend(["bash", "-c", inner_command_quoted])
+
+        apptainer_cmd = " ".join(cmd_parts)
+                
         clean_env_vars = [
             "SINGULARITY_BIND", "APPTAINER_BIND", "SINGULARITY_BINDPATH", "APPTAINER_BINDPATH",
             "SINGULARITY_NAME", "APPTAINER_NAME", "SINGULARITY_CONTAINER", "APPTAINER_CONTAINER",
@@ -102,6 +108,7 @@ class ContainerService:
         print(f"[CONTAINER DEBUG] Parts: {cmd_parts}")
         print(f"[CONTAINER DEBUG] Full: {final_command}")
         return final_command
+
 _container_service = None
 
 def get_container_service() -> ContainerService:
