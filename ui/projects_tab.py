@@ -78,18 +78,19 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
 
 
     async def on_param_change(param_name: str, value: Any, cast_func: Callable):
-            """Generic handler to update backend on UI change"""
-            try:
-                casted_value = cast_func(value)
-                await backend.update_parameter({
-                    "param_name": param_name,
-                    "value": casted_value
-                })
-            except (ValueError, TypeError) as e:
-                print(f"[UI] Invalid input for {param_name}: {value}. Error: {e}")
-                # Optionally show a UI error
-            except Exception as e:
-                print(f"[UI] Error updating {param_name}: {e}")
+        """Generic handler to update backend on UI change"""
+        try:
+            casted_value = cast_func(value)
+            # Mark as user input
+            await backend.update_parameter({
+                "param_name": param_name,
+                "value": casted_value,
+                "mark_as_user_input": True  # <-- NEW FLAG
+            })
+        except (ValueError, TypeError) as e:
+            print(f"[UI] Invalid input for {param_name}: {value}. Error: {e}")
+        except Exception as e:
+            print(f"[UI] Error updating {param_name}: {e}")
 
 
     async def auto_detect_metadata():
@@ -598,22 +599,26 @@ def build_projects_tab(backend: CryoBoostBackend, user: User):
             pipeline_job_tabs = ui.tabs().classes('w-full')
             pipeline_job_panels = ui.tab_panels(pipeline_job_tabs).classes('w-full mt-2')
 
-    pixel_size_input.on('change', lambda e: on_param_change('pixel_size_angstrom', e.value, float))
-    voltage_input.on('change', lambda e: on_param_change('acceleration_voltage_kv', e.value, float))
-    cs_input.on('change', lambda e: on_param_change('spherical_aberration_mm', e.value, float))
-    amplitude_contrast_input.on('change', lambda e: on_param_change('amplitude_contrast', e.value, float))
-    dose_per_tilt_input.on('change', lambda e: on_param_change('dose_per_tilt', e.value, float))
-    tilt_axis_input.on('change', lambda e: on_param_change('tilt_axis_degrees', e.value, float))
-    rec_binning_input.on('change', lambda e: on_param_change('reconstruction_binning', e.value, int))
-    sample_thickness_input.on('change', lambda e: on_param_change('sample_thickness_nm', e.value, float))
-    alignment_method_select.on('change', lambda e: on_param_change('alignment_method', e.value, str))
+    # ui/projects_tab.py - FIX the event handlers at the bottom
+
+    # Change these lines (around line 603-620):
+    pixel_size_input.on('change', lambda e: on_param_change('pixel_size_angstrom', e.args, float))
+    voltage_input.on('change', lambda e: on_param_change('acceleration_voltage_kv', e.args, float))
+    cs_input.on('change', lambda e: on_param_change('spherical_aberration_mm', e.args, float))
+    amplitude_contrast_input.on('change', lambda e: on_param_change('amplitude_contrast', e.args, float))
+    dose_per_tilt_input.on('change', lambda e: on_param_change('dose_per_tilt', e.args, float))
+    tilt_axis_input.on('change', lambda e: on_param_change('tilt_axis_degrees', e.args, float))
+    rec_binning_input.on('change', lambda e: on_param_change('reconstruction_binning', e.args, int))
+    sample_thickness_input.on('change', lambda e: on_param_change('sample_thickness_nm', e.args, float))
+    alignment_method_select.on('change', lambda e: on_param_change('alignment_method', e.args, str))
     
     # EER inputs
-    dose_per_tilt_input.on('change', calculate_eer_grouping)
-    eer_grouping_input.on('change', calculate_eer_grouping)
-    target_dose_input.on('change', calculate_eer_grouping) # Recalculate if target changes
-    
-    
+    # Also around line 620:
+    dose_per_tilt_input.on('change', lambda e: asyncio.create_task(on_param_change('dose_per_tilt', e.args, float)) or calculate_eer_grouping())
+    eer_grouping_input.on('change', lambda: calculate_eer_grouping())
+    target_dose_input.on('change', lambda: calculate_eer_grouping())
+        
+        
     # Initialize the state dict for auto-detection
     state["auto_detected_values"] = {}
     
