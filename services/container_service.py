@@ -2,10 +2,10 @@
 
 from pathlib import Path
 import shlex
-import os
-from typing import List, Optional
+from typing import List
 from .config_service import get_config_service
 from .tool_service import get_tool_service
+import shlex  # Make sure this import is at the top of your file
 
 class ContainerService:
     def __init__(self):
@@ -13,22 +13,12 @@ class ContainerService:
         self.container_paths = config_data.containers or {}
         self.tool_service = get_tool_service()
         
-        # Define which containers need X11/GUI support
-        self.gui_containers = {
-            'relion',  # Relion needs GUI for some operations
-            # Add other GUI containers here if needed
-        }
-        # CLI-only containers (no X11 needed)
-        self.cli_containers = {
-            'warp_aretomo',  # WarpTools is CLI-only
-            'cryocare',      # CryoCARE is CLI-only  
-            'pytom',         # PyTom is CLI-only
-        }
+        self.gui_containers = {'relion'}
+        self.cli_containers = {'warp_aretomo', 'cryocare', 'pytom'}
 
     def wrap_command_for_tool(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
         """Wrap command using the specified tool's container"""
         
-        # Check if this is a container-based tool
         if not self.tool_service.is_container_tool(tool_name):
             print(f"[CONTAINER] Tool {tool_name} is not container-based, running natively")
             return command
@@ -39,7 +29,6 @@ class ContainerService:
             return command
 
         container_path = self.container_paths[container_name]
-        
         if not Path(container_path).exists():
             print(f"[CONTAINER ERROR] Container not found: {container_path}")
             return command
@@ -48,9 +37,8 @@ class ContainerService:
         binds = set()
         essential_paths = ["/tmp", "/scratch", str(Path.home()), str(cwd.resolve())]
         for p in essential_paths:
-            path = Path(p)
-            if path.exists():
-                binds.add(str(path.resolve()))
+            if Path(p).exists():
+                binds.add(str(Path(p).resolve()))
 
         if additional_binds:
             for p in additional_binds:
@@ -71,7 +59,7 @@ class ContainerService:
                 else:
                     binds.add(p_str)
 
-        # CRITICAL FIX: Only add X11 bindings for GUI containers
+        # X11 for GUI containers only
         if container_name in self.gui_containers:
             print(f"[CONTAINER] Adding X11 bindings for GUI container: {container_name}")
             x11_authority = Path.home() / ".Xauthority"
@@ -80,92 +68,40 @@ class ContainerService:
                 binds.add(f"{str(x11_authority)}:{str(x11_authority)}:ro")
             if x11_socket.exists():
                 binds.add(str(x11_socket))
-        else:
-            print(f"[CONTAINER] Skipping X11 bindings for CLI container: {container_name}")
         
         bind_args = []
-        for path in sorted(list(binds)):
+        for path in sorted(binds):
             bind_args.extend(['-B', path])
         
-        args = ["apptainer", "run", "--nv", "--cleanenv"]
-        args.extend(bind_args)
-        args.append(container_path)
-        
-        wrapped_inner_command = f"bash -c {shlex.quote(command)}"
-        args.append(wrapped_inner_command)
+        # Build the apptainer command parts
+        cmd_parts = ["apptainer", "run", "--nv", "--cleanenv"]
+        cmd_parts.extend(bind_args)
+        cmd_parts.append(container_path)
 
-        apptainer_cmd = " ".join(args)
+        # CRITICAL: Use the EXACT same pattern as the old working version
+        # This creates a single argument: "bash -c 'command'"
+        wrapped_command = f"bash -c {shlex.quote(command)}"
+        cmd_parts.append(wrapped_command)
 
-        if container_name in self.gui_containers:
-            display_var = os.getenv('DISPLAY', ':0.0')
-            args.extend([f"--env", f"DISPLAY={display_var}"])
-            
-            inner_command = f"""
-            unset PYTHONPATH
-            unset PYTHONHOME
-            unset CONDA_PREFIX
-            unset CONDA_DEFAULT_ENV
-            unset CONDA_PROMPT_MODIFIER
-            export PATH="/opt/miniconda3/envs/relion-5.0/bin:/opt/miniconda3/bin:/opt/relion-5.0/build/bin:/usr/local/cuda-11.8/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            {command}
-            """
-        else:
-            # CLI containers - no DISPLAY, simpler environment
-            inner_command = f"""
-            unset PYTHONPATH
-            unset PYTHONHOME
-            unset CONDA_PREFIX
-            unset CONDA_DEFAULT_ENV
-            unset DISPLAY  # Make sure DISPLAY is unset for CLI containers
-            {command} "$@"
-            """
+        apptainer_cmd = " ".join(cmd_parts)
         
-        wrapped_command = f"bash -c {shlex.quote(inner_command.strip())}"
-        args.append(container_path)
-        args.append(wrapped_command)
-
-        full_command = " ".join(args)
-        
-        # Clean host environment
+        # Environment cleanup
         clean_env_vars = [
             "SINGULARITY_BIND", "APPTAINER_BIND", "SINGULARITY_BINDPATH", "APPTAINER_BINDPATH",
             "SINGULARITY_NAME", "APPTAINER_NAME", "SINGULARITY_CONTAINER", "APPTAINER_CONTAINER",
-            "LD_PRELOAD", "XDG_RUNTIME_DIR", "DISPLAY", "XAUTHORITY",
-            "CONDA_PREFIX", "CONDA_DEFAULT_ENV", "CONDA_PROMPT_MODIFIER"
+            "LD_PRELOAD", "XDG_RUNTIME_DIR", "CONDA_PREFIX", "CONDA_DEFAULT_ENV", "CONDA_PROMPT_MODIFIER"
         ]
         
-        args = ["apptainer", "run", "--nv", "--cleanenv"]
-        args.extend(bind_args)
-        args.append(container_path)
-
-        # The raw command needs to be wrapped for bash to handle things like '&&'
-        # We use shlex.quote to make it safe.
-        wrapped_inner_command = f"bash -c {shlex.quote(command)}"
-        args.append(wrapped_inner_command)
-
-        # Join the main apptainer command parts
-        apptainer_cmd = " ".join(args)
-        clean_env_vars = [
-                "SINGULARITY_BIND", "APPTAINER_BIND", "SINGULARITY_BINDPATH", "APPTAINER_BINDPATH",
-                "SINGULARITY_NAME", "APPTAINER_NAME", "SINGULARITY_CONTAINER", "APPTAINER_CONTAINER",
-                "LD_PRELOAD", "XDG_RUNTIME_DIR", "DISPLAY", "XAUTHORITY",
-                "CONDA_PREFIX", "CONDA_DEFAULT_ENV", "CONDA_PROMPT_MODIFIER"
-            ]
-        
-        # For CLI containers, also clean X11-related env vars
-        container_name = self.tool_service.get_container_for_tool(tool_name)
         if container_name not in self.gui_containers:
             clean_env_vars.extend(["DISPLAY", "XAUTHORITY"])
-            
-        clean_env_cmd = "unset " + " ".join(list(set(clean_env_vars))) # Use set to remove duplicates
-
-        # The final command unsets host variables, THEN runs the apptainer command.
-        # Relion will append its arguments after this entire string.
+                
+        clean_env_cmd = "unset " + " ".join(sorted(set(clean_env_vars)))
         final_command = f"{clean_env_cmd}; {apptainer_cmd}"
         
-        print(f"[CONTAINER] Wrapping command for tool '{tool_name}'")
+        print(f"[CONTAINER DEBUG] Final command structure:")
+        print(f"[CONTAINER DEBUG] Parts: {cmd_parts}")
+        print(f"[CONTAINER DEBUG] Full: {final_command}")
         return final_command
-
 _container_service = None
 
 def get_container_service() -> ContainerService:

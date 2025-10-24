@@ -89,30 +89,26 @@ class PipelineOrchestratorService:
         output_settings_file = "./warp_frameseries.settings"
         folder_processing = "./warp_frameseries" 
 
-        # Extract user parameters with defaults
         angpix = user_params.get('angpix', 1.35)
         eer_fractions = params.get('eer_fractions', 32)
         voltage = user_params.get('voltage', 300)
         cs = user_params.get('cs', 2.7)
         amplitude = user_params.get('amplitude', 0.07)
 
-        # Extract motion correction parameters with defaults
         m_min, m_max = params.get('m_range_min_max', '500:10').split(':')
         c_min, c_max = params.get('c_range_min_max', '30:4').split(':')
         defocus_min, defocus_max = params.get('c_defocus_min_max', '0.5:8').split(':')
 
-        # Build create_settings command
         create_settings_parts = [
             "WarpTools create_settings",
             f"--folder_data {frame_folder}",
-            f"--extension '*.eer'",
+            f"--extension '*.eer'",  # Simple quoted version
             f"--folder_processing {folder_processing}",
             f"--output {output_settings_file}",
             f"--angpix {angpix}",
             f"--eer_ngroups -{eer_fractions}",
         ]
 
-        # Build main motion/CTF command
         run_main_parts = [
             "WarpTools fs_motion_and_ctf",
             f"--settings {output_settings_file}",

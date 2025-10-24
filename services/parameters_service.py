@@ -332,11 +332,6 @@ class PipelineState(BaseModel):
         
         return issues
 
-# (JobParams, ImportMoviesParams, FsMotionAndCtfParams classes are removed for now)
-# (We will add them back when we refactor the pipeline_orchestrator)
-
-
-# ===== PARAMETER MANAGER (NEW / HEAVILY MODIFIED) =====
 
 class ParameterManager:
     """Manages pipeline parameters with type safety and validation"""
