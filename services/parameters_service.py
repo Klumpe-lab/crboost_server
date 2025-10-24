@@ -1,5 +1,8 @@
 # services/parameters_service.py
 
+if TYPE_CHECKING:
+    from typing import TYPE_CHECKING
+
 from datetime import datetime
 import glob
 import json
@@ -14,20 +17,18 @@ from functools import lru_cache
 # to respect the constraint of not changing the pipeline_orchestrator's
 # command builders. We will use `get_legacy_user_params_dict` instead.
 
-
 T = TypeVar('T')
 
 class Parameter(BaseModel, Generic[T]):
     """
     A strongly-typed parameter with validation constraints.
-    This is our basic building block.
     """
     value: T
     min_value: Optional[T] = None
     max_value: Optional[T] = None
     choices: Optional[List[T]] = None
     description: Optional[str] = None
-    source: Optional[str] = None  
+    source: Optional[str] = None
 
     @validator('value')
     def validate_constraints(cls, v, values):
@@ -40,7 +41,6 @@ class Parameter(BaseModel, Generic[T]):
             if v > values['max_value']:
                 raise ValueError(f"Value {v} above maximum {values['max_value']}")
         
-        # Check choices
         if 'choices' in values and values['choices'] is not None:
             if v not in values['choices']:
                 raise ValueError(f"Value {v} not in allowed choices: {values['choices']}")
@@ -50,6 +50,7 @@ class Parameter(BaseModel, Generic[T]):
     class Config:
         arbitrary_types_allowed = True
 
+# Create explicit type aliases for better IDE support
 FloatParam = Parameter[float]
 IntParam = Parameter[int]
 StrParam = Parameter[str]
@@ -149,6 +150,7 @@ class PipelineState(BaseModel):
         )
     )
     
+    # Use explicit Parameter[Tuple[int, int]] instead of generic
     detector_dimensions: Parameter[Tuple[int, int]] = Field(
         default_factory=lambda: Parameter[Tuple[int, int]](
             value=(4096, 4096),
@@ -166,15 +168,6 @@ class PipelineState(BaseModel):
     )
     
     # ===== Processing Parameters =====
-    reconstruction_binning: IntParam = Field(
-        default_factory=lambda: IntParam(
-            value=4,
-            min_value=1,
-            max_value=16,
-            description="Binning factor for reconstruction"
-        )
-    )
-    
     sample_thickness_nm: FloatParam = Field(
         default_factory=lambda: FloatParam(
             value=300.0,
@@ -252,101 +245,21 @@ class PipelineState(BaseModel):
         )
     )
     
-    # ===== Derived Value Computation =====
-    def get_derived_value(self, key: str) -> Any:
-        """Compute derived values on-demand"""
-        if key == "reconstruction_pixel_size":
-            return self.pixel_size_angstrom.value * self.reconstruction_binning.value
-        elif key == "dose_rate":
-            # For RELION: dose per frame (assuming 40 frames/tilt)
-            return self.dose_per_tilt.value / 40.0
-        elif key == "tomogram_dimensions":
-            width, height = self.detector_dimensions.value
-            return f"{width}x{height}x2048"
-        else:
-            raise KeyError(f"Unknown derived value: {key}")
-    
-    def update_parameter(self, param_name: str, value: Any):
-        """Update a parameter value with validation"""
-        if hasattr(self, param_name):
-            param = getattr(self, param_name)
-            if isinstance(param, Parameter):
-                # Create new parameter with same constraints but new value
-                param_class = type(param)
-                
-                # Handle path conversion
-                if param_class == PathParam and value is not None:
-                    value = Path(value)
-                
-                updated_param = param_class(
-                    value=value,
-                    min_value=param.min_value,
-                    max_value=param.max_value,
-                    choices=param.choices,
-                    description=param.description
-                )
-                setattr(self, param_name, updated_param)
-            # Handle optional parameters being set to None
-            elif param is None and value is not None:
-                # This is for setting an Optional[IntParam] like eer_fractions
-                # We need to find its type hint
-                field_type = self.__annotations__.get(param_name)
-                if field_type and hasattr(field_type, '__args__'):
-                    # Assumes Optional[ParamType]
-                    param_type = field_type.__args__[0]
-                    if issubclass(param_type, Parameter):
-                         setattr(self, param_name, param_type(value=value))
-            
-            else:
-                raise ValueError(f"{param_name} is not a Parameter")
-        else:
-            raise KeyError(f"Unknown parameter: {param_name}")
-    
-    def validate_all(self) -> Dict[str, Any]:
-        """Validate all parameters and return any issues"""
-        issues = {"errors": [], "warnings": []}
-        
-        # Check for unusual pixel size
-        if self.pixel_size_angstrom.value < 0.8 or self.pixel_size_angstrom.value > 5.0:
-            issues["warnings"].append(
-                f"Pixel size {self.pixel_size_angstrom.value} Å is unusual for cryo-EM"
-            )
-        
-        # Check dose
-        if self.dose_per_tilt.value > 6.0:
-            issues["warnings"].append(
-                f"Dose per tilt {self.dose_per_tilt.value} e-/Å² is quite high"
-            )
-        
-        # Check binning vs pixel size
-        final_pixel = self.get_derived_value("reconstruction_pixel_size")
-        if final_pixel > 20.0:
-            issues["warnings"].append(
-                f"Reconstruction pixel size {final_pixel} Å is very large"
-            )
-        
-        return issues
-
 class ParameterManager:
     """Manages pipeline parameters with type safety and validation"""
     
     def __init__(self):
-        self.state: Optional[PipelineState] = None
-
-        # Import here to avoid circular dependency
+        # Initialize state immediately - never None
         from services.config_service import get_config_service
         self.config_service = get_config_service()
+        self.state = PipelineState()  # Always initialized, not Optional
         self._initialize_state_from_config()
 
     def _initialize_state_from_config(self):
         """Initialize the default PipelineState from conf.yaml"""
-        self.state = PipelineState()
-        
-        # Get default computing params from config service
+        # self.state is already initialized above, just update it
         try:
             computing_defaults = self.config_service.get_default_computing_params()
-            
-            # Map partition string to enum
             partition_map = {
                 'g': Partition.GPU,
                 'g-v100': Partition.GPU_V100,
@@ -367,15 +280,6 @@ class ParameterManager:
             print(f"[WARN] Could not parse computing defaults from conf.yaml: {e}. Using model defaults.")
 
 
-        # Apply microscope defaults (e.g., from 'Krios_G3')
-        try:
-            # We'll just load the defaults from the model, but this is where
-            # you could load a specific microscope preset from config.microscopes
-            pass 
-        except Exception as e:
-            print(f"[WARN] Could not parse microscope defaults from conf.yaml: {e}")
-
-
     def export_for_project(self, 
                           project_name: str,
                           movies_glob: str,
@@ -383,10 +287,10 @@ class ParameterManager:
                           selected_jobs: List[str]) -> Dict[str, Any]:
         """
         Export a clean, hierarchical parameter configuration for the project.
-        This is what gets saved to project_params.json - user-friendly format.
         """
-        if not self.state:
-            self._initialize_state_from_config()
+        # No need for this check anymore since state is never None
+        # if not self.state:
+        #     self._initialize_state_from_config()
         
         # Helper to extract clean param
         def clean_param(param: Parameter, override_source: str = None) -> Dict[str, Any]:
@@ -396,7 +300,6 @@ class ParameterManager:
                 "source": override_source or param.source or "default"
             }
         
-        # Get container paths from config
         containers = self.config_service.get_config().containers or {}
         
         export = {
@@ -436,26 +339,18 @@ class ParameterManager:
                 "eer_fractions_per_frame": clean_param(self.state.eer_fractions_per_frame) if self.state.eer_fractions_per_frame else None,
             },
             
-            "reconstruction": {
-                "binning": clean_param(self.state.reconstruction_binning),
-                "sample_thickness_nm": clean_param(self.state.sample_thickness_nm),
-                "alignment_method": clean_param(self.state.alignment_method),
-                "invert_tilt_angles": clean_param(self.state.invert_tilt_angles),
-                "invert_defocus_hand": clean_param(self.state.invert_defocus_hand),
-            },
-            
             "computing": {
                 "default_partition": clean_param(self.state.default_partition, override_source="conf.yaml"),
                 "default_gpu_count": clean_param(self.state.default_gpu_count, override_source="conf.yaml"),
                 "default_memory_gb": clean_param(self.state.default_memory_gb, override_source="conf.yaml"),
-                "default_threads": clean_param(self.state.default_threads, override_source="conf.yaml"),
+                "default_threads": clean_param(self.state.default_threads, override_source="conf.yaml"),,
             },
             
             "jobs": self._export_job_parameters(selected_jobs)
         }
         
         return export
-    
+        
 
     def _export_job_parameters(self, selected_jobs: List[str]) -> Dict[str, Dict[str, Any]]:
         """
@@ -548,16 +443,10 @@ class ParameterManager:
 
 
     def update_parameter_from_ui(self, param_name: str, value: Any, mark_as_user_input: bool = True):
-        """
-        Update a parameter from the UI, automatically marking source as 'user_input'
-        """
-        if not self.state:
-            self.state = PipelineState()
-        
+        """Update a parameter from the UI, automatically marking source as 'user_input'"""
         try:
             self.state.update_parameter(param_name, value)
             
-            # Mark as user input if requested
             if mark_as_user_input:
                 param = getattr(self.state, param_name)
                 if isinstance(param, Parameter):
@@ -568,26 +457,16 @@ class ParameterManager:
             print(f"[ERROR] Failed to update parameter {param_name}: {e}")
             raise
 
-
     def get_unified_config_dict(self) -> Dict[str, Any]:
-        """
-        Export EVERYTHING as one unified configuration dict.
-        This includes pipeline params AND computing config.
-        """
-        if not self.state:
-            self._initialize_state_from_config()
-        
-        # Start with the full state
+        """Export EVERYTHING as one unified configuration dict"""
         unified = json.loads(self.state.json())
         
-        # Add metadata
         unified['_metadata'] = {
             'config_version': '1.0',
             'created_by': 'CryoBoost Parameter Manager',
             'parameter_sources': self._get_parameter_sources()
         }
         
-        # Add computing config from config_service
         unified['computing_config'] = {
             'default_partition': self.state.default_partition.value.value,
             'default_gpu_count': self.state.default_gpu_count.value,
@@ -613,23 +492,21 @@ class ParameterManager:
                 print(f"[PARAMS] Loaded unified config from {path}")
             except Exception as e:
                 print(f"[ERROR] Failed to load unified config from {path}: {e}")
+ 
+    def get_state_as_dict(self) -> Dict[str, Any]:
+        """Return the current state as a serializable dict"""
+        # No need to check anymore
+        return json.loads(self.state.json())
 
     def save_unified_config(self, path: Path):
-        """
-        Save the complete unified configuration to JSON.
-        This is the ONE file that represents the entire parameter state.
-        """
-        if not self.state:
-            print("[WARN] No state to save.")
-            return
-            
+        """Save the complete unified configuration to JSON"""
         try:
             unified_config = self.get_unified_config_dict()
             path.write_text(json.dumps(unified_config, indent=2))
             print(f"[PARAMS] Saved unified config to {path}")
         except Exception as e:
             print(f"[ERROR] Failed to save unified config to {path}: {e}")
-            
+
     def _get_parameter_sources(self) -> Dict[str, str]:
         """Track where each parameter value came from"""
         sources = {}
@@ -764,12 +641,6 @@ class ParameterManager:
             print(f"Parameter warnings: {issues['warnings']}")
         
         return self.state
-
-    def get_state_as_dict(self) -> Dict[str, Any]:
-        """Return the current state as a serializable dict"""
-        if not self.state:
-            self._initialize_state_from_config()
-        return json.loads(self.state.json()) # Use json to handle complex types
 
 
             
