@@ -1,5 +1,6 @@
 # services/parameters_service.py
 
+from datetime import datetime
 import glob
 import json
 from pydantic import BaseModel, Field, validator, root_validator
@@ -374,6 +375,200 @@ class ParameterManager:
         except Exception as e:
             print(f"[WARN] Could not parse microscope defaults from conf.yaml: {e}")
 
+
+    def export_for_project(self, 
+                          project_name: str,
+                          movies_glob: str,
+                          mdocs_glob: str,
+                          selected_jobs: List[str]) -> Dict[str, Any]:
+        """
+        Export a clean, hierarchical parameter configuration for the project.
+        This is what gets saved to project_params.json - user-friendly format.
+        """
+        if not self.state:
+            self._initialize_state_from_config()
+        
+        # Helper to extract clean param
+        def clean_param(param: Parameter, override_source: str = None) -> Dict[str, Any]:
+            return {
+                "value": param.value,
+                "description": param.description,
+                "source": override_source or param.source or "default"
+            }
+        
+        # Get container paths from config
+        containers = self.config_service.get_config().containers or {}
+        
+        export = {
+            "metadata": {
+                "config_version": "1.0",
+                "created_by": "CryoBoost Parameter Manager",
+                "created_at": datetime.now().isoformat(),
+                "project_name": project_name
+            },
+            
+            "data_sources": {
+                "frames_glob": movies_glob,
+                "mdocs_glob": mdocs_glob,
+                "gain_reference": str(self.state.gain_reference_path.value) if self.state.gain_reference_path and self.state.gain_reference_path.value else None
+            },
+            
+            "containers": {
+                name: path for name, path in containers.items()
+            },
+            
+            "microscope": {
+                "type": clean_param(self.state.microscope_type),
+                "pixel_size_angstrom": clean_param(self.state.pixel_size_angstrom),
+                "acceleration_voltage_kv": clean_param(self.state.acceleration_voltage_kv),
+                "spherical_aberration_mm": clean_param(self.state.spherical_aberration_mm),
+                "amplitude_contrast": clean_param(self.state.amplitude_contrast),
+            },
+            
+            "acquisition": {
+                "dose_per_tilt": clean_param(self.state.dose_per_tilt),
+                "detector_dimensions": {
+                    "value": self.state.detector_dimensions.value,
+                    "description": self.state.detector_dimensions.description,
+                    "source": self.state.detector_dimensions.source or "default"
+                },
+                "tilt_axis_degrees": clean_param(self.state.tilt_axis_degrees),
+                "eer_fractions_per_frame": clean_param(self.state.eer_fractions_per_frame) if self.state.eer_fractions_per_frame else None,
+            },
+            
+            "reconstruction": {
+                "binning": clean_param(self.state.reconstruction_binning),
+                "sample_thickness_nm": clean_param(self.state.sample_thickness_nm),
+                "alignment_method": clean_param(self.state.alignment_method),
+                "invert_tilt_angles": clean_param(self.state.invert_tilt_angles),
+                "invert_defocus_hand": clean_param(self.state.invert_defocus_hand),
+            },
+            
+            "computing": {
+                "default_partition": clean_param(self.state.default_partition, override_source="conf.yaml"),
+                "default_gpu_count": clean_param(self.state.default_gpu_count, override_source="conf.yaml"),
+                "default_memory_gb": clean_param(self.state.default_memory_gb, override_source="conf.yaml"),
+                "default_threads": clean_param(self.state.default_threads, override_source="conf.yaml"),
+            },
+            
+            "jobs": self._export_job_parameters(selected_jobs)
+        }
+        
+        return export
+    
+
+    def _export_job_parameters(self, selected_jobs: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract job-specific parameters for each selected job.
+        This is where we'd pull from job.star defaults + overrides.
+        """
+        job_params = {}
+        
+        for job_name in selected_jobs:
+            if job_name == 'importmovies':
+                job_params[job_name] = {
+                    "nominal_tilt_axis_angle": {
+                        "value": self.state.tilt_axis_degrees.value,
+                        "description": "Tilt axis angle for import",
+                        "source": self.state.tilt_axis_degrees.source or "default"
+                    },
+                    "nominal_pixel_size": {
+                        "value": self.state.pixel_size_angstrom.value,
+                        "description": "Pixel size for import",
+                        "source": self.state.pixel_size_angstrom.source or "default"
+                    },
+                    "voltage": {
+                        "value": self.state.acceleration_voltage_kv.value,
+                        "description": "Acceleration voltage",
+                        "source": self.state.acceleration_voltage_kv.source or "default"
+                    },
+                    "spherical_aberration": {
+                        "value": self.state.spherical_aberration_mm.value,
+                        "description": "Spherical aberration",
+                        "source": self.state.spherical_aberration_mm.source or "default"
+                    },
+                    "amplitude_contrast": {
+                        "value": self.state.amplitude_contrast.value,
+                        "description": "Amplitude contrast",
+                        "source": self.state.amplitude_contrast.source or "default"
+                    },
+                    "dose_per_tilt_image": {
+                        "value": self.state.dose_per_tilt.value,
+                        "description": "Dose per tilt image",
+                        "source": self.state.dose_per_tilt.source or "default"
+                    }
+                }
+            
+            elif job_name == 'fsMotionAndCtf':
+                job_params[job_name] = {
+                    "angpix": {
+                        "value": self.state.pixel_size_angstrom.value,
+                        "description": "Pixel size for motion correction",
+                        "source": self.state.pixel_size_angstrom.source or "default"
+                    },
+                    "eer_ngroups": {
+                        "value": self.state.eer_fractions_per_frame.value if self.state.eer_fractions_per_frame else 32,
+                        "description": "EER fractions grouping",
+                        "source": self.state.eer_fractions_per_frame.source if self.state.eer_fractions_per_frame else "default"
+                    },
+                    "voltage": {
+                        "value": self.state.acceleration_voltage_kv.value,
+                        "description": "Acceleration voltage",
+                        "source": self.state.acceleration_voltage_kv.source or "default"
+                    },
+                    "cs": {
+                        "value": self.state.spherical_aberration_mm.value,
+                        "description": "Spherical aberration",
+                        "source": self.state.spherical_aberration_mm.source or "default"
+                    },
+                    "amplitude": {
+                        "value": self.state.amplitude_contrast.value,
+                        "description": "Amplitude contrast",
+                        "source": self.state.amplitude_contrast.source or "default"
+                    }
+                }
+            
+            elif job_name == 'tsAlignment':
+                job_params[job_name] = {
+                    "binning": {
+                        "value": self.state.reconstruction_binning.value,
+                        "description": "Alignment binning",
+                        "source": self.state.reconstruction_binning.source or "default"
+                    },
+                    "alignment_method": {
+                        "value": self.state.alignment_method.value,
+                        "description": "Alignment algorithm",
+                        "source": self.state.alignment_method.source or "default"
+                    }
+                }
+            
+            # Add more jobs as you implement them...
+        
+        return job_params
+
+
+    def update_parameter_from_ui(self, param_name: str, value: Any, mark_as_user_input: bool = True):
+        """
+        Update a parameter from the UI, automatically marking source as 'user_input'
+        """
+        if not self.state:
+            self.state = PipelineState()
+        
+        try:
+            self.state.update_parameter(param_name, value)
+            
+            # Mark as user input if requested
+            if mark_as_user_input:
+                param = getattr(self.state, param_name)
+                if isinstance(param, Parameter):
+                    param.source = "user_input"
+            
+            print(f"[PARAMS] Updated {param_name} = {value} (source: {'user_input' if mark_as_user_input else 'unchanged'})")
+        except Exception as e:
+            print(f"[ERROR] Failed to update parameter {param_name}: {e}")
+            raise
+
+
     def get_unified_config_dict(self) -> Dict[str, Any]:
         """
         Export EVERYTHING as one unified configuration dict.
@@ -576,16 +771,6 @@ class ParameterManager:
             self._initialize_state_from_config()
         return json.loads(self.state.json()) # Use json to handle complex types
 
-    def update_parameter_from_ui(self, param_name: str, value: Any):
-        """Update a single parameter from the UI, with validation"""
-        if not self.state:
-            self.state = PipelineState()
-        
-        try:
-            self.state.update_parameter(param_name, value)
-        except Exception as e:
-            print(f"[ERROR] Failed to update parameter {param_name} with value {value}: {e}")
-            # Optionally re-raise or return an error status
 
             
     def get_legacy_user_params_dict(self) -> Dict[str, Any]:

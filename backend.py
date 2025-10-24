@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import uuid
 from pathlib import Path
@@ -48,6 +49,7 @@ class CryoBoostBackend:
         Creates project structure, scheme, AND saves unified parameter config
         """
         try:
+
             project_dir = Path(project_base_path).expanduser() / project_name
             base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
             scheme_name = f"scheme_{project_name}"
@@ -69,14 +71,23 @@ class CryoBoostBackend:
             if not structure_result["success"]:
                 return structure_result
             
-            # *** CRITICAL: Save unified parameter configuration ***
-            # This must happen AFTER project_dir is created but BEFORE running pipeline
             params_json_path = project_dir / "project_params.json"
             try:
-                self.parameter_manager.save_unified_config(params_json_path)
-                print(f"[BACKEND] ✓ Saved unified parameters to {params_json_path}")
+                # Export clean, hierarchical config
+                clean_config = self.parameter_manager.export_for_project(
+                    project_name=project_name,
+                    movies_glob=movies_glob,
+                    mdocs_glob=mdocs_glob,
+                    selected_jobs=selected_jobs
+                )
                 
-                # Verify the file was actually created and has content
+                # Save it
+                with open(params_json_path, 'w') as f:
+                    json.dump(clean_config, f, indent=2)
+                
+                print(f"[BACKEND] ✓ Saved clean parameters to {params_json_path}")
+                
+                # Verify
                 if not params_json_path.exists():
                     raise FileNotFoundError(f"Parameter file was not created at {params_json_path}")
                 
@@ -85,6 +96,15 @@ class CryoBoostBackend:
                     raise ValueError(f"Parameter file is empty: {params_json_path}")
                 
                 print(f"[BACKEND] ✓ Verified parameter file: {file_size} bytes")
+                
+            except Exception as e:
+                print(f"[ERROR] Failed to save project_params.json: {e}")
+                import traceback
+                traceback.print_exc()
+                return {
+                    "success": False, 
+                    "error": f"Project created but failed to save parameters: {str(e)}"
+                }
                 
             except Exception as e:
                 print(f"[ERROR] Failed to save project_params.json: {e}")
@@ -172,14 +192,21 @@ class CryoBoostBackend:
         self.parameter_manager.autodetect_from_mdoc(mdocs_glob)
         return self.parameter_manager.get_state_as_dict()
         
+
     async def update_parameter(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Update a single parameter in the central state"""
         try:
             param_name = payload.get("param_name")
             value = payload.get("value")
+            mark_as_user_input = payload.get("mark_as_user_input", True)
+            
             if param_name:
                 print(f"[BACKEND] Updating {param_name} -> {value}")
-                self.parameter_manager.update_parameter_from_ui(param_name, value)
+                self.parameter_manager.update_parameter_from_ui(
+                    param_name, 
+                    value, 
+                    mark_as_user_input=mark_as_user_input
+                )
                 return {"success": True}
         except Exception as e:
             print(f"[ERROR] update_parameter failed: {e}")
