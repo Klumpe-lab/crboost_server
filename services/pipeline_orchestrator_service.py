@@ -55,10 +55,9 @@ class PipelineOrchestratorService:
         output_dir = "./Import/job001/"  # This will be dynamic based on job number
         pipeline_control = "./Import/job001/"  # Same as output_dir for pipeline control
         
-        # Microscope parameters - these should come from user_params or config
         nominal_tilt_axis_angle = user_params.get('nominal_tilt_axis_angle', -95.0)
         nominal_pixel_size = user_params.get('nominal_pixel_size', 2.93)  # Angstroms
-        voltage = user_params.get('voltage', 300)  # keV
+        voltage = user_params.get('voltage', 300.0)  # keV
         spherical_aberration = user_params.get('spherical_aberration', 2.7)  # mm
         amplitude_contrast = user_params.get('amplitude_contrast', 0.1)
         dose_per_tilt_image = user_params.get('dose_per_tilt_image', 3)  # e-/Å²
@@ -70,7 +69,7 @@ class PipelineOrchestratorService:
             f"--mdoc-file-pattern '{mdoc_pattern}'",
             f"--nominal-tilt-axis-angle {nominal_tilt_axis_angle}",
             f"--nominal-pixel-size {nominal_pixel_size}",
-            f"--voltage {voltage}",
+            f"--c_voltage {str(round(float(voltage)))}",
             f"--spherical-aberration {spherical_aberration}",
             f"--amplitude-contrast {amplitude_contrast}",
             f"--optics-group-name ''",  # Empty string for default
@@ -89,12 +88,16 @@ class PipelineOrchestratorService:
         output_settings_file = "./warp_frameseries.settings"
         folder_processing = "./warp_frameseries" 
 
-        angpix = user_params.get('angpix', 1.35)
+        # Get parameters from job.star (params dict), not user_params
+        angpix = params.get('angpix', 1.35)  # From params, not user_params
         eer_fractions = params.get('eer_fractions', 32)
-        voltage = user_params.get('voltage', 300)
-        cs = user_params.get('cs', 2.7)
-        amplitude = user_params.get('amplitude', 0.07)
+        
+        # These should come from microscope metadata, not user_params
+        voltage = float(params.get('rlnVoltage', 300))  # Try relion parameter names
+        cs = float(params.get('rlnSphericalAberration', 2.7))
+        amplitude = float(params.get('rlnAmplitudeContrast', 0.07))
 
+        # Extract ranges the same way as old code
         m_min, m_max = params.get('m_range_min_max', '500:10').split(':')
         c_min, c_max = params.get('c_range_min_max', '30:4').split(':')
         defocus_min, defocus_max = params.get('c_defocus_min_max', '0.5:8').split(':')
@@ -102,7 +105,7 @@ class PipelineOrchestratorService:
         create_settings_parts = [
             "WarpTools create_settings",
             f"--folder_data {frame_folder}",
-            f"--extension '*.eer'",  # Simple quoted version
+            f"--extension '*.eer'",  # Simple quotes like old code
             f"--folder_processing {folder_processing}",
             f"--output {output_settings_file}",
             f"--angpix {angpix}",
@@ -122,7 +125,7 @@ class PipelineOrchestratorService:
             f"--c_range_max {c_max}",
             f"--c_defocus_min {defocus_min}",
             f"--c_defocus_max {defocus_max}",
-            f"--c_voltage {voltage}",
+            f"--c_voltage {str(round(float(voltage)))}",
             f"--c_cs {cs}",
             f"--c_amplitude {amplitude}",
             f"--perdevice {params.get('perdevice', 1)}",
