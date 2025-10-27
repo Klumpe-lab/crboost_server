@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+from pydantic import BaseModel
 
 from services.parameter_models import (
     PipelineState, ComputingParams, MicroscopeParams, 
@@ -25,6 +26,60 @@ class ParameterManagerV2:
         self.config_path = config_path
         print(f"[PARAMS-V2] Initialized with computing: {self.state.computing.dict()}")
     
+    def update_parameter(self, param_path: str, value: Any):
+        """Update parameter - SIMPLE AND DIRECT, NO COMPLEX NAVIGATION BULLSHIT"""
+        print(f"[PARAMS DIRECT] Updating {param_path} = {value}")
+        
+        try:
+            # Handle job parameters (e.g., "jobs.importmovies.voltage")
+            if param_path.startswith('jobs.'):
+                parts = param_path.split('.')
+                if len(parts) != 3:
+                    raise ValueError(f"Invalid job parameter path: {param_path}. Expected format: jobs.<job_name>.<field_name>")
+                
+                job_name = parts[1]
+                field_name = parts[2]
+                
+                # Initialize job if it doesn't exist
+                if job_name not in self.state.jobs:
+                    print(f"[PARAMS DIRECT] Auto-initializing {job_name}")
+                    self.state.populate_job(job_name)
+                
+                # Update the fucking parameter directly
+                job_obj = self.state.jobs[job_name]
+                if hasattr(job_obj, field_name):
+                    setattr(job_obj, field_name, value)
+                    self.state.update_modified()
+                    print(f"[PARAMS DIRECT] ✓ Updated {job_name}.{field_name} = {value}")
+                else:
+                    available_fields = list(job_obj.dict().keys())
+                    raise ValueError(f"Field '{field_name}' not found in {job_name}. Available: {available_fields}")
+                    
+            # Handle global parameters (e.g., "microscope.voltage")  
+            elif param_path.startswith(('microscope.', 'acquisition.', 'computing.')):
+                parts = param_path.split('.')
+                if len(parts) != 2:
+                    raise ValueError(f"Invalid global parameter path: {param_path}")
+                
+                category = parts[0]  # 'microscope', 'acquisition', 'computing'
+                field_name = parts[1]
+                
+                category_obj = getattr(self.state, category)
+                if hasattr(category_obj, field_name):
+                    setattr(category_obj, field_name, value)
+                    self.state.update_modified()
+                    print(f"[PARAMS DIRECT] ✓ Updated {category}.{field_name} = {value}")
+                else:
+                    available_fields = list(category_obj.dict().keys())
+                    raise ValueError(f"Field '{field_name}' not found in {category}. Available: {available_fields}")
+                    
+            else:
+                raise ValueError(f"Unsupported parameter path: {param_path}. Must start with 'jobs.', 'microscope.', 'acquisition.', or 'computing.'")
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to update parameter {param_path}: {e}")
+            raise
+            
     def update_from_mdoc(self, mdocs_glob: str):
         """Parse first mdoc and update relevant params"""
         mdoc_files = glob.glob(mdocs_glob)
@@ -72,39 +127,6 @@ class ParameterManagerV2:
             print(f"[ERROR] Failed to parse mdoc {mdoc_files[0]}: {e}")
             import traceback
             traceback.print_exc()
-    
-    def update_parameter(self, param_path: str, value: Any):
-        """Update parameter using dot notation (e.g., 'microscope.pixel_size_angstrom')"""
-        parts = param_path.split('.')
-        
-        # Special handling for detector dimensions
-        if param_path == 'acquisition.detector_dimensions' and isinstance(value, str):
-            dims = value.split('x')
-            if len(dims) == 2:
-                value = (int(dims[0]), int(dims[1]))
-        
-        try:
-            # Navigate to the parameter
-            obj = self.state
-            for part in parts[:-1]:
-                if hasattr(obj, part):
-                    obj = getattr(obj, part)
-                elif hasattr(obj, 'jobs') and part in obj.jobs:
-                    obj = obj.jobs[part]
-                else:
-                    raise ValueError(f"Invalid parameter path: {param_path} (couldn't find {part})")
-            
-            # Set the value
-            if hasattr(obj, parts[-1]):
-                setattr(obj, parts[-1], value)
-                self.state.update_modified()
-                print(f"[PARAMS-V2] Updated {param_path} = {value}")
-            else:
-                raise ValueError(f"Parameter {parts[-1]} not found in {param_path}")
-                
-        except Exception as e:
-            print(f"[ERROR] Failed to update parameter {param_path}: {e}")
-            raise
     
     def prepare_job_params(self, job_name: str, job_star_path: Optional[Path] = None) -> BaseModel:
         """Get params for a specific job, creating if needed"""
