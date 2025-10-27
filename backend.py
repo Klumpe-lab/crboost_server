@@ -1,13 +1,11 @@
-# backend.py
-
 import asyncio
+import json
 import os
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
-from models import  User
+from models import User
 import pandas as pd
-# Add to CryoBoostBackend class in backend.py
 
 import yaml
 import subprocess
@@ -19,7 +17,7 @@ from services.config_service import get_config_service
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
-from services.setup_service import SetupService
+from services.parameters_service import get_parameter_manager
 
 HARDCODED_USER = User(username="artem.kushner")
 
@@ -30,7 +28,7 @@ class CryoBoostBackend:
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
-        self.setup_service = SetupService(server_dir)  
+        self.parameter_manager = get_parameter_manager()
 
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
@@ -40,16 +38,31 @@ class CryoBoostBackend:
         return jobs
     
     async def create_project_and_scheme(
-            self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
-        ):
+        self, 
+        project_name: str, 
+        project_base_path: str, 
+        selected_jobs: List[str], 
+        movies_glob: str, 
+        mdocs_glob: str
+    ):
+        """
+        Creates project structure, scheme, AND saves unified parameter config
+        """
+        try:
+
             project_dir = Path(project_base_path).expanduser() / project_name
             base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
             scheme_name = f"scheme_{project_name}"
-            user_params = {"angpix": "1.35", "dose_rate": "1.5"}
-
+            
+            # Check if project already exists
             if project_dir.exists():
                 return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
 
+            # Get user params from centralized ParameterManager
+            user_params = self.parameter_manager.get_legacy_user_params_dict()
+            print(f"[BACKEND] Using parameters: {user_params}")
+
+            # Create project structure
             import_prefix = f"{project_name}_"
             structure_result = await self.project_service.create_project_structure(
                 project_dir, movies_glob, mdocs_glob, import_prefix
@@ -58,19 +71,72 @@ class CryoBoostBackend:
             if not structure_result["success"]:
                 return structure_result
             
+            params_json_path = project_dir / "project_params.json"
+            try:
+                # Export clean, hierarchical config
+                clean_config = self.parameter_manager.export_for_project(
+                    project_name=project_name,
+                    movies_glob=movies_glob,
+                    mdocs_glob=mdocs_glob,
+                    selected_jobs=selected_jobs
+                )
+                
+                # Save it
+                with open(params_json_path, 'w') as f:
+                    json.dump(clean_config, f, indent=2)
+                
+                print(f"[BACKEND] ✓ Saved clean parameters to {params_json_path}")
+                
+                # Verify
+                if not params_json_path.exists():
+                    raise FileNotFoundError(f"Parameter file was not created at {params_json_path}")
+                
+                file_size = params_json_path.stat().st_size
+                if file_size == 0:
+                    raise ValueError(f"Parameter file is empty: {params_json_path}")
+                
+                print(f"[BACKEND] ✓ Verified parameter file: {file_size} bytes")
+                
+            except Exception as e:
+                print(f"[ERROR] Failed to save project_params.json: {e}")
+                import traceback
+                traceback.print_exc()
+                return {
+                    "success": False, 
+                    "error": f"Project created but failed to save parameters: {str(e)}"
+                }
+                
+            except Exception as e:
+                print(f"[ERROR] Failed to save project_params.json: {e}")
+                import traceback
+                traceback.print_exc()
+                # Don't fail the entire project creation, but warn loudly
+                return {
+                    "success": False, 
+                    "error": f"Project created but failed to save parameters: {str(e)}"
+                }
+            
+            # Collect bind paths
             additional_bind_paths = {
                 str(Path(project_base_path).expanduser().resolve()),
                 str(Path(movies_glob).parent.resolve()),
                 str(Path(mdocs_glob).parent.resolve())
             }
             
+            # Create the scheme
             scheme_result = await self.pipeline_orchestrator.create_custom_scheme(
-                project_dir, scheme_name, base_template_path, selected_jobs, user_params,
+                project_dir, 
+                scheme_name, 
+                base_template_path, 
+                selected_jobs, 
+                user_params,
                 additional_bind_paths=list(additional_bind_paths)
             )
+            
             if not scheme_result["success"]:
                 return scheme_result
             
+            # Initialize Relion project
             print(f"[BACKEND] Initializing Relion project in {project_dir}...")
             pipeline_star_path = project_dir / "default_pipeline.star"
 
@@ -79,7 +145,7 @@ class CryoBoostBackend:
             container_init_command = self.container_service.wrap_command_for_tool(
                 command=init_command,
                 cwd=project_dir,
-                tool_name="relion",  # Explicitly specify the tool
+                tool_name="relion",
                 additional_binds=list(additional_bind_paths)
             )
 
@@ -107,11 +173,50 @@ class CryoBoostBackend:
             return {
                 "success": True,
                 "message": f"Project '{project_name}' created and initialized successfully.",
-                "project_path": str(project_dir)
+                "project_path": str(project_dir),
+                "params_file": str(params_json_path)  # Return the params file path
             }
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": f"Project creation failed: {str(e)}"}
+
+    async def get_initial_parameters(self) -> Dict[str, Any]:
+        """Get the default parameters to populate the UI"""
+        return self.parameter_manager.get_state_as_dict()
+
+    async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
+        """Run mdoc autodetection and return the updated state"""
+        print(f"[BACKEND] Autodetecting from {mdocs_glob}")
+        self.parameter_manager.autodetect_from_mdoc(mdocs_glob)
+        return self.parameter_manager.get_state_as_dict()
+        
+
+    async def update_parameter(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a single parameter in the central state"""
+        try:
+            param_name = payload.get("param_name")
+            value = payload.get("value")
+            mark_as_user_input = payload.get("mark_as_user_input", True)
+            
+            if param_name:
+                print(f"[BACKEND] Updating {param_name} -> {value}")
+                self.parameter_manager.update_parameter_from_ui(
+                    param_name, 
+                    value, 
+                    mark_as_user_input=mark_as_user_input
+                )
+                return {"success": True}
+        except Exception as e:
+            print(f"[ERROR] update_parameter failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+        return {"success": False, "error": "Invalid payload"}
 
     async def run_shell_command(self, command: str, cwd: Path = None, 
-                            tool_name: str = None, additional_binds: List[str] = None):
+                                tool_name: str = None, additional_binds: List[str] = None):
         """Runs a shell command, optionally using specified tool's container."""
         try:
             if tool_name:
@@ -155,42 +260,15 @@ class CryoBoostBackend:
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
 
-
-    async def debug_container_environment(self, project_dir: Path):
-        """Debug what environment the container is actually using"""
-        test_commands = [
-            # Test with explicit tools
-            ("relion --version", "relion"),
-            ("relion_python_tomo_import --help", "relion_import"),
-            ("WarpTools --help", "warptools"),
-            
-            # Test Python inside container using tools
-            ("python -c \"import sys; print(sys.executable)\"", "relion"),
-            ("python -c \"import mdocfile; print('mdocfile OK')\"", "relion_import"),
-        ]
-        
-        print(f"\n=== DEBUG CONTAINER ENVIRONMENT ===")
-        print(f"Project dir: {project_dir}")
-        
-        for cmd, tool in test_commands:
-            print(f"\n--- Testing with tool '{tool}': {cmd} ---")
-            result = await self.run_shell_command(cmd, cwd=project_dir, tool_name=tool)
-            print(f"Success: {result['success']}")
-            if result['success']:
-                print(f"Output: {result['output'][:500]}...")
-            else:
-                print(f"Error: {result['error'][:500]}...")
     async def _run_relion_schemer(self, project_dir: Path, scheme_name: str, additional_bind_paths: List[str]):
         """Run relion_schemer to execute the pipeline scheme"""
         try:
-            # The `unset DISPLAY` handles the non-GUI case for the schemer.
             run_command = f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --verb 2"
             
-            # Use the relion_schemer tool (you'll need to add this to your tool_service)
             full_run_command = self.container_service.wrap_command_for_tool(
                 command=run_command,
                 cwd=project_dir,
-                tool_name="relion_schemer",  # Make sure this tool exists in tool_service
+                tool_name="relion_schemer",
                 additional_binds=additional_bind_paths
             )
             
@@ -203,7 +281,6 @@ class CryoBoostBackend:
                 cwd=project_dir
             )
             
-            # Store the process for monitoring
             self.active_schemer_process = process
             asyncio.create_task(self._monitor_schemer(process, project_dir))
             
@@ -219,8 +296,6 @@ class CryoBoostBackend:
         bind_paths = {str(Path(p).parent.resolve()) for p in required_paths if p}
         bind_paths.add(str(project_dir.parent.resolve()))
         
-        # FIX: Use the method that actually exists - run relion_schemer directly
-        # Since the orchestrator only creates schemes but doesn't run them, we need to run it ourselves
         return await self._run_relion_schemer(
             project_dir, scheme_name, additional_bind_paths=list(bind_paths)
         )
@@ -277,19 +352,17 @@ class CryoBoostBackend:
         )
         
         await process.wait()
-        print(f" [MONITOR] relion_schemer PID {process.pid} completed with return code: {process.returncode}")
+        print(f"[MONITOR] relion_schemer PID {process.pid} completed with return code: {process.returncode}")
         self.active_schemer_process = None
 
     async def get_eer_frames_per_tilt(self, eer_file_path: str) -> int:
         """Extract number of frames per tilt from EER file"""
         try:
-            # Use header command to get EER metadata
             command = f"header {eer_file_path}"
             result = await self.run_shell_command(command)
-            
+
             if result["success"]:
                 output = result["output"]
-                # Parse the output to find frames per tilt
                 for line in output.split('\n'):
                     if "Number of columns, rows, sections" in line:
                         parts = line.split('.')[-1].strip().split()
@@ -300,111 +373,14 @@ class CryoBoostBackend:
             print(f"Error getting EER frames: {e}")
             return None
 
-    async def parse_mdoc_metadata(self, mdoc_path: str) -> Dict[str, Any]:
-        """Parse mdoc file for microscope and acquisition parameters"""
-        try:
-            metadata = {}
-            mdoc_files = glob.glob(mdoc_path)
-            if not mdoc_files:
-                return {}
-                
-            with open(mdoc_files[0], 'r') as f:
-                content = f.read()
-                
-                # Extract basic metadata
-                if 'PixelSpacing = ' in content:
-                    metadata['pixel_size'] = float(content.split('PixelSpacing = ')[1].split('\n')[0])
-                    
-                if 'ExposureDose = ' in content:
-                    metadata['dose_per_tilt'] = float(content.split('ExposureDose = ')[1].split('\n')[0])
-                    
-                if 'ImageSize = ' in content:
-                    metadata['image_size'] = content.split('ImageSize = ')[1].split('\n')[0].replace(' ', 'x')
-                    
-                if 'Voltage = ' in content:
-                    metadata['voltage'] = float(content.split('Voltage = ')[1].split('\n')[0])
-                    
-                # Try to find tilt axis angle
-                if 'Tilt axis angle = ' in content:
-                    metadata['tilt_axis'] = float(content.split('Tilt axis angle = ')[1].split(',')[0])
-                elif 'RotationAngle = ' in content:
-                    # Alternative location for tilt axis
-                    lines = content.split('\n')
-                    for line in lines:
-                        if 'RotationAngle = ' in line:
-                            metadata['tilt_axis'] = abs(float(line.split('RotationAngle = ')[1]))
-                            break
-                            
-            return metadata
-        except Exception as e:
-            print(f"Error parsing mdoc: {e}")
-            return {}
-
-    async def validate_setup_parameters(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate the tomogram setup parameters"""
-        validation_result = {
-            "valid": True,
-            "warnings": [],
-            "errors": []
-        }
-        
-        # Validate required parameters
-        required_params = ['pixel_size', 'dose_per_tilt', 'voltage']
-        for param in required_params:
-            if not params.get(param):
-                validation_result["valid"] = False
-                validation_result["errors"].append(f"Missing required parameter: {param}")
-        
-        # Validate numeric ranges
-        if params.get('pixel_size'):
-            pix_size = float(params['pixel_size'])
-            if pix_size < 0.5 or pix_size > 10:
-                validation_result["warnings"].append(f"Pixel size {pix_size} seems unusual")
-                
-        if params.get('voltage'):
-            voltage = float(params['voltage'])
-            if voltage not in [200, 300]:
-                validation_result["warnings"].append(f"Voltage {voltage} kV is non-standard")
-        
-        return validation_result
-
-    async def apply_setup_to_project(self, project_path: str, setup_params: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply the setup parameters to a project"""
-        try:
-            # This would integrate with your existing project creation
-            # but with the additional setup parameters
-            
-            # Store setup parameters in project configuration
-            config_path = Path(project_path) / "setup_config.yaml"
-            
-            with open(config_path, 'w') as f:
-                yaml.dump(setup_params, f)
-                
-            return {
-                "success": True,
-                "message": "Setup parameters applied successfully",
-                "config_path": str(config_path)
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to apply setup: {str(e)}"
-            }
-
-    #--------- Pipeline tracking
-    
-    
-    # Add to CryoBoostBackend class in backend.py
-
     async def get_pipeline_job_logs(self, project_path: str, job_type: str, job_number: str) -> Dict[str, str]:
         """Get the run.out and run.err contents for a specific pipeline job"""
         project_dir = Path(project_path)
         
-        # Map job types to their directory names
         job_dir_map = {
             'importmovies': 'Import',
             'fsMotionAndCtf': 'External',
-            'tsAlignment': 'External'  # Add more as needed
+            'tsAlignment': 'External'
         }
         
         job_dir_name = job_dir_map.get(job_type, 'External')
@@ -422,7 +398,6 @@ class CryoBoostBackend:
         
         logs['exists'] = True
         
-        # Read run.out
         out_file = job_path / 'run.out'
         if out_file.exists():
             try:
@@ -431,7 +406,6 @@ class CryoBoostBackend:
             except Exception as e:
                 logs['stdout'] = f"Error reading run.out: {e}"
         
-        # Read run.err
         err_file = job_path / 'run.err'
         if err_file.exists():
             try:
@@ -454,4 +428,4 @@ class CryoBoostBackend:
                     'logs': logs
                 })
             yield job_statuses
-            await asyncio.sleep(5)  # Poll every 5 seconds
+            await asyncio.sleep(5)

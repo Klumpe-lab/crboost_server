@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import asyncio
+# import asyncio # <-- No longer needed here
 import socket
 import argparse
 from pathlib import Path
@@ -10,10 +10,10 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from nicegui import ui
 
-# from ui import create_ui_router
 from backend import CryoBoostBackend
 
-async def setup_app():
+# --- CHANGED: This is now a regular synchronous function ---
+def setup_app():
     """Configures and returns the FastAPI app."""
     app = FastAPI()
     app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -28,11 +28,7 @@ async def setup_app():
     backend = CryoBoostBackend(Path.cwd())
     create_ui_router(backend) 
 
-    # # Run debug immediately
-    # print("=== RUNNING CONTAINER DEBUG ===")
-    # await backend.debug_container_environment(Path("/users/artem.kushner/cryoboost_projects/nu6"))
-    # print("=== DEBUG COMPLETE ===")
-
+    # ui.run_with *must* be called before uvicorn.run
     ui.run_with(app, title="CryoBoost Server")
     return app
 
@@ -49,8 +45,8 @@ def get_local_ip():
 
 if __name__ in {"__main__", "__mp_main__"}:
     
-    # Run the async setup
-    app = asyncio.run(setup_app())
+    # --- CHANGED: Call setup_app directly, no asyncio.run ---
+    app = setup_app()
 
     parser = argparse.ArgumentParser(description='CryoBoost Server')
     parser.add_argument('--port', type=int, default=8081, help='Port to run server on')
@@ -62,12 +58,14 @@ if __name__ in {"__main__", "__mp_main__"}:
     
     print("CryoBoost Server Starting")
     print(f"Access URLs:")
-    print(f"  Local:   http://localhost:{args.port}")
+    print(f"  Local:    http://localhost:{args.port}")
     print(f"  Network: http://{local_ip}:{args.port}")
     print("\nTo access from another machine, use an SSH tunnel:")
     print(f"ssh -L 8081:{hostname}:{args.port} [YOUR_USERNAME]@{hostname}")
     print("-" * 30)
 
+    # This call will start Uvicorn, which creates its own event loop
+    # that NiceGUI (via ui.run_with) will now correctly use.
     uvicorn.run(
         app, 
         host=args.host, 

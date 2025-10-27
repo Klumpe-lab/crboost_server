@@ -17,19 +17,6 @@ local:
     Environment: "source /opt/CryoBoost/.cbenv"  # This is for inside container
 
 
-#submission:
-#  - HeadNode: cbe.vbc.ac.at 
-#    SshCommand: "ssh -Y"
-#    Environment: "source /programs/sbgrid.shrc; source /groups/klumpe/software/Setup/relion_5_LG.sh; source /groups/klumpe/software/Setup/CryoBoost/.cbenv"
-#    CalusterStatus: sinfo
-#    Helpssh: c-wing-wiki.biochem.mpg.de/wiki/index.php/Ssh-keygen
-#    HelpConflict: "Testing VBC installation"
-#local:
-#    Environment: "source /groups/klumpe/software/Setup/relion_5_LG.sh; source /groups/klumpe/software/Setup/CryoBoost/.cbenv"
-
-
-
-
 aliases:
   - Job: all
     Parameter: qsubscript
