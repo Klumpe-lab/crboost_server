@@ -69,7 +69,7 @@ class ProjectService:
             "XXXextra2XXX": "",       # mpi_per_node (empty = let relion handle it)
             "XXXextra3XXX": "g",      # partition (GPU)
             "XXXextra4XXX": "1",      # gpus  
-            "XXXextra5XXX": "32G",    # memory
+            "XXXextra5XXX": "16G",    # memory
             "XXXthreadsXXX": "8",     # threads
         }
         
