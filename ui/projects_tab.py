@@ -6,12 +6,11 @@ import math
 from pathlib import Path
 from nicegui import ui
 from backend import CryoBoostBackend
-from models import User
 from ui.utils import create_path_input_with_picker
 from typing import Dict, Any, Callable
 
 
-def build_projects_tab(backend: CryoBoostBackend, user: User):
+def build_projects_tab(backend: CryoBoostBackend):
     """Projects tab - ultra-compact UI"""
     state = {
         "selected_jobs": [],

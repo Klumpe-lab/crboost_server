@@ -1,10 +1,9 @@
 import asyncio
 from nicegui import ui
 from backend import CryoBoostBackend
-from models import User
 
 
-def create_job_scheduler_tab(backend: CryoBoostBackend, user: User):
+def create_job_scheduler_tab(backend: CryoBoostBackend):
     """Tab for job scheduling and container configuration"""
     state = {
         "container_settings": {},

@@ -97,8 +97,6 @@ class PipelineState(BaseModel):
     """
     Central parameter state with strongly-typed, validated parameters.
     """
-    
-    # ===== Microscope Parameters =====
     microscope_type: Parameter[MicroscopeType] = Field(
         default_factory=lambda: Parameter[MicroscopeType](
             value=MicroscopeType.CUSTOM,
@@ -500,8 +498,6 @@ class ParameterManager:
             # Add more jobs as you implement them...
         
         return job_params
-
-
 
     def get_unified_config_dict(self) -> Dict[str, Any]:
         """Export EVERYTHING as one unified configuration dict"""
