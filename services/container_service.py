@@ -18,23 +18,20 @@ class ContainerService:
         self.cli_containers = {'warp_aretomo', 'cryocare', 'pytom'}
 
     def wrap_command_for_tool(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
-        """Wrap command using the specified tool's container"""
+        """Simple wrapper that matches the old working code"""
         
         if not self.tool_service.is_container_tool(tool_name):
-            print(f"[CONTAINER] Tool {tool_name} is not container-based, running natively")
             return command
         
         container_name = self.tool_service.get_container_for_tool(tool_name)
         if not container_name or container_name not in self.container_paths:
-            print(f"[CONTAINER ERROR] No container found for tool {tool_name}")
             return command
 
         container_path = self.container_paths[container_name]
         if not Path(container_path).exists():
-            print(f"[CONTAINER ERROR] Container not found: {container_path}")
             return command
         
-        # Build bind mounts
+        # Build bind mounts (your existing logic)
         binds = set()
         essential_paths = ["/tmp", "/scratch", str(Path.home()), str(cwd.resolve())]
         for p in essential_paths:
@@ -47,11 +44,8 @@ class ContainerService:
                 if path.exists():
                     binds.add(str(path))
 
-        # HPC integration
-        hpc_paths = [
-            "/usr/bin", "/usr/lib64/slurm", "/run/munge", 
-            "/etc/passwd", "/etc/group", "/groups", "/programs", "/software"
-        ]
+        # Add HPC paths
+        hpc_paths = ["/usr/bin", "/usr/lib64/slurm", "/run/munge", "/etc/passwd", "/etc/group", "/groups", "/programs", "/software"]
         for p_str in hpc_paths:
             path = Path(p_str)
             if path.exists():
@@ -60,53 +54,34 @@ class ContainerService:
                 else:
                     binds.add(p_str)
 
-        # X11 for GUI containers only
-        if container_name in self.gui_containers:
-            print(f"[CONTAINER] Adding X11 bindings for GUI container: {container_name}")
-            x11_authority = Path.home() / ".Xauthority"
-            x11_socket = Path("/tmp/.X11-unix")
-            if x11_authority.exists():
-                binds.add(f"{str(x11_authority)}:{str(x11_authority)}:ro")
-            if x11_socket.exists():
-                binds.add(str(x11_socket))
-        
         bind_args = []
         for path in sorted(binds):
             bind_args.extend(['-B', path])
         
-        # Build the apptainer command parts
-        cmd_parts = ["apptainer", "run", "--nv", "--cleanenv"]
-        cmd_parts.extend(bind_args)
-        cmd_parts.append(container_path)
-
-        wrapped_command = f"bash -c {shlex.quote(command)}"
-        cmd_parts.append(wrapped_command)
-
-        apptainer_cmd = " ".join(cmd_parts)
-
-        # With this (matching your old working code):
+        # Simple command construction like your old working version
         inner_command_quoted = shlex.quote(command)
-
-        # Build as a proper list
-        cmd_parts.extend(["bash", "-c", inner_command_quoted])
-
-        apptainer_cmd = " ".join(cmd_parts)
-                
+        apptainer_cmd_parts = [
+            "apptainer", "run", "--nv", "--cleanenv",
+            *bind_args,
+            container_path,
+            "bash", "-c", inner_command_quoted
+        ]
+        
+        apptainer_cmd = " ".join(apptainer_cmd_parts)
+        
+        # Environment cleaning
         clean_env_vars = [
             "SINGULARITY_BIND", "APPTAINER_BIND", "SINGULARITY_BINDPATH", "APPTAINER_BINDPATH",
-            "SINGULARITY_NAME", "APPTAINER_NAME", "SINGULARITY_CONTAINER", "APPTAINER_CONTAINER",
+            "SINGULARITY_NAME", "APPTAINER_NAME", "SINGULARITY_CONTAINER", "APPTAINER_CONTAINER", 
             "LD_PRELOAD", "XDG_RUNTIME_DIR", "CONDA_PREFIX", "CONDA_DEFAULT_ENV", "CONDA_PROMPT_MODIFIER"
         ]
         
         if container_name not in self.gui_containers:
             clean_env_vars.extend(["DISPLAY", "XAUTHORITY"])
-                
-        clean_env_cmd = "unset " + " ".join(sorted(set(clean_env_vars)))
+            
+        clean_env_cmd = "unset " + " ".join(clean_env_vars)
         final_command = f"{clean_env_cmd}; {apptainer_cmd}"
         
-        print(f"[CONTAINER DEBUG] Final command structure:")
-        print(f"[CONTAINER DEBUG] Parts: {cmd_parts}")
-        print(f"[CONTAINER DEBUG] Full: {final_command}")
         return final_command
 
 _container_service = None
