@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=CryoBoost-Warp
+#SBATCH --constraint=g4
 #SBATCH --partition=XXXextra3XXX
 #SBATCH --nodes=XXXextra1XXX
 #SBATCH --ntasks-per-node=1
