@@ -1,11 +1,13 @@
-# services/config_service.py (updated)
+# services/config_service.py
 
 import yaml
 from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional
 
+# Import the Parameter model from parameters_service
+from services.parameters_service import Parameter, IntParam, StrParam
 class SubmissionConfig(BaseModel):
     HeadNode: str
     SshCommand: str
@@ -21,12 +23,24 @@ class Alias(BaseModel):
     Job: str
     Parameter: str
     Alias: str
-    
+
+# Refactored to use Parameter model
 class ComputingPartition(BaseModel):
-    NrGPU: int
-    NrCPU: int
-    RAM: str
-    VRAM: str
+    """Computing partition with Parameter-based fields"""
+    NrGPU: IntParam
+    NrCPU: IntParam
+    RAM: StrParam  # Kept as string since it includes unit (e.g., "32G")
+    VRAM: StrParam
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ComputingPartition':
+        """Create from raw dict with Parameter wrapping"""
+        return cls(
+            NrGPU=IntParam(value=data['NrGPU'], min_value=0, max_value=8),
+            NrCPU=IntParam(value=data['NrCPU'], min_value=1, max_value=128),
+            RAM=StrParam(value=data['RAM']),
+            VRAM=StrParam(value=data['VRAM'])
+        )
 
 class NodeSharingConfig(BaseModel):
     CPU_PerGPU: int = Field(alias='CPU-PerGPU')
@@ -40,7 +54,7 @@ class ComputingConfig(BaseModel):
     JOBMaxNodes: Dict[str, List[int]]
     JOBsPerDevice: Dict[str, Dict[str, int]]
     
-    # Make all partitions optional with safe defaults
+    # Partitions with Parameter-based models
     c: Optional[ComputingPartition] = None
     m: Optional[ComputingPartition] = None
     g: Optional[ComputingPartition] = None
@@ -54,17 +68,21 @@ class Config(BaseModel):
     aliases: List[Alias]
     meta_data: Dict[str, List[Dict[str, str]]]
     microscopes: Dict[str, List[Dict[str, str]]]
-    
     star_file: Optional[Dict[str, str]] = None
-    
     containers: Optional[Dict[str, str]] = None 
     computing: ComputingConfig
     filepath: Dict[str, str]
 
     class Config:
-        extra = 'ignore'  # Ignore extra fields
+        extra = 'ignore'
 
 class ConfigService:
+    """
+    ConfigService is now SUBSERVIENT to ParameterManager.
+    It loads static defaults from conf.yaml and provides them
+    to the parameter manager for initialization.
+    """
+    
     def __init__(self, config_path: Path):
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found at: {config_path}")
@@ -75,10 +93,41 @@ class ConfigService:
         if 'star_file' not in data:
             data['star_file'] = {}
         
+        # Convert partition dicts to Parameter-based models
+        if 'computing' in data:
+            for partition_key in ['c', 'm', 'g', 'g-p100', 'g-v100', 'g-a100']:
+                if partition_key in data['computing']:
+                    partition_data = data['computing'][partition_key]
+                    data['computing'][partition_key] = ComputingPartition.from_dict(partition_data).dict()
+        
         self._config = Config(**data)
 
     def get_config(self) -> Config:
         return self._config
+    
+    def get_default_computing_params(self) -> Dict[str, Any]:
+        """
+        Extract default computing parameters as a dict
+        for ParameterManager to consume.
+        """
+        # Find first available GPU partition
+        for partition_key in ['g', 'g_v100', 'g_a100', 'g_p100']:
+            partition = getattr(self._config.computing, partition_key, None)
+            if partition:
+                return {
+                    'partition': partition_key.replace('_', '-'),
+                    'gpu_count': partition.NrGPU.value,
+                    'cpu_count': partition.NrCPU.value,
+                    'memory_gb': int(partition.RAM.value.replace('G', '').replace('g', '')),
+                }
+        
+        # Fallback defaults if no GPU partition found
+        return {
+            'partition': 'g',
+            'gpu_count': 1,
+            'cpu_count': 8,
+            'memory_gb': 32,
+        }
 
     def get_job_output_filename(self, job_type: str) -> Optional[str]:
         if not self._config.star_file:

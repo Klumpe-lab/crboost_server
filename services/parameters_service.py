@@ -1,567 +1,680 @@
-# services/parameter_service.py
+# services/parameters_service.py
 
-import yaml
-import pandas as pd
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Union, Type, TypeVar
-from pydantic import BaseModel, Field, validator
-from enum import Enum
-from functools import lru_cache
+if TYPE_CHECKING:
+    from typing import TYPE_CHECKING
+
+from datetime import datetime
 import glob
-import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+import json
+from pydantic import BaseModel, Field, validator, root_validator
+from typing import Optional, Dict, Any, Literal, Union, Tuple, TypeVar, Generic, List
+from enum import Enum
+from pathlib import Path
+from functools import lru_cache
 
-from .starfile_service import StarfileService
-from .config_service import get_config_service, Config
 
-# ===== CORE PARAMETER MODELS =====
+# Note: We are NOT using JobParams/ImportMoviesParams for now
+# to respect the constraint of not changing the pipeline_orchestrator's
+# command builders. We will use `get_legacy_user_params_dict` instead.
+
+T = TypeVar('T')
+
+class Parameter(BaseModel, Generic[T]):
+    """
+    A strongly-typed parameter with validation constraints.
+    """
+    value: T
+    min_value: Optional[T] = None
+    max_value: Optional[T] = None
+    choices: Optional[List[T]] = None
+    description: Optional[str] = None
+    source: Optional[str] = None
+
+    @validator('value')
+    def validate_constraints(cls, v, values):
+        """Validate value against constraints"""
+        if 'min_value' in values and values['min_value'] is not None:
+            if v < values['min_value']:
+                raise ValueError(f"Value {v} below minimum {values['min_value']}")
+        
+        if 'max_value' in values and values['max_value'] is not None:
+            if v > values['max_value']:
+                raise ValueError(f"Value {v} above maximum {values['max_value']}")
+        
+        if 'choices' in values and values['choices'] is not None:
+            if v not in values['choices']:
+                raise ValueError(f"Value {v} not in allowed choices: {values['choices']}")
+        
+        return v
+    
+    class Config:
+        arbitrary_types_allowed = True
+
+# Create explicit type aliases for better IDE support
+FloatParam = Parameter[float]
+IntParam = Parameter[int]
+StrParam = Parameter[str]
+BoolParam = Parameter[bool]
+PathParam = Parameter[Optional[Path]]
 
 class MicroscopeType(str, Enum):
     KRIOS_G3 = "Krios_G3"
-    GLACIOS = "TFS_Glacios"
+    KRIOS_G4 = "Krios_G4"
+    GLACIOS = "Glacios"
+    TALOS = "Talos"
     CUSTOM = "Custom"
 
-class AcquisitionSoftware(str, Enum):
-    SERIALEM = "SerialEM"
-    TOMO5 = "Tomo5"
+class Partition(str, Enum):
+    CPU = "c"
+    GPU = "g"
+    GPU_V100 = "g-v100"
+    GPU_A100 = "g-a100"
+    MEMORY = "m"
 
-class JobType(str, Enum):
-    IMPORT_MOVIES = "importmovies"
-    MOTION_CORR = "motioncorr"
-    FS_MOTION_CTF = "fsMotionAndCtf"
-    CTF_FIND = "ctffind"
-    ALIGN_TILTS = "aligntilts"
-    RECONSTRUCTION = "reconstruction"
-    TEMPLATE_MATCHING = "templatematching"
-    TS_ALIGNMENT = "tsAlignment"
-    TS_RECONSTRUCT = "tsReconstruct"
-    TS_CTF = "tsCtf"
+class AlignmentMethod(str, Enum):
+    ARETOMO = "AreTomo"
+    IMOD = "IMOD"
+    RELION = "Relion"
 
-class MicroscopeParams(BaseModel):
-    """Centralized microscope parameters"""
-    microscope_type: MicroscopeType = Field(default=MicroscopeType.CUSTOM)
-    voltage: float = Field(300.0, gt=0, description="Acceleration voltage (kV)")
-    spherical_aberration: float = Field(2.7, description="Cs (mm)")
-    amplitude_contrast: float = Field(0.1, description="Amplitude contrast ratio")
-    pixel_size: float = Field(1.35, gt=0, description="Pixel size (Å)")
-    acquisition_software: AcquisitionSoftware = Field(default=AcquisitionSoftware.SERIALEM)
-    tilt_axis_angle: float = Field(-95.0, description="Nominal tilt axis angle")
-    
-    class Config:
-        use_enum_values = True
-
-class TomogramSetupParams(BaseModel):
-    """Tomogram-specific setup parameters"""
-    dose_per_tilt: float = Field(3.0, gt=0, description="Total dose per tilt (e⁻/Å²)")
-    image_size: str = Field("4096x4096", description="Image dimensions")
-    eer_grouping: Optional[int] = Field(32, description="EER fractions per rendered frame")
-    gain_reference_path: Optional[Path] = None
-    invert_handedness: bool = Field(False, description="Flip tilt series hand")
-    reconstruction_pixel_size: float = Field(11.8, gt=0)
-    tomogram_size: str = Field("4096x4096x2048", description="Reconstruction dimensions")
-    sample_thickness: float = Field(300.0, gt=0, description="Sample thickness (nm)")
-    alignment_method: str = Field("AreTomo", description="Alignment method")
-    patch_size: int = Field(800, description="Patch size for alignment")
-    
-    @validator('image_size', 'tomogram_size')
-    def validate_dimensions(cls, v):
-        if 'x' not in v:
-            raise ValueError('Size must be in format "WxH" or "WxHxD"')
-        return v
-
-class ComputingParams(BaseModel):
-    """Computing resource parameters"""
-    nodes: int = Field(1, ge=1)
-    partition: str = Field("g", description="SLURM partition")
-    gpus: int = Field(1, ge=0)
-    memory: str = Field("32G", description="Memory allocation")
-    threads: int = Field(8, ge=1)
-    mpi_per_node: Optional[int] = None
-
-class RelionJobParams(BaseModel):
-    """Parameters for RELION native jobs"""
-    job_type: JobType
-    computing: ComputingParams = Field(default_factory=ComputingParams)
-    
-    # RELION-specific parameters
-    angpix: Optional[float] = None
-    kV: Optional[float] = None
-    dose_rate: Optional[float] = None
-    eer_grouping: Optional[int] = None
-    binned_angpix: Optional[float] = None
-    flip_tiltseries_hand: Optional[str] = None
-    
-    class Config:
-        use_enum_values = True
-
-class ExternalJobParams(BaseModel):
-    """Parameters for external jobs using paramX_label/value system"""
-    job_type: JobType
-    computing: ComputingParams = Field(default_factory=ComputingParams)
-    external_params: Dict[str, Any] = Field(default_factory=dict)
-    
-    class Config:
-        use_enum_values = True
-    
-    def to_param_pairs(self) -> List[Dict[str, str]]:
-        """Convert to paramX_label/value pairs for job.star"""
-        return [
-            {"label": k, "value": str(v)} 
-            for i, (k, v) in enumerate(self.external_params.items(), 1)
-        ]
-
-class PipelineParameters(BaseModel):
-    """Central container for all pipeline parameters"""
-    microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
-    tomogram_setup: TomogramSetupParams = Field(default_factory=TomogramSetupParams)
-    job_parameters: Dict[JobType, Union[RelionJobParams, ExternalJobParams]] = Field(default_factory=dict)
-    
-    # Project metadata
-    project_name: str = "default_project"
-    scheme_name: str = "default_scheme"
-    
-    def get_job_params(self, job_type: JobType) -> Optional[Union[RelionJobParams, ExternalJobParams]]:
-        return self.job_parameters.get(job_type)
-    
-    def update_job_params(self, job_type: JobType, params: Union[RelionJobParams, ExternalJobParams]):
-        self.job_parameters[job_type] = params
-
-# ===== MDOC PARSING =====
-
-@dataclass
-class MdocMetadata:
-    """Parsed metadata from mdoc files"""
-    pixel_size: float
+class RawMdocData(BaseModel):
+    """Exactly what we read from mdoc files"""
+    pixel_spacing: float
     voltage: float
-    dose_per_tilt: float
-    image_size: str
+    exposure_dose: float
+    image_size_str: str
     tilt_axis_angle: float
-    acquisition_software: AcquisitionSoftware
-    num_mdoc_files: int = 0
-
-class MdocParser:
-    """Handles mdoc file parsing"""
+    is_serialem: bool
+    num_mdoc_files: int
     
-    @staticmethod
-    def parse_mdoc_directory(mdoc_glob: str) -> MdocMetadata:
-        """Parse mdoc files and extract metadata"""
-        mdoc_files = glob.glob(mdoc_glob)
-        if not mdoc_files:
-            raise FileNotFoundError(f"No mdoc files found with pattern: {mdoc_glob}")
-        
-        # Parse first mdoc file for basic metadata
-        first_mdoc = mdoc_files[0]
-        return MdocParser._parse_single_mdoc(first_mdoc, len(mdoc_files))
-    
-    @staticmethod
-    def _parse_single_mdoc(mdoc_path: Path, total_files: int = 1) -> MdocMetadata:
-        """Parse a single mdoc file"""
-        with open(mdoc_path, 'r') as f:
-            content = f.read()
-        
-        metadata = {}
-        
-        # Extract basic metadata
-        if 'PixelSpacing = ' in content:
-            metadata['pixel_size'] = float(content.split('PixelSpacing = ')[1].split('\n')[0])
-        if 'Voltage = ' in content:
-            metadata['voltage'] = float(content.split('Voltage = ')[1].split('\n')[0])
-        if 'ExposureDose = ' in content:
-            metadata['dose_per_tilt'] = float(content.split('ExposureDose = ')[1].split('\n')[0])
-        if 'ImageSize = ' in content:
-            metadata['image_size'] = content.split('ImageSize = ')[1].split('\n')[0].replace(' ', 'x')
-        
-        # Determine acquisition software and tilt axis
-        if 'SerialEM:' in content:
-            metadata['acquisition_software'] = AcquisitionSoftware.SERIALEM
-            if 'Tilt axis angle = ' in content:
-                metadata['tilt_axis_angle'] = float(content.split('Tilt axis angle = ')[1].split(',')[0])
-        else:
-            metadata['acquisition_software'] = AcquisitionSoftware.TOMO5
-            # Parse RotationAngle from ZValue sections for Tomo5
-            lines = content.split('\n')
-            for line in lines:
-                if 'RotationAngle = ' in line:
-                    metadata['tilt_axis_angle'] = abs(float(line.split('RotationAngle = ')[1]))
-                    break
-        
-        metadata['num_mdoc_files'] = total_files
-        
-        return MdocMetadata(**metadata)
+    @property
+    def image_dimensions(self) -> Tuple[int, int]:
+        parts = self.image_size_str.split('x')
+        return (int(parts[0]), int(parts[1]))
 
-# ===== XML PARSING =====
-
-class XMLParser:
-    """Handles XML metadata parsing (Warp, etc.)"""
+class PipelineState(BaseModel):
+    """
+    Central parameter state with strongly-typed, validated parameters.
+    """
     
-    @staticmethod
-    def parse_warp_xml(xml_path: Path) -> Dict[str, Any]:
-        """Parse Warp XML files for CTF parameters"""
+    # ===== Microscope Parameters =====
+    microscope_type: Parameter[MicroscopeType] = Field(
+        default_factory=lambda: Parameter[MicroscopeType](
+            value=MicroscopeType.CUSTOM,
+            choices=list(MicroscopeType),
+            description="Type of microscope"
+        )
+    )
+    
+    pixel_size_angstrom: FloatParam = Field(
+        default_factory=lambda: FloatParam(
+            value=1.35,
+            min_value=0.5,
+            max_value=10.0,
+            description="Pixel size in Angstroms"
+        )
+    )
+    
+    acceleration_voltage_kv: FloatParam = Field(
+        default_factory=lambda: FloatParam(
+            value=300.0,
+            choices=[200.0, 300.0],
+            description="Acceleration voltage in kV"
+        )
+    )
+    
+    spherical_aberration_mm: FloatParam = Field(
+        default_factory=lambda: FloatParam(
+            value=2.7,
+            min_value=0.0,
+            max_value=10.0,
+            description="Spherical aberration Cs in mm"
+        )
+    )
+    
+    amplitude_contrast: FloatParam = Field(
+        default_factory=lambda: FloatParam(
+            value=0.1,
+            min_value=0.0,
+            max_value=1.0,
+            description="Amplitude contrast ratio"
+        )
+    )
+    
+    # ===== Acquisition Parameters =====
+    dose_per_tilt: FloatParam = Field(
+        default_factory=lambda: FloatParam(
+            value=3.0,
+            min_value=0.1,
+            max_value=9.0,
+            description="Total dose per tilt in e-/A^2"
+        )
+    )
+    
+    # Use explicit Parameter[Tuple[int, int]] instead of generic
+    detector_dimensions: Parameter[Tuple[int, int]] = Field(
+        default_factory=lambda: Parameter[Tuple[int, int]](
+            value=(4096, 4096),
+            description="Detector dimensions (width, height)"
+        )
+    )
+    
+    tilt_axis_degrees: FloatParam = Field(
+        default_factory=lambda: FloatParam(
+            value=-95.0,
+            min_value=-180.0,
+            max_value=180.0,
+            description="Tilt axis angle in degrees"
+        )
+    )
+    
+    # ===== Processing Parameters =====
+    sample_thickness_nm: FloatParam = Field(
+        default_factory=lambda: FloatParam(
+            value=300.0,
+            min_value=50.0,
+            max_value=2000.0,
+            description="Sample thickness in nanometers"
+        )
+    )
+    
+    eer_fractions_per_frame: Optional[IntParam] = Field(
+        default=None,
+        description="EER fractions per rendered frame (if applicable)"
+    )
+    
+    gain_reference_path: Optional[PathParam] = Field(
+        default=None,
+        description="Path to gain reference file"
+    )
+    
+    invert_tilt_angles: BoolParam = Field(
+        default_factory=lambda: BoolParam(
+            value=False,
+            description="Invert tilt series handedness"
+        )
+    )
+    
+    invert_defocus_hand: BoolParam = Field(
+        default_factory=lambda: BoolParam(
+            value=False,
+            description="Invert defocus handedness"
+        )
+    )
+    
+    alignment_method: Parameter[AlignmentMethod] = Field(
+        default_factory=lambda: Parameter[AlignmentMethod](
+            value=AlignmentMethod.ARETOMO,
+            choices=list(AlignmentMethod),
+            description="Tilt series alignment method"
+        )
+    )
+    
+    # ===== Computing Resources =====
+    default_partition: Parameter[Partition] = Field(
+        default_factory=lambda: Parameter[Partition](
+            value=Partition.GPU,
+            choices=list(Partition),
+            description="Default compute partition"
+        )
+    )
+    
+    default_gpu_count: IntParam = Field(
+        default_factory=lambda: IntParam(
+            value=1,
+            min_value=0,
+            max_value=8,
+            description="Number of GPUs"
+        )
+    )
+    
+    default_memory_gb: IntParam = Field(
+        default_factory=lambda: IntParam(
+            value=32,
+            min_value=4,
+            max_value=512,
+            description="Memory allocation in GB"
+        )
+    )
+    
+    default_threads: IntParam = Field(
+        default_factory=lambda: IntParam(
+            value=8,
+            min_value=1,
+            max_value=128,
+            description="Number of CPU threads"
+        )
+    )
+    
+class ParameterManager:
+    """Manages pipeline parameters with type safety and validation"""
+    
+    def __init__(self):
+        # Initialize state immediately - never None
+        from services.config_service import get_config_service
+        self.config_service = get_config_service()
+        self.state = PipelineState()  # Always initialized, not Optional
+        self._initialize_state_from_config()
+
+    def _initialize_state_from_config(self):
+        """Initialize the default PipelineState from conf.yaml"""
+        # self.state is already initialized above, just update it
         try:
-            tree = ET.parse(xml_path)
-            root = tree.getroot()
-            
-            ctf_data = {}
-            ctf = root.find(".//CTF")
-            if ctf is not None:
-                ctf_data['defocus'] = float(ctf.find(".//Param[@Name='Defocus']").get('Value'))
-                ctf_data['defocus_angle'] = float(ctf.find(".//Param[@Name='DefocusAngle']").get('Value'))
-                ctf_data['defocus_delta'] = float(ctf.find(".//Param[@Name='DefocusDelta']").get('Value'))
-            
-            return ctf_data
-        except Exception as e:
-            print(f"Warning: Could not parse XML file {xml_path}: {e}")
-            return {}
-
-# ===== MAIN PARAMETER SERVICE =====
-
-class ParameterService:
-    """
-    Centralized service for managing all parameters across CryoBoost.
-    Replaces SetupService, SimpleComputingService parameter logic, and centralizes
-    parameter propagation from multiple scattered services.
-    """
-    
-    def __init__(self, config_service: Config = None):
-        self.config_service = config_service or get_config_service()
-        self.star_handler = StarfileService()
-        self._current_params: Optional[PipelineParameters] = None
-        self.mdoc_parser = MdocParser()
-        self.xml_parser = XMLParser()
-        
-        # Job type mappings
-        self.job_tools = {
-            JobType.IMPORT_MOVIES: 'relion_import',
-            JobType.FS_MOTION_CTF: 'warptools',
-            JobType.TS_ALIGNMENT: 'aretomo',
-            JobType.MOTION_CORR: 'relion',
-            JobType.CTF_FIND: 'relion',
-            JobType.ALIGN_TILTS: 'relion',
-            JobType.RECONSTRUCTION: 'relion',
-            JobType.TEMPLATE_MATCHING: 'pytom',
-        }
-    
-    # ===== INITIALIZATION METHODS =====
-    
-    def initialize_from_mdoc(self, mdoc_glob: str, project_name: str = "default") -> PipelineParameters:
-        """Initialize parameters from mdoc files - main entry point"""
-        mdoc_meta = self.mdoc_parser.parse_mdoc_directory(mdoc_glob)
-        
-        microscope_params = MicroscopeParams(
-            microscope_type=MicroscopeType.CUSTOM,
-            voltage=mdoc_meta.voltage,
-            pixel_size=mdoc_meta.pixel_size,
-            acquisition_software=mdoc_meta.acquisition_software,
-            tilt_axis_angle=mdoc_meta.tilt_axis_angle
-        )
-        
-        tomogram_params = TomogramSetupParams(
-            dose_per_tilt=mdoc_meta.dose_per_tilt,
-            image_size=mdoc_meta.image_size,
-            reconstruction_pixel_size=mdoc_meta.pixel_size * 4,  # default 4x binning
-            tomogram_size=f"{mdoc_meta.image_size.split('x')[0]}x2048"
-        )
-        
-        self._current_params = PipelineParameters(
-            microscope=microscope_params,
-            tomogram_setup=tomogram_params,
-            project_name=project_name,
-            scheme_name=f"scheme_{project_name}"
-        )
-        
-        return self._current_params
-    
-    def initialize_from_preset(self, preset_name: str, project_name: str = "default") -> PipelineParameters:
-        """Initialize from microscope presets"""
-        presets = self._load_microscope_presets()
-        if preset_name not in presets:
-            raise ValueError(f"Unknown preset: {preset_name}. Available: {list(presets.keys())}")
-        
-        preset = presets[preset_name]
-        self._current_params = PipelineParameters(
-            microscope=preset['microscope'],
-            tomogram_setup=preset['tomogram_setup'],
-            project_name=project_name,
-            scheme_name=f"scheme_{project_name}"
-        )
-        
-        return self._current_params
-    
-    # ===== JOB PARAMETER MANAGEMENT =====
-    
-    def create_job_parameters(self, job_types: List[JobType]) -> None:
-        """Create default parameters for specified job types"""
-        if not self._current_params:
-            raise ValueError("Pipeline parameters not initialized")
-            
-        for job_type in job_types:
-            if job_type in [JobType.IMPORT_MOVIES, JobType.MOTION_CORR, JobType.CTF_FIND, 
-                           JobType.ALIGN_TILTS, JobType.RECONSTRUCTION]:
-                self._create_relion_job_params(job_type)
-            else:
-                self._create_external_job_params(job_type)
-    
-    def _create_relion_job_params(self, job_type: JobType):
-        """Create RELION native job parameters"""
-        computing_params = self._get_computing_params(job_type)
-        
-        base_params = {
-            'job_type': job_type,
-            'computing': computing_params,
-            'angpix': self._current_params.microscope.pixel_size,
-            'kV': self._current_params.microscope.voltage,
-        }
-        
-        if job_type == JobType.IMPORT_MOVIES:
-            params = RelionJobParams(
-                **base_params,
-                dose_rate=self._current_params.tomogram_setup.dose_per_tilt,
-                flip_tiltseries_hand="Yes" if self._current_params.tomogram_setup.invert_handedness else "No"
-            )
-        elif job_type == JobType.MOTION_CORR:
-            params = RelionJobParams(
-                **base_params,
-                eer_grouping=self._current_params.tomogram_setup.eer_grouping
-            )
-        elif job_type in [JobType.RECONSTRUCTION, JobType.ALIGN_TILTS]:
-            params = RelionJobParams(
-                **base_params,
-                binned_angpix=self._current_params.tomogram_setup.reconstruction_pixel_size
-            )
-        else:
-            params = RelionJobParams(**base_params)
-        
-        self._current_params.update_job_params(job_type, params)
-    
-    def _create_external_job_params(self, job_type: JobType):
-        """Create external job parameters"""
-        computing_params = self._get_computing_params(job_type)
-        
-        if job_type == JobType.FS_MOTION_CTF:
-            params = ExternalJobParams(
-                job_type=job_type,
-                computing=computing_params,
-                external_params={
-                    "eer_fractions": self._current_params.tomogram_setup.eer_grouping or 32,
-                    "bin_factor": 2,
-                    "angpix": self._current_params.microscope.pixel_size,
-                    "voltage": self._current_params.microscope.voltage,
-                    "cs": self._current_params.microscope.spherical_aberration,
-                }
-            )
-        elif job_type == JobType.TS_RECONSTRUCT:
-            params = ExternalJobParams(
-                job_type=job_type,
-                computing=computing_params,
-                external_params={
-                    "voxel_size": self._current_params.tomogram_setup.reconstruction_pixel_size,
-                    "tomogram_size": self._current_params.tomogram_setup.tomogram_size,
-                }
-            )
-        else:
-            params = ExternalJobParams(
-                job_type=job_type,
-                computing=computing_params,
-                external_params={}
-            )
-        
-        self._current_params.update_job_params(job_type, params)
-    
-    def _get_computing_params(self, job_type: JobType) -> ComputingParams:
-        """Get computing parameters for a job type"""
-        # Use simple computing service logic
-        simple_params = self._get_simple_computing_params(job_type)
-        return ComputingParams(**simple_params)
-    
-    def _get_simple_computing_params(self, job_type: JobType) -> Dict[str, Any]:
-        """Simple computing parameters (replaces SimpleComputingService)"""
-        default_params = {
-            "nodes": 1,
-            "partition": "g",
-            "gpus": 1,
-            "memory": "32G",
-            "threads": 8
-        }
-        
-        job_specific = {
-            JobType.IMPORT_MOVIES: {"partition": "c", "gpus": 0, "memory": "16G", "threads": 4},
-            JobType.FS_MOTION_CTF: {"partition": "g", "gpus": 1, "memory": "32G", "threads": 8},
-            JobType.MOTION_CORR: {"partition": "g", "gpus": 1, "memory": "32G", "threads": 8},
-        }
-        
-        return {**default_params, **job_specific.get(job_type, {})}
-    
-    # ===== PARAMETER PROPAGATION =====
-    
-    def propagate_parameter_change(self, param_path: str, new_value: Any) -> None:
-        """When a parameter changes, propagate to dependent jobs"""
-        if not self._current_params:
-            return
-            
-        # Example: if pixel_size changes
-        if param_path == "microscope.pixel_size":
-            self._propagate_pixel_size_change(new_value)
-        elif param_path == "tomogram_setup.dose_per_tilt":
-            self._propagate_dose_change(new_value)
-        elif param_path == "tomogram_setup.reconstruction_pixel_size":
-            self._propagate_reconstruction_pixel_size_change(new_value)
-    
-    def _propagate_pixel_size_change(self, new_pixel_size: float):
-        """Propagate pixel size change to relevant jobs"""
-        for job_type, job_params in self._current_params.job_parameters.items():
-            if isinstance(job_params, RelionJobParams) and job_params.angpix is not None:
-                job_params.angpix = new_pixel_size
-            elif isinstance(job_params, ExternalJobParams) and "angpix" in job_params.external_params:
-                job_params.external_params["angpix"] = new_pixel_size
-    
-    def _propagate_dose_change(self, new_dose: float):
-        """Propagate dose change to relevant jobs"""
-        for job_type, job_params in self._current_params.job_parameters.items():
-            if isinstance(job_params, RelionJobParams) and job_params.dose_rate is not None:
-                job_params.dose_rate = new_dose
-    
-    def _propagate_reconstruction_pixel_size_change(self, new_pixel_size: float):
-        """Propagate reconstruction pixel size change"""
-        for job_type, job_params in self._current_params.job_parameters.items():
-            if isinstance(job_params, RelionJobParams) and job_params.binned_angpix is not None:
-                job_params.binned_angpix = new_pixel_size
-            elif isinstance(job_params, ExternalJobParams) and "voxel_size" in job_params.external_params:
-                job_params.external_params["voxel_size"] = new_pixel_size
-    
-    # ===== JOB.STAR CONVERSION =====
-    
-    def to_job_star_dict(self, job_type: JobType) -> Dict[str, Any]:
-        """Convert parameters to job.star compatible dictionary"""
-        job_params = self._current_params.job_parameters.get(job_type)
-        if not job_params:
-            return {}
-        
-        star_dict = {}
-        
-        # Add computing parameters (qsub extras)
-        if job_params.computing:
-            star_dict.update(self._computing_to_qsub_params(job_params.computing))
-        
-        # Add job-specific parameters
-        if isinstance(job_params, RelionJobParams):
-            star_dict.update(self._relion_params_to_star(job_params))
-        elif isinstance(job_params, ExternalJobParams):
-            star_dict.update(self._external_params_to_star(job_params))
-        
-        return star_dict
-    
-    def _computing_to_qsub_params(self, computing: ComputingParams) -> Dict[str, Any]:
-        """Convert computing params to qsub format"""
-        return {
-            "qsub_extra1": str(computing.nodes),
-            "qsub_extra3": computing.partition,
-            "qsub_extra4": str(computing.gpus),
-            "qsub_extra5": computing.memory,
-            "nr_threads": str(computing.threads)
-        }
-    
-    def _relion_params_to_star(self, params: RelionJobParams) -> Dict[str, Any]:
-        """Convert RELION params to job.star format"""
-        star_dict = {}
-        for field, value in params.dict(exclude_none=True).items():
-            if field not in ['job_type', 'computing'] and value is not None:
-                star_dict[field] = str(value)
-        return star_dict
-    
-    def _external_params_to_star(self, params: ExternalJobParams) -> Dict[str, Any]:
-        """Convert external params to paramX_label/value format"""
-        star_dict = {}
-        for i, (key, value) in enumerate(params.external_params.items(), 1):
-            star_dict[f"param{i}_label"] = key
-            star_dict[f"param{i}_value"] = str(value)
-        return star_dict
-    
-    # ===== PRESET MANAGEMENT =====
-    
-    def _load_microscope_presets(self) -> Dict[str, Dict]:
-        """Load predefined microscope configurations"""
-        return {
-            "Krios_G3": {
-                'microscope': MicroscopeParams(
-                    microscope_type=MicroscopeType.KRIOS_G3,
-                    pixel_size=1.35,
-                    voltage=300,
-                    spherical_aberration=2.7,
-                    amplitude_contrast=0.1
-                ),
-                'tomogram_setup': TomogramSetupParams(
-                    dose_per_tilt=3.0,
-                    image_size="4096x4096",
-                    reconstruction_pixel_size=5.4,
-                    tomogram_size="4096x4096x2048"
-                )
-            },
-            "TFS_Glacios": {
-                'microscope': MicroscopeParams(
-                    microscope_type=MicroscopeType.GLACIOS,
-                    pixel_size=1.6,
-                    voltage=200,
-                    spherical_aberration=2.7,
-                    amplitude_contrast=0.1
-                ),
-                'tomogram_setup': TomogramSetupParams(
-                    dose_per_tilt=3.0,
-                    image_size="4096x4096",
-                    reconstruction_pixel_size=6.4,
-                    tomogram_size="4096x4096x2048"
-                )
+            computing_defaults = self.config_service.get_default_computing_params()
+            partition_map = {
+                'g': Partition.GPU,
+                'g-v100': Partition.GPU_V100,
+                'g-a100': Partition.GPU_A100,
+                'c': Partition.CPU,
+                'm': Partition.MEMORY
             }
+            
+            partition_enum = partition_map.get(computing_defaults['partition'], Partition.GPU)
+            
+            self.state.update_parameter("default_partition", partition_enum)
+            self.state.update_parameter("default_gpu_count", computing_defaults['gpu_count'])
+            self.state.update_parameter("default_memory_gb", computing_defaults['memory_gb'])
+            self.state.update_parameter("default_threads", computing_defaults['cpu_count'])
+            
+            print(f"[PARAMS] Initialized computing defaults from config: {computing_defaults}")
+        except Exception as e:
+            print(f"[WARN] Could not parse computing defaults from conf.yaml: {e}. Using model defaults.")
+
+
+    def export_for_project(self, 
+                          project_name: str,
+                          movies_glob: str,
+                          mdocs_glob: str,
+                          selected_jobs: List[str]) -> Dict[str, Any]:
+        """
+        Export a clean, hierarchical parameter configuration for the project.
+        """
+        # No need for this check anymore since state is never None
+        # if not self.state:
+        #     self._initialize_state_from_config()
+        
+        # Helper to extract clean param
+        def clean_param(param: Parameter, override_source: str = None) -> Dict[str, Any]:
+            return {
+                "value": param.value,
+                "description": param.description,
+                "source": override_source or param.source or "default"
+            }
+        
+        containers = self.config_service.get_config().containers or {}
+        
+        export = {
+            "metadata": {
+                "config_version": "1.0",
+                "created_by": "CryoBoost Parameter Manager",
+                "created_at": datetime.now().isoformat(),
+                "project_name": project_name
+            },
+            
+            "data_sources": {
+                "frames_glob": movies_glob,
+                "mdocs_glob": mdocs_glob,
+                "gain_reference": str(self.state.gain_reference_path.value) if self.state.gain_reference_path and self.state.gain_reference_path.value else None
+            },
+            
+            "containers": {
+                name: path for name, path in containers.items()
+            },
+            
+            "microscope": {
+                "type": clean_param(self.state.microscope_type),
+                "pixel_size_angstrom": clean_param(self.state.pixel_size_angstrom),
+                "acceleration_voltage_kv": clean_param(self.state.acceleration_voltage_kv),
+                "spherical_aberration_mm": clean_param(self.state.spherical_aberration_mm),
+                "amplitude_contrast": clean_param(self.state.amplitude_contrast),
+            },
+            
+            "acquisition": {
+                "dose_per_tilt": clean_param(self.state.dose_per_tilt),
+                "detector_dimensions": {
+                    "value": self.state.detector_dimensions.value,
+                    "description": self.state.detector_dimensions.description,
+                    "source": self.state.detector_dimensions.source or "default"
+                },
+                "tilt_axis_degrees": clean_param(self.state.tilt_axis_degrees),
+                "eer_fractions_per_frame": clean_param(self.state.eer_fractions_per_frame) if self.state.eer_fractions_per_frame else None,
+            },
+            
+            "computing": {
+                "default_partition": clean_param(self.state.default_partition, override_source="conf.yaml"),
+                "default_gpu_count": clean_param(self.state.default_gpu_count, override_source="conf.yaml"),
+                "default_memory_gb": clean_param(self.state.default_memory_gb, override_source="conf.yaml"),
+                "default_threads": clean_param(self.state.default_threads, override_source="conf.yaml"),,
+            },
+            
+            "jobs": self._export_job_parameters(selected_jobs)
         }
-    
-    # ===== PERSISTENCE =====
-    
-    def save_to_project(self, project_path: Path) -> None:
-        """Save parameters to project directory"""
-        if self._current_params:
-            param_file = project_path / "pipeline_parameters.yaml"
-            with open(param_file, 'w') as f:
-                yaml.dump(self._current_params.dict(), f)
-    
-    def load_from_project(self, project_path: Path) -> Optional[PipelineParameters]:
-        """Load parameters from project directory"""
-        param_file = project_path / "pipeline_parameters.yaml"
-        if param_file.exists():
-            with open(param_file, 'r') as f:
-                data = yaml.safe_load(f)
-            self._current_params = PipelineParameters(**data)
-            return self._current_params
-        return None
-    
-    # ===== VALIDATION =====
-    
-    def validate_parameters(self) -> Dict[str, Any]:
-        """Validate current parameters"""
-        if not self._current_params:
-            return {"valid": False, "errors": ["No parameters loaded"]}
         
-        errors = []
-        warnings = []
+        return export
         
-        # Validate microscope parameters
-        micro = self._current_params.microscope
-        if micro.pixel_size < 0.5 or micro.pixel_size > 10:
-            warnings.append(f"Pixel size {micro.pixel_size} seems unusual")
-        if micro.voltage not in [200, 300]:
-            warnings.append(f"Voltage {micro.voltage} kV is non-standard")
+
+    def _export_job_parameters(self, selected_jobs: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract job-specific parameters for each selected job.
+        This is where we'd pull from job.star defaults + overrides.
+        """
+        job_params = {}
         
-        # Validate tomogram setup
-        tomo = self._current_params.tomogram_setup
-        if tomo.dose_per_tilt < 0.1 or tomo.dose_per_tilt > 9:
-            errors.append(f"Dose per tilt {tomo.dose_per_tilt} is out of reasonable range")
+        for job_name in selected_jobs:
+            if job_name == 'importmovies':
+                job_params[job_name] = {
+                    "nominal_tilt_axis_angle": {
+                        "value": self.state.tilt_axis_degrees.value,
+                        "description": "Tilt axis angle for import",
+                        "source": self.state.tilt_axis_degrees.source or "default"
+                    },
+                    "nominal_pixel_size": {
+                        "value": self.state.pixel_size_angstrom.value,
+                        "description": "Pixel size for import",
+                        "source": self.state.pixel_size_angstrom.source or "default"
+                    },
+                    "voltage": {
+                        "value": self.state.acceleration_voltage_kv.value,
+                        "description": "Acceleration voltage",
+                        "source": self.state.acceleration_voltage_kv.source or "default"
+                    },
+                    "spherical_aberration": {
+                        "value": self.state.spherical_aberration_mm.value,
+                        "description": "Spherical aberration",
+                        "source": self.state.spherical_aberration_mm.source or "default"
+                    },
+                    "amplitude_contrast": {
+                        "value": self.state.amplitude_contrast.value,
+                        "description": "Amplitude contrast",
+                        "source": self.state.amplitude_contrast.source or "default"
+                    },
+                    "dose_per_tilt_image": {
+                        "value": self.state.dose_per_tilt.value,
+                        "description": "Dose per tilt image",
+                        "source": self.state.dose_per_tilt.source or "default"
+                    }
+                }
+            
+            elif job_name == 'fsMotionAndCtf':
+                job_params[job_name] = {
+                    "angpix": {
+                        "value": self.state.pixel_size_angstrom.value,
+                        "description": "Pixel size for motion correction",
+                        "source": self.state.pixel_size_angstrom.source or "default"
+                    },
+                    "eer_ngroups": {
+                        "value": self.state.eer_fractions_per_frame.value if self.state.eer_fractions_per_frame else 32,
+                        "description": "EER fractions grouping",
+                        "source": self.state.eer_fractions_per_frame.source if self.state.eer_fractions_per_frame else "default"
+                    },
+                    "voltage": {
+                        "value": self.state.acceleration_voltage_kv.value,
+                        "description": "Acceleration voltage",
+                        "source": self.state.acceleration_voltage_kv.source or "default"
+                    },
+                    "cs": {
+                        "value": self.state.spherical_aberration_mm.value,
+                        "description": "Spherical aberration",
+                        "source": self.state.spherical_aberration_mm.source or "default"
+                    },
+                    "amplitude": {
+                        "value": self.state.amplitude_contrast.value,
+                        "description": "Amplitude contrast",
+                        "source": self.state.amplitude_contrast.source or "default"
+                    }
+                }
+            
+            elif job_name == 'tsAlignment':
+                job_params[job_name] = {
+                    "binning": {
+                        "value": self.state.reconstruction_binning.value,
+                        "description": "Alignment binning",
+                        "source": self.state.reconstruction_binning.source or "default"
+                    },
+                    "alignment_method": {
+                        "value": self.state.alignment_method.value,
+                        "description": "Alignment algorithm",
+                        "source": self.state.alignment_method.source or "default"
+                    }
+                }
+            
+            # Add more jobs as you implement them...
+        
+        return job_params
+
+
+    def update_parameter_from_ui(self, param_name: str, value: Any, mark_as_user_input: bool = True):
+        """Update a parameter from the UI, automatically marking source as 'user_input'"""
+        try:
+            self.state.update_parameter(param_name, value)
+            
+            if mark_as_user_input:
+                param = getattr(self.state, param_name)
+                if isinstance(param, Parameter):
+                    param.source = "user_input"
+            
+            print(f"[PARAMS] Updated {param_name} = {value} (source: {'user_input' if mark_as_user_input else 'unchanged'})")
+        except Exception as e:
+            print(f"[ERROR] Failed to update parameter {param_name}: {e}")
+            raise
+
+    def get_unified_config_dict(self) -> Dict[str, Any]:
+        """Export EVERYTHING as one unified configuration dict"""
+        unified = json.loads(self.state.json())
+        
+        unified['_metadata'] = {
+            'config_version': '1.0',
+            'created_by': 'CryoBoost Parameter Manager',
+            'parameter_sources': self._get_parameter_sources()
+        }
+        
+        unified['computing_config'] = {
+            'default_partition': self.state.default_partition.value.value,
+            'default_gpu_count': self.state.default_gpu_count.value,
+            'default_memory_gb': self.state.default_memory_gb.value,
+            'default_threads': self.state.default_threads.value,
+        }
+        
+        return unified
+    
+
+    
+    def load_unified_config(self, path: Path):
+            """Load a previously saved unified configuration"""
+            try:
+                with open(path, 'r') as f:
+                    data = json.load(f)
+                
+                # Remove metadata before loading into state
+                data.pop('_metadata', None)
+                data.pop('computing_config', None)  # This is derived from other params
+                
+                self.state = PipelineState(**data)
+                print(f"[PARAMS] Loaded unified config from {path}")
+            except Exception as e:
+                print(f"[ERROR] Failed to load unified config from {path}: {e}")
+ 
+    def get_state_as_dict(self) -> Dict[str, Any]:
+        """Return the current state as a serializable dict"""
+        # No need to check anymore
+        return json.loads(self.state.json())
+
+    def save_unified_config(self, path: Path):
+        """Save the complete unified configuration to JSON"""
+        try:
+            unified_config = self.get_unified_config_dict()
+            path.write_text(json.dumps(unified_config, indent=2))
+            print(f"[PARAMS] Saved unified config to {path}")
+        except Exception as e:
+            print(f"[ERROR] Failed to save unified config to {path}: {e}")
+
+    def _get_parameter_sources(self) -> Dict[str, str]:
+        """Track where each parameter value came from"""
+        sources = {}
+        if self.state:
+            for field_name in self.state.__fields__.keys():
+                param = getattr(self.state, field_name)
+                if isinstance(param, Parameter) and param.source:
+                    sources[field_name] = param.source
+        return sources
+
+    def _parse_mdoc(self, mdoc_path: Path) -> Dict[str, Any]:
+        """
+        Parses an .mdoc file into a header string and a list of data dictionaries.
+        (Logic lifted from data_import_service.py)
+        """
+        header_lines = []
+        data_sections = []
+        current_section = {}
+        in_zvalue_section = False
+        header_data = {}
+
+        with open(mdoc_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+
+                if line.startswith('[ZValue'):
+                    if current_section:
+                        data_sections.append(current_section)
+                    current_section = {'ZValue': line.split('=')[1].strip().strip(']')}
+                    in_zvalue_section = True
+                elif in_zvalue_section and '=' in line:
+                    key, value = [x.strip() for x in line.split('=', 1)]
+                    current_section[key] = value
+                elif not in_zvalue_section:
+                    header_lines.append(line)
+                    if '=' in line:
+                        key, value = [x.strip() for x in line.split('=', 1)]
+                        header_data[key] = value
+
+        if current_section:
+            data_sections.append(current_section)
+
+        return {'header': "\n".join(header_lines), 'header_data': header_data, 'data': data_sections}
+
+    def autodetect_from_mdoc(self, mdocs_glob: str) -> Optional[PipelineState]:
+        """
+        Finds the first mdoc file, parses it, and updates the state.
+        Returns the updated state.
+        """
+        mdoc_files = glob.glob(mdocs_glob)
+        if not mdoc_files:
+            print(f"[WARN] No mdoc files found at: {mdocs_glob}")
+            return self.state
+
+        try:
+            first_mdoc_path = Path(mdoc_files[0])
+            parsed_mdoc = self._parse_mdoc(first_mdoc_path)
+            
+            header = parsed_mdoc['header_data']
+            first_section = parsed_mdoc['data'][0] if parsed_mdoc['data'] else {}
+
+            # Extract values, preferring header, falling back to first section
+            pixel_spacing = float(header.get('PixelSpacing', first_section.get('PixelSpacing', 1.0)))
+            voltage = float(header.get('Voltage', first_section.get('Voltage', 300)))
+            image_size_str = header.get('ImageSize', first_section.get('ImageSize', '4096x4096')).replace(' ', 'x')
+            
+            # ExposureDose and TiltAxisAngle are often in the sections
+            exposure_dose = float(first_section.get('ExposureDose', header.get('ExposureDose', 3.0)))
+            tilt_axis_angle = float(first_section.get('TiltAxisAngle', header.get('Tilt axis angle', -95.0)))
+
+            raw_data = RawMdocData(
+                pixel_spacing=pixel_spacing,
+                voltage=voltage,
+                exposure_dose=exposure_dose,
+                image_size_str=image_size_str,
+                tilt_axis_angle=tilt_axis_angle,
+                is_serialem="SerialEM" in parsed_mdoc['header'],
+                num_mdoc_files=len(mdoc_files)
+            )
+
+            # Use the existing initializer from your draft
+            self.initialize_from_mdoc(raw_data)
+            return self.state
+
+        except Exception as e:
+            print(f"[ERROR] Failed to parse mdoc {mdoc_files[0]}: {e}")
+            return self.state
+
+    def initialize_from_mdoc(self, mdoc_data: RawMdocData) -> PipelineState:
+        """Initialize with validated, typed parameters from mdoc"""
+        
+        # Calculate and validate dose per tilt
+        # (This logic was in your draft and is good)
+        dose_per_tilt = mdoc_data.exposure_dose * 1.5
+        dose_per_tilt = max(0.1, min(9.0, dose_per_tilt))  # Clamp to valid range
+        
+        if not self.state:
+            self.state = PipelineState()
+        
+        # Update with mdoc values (with validation)
+        self.state.update_parameter("pixel_size_angstrom", mdoc_data.pixel_spacing)
+        self.state.pixel_size_angstrom.source = "mdoc"
+        
+        self.state.update_parameter("acceleration_voltage_kv", mdoc_data.voltage)
+        self.state.acceleration_voltage_kv.source = "mdoc"
+        
+        self.state.update_parameter("dose_per_tilt", dose_per_tilt)
+        self.state.dose_per_tilt.source = "mdoc"
+        
+        self.state.update_parameter("detector_dimensions", mdoc_data.image_dimensions)
+        self.state.detector_dimensions.source = "mdoc"
+        
+        self.state.update_parameter("tilt_axis_degrees", mdoc_data.tilt_axis_angle)
+        self.state.tilt_axis_degrees.source = "mdoc"
+        
+        # Set EER if K3 detected
+        if "5760" in mdoc_data.image_size_str or "11520" in mdoc_data.image_size_str:
+            self.state.eer_fractions_per_frame = IntParam(
+                value=32,
+                min_value=1,
+                max_value=100,
+                description="EER fractions for K3"
+            )
+        
+        # Validate everything
+        issues = self.state.validate_all()
+        if issues["errors"]:
+            print(f"Parameter errors: {issues['errors']}")
+        if issues["warnings"]:
+            print(f"Parameter warnings: {issues['warnings']}")
+        
+        return self.state
+
+
+            
+    def get_legacy_user_params_dict(self) -> Dict[str, Any]:
+        """
+        *** ADAPTER METHOD ***
+        This is the Layer 3 adapter that translates the new PipelineState
+        into the old `user_params` dict that pipeline_orchestrator expects.
+        This respects the constraint of not changing the command builders.
+        """
+        if not self.state:
+            self.state = PipelineState()
+            
+        s = self.state
         
         return {
-            "valid": len(errors) == 0,
-            "errors": errors,
-            "warnings": warnings
+            # For _build_import_movies_command
+            "nominal_tilt_axis_angle": str(s.tilt_axis_degrees.value),
+            "nominal_pixel_size": str(s.pixel_size_angstrom.value),
+            "voltage": str(s.acceleration_voltage_kv.value),
+            "spherical_aberration": str(s.spherical_aberration_mm.value),
+            "amplitude_contrast": str(s.amplitude_contrast.value),
+            "dose_per_tilt_image": str(s.dose_per_tilt.value),
+            
+            # For _build_warp_fs_motion_ctf_command
+            "angpix": str(s.pixel_size_angstrom.value),
+            "cs": str(s.spherical_aberration_mm.value),
+            "amplitude": str(s.amplitude_contrast.value),
+            
+            # Add other common params
+            "eer_fractions": str(s.eer_fractions_per_frame.value) if s.eer_fractions_per_frame else "32",
         }
 
-# ===== SERVICE INSTANTIATION =====
 
 @lru_cache()
-def get_parameter_service() -> ParameterService:
-    return ParameterService()
+def get_parameter_manager() -> ParameterManager:
+    return ParameterManager()
