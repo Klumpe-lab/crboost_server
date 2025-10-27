@@ -4,7 +4,6 @@ import os
 import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
-from models import User
 import pandas as pd
 import yaml
 import subprocess
@@ -17,6 +16,13 @@ from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
 from services.parameters_service import get_parameter_manager
+from pydantic import BaseModel, Field
+from pathlib import Path
+import uuid
+
+class User(BaseModel):
+    """Represents an authenticated user."""
+    username: str
 
 HARDCODED_USER = User(username="artem.kushner")
 
@@ -102,15 +108,6 @@ class CryoBoostBackend:
                     "error": f"Project created but failed to save parameters: {str(e)}"
                 }
                 
-            except Exception as e:
-                print(f"[ERROR] Failed to save project_params.json: {e}")
-                import traceback
-                traceback.print_exc()
-                # Don't fail the entire project creation, but warn loudly
-                return {
-                    "success": False, 
-                    "error": f"Project created but failed to save parameters: {str(e)}"
-                }
             
             # Collect bind paths
             additional_bind_paths = {
