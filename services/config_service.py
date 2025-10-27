@@ -29,7 +29,7 @@ class ComputingPartition(BaseModel):
     """Computing partition with Parameter-based fields"""
     NrGPU: IntParam
     NrCPU: IntParam
-    RAM: StrParam  # Kept as string since it includes unit (e.g., "32G")
+    RAM: StrParam  
     VRAM: StrParam
     
     @classmethod

@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from models import User
 import pandas as pd
-
 import yaml
 import subprocess
 import glob
@@ -45,9 +44,6 @@ class CryoBoostBackend:
         movies_glob: str, 
         mdocs_glob: str
     ):
-        """
-        Creates project structure, scheme, AND saves unified parameter config
-        """
         try:
 
             project_dir = Path(project_base_path).expanduser() / project_name
