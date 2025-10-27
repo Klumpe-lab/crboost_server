@@ -16,6 +16,7 @@ from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
 from services.parameters_service import get_parameter_manager
+from services.parameter_manager import ParameterManagerV2
 from pydantic import BaseModel, Field
 from pathlib import Path
 import uuid
@@ -34,6 +35,8 @@ class CryoBoostBackend:
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
         self.parameter_manager = get_parameter_manager()
+        # self.parameter_manager = ParameterManagerV2()  # NEW
+
 
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
