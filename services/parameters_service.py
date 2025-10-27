@@ -1,7 +1,5 @@
 # services/parameters_service.py
 
-if TYPE_CHECKING:
-    from typing import TYPE_CHECKING
 
 from datetime import datetime
 import glob
@@ -343,7 +341,7 @@ class ParameterManager:
                 "default_partition": clean_param(self.state.default_partition, override_source="conf.yaml"),
                 "default_gpu_count": clean_param(self.state.default_gpu_count, override_source="conf.yaml"),
                 "default_memory_gb": clean_param(self.state.default_memory_gb, override_source="conf.yaml"),
-                "default_threads": clean_param(self.state.default_threads, override_source="conf.yaml"),,
+                "default_threads": clean_param(self.state.default_threads, override_source="conf.yaml"),
             },
             
             "jobs": self._export_job_parameters(selected_jobs)
