@@ -31,7 +31,6 @@ class ContainerService:
         if not Path(container_path).exists():
             return command
         
-        # Build bind mounts (your existing logic)
         binds = set()
         essential_paths = ["/tmp", "/scratch", str(Path.home()), str(cwd.resolve())]
         for p in essential_paths:

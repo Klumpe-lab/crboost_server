@@ -11,10 +11,6 @@ from pathlib import Path
 from functools import lru_cache
 
 
-# Note: We are NOT using JobParams/ImportMoviesParams for now
-# to respect the constraint of not changing the pipeline_orchestrator's
-# command builders. We will use `get_legacy_user_params_dict` instead.
-
 T = TypeVar('T')
 
 class Parameter(BaseModel, Generic[T]):
@@ -27,6 +23,14 @@ class Parameter(BaseModel, Generic[T]):
     choices: Optional[List[T]] = None
     description: Optional[str] = None
     source: Optional[str] = None
+
+    def copy(self, **kwargs) -> 'Parameter[T]':
+        """Create a copy of the parameter with optional updates"""
+        return self.__class__(**{**self.dict(), **kwargs})
+
+    def dict(self, **kwargs) -> Dict[str, Any]:
+        """Convert to dictionary, compatible with Pydantic"""
+        return super().dict(**kwargs)
 
     @validator('value')
     def validate_constraints(cls, v, values):
@@ -254,28 +258,97 @@ class ParameterManager:
         self._initialize_state_from_config()
 
     def _initialize_state_from_config(self):
-        """Initialize the default PipelineState from conf.yaml"""
-        # self.state is already initialized above, just update it
+            """Initialize the default PipelineState from conf.yaml"""
+            try:
+                computing_defaults = self.config_service.get_default_computing_params()
+                partition_map = {
+                    'g': Partition.GPU,
+                    'g-v100': Partition.GPU_V100,
+                    'g-a100': Partition.GPU_A100,
+                    'c': Partition.CPU,
+                    'm': Partition.MEMORY
+                }
+                
+                partition_enum = partition_map.get(computing_defaults['partition'], Partition.GPU)
+                
+                # Update parameters directly
+                self.state.default_partition.value = partition_enum
+                self.state.default_partition.source = "conf.yaml"
+                
+                self.state.default_gpu_count.value = computing_defaults['gpu_count']
+                self.state.default_gpu_count.source = "conf.yaml"
+                
+                self.state.default_memory_gb.value = computing_defaults['memory_gb']
+                self.state.default_memory_gb.source = "conf.yaml"
+                
+                self.state.default_threads.value = computing_defaults['cpu_count']
+                self.state.default_threads.source = "conf.yaml"
+                
+                print(f"[PARAMS] Initialized computing defaults from config: {computing_defaults}")
+            except Exception as e:
+                print(f"[WARN] Could not parse computing defaults from conf.yaml: {e}. Using model defaults.")
+
+    def update_parameter_from_ui(self, param_name: str, value: Any, mark_as_user_input: bool = True):
+        """Update a parameter from the UI, automatically marking source as 'user_input'"""
         try:
-            computing_defaults = self.config_service.get_default_computing_params()
-            partition_map = {
-                'g': Partition.GPU,
-                'g-v100': Partition.GPU_V100,
-                'g-a100': Partition.GPU_A100,
-                'c': Partition.CPU,
-                'm': Partition.MEMORY
-            }
+            if not hasattr(self.state, param_name):
+                raise AttributeError(f"Parameter '{param_name}' not found")
             
-            partition_enum = partition_map.get(computing_defaults['partition'], Partition.GPU)
+            param = getattr(self.state, param_name)
+            if not isinstance(param, Parameter):
+                raise TypeError(f"'{param_name}' is not a Parameter instance")
             
-            self.state.update_parameter("default_partition", partition_enum)
-            self.state.update_parameter("default_gpu_count", computing_defaults['gpu_count'])
-            self.state.update_parameter("default_memory_gb", computing_defaults['memory_gb'])
-            self.state.update_parameter("default_threads", computing_defaults['cpu_count'])
+            param.value = value
             
-            print(f"[PARAMS] Initialized computing defaults from config: {computing_defaults}")
+            if mark_as_user_input:
+                param.source = "user_input"
+            
+            print(f"[PARAMS] Updated {param_name} = {value} (source: {'user_input' if mark_as_user_input else 'unchanged'})")
         except Exception as e:
-            print(f"[WARN] Could not parse computing defaults from conf.yaml: {e}. Using model defaults.")
+            print(f"[ERROR] Failed to update parameter {param_name}: {e}")
+            raise
+
+    def initialize_from_mdoc(self, mdoc_data: RawMdocData) -> PipelineState:
+        """Initialize with validated, typed parameters from mdoc"""
+        
+        # Calculate and validate dose per tilt
+        dose_per_tilt = mdoc_data.exposure_dose * 1.5
+        dose_per_tilt = max(0.1, min(9.0, dose_per_tilt))  # Clamp to valid range
+        
+        # Update parameters directly
+        self.state.pixel_size_angstrom.value = mdoc_data.pixel_spacing
+        self.state.pixel_size_angstrom.source = "mdoc"
+        
+        self.state.acceleration_voltage_kv.value = mdoc_data.voltage
+        self.state.acceleration_voltage_kv.source = "mdoc"
+        
+        self.state.dose_per_tilt.value = dose_per_tilt
+        self.state.dose_per_tilt.source = "mdoc"
+        
+        self.state.detector_dimensions.value = mdoc_data.image_dimensions
+        self.state.detector_dimensions.source = "mdoc"
+        
+        self.state.tilt_axis_degrees.value = mdoc_data.tilt_axis_angle
+        self.state.tilt_axis_degrees.source = "mdoc"
+        
+        # Set EER if K3 detected
+        if "5760" in mdoc_data.image_size_str or "11520" in mdoc_data.image_size_str:
+            self.state.eer_fractions_per_frame = IntParam(
+                value=32,
+                min_value=1,
+                max_value=100,
+                description="EER fractions for K3",
+                source="mdoc"
+            )
+        
+        # Validate everything
+        issues = self.state.validate_all()
+        if issues["errors"]:
+            print(f"Parameter errors: {issues['errors']}")
+        if issues["warnings"]:
+            print(f"Parameter warnings: {issues['warnings']}")
+        
+        return self.state
 
 
     def export_for_project(self, 
@@ -283,14 +356,7 @@ class ParameterManager:
                           movies_glob: str,
                           mdocs_glob: str,
                           selected_jobs: List[str]) -> Dict[str, Any]:
-        """
-        Export a clean, hierarchical parameter configuration for the project.
-        """
-        # No need for this check anymore since state is never None
-        # if not self.state:
-        #     self._initialize_state_from_config()
-        
-        # Helper to extract clean param
+
         def clean_param(param: Parameter, override_source: str = None) -> Dict[str, Any]:
             return {
                 "value": param.value,
@@ -351,10 +417,6 @@ class ParameterManager:
         
 
     def _export_job_parameters(self, selected_jobs: List[str]) -> Dict[str, Dict[str, Any]]:
-        """
-        Extract job-specific parameters for each selected job.
-        This is where we'd pull from job.star defaults + overrides.
-        """
         job_params = {}
         
         for job_name in selected_jobs:
@@ -440,20 +502,6 @@ class ParameterManager:
         return job_params
 
 
-    def update_parameter_from_ui(self, param_name: str, value: Any, mark_as_user_input: bool = True):
-        """Update a parameter from the UI, automatically marking source as 'user_input'"""
-        try:
-            self.state.update_parameter(param_name, value)
-            
-            if mark_as_user_input:
-                param = getattr(self.state, param_name)
-                if isinstance(param, Parameter):
-                    param.source = "user_input"
-            
-            print(f"[PARAMS] Updated {param_name} = {value} (source: {'user_input' if mark_as_user_input else 'unchanged'})")
-        except Exception as e:
-            print(f"[ERROR] Failed to update parameter {param_name}: {e}")
-            raise
 
     def get_unified_config_dict(self) -> Dict[str, Any]:
         """Export EVERYTHING as one unified configuration dict"""
@@ -477,7 +525,6 @@ class ParameterManager:
 
     
     def load_unified_config(self, path: Path):
-            """Load a previously saved unified configuration"""
             try:
                 with open(path, 'r') as f:
                     data = json.load(f)
@@ -492,8 +539,6 @@ class ParameterManager:
                 print(f"[ERROR] Failed to load unified config from {path}: {e}")
  
     def get_state_as_dict(self) -> Dict[str, Any]:
-        """Return the current state as a serializable dict"""
-        # No need to check anymore
         return json.loads(self.state.json())
 
     def save_unified_config(self, path: Path):
@@ -587,59 +632,12 @@ class ParameterManager:
                 num_mdoc_files=len(mdoc_files)
             )
 
-            # Use the existing initializer from your draft
             self.initialize_from_mdoc(raw_data)
             return self.state
 
         except Exception as e:
             print(f"[ERROR] Failed to parse mdoc {mdoc_files[0]}: {e}")
             return self.state
-
-    def initialize_from_mdoc(self, mdoc_data: RawMdocData) -> PipelineState:
-        """Initialize with validated, typed parameters from mdoc"""
-        
-        # Calculate and validate dose per tilt
-        # (This logic was in your draft and is good)
-        dose_per_tilt = mdoc_data.exposure_dose * 1.5
-        dose_per_tilt = max(0.1, min(9.0, dose_per_tilt))  # Clamp to valid range
-        
-        if not self.state:
-            self.state = PipelineState()
-        
-        # Update with mdoc values (with validation)
-        self.state.update_parameter("pixel_size_angstrom", mdoc_data.pixel_spacing)
-        self.state.pixel_size_angstrom.source = "mdoc"
-        
-        self.state.update_parameter("acceleration_voltage_kv", mdoc_data.voltage)
-        self.state.acceleration_voltage_kv.source = "mdoc"
-        
-        self.state.update_parameter("dose_per_tilt", dose_per_tilt)
-        self.state.dose_per_tilt.source = "mdoc"
-        
-        self.state.update_parameter("detector_dimensions", mdoc_data.image_dimensions)
-        self.state.detector_dimensions.source = "mdoc"
-        
-        self.state.update_parameter("tilt_axis_degrees", mdoc_data.tilt_axis_angle)
-        self.state.tilt_axis_degrees.source = "mdoc"
-        
-        # Set EER if K3 detected
-        if "5760" in mdoc_data.image_size_str or "11520" in mdoc_data.image_size_str:
-            self.state.eer_fractions_per_frame = IntParam(
-                value=32,
-                min_value=1,
-                max_value=100,
-                description="EER fractions for K3"
-            )
-        
-        # Validate everything
-        issues = self.state.validate_all()
-        if issues["errors"]:
-            print(f"Parameter errors: {issues['errors']}")
-        if issues["warnings"]:
-            print(f"Parameter warnings: {issues['warnings']}")
-        
-        return self.state
-
 
             
     def get_legacy_user_params_dict(self) -> Dict[str, Any]:
@@ -653,7 +651,12 @@ class ParameterManager:
             self.state = PipelineState()
             
         s = self.state
-        
+        eer_fractions_value = s.eer_fractions_per_frame.value if s.eer_fractions_per_frame else 32
+        # FORCE POSITIVE VALUE
+        if eer_fractions_value <= 0:
+            eer_fractions_value = 32
+            
+            
         return {
             # For _build_import_movies_command
             "nominal_tilt_axis_angle": str(s.tilt_axis_degrees.value),
