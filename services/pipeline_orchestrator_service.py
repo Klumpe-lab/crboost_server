@@ -24,7 +24,7 @@ from .container_service import get_container_service
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
-    from services.parameter_manager import ParameterManagerV2
+    from services.parameter_manager import ParameterManager
 
 class PipelineOrchestratorService:
     """
@@ -173,7 +173,7 @@ class PipelineOrchestratorService:
             base_scheme_name = base_template_path.name
 
             # NEW: Get the parameter manager from the backend
-            param_manager: 'ParameterManagerV2' = self.backend.parameter_manager
+            param_manager: 'ParameterManager' = self.backend.parameter_manager
 
             # NEW: Use enumerate to get job index for path generation
             for job_index, job_name in enumerate(selected_jobs):

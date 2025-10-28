@@ -15,10 +15,6 @@ class DataImportService:
     """
 
     def _parse_mdoc(self, mdoc_path: Path) -> Dict[str, Any]:
-        """
-        Parses an .mdoc file into a header string and a list of data dictionaries.
-        Lifts logic from `mdocMeta.readMdoc`.
-        """
         header_lines = []
         data_sections = []
         current_section = {}

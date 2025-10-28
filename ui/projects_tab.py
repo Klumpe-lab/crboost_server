@@ -1,5 +1,4 @@
-# ui/projects_tab.py - CORRECTED VERSION 2
-
+# ui/projects_tab.py
 import asyncio
 import glob
 import math
@@ -9,9 +8,7 @@ from backend import CryoBoostBackend
 from ui.utils import create_path_input_with_picker
 from typing import Dict, Any, Callable
 
-# Helper to make labels look nice
 def _snake_to_title(snake_str: str) -> str:
-    """Converts 'snake_case_string' to 'Snake Case String'"""
     return ' '.join(word.capitalize() for word in snake_str.split('_'))
 
 def build_projects_tab(backend: CryoBoostBackend):
@@ -22,7 +19,7 @@ def build_projects_tab(backend: CryoBoostBackend):
         "current_scheme_name": None,
         "auto_detected_values": {},
         "job_param_tabs": {},
-        "job_param_inputs": {}, # To store created UI elements
+        "job_param_inputs": {},
     }
     
     job_log_displays = {}
@@ -44,36 +41,18 @@ def build_projects_tab(backend: CryoBoostBackend):
 
     async def _update_ui_from_state(state_dict: Dict[str, Any]):
         try:
-            # NEW: Handle hierarchical state structure
-            # Check if we have the new hierarchical format or old flat format
-            if 'microscope' in state_dict and 'acquisition' in state_dict:
-                # Hierarchical format (new)
-                pixel_size_input.set_value(state_dict['microscope']['pixel_size_angstrom'])
-                voltage_input.set_value(state_dict['microscope']['acceleration_voltage_kv'])
-                cs_input.set_value(state_dict['microscope']['spherical_aberration_mm'])
-                amplitude_contrast_input.set_value(state_dict['microscope']['amplitude_contrast'])
-                dose_per_tilt_input.set_value(state_dict['acquisition']['dose_per_tilt'])
-                dims = state_dict['acquisition']['detector_dimensions']
-                image_size_input.set_value(f"{dims[0]}x{dims[1]}")
-                tilt_axis_input.set_value(state_dict['acquisition']['tilt_axis_degrees'])
-                
-                if state_dict['acquisition'].get('eer_fractions_per_frame'):
-                    eer_grouping_input.set_value(state_dict['acquisition']['eer_fractions_per_frame'])
-            else:
-                # Legacy flat format (fallback)
-                pixel_size_input.set_value(state_dict['pixel_size_angstrom']['value'])
-                voltage_input.set_value(state_dict['acceleration_voltage_kv']['value'])
-                cs_input.set_value(state_dict['spherical_aberration_mm']['value'])
-                amplitude_contrast_input.set_value(state_dict['amplitude_contrast']['value'])
-                dose_per_tilt_input.set_value(state_dict['dose_per_tilt']['value'])
-                dims = state_dict['detector_dimensions']['value']
-                image_size_input.set_value(f"{dims[0]}x{dims[1]}")
-                tilt_axis_input.set_value(state_dict['tilt_axis_degrees']['value'])
-                
-                if state_dict.get('eer_fractions_per_frame') and state_dict['eer_fractions_per_frame']['value']:
-                    eer_grouping_input.set_value(state_dict['eer_fractions_per_frame']['value'])
+            pixel_size_input.set_value(state_dict['microscope']['pixel_size_angstrom'])
+            voltage_input.set_value(state_dict['microscope']['acceleration_voltage_kv'])
+            cs_input.set_value(state_dict['microscope']['spherical_aberration_mm'])
+            amplitude_contrast_input.set_value(state_dict['microscope']['amplitude_contrast'])
+            dose_per_tilt_input.set_value(state_dict['acquisition']['dose_per_tilt'])
+            dims = state_dict['acquisition']['detector_dimensions']
+            image_size_input.set_value(f"{dims[0]}x{dims[1]}")
+            tilt_axis_input.set_value(state_dict['acquisition']['tilt_axis_degrees'])
+            
+            if state_dict['acquisition'].get('eer_fractions_per_frame'):
+                eer_grouping_input.set_value(state_dict['acquisition']['eer_fractions_per_frame'])
 
-            # Update job parameters if they are already loaded
             if 'jobs' in state_dict:
                 for job_name, params in state_dict['jobs'].items():
                     if job_name in state['job_param_inputs']:
@@ -85,7 +64,6 @@ def build_projects_tab(backend: CryoBoostBackend):
             print(f"[ERROR] Failed to update UI: {e}")
 
     async def on_param_change(param_name: str, value: Any, cast_func: Callable):
-        """Updates GLOBAL (microscope, acquisition) parameters"""
         try:
             casted_value = cast_func(value)
             # This still works because the backend maps flat names
@@ -97,14 +75,9 @@ def build_projects_tab(backend: CryoBoostBackend):
             print(f"[UI] Error updating global {param_name}: {e}")
 
     async def on_job_param_change(job_name: str, param_name: str, value: Any, cast_func: Callable):
-        """Updates JOB-SPECIFIC parameters - NO FUCKING MAPPING"""
         try:
             casted_value = cast_func(value)
-            
-            # JUST USE THE ACTUAL PARAMETER PATH - NO MAPPING BULLSHIT
             hierarchical_path = f"jobs.{job_name}.{param_name}"
-            
-            print(f"[UI DIRECT] Updating {hierarchical_path} = {casted_value}")
             await backend.update_parameter({
                 "param_name": hierarchical_path,
                 "value": casted_value
@@ -218,8 +191,6 @@ def build_projects_tab(backend: CryoBoostBackend):
         params_dict = result.get("params", {})
         print(f"[UI DEBUG] {job_name} parameters: {list(params_dict.keys())}")  # DEBUG
         
-        # ... rest of your UI creation code ...
-        # The 'param_name' in the loop MUST be the actual field names from the model
         state["job_param_inputs"][job_name] = {}
         
         with job_param_tabs:
@@ -337,7 +308,6 @@ def build_projects_tab(backend: CryoBoostBackend):
         else:
             ui.notify(f"Error: {result.get('error')}", type='negative')
 
-    
     async def _monitor_pipeline_progress():
         while state["current_project_path"] and not stop_button.props.get('disabled'):
             progress = await backend.get_pipeline_progress(state["current_project_path"])
@@ -543,11 +513,6 @@ def build_projects_tab(backend: CryoBoostBackend):
         pipeline_job_tabs = ui.tabs().classes('w-full text-xs')
         pipeline_job_panels = ui.tab_panels(pipeline_job_tabs).classes('w-full')
 
-    # Event handlers
-    #
-    # *** FIX for AttributeError ***
-    # Use .on_value_change(lambda e: ...) and pass e.value to the handler.
-    #
 
     movies_path_input.on_value_change(lambda: asyncio.create_task(auto_detect_metadata()))
     mdocs_path_input.on_value_change(lambda: asyncio.create_task(auto_detect_metadata()))

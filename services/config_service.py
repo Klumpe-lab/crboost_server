@@ -25,6 +25,7 @@ class Alias(BaseModel):
 
 # Refactored to use Parameter model
 class ComputingPartition(BaseModel):
+    
     """Computing partition with Parameter-based fields"""
     NrGPU: IntParam
     NrCPU: IntParam
