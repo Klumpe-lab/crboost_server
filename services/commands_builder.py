@@ -118,7 +118,6 @@ class FsMotionCtfCommandBuilder(BaseCommandBuilder):
         ])
         print(f"[COMMAND BUILDER] Built WarpTools command with {len(create_settings_parts)} create_settings args and {len(run_main_parts)} fs_motion_and_ctf args")
         return full_command
-
         
 
 class TsAlignmentCommandBuilder(BaseCommandBuilder):

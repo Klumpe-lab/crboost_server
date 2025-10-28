@@ -92,7 +92,6 @@ class MicroscopeParams(BaseModel):
     def validate_voltage(cls, v):
         allowed = [200.0, 300.0]
         if v not in allowed:
-            # Allow but warn
             print(f"[WARN] Voltage {v} not in standard values {allowed}")
         return v
     
@@ -377,9 +376,6 @@ class PipelineState(BaseModel):
     modified_at: datetime = Field(default_factory=datetime.now)
     
     def populate_job(self, job_name: str, job_star_path: Optional[Path] = None):
-        """Create job params from current state and optional job.star"""
-        print(f"[PIPELINE STATE DEBUG] Populating job {job_name} with pixel_size={self.microscope.pixel_size_angstrom}")
-
         # First try to load from job.star if provided
         job_params = None
         if job_star_path and job_star_path.exists():

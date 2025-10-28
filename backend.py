@@ -16,10 +16,7 @@ from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
 
-# --- NEW IMPORTS ---
-# from services.parameters_service import get_parameter_manager # OLD
-from services.parameter_manager import ParameterManagerV2  # NEW
-# --- END NEW IMPORTS ---
+from services.parameter_manager import ParameterManager  # NEW
 
 from pydantic import BaseModel, Field
 from pathlib import Path
@@ -38,11 +35,7 @@ class CryoBoostBackend:
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
-        
-        # --- PARAMETER MANAGER SWAP ---
-        # self.parameter_manager = get_parameter_manager() # OLD
-        self.parameter_manager = ParameterManagerV2()  # NEW
-        # --- END SWAP ---
+        self.parameter_manager = ParameterManager()  
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
             """
@@ -79,18 +72,10 @@ class CryoBoostBackend:
             project_dir = Path(project_base_path).expanduser() / project_name
             base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
             scheme_name = f"scheme_{project_name}"
-            
-            # Check if project already exists
+
             if project_dir.exists():
                 return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
 
-            # --- REMOVED LEGACY PARAMS ---
-            # user_params = self.parameter_manager.get_legacy_user_params_dict() # OLD
-            # print(f"[BACKEND] Using parameters: {user_params}") # OLD
-            print(f"[BACKEND-V2] Using parameters from ParameterManagerV2") # NEW
-            # --- END REMOVAL ---
-
-            # Create project structure
             import_prefix = f"{project_name}_"
             structure_result = await self.project_service.create_project_structure(
                 project_dir, movies_glob, mdocs_glob, import_prefix
@@ -212,19 +197,14 @@ class CryoBoostBackend:
         """Run mdoc autodetection and return the updated state"""
         print(f"[BACKEND-V2] Autodetecting from {mdocs_glob}")
         
-        # NEW: Store current jobs before update
         current_jobs = list(self.parameter_manager.state.jobs.keys())
         
-        # Update from mdoc
         self.parameter_manager.update_from_mdoc(mdocs_glob)
         
-        # NEW: Refresh any existing jobs with new global values
         for job_name in current_jobs:
             print(f"[BACKEND-V2] Refreshing job {job_name} after mdoc detection")
-            # Re-populate the job to get updated global values
             self.parameter_manager.state.populate_job(job_name)
         
-        # Return UI-compatible state
         return self.parameter_manager.get_ui_state()
             
 
