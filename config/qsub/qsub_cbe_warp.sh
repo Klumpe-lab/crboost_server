@@ -22,7 +22,6 @@ echo "Target Job Directory: ${JOB_DIR}"
 cd "${JOB_DIR}"
 echo "New CWD: $(pwd)"
 
-echo "Executing Command..."
 XXXcommandXXX
 
 EXIT_CODE=$?

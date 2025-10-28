@@ -1,8 +1,9 @@
 # services/parameter_models.py
 from pydantic import BaseModel, Field, validator
-from typing import Optional, Dict, Any, Tuple, List
+from typing import Optional, Dict, Tuple
 from enum import Enum
 from pathlib import Path
+import pandas as pd
 import yaml
 import starfile
 from datetime import datetime
@@ -153,6 +154,10 @@ class ImportMoviesParams(BaseModel):
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
             return None
 
+# services/parameter_models.py
+
+# services/parameter_models.py
+
 class FsMotionCtfParams(BaseModel):
     """Parameters for WarpTools motion correction and CTF"""
     # From microscope
@@ -164,15 +169,60 @@ class FsMotionCtfParams(BaseModel):
     # EER specific
     eer_ngroups: int = Field(default=32, ge=1)
     
-    # Processing params
-    window: int = Field(default=768, ge=128)
-    range_min: float = Field(default=5.0, ge=1.0)
-    range_max: float = Field(default=40.0, le=100.0)
-    defocus_min: float = Field(default=5000.0)
-    defocus_max: float = Field(default=50000.0)
+    # Motion correction parameters (from job.star)
+    m_range_min_max: str = "500:10"  # Format: "min:max"
+    m_bfac: int = Field(default=-500)
+    m_grid: str = "1x1x3"
+    
+    # CTF parameters  
+    c_range_min_max: str = "30:6.0"  # Format: "min:max"
+    c_defocus_min_max: str = "1.1:8"  # Format: "min:max" (in microns!)
+    c_grid: str = "2x2x1"
+    c_window: int = Field(default=512, ge=128)
+    
+    # Processing control
+    perdevice: int = Field(default=1, ge=0, le=8)
     
     # Output control
     do_at_most: int = Field(default=-1)
+    
+    # Optional gain reference
+    gain_path: Optional[str] = None
+    gain_operations: Optional[str] = None
+    
+    # Helper properties to parse range strings
+    @property
+    def m_range_min(self) -> int:
+        return int(self.m_range_min_max.split(':')[0])
+    
+    @property
+    def m_range_max(self) -> int:
+        return int(self.m_range_min_max.split(':')[1])
+    
+    @property
+    def c_range_min(self) -> float:
+        return float(self.c_range_min_max.split(':')[0])
+    
+    @property
+    def c_range_max(self) -> float:
+        return float(self.c_range_min_max.split(':')[1])
+    
+    @property
+    def defocus_min_microns(self) -> float:
+        return float(self.c_defocus_min_max.split(':')[0])
+    
+    @property
+    def defocus_max_microns(self) -> float:
+        return float(self.c_defocus_min_max.split(':')[1])
+    
+    # Convert microns to Angstroms for WarpTools
+    @property
+    def defocus_min_angstroms(self) -> float:
+        return self.defocus_min_microns * 10000.0
+    
+    @property
+    def defocus_max_angstroms(self) -> float:
+        return self.defocus_max_microns * 10000.0
     
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional['FsMotionCtfParams']:
@@ -183,24 +233,34 @@ class FsMotionCtfParams(BaseModel):
         try:
             data = starfile.read(star_path, always_dict=True)
             job_params = {}
-            if 'job' in data:
-                if isinstance(data['job'], dict):
-                    job_params = data['job']
-                else:
-                    job_params = data['job'].to_dict('records')[0] if len(data['job']) > 0 else {}
-            
-            return cls(
-                pixel_size=float(job_params.get('angpix', 1.35)),
-                voltage=float(job_params.get('voltage', 300)),
-                cs=float(job_params.get('cs', 2.7)),
-                amplitude=float(job_params.get('amplitude', 0.1)),
-                eer_ngroups=int(job_params.get('eer_ngroups', 32)),
-                window=int(job_params.get('window', 768)),
-                range_min=float(job_params.get('range_min', 5.0)),
-                range_max=float(job_params.get('range_max', 40.0)),
-                defocus_min=float(job_params.get('defocus_min', 5000.0)),
-                defocus_max=float(job_params.get('defocus_max', 50000.0))
-            )
+            if 'joboptions_values' in data:
+                # Extract parameters from the joboptions_values table
+                df = data['joboptions_values']
+                param_dict = pd.Series(
+                    df.rlnJobOptionValue.values, 
+                    index=df.rlnJobOptionVariable
+                ).to_dict()
+                
+                # Return an INSTANCE of FsMotionCtfParams, not a dict
+                return cls(
+                    # These will be overridden by global state, but provide defaults
+                    pixel_size=1.35,
+                    voltage=300.0,  
+                    cs=2.7,
+                    amplitude=0.1,
+                    eer_ngroups=int(param_dict.get('param1_value', 32)),
+                    gain_path=param_dict.get('param2_value', None),
+                    gain_operations=param_dict.get('param3_value', None),
+                    m_range_min_max=param_dict.get('param4_value', '500:10'),
+                    m_bfac=int(param_dict.get('param5_value', -500)),
+                    m_grid=param_dict.get('param6_value', '1x1x3'),
+                    c_range_min_max=param_dict.get('param7_value', '30:6.0'),
+                    c_defocus_min_max=param_dict.get('param8_value', '1.1:8'),
+                    c_grid=param_dict.get('param9_value', '2x2x1'),
+                    perdevice=int(param_dict.get('param10_value', 1)),
+                    c_window=512
+                )
+                
         except Exception as e:
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
             return None
@@ -267,7 +327,8 @@ class PipelineState(BaseModel):
     
     def populate_job(self, job_name: str, job_star_path: Optional[Path] = None):
         """Create job params from current state and optional job.star"""
-        
+        print(f"[PIPELINE STATE DEBUG] Populating job {job_name} with pixel_size={self.microscope.pixel_size_angstrom}")
+
         # First try to load from job.star if provided
         job_params = None
         if job_star_path and job_star_path.exists():
@@ -280,6 +341,7 @@ class PipelineState(BaseModel):
         
         # If no job.star or failed to load, create from current state
         if job_params is None:
+
             if job_name == 'importmovies':
                 job_params = ImportMoviesParams(
                     pixel_size=self.microscope.pixel_size_angstrom,
@@ -291,13 +353,33 @@ class PipelineState(BaseModel):
                     invert_defocus_hand=self.acquisition.invert_defocus_hand
                 )
             elif job_name == 'fsMotionAndCtf':
-                job_params = FsMotionCtfParams(
-                    pixel_size=self.microscope.pixel_size_angstrom,
-                    voltage=self.microscope.acceleration_voltage_kv,
-                    cs=self.microscope.spherical_aberration_mm,
-                    amplitude=self.microscope.amplitude_contrast,
-                    eer_ngroups=self.acquisition.eer_fractions_per_frame or 32
-                )
+                job_params = None
+                if job_star_path and job_star_path.exists():
+                    job_params = FsMotionCtfParams.from_job_star(job_star_path)
+                    print(f"[PIPELINE STATE DEBUG] Loaded fsMotionAndCtf from job.star")
+                
+                # If no job.star or failed to load, create new with current global values
+                if job_params is None:
+                    job_params = FsMotionCtfParams(
+                        pixel_size=self.microscope.pixel_size_angstrom,
+                        voltage=self.microscope.acceleration_voltage_kv,
+                        cs=self.microscope.spherical_aberration_mm,
+                        amplitude=self.microscope.amplitude_contrast,
+                        eer_ngroups=self.acquisition.eer_fractions_per_frame or 32
+                    )
+                    print(f"[PIPELINE STATE DEBUG] Created new fsMotionAndCtf with current global state")
+                else:
+                    # Update the loaded params with current global values
+                    job_params.pixel_size = self.microscope.pixel_size_angstrom
+                    job_params.voltage = self.microscope.acceleration_voltage_kv
+                    job_params.cs = self.microscope.spherical_aberration_mm
+                    job_params.amplitude = self.microscope.amplitude_contrast
+                    job_params.eer_ngroups = self.acquisition.eer_fractions_per_frame or 32
+                    print(f"[PIPELINE STATE DEBUG] Updated fsMotionAndCtf with current global state")
+                
+                self.jobs[job_name] = job_params
+                    
+        
             elif job_name == 'tsAlignment':
                 job_params = TsAlignmentParams(
                     thickness_nm=self.acquisition.sample_thickness_nm

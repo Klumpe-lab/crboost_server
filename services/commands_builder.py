@@ -57,48 +57,69 @@ class ImportMoviesCommandBuilder(BaseCommandBuilder):
         return " ".join(cmd_parts)
 
 class FsMotionCtfCommandBuilder(BaseCommandBuilder):
-    """Build WarpTools fs_motion_and_ctf command"""
+    """Build complete WarpTools motion correction and CTF command"""
     
     def build(self, params: FsMotionCtfParams, paths: Dict[str, Path]) -> str:
-        """Build the WarpTools command"""
+        test_cmd = f"echo 'ACTUAL VALUES: pixel_size={params.pixel_size}, voltage={params.voltage}' && "
+        test_cmd += "WarpTools --help"  # Just to see if WarpTools works
         
-        # Base command
-        cmd_parts = ["WarpTools", "fs_motion_and_ctf"]
+        print("TEST CMD:", test_cmd)
+        print(f"[COMMAND BUILDER DEBUG] Building command with pixel_size: {params.pixel_size}, voltage: {params.voltage}")
         
-        # Input/output paths
-        if 'input_star' in paths:
-            cmd_parts.extend(["--input_star", str(paths['input_star'])])
-        
-        if 'output_star' in paths:
-            cmd_parts.extend(["--output_star", str(paths['output_star'])])
-        
-        # Core parameters
-        cmd_parts.extend([
-            "--angpix", str(params.pixel_size),
-            "--voltage", str(params.voltage),
-            "--cs", str(params.cs),
-            "--amplitude", str(params.amplitude),
+        # Step 1: Create settings file
+        create_settings_parts = [
+            "WarpTools create_settings",
+            "--folder_data ../../frames",
+            "--extension '*.eer'",
+            "--folder_processing ./warp_frameseries",
+            "--output ./warp_frameseries.settings",
+            "--angpix", str(params.pixel_size),  
             "--eer_ngroups", str(params.eer_ngroups),
-        ])
+        ]
         
-        # CTF parameters
-        cmd_parts.extend([
-            "--window", str(params.window),
-            "--range_min", str(params.range_min),
-            "--range_max", str(params.range_max),
-            "--defocus_min", str(params.defocus_min),
-            "--defocus_max", str(params.defocus_max),
-        ])
+        # Add gain reference if provided
+        if params.gain_path and params.gain_path != "None":
+            create_settings_parts.extend(["--gain_reference", params.gain_path])
+            if params.gain_operations and params.gain_operations != "None":
+                create_settings_parts.extend(["--gain_operations", params.gain_operations])
+        
+        # Step 2: Run motion correction and CTF estimation
+        run_main_parts = [
+            "WarpTools fs_motion_and_ctf",
+            "--settings ./warp_frameseries.settings",  # From step 1
+            # Motion correction parameters
+            "--m_grid", params.m_grid,
+            "--m_range_min", str(params.m_range_min),
+            "--m_range_max", str(params.m_range_max),
+            "--m_bfac", str(params.m_bfac),
+            # CTF parameters
+            "--c_grid", params.c_grid,
+            "--c_window", str(params.c_window),
+            "--c_range_min", str(params.c_range_min),
+            "--c_range_max", str(params.c_range_max),
+            "--c_defocus_min", str(params.defocus_min_angstroms),  # Converted to Å
+            "--c_defocus_max", str(params.defocus_max_angstroms),  # Converted to Å
+            "--c_voltage", str(round(float(params.voltage))),
+            "--c_cs", str(params.cs),
+            "--c_amplitude", str(params.amplitude),
+            # Processing control
+            "--perdevice", str(params.perdevice),
+            "--out_averages",  # Output motion-corrected averages
+        ]
         
         # Optional: limit processing
         if params.do_at_most > 0:
-            cmd_parts.extend(["--do_at_most", str(params.do_at_most)])
+            run_main_parts.extend(["--do_at_most", str(params.do_at_most)])
         
-        # Gain reference if provided
-        if 'gain_reference' in paths and paths['gain_reference']:
-            cmd_parts.extend(["--gain_reference", str(paths['gain_reference'])])
+        # Join the two commands with &&
+        full_command = " && ".join([
+            " ".join(create_settings_parts),
+            " ".join(run_main_parts)
+        ])
+        print(f"[COMMAND BUILDER] Built WarpTools command with {len(create_settings_parts)} create_settings args and {len(run_main_parts)} fs_motion_and_ctf args")
+        return full_command
+
         
-        return " ".join(cmd_parts)
 
 class TsAlignmentCommandBuilder(BaseCommandBuilder):
     """Build tilt series alignment command"""
