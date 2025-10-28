@@ -218,11 +218,7 @@ class CryoBoostBackend:
                 
                 if not param_name:
                     return {"success": False, "error": "Invalid payload: 'param_name' missing"}
-
-                # JUST PASS THE FUCKING PARAMETER PATH DIRECTLY - NO MAPPING
-                print(f"[BACKEND DIRECT] Updating {param_name} = {value}")
                 self.parameter_manager.update_parameter(param_name, value)
-                
                 return {"success": True}
                 
             except Exception as e:

@@ -204,10 +204,6 @@ class ImportMoviesParams(BaseModel):
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
             return None
 
-# services/parameter_models.py
-
-# services/parameter_models.py
-
 class FsMotionCtfParams(BaseModel):
     """Parameters for WarpTools motion correction and CTF"""
     # From microscope
