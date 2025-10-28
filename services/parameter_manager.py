@@ -134,19 +134,29 @@ class ParameterManagerV2:
             self.state.populate_job(job_name, job_star_path)
         return self.state.jobs[job_name]
     
+# In services/parameter_manager.py - in the export_for_project method
+
     def export_for_project(self, 
-                          project_name: str, 
-                          movies_glob: str,
-                          mdocs_glob: str,
-                          selected_jobs: List[str]) -> Dict[str, Any]:
+                        project_name: str, 
+                        movies_glob: str,
+                        mdocs_glob: str,
+                        selected_jobs: List[str]) -> Dict[str, Any]:
         """Export clean configuration for project"""
+        
+        print(f"[PARAMS-V2 DEBUG] Exporting project with microscope.pixel_size_angstrom = {self.state.microscope.pixel_size_angstrom}")
+        print(f"[PARAMS-V2 DEBUG] Current jobs: {list(self.state.jobs.keys())}")
         
         # Ensure all selected jobs have params
         for job in selected_jobs:
+            print(f"[PARAMS-V2 DEBUG] Preparing job: {job}")
             if job not in self.state.jobs:
                 # Try to load from template job.star if available
                 template_path = Path("config/Schemes/warp_tomo_prep") / job / "job.star"
                 self.state.populate_job(job, template_path if template_path.exists() else None)
+            else:
+                print(f"[PARAMS-V2 DEBUG] Job {job} already exists, pixel_size = {getattr(self.state.jobs[job], 'pixel_size', 'N/A')}")
+        
+        # ... rest of the method
         
         # Get containers from config if available
         containers = {}

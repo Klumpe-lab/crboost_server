@@ -212,7 +212,7 @@ def build_projects_tab(backend: CryoBoostBackend):
         """Add job parameter tab - USING REAL MODEL FIELD NAMES"""
         result = await backend.get_job_parameters(job_name)
         if not result.get("success"):
-            ui.notify(f"Could not load params for {job_name}: {result.get('error')}", 'negative')
+            ui.notify(f"Could not load params for {job_name}: {result.get('error')}")
             return
             
         params_dict = result.get("params", {})

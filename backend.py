@@ -206,14 +206,27 @@ class CryoBoostBackend:
         # NEW: Use get_ui_state() for backward compatibility
         return self.parameter_manager.get_ui_state()
 
+    # In backend.py - in the autodetect_parameters method
+
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
         """Run mdoc autodetection and return the updated state"""
         print(f"[BACKEND-V2] Autodetecting from {mdocs_glob}")
-        # NEW: Use V2 method
-        self.parameter_manager.update_from_mdoc(mdocs_glob)
-        # NEW: Return UI-compatible state
-        return self.parameter_manager.get_ui_state()
         
+        # NEW: Store current jobs before update
+        current_jobs = list(self.parameter_manager.state.jobs.keys())
+        
+        # Update from mdoc
+        self.parameter_manager.update_from_mdoc(mdocs_glob)
+        
+        # NEW: Refresh any existing jobs with new global values
+        for job_name in current_jobs:
+            print(f"[BACKEND-V2] Refreshing job {job_name} after mdoc detection")
+            # Re-populate the job to get updated global values
+            self.parameter_manager.state.populate_job(job_name)
+        
+        # Return UI-compatible state
+        return self.parameter_manager.get_ui_state()
+            
 
     async def update_parameter(self, payload: Dict[str, Any]) -> Dict[str, Any]:
             """
