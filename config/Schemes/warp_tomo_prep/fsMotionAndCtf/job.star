@@ -52,5 +52,5 @@ qsub_extra1          1
 qsub_extra2          8 
 qsub_extra3    g
 qsub_extra4      1 
-qsub_extra5      32G
+qsub_extra5      16G
  

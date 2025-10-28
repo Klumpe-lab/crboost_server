@@ -31,7 +31,6 @@ class ContainerService:
         if not Path(container_path).exists():
             return command
         
-        # Build bind mounts (your existing logic)
         binds = set()
         essential_paths = ["/tmp", "/scratch", str(Path.home()), str(cwd.resolve())]
         for p in essential_paths:
@@ -58,7 +57,6 @@ class ContainerService:
         for path in sorted(binds):
             bind_args.extend(['-B', path])
         
-        # Simple command construction like your old working version
         inner_command_quoted = shlex.quote(command)
         apptainer_cmd_parts = [
             "apptainer", "run", "--nv", "--cleanenv",
@@ -68,8 +66,6 @@ class ContainerService:
         ]
         
         apptainer_cmd = " ".join(apptainer_cmd_parts)
-        
-        # Environment cleaning
         clean_env_vars = [
             "SINGULARITY_BIND", "APPTAINER_BIND", "SINGULARITY_BINDPATH", "APPTAINER_BINDPATH",
             "SINGULARITY_NAME", "APPTAINER_NAME", "SINGULARITY_CONTAINER", "APPTAINER_CONTAINER", 

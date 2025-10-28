@@ -6,6 +6,17 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
+# NEW: Import the builders and new models
+from pydantic import BaseModel
+from services.commands_builder import (
+    ImportMoviesCommandBuilder, FsMotionCtfCommandBuilder, 
+    TsAlignmentCommandBuilder, BaseCommandBuilder
+)
+from services.parameter_models import (
+    AcquisitionParams, ImportMoviesParams, FsMotionCtfParams, 
+    TsAlignmentParams, AlignmentMethod
+)
+
 from services.tool_service import get_tool_service
 from .starfile_service import StarfileService
 from .config_service import get_config_service
@@ -13,21 +24,17 @@ from .container_service import get_container_service
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
+    from services.parameter_manager import ParameterManager
 
- 
-# services/pipeline_orchestrator_service.py
 class PipelineOrchestratorService:
     """
     Orchestrates the creation and execution of Relion pipelines.
     
     This service is responsible for:
-    1.  Creating custom pipeline schemes from templates.
-    2.  Building raw, executable commands for tools like WarpTools.
-    3.  Using the ContainerService to wrap these raw commands into full,
-        containerized `apptainer` calls.
-    4.  Injecting the final containerized commands into the `fn_exe` field
-        of the job.star files.
-    5.  Scheduling and monitoring the pipeline execution via `relion_schemer`.
+    1.  Using ParameterManagerV2 to get validated Pydantic models for each job.
+    2.  Using CommandBuilders to create raw tool commands from those models.
+    3.  Using the ContainerService to wrap these raw commands.
+    4.  Injecting the final containerized commands into the job.star files.
     """
     
     def __init__(self, backend_instance: 'CryoBoostBackend'):
@@ -37,134 +44,141 @@ class PipelineOrchestratorService:
         self.container_service = get_container_service()
         self.tool_service = get_tool_service()
         
-        # Map job types to tools
-        self.job_tools = {
-            'importmovies': 'relion_import',
-            'fsMotionAndCtf': 'warptools',
-            'tsAlignment': 'aretomo',
-            # Add more job-to-tool mappings as needed
+        # NEW: Map job names to their corresponding builder class
+        self.job_builders: Dict[str, BaseCommandBuilder] = {
+            'importmovies': ImportMoviesCommandBuilder(),
+            'fsMotionAndCtf': FsMotionCtfCommandBuilder(),
+            'tsAlignment': TsAlignmentCommandBuilder(),
         }
 
-    def _build_import_movies_command(self, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
-        """Build Relion import command for SerialEM tilt series data"""
+    def _get_job_tool(self, job_name: str, job_model: BaseModel) -> str:
+        """
+        Get the correct tool name for container service,
+        handling dynamic tools like tsAlignment.
+        """
+        if job_name == 'importmovies':
+            return 'relion_import'
         
-        # Extract parameters - these would typically come from the job.star file
-        # For now, using reasonable defaults that match your test data
-        tilt_image_pattern = "./frames/*.eer"
-        mdoc_pattern = "./mdoc/*.mdoc"
-        output_dir = "./Import/job001/"  # This will be dynamic based on job number
-        pipeline_control = "./Import/job001/"  # Same as output_dir for pipeline control
+        if job_name == 'fsMotionAndCtf':
+            return 'warptools'
+            
+        if job_name == 'tsAlignment':
+            if isinstance(job_model, TsAlignmentParams):
+                if job_model.alignment_method == AlignmentMethod.ARETOMO:
+                    return 'aretomo'
+                if job_model.alignment_method == AlignmentMethod.IMOD:
+                    return 'imod' # Assuming 'imod' is a defined tool
+                if job_model.alignment_method == AlignmentMethod.RELION:
+                    return 'relion' # Assuming 'relion' is a defined tool
+            return 'aretomo' # Default fallback
+            
+        # Fallback for other jobs
+        return 'relion'
+
+    def _get_job_paths(
+        self,
+        job_name: str,
+        job_index: int,
+        selected_jobs: List[str],
+        acquisition_params: AcquisitionParams,
+        project_dir: Path,
+        job_dir: Path
+    ) -> Dict[str, Path]:
+        """
+        Construct the relative input/output paths for a job
+        based on its position in the pipeline.
         
-        nominal_tilt_axis_angle = user_params.get('nominal_tilt_axis_angle', -95.0)
-        nominal_pixel_size = user_params.get('nominal_pixel_size', 2.93)  # Angstroms
-        voltage = user_params.get('voltage', 300.0)  # keV
-        spherical_aberration = user_params.get('spherical_aberration', 2.7)  # mm
-        amplitude_contrast = user_params.get('amplitude_contrast', 0.1)
-        dose_per_tilt_image = user_params.get('dose_per_tilt_image', 3)  # e-/Å²
+        Paths are relative to the job's execution directory (e.g., Import/job001).
+        """
+        paths = {}
         
-        # Build the command according to the help output format
-        command_parts = [
-            "relion_python_tomo_import SerialEM",
-            f"--tilt-image-movie-pattern '{tilt_image_pattern}'",
-            f"--mdoc-file-pattern '{mdoc_pattern}'",
-            f"--nominal-tilt-axis-angle {nominal_tilt_axis_angle}",
-            f"--nominal-pixel-size {nominal_pixel_size}",
-            f"--c_voltage {str(round(float(voltage)))}",
-            f"--spherical-aberration {spherical_aberration}",
-            f"--amplitude-contrast {amplitude_contrast}",
-            f"--optics-group-name ''",  # Empty string for default
-            f"--dose-per-tilt-image {dose_per_tilt_image}",
-            f"--output-directory {output_dir}",
-            f"--pipeline_control {pipeline_control}",
-        ]
-        
-        full_command = " ".join(command_parts)
-        print(f"[PIPELINE] Built import command: {full_command}")
-        return full_command
+        # Helper to find the output dir of a previous job
+        def get_job_dir_by_name(name: str) -> Optional[str]:
+            try:
+                idx = selected_jobs.index(name)
+                # This logic assumes job dir naming conventions
+                if name == 'importmovies':
+                    return f"Import/job{idx+1:03d}"
+                else:
+                    return f"External/job{idx+1:03d}"
+            except ValueError:
+                return None
 
-    def _build_warp_fs_motion_ctf_command(self, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
-        """Build WarpTools motion correction and CTF estimation command"""
-        frame_folder = "../../frames"
-        output_settings_file = "./warp_frameseries.settings"
-        folder_processing = "./warp_frameseries" 
+        if job_name == 'importmovies':
+            # Job 001, runs in Import/job001
+            # Input dir is relative to project root, then up two levels
+            paths['input_dir'] = Path(f"../../{project_dir.name}/mdoc")
+            paths['output_dir'] = Path(".") # Output to current dir
+            paths['pipeline_control'] = Path(".")
+            
+        elif job_name == 'fsMotionAndCtf':
+            # Job 002, runs in External/job002
+            # Depends on importmovies
+            import_dir = get_job_dir_by_name('importmovies')
+            if import_dir:
+                # Input is from job001, output is movies.star
+                paths['input_star'] = Path(f"../{import_dir}/movies.star")
+            
+            paths['output_star'] = Path("movies_mic.star") # Output to current dir
+            if acquisition_params.gain_reference_path:
+                paths['gain_reference'] = Path(acquisition_params.gain_reference_path)
 
-        # Get parameters from job.star (params dict), not user_params
-        angpix = params.get('angpix', 1.35)  # From params, not user_params
-        eer_fractions = params.get('eer_fractions', 32)
-        
-        # These should come from microscope metadata, not user_params
-        voltage = float(params.get('rlnVoltage', 300))  # Try relion parameter names
-        cs = float(params.get('rlnSphericalAberration', 2.7))
-        amplitude = float(params.get('rlnAmplitudeContrast', 0.07))
+        elif job_name == 'tsAlignment':
+            # Job 003, runs in External/job003
+            # Depends on fsMotionAndCtf
+            motion_dir = get_job_dir_by_name('fsMotionAndCtf')
+            if motion_dir:
+                paths['input_star'] = Path(f"../{motion_dir}/movies_mic.star")
 
-        # Extract ranges the same way as old code
-        m_min, m_max = params.get('m_range_min_max', '500:10').split(':')
-        c_min, c_max = params.get('c_range_min_max', '30:4').split(':')
-        defocus_min, defocus_max = params.get('c_defocus_min_max', '0.5:8').split(':')
+            # AreTomo-specific outputs
+            paths['output_dir'] = Path(".") # Aligned stack
+            paths['output_star'] = Path("aligned.star") # Relion output
+            # Note: We removed 'gpu_id' as it's a scheduler concern
 
-        create_settings_parts = [
-            "WarpTools create_settings",
-            f"--folder_data {frame_folder}",
-            f"--extension '*.eer'",  # Simple quotes like old code
-            f"--folder_processing {folder_processing}",
-            f"--output {output_settings_file}",
-            f"--angpix {angpix}",
-            f"--eer_ngroups -{eer_fractions}",
-        ]
+        return paths
 
-        run_main_parts = [
-            "WarpTools fs_motion_and_ctf",
-            f"--settings {output_settings_file}",
-            f"--m_grid {params.get('m_grid', '1x1x3')}",
-            f"--m_range_min {m_min}",
-            f"--m_range_max {m_max}",
-            f"--m_bfac {params.get('m_bfac', -500)}",
-            f"--c_grid {params.get('c_grid', '2x2x1')}",
-            f"--c_window {params.get('c_window', 512)}",
-            f"--c_range_min {c_min}",
-            f"--c_range_max {c_max}",
-            f"--c_defocus_min {defocus_min}",
-            f"--c_defocus_max {defocus_max}",
-            f"--c_voltage {str(round(float(voltage)))}",
-            f"--c_cs {cs}",
-            f"--c_amplitude {amplitude}",
-            f"--perdevice {params.get('perdevice', 1)}",
-            "--out_averages",
-        ]
-
-        full_command = " && ".join([" ".join(create_settings_parts), " ".join(run_main_parts)])
-        print(f"[PIPELINE] Built WarpTools command: {full_command}")
-        return full_command
-
-    def _build_warp_ts_alignment_command(self, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
-        """Build WarpTools tilt series alignment command"""
-        return "echo 'tsAlignment job not fully implemented yet'; exit 1;"
-
-    def _build_command_for_job(self, job_name: str, params: Dict[str, Any], user_params: Dict[str, Any]) -> str:
+    def _build_job_command(
+        self, 
+        job_name: str, 
+        job_model: BaseModel,
+        paths: Dict[str, Path]
+    ) -> str:
         """Dispatcher function to call the correct command builder"""
-        job_builders = {
-            'importmovies': self._build_import_movies_command,
-            'fsMotionAndCtf': self._build_warp_fs_motion_ctf_command,
-            'tsAlignment': self._build_warp_ts_alignment_command,
-        }
         
-        builder = job_builders.get(job_name)
+        builder = self.job_builders.get(job_name)
         
         if builder:
-            raw_command = builder(params, user_params)
-            return raw_command
+            try:
+                # The builder's .build() method is polymorphic
+                return builder.build(job_model, paths)
+            except Exception as e:
+                print(f"[PIPELINE ERROR] Failed to build command for {job_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                return f"echo 'ERROR: Failed to build command for {job_name}: {e}'; exit 1;"
         else:
             return f"echo 'ERROR: Job type \"{job_name}\" not implemented'; exit 1;"
 
-    async def create_custom_scheme(self, project_dir: Path, new_scheme_name: str, 
-                                 base_template_path: Path, selected_jobs: List[str], 
-                                 user_params: Dict[str, Any], additional_bind_paths: List[str]):
+    async def create_custom_scheme(self, 
+        project_dir: Path, 
+        new_scheme_name: str, 
+        base_template_path: Path, 
+        selected_jobs: List[str], 
+        # REMOVED: user_params: Dict[str, Any],
+        additional_bind_paths: List[str]
+    ):
         try:
             new_scheme_dir = project_dir / "Schemes" / new_scheme_name
             new_scheme_dir.mkdir(parents=True, exist_ok=True)
             base_scheme_name = base_template_path.name
 
-            for job_name in selected_jobs:
+            # NEW: Get the parameter manager from the backend
+            param_manager: 'ParameterManager' = self.backend.parameter_manager
+
+            # NEW: Use enumerate to get job index for path generation
+            for job_index, job_name in enumerate(selected_jobs):
+                job_number_str = f"job{job_index+1:03d}"
+                
                 source_job_dir = base_template_path / job_name
                 dest_job_dir = new_scheme_dir / job_name
                 if dest_job_dir.exists():
@@ -179,33 +193,48 @@ class PipelineOrchestratorService:
                 params_df = job_data.get('joboptions_values')
                 if params_df is None:
                     continue
-                
-                # Extract parameters from job.star
-                params_dict = pd.Series(
-                    params_df.rlnJobOptionValue.values,
-                    index=params_df.rlnJobOptionVariable
-                ).to_dict()
 
-                # Get the tool for this job
-                tool_name = self.job_tools.get(job_name)
+                # === NEW LOGIC START ===
+                
+                # 1. Get the validated, populated Pydantic model for this job
+                #    This loads defaults from job.star and merges with global state
+                job_model = param_manager.prepare_job_params(job_name, job_star_path)
+                
+                # 2. Get the tool name for containerization
+                tool_name = self._get_job_tool(job_name, job_model)
                 if not tool_name:
                     print(f"[PIPELINE WARNING] No tool mapping for job {job_name}, skipping containerization")
                     continue
+
+                # 3. Get the relative paths for this job
+                job_dir_name = "Import" if job_name == 'importmovies' else "External"
+                job_run_dir = project_dir / job_dir_name / job_number_str
                 
-                # Build the raw command for this job
-                raw_command = self._build_command_for_job(job_name, params_dict, user_params)
+                paths = self._get_job_paths(
+                    job_name,
+                    job_index,
+                    selected_jobs,
+                    param_manager.state.acquisition,
+                    project_dir.parent / project_dir.name, # Pass project root
+                    job_run_dir
+                )
+
+                # 4. Build the raw tool command using the builder
+                raw_command = self._build_job_command(job_name, job_model, paths)
                 print(f"[PIPELINE DEBUG] Raw command for {job_name}: {raw_command}")
 
-                # Wrap command using the job's tool
+                # === NEW LOGIC END ===
+
+                # 5. Wrap command using the job's tool (Same as old code)
                 final_containerized_command = self.container_service.wrap_command_for_tool(
                     command=raw_command,
-                    cwd=project_dir,
+                    cwd=project_dir, # CWD for apptainer is project root
                     tool_name=tool_name,
                     additional_binds=additional_bind_paths
                 )
                 print(f"[PIPELINE DEBUG] Containerized command for {job_name}: {final_containerized_command}")
                 
-                # Update the job.star file with the containerized command
+                # 6. Update the job.star file (Same as old code)
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = final_containerized_command
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'other_args', 'rlnJobOptionValue'] = ''
 
@@ -273,3 +302,8 @@ class PipelineOrchestratorService:
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
+
+    # ==================================================================
+    # ALL OLD COMMAND BUILDER METHODS (e.g., _build_import_movies_command)
+    # ARE NOW REMOVED.
+    # ==================================================================

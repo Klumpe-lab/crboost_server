@@ -4,12 +4,11 @@ import asyncio
 from nicegui import ui, Client
 
 from backend import CryoBoostBackend
-from models import User
 
-from .job_scheduler_tab import create_job_scheduler_tab
+# from .job_scheduler_tab import create_job_scheduler_tab
 from .projects_tab import build_projects_tab
 
-HARDCODED_USER = User(username="artem.kushner")
+HARDCODED_USER = "artem.kushner"
 
 
 def create_ui_router(backend: CryoBoostBackend):
@@ -52,18 +51,18 @@ def create_ui_router(backend: CryoBoostBackend):
 
                 with ui.tabs().classes('w-1/2') as tabs:
                     projects_tab = ui.tab('Projects & Parameters')
-                    job_scheduler_tab = ui.tab('Job Scheduler')
+                    # job_scheduler_tab = ui.tab('Job Scheduler')
                     info_tab = ui.tab('Cluster Info')
 
-                ui.label(f'User: {HARDCODED_USER.username}').classes('text-xs')
+                ui.label(f'User: {HARDCODED_USER}').classes('text-xs')
 
         with ui.tab_panels(tabs, value=projects_tab).classes('w-full p-3') as panels:
             
-            with ui.tab_panel(job_scheduler_tab):
-                create_job_scheduler_tab(backend, HARDCODED_USER)
+            # with ui.tab_panel(job_scheduler_tab):
+            #     create_job_scheduler_tab(backend)
                 
             with ui.tab_panel(projects_tab):
-                load_project_data_func = build_projects_tab(backend, HARDCODED_USER)
+                load_project_data_func = build_projects_tab(backend)
                 
             with ui.tab_panel(info_tab):
                 load_info_data_func = create_info_page(backend)
