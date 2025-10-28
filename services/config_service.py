@@ -5,9 +5,8 @@ from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
+from services.parameter_models import StrParam, IntParam
 
-# Import the Parameter model from parameters_service
-from services.parameters_service import Parameter, IntParam, StrParam
 class SubmissionConfig(BaseModel):
     HeadNode: str
     SshCommand: str

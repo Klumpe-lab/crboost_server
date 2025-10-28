@@ -1,12 +1,63 @@
 # services/parameter_models.py
 from pydantic import BaseModel, Field, validator
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, TypeVar, Generic, List, Any
 from enum import Enum
 from pathlib import Path
 import pandas as pd
 import yaml
 import starfile
 from datetime import datetime
+
+T = TypeVar('T')
+
+class Parameter(BaseModel, Generic[T]):
+    """
+    A strongly-typed parameter with validation constraints.
+    """
+    value: T
+    min_value: Optional[T] = None
+    max_value: Optional[T] = None
+    choices: Optional[List[T]] = None
+    description: Optional[str] = None
+    source: Optional[str] = None
+
+    def copy(self, **kwargs) -> 'Parameter[T]':
+        """Create a copy of the parameter with optional updates"""
+        return self.__class__(**{**self.dict(), **kwargs})
+
+    def dict(self, **kwargs) -> Dict[str, Any]:
+        """Convert to dictionary, compatible with Pydantic"""
+        return super().dict(**kwargs)
+
+    @validator('value')
+    def validate_constraints(cls, v, values):
+        """Validate value against constraints"""
+        if 'min_value' in values and values['min_value'] is not None:
+            if v < values['min_value']:
+                raise ValueError(f"Value {v} below minimum {values['min_value']}")
+        
+        if 'max_value' in values and values['max_value'] is not None:
+            if v > values['max_value']:
+                raise ValueError(f"Value {v} above maximum {values['max_value']}")
+        
+        if 'choices' in values and values['choices'] is not None:
+            if v not in values['choices']:
+                raise ValueError(f"Value {v} not in allowed choices: {values['choices']}")
+        
+        return v
+    
+    class Config:
+        arbitrary_types_allowed = True
+
+# Create explicit type aliases for better IDE support
+FloatParam = Parameter[float]
+IntParam = Parameter[int]
+StrParam = Parameter[str]
+BoolParam = Parameter[bool]
+PathParam = Parameter[Optional[Path]]
+
+
+
 
 # ============= ENUMS =============
 class Partition(str, Enum):
@@ -356,7 +407,7 @@ class PipelineState(BaseModel):
                 job_params = None
                 if job_star_path and job_star_path.exists():
                     job_params = FsMotionCtfParams.from_job_star(job_star_path)
-                    print(f"[PIPELINE STATE DEBUG] Loaded fsMotionAndCtf from job.star")
+                    print("[PIPELINE STATE DEBUG] Loaded fsMotionAndCtf from job.star")
                 
                 # If no job.star or failed to load, create new with current global values
                 if job_params is None:
@@ -367,7 +418,7 @@ class PipelineState(BaseModel):
                         amplitude=self.microscope.amplitude_contrast,
                         eer_ngroups=self.acquisition.eer_fractions_per_frame or 32
                     )
-                    print(f"[PIPELINE STATE DEBUG] Created new fsMotionAndCtf with current global state")
+                    print("[PIPELINE STATE DEBUG] Created new fsMotionAndCtf with current global state")
                 else:
                     # Update the loaded params with current global values
                     job_params.pixel_size = self.microscope.pixel_size_angstrom
@@ -375,7 +426,7 @@ class PipelineState(BaseModel):
                     job_params.cs = self.microscope.spherical_aberration_mm
                     job_params.amplitude = self.microscope.amplitude_contrast
                     job_params.eer_ngroups = self.acquisition.eer_fractions_per_frame or 32
-                    print(f"[PIPELINE STATE DEBUG] Updated fsMotionAndCtf with current global state")
+                    print("[PIPELINE STATE DEBUG] Updated fsMotionAndCtf with current global state")
                 
                 self.jobs[job_name] = job_params
                     
