@@ -1,4 +1,4 @@
-# ui/projects_tab.py (SIMPLIFIED & FIXED)
+# ui/projects_tab.py
 import asyncio
 import glob
 import json
@@ -21,14 +21,13 @@ def _snake_to_title(snake_str: str) -> str:
 def build_projects_tab(backend: CryoBoostBackend):
     """Projects tab with unified job cards"""
 
-    # Local UI state
     state = {
-        "selected_jobs": [],  # List of JobType enums
+        "selected_jobs": [],
         "current_project_path": None,
         "current_scheme_name": None,
         "auto_detected_values": {},
-        "job_cards": {},  # JobType -> {card, param_inputs, monitor_components}
-        "params_snapshot": {},  # JobType -> dict at run time
+        "job_cards": {},
+        "params_snapshot": {},
         "project_created": False,
         "pipeline_running": False,
     }
@@ -97,7 +96,6 @@ def build_projects_tab(backend: CryoBoostBackend):
         """Sync a job's parameters with global state - with better UI updates"""
         job_model = app_state.jobs.get(job_type.value)
         if job_model:
-            # Use the proper sync method from the parameter model
             job_model.sync_from_pipeline_state(app_state)
 
             # Force UI updates for all parameter inputs
@@ -106,35 +104,13 @@ def build_projects_tab(backend: CryoBoostBackend):
                 for param_name, updater_fn in card_data["param_updaters"].items():
                     updater_fn()  # Refresh UI input values
 
-            # Update sync indicator
             update_job_card_sync_indicator(job_type)
-
             ui.run(
                 lambda: ui.notify(
                     f"Synced {JobConfig.get_job_display_name(job_type)} with global params",
                     type="positive",
                 )
             )
-
-        # Update sync function to trigger UI updates:
-
-    # async def sync_job_with_global(job_type: JobType):
-    #     """Sync a job's parameters with global state"""
-    #     job_model = app_state.jobs.get(job_type.value)
-    #     if job_model:
-    #         job_model.sync_from_pipeline_state(app_state)
-
-    #         # Update UI inputs for numeric fields
-    #         card_data = state["job_cards"].get(job_type, {})
-    #         if "param_updaters" in card_data:
-    #             for updater_fn in card_data["param_updaters"].values():
-    #                 updater_fn()  # Refresh UI
-
-    #         ui.notify(
-    #             f"Synced {JobConfig.get_job_display_name(job_type)} with global params",
-    #             type="positive",
-    #         )
-    #         update_job_card_sync_indicator(job_type)
 
     def update_job_card_sync_indicator(job_type: JobType):
         """Update sync indicator on job card"""
@@ -267,9 +243,6 @@ def build_projects_tab(backend: CryoBoostBackend):
     def rebuild_pipeline_cards():
         """Rebuild all job cards"""
         pipeline_container.clear()
-        # DON'T clear job_cards - we need to preserve monitor references!
-        # state["job_cards"].clear()  # REMOVE THIS LINE
-
         with pipeline_container:
             if not state["selected_jobs"]:
                 ui.label("No jobs selected. Click buttons above to add jobs.").classes(
@@ -538,10 +511,6 @@ def build_projects_tab(backend: CryoBoostBackend):
             "stderr": stderr_log,
         }
 
-    # Fix the file browser - update build_file_browser to show better debugging:
-
-    # Fix build_file_browser to wait for directory to be created:
-
     def build_file_browser(job_type: JobType, job_index: int):
         """Build simple file browser"""
         ui.label("Job Directory Browser").classes("text-xs font-medium mb-2")
@@ -659,6 +628,8 @@ def build_projects_tab(backend: CryoBoostBackend):
             """Show file content in a dialog"""
             try:
                 text_extensions = [
+                    ".sh",
+                    ".xml",
                     ".txt",
                     ".log",
                     ".star",
@@ -854,8 +825,6 @@ def build_projects_tab(backend: CryoBoostBackend):
                 break
             await asyncio.sleep(5)
 
-    # Fix refresh_job_logs - get job_index from card_data, not monitor:
-
     async def refresh_job_logs(job_type: JobType):
         """Manually refresh logs for a job"""
         card_data = state["job_cards"].get(job_type)
@@ -875,10 +844,7 @@ def build_projects_tab(backend: CryoBoostBackend):
         monitor["stderr"].clear()
         monitor["stderr"].push(logs.get("stderr", "No errors"))
 
-        # FIX: Use ui.run to safely show notifications from background tasks
         ui.run(lambda: ui.notify("Logs refreshed", type="positive"))
-
-    # Fix monitor_all_jobs similarly:
 
     async def monitor_all_jobs():
         """Auto-refresh logs for all jobs - no notifications here"""
@@ -911,13 +877,7 @@ def build_projects_tab(backend: CryoBoostBackend):
                     monitor["stderr"].push(logs.get("stderr", "No errors"))
                     last_content[job_type]["stderr"] = logs.get("stderr", "")
 
-            await asyncio.sleep(5)
-
-    # =============================================================================
-    # UI CONSTRUCTION
-    # =============================================================================
-
-    parameter_inputs = []
+            await asyncio.sleep(2)
 
     async def debug_current_state():
         """Debug function to see current state values"""
@@ -937,6 +897,12 @@ def build_projects_tab(backend: CryoBoostBackend):
                     print(f"  voltage: {job_model.voltage}")
 
         print("=== END DEBUG ===\n")
+
+    # =============================================================================
+    # UI CONSTRUCTION
+    # =============================================================================
+
+    parameter_inputs = []
 
     with ui.column().classes("w-full gap-2 p-2"):
         # DATA IMPORT
@@ -1121,9 +1087,6 @@ def build_projects_tab(backend: CryoBoostBackend):
         )
         progress_message = ui.label("").classes("text-xs text-gray-600 hidden")
 
-    # Add after UI construction, at the end of build_projects_tab:
-
-    # Add change listeners to global parameters to update sync indicators
     def setup_global_param_listeners():
         """Setup listeners to update job sync indicators when global params change"""
 

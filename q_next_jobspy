@@ -1,0 +1,22 @@
+Ok cool. So i'm i nthe process of porting the old cryoboost application to a new server architecutre. The current task is to add the next few jobs (we only have importmovies and fsmotion for now).
+
+
+The jobs that we want to migrated from the old cryoboost are:
+- aligntilts
+- tsctf
+- tsreconstruction
+- denoisetrain
+- denoisepredict
+
+
+In the new system the job definition relies on pydantic models that are aware of all the necessary parameters and are able to construct the correct commands to execute the jobs. These were previosuly the functions of the old "wrappers" in the `bin` folder of cryoboost which will show to you and we should use them to the best of our ability. They are almost direct translations, except ours strive to be cleaner and well-typed. Another layer in our system is the "Container_service", which, when the external tool is containerized -- wraps the given command to it into a container invocation and passes it on into the instantiated job.star. 
+
+```
+The main sources of global parameters are the single config file (conf.yaml) where each user should be able to specify some system-specific paths and params etc., a set of relion-type `job.star` files that each define a set of defaults for a given job type (ex. `fsMotionAndCtf/job.star`) that are shipped with our cryoboost application. Of course the user is free to chnage those as well so this cannot be just hardcoded into the python code, but instead read on startup and entered into the global store. What should be hardcoded/well-defined is the shape/data model of each job because those are static. 
+
+In fact exactly this "data model" of a given job is (or _should_ be) one of the main actors in the application because given its knowledge of the exact parameters that a given job takes this data model is capable (independely of the rest of the application) of constructing the command necessary to dispatch this job to a given tool binary. It is also able to validate its parameters. A set of these job models, provided an external overarching schema, should be able to arrange themselves in correct order and validate their dependency vis a vis each other. They should also be able to provide a "blueprint" for a local ui component defining the inputs and parameters of this given job given the knowldege of types and constraints on this parameter
+
+```
+
+Special care should be taken when you implement new jobs to correctly construct their directory hierarchy. That is, currently fsmotion correction is at External/job002 and all of its outputs land in that folder. Next job would be alignTilts and it should accordingly land at External/job003 and so on unless it's a relion job of course.
+
