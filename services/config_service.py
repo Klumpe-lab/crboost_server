@@ -1,11 +1,15 @@
 # services/config_service.py
+"""
+Pure configuration loader - reads conf.yaml and provides typed access.
+No business logic, just data loading.
+"""
 
 import yaml
 from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
-from services.parameter_models import StrParam, IntParam
+
 
 class SubmissionConfig(BaseModel):
     HeadNode: str
@@ -15,36 +19,29 @@ class SubmissionConfig(BaseModel):
     Helpssh: str
     HelpConflict: str
 
+
 class LocalConfig(BaseModel):
     Environment: str
+
 
 class Alias(BaseModel):
     Job: str
     Parameter: str
     Alias: str
 
-# Refactored to use Parameter model
+
 class ComputingPartition(BaseModel):
-    
-    """Computing partition with Parameter-based fields"""
-    NrGPU: IntParam
-    NrCPU: IntParam
-    RAM: StrParam  
-    VRAM: StrParam
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'ComputingPartition':
-        """Create from raw dict with Parameter wrapping"""
-        return cls(
-            NrGPU=IntParam(value=data['NrGPU'], min_value=0, max_value=8),
-            NrCPU=IntParam(value=data['NrCPU'], min_value=1, max_value=128),
-            RAM=StrParam(value=data['RAM']),
-            VRAM=StrParam(value=data['VRAM'])
-        )
+    """Simple partition definition - no Parameter wrappers"""
+    NrGPU: int
+    NrCPU: int
+    RAM: str
+    VRAM: str
+
 
 class NodeSharingConfig(BaseModel):
     CPU_PerGPU: int = Field(alias='CPU-PerGPU')
     ApplyTo: List[str]
+
 
 class ComputingConfig(BaseModel):
     QueSize: Dict[str, int]
@@ -54,7 +51,7 @@ class ComputingConfig(BaseModel):
     JOBMaxNodes: Dict[str, List[int]]
     JOBsPerDevice: Dict[str, Dict[str, int]]
     
-    # Partitions with Parameter-based models
+    # Simplified partitions
     c: Optional[ComputingPartition] = None
     m: Optional[ComputingPartition] = None
     g: Optional[ComputingPartition] = None
@@ -62,7 +59,9 @@ class ComputingConfig(BaseModel):
     g_v100: Optional[ComputingPartition] = Field(None, alias='g-v100')
     g_a100: Optional[ComputingPartition] = Field(None, alias='g-a100')
 
+
 class Config(BaseModel):
+    """Root configuration model"""
     submission: List[SubmissionConfig]
     local: LocalConfig
     aliases: List[Alias]
@@ -76,12 +75,9 @@ class Config(BaseModel):
     class Config:
         extra = 'ignore'
 
+
 class ConfigService:
-    """
-    ConfigService is now SUBSERVIENT to ParameterManager.
-    It loads static defaults from conf.yaml and provides them
-    to the parameter manager for initialization.
-    """
+    """Loads and provides access to static configuration"""
     
     def __init__(self, config_path: Path):
         if not config_path.exists():
@@ -90,52 +86,79 @@ class ConfigService:
         with open(config_path, 'r') as f:
             data = yaml.safe_load(f)
         
+        # Ensure required keys exist
         if 'star_file' not in data:
             data['star_file'] = {}
         
-        # Convert partition dicts to Parameter-based models
-        if 'computing' in data:
-            for partition_key in ['c', 'm', 'g', 'g-p100', 'g-v100', 'g-a100']:
-                if partition_key in data['computing']:
-                    partition_data = data['computing'][partition_key]
-                    data['computing'][partition_key] = ComputingPartition.from_dict(partition_data).dict()
-        
         self._config = Config(**data)
+        print(f"[CONFIG] Loaded from {config_path}")
 
-    def get_config(self) -> Config:
+    @property
+    def config(self) -> Config:
+        """Get the full config object"""
         return self._config
     
-    def get_default_computing_params(self) -> Dict[str, Any]:
-        """
-        Extract default computing parameters as a dict
-        for ParameterManager to consume.
-        """
-        # Find first available GPU partition
-        for partition_key in ['g', 'g_v100', 'g_a100', 'g_p100']:
-            partition = getattr(self._config.computing, partition_key, None)
-            if partition:
-                return {
-                    'partition': partition_key.replace('_', '-'),
-                    'gpu_count': partition.NrGPU.value,
-                    'cpu_count': partition.NrCPU.value,
-                    'memory_gb': int(partition.RAM.value.replace('G', '').replace('g', '')),
-                }
-        
-        # Fallback defaults if no GPU partition found
-        return {
-            'partition': 'g',
-            'gpu_count': 1,
-            'cpu_count': 8,
-            'memory_gb': 32,
-        }
+    @property
+    def containers(self) -> Dict[str, str]:
+        """Get container paths"""
+        return self._config.containers or {}
 
+
+    @property
+    def tools(self) -> Dict[str, Dict[str, str]]:
+        """
+        Get tool-to-container mapping.
+        Returns a dict like: {'relion': {'container': 'relion', 'type': 'container'}}
+        """
+        return {
+            # Relion tools
+            'relion': {'container': 'relion', 'type': 'container'},
+            'relion_import': {'container': 'relion', 'type': 'container'},
+            'relion_schemer': {'container': 'relion', 'type': 'container'},
+            
+            # Warp/AreTomo tools
+            'warptools': {'container': 'warp_aretomo', 'type': 'container'},
+            'aretomo': {'container': 'warp_aretomo', 'type': 'container'},
+            
+            # Other tools
+            'cryocare': {'container': 'cryocare', 'type': 'container'},
+            'pytom': {'container': 'pytom', 'type': 'container'},
+        }
+    
+    def get_container_for_tool(self, tool_name: str) -> Optional[str]:
+        """Get the container name for a tool"""
+        tool_config = self.tools.get(tool_name)
+        if not tool_config:
+            return None
+        
+        container_key = tool_config.get('container')
+        return self.containers.get(container_key)
+    
     def get_job_output_filename(self, job_type: str) -> Optional[str]:
+        """Get expected output filename for a job type"""
         if not self._config.star_file:
             return None
         base_job_type = job_type.split('_')[0]
         return self._config.star_file.get(base_job_type)
+    
+    def find_gpu_partition(self) -> Optional[tuple[str, ComputingPartition]]:
+        """Find the first available GPU partition"""
+        for partition_key in ['g', 'g_v100', 'g_a100', 'g_p100']:
+            partition = getattr(self._config.computing, partition_key, None)
+            if partition:
+                # Return both the key and the partition object
+                return (partition_key.replace('_', '-'), partition)
+        return None
+
+
+# Singleton instance
+_config_service_instance = None
 
 @lru_cache()
 def get_config_service(config_path: str = "config/conf.yaml") -> ConfigService:
-    path = Path.cwd() / config_path
-    return ConfigService(path)
+    """Get or create the config service singleton"""
+    global _config_service_instance
+    if _config_service_instance is None:
+        path = Path.cwd() / config_path
+        _config_service_instance = ConfigService(path)
+    return _config_service_instance

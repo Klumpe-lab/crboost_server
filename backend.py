@@ -1,3 +1,4 @@
+# backend.py
 import asyncio
 import json
 import os
@@ -9,24 +10,33 @@ import yaml
 import subprocess
 import glob
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
 from services.config_service import get_config_service
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
 
-from services.parameter_manager import ParameterManager  # NEW
+# NEW: Import the global state and mutators
+from app_state import (
+    state as app_state,
+    prepare_job_params,
+    update_from_mdoc,
+    export_for_project,
+    get_ui_state_legacy,
+)
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from pathlib import Path
 import uuid
+
 
 class User(BaseModel):
     """Represents an authenticated user."""
     username: str
 
+
 HARDCODED_USER = User(username="artem.kushner")
+
 
 class CryoBoostBackend:
 
@@ -35,23 +45,25 @@ class CryoBoostBackend:
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
-        self.parameter_manager = ParameterManager()  
+        
+        # Store a reference to global state (for services that need it)
+        self.app_state = app_state
+        print(f"[BACKEND] Initialized with state reference")
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
-            """
-            Get the parameters for a specific job, populating from
-            global state and job.star defaults if not already loaded.
-            """
-            try:
-                # This will create the job params from defaults/job.star if not exist
-                job_model = self.parameter_manager.prepare_job_params(job_name)
-                if job_model:
-                    return {"success": True, "params": job_model.dict()}
-                else:
-                    return {"success": False, "error": f"Unknown job type {job_name}"}
-            except Exception as e:
-                print(f"[ERROR] Could not get params for job {job_name}: {e}")
-                return {"success": False, "error": str(e)}
+        """
+        Get the parameters for a specific job, populating from
+        global state and job.star defaults if not already loaded.
+        """
+        try:
+            job_model = prepare_job_params(job_name)
+            if job_model:
+                return {"success": True, "params": job_model.dict()}
+            else:
+                return {"success": False, "error": f"Unknown job type {job_name}"}
+        except Exception as e:
+            print(f"[ERROR] Could not get params for job {job_name}: {e}")
+            return {"success": False, "error": str(e)}
 
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
@@ -86,21 +98,19 @@ class CryoBoostBackend:
             
             params_json_path = project_dir / "project_params.json"
             try:
-                # Export clean, hierarchical config (using V2 manager)
-                clean_config = self.parameter_manager.export_for_project(
+                # Use the mutator function to export config
+                clean_config = export_for_project(
                     project_name=project_name,
                     movies_glob=movies_glob,
                     mdocs_glob=mdocs_glob,
                     selected_jobs=selected_jobs
                 )
                 
-                # Save it
                 with open(params_json_path, 'w') as f:
                     json.dump(clean_config, f, indent=2)
                 
-                print(f"[BACKEND-V2] ✓ Saved clean parameters to {params_json_path}")
+                print(f"[BACKEND] Saved parameters to {params_json_path}")
                 
-                # Verify
                 if not params_json_path.exists():
                     raise FileNotFoundError(f"Parameter file was not created at {params_json_path}")
                 
@@ -108,7 +118,7 @@ class CryoBoostBackend:
                 if file_size == 0:
                     raise ValueError(f"Parameter file is empty: {params_json_path}")
                 
-                print(f"[BACKEND-V2] ✓ Verified parameter file: {file_size} bytes")
+                print(f"[BACKEND] Verified parameter file: {file_size} bytes")
                 
             except Exception as e:
                 print(f"[ERROR] Failed to save project_params.json: {e}")
@@ -118,7 +128,6 @@ class CryoBoostBackend:
                     "success": False, 
                     "error": f"Project created but failed to save parameters: {str(e)}"
                 }
-                
             
             # Collect bind paths
             additional_bind_paths = {
@@ -133,7 +142,6 @@ class CryoBoostBackend:
                 scheme_name, 
                 base_template_path, 
                 selected_jobs, 
-                # user_params, # REMOVED
                 additional_bind_paths=list(additional_bind_paths)
             )
             
@@ -178,7 +186,7 @@ class CryoBoostBackend:
                 "success": True,
                 "message": f"Project '{project_name}' created and initialized successfully.",
                 "project_path": str(project_dir),
-                "params_file": str(params_json_path)  # Return the params file path
+                "params_file": str(params_json_path)
             }
             
         except Exception as e:
@@ -188,44 +196,22 @@ class CryoBoostBackend:
 
     async def get_initial_parameters(self) -> Dict[str, Any]:
         """Get the default parameters to populate the UI"""
-        # NEW: Use get_ui_state() for backward compatibility
-        return self.parameter_manager.get_ui_state()
-
-    # In backend.py - in the autodetect_parameters method
+        return get_ui_state_legacy()
 
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
         """Run mdoc autodetection and return the updated state"""
-        print(f"[BACKEND-V2] Autodetecting from {mdocs_glob}")
+        print(f"[BACKEND] Autodetecting from {mdocs_glob}")
         
-        current_jobs = list(self.parameter_manager.state.jobs.keys())
+        # Call the mutator function
+        update_from_mdoc(mdocs_glob)
         
-        self.parameter_manager.update_from_mdoc(mdocs_glob)
-        
-        for job_name in current_jobs:
-            print(f"[BACKEND-V2] Refreshing job {job_name} after mdoc detection")
-            self.parameter_manager.state.populate_job(job_name)
-        
-        return self.parameter_manager.get_ui_state()
-            
+        # Return updated state for UI
+        return get_ui_state_legacy()
 
-    async def update_parameter(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-            """
-            Update a single parameter - NO ADAPTER BULLSHIT
-            """
-            try:
-                param_name = payload.get("param_name")
-                value = payload.get("value")
-                
-                if not param_name:
-                    return {"success": False, "error": "Invalid payload: 'param_name' missing"}
-                self.parameter_manager.update_parameter(param_name, value)
-                return {"success": True}
-                
-            except Exception as e:
-                print(f"[ERROR] update_parameter failed: {e}")
-                import traceback
-                traceback.print_exc()
-                return {"success": False, "error": str(e)}
+    # DELETE THIS ENTIRE FUNCTION - No longer needed with bind_value
+    # async def update_parameter(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    #     """This function is now obsolete - UI uses bind_value instead"""
+    #     pass
 
     async def run_shell_command(self, command: str, cwd: Path = None, 
                                 tool_name: str = None, additional_binds: List[str] = None):
@@ -269,7 +255,7 @@ class CryoBoostBackend:
             print(f"[ERROR] Exception in run_shell_command: {e}")
             return {"success": False, "output": "", "error": str(e)}
 
-    # ... [Rest of backend.py (get_slurm_info, _run_relion_schemer, etc.) remains unchanged] ...
+    # ... Rest of backend methods remain unchanged ...
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
 

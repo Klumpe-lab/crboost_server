@@ -6,13 +6,16 @@ from pathlib import Path
 from nicegui import ui
 from backend import CryoBoostBackend
 from ui.utils import create_path_input_with_picker
-from typing import Dict, Any, Callable
+from typing import Dict, Any
+
+# Import global state for binding
+from app_state import state as app_state, update_from_mdoc
 
 def _snake_to_title(snake_str: str) -> str:
     return ' '.join(word.capitalize() for word in snake_str.split('_'))
 
 def build_projects_tab(backend: CryoBoostBackend):
-    """Projects tab - ultra-compact UI"""
+    """Projects tab with reactive state bindings"""
     state = {
         "selected_jobs": [],
         "current_project_path": None,
@@ -26,64 +29,9 @@ def build_projects_tab(backend: CryoBoostBackend):
     
     async def load_page_data():
         try:
-            await _load_initial_params()
             await _load_available_jobs()
         except Exception as e:
             print(f"[ERROR] load_page_data: {e}")
-    
-    async def _load_initial_params():
-        try:
-            # This still works because get_ui_state() has the flat legacy keys
-            initial_state_dict = await backend.get_initial_parameters()
-            await _update_ui_from_state(initial_state_dict)
-        except Exception as e:
-            print(f"[ERROR] Failed to load initial parameters: {e}")
-
-    async def _update_ui_from_state(state_dict: Dict[str, Any]):
-        try:
-            pixel_size_input.set_value(state_dict['microscope']['pixel_size_angstrom'])
-            voltage_input.set_value(state_dict['microscope']['acceleration_voltage_kv'])
-            cs_input.set_value(state_dict['microscope']['spherical_aberration_mm'])
-            amplitude_contrast_input.set_value(state_dict['microscope']['amplitude_contrast'])
-            dose_per_tilt_input.set_value(state_dict['acquisition']['dose_per_tilt'])
-            dims = state_dict['acquisition']['detector_dimensions']
-            image_size_input.set_value(f"{dims[0]}x{dims[1]}")
-            tilt_axis_input.set_value(state_dict['acquisition']['tilt_axis_degrees'])
-            
-            if state_dict['acquisition'].get('eer_fractions_per_frame'):
-                eer_grouping_input.set_value(state_dict['acquisition']['eer_fractions_per_frame'])
-
-            if 'jobs' in state_dict:
-                for job_name, params in state_dict['jobs'].items():
-                    if job_name in state['job_param_inputs']:
-                        for param_name, value in params.items():
-                            if param_name in state['job_param_inputs'][job_name]:
-                                state['job_param_inputs'][job_name][param_name].set_value(value)
-
-        except Exception as e:
-            print(f"[ERROR] Failed to update UI: {e}")
-
-    async def on_param_change(param_name: str, value: Any, cast_func: Callable):
-        try:
-            casted_value = cast_func(value)
-            # This still works because the backend maps flat names
-            await backend.update_parameter({
-                "param_name": param_name,
-                "value": casted_value
-            })
-        except Exception as e:
-            print(f"[UI] Error updating global {param_name}: {e}")
-
-    async def on_job_param_change(job_name: str, param_name: str, value: Any, cast_func: Callable):
-        try:
-            casted_value = cast_func(value)
-            hierarchical_path = f"jobs.{job_name}.{param_name}"
-            await backend.update_parameter({
-                "param_name": hierarchical_path,
-                "value": casted_value
-            })
-        except Exception as e:
-            print(f"[UI] Error updating job {job_name}.{param_name}: {e}")
 
     async def auto_detect_metadata():
         movies_path = movies_path_input.value
@@ -94,28 +42,20 @@ def build_projects_tab(backend: CryoBoostBackend):
         detection_status.set_text("Detecting...")
         
         try:
-            updated_state_dict = await backend.autodetect_parameters(mdocs_path)
-            await _update_ui_from_state(updated_state_dict)
+            # Call the mutator - UI will update automatically via bind_value
+            update_from_mdoc(mdocs_path)
             
-            # Update auto-detected values with new hierarchical structure
-            if 'microscope' in updated_state_dict and 'acquisition' in updated_state_dict:
-                # Hierarchical format
-                state["auto_detected_values"]["pixel_size"] = updated_state_dict['microscope']['pixel_size_angstrom']
-                state["auto_detected_values"]["dose_per_tilt"] = updated_state_dict['acquisition']['dose_per_tilt']
-                dims = updated_state_dict['acquisition']['detector_dimensions']
-                state["auto_detected_values"]["image_size"] = f"{dims[0]}x{dims[1]}"
-            else:
-                # Legacy flat format (fallback)
-                state["auto_detected_values"]["pixel_size"] = updated_state_dict['pixel_size_angstrom']['value']
-                state["auto_detected_values"]["dose_per_tilt"] = updated_state_dict['dose_per_tilt']['value']
-                dims = updated_state_dict['detector_dimensions']['value']
-                state["auto_detected_values"]["image_size"] = f"{dims[0]}x{dims[1]}"
+            # Store detected values for EER calculation
+            state["auto_detected_values"]["pixel_size"] = app_state.microscope.pixel_size_angstrom
+            state["auto_detected_values"]["dose_per_tilt"] = app_state.acquisition.dose_per_tilt
+            dims = app_state.acquisition.detector_dimensions
+            state["auto_detected_values"]["image_size"] = f"{dims[0]}x{dims[1]}"
                 
         except Exception as e:
             detection_status.set_text("Failed")
             return
 
-        # Rest of the EER detection logic remains the same...
+        # EER detection logic
         eer_files = glob.glob(movies_path)
         if eer_files and eer_files[0].endswith('.eer'):
             try:
@@ -132,7 +72,8 @@ def build_projects_tab(backend: CryoBoostBackend):
                         dose_per_frame = total_dose / frames_per_tilt
                         grouping = math.floor(target / dose_per_frame)
                         if grouping > 0:
-                            eer_grouping_input.set_value(str(grouping))
+                            # This will trigger bind_value update
+                            app_state.acquisition.eer_fractions_per_frame = grouping
             except Exception as e:
                 pass
 
@@ -151,8 +92,6 @@ def build_projects_tab(backend: CryoBoostBackend):
             eer_info_label.set_text(
                 f"{grouping} → {rendered} frames, {lost} lost ({lost/frames*100:.1f}%) | {dose_per_frame:.2f} e⁻/Å²"
             )
-            # FIXED: Use hierarchical path for EER fractions
-            asyncio.create_task(on_param_change('acquisition.eer_fractions_per_frame', grouping, int))
         except Exception as e:
             pass
 
@@ -169,7 +108,7 @@ def build_projects_tab(backend: CryoBoostBackend):
         for job in selected:
             if job not in state["selected_jobs"]:
                 state["selected_jobs"].append(job)
-                await add_job_parameter_tab(job) # Now awaited
+                add_job_parameter_tab(job)
         
         # Remove deselected jobs
         to_remove = [job for job in state["selected_jobs"] if job not in selected]
@@ -179,17 +118,22 @@ def build_projects_tab(backend: CryoBoostBackend):
                 state["job_param_tabs"][job].delete()
                 del state["job_param_tabs"][job]
             if job in state["job_param_inputs"]:
-                del state["job_param_inputs"][job] # Clean up input dict
+                del state["job_param_inputs"][job]
 
-    async def add_job_parameter_tab(job_name: str):
-        """Add job parameter tab - USING REAL MODEL FIELD NAMES"""
-        result = await backend.get_job_parameters(job_name)
-        if not result.get("success"):
-            ui.notify(f"Could not load params for {job_name}: {result.get('error')}")
-            return
-            
-        params_dict = result.get("params", {})
-        print(f"[UI DEBUG] {job_name} parameters: {list(params_dict.keys())}")  # DEBUG
+    def add_job_parameter_tab(job_name: str):
+        """
+        Add job parameter tab using bind_value for reactive updates.
+        This is done generically for now, but eventually perhaps it's woth to define this per-job.
+        """
+        # Ensure job exists in state
+        if job_name not in app_state.jobs:
+            from app_state import prepare_job_params
+            prepare_job_params(job_name)
+        
+        job_model = app_state.jobs[job_name]
+        params_dict = job_model.dict()
+        
+        print(f"[UI DEBUG] {job_name} parameters: {list(params_dict.keys())}")
         
         state["job_param_inputs"][job_name] = {}
         
@@ -200,63 +144,45 @@ def build_projects_tab(backend: CryoBoostBackend):
             with ui.tab_panel(tab).classes('p-2'):
                 ui.label(f'{job_name} Parameters').classes('text-xs font-medium mb-2')
                 
-                # 2. Generically build UI
                 with ui.grid(columns=3).classes('gap-1'):
                     
                     for param_name, value in params_dict.items():
                         label = _snake_to_title(param_name)
                         
-                        # Store a reference to the UI element
-                        element = None 
+                        element = None
                         
-                        # Simple type-based UI builder
+                        # Build UI based on type
                         if isinstance(value, bool):
                             element = ui.checkbox(label, value=value).props('dense')
-                            cast_func = bool
                             
                         elif isinstance(value, (int, float)):
                             element = ui.input(label=label, value=value).props('dense outlined type=number')
-                            cast_func = float if '.' in str(value) else int
                             if 'pixel' in param_name or 'amplitude' in param_name or 'cs' in param_name:
                                 element.props('step=0.01')
                             
                         elif isinstance(value, str):
-                            # Check if it's an Enum (like alignment_method)
                             if param_name == 'alignment_method' and job_name == 'tsAlignment':
-                                # This is a bit of a special case
                                 options = ['AreTomo', 'IMOD', 'Relion'] 
                                 element = ui.select(label=label, options=options, value=value).props('dense outlined')
-                                cast_func = str
                             else:
                                 element = ui.input(label=label, value=value).props('dense outlined')
-                                cast_func = str
-                        
                         else:
-                            # Skip complex types for now (like tuples)
+                            # Skip complex types for now
                             continue
-                            
-                        # 3. Bind the element to the new job-specific handler
-                        #
-                        #    *** THIS IS THE FIX ***
-                        #    The event handler passes an event object 'e'.
-                        #    We must pass 'e.value' to our callback.
-                        #
-                        element.on_value_change(
-                            lambda e, jn=job_name, pn=param_name, cf=cast_func: \
-                                asyncio.create_task(on_job_param_change(jn, pn, e.value, cf))
+                        element.bind_value(
+                            app_state.jobs[job_name],  # Target object
+                            param_name                 # Attribute name
                         )
                         
-                        # 4. Add tooltip for duplicated parameters
+                        # Add tooltip for inherited parameters
                         if param_name in [
                             'pixel_size', 'voltage', 'spherical_aberration', 
                             'amplitude_contrast', 'dose_per_tilt_image', 
                             'tilt_axis_angle', 'cs', 'amplitude', 'eer_ngroups'
                         ]:
                             with element:
-                                ui.tooltip('Pre-populated from global settings, but editable for this job.')
-
+                                ui.tooltip('Pre-populated from global settings, editable for this job.')
                         
-                        # Store reference
                         state["job_param_inputs"][job_name][param_name] = element
 
         state["job_param_tabs"][job_name] = tab
@@ -291,7 +217,7 @@ def build_projects_tab(backend: CryoBoostBackend):
             project_status.set_text("Ready")
             run_button.props(remove='disabled')
 
-            # Disable fields
+            # Disable all inputs
             project_name_input.disable()
             project_location_input.disable()
             movies_path_input.disable()
@@ -299,7 +225,6 @@ def build_projects_tab(backend: CryoBoostBackend):
             create_button.disable()
             job_selector.disable()
             
-            # Disable ALL parameter inputs (global and job-specific)
             for el in parameter_inputs:
                 el.disable()
             for job_inputs in state["job_param_inputs"].values():
@@ -410,7 +335,7 @@ def build_projects_tab(backend: CryoBoostBackend):
     async def handle_stop_pipeline():
         ui.notify("Stop not implemented", type="warning")
 
-    # ========== ULTRA-COMPACT UI ==========
+    # ========== UI CONSTRUCTION ==========
     
     parameter_inputs = []
     
@@ -444,19 +369,43 @@ def build_projects_tab(backend: CryoBoostBackend):
         
         with ui.row().classes('w-full gap-2'):
             with ui.column().classes('gap-1'):
-                pixel_size_input = ui.input(label='Pixel (Å)').props('dense outlined type=number step=0.01').classes('w-28')
-                voltage_input = ui.input(label='Voltage (kV)').props('dense outlined type=number').classes('w-28')
-                cs_input = ui.input(label='Cs (mm)').props('dense outlined type=number step=0.1').classes('w-28')
+                # *** BIND TO GLOBAL STATE ***
+                pixel_size_input = ui.input(label='Pixel (Å)')\
+                    .props('dense outlined type=number step=0.01').classes('w-28')\
+                    .bind_value(app_state.microscope, 'pixel_size_angstrom')
+                    
+                voltage_input = ui.input(label='Voltage (kV)')\
+                    .props('dense outlined type=number').classes('w-28')\
+                    .bind_value(app_state.microscope, 'acceleration_voltage_kv')
+                    
+                cs_input = ui.input(label='Cs (mm)')\
+                    .props('dense outlined type=number step=0.1').classes('w-28')\
+                    .bind_value(app_state.microscope, 'spherical_aberration_mm')
             
             with ui.column().classes('gap-1'):
-                amplitude_contrast_input = ui.input(label='Amp. Contrast').props('dense outlined type=number step=0.01').classes('w-28')
-                dose_per_tilt_input = ui.input(label='Dose/Tilt').props('dense outlined type=number step=0.1').classes('w-28')
-                tilt_axis_input = ui.input(label='Tilt Axis (°)').props('dense outlined type=number step=0.1').classes('w-28')
+                amplitude_contrast_input = ui.input(label='Amp. Contrast')\
+                    .props('dense outlined type=number step=0.01').classes('w-28')\
+                    .bind_value(app_state.microscope, 'amplitude_contrast')
+                    
+                dose_per_tilt_input = ui.input(label='Dose/Tilt')\
+                    .props('dense outlined type=number step=0.1').classes('w-28')\
+                    .bind_value(app_state.acquisition, 'dose_per_tilt')
+                    
+                tilt_axis_input = ui.input(label='Tilt Axis (°)')\
+                    .props('dense outlined type=number step=0.1').classes('w-28')\
+                    .bind_value(app_state.acquisition, 'tilt_axis_degrees')  # RIGHT - matches the actual field name
             
             with ui.column().classes('gap-1'):
-                image_size_input = ui.input(label='Detector').props('dense outlined readonly').classes('w-32')
-                eer_grouping_input = ui.input(label='EER Group').props('dense outlined type=number').classes('w-32')
-                target_dose_input = ui.input(label='Target Dose').props('dense outlined type=number step=0.01').classes('w-32')
+                # Read-only, updates via mdoc detection
+                image_size_input = ui.input(label='Detector')\
+                    .props('dense outlined readonly').classes('w-32')
+                    
+                eer_grouping_input = ui.input(label='EER Group')\
+                    .props('dense outlined type=number').classes('w-32')\
+                    .bind_value(app_state.acquisition, 'eer_fractions_per_frame')
+                    
+                target_dose_input = ui.input(label='Target Dose')\
+                    .props('dense outlined type=number step=0.01').classes('w-32')
         
         eer_info_label = ui.label('').classes('text-xs text-blue-600 ml-1')
         
@@ -475,7 +424,6 @@ def build_projects_tab(backend: CryoBoostBackend):
             )
             project_location_input.classes('flex-grow')
         
-
         job_selector = ui.select(
             label='Select jobs',
             options=[],
@@ -483,7 +431,7 @@ def build_projects_tab(backend: CryoBoostBackend):
             with_input=True
         ).props('dense outlined use-chips options-dense').classes('w-full').on(
             'update:model-value', 
-            lambda: asyncio.create_task(handle_job_selection()) # Must be async now
+            lambda: asyncio.create_task(handle_job_selection())
         )
         
         # Job parameter tabs
@@ -513,23 +461,16 @@ def build_projects_tab(backend: CryoBoostBackend):
         pipeline_job_tabs = ui.tabs().classes('w-full text-xs')
         pipeline_job_panels = ui.tab_panels(pipeline_job_tabs).classes('w-full')
 
-
-    movies_path_input.on_value_change(lambda: asyncio.create_task(auto_detect_metadata()))
-    mdocs_path_input.on_value_change(lambda: asyncio.create_task(auto_detect_metadata()))
-    
-    # NEW HIERARCHICAL PATHS:
-    pixel_size_input.on_value_change(lambda e: asyncio.create_task(on_param_change('microscope.pixel_size_angstrom', e.value, float)))
-    voltage_input.on_value_change(lambda e: asyncio.create_task(on_param_change('microscope.acceleration_voltage_kv', e.value, float)))
-    cs_input.on_value_change(lambda e: asyncio.create_task(on_param_change('microscope.spherical_aberration_mm', e.value, float)))
-    amplitude_contrast_input.on_value_change(lambda e: asyncio.create_task(on_param_change('microscope.amplitude_contrast', e.value, float)))
-    dose_per_tilt_input.on_value_change(lambda e: asyncio.create_task(on_param_change('acquisition.dose_per_tilt', e.value, float)))
-    tilt_axis_input.on_value_change(lambda e: asyncio.create_task(on_param_change('acquisition.tilt_axis_degrees', e.value, float)))
-
-    # EER grouping should also be hierarchical
-    eer_grouping_input.on_value_change(lambda e: asyncio.create_task(on_param_change('acquisition.eer_fractions_per_frame', e.value, int)))
-
-    # These handlers are correct as they don't pass event args
+    # Only keep handlers that aren't handled by bind_value
     dose_per_tilt_input.on_value_change(lambda: calculate_eer_grouping())
     target_dose_input.on_value_change(lambda: calculate_eer_grouping())
+    
+    # Update image_size display when detector_dimensions changes
+    def update_image_size_display():
+        dims = app_state.acquisition.detector_dimensions
+        image_size_input.set_value(f"{dims[0]}x{dims[1]}")
+    
+    # Call once to initialize
+    update_image_size_display()
     
     return load_page_data
