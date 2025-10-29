@@ -2,34 +2,27 @@
 
 from pathlib import Path
 import shlex
-from typing import List
+from typing import List, Optional
 from .config_service import get_config_service
-from .tool_service import get_tool_service
 import shlex 
 
 class ContainerService:
 
     def __init__(self):
-        config_data = get_config_service().get_config()
-        self.container_paths = config_data.containers or {}
-        self.tool_service = get_tool_service()
-        
+        self.config = get_config_service()
         self.gui_containers = {'relion'}
         self.cli_containers = {'warp_aretomo', 'cryocare', 'pytom'}
 
-    def wrap_command_for_tool(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
-        """Simple wrapper that matches the old working code"""
-        
-        if not self.tool_service.is_container_tool(tool_name):
-            return command
-        
-        container_name = self.tool_service.get_container_for_tool(tool_name)
-        if not container_name or container_name not in self.container_paths:
-            return command
+    def get_container_path(self, tool_name: str) -> Optional[str]:
+        return self.config.get_container_for_tool(tool_name)
 
-        container_path = self.container_paths[container_name]
-        if not Path(container_path).exists():
+    def wrap_command_for_tool(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
+        container_path = self.get_container_path(tool_name)
+
+        if not container_path:
+            print(f"[CONTAINER WARN] No container found for tool '{tool_name}', running natively")
             return command
+        
         
         binds = set()
         essential_paths = ["/tmp", "/scratch", str(Path.home()), str(cwd.resolve())]
@@ -72,7 +65,8 @@ class ContainerService:
             "LD_PRELOAD", "XDG_RUNTIME_DIR", "CONDA_PREFIX", "CONDA_DEFAULT_ENV", "CONDA_PROMPT_MODIFIER"
         ]
         
-        if container_name not in self.gui_containers:
+        #TODO: THIS should be an enum of tools chekc, not a rickety ass substring, but leaving for later.
+        if 'relion' in container_path.lower():
             clean_env_vars.extend(["DISPLAY", "XAUTHORITY"])
             
         clean_env_cmd = "unset " + " ".join(clean_env_vars)
