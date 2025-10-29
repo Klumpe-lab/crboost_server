@@ -15,6 +15,7 @@ from services.config_service import get_config_service
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
+from services.job_types import JobType
 
 # NEW: Import the global state and mutators
 from app_state import (
@@ -50,19 +51,20 @@ class CryoBoostBackend:
         self.app_state = app_state
         print(f"[BACKEND] Initialized with state reference")
 
+    # In backend.py, replace string-based job handling:
+
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
-        """
-        Get the parameters for a specific job, populating from
-        global state and job.star defaults if not already loaded.
-        """
+        """Get parameters for a specific job"""
         try:
-            job_model = prepare_job_params(job_name)
+            # Convert string to enum safely
+            job_type = JobType.from_string(job_name)
+            job_model = prepare_job_params(job_type)  # Updated signature
+            
             if job_model:
-                return {"success": True, "params": job_model.dict()}
+                return {"success": True, "params": job_model.model_dump()}  # Pydantic V2
             else:
                 return {"success": False, "error": f"Unknown job type {job_name}"}
-        except Exception as e:
-            print(f"[ERROR] Could not get params for job {job_name}: {e}")
+        except ValueError as e:
             return {"success": False, "error": str(e)}
 
     async def get_available_jobs(self) -> List[str]:
@@ -177,7 +179,6 @@ class CryoBoostBackend:
                 process.kill()
                 await process.wait()
 
-            print(f"[BACKEND] Relion project initialization finished.")
 
             if not pipeline_star_path.exists():
                 return {"success": False, "error": f"Failed to create default_pipeline.star."}
@@ -202,16 +203,9 @@ class CryoBoostBackend:
         """Run mdoc autodetection and return the updated state"""
         print(f"[BACKEND] Autodetecting from {mdocs_glob}")
         
-        # Call the mutator function
         update_from_mdoc(mdocs_glob)
-        
-        # Return updated state for UI
         return get_ui_state_legacy()
 
-    # DELETE THIS ENTIRE FUNCTION - No longer needed with bind_value
-    # async def update_parameter(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-    #     """This function is now obsolete - UI uses bind_value instead"""
-    #     pass
 
     async def run_shell_command(self, command: str, cwd: Path = None, 
                                 tool_name: str = None, additional_binds: List[str] = None):
@@ -255,7 +249,6 @@ class CryoBoostBackend:
             print(f"[ERROR] Exception in run_shell_command: {e}")
             return {"success": False, "output": "", "error": str(e)}
 
-    # ... Rest of backend methods remain unchanged ...
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
 
@@ -264,14 +257,13 @@ class CryoBoostBackend:
         try:
             run_command = f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --verb 2"
             
+            # This call prints the formatted log, so no need for manual print
             full_run_command = self.container_service.wrap_command_for_tool(
                 command=run_command,
                 cwd=project_dir,
                 tool_name="relion_schemer",
                 additional_binds=additional_bind_paths
             )
-            
-            print(f"[BACKEND] Starting pipeline with command: {full_run_command}")
             
             process = await asyncio.create_subprocess_shell(
                 full_run_command,
