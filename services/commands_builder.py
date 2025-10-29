@@ -63,10 +63,6 @@ class FsMotionCtfCommandBuilder(BaseCommandBuilder):
         test_cmd = f"echo 'ACTUAL VALUES: pixel_size={params.pixel_size}, voltage={params.voltage}' && "
         test_cmd += "WarpTools --help"  # Just to see if WarpTools works
         
-        print("TEST CMD:", test_cmd)
-        print(f"[COMMAND BUILDER DEBUG] Building command with pixel_size: {params.pixel_size}, voltage: {params.voltage}")
-        
-        # Step 1: Create settings file
         create_settings_parts = [
             "WarpTools create_settings",
             "--folder_data ../../frames",
@@ -107,11 +103,9 @@ class FsMotionCtfCommandBuilder(BaseCommandBuilder):
             "--out_averages",  # Output motion-corrected averages
         ]
         
-        # Optional: limit processing
         if params.do_at_most > 0:
             run_main_parts.extend(["--do_at_most", str(params.do_at_most)])
         
-        # Join the two commands with &&
         full_command = " && ".join([
             " ".join(create_settings_parts),
             " ".join(run_main_parts)
@@ -120,112 +114,36 @@ class FsMotionCtfCommandBuilder(BaseCommandBuilder):
         return full_command
         
 
+#TODO Work in progress
 class TsAlignmentCommandBuilder(BaseCommandBuilder):
-    """Build tilt series alignment command"""
-    
-    def build(self, params: TsAlignmentParams, paths: Dict[str, Path]) -> str:
-        """Build alignment command based on selected method"""
-        
-        if params.alignment_method.value == "AreTomo":
-            return self._build_aretomo_command(params, paths)
-        elif params.alignment_method.value == "IMOD":
-            return self._build_imod_command(params, paths)
-        else:
-            return self._build_relion_command(params, paths)
-    
-    def _build_aretomo_command(self, params: TsAlignmentParams, paths: Dict[str, Path]) -> str:
-        """Build AreTomo2 command"""
-        cmd_parts = ["AreTomo2"]
-        
-        # Input/output
-        if 'input_star' in paths:
-            # AreTomo needs the .star file to find the .mrc stacks
-            # Assuming AreTomo can parse a Relion 5 star file...
-            # This is a potential point of failure.
-            # For now, let's assume it needs the *input stack*, not the star.
-            # This logic needs verification.
-            # Let's assume the orchestrator path logic is wrong and 
-            # AreTomo needs an input stack, not a star.
-            # The user's code had -InMrc, so it expects an MRC file.
-            # This part of the logic is flawed, but fixing it requires
-            # knowing what the AreTomo wrapper expects.
-            
-            # --- FALLBACK: Use input_star path, but change extension
-            input_mrc = paths['input_star'].with_suffix('.mrcs') # Guessing
-            cmd_parts.extend(["-InMrc", str(input_mrc)])
-        
-        if 'output_dir' in paths:
-            # Output to current dir, named aligned.mrc
-            cmd_parts.extend(["-OutMrc", str(paths['output_dir']) + "/aligned.mrc"])
-        
-        # Core parameters
-        cmd_parts.extend([
-            "-OutBin", str(params.binning),
-            # This conversion is suspicious, but keeping from user's code
-            "-VolZ", str(int(params.thickness_nm / 10)),  
-            "-TiltCor", str(params.tilt_cor),
-            "-OutImod", str(params.out_imod),
-        ])
-        
-        # Patch tracking
-        cmd_parts.extend([
-            "-Patch", f"{params.patch_x} {params.patch_y}",
-        ])
-        
-        # --- MODIFICATION ---
-        # REMOVED: GPU selection. This should be handled by the scheduler (qsub/slurm)
-        # if 'gpu_id' in paths:
-        #     cmd_parts.extend(["-Gpu", str(paths['gpu_id'])])
-        # --- END MODIFICATION ---
-            
-        return " ".join(cmd_parts)
-    
-    def _build_imod_command(self, params: TsAlignmentParams, paths: Dict[str, Path]) -> str:
-        """Build IMOD alignment command"""
-        # Placeholder for IMOD command building
-        return f"echo 'IMOD alignment not implemented'; etomo --binning {params.binning}"
-    
-    def _build_relion_command(self, params: TsAlignmentParams, paths: Dict[str, Path]) -> str:
-        """Build Relion tomo alignment command"""
-        cmd_parts = ["relion_tomo_align"]
-        
-        if 'input_star' in paths:
-            cmd_parts.extend(["--i", str(paths['input_star'])])
-        
-        if 'output_star' in paths:
-            cmd_parts.extend(["--o", str(paths['output_star'])])
-        
-        cmd_parts.extend([
-            "--bin", str(params.binning),
-            "--thickness", str(params.thickness_nm),
-        ])
-        
-        if params.do_at_most > 0:
-            cmd_parts.extend(["--do_at_most", str(params.do_at_most)])
-        
-        return " ".join(cmd_parts)
+    ...
 
-class QsubCommandBuilder(BaseCommandBuilder):
-    """Build qsub submission commands"""
-    
-    def build(self, 
-              job_command: str,
-              computing: ComputingParams,
-              job_name: str,
-              paths: Dict[str, Path]) -> str:
-        """Build the qsub wrapper command"""
-        
-        qsub_script = paths.get('qsub_script', Path("qsub/qsub_cbe_warp.sh"))
-        
-        # Build the submission command
-        cmd_parts = [
-            str(qsub_script),
-            job_name,
-            f"'{job_command}'", # Wrap job command in quotes
-            str(computing.partition.value),
-            str(computing.gpu_count) if computing.gpu_count > 0 else "0",
-            f"{computing.memory_gb}G",
-            str(computing.threads),
-        ]
-        
-        return " ".join(cmd_parts)
+class TsCtf(BaseCommandBuilder):
+    ...
+class TsReconstruct(BaseCommandBuilder):
+    ...
+
+class denoiseTrain(BaseCommandBuilder):
+    ...
+class denoiseInfer(BaseCommandBuilder):
+    ...
+class templateMatching(BaseCommandBuilder):
+    ...
+
+class tmExtractCandidates(BaseCommandBuilder):
+    ...
+class subTomoReconstruction(BaseCommandBuilder):
+    ...
+
+
+
+
+
+
+
+
+
+
+
+
+

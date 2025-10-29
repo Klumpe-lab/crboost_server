@@ -6,10 +6,10 @@ This is the single source of truth for all application state.
 
 import glob
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from datetime import datetime
 import json
-
+from services.job_types import JobType
 from services.parameter_models import (
     PipelineState,
     ComputingParams,
@@ -20,8 +20,6 @@ from services.parameter_models import (
     TsAlignmentParams,
 )
 
-# ============= GLOBAL STATE INSTANCE =============
-# This is the single source of truth - import this in any module that needs state
 state = PipelineState(
     computing=ComputingParams.from_conf_yaml(Path("config/conf.yaml"))
 )
@@ -29,20 +27,31 @@ state = PipelineState(
 print(f"[APP STATE] Initialized with computing: {state.computing.dict()}")
 
 
-# ============= STATE MUTATORS (aka Reducers) =============
-# These are the ONLY functions that should modify the global state
+state = PipelineState()
 
 
-def prepare_job_params(job_name: str, job_star_path: Optional[Path] = None):
+def prepare_job_params(job_name_or_type):
     """
-    Populate job parameters in the state, loading from job.star if available.
-    This mutates state.jobs[job_name].
+    Prepare job parameters - ensure they're properly synced with global state
     """
-    if job_name not in state.jobs:
-        state.populate_job(job_name, job_star_path)
-        print(f"[STATE] Prepared job: {job_name}")
-    return state.jobs.get(job_name)
+    if isinstance(job_name_or_type, str):
+        job_type = JobType.from_string(job_name_or_type)
+    else:
+        job_type = job_name_or_type
 
+    template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+    job_star_path = template_base / job_type.value / "job.star"
+
+    # Use populate_job but then force sync with current global state
+    state.populate_job(job_type, job_star_path if job_star_path.exists() else None)
+    
+    # Ensure the job is synced with current global state
+    job_model = state.jobs.get(job_type.value)
+    if job_model and hasattr(job_model, 'sync_from_pipeline_state'):
+        job_model.sync_from_pipeline_state(state)
+        print(f"[STATE] Force-synced {job_type.value} with current global state")
+
+    return state.jobs.get(job_type.value)
 
 def update_from_mdoc(mdocs_glob: str):
     """

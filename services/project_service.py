@@ -126,7 +126,6 @@ class ProjectService:
     ) -> Dict[str, Any]:
         """
         Creates the project directory structure and imports the raw data.
-        Now with PRE-POPULATED qsub scripts!
         """
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
@@ -154,34 +153,26 @@ class ProjectService:
         if qsub_template_path.is_dir():
             # Copy all templates
             shutil.copytree(qsub_template_path, project_qsub_path, dirs_exist_ok=True)
-            
-            # Pre-populate the main qsub script we use
             main_qsub_script = project_qsub_path / "qsub_cbe_warp.sh"
             if main_qsub_script.exists():
                 await self._prepopulate_qsub_script(main_qsub_script)
                 
             print(f"[PROJECT] Pre-populated qsub scripts in {project_qsub_path}")
 
+    # In project_service.py, update this method:
+
     async def _prepopulate_qsub_script(self, qsub_script_path: Path):
-        """Replace XXXextraXXXX placeholders with sensible defaults"""
+        """Replace placeholders with values from computing params"""
         with open(qsub_script_path, 'r') as f:
             content = f.read()
         
-        # Replace all the extra placeholders with sensible defaults
-        replacements = {
-            "XXXextra1XXX": "1",      # nodes
-            "XXXextra2XXX": "",       # mpi_per_node (empty = let relion handle it)
-            "XXXextra3XXX": "g",      # partition (GPU)
-            "XXXextra4XXX": "1",      # gpus  
-            "XXXextra5XXX": "16G",    # memory
-            "XXXthreadsXXX": "8",     # threads
-        }
+        # Get replacements from computing params in global state
+        replacements = self.backend.app_state.computing.get_qsub_replacements()
         
         for placeholder, value in replacements.items():
             content = content.replace(placeholder, value)
         
-        # Write back
         with open(qsub_script_path, 'w') as f:
             f.write(content)
         
-        print(f"[QSUB] Pre-populated {qsub_script_path} with defaults")
+        print(f"[PROJECT] Pre-populated qsub script with: {replacements}")
