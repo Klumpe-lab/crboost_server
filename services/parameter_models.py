@@ -8,53 +8,6 @@ import yaml
 import starfile
 from datetime import datetime
 
-T = TypeVar('T')
-
-class Parameter(BaseModel, Generic[T]):
-    """
-    A strongly-typed parameter with validation constraints.
-    """
-    value: T
-    min_value: Optional[T] = None
-    max_value: Optional[T] = None
-    choices: Optional[List[T]] = None
-    description: Optional[str] = None
-    source: Optional[str] = None
-
-    def copy(self, **kwargs) -> 'Parameter[T]':
-        """Create a copy of the parameter with optional updates"""
-        return self.__class__(**{**self.dict(), **kwargs})
-
-    def dict(self, **kwargs) -> Dict[str, Any]:
-        """Convert to dictionary, compatible with Pydantic"""
-        return super().dict(**kwargs)
-
-    @validator('value')
-    def validate_constraints(cls, v, values):
-        """Validate value against constraints"""
-        if 'min_value' in values and values['min_value'] is not None:
-            if v < values['min_value']:
-                raise ValueError(f"Value {v} below minimum {values['min_value']}")
-        
-        if 'max_value' in values and values['max_value'] is not None:
-            if v > values['max_value']:
-                raise ValueError(f"Value {v} above maximum {values['max_value']}")
-        
-        if 'choices' in values and values['choices'] is not None:
-            if v not in values['choices']:
-                raise ValueError(f"Value {v} not in allowed choices: {values['choices']}")
-        
-        return v
-    
-    class Config:
-        arbitrary_types_allowed = True
-
-# Create explicit type aliases for better IDE support
-FloatParam = Parameter[float]
-IntParam = Parameter[int]
-StrParam = Parameter[str]
-BoolParam = Parameter[bool]
-PathParam = Parameter[Optional[Path]]
 
 
 
@@ -106,6 +59,7 @@ class AcquisitionParams(BaseModel):
     invert_tilt_angles: bool = False
     invert_defocus_hand: bool = False
     
+
 class ComputingParams(BaseModel):
     """Computing resource parameters"""
     partition: Partition = Partition.GPU
@@ -116,37 +70,27 @@ class ComputingParams(BaseModel):
     @classmethod
     def from_conf_yaml(cls, config_path: Path) -> 'ComputingParams':
         """Extract computing params from conf.yaml"""
-        if not config_path.exists():
-            print(f"[WARN] Config not found at {config_path}, using defaults")
-            return cls()
-            
+        from services.config_service import get_config_service
+        
         try:
-            with open(config_path) as f:
-                conf = yaml.safe_load(f)
+            config_service = get_config_service(str(config_path))
+            gpu_partition = config_service.find_gpu_partition()
             
-            computing = conf.get('computing', {})
-            
-            # Try different partition keys
-            for partition_key in ['g', 'g-v100', 'g-a100', 'g-p100']:
-                # Try both underscore and hyphen variants
-                clean_key = partition_key.replace('-', '_')
-                if clean_key in computing or partition_key in computing:
-                    part_data = computing.get(clean_key) or computing.get(partition_key)
-                    
-                    # Extract values with defaults
-                    gpu_count = part_data.get('NrGPU', 1)
-                    ram_str = str(part_data.get('RAM', '32G'))
-                    memory_gb = int(ram_str.replace('G', '').replace('g', ''))
-                    threads = part_data.get('NrCPU', 8)
-                    
-                    return cls(
-                        partition=Partition(partition_key),
-                        gpu_count=gpu_count,
-                        memory_gb=memory_gb,
-                        threads=threads
-                    )
+            if gpu_partition:
+                partition_key, partition = gpu_partition
+                
+                # Parse memory string (e.g., "169G" -> 169)
+                memory_gb = int(partition.RAM.replace('G', '').replace('g', ''))
+                
+                return cls(
+                    partition=Partition(partition_key),
+                    gpu_count=partition.NrGPU,
+                    memory_gb=memory_gb,
+                    threads=partition.NrCPU
+                )
             
             # Fallback to defaults
+            print("[WARN] No GPU partition found in config, using defaults")
             return cls()
             
         except Exception as e:

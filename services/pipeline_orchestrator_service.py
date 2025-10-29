@@ -6,7 +6,6 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-# NEW: Import the builders and new models
 from pydantic import BaseModel
 from services.commands_builder import (
     ImportMoviesCommandBuilder, FsMotionCtfCommandBuilder, 
@@ -17,24 +16,18 @@ from services.parameter_models import (
     TsAlignmentParams, AlignmentMethod
 )
 
-from services.tool_service import get_tool_service
 from .starfile_service import StarfileService
 from .config_service import get_config_service
 from .container_service import get_container_service
+
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
-    from services.parameter_manager import ParameterManager
+
 
 class PipelineOrchestratorService:
     """
     Orchestrates the creation and execution of Relion pipelines.
-    
-    This service is responsible for:
-    1.  Using ParameterManagerV2 to get validated Pydantic models for each job.
-    2.  Using CommandBuilders to create raw tool commands from those models.
-    3.  Using the ContainerService to wrap these raw commands.
-    4.  Injecting the final containerized commands into the job.star files.
     """
     
     def __init__(self, backend_instance: 'CryoBoostBackend'):
@@ -42,9 +35,8 @@ class PipelineOrchestratorService:
         self.star_handler = StarfileService()
         self.config_service = get_config_service()
         self.container_service = get_container_service()
-        self.tool_service = get_tool_service()
         
-        # NEW: Map job names to their corresponding builder class
+        # Map job names to their corresponding builder class
         self.job_builders: Dict[str, BaseCommandBuilder] = {
             'importmovies': ImportMoviesCommandBuilder(),
             'fsMotionAndCtf': FsMotionCtfCommandBuilder(),
@@ -52,10 +44,7 @@ class PipelineOrchestratorService:
         }
 
     def _get_job_tool(self, job_name: str, job_model: BaseModel) -> str:
-        """
-        Get the correct tool name for container service,
-        handling dynamic tools like tsAlignment.
-        """
+        """Get the correct tool name for container service"""
         if job_name == 'importmovies':
             return 'relion_import'
         
@@ -67,12 +56,11 @@ class PipelineOrchestratorService:
                 if job_model.alignment_method == AlignmentMethod.ARETOMO:
                     return 'aretomo'
                 if job_model.alignment_method == AlignmentMethod.IMOD:
-                    return 'imod' # Assuming 'imod' is a defined tool
+                    return 'imod'
                 if job_model.alignment_method == AlignmentMethod.RELION:
-                    return 'relion' # Assuming 'relion' is a defined tool
-            return 'aretomo' # Default fallback
+                    return 'relion'
+            return 'aretomo'
             
-        # Fallback for other jobs
         return 'relion'
 
     def _get_job_paths(
@@ -84,19 +72,12 @@ class PipelineOrchestratorService:
         project_dir: Path,
         job_dir: Path
     ) -> Dict[str, Path]:
-        """
-        Construct the relative input/output paths for a job
-        based on its position in the pipeline.
-        
-        Paths are relative to the job's execution directory (e.g., Import/job001).
-        """
+        """Construct the relative input/output paths for a job"""
         paths = {}
         
-        # Helper to find the output dir of a previous job
         def get_job_dir_by_name(name: str) -> Optional[str]:
             try:
                 idx = selected_jobs.index(name)
-                # This logic assumes job dir naming conventions
                 if name == 'importmovies':
                     return f"Import/job{idx+1:03d}"
                 else:
@@ -105,35 +86,26 @@ class PipelineOrchestratorService:
                 return None
 
         if job_name == 'importmovies':
-            # Job 001, runs in Import/job001
-            # Input dir is relative to project root, then up two levels
             paths['input_dir'] = Path(f"../../{project_dir.name}/mdoc")
-            paths['output_dir'] = Path(".") # Output to current dir
+            paths['output_dir'] = Path(".")
             paths['pipeline_control'] = Path(".")
             
         elif job_name == 'fsMotionAndCtf':
-            # Job 002, runs in External/job002
-            # Depends on importmovies
             import_dir = get_job_dir_by_name('importmovies')
             if import_dir:
-                # Input is from job001, output is movies.star
                 paths['input_star'] = Path(f"../{import_dir}/movies.star")
             
-            paths['output_star'] = Path("movies_mic.star") # Output to current dir
+            paths['output_star'] = Path("movies_mic.star")
             if acquisition_params.gain_reference_path:
                 paths['gain_reference'] = Path(acquisition_params.gain_reference_path)
 
         elif job_name == 'tsAlignment':
-            # Job 003, runs in External/job003
-            # Depends on fsMotionAndCtf
             motion_dir = get_job_dir_by_name('fsMotionAndCtf')
             if motion_dir:
                 paths['input_star'] = Path(f"../{motion_dir}/movies_mic.star")
 
-            # AreTomo-specific outputs
-            paths['output_dir'] = Path(".") # Aligned stack
-            paths['output_star'] = Path("aligned.star") # Relion output
-            # Note: We removed 'gpu_id' as it's a scheduler concern
+            paths['output_dir'] = Path(".")
+            paths['output_star'] = Path("aligned.star")
 
         return paths
 
@@ -149,7 +121,6 @@ class PipelineOrchestratorService:
         
         if builder:
             try:
-                # The builder's .build() method is polymorphic
                 return builder.build(job_model, paths)
             except Exception as e:
                 print(f"[PIPELINE ERROR] Failed to build command for {job_name}: {e}")
@@ -164,7 +135,6 @@ class PipelineOrchestratorService:
         new_scheme_name: str, 
         base_template_path: Path, 
         selected_jobs: List[str], 
-        # REMOVED: user_params: Dict[str, Any],
         additional_bind_paths: List[str]
     ):
         try:
@@ -172,10 +142,6 @@ class PipelineOrchestratorService:
             new_scheme_dir.mkdir(parents=True, exist_ok=True)
             base_scheme_name = base_template_path.name
 
-            # NEW: Get the parameter manager from the backend
-            param_manager: 'ParameterManager' = self.backend.parameter_manager
-
-            # NEW: Use enumerate to get job index for path generation
             for job_index, job_name in enumerate(selected_jobs):
                 job_number_str = f"job{job_index+1:03d}"
                 
@@ -194,19 +160,19 @@ class PipelineOrchestratorService:
                 if params_df is None:
                     continue
 
-                # === NEW LOGIC START ===
+                # Get the job model from global state
+                job_model = self.backend.app_state.jobs.get(job_name)
+                if not job_model:
+                    print(f"[PIPELINE WARNING] Job {job_name} not in state, skipping")
+                    continue
                 
-                # 1. Get the validated, populated Pydantic model for this job
-                #    This loads defaults from job.star and merges with global state
-                job_model = param_manager.prepare_job_params(job_name, job_star_path)
-                
-                # 2. Get the tool name for containerization
+                # Get the tool name
                 tool_name = self._get_job_tool(job_name, job_model)
                 if not tool_name:
                     print(f"[PIPELINE WARNING] No tool mapping for job {job_name}, skipping containerization")
                     continue
 
-                # 3. Get the relative paths for this job
+                # Get the paths
                 job_dir_name = "Import" if job_name == 'importmovies' else "External"
                 job_run_dir = project_dir / job_dir_name / job_number_str
                 
@@ -214,27 +180,25 @@ class PipelineOrchestratorService:
                     job_name,
                     job_index,
                     selected_jobs,
-                    param_manager.state.acquisition,
-                    project_dir.parent / project_dir.name, # Pass project root
+                    self.backend.app_state.acquisition,
+                    project_dir.parent / project_dir.name,
                     job_run_dir
                 )
 
-                # 4. Build the raw tool command using the builder
+                # Build the raw command
                 raw_command = self._build_job_command(job_name, job_model, paths)
                 print(f"[PIPELINE DEBUG] Raw command for {job_name}: {raw_command}")
 
-                # === NEW LOGIC END ===
-
-                # 5. Wrap command using the job's tool (Same as old code)
+                # Wrap command with container
                 final_containerized_command = self.container_service.wrap_command_for_tool(
                     command=raw_command,
-                    cwd=project_dir, # CWD for apptainer is project root
+                    cwd=project_dir,
                     tool_name=tool_name,
                     additional_binds=additional_bind_paths
                 )
                 print(f"[PIPELINE DEBUG] Containerized command for {job_name}: {final_containerized_command}")
                 
-                # 6. Update the job.star file (Same as old code)
+                # Update job.star
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = final_containerized_command
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'other_args', 'rlnJobOptionValue'] = ''
 
@@ -253,7 +217,7 @@ class PipelineOrchestratorService:
                 
                 self.star_handler.write(job_data, job_star_path)
 
-            # Create scheme.star file (existing code remains the same)
+            # Create scheme.star file
             scheme_general_df = pd.DataFrame({'rlnSchemeName': [f'Schemes/{new_scheme_name}/'], 'rlnSchemeCurrentNodeName': ['WAIT']})
             scheme_floats_df = pd.DataFrame({
                 'rlnSchemeFloatVariableName': ['do_at_most', 'maxtime_hr', 'wait_sec'],
@@ -302,8 +266,3 @@ class PipelineOrchestratorService:
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
-
-    # ==================================================================
-    # ALL OLD COMMAND BUILDER METHODS (e.g., _build_import_movies_command)
-    # ARE NOW REMOVED.
-    # ==================================================================
