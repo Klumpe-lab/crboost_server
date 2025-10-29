@@ -91,11 +91,9 @@ class ConfigService:
             data['star_file'] = {}
         
         self._config = Config(**data)
-        print(f"[CONFIG] Loaded from {config_path}")
 
     @property
     def config(self) -> Config:
-        """Get the full config object"""
         return self._config
     
     @property
@@ -106,10 +104,6 @@ class ConfigService:
 
     @property
     def tools(self) -> Dict[str, Dict[str, str]]:
-        """
-        Get tool-to-container mapping.
-        Returns a dict like: {'relion': {'container': 'relion', 'type': 'container'}}
-        """
         return {
             # Relion tools
             'relion': {'container': 'relion', 'type': 'container'},
@@ -126,32 +120,21 @@ class ConfigService:
         }
     
     def get_container_for_tool(self, tool_name: str) -> Optional[str]:
-        """Get the container name for a tool"""
         tool_config = self.tools.get(tool_name)
         if not tool_config:
             return None
-        
         container_key = tool_config.get('container')
         return self.containers.get(container_key)
     
-    def get_job_output_filename(self, job_type: str) -> Optional[str]:
-        """Get expected output filename for a job type"""
-        if not self._config.star_file:
-            return None
-        base_job_type = job_type.split('_')[0]
-        return self._config.star_file.get(base_job_type)
     
     def find_gpu_partition(self) -> Optional[tuple[str, ComputingPartition]]:
-        """Find the first available GPU partition"""
         for partition_key in ['g', 'g_v100', 'g_a100', 'g_p100']:
             partition = getattr(self._config.computing, partition_key, None)
             if partition:
-                # Return both the key and the partition object
                 return (partition_key.replace('_', '-'), partition)
         return None
 
 
-# Singleton instance
 _config_service_instance = None
 
 @lru_cache()

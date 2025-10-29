@@ -117,11 +117,15 @@ class PipelineOrchestratorService:
     ) -> str:
         """Dispatcher function to call the correct command builder"""
         
+        print(f"[PIPELINE] Building command for {job_name} with params: {job_model.model_dump()}")
+        
         builder = self.job_builders.get(job_name)
         
         if builder:
             try:
-                return builder.build(job_model, paths)
+                command = builder.build(job_model, paths)
+                print(f"[PIPELINE] Built command: {command[:200]}...")  # Log first 200 chars
+                return command
             except Exception as e:
                 print(f"[PIPELINE ERROR] Failed to build command for {job_name}: {e}")
                 import traceback
@@ -187,7 +191,6 @@ class PipelineOrchestratorService:
 
                 # Build the raw command
                 raw_command = self._build_job_command(job_name, job_model, paths)
-                print(f"[PIPELINE DEBUG] Raw command for {job_name}: {raw_command}")
 
                 # Wrap command with container
                 final_containerized_command = self.container_service.wrap_command_for_tool(
@@ -196,7 +199,6 @@ class PipelineOrchestratorService:
                     tool_name=tool_name,
                     additional_binds=additional_bind_paths
                 )
-                print(f"[PIPELINE DEBUG] Containerized command for {job_name}: {final_containerized_command}")
                 
                 # Update job.star
                 params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = final_containerized_command
