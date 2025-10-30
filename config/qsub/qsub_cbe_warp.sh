@@ -1,15 +1,38 @@
 #!/bin/bash
 #SBATCH --job-name=CryoBoost-Warp
 #SBATCH --constraint="g2|g3|g4"
-#SBATCH --partition=XXXextra3XXX
-#SBATCH --nodes=XXXextra1XXX
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=XXXthreadsXXX
-#SBATCH --gres=gpu=XXXextra4XXX
-#SBATCH --mem=XXXextra5XXX
+#SBATCH --partition=g
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1     
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:4             
+#SBATCH --mem=96G                 
+#SBATCH --time=5:00:00
 #SBATCH --time=5:00:00
 #SBATCH --output=XXXoutfileXXX
 #SBATCH --error=XXXerrfileXXX
+
+
+export MODULEPATH=/software/system/modules/core
+. /opt/ohpc/admin/lmod/lmod/init/bash
+
+module load build-env/f2022
+module load miniconda3/24.7.1-0
+module load python/3.11.5-gcccore-13.2.0 
+module load gcccore/13.2.0 
+module load arrow/16.1.0-gfbf-2023b
+which python3
+python3 --version
+
+
+SATELLITE_ACTIVATE_SCRIPT="/groups/klumpe/software/Setup/cryoboost_satellite_repo/activate_satellite_repo.sh"
+echo "--- Sourcing Application Environment from ${SATELLITE_ACTIVATE_SCRIPT} ---"
+# source "${SATELLITE_ACTIVATE_SCRIPT}" 
+
+
+VENV_PYTHON="/users/artem.kushner/dev/crboost_server/venv/bin/python3"
+HELPER_SCRIPT="/users/artem.kushner/dev/crboost_server/config/binAdapters/update_fs_metadata.py"
+export PYTHONPATH="${VENV_PYTHON}:${PYTHONPATH}"
 
 echo "--- SLURM JOB START ---"
 echo "Node: $(hostname)"

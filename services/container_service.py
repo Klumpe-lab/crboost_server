@@ -4,13 +4,9 @@ from pathlib import Path
 import re
 import shlex
 from typing import List, Optional, Tuple
-
 from services.config_service import get_config_service
 
-
 class Colors:
-    """ANSI color codes for terminal output"""
-
     HEADER = "\033[95m"
     BLUE = "\033[94m"
     CYAN = "\033[96m"
@@ -118,9 +114,7 @@ class Colors:
         env_cleanup, bind_paths, parsed_container, inner_command = (
             cls._parse_container_command(command)
         )
-
         display_container = container_path or parsed_container
-
         def shorten_path(p: str, max_len: int = 50) -> str:
             if len(p) <= max_len:
                 return p
@@ -128,15 +122,12 @@ class Colors:
             if len(parts) > 3:
                 return f"{'/'.join(parts[:2])}/.../{parts[-1]}"
             return p
-
         lines = [
             f"{cls.BOLD}{cls.CYAN}╭─ CONTAINER EXECUTION{cls.RESET}",
             f"{cls.CYAN}│{cls.RESET} {cls.BOLD}Tool:{cls.RESET}      {cls.GREEN}{tool_name}{cls.RESET}",
             f"{cls.CYAN}│{cls.RESET} {cls.BOLD}Container:{cls.RESET} {cls.DIM}{shorten_path(display_container)}{cls.RESET}",
             f"{cls.CYAN}│{cls.RESET} {cls.BOLD}CWD:{cls.RESET}       {cls.YELLOW}{cwd}{cls.RESET}",
         ]
-
-        # Environment cleanup section
         if env_cleanup:
             lines.append(f"{cls.CYAN}│{cls.RESET}")
             lines.append(
@@ -150,8 +141,6 @@ class Colors:
                     lines.append(
                         f"{cls.CYAN}│{cls.RESET} {cls.DIM}{prefix}{var}{suffix}{cls.RESET}"
                     )
-
-        # Container invocation section
         lines.append(f"{cls.CYAN}│{cls.RESET}")
         lines.append(
             f"{cls.CYAN}│{cls.RESET} {cls.BOLD}Container invocation:{cls.RESET}"
@@ -159,8 +148,6 @@ class Colors:
         lines.append(
             f"{cls.CYAN}│{cls.RESET}   {cls.BLUE}apptainer run --nv --cleanenv \\{cls.RESET}"
         )
-
-        # Bind paths
         if bind_paths:
             for i, bind in enumerate(bind_paths):
                 suffix = " \\" if i < len(bind_paths) - 1 else " \\"
@@ -172,25 +159,18 @@ class Colors:
                 lines.append(
                     f"{cls.CYAN}│{cls.RESET}     {cls.BLUE}-B{cls.RESET} {cls.YELLOW}{display_bind}{cls.RESET}{cls.BLUE}{suffix}{cls.RESET}"
                 )
-
-        # Container path
         lines.append(
             f"{cls.CYAN}│{cls.RESET}     {cls.DIM}{shorten_path(parsed_container)} \\{cls.RESET}"
         )
-
-        # Inner command section with proper line breaking
         if inner_command and inner_command != "unknown":
             lines.append(f"{cls.CYAN}│{cls.RESET}")
             lines.append(f"{cls.CYAN}│{cls.RESET} {cls.BOLD}Inner command:{cls.RESET}")
-
             formatted_lines = cls._format_inner_command(inner_command, indent=3)
             for line in formatted_lines:
                 lines.append(f"{cls.CYAN}│{cls.RESET} {cls.GREEN}{line}{cls.RESET}")
-
         lines.append(f"{cls.CYAN}╰{'─' * 70}{cls.RESET}")
 
         return "\n".join(lines)
-
 
 class ContainerService:
     def __init__(self):
@@ -208,7 +188,35 @@ class ContainerService:
         tool_name: str,
         additional_binds: List[str] = None,
     ) -> str:
-        """Wrap a command for containerized execution"""
+        """
+        Wrap a command for containerized execution.
+        If command contains ';', only the first part is containerized,
+        allowing for native post-processing commands.
+        """
+        # Check if command has native post-processing (split on first ';' only)
+        if ';' in command:
+            container_part, native_part = command.split(';', 1)
+            
+            # Wrap only the container part using existing logic
+            wrapped_container = self._wrap_single_command(
+                container_part.strip(), cwd, tool_name, additional_binds
+            )
+            
+            # Return: containerized_command ; native_command
+            # The native part runs AFTER the container exits
+            return f"{wrapped_container} ; {native_part.strip()}"
+        else:
+            # Normal single command - wrap everything
+            return self._wrap_single_command(command, cwd, tool_name, additional_binds)
+
+    def _wrap_single_command(
+        self,
+        command: str,
+        cwd: Path,
+        tool_name: str,
+        additional_binds: List[str] = None,
+    ) -> str:
+        """Wrap a single command in container (existing logic unchanged)"""
         container_path = self.get_container_path(tool_name)
         if not container_path:
             print(
@@ -251,6 +259,7 @@ class ContainerService:
         for path in sorted(binds):
             bind_args.extend(["-B", path])
 
+        # CRITICAL: shlex.quote handles all escaping - DO NOT CHANGE THIS
         inner_command_quoted = shlex.quote(command)
         apptainer_cmd_parts = [
             "apptainer",

@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 import pandas as pd
+from services.metadata_service import update_fs_motion_ctf_metadata
 import yaml
 import subprocess
 import glob
@@ -33,6 +34,7 @@ import uuid
 
 class User(BaseModel):
     """Represents an authenticated user."""
+
     username: str
 
 
@@ -40,13 +42,12 @@ HARDCODED_USER = User(username="artem.kushner")
 
 
 class CryoBoostBackend:
-
     def __init__(self, server_dir: Path):
         self.server_dir = server_dir
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
-        
+
         # Store a reference to global state (for services that need it)
         self.app_state = app_state
         print(f"[BACKEND] Initialized with state reference")
@@ -59,9 +60,12 @@ class CryoBoostBackend:
             # Convert string to enum safely
             job_type = JobType.from_string(job_name)
             job_model = prepare_job_params(job_type)  # Updated signature
-            
+
             if job_model:
-                return {"success": True, "params": job_model.model_dump()}  # Pydantic V2
+                return {
+                    "success": True,
+                    "params": job_model.model_dump(),
+                }  # Pydantic V2
             else:
                 return {"success": False, "error": f"Unknown job type {job_name}"}
         except ValueError as e:
@@ -73,14 +77,14 @@ class CryoBoostBackend:
             return []
         jobs = sorted([p.name for p in template_path.iterdir() if p.is_dir()])
         return jobs
-    
+
     async def create_project_and_scheme(
-        self, 
-        project_name: str, 
-        project_base_path: str, 
-        selected_jobs: List[str], 
-        movies_glob: str, 
-        mdocs_glob: str
+        self,
+        project_name: str,
+        project_base_path: str,
+        selected_jobs: List[str],
+        movies_glob: str,
+        mdocs_glob: str,
     ):
         try:
             project_dir = Path(project_base_path).expanduser() / project_name
@@ -88,7 +92,10 @@ class CryoBoostBackend:
             scheme_name = f"scheme_{project_name}"
 
             if project_dir.exists():
-                return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
+                return {
+                    "success": False,
+                    "error": f"Project directory '{project_dir}' already exists.",
+                }
 
             import_prefix = f"{project_name}_"
             structure_result = await self.project_service.create_project_structure(
@@ -97,7 +104,7 @@ class CryoBoostBackend:
 
             if not structure_result["success"]:
                 return structure_result
-            
+
             params_json_path = project_dir / "project_params.json"
             try:
                 # Use the mutator function to export config
@@ -105,73 +112,78 @@ class CryoBoostBackend:
                     project_name=project_name,
                     movies_glob=movies_glob,
                     mdocs_glob=mdocs_glob,
-                    selected_jobs=selected_jobs
+                    selected_jobs=selected_jobs,
                 )
-                
-                with open(params_json_path, 'w') as f:
+
+                with open(params_json_path, "w") as f:
                     json.dump(clean_config, f, indent=2)
-                
+
                 print(f"[BACKEND] Saved parameters to {params_json_path}")
-                
+
                 if not params_json_path.exists():
-                    raise FileNotFoundError(f"Parameter file was not created at {params_json_path}")
-                
+                    raise FileNotFoundError(
+                        f"Parameter file was not created at {params_json_path}"
+                    )
+
                 file_size = params_json_path.stat().st_size
                 if file_size == 0:
                     raise ValueError(f"Parameter file is empty: {params_json_path}")
-                
+
                 print(f"[BACKEND] Verified parameter file: {file_size} bytes")
-                
+
             except Exception as e:
                 print(f"[ERROR] Failed to save project_params.json: {e}")
                 import traceback
+
                 traceback.print_exc()
                 return {
-                    "success": False, 
-                    "error": f"Project created but failed to save parameters: {str(e)}"
+                    "success": False,
+                    "error": f"Project created but failed to save parameters: {str(e)}",
                 }
-            
+
             # Collect bind paths
             additional_bind_paths = {
                 str(Path(project_base_path).expanduser().resolve()),
                 str(Path(movies_glob).parent.resolve()),
-                str(Path(mdocs_glob).parent.resolve())
+                str(Path(mdocs_glob).parent.resolve()),
             }
-            
+
             # Create the scheme
             scheme_result = await self.pipeline_orchestrator.create_custom_scheme(
-                project_dir, 
-                scheme_name, 
-                base_template_path, 
-                selected_jobs, 
-                additional_bind_paths=list(additional_bind_paths)
+                project_dir,
+                scheme_name,
+                base_template_path,
+                selected_jobs,
+                additional_bind_paths=list(additional_bind_paths),
             )
-            
+
             if not scheme_result["success"]:
                 return scheme_result
-            
+
             # Initialize Relion project
             print(f"[BACKEND] Initializing Relion project in {project_dir}...")
             pipeline_star_path = project_dir / "default_pipeline.star"
 
             init_command = "unset DISPLAY && relion --tomo --do_projdir ."
-            
+
             container_init_command = self.container_service.wrap_command_for_tool(
                 command=init_command,
                 cwd=project_dir,
                 tool_name="relion",
-                additional_binds=list(additional_bind_paths)
+                additional_binds=list(additional_bind_paths),
             )
 
             process = await asyncio.create_subprocess_shell(
                 container_init_command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=project_dir
+                cwd=project_dir,
             )
-            
+
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=30.0
+                )
                 if process.returncode != 0:
                     print(f"[RELION INIT ERROR] {stderr.decode()}")
             except asyncio.TimeoutError:
@@ -179,19 +191,22 @@ class CryoBoostBackend:
                 process.kill()
                 await process.wait()
 
-
             if not pipeline_star_path.exists():
-                return {"success": False, "error": f"Failed to create default_pipeline.star."}
+                return {
+                    "success": False,
+                    "error": f"Failed to create default_pipeline.star.",
+                }
 
             return {
                 "success": True,
                 "message": f"Project '{project_name}' created and initialized successfully.",
                 "project_path": str(project_dir),
-                "params_file": str(params_json_path)
+                "params_file": str(params_json_path),
             }
-            
+
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": f"Project creation failed: {str(e)}"}
 
@@ -202,13 +217,17 @@ class CryoBoostBackend:
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
         """Run mdoc autodetection and return the updated state"""
         print(f"[BACKEND] Autodetecting from {mdocs_glob}")
-        
+
         update_from_mdoc(mdocs_glob)
         return get_ui_state_legacy()
 
-
-    async def run_shell_command(self, command: str, cwd: Path = None, 
-                                tool_name: str = None, additional_binds: List[str] = None):
+    async def run_shell_command(
+        self,
+        command: str,
+        cwd: Path = None,
+        tool_name: str = None,
+        additional_binds: List[str] = None,
+    ):
         """Runs a shell command, optionally using specified tool's container."""
         try:
             if tool_name:
@@ -217,34 +236,46 @@ class CryoBoostBackend:
                     command=command,
                     cwd=cwd or self.server_dir,
                     tool_name=tool_name,
-                    additional_binds=additional_binds or []
+                    additional_binds=additional_binds or [],
                 )
             else:
                 final_command = command
                 print(f"[SHELL] Running natively: {final_command}")
-            
+
             process = await asyncio.create_subprocess_shell(
                 final_command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=cwd or self.server_dir
+                cwd=cwd or self.server_dir,
             )
-            
+
             try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120.0)
-                
-                print(f"[DEBUG] Process completed with return code: {process.returncode}")
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=120.0
+                )
+
+                print(
+                    f"[DEBUG] Process completed with return code: {process.returncode}"
+                )
                 if process.returncode == 0:
                     return {"success": True, "output": stdout.decode(), "error": None}
                 else:
-                    return {"success": False, "output": stdout.decode(), "error": stderr.decode()}
-                    
+                    return {
+                        "success": False,
+                        "output": stdout.decode(),
+                        "error": stderr.decode(),
+                    }
+
             except asyncio.TimeoutError:
                 print(f"[ERROR] Command timed out after 120 seconds: {final_command}")
                 process.terminate()
                 await process.wait()
-                return {"success": False, "output": "", "error": "Command execution timed out"}
-                
+                return {
+                    "success": False,
+                    "output": "",
+                    "error": "Command execution timed out",
+                }
+
         except Exception as e:
             print(f"[ERROR] Exception in run_shell_command: {e}")
             return {"success": False, "output": "", "error": str(e)}
@@ -252,41 +283,58 @@ class CryoBoostBackend:
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
 
-    async def _run_relion_schemer(self, project_dir: Path, scheme_name: str, additional_bind_paths: List[str]):
+    async def _run_relion_schemer(
+        self, project_dir: Path, scheme_name: str, additional_bind_paths: List[str]
+    ):
         """Run relion_schemer to execute the pipeline scheme"""
         try:
-            run_command = f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --verb 2"
-            
+            run_command = (
+                f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --verb 2"
+            )
+
             # This call prints the formatted log, so no need for manual print
             full_run_command = self.container_service.wrap_command_for_tool(
                 command=run_command,
                 cwd=project_dir,
                 tool_name="relion_schemer",
-                additional_binds=additional_bind_paths
+                additional_binds=additional_bind_paths,
             )
-            
+
             process = await asyncio.create_subprocess_shell(
                 full_run_command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=project_dir
+                cwd=project_dir,
             )
-            
+
             self.active_schemer_process = process
             asyncio.create_task(self._monitor_schemer(process, project_dir))
-            
-            return {"success": True, "message": f"Workflow started (PID: {process.pid})", "pid": process.pid}
+
+            return {
+                "success": True,
+                "message": f"Workflow started (PID: {process.pid})",
+                "pid": process.pid,
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def start_pipeline(self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]):
+    async def start_pipeline(
+        self,
+        project_path: str,
+        scheme_name: str,
+        selected_jobs: List[str],
+        required_paths: List[str],
+    ):
         project_dir = Path(project_path)
         if not project_dir.is_dir():
-            return {"success": False, "error": f"Project path not found: {project_path}"}
-        
+            return {
+                "success": False,
+                "error": f"Project path not found: {project_path}",
+            }
+
         bind_paths = {str(Path(p).parent.resolve()) for p in required_paths if p}
         bind_paths.add(str(project_dir.parent.resolve()))
-        
+
         return await self._run_relion_schemer(
             project_dir, scheme_name, additional_bind_paths=list(bind_paths)
         )
@@ -298,17 +346,26 @@ class CryoBoostBackend:
 
         try:
             data = self.pipeline_orchestrator.star_handler.read(pipeline_star)
-            processes = data.get('pipeline_processes', pd.DataFrame())
-            
+            processes = data.get("pipeline_processes", pd.DataFrame())
+
             if processes.empty:
-                return {"status": "ok", "total": 0, "completed": 0, "running": 0, "failed": 0, "is_complete": True}
+                return {
+                    "status": "ok",
+                    "total": 0,
+                    "completed": 0,
+                    "running": 0,
+                    "failed": 0,
+                    "is_complete": True,
+                }
 
             total = len(processes)
-            succeeded = (processes['rlnPipeLineProcessStatusLabel'] == 'Succeeded').sum()
-            running = (processes['rlnPipeLineProcessStatusLabel'] == 'Running').sum()
-            failed = (processes['rlnPipeLineProcessStatusLabel'] == 'Failed').sum()
-            
-            is_complete = (running == 0 and total > 0)
+            succeeded = (
+                processes["rlnPipeLineProcessStatusLabel"] == "Succeeded"
+            ).sum()
+            running = (processes["rlnPipeLineProcessStatusLabel"] == "Running").sum()
+            failed = (processes["rlnPipeLineProcessStatusLabel"] == "Failed").sum()
+
+            is_complete = running == 0 and total > 0
 
             return {
                 "status": "ok",
@@ -322,28 +379,33 @@ class CryoBoostBackend:
             print(f"[BACKEND] Error reading pipeline progress for {project_path}: {e}")
             return {"status": "error", "message": str(e)}
 
-    async def _monitor_schemer(self, process: asyncio.subprocess.Process, project_dir: Path):
+    async def _monitor_schemer(
+        self, process: asyncio.subprocess.Process, project_dir: Path
+    ):
         """Monitor the relion_schemer process"""
+
         async def read_stream(stream, callback):
             while True:
                 line = await stream.readline()
                 if not line:
                     break
                 callback(line.decode().strip())
-        
+
         def handle_stdout(line):
             print(f"[SCHEMER] {line}")
-            
+
         def handle_stderr(line):
             print(f"[SCHEMER-ERR] {line}")
-        
+
         await asyncio.gather(
             read_stream(process.stdout, handle_stdout),
-            read_stream(process.stderr, handle_stderr)
+            read_stream(process.stderr, handle_stderr),
         )
-        
+
         await process.wait()
-        print(f"[MONITOR] relion_schemer PID {process.pid} completed with return code: {process.returncode}")
+        print(
+            f"[MONITOR] relion_schemer PID {process.pid} completed with return code: {process.returncode}"
+        )
         self.active_schemer_process = None
 
     async def get_eer_frames_per_tilt(self, eer_file_path: str) -> int:
@@ -354,9 +416,9 @@ class CryoBoostBackend:
 
             if result["success"]:
                 output = result["output"]
-                for line in output.split('\n'):
+                for line in output.split("\n"):
                     if "Number of columns, rows, sections" in line:
-                        parts = line.split('.')[-1].strip().split()
+                        parts = line.split(".")[-1].strip().split()
                         if len(parts) >= 3:
                             return int(parts[2])
             return None
@@ -364,59 +426,58 @@ class CryoBoostBackend:
             print(f"Error getting EER frames: {e}")
             return None
 
-    async def get_pipeline_job_logs(self, project_path: str, job_type: str, job_number: str) -> Dict[str, str]:
+    async def get_pipeline_job_logs(
+        self, project_path: str, job_type: str, job_number: str
+    ) -> Dict[str, str]:
         """Get the run.out and run.err contents for a specific pipeline job"""
         project_dir = Path(project_path)
-        
+
         job_dir_map = {
-            'importmovies': 'Import',
-            'fsMotionAndCtf': 'External',
-            'tsAlignment': 'External'
+            "importmovies": "Import",
+            "fsMotionAndCtf": "External",
+            "tsAlignment": "External",
         }
-        
-        job_dir_name = job_dir_map.get(job_type, 'External')
+
+        job_dir_name = job_dir_map.get(job_type, "External")
         job_path = project_dir / job_dir_name / f"job{job_number.zfill(3)}"
-        
-        logs = {
-            'stdout': '',
-            'stderr': '',
-            'exists': False,
-            'path': str(job_path)
-        }
-        
+
+        logs = {"stdout": "", "stderr": "", "exists": False, "path": str(job_path)}
+
         if not job_path.exists():
             return logs
-        
-        logs['exists'] = True
-        
-        out_file = job_path / 'run.out'
+
+        logs["exists"] = True
+
+        out_file = job_path / "run.out"
         if out_file.exists():
             try:
-                with open(out_file, 'r', encoding='utf-8') as f:
-                    logs['stdout'] = f.read()
+                with open(out_file, "r", encoding="utf-8") as f:
+                    logs["stdout"] = f.read()
             except Exception as e:
-                logs['stdout'] = f"Error reading run.out: {e}"
-        
-        err_file = job_path / 'run.err'
+                logs["stdout"] = f"Error reading run.out: {e}"
+
+        err_file = job_path / "run.err"
         if err_file.exists():
             try:
-                with open(err_file, 'r', encoding='utf-8') as f:
-                    logs['stderr'] = f.read()
+                with open(err_file, "r", encoding="utf-8") as f:
+                    logs["stderr"] = f.read()
             except Exception as e:
-                logs['stderr'] = f"Error reading run.err: {e}"
-        
+                logs["stderr"] = f"Error reading run.err: {e}"
+
         return logs
 
-    async def monitor_pipeline_jobs(self, project_path: str, selected_jobs: List[str]) -> AsyncGenerator:
+    async def monitor_pipeline_jobs(
+        self, project_path: str, selected_jobs: List[str]
+    ) -> AsyncGenerator:
         """Monitor all pipeline jobs and yield updates"""
         while True:
             job_statuses = []
             for idx, job_type in enumerate(selected_jobs, 1):
-                logs = await self.get_pipeline_job_logs(project_path, job_type, str(idx))
-                job_statuses.append({
-                    'job_type': job_type,
-                    'job_number': idx,
-                    'logs': logs
-                })
+                logs = await self.get_pipeline_job_logs(
+                    project_path, job_type, str(idx)
+                )
+                job_statuses.append(
+                    {"job_type": job_type, "job_number": idx, "logs": logs}
+                )
             yield job_statuses
             await asyncio.sleep(5)
