@@ -9,7 +9,7 @@ class JobType(str, Enum):
     """Enumeration of all pipeline job types"""
     IMPORT_MOVIES = "importmovies"
     FS_MOTION_CTF = "fsMotionAndCtf"
-    TS_ALIGNMENT = "tsAlignment"
+    TS_ALIGNMENT = "aligntiltsWarp"
     
     @classmethod
     def from_string(cls, value: str) -> 'JobType':

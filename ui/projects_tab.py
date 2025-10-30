@@ -659,6 +659,7 @@ def build_projects_tab(backend: CryoBoostBackend):
             """Show file content in a dialog"""
             try:
                 text_extensions = [
+                    ".script",
                     ".txt",
                     ".log",
                     ".star",
