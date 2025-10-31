@@ -25,11 +25,8 @@ which python3
 python3 --version
 
 
-SATELLITE_ACTIVATE_SCRIPT="/groups/<lab>/software/Setup/cryoboost_satellite_repo/activate_satellite_repo.sh"
-echo "--- Sourcing Application Environment from ${SATELLITE_ACTIVATE_SCRIPT} ---"
-# source "${SATELLITE_ACTIVATE_SCRIPT}" 
 
-
+export CRBOOST_SERVER_DIR="/users/<user>/dev/crboost_server/"
 VENV_PYTHON="/users/<user>/dev/crboost_server/venv/bin/python3"
 HELPER_SCRIPT="/users/<user>/dev/crboost_server/config/binAdapters/update_fs_metadata.py"
 export PYTHONPATH="${VENV_PYTHON}:${PYTHONPATH}"
