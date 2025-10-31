@@ -6,6 +6,7 @@ import shlex
 from typing import List, Optional, Tuple
 from services.config_service import get_config_service
 
+
 class Colors:
     HEADER = "\033[95m"
     BLUE = "\033[94m"
@@ -115,6 +116,7 @@ class Colors:
             cls._parse_container_command(command)
         )
         display_container = container_path or parsed_container
+
         def shorten_path(p: str, max_len: int = 50) -> str:
             if len(p) <= max_len:
                 return p
@@ -122,6 +124,7 @@ class Colors:
             if len(parts) > 3:
                 return f"{'/'.join(parts[:2])}/.../{parts[-1]}"
             return p
+
         lines = [
             f"{cls.BOLD}{cls.CYAN}╭─ CONTAINER EXECUTION{cls.RESET}",
             f"{cls.CYAN}│{cls.RESET} {cls.BOLD}Tool:{cls.RESET}      {cls.GREEN}{tool_name}{cls.RESET}",
@@ -172,6 +175,7 @@ class Colors:
 
         return "\n".join(lines)
 
+
 class ContainerService:
     def __init__(self):
         self.config = get_config_service()
@@ -188,26 +192,8 @@ class ContainerService:
         tool_name: str,
         additional_binds: List[str] = None,
     ) -> str:
-        """
-        Wrap a command for containerized execution.
-        If command contains ';', only the first part is containerized,
-        allowing for native post-processing commands.
-        """
-        # Check if command has native post-processing (split on first ';' only)
-        if ';' in command:
-            container_part, native_part = command.split(';', 1)
-            
-            # Wrap only the container part using existing logic
-            wrapped_container = self._wrap_single_command(
-                container_part.strip(), cwd, tool_name, additional_binds
-            )
-            
-            # Return: containerized_command ; native_command
-            # The native part runs AFTER the container exits
-            return f"{wrapped_container} ; {native_part.strip()}"
-        else:
-            # Normal single command - wrap everything
-            return self._wrap_single_command(command, cwd, tool_name, additional_binds)
+        # The driver will only call this, so we just call the single command wrapper
+        return self._wrap_single_command(command, cwd, tool_name, additional_binds)
 
     def _wrap_single_command(
         self,
@@ -216,7 +202,7 @@ class ContainerService:
         tool_name: str,
         additional_binds: List[str] = None,
     ) -> str:
-        """Wrap a single command in container (existing logic unchanged)"""
+        """Wrap a single command in container"""
         container_path = self.get_container_path(tool_name)
         if not container_path:
             print(
@@ -236,7 +222,6 @@ class ContainerService:
                 if path.exists():
                     binds.add(str(path))
 
-        # Add HPC paths
         hpc_paths = [
             "/usr/bin",
             "/usr/lib64/slurm",
@@ -259,8 +244,12 @@ class ContainerService:
         for path in sorted(binds):
             bind_args.extend(["-B", path])
 
-        # CRITICAL: shlex.quote handles all escaping - DO NOT CHANGE THIS
+        # --- THIS IS THE KEY ---
+        # We MUST wrap the command in "bash -c '...'" because the
+        # driver is passing a string with "&&", which requires a shell.
+        # We use shlex.quote to safely escape the *entire* inner command string.
         inner_command_quoted = shlex.quote(command)
+
         apptainer_cmd_parts = [
             "apptainer",
             "run",
@@ -268,12 +257,14 @@ class ContainerService:
             "--cleanenv",
             *bind_args,
             container_path,
-            "bash",
-            "-c",
-            inner_command_quoted,
+            "bash",  # <-- We are telling apptainer to run bash
+            "-c",  # <-- and passing it the -c flag
+            inner_command_quoted,  # <-- and the quoted command string
         ]
+        # --- END KEY ---
 
         apptainer_cmd = " ".join(apptainer_cmd_parts)
+
         clean_env_vars = [
             "SINGULARITY_BIND",
             "APPTAINER_BIND",
@@ -289,24 +280,23 @@ class ContainerService:
             "CONDA_DEFAULT_ENV",
             "CONDA_PROMPT_MODIFIER",
         ]
-
-        # Check if relion tool (better than substring check)
         if "relion" in tool_name.lower():
             clean_env_vars.extend(["DISPLAY", "XAUTHORITY"])
 
         clean_env_cmd = "unset " + " ".join(clean_env_vars)
         final_command = f"{clean_env_cmd}; {apptainer_cmd}"
 
+        # This log will be printed by the driver script into run.out
         print(Colors.format_command_log(tool_name, final_command, cwd, container_path))
 
         return final_command
 
 
-_container_service = None
 
+_container_service = None
 
 def get_container_service() -> ContainerService:
     global _container_service
     if _container_service is None:
         _container_service = ContainerService()
-    return _container_service
+    return _container_service # <-- FIX: Add this line
