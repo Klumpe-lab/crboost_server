@@ -10,6 +10,15 @@ from functools import lru_cache
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 
+# --- NEW: Define project root based on this file's location ---
+# Path(__file__) -> /.../crboost_server/services/config_service.py
+# .parent        -> /.../crboost_server/services
+# .parent        -> /.../crboost_server (This is our project root)
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "conf.yaml"
+
+# -----------------------------------------------------------------
+
 
 class SubmissionConfig(BaseModel):
     HeadNode: str
@@ -81,6 +90,7 @@ class ConfigService:
     
     def __init__(self, config_path: Path):
         if not config_path.exists():
+            # This error message will now be correct
             raise FileNotFoundError(f"Configuration file not found at: {config_path}")
         
         with open(config_path, 'r') as f:
@@ -138,10 +148,12 @@ class ConfigService:
 _config_service_instance = None
 
 @lru_cache()
-def get_config_service(config_path: str = "config/conf.yaml") -> ConfigService:
+def get_config_service() -> ConfigService: # <-- REMOVED config_path argument
     """Get or create the config service singleton"""
     global _config_service_instance
     if _config_service_instance is None:
-        path = Path.cwd() / config_path
-        _config_service_instance = ConfigService(path)
+        # --- MODIFIED ---
+        # Use the absolute path defined at the top of the file
+        _config_service_instance = ConfigService(DEFAULT_CONFIG_PATH)
+        # --- END MODIFIED ---
     return _config_service_instance
