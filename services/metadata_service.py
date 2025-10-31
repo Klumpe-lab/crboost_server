@@ -137,34 +137,115 @@ class MetadataTranslator:
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
-    
+
     def _load_all_tilt_series(
         self, 
         base_dir: Path, 
         tilt_series_df: pd.DataFrame
     ) -> pd.DataFrame:
-        """Load all individual tilt series STAR files into one DataFrame"""
+        """
+        Load all individual tilt series STAR files into one merged DataFrame.
+        This replicates the old tiltSeriesMeta.readTiltSeries() behavior.
+        """
         all_tilts = []
+        tilt_series_rows = []
         
-        for ts_file in tilt_series_df['rlnTomoTiltSeriesStarFile']:
-            ts_path = base_dir / ts_file
+        project_root = base_dir.parent.parent  # Import/job001 -> Import -> project_root
+        
+        for i, (_, ts_row) in enumerate(tilt_series_df.iterrows()):
+            ts_file = ts_row["rlnTomoTiltSeriesStarFile"]
+            ts_path = project_root / ts_file
+            
+            print(f"[METADATA] Looking for tilt series file: {ts_path}", flush=True)
+            
             if not ts_path.exists():
                 print(f"[WARN] Tilt series file not found: {ts_path}")
                 continue
             
+            # Read the individual tilt series file
             ts_data = self.starfile_service.read(ts_path)
-            # Get the first (and usually only) data block
-            ts_df = next(iter(ts_data.values()))
+            ts_df = next(iter(ts_data.values()))  # Get first data block
             
             # Create a lookup key from the movie name
             ts_df['cryoBoostKey'] = ts_df['rlnMicrographMovieName'].apply(
-                lambda x: Path(x).stem  # Remove extension
+                lambda x: Path(x).stem
             )
             
-            all_tilts.append(ts_df)
+            # CRITICAL: Replicate the OLD behavior - repeat the tilt_series row for each tilt
+            # This creates a dataframe with ts_row repeated len(ts_df) times
+            ts_row_repeated = pd.concat(
+                [pd.DataFrame(ts_row).T] * len(ts_df), 
+                ignore_index=True
+            )
+            
+            # Merge horizontally: [tilt_series columns | individual tilt columns]
+            merged = pd.concat([ts_row_repeated.reset_index(drop=True), ts_df.reset_index(drop=True)], axis=1)
+            
+            all_tilts.append(merged)
         
-        return pd.concat(all_tilts, ignore_index=True)
-    
+        if not all_tilts:
+            raise ValueError("No tilt series files could be loaded. Check paths in input STAR file.")
+        
+        # Concatenate all tilt series vertically
+        all_tilts_df = pd.concat(all_tilts, ignore_index=True)
+        
+        # Move cryoBoostKey to the end (old code did this)
+        key_values = all_tilts_df['cryoBoostKey']
+        all_tilts_df = all_tilts_df.drop('cryoBoostKey', axis=1)
+        all_tilts_df['cryoBoostKey'] = key_values
+        
+        print(f"[METADATA] Loaded {len(all_tilts_df)} individual tilts from {len(tilt_series_df)} tilt series")
+        print(f"[METADATA] Columns in merged dataframe: {list(all_tilts_df.columns[:10])}...")
+        
+        return all_tilts_df
+
+    def _write_updated_star(
+        self,
+        tilts_df: pd.DataFrame,
+        tilt_series_df: pd.DataFrame,
+        output_path: Path
+    ):
+        """
+        Write updated metadata to STAR file.
+        Replicates old tiltSeriesMeta.writeTiltSeries() behavior.
+        """
+        # Create output directory structure
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        tilt_series_dir = output_path.parent / "tilt_series"
+        tilt_series_dir.mkdir(exist_ok=True)
+        
+        # Extract tilt series info from the merged dataframe
+        # The first N columns are the tilt series columns
+        num_ts_cols = len(tilt_series_df.columns)
+        ts_df = tilts_df.iloc[:, :num_ts_cols].copy()
+        ts_df = ts_df.drop('cryoBoostKey', axis=1, errors='ignore')
+        ts_df = ts_df.drop_duplicates().reset_index(drop=True)
+        
+        # Update paths to point to new tilt_series directory
+        ts_df['rlnTomoTiltSeriesStarFile'] = ts_df['rlnTomoTiltSeriesStarFile'].apply(
+            lambda x: f"tilt_series/{Path(x).name}"
+        )
+        
+        # Write main tilt series STAR file
+        self.starfile_service.write({'global': ts_df}, output_path)
+        
+        # Write individual tilt series files
+        for ts_name in ts_df['rlnTomoName']:
+            # Get all tilts for this tilt series
+            ts_tilts = tilts_df[tilts_df['rlnTomoName'] == ts_name].copy()
+            
+            # Extract only the per-tilt columns (after the tilt series columns)
+            ts_tilts_only = ts_tilts.iloc[:, num_ts_cols:].copy()
+            
+            # Remove the cryoBoostKey helper column
+            if 'cryoBoostKey' in ts_tilts_only.columns:
+                ts_tilts_only = ts_tilts_only.drop('cryoBoostKey', axis=1)
+            
+            ts_file = tilt_series_dir / f"{ts_name}.star"
+            self.starfile_service.write({ts_name: ts_tilts_only}, ts_file)
+        
+        print(f"[METADATA] Wrote updated STAR files to {output_path}")
+        
     def _merge_warp_metadata(
         self,
         tilts_df: pd.DataFrame,
@@ -225,47 +306,6 @@ class MetadataTranslator:
         
         return updated_df
     
-    def _write_updated_star(
-        self,
-        tilts_df: pd.DataFrame,
-        tilt_series_df: pd.DataFrame,
-        output_path: Path
-    ):
-        """Write updated metadata to STAR file"""
-        # Create output directory structure
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        tilt_series_dir = output_path.parent / "tilt_series"
-        tilt_series_dir.mkdir(exist_ok=True)
-        
-        # Update tilt series paths
-        updated_ts_df = tilt_series_df.copy()
-        updated_ts_df['rlnTomoTiltSeriesStarFile'] = \
-            updated_ts_df['rlnTomoTiltSeriesStarFile'].apply(
-                lambda x: f"tilt_series/{Path(x).name}"
-            )
-        
-        # Write main tilt series STAR file
-        self.starfile_service.write(
-            {'global': updated_ts_df},
-            output_path
-        )
-        
-        # Write individual tilt series files
-        for ts_name in updated_ts_df['rlnTomoName']:
-            ts_tilts = tilts_df[tilts_df['rlnTomoName'] == ts_name].copy()
-            
-            # Remove the cryoBoostKey helper column
-            if 'cryoBoostKey' in ts_tilts.columns:
-                ts_tilts = ts_tilts.drop('cryoBoostKey', axis=1)
-            
-            ts_file = tilt_series_dir / f"{ts_name}.star"
-            self.starfile_service.write(
-                {ts_name: ts_tilts},
-                ts_file
-            )
-        
-        print(f"[METADATA] Wrote updated STAR files to {output_path}")
-
     def update_ts_alignment_metadata(
         self,
         job_dir: Path,

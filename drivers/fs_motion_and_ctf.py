@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# drivers/fs_motion_and_ctf.py
 # This script is executed directly on the compute node by Relion
 
 import json
@@ -45,7 +46,7 @@ def run_command(command: str, cwd: Path):
     if process.stdout:
         for line in iter(process.stdout.readline, ""):
             print(line, end="", flush=True)
-    
+
     # Stream stderr
     print("--- CONTAINER STDERR ---", file=sys.stderr, flush=True)
     stderr_output = ""
@@ -61,21 +62,41 @@ def run_command(command: str, cwd: Path):
             process.returncode, command, None, stderr_output
         )
 
-def build_warp_commands(params: FsMotionCtfParams, paths: dict) -> str:
-    """Builds the multi-step WarpTools command string."""
+
+def build_warp_commands(params: FsMotionCtfParams, job_dir: Path, paths: dict) -> str:
+    """
+    Builds the multi-step WarpTools command string.
     
-    gain_path_str = paths.get('gain_path_str', '')
-    gain_ops_str = paths.get('gain_operations_str', '')
+    WarpTools expects paths RELATIVE to where it's executed (job_dir).
+    We hardcode known relative paths - no computation needed.
+    """
+    
+    # HARDCODED: frames is always at ../../frames from External/job002
+    frames_dir_rel = "../../frames"
+    
+    # HARDCODED: gain reference (if provided) is typically at ../../gain.mrc or similar
+    gain_path_str = ""
+    if params.gain_path and params.gain_path != "None":
+        # If gain path is absolute, assume it's at project root level
+        gain_abs = Path(params.gain_path)
+        if gain_abs.is_absolute():
+            # Just use the filename, assume it's also accessible via ../..
+            gain_path_str = f"../../{gain_abs.name}"
+        else:
+            gain_path_str = params.gain_path
+    
+    gain_ops_str = params.gain_operations if params.gain_operations else ""
 
     create_settings_parts = [
         "WarpTools create_settings",
-        "--folder_data ../../frames", # Relative to CWD (External/job002)
+        f"--folder_data {frames_dir_rel}",  # Always ../../frames
         "--extension '*.eer'", 
         "--folder_processing ./warp_frameseries",
         "--output ./warp_frameseries.settings",
         "--angpix", str(params.pixel_size),
         "--eer_ngroups", str(params.eer_ngroups),
     ]
+    
     if gain_path_str:
         create_settings_parts.extend(["--gain_reference", gain_path_str])
         if gain_ops_str:
@@ -100,6 +121,7 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict) -> str:
         "--perdevice", str(params.perdevice),
         "--out_averages",
     ]
+    
     if params.do_at_most > 0:
         run_main_parts.extend(["--do_at_most", str(params.do_at_most)])
     
@@ -109,8 +131,10 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict) -> str:
         " ".join(run_main_parts),
     ])
 
+
 def main():
     print("[DRIVER] fs_motion_and_ctf driver started.", flush=True)
+
     # Relion sets the CWD to the job directory
     job_dir = Path.cwd()
     params_file = job_dir / "job_params.json"
@@ -120,68 +144,80 @@ def main():
     try:
         # 1. Load parameters from JSON
         print(f"[DRIVER] Loading params from {params_file}", flush=True)
-        with open(params_file, 'r') as f:
+        with open(params_file, "r") as f:
             params_data = json.load(f)
-        
-        params = FsMotionCtfParams(**params_data['job_model'])
-        paths = params_data['paths']
-        additional_binds = params_data['additional_binds']
-        
-        # 2. Build the *inner* WarpTools command
-        warp_command = build_warp_commands(params, paths)
-        print(f"[DRIVER] Built inner command: {warp_command}", flush=True)
-        
+
+        params = FsMotionCtfParams(**params_data["job_model"])
+
+        # Paths are ALL ABSOLUTE from orchestrator
+        paths = {k: Path(v) for k, v in params_data["paths"].items()}
+        additional_binds = params_data["additional_binds"]
+
+        print(f"[DRIVER] Job directory: {job_dir}", flush=True)
+        print(f"[DRIVER] Received paths:", flush=True)
+        for key, path in paths.items():
+            print(f"  {key}: {path}", flush=True)
+
+        # 2. Build the *inner* WarpTools command (converts to relative paths)
+        warp_command = build_warp_commands(params, job_dir, paths)
+        print(f"[DRIVER] Built inner command: {warp_command[:200]}...", flush=True)
+
         # 3. Get container service to build the *full apptainer* command
         container_svc = get_container_service()
         apptainer_command = container_svc.wrap_command_for_tool(
             command=warp_command,
             cwd=job_dir,
             tool_name="warptools",
-            additional_binds=additional_binds
+            additional_binds=additional_binds,
         )
-        
+
         # 4. Run the containerized computation
         print(f"[DRIVER] Executing container...", flush=True)
         run_command(apptainer_command, cwd=job_dir)
-        
+
         # 5. Run the metadata processing step
-        print("[DRIVER] Computation finished. Starting metadata processing.", flush=True)
+        print(
+            "[DRIVER] Computation finished. Starting metadata processing.", flush=True
+        )
         translator = MetadataTranslator(StarfileService())
-        
-        # These paths are relative to the job_dir (CWD)
-        input_star_rel = paths['input_star']
-        output_star_rel = paths['output_star']
-        
-        # The metadata service needs the *absolute* path to the input star
-        abs_input_star = (job_dir / input_star_rel).resolve()
-        
+
+        # All paths are ABSOLUTE - use them directly
+        input_star_abs = paths["input_star"]
+        output_star_abs = paths["output_star"]
+
+        print(f"[DRIVER] Input STAR (absolute): {input_star_abs}", flush=True)
+        print(f"[DRIVER] Output STAR (absolute): {output_star_abs}", flush=True)
+        print(f"[DRIVER] Input STAR exists: {input_star_abs.exists()}", flush=True)
+
         result = translator.update_fs_motion_and_ctf_metadata(
             job_dir=job_dir,
-            input_star_path=abs_input_star, 
-            output_star_path=Path(output_star_rel), # This one is relative
-            warp_folder="warp_frameseries"
+            input_star_path=input_star_abs,  # Already absolute
+            output_star_path=output_star_abs,  # Already absolute
+            warp_folder="warp_frameseries",
         )
-        
-        if not result['success']:
+
+        if not result["success"]:
             raise Exception(f"Metadata update failed: {result['error']}")
-            
+
         print("[DRIVER] Metadata processing successful.", flush=True)
-        
+
         # 6. Create success file
         success_file.touch()
         print("[DRIVER] Job finished successfully.", flush=True)
         sys.exit(0)
-        
+
     except Exception as e:
         print(f"[DRIVER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
         print(str(e), file=sys.stderr, flush=True)
         import traceback
+
         traceback.print_exc(file=sys.stderr)
-        
+
         # Create failure file
         failure_file.touch()
         print("[DRIVER] Job failed.", flush=True)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

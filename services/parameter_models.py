@@ -1,6 +1,6 @@
 # services/parameter_models.py
 from pydantic import BaseModel, Field, field_validator, ConfigDict
-from typing import Optional, Dict, Tuple, Self, Union, Any, TYPE_CHECKING
+from typing import ClassVar, Optional, Dict, Tuple, Self, Union, Any, TYPE_CHECKING
 from enum import Enum
 from pathlib import Path
 import pandas as pd
@@ -13,29 +13,29 @@ if TYPE_CHECKING:
 # ============= BASE & PROTOCOL =============
 
 
-class JobParamsProtocol:
-    """
-    Protocol defining the interface all job parameters must implement.
-    This is documentation + type hints, not enforced inheritance.
-    """
+# class JobParamsProtocol:
+#     """
+#     Protocol defining the interface all job parameters must implement.
+#     This is documentation + type hints, not enforced inheritance.
+#     """
 
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        """Load default values from job.star template"""
-        ...
+#     @classmethod
+#     def from_job_star(cls, star_path: Path) -> Optional[Self]:
+#         """Load default values from job.star template"""
+#         ...
 
-    @classmethod
-    def from_pipeline_state(cls, state: "PipelineState") -> Self:
-        """Create fresh instance using current global state values"""
-        ...
+#     @classmethod
+#     def from_pipeline_state(cls, state: "PipelineState") -> Self:
+#         """Create fresh instance using current global state values"""
+#         ...
 
-    def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
-        """
-        Update microscope/acquisition fields from global state IN-PLACE.
-        This is called when global params change and user wants to sync.
-        IMPORTANT: Modifies self and returns self (for chaining).
-        """
-        ...
+#     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
+#         """
+#         Update microscope/acquisition fields from global state IN-PLACE.
+#         This is called when global params change and user wants to sync.
+#         IMPORTANT: Modifies self and returns self (for chaining).
+#         """
+#         ...
 
 
 # ============= ENUMS =============
@@ -61,9 +61,6 @@ class AlignmentMethod(str, Enum):
     ARETOMO = "AreTomo"
     IMOD = "IMOD"
     RELION = "Relion"
-
-
-# ============= CORE PARAMETER GROUPS =============
 
 
 class MicroscopeParams(BaseModel):
@@ -157,10 +154,76 @@ class ComputingParams(BaseModel):
 # ============= JOB-SPECIFIC PARAMETER MODELS =============
 
 
+class JobCategory(str, Enum):
+    """Where different job types live in the project"""
+    IMPORT = "Import"
+    EXTERNAL = "External"
+    MOTIONCORR = "MotionCorr"
+    CTFFIND = "CtfFind"
+
+class JobParamsBase(BaseModel):
+    """
+    Base class for all job parameter models.
+    Defines the interface for path resolution and dependencies.
+    """
+    
+    model_config = ConfigDict(validate_assignment=True)
+    
+    # Class-level metadata (not fields)
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL  # Default, override in subclasses
+    
+    # === ABSTRACT METHODS (implement in subclasses) ===
+    
+    @staticmethod
+    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+        """Define all outputs this job produces. MUST override in subclass."""
+        raise NotImplementedError("Subclass must implement get_output_assets()")
+    
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        """
+        Define what inputs this job needs.
+        Returns dict of {logical_name: upstream_job_type}
+        """
+        return {}  # Default: no dependencies
+    
+    @staticmethod
+    def get_input_assets(
+        job_dir: Path, 
+        upstream_outputs: Dict[str, Dict[str, Path]]
+    ) -> Dict[str, Path]:
+        """
+        Given upstream job outputs, define where this job's inputs come from.
+        upstream_outputs: {job_type: {asset_name: Path}}
+        """
+        return {"job_dir": job_dir}  # Default: just the job dir
+    
+    # === FACTORY METHODS (all subclasses should implement) ===
+    
+    @classmethod
+    def from_job_star(cls, star_path: Path) -> Optional[Self]:
+        """Load default values from job.star template"""
+        return None  # Default: no template loading
+    
+    @classmethod
+    def from_pipeline_state(cls, state: "PipelineState") -> Self:
+        """Create fresh instance using current global state values"""
+        raise NotImplementedError("Subclass must implement from_pipeline_state()")
+    
+    def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
+        """Update microscope/acquisition fields from global state IN-PLACE"""
+        return self  # Default: no syncing needed
+
+
+
+
 class ImportMoviesParams(BaseModel):
     """Parameters for import movies job - implements JobParamsProtocol"""
 
     model_config = ConfigDict(validate_assignment=True)
+
+
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
 
     # From microscope
     pixel_size: float = Field(ge=0.5, le=10.0)
@@ -238,11 +301,38 @@ class ImportMoviesParams(BaseModel):
         self.invert_defocus_hand = state.acquisition.invert_defocus_hand
         return self
 
+    @staticmethod
+    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+        return {
+            "job_dir": job_dir,
+            "tilt_series_star": job_dir / "tilt_series.star",
+            "tilt_series_dir": job_dir / "tilt_series",
+            "log": job_dir / "log.txt",
+        }
+
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        return {}  # ImportMovies has no upstream dependencies
+
+    @staticmethod
+    def get_input_assets(
+        job_dir: Path, upstream_outputs: Dict[str, Dict[str, Path]]
+    ) -> Dict[str, Path]:
+        project_root = job_dir.parent.parent
+        return {
+            "job_dir": job_dir,
+            "frames_dir": project_root / "frames",
+            "mdoc_dir": project_root / "mdoc",
+        }
+
 
 class FsMotionCtfParams(BaseModel):
     """Parameters for WarpTools motion correction and CTF"""
 
     model_config = ConfigDict(validate_assignment=True)
+
+
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
     # From microscope (synced from global)
     pixel_size: float = Field(ge=0.5, le=10.0)
@@ -371,11 +461,48 @@ class FsMotionCtfParams(BaseModel):
         self.gain_path = state.acquisition.gain_reference_path  # Sync gain path
         return self
 
+    @staticmethod
+    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+        """Define all outputs this job produces"""
+        return {
+            "job_dir": job_dir,
+            "output_star": job_dir / "fs_motion_and_ctf.star",
+            "tilt_series_dir": job_dir / "tilt_series",
+            "warp_dir": job_dir / "warp_frameseries",
+            "warp_settings": job_dir / "warp_frameseries.settings",
+            "xml_pattern": str(job_dir / "warp_frameseries" / "*.xml"),
+        }
+
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        """This job needs outputs from importmovies"""
+        return {
+            "import": "importmovies"  # Key is logical name, value is job type
+        }
+
+    @staticmethod
+    def get_input_assets(
+        job_dir: Path, upstream_outputs: Dict[str, Dict[str, Path]]
+    ) -> Dict[str, Path]:
+        """Map upstream outputs to this job's inputs"""
+        import_outputs = upstream_outputs.get("importmovies", {})
+        project_root = job_dir.parent.parent
+
+        return {
+            "job_dir": job_dir,
+            "input_star": import_outputs.get("tilt_series_star"),
+            "output_star": job_dir / "fs_motion_and_ctf.star",
+            "warp_dir": job_dir / "warp_frameseries",
+            "frames_dir": project_root / "frames",
+            "mdoc_dir": project_root / "mdoc",
+        }
+
 
 class TsAlignmentParams(BaseModel):
     """Parameters for tilt series alignment"""
 
     model_config = ConfigDict(validate_assignment=True)
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
     # Synced from global state
     pixel_size: float = Field(default=1.35)  # Original pixel size
@@ -484,6 +611,37 @@ class TsAlignmentParams(BaseModel):
         self.invert_tilt_angles = state.acquisition.invert_tilt_angles
         self.gain_path = state.acquisition.gain_reference_path
         return self
+
+    @staticmethod
+    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+        return {
+            "job_dir": job_dir,
+            "output_star": job_dir / "aligned_tilt_series.star",
+            "tilt_series_dir": job_dir / "tilt_series",
+            "warp_dir": job_dir / "warp_tiltseries",
+            "warp_settings": job_dir / "warp_tiltseries.settings",
+            "tomostar_dir": job_dir / "tomostar",
+        }
+
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        return {"motion": "fsMotionAndCtf"}
+
+    @staticmethod
+    def get_input_assets(
+        job_dir: Path, upstream_outputs: Dict[str, Dict[str, Path]]
+    ) -> Dict[str, Path]:
+        motion_outputs = upstream_outputs.get("fsMotionAndCtf", {})
+        project_root = job_dir.parent.parent
+        return {
+            "job_dir": job_dir,
+            "input_star": motion_outputs.get("output_star"),
+            "frameseries_dir": motion_outputs.get("warp_dir"),
+            "output_star": job_dir / "aligned_tilt_series.star",
+            "mdoc_dir": project_root / "mdoc",
+            "tomostar_dir": job_dir / "tomostar",
+            "warp_dir": job_dir / "warp_tiltseries",
+        }
 
 
 # ============= MAIN PIPELINE STATE =============
