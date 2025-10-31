@@ -28,7 +28,6 @@ python3 --version
 
 export CRBOOST_SERVER_DIR="/users/<user>/dev/crboost_server/"
 VENV_PYTHON="/users/<user>/dev/crboost_server/venv/bin/python3"
-HELPER_SCRIPT="/users/<user>/dev/crboost_server/config/binAdapters/update_fs_metadata.py"
 export PYTHONPATH="${VENV_PYTHON}:${PYTHONPATH}"
 
 echo "--- SLURM JOB START ---"
