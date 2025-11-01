@@ -118,7 +118,6 @@ class ProjectService:
         self.backend = backend_instance
         self.data_importer = DataImportService()
         self.star_handler = StarfileService()
-
         self.project_root: Optional[Path] = None
 
     def set_project_root(self, project_dir: Path):

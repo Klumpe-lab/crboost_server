@@ -12,9 +12,6 @@ from datetime import datetime
 class Partition(str, Enum):
     CPU = "c"
     GPU = "g"
-    GPU_V100 = "g-v100"
-    GPU_A100 = "g-a100"
-    MEMORY = "m"
 
 
 class MicroscopeType(str, Enum):
@@ -573,8 +570,6 @@ class TsAlignmentParams(AbstractJobParams):
             "warp_dir": job_dir / "warp_tiltseries",
         }
 
-
-# ============= MAIN PIPELINE STATE =============
 
 
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
