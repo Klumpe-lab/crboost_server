@@ -1,57 +1,68 @@
 #!/usr/bin/env python
+# drivers/ts_alignment.py
 import json
 import subprocess
 import sys
 import os
+import shlex
 from pathlib import Path
 
-# --- Add server root to Python path ---
-CRBOOST_SERVER_DIR = os.environ.get("CRBOOST_SERVER_DIR")
-if not CRBOOST_SERVER_DIR:
-    print("FATAL: CRBOOST_SERVER_DIR environment variable not set.", file=sys.stderr)
-    sys.exit(1)
-sys.path.append(CRBOOST_SERVER_DIR)
+# Add the server root to PYTHONPATH (set by fn_exe command)
+# This allows us to import 'services'
+server_dir = Path(__file__).parent.parent
+sys.path.append(str(server_dir))
 # ----------------------------------------
 
 try:
     from services.parameter_models import TsAlignmentParams, AlignmentMethod
     from services.metadata_service import MetadataTranslator
     from services.starfile_service import StarfileService
+    from services.container_service import get_container_service # Import for consistency
 except ImportError as e:
-    print(f"FATAL: Could not import services. Check CRBOOST_SERVER_DIR.", file=sys.stderr)
+    print(f"FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
+    print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
     print(f"Error: {e}", file=sys.stderr)
     sys.exit(1)
 
-# (Include the same run_command helper function from fs_motion_ctf_wrapper.py)
 def run_command(command: str, cwd: Path):
-    """Helper to run a shell command and check for errors."""
-    print(f"[WRAPPER] Executing: {command}", flush=True)
-    result = subprocess.run(
-        command, shell=True, cwd=cwd, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
-    print("--- STDOUT ---", flush=True)
-    print(result.stdout, flush=True)
-    print("--- STDERR ---", flush=True)
-    print(result.stderr, file=sys.stderr, flush=True)
-    if result.returncode != 0:
-        raise subprocess.CalledProcessError(
-            result.returncode, command, result.stdout, result.stderr
-        )
-    return result
+    """
+    Helper to run a shell command, stream output, and check for errors.
+    """
+    # print(f"[DRIVER] Executing: {command}", flush=True) # <-- REMOVED THIS LINE
+    process = subprocess.Popen(command, shell=True, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    print("--- CONTAINER STDOUT ---", flush=True)
+    if process.stdout:
+        for line in iter(process.stdout.readline, ""):
+            print(line, end="", flush=True)
 
-def build_alignment_commands(params: TsAlignmentParams, paths: dict) -> str:
+    print("--- CONTAINER STDERR ---", file=sys.stderr, flush=True)
+    stderr_output = ""
+    if process.stderr:
+        for line in iter(process.stderr.readline, ""):
+            print(line, end="", file=sys.stderr, flush=True)
+            stderr_output += line
+
+    process.wait()
+
+    if process.returncode != 0:
+        raise subprocess.CalledProcessError(process.returncode, command, None, stderr_output)
+
+def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path]) -> str:
     """Builds the multi-step WarpTools alignment command string."""
     
-    gain_path_str = paths.get('gain_path_str', '')
-    gain_ops_str = paths.get('gain_operations_str', '')
+    # Get gain path from params object
+    gain_path_str = ""
+    if params.gain_path and params.gain_path != "None":
+        gain_path_str = shlex.quote(params.gain_path)
     
-    # Paths from the JSON
-    mdoc_dir = paths['mdoc_dir']
-    frameseries_dir = paths['frameseries_dir']
-    tomostar_dir = paths['tomostar_dir']
-    processing_dir = paths['processing_dir']
-    settings_file = paths['settings_file']
+    gain_ops_str = params.gain_operations if params.gain_operations else ""
+    
+    # Paths from the JSON (are all absolute)
+    mdoc_dir = shlex.quote(str(paths['mdoc_dir']))
+    frameseries_dir = shlex.quote(str(paths['frameseries_dir']))
+    tomostar_dir = shlex.quote(str(paths['tomostar_dir']))
+    processing_dir = shlex.quote(str(paths['warp_dir'])) # Use 'warp_dir' for processing
+    settings_file = shlex.quote(str(paths['warp_settings']))
 
     mkdir_cmds = [
         f"mkdir -p {tomostar_dir}",
@@ -129,7 +140,7 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict) -> str:
     ])
 
 def main():
-    print("[WRAPPER] tsAlignment wrapper started.", flush=True)
+    print("[DRIVER] tsAlignment driver started.", flush=True)
     job_dir = Path.cwd()
     params_file = job_dir / "job_params.json"
     success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
@@ -137,32 +148,46 @@ def main():
 
     try:
         # 1. Load parameters
-        print(f"[WRAPPER] Loading params from {params_file}", flush=True)
+        print(f"[DRIVER] Loading params from {params_file}", flush=True)
         with open(params_file, 'r') as f:
             params_data = json.load(f)
         
         params = TsAlignmentParams(**params_data['job_model'])
-        paths = params_data['paths']
+        # Paths are Dict[str, str] of absolute paths
+        paths_str_dict = params_data['paths']
+        # Convert to Path objects for local use
+        paths = {k: Path(v) for k, v in paths_str_dict.items()}
+
         
-        # Get I/O STAR files
-        input_star_rel = paths['input_star']
-        output_star_rel = paths['output_star']
-        
-        # Metadata service needs absolute path to input star
-        abs_input_star = (job_dir / input_star_rel).resolve()
+        # Get I/O STAR files (already absolute)
+        input_star_abs = paths['input_star']
+        output_star_abs = paths['output_star']
         
         # 2. Build and run alignment commands
-        align_command = build_alignment_commands(params, paths)
-        run_command(align_command, cwd=job_dir)
+        # We pass the Path dict for building
+        align_command_str = build_alignment_commands(params, paths)
         
-        # 3. Run metadata processing
-        print("[WRAPPER] Alignment finished. Starting metadata processing.", flush=True)
+        # 3. Get container service to build the *full apptainer* command
+        container_svc = get_container_service()
+        apptainer_command = container_svc.wrap_command_for_tool(
+            command=align_command_str,
+            cwd=job_dir,
+            tool_name="warptools", # Assuming same container as fs_motion
+            additional_binds=params_data["additional_binds"]
+        )
+        
+        # 4. Run the containerized computation
+        print(f"[DRIVER] Executing container...", flush=True)
+        run_command(apptainer_command, cwd=job_dir)
+        
+        # 5. Run metadata processing
+        print("[DRIVER] Alignment finished. Starting metadata processing.", flush=True)
         translator = MetadataTranslator(StarfileService())
         
         result = translator.update_ts_alignment_metadata(
             job_dir=job_dir,
-            input_star_path=abs_input_star,
-            output_star_path=Path(output_star_rel),
+            input_star_path=input_star_abs,
+            output_star_path=output_star_abs,
             tomo_dimensions=params.tomo_dimensions,
             alignment_program=params.alignment_method.value # Pass "Aretomo" or "Imod"
         )
@@ -170,21 +195,21 @@ def main():
         if not result['success']:
             raise Exception(f"Metadata update failed: {result['error']}")
 
-        print("[WRAPPER] Metadata processing successful.", flush=True)
+        print("[DRIVER] Metadata processing successful.", flush=True)
         
-        # 4. Create success file
+        # 6. Create success file
         success_file.touch()
-        print("[WRAPPER] Job finished successfully.", flush=True)
+        print("[DRIVER] Job finished successfully.", flush=True)
         sys.exit(0)
 
     except Exception as e:
-        print(f"[WRAPPER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
+        print(f"[DRIVER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
         print(str(e), file=sys.stderr, flush=True)
         import traceback
         traceback.print_exc(file=sys.stderr)
         
         failure_file.touch()
-        print("[WRAPPER] Job failed.", flush=True)
+        print("[DRIVER] Job failed.", flush=True)
         sys.exit(1)
 
 if __name__ == "__main__":

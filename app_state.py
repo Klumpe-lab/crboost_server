@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Dict, Any, List
 from datetime import datetime
 import json
-from services.job_types import JobType
 from services.parameter_models import (
+    JobType,
     PipelineState,
     ComputingParams,
     MicroscopeParams,
@@ -20,9 +20,7 @@ from services.parameter_models import (
     TsAlignmentParams,
 )
 
-state = PipelineState(
-    computing=ComputingParams.from_conf_yaml(Path("config/conf.yaml"))
-)
+state = PipelineState(computing=ComputingParams.from_conf_yaml(Path("config/conf.yaml")))
 
 print(f"[APP STATE] Initialized with computing: {state.computing.dict()}")
 
@@ -44,14 +42,15 @@ def prepare_job_params(job_name_or_type):
 
     # Use populate_job but then force sync with current global state
     state.populate_job(job_type, job_star_path if job_star_path.exists() else None)
-    
+
     # Ensure the job is synced with current global state
     job_model = state.jobs.get(job_type.value)
-    if job_model and hasattr(job_model, 'sync_from_pipeline_state'):
+    if job_model and hasattr(job_model, "sync_from_pipeline_state"):
         job_model.sync_from_pipeline_state(state)
         print(f"[STATE] Force-synced {job_type.value} with current global state")
 
     return state.jobs.get(job_type.value)
+
 
 def update_from_mdoc(mdocs_glob: str):
     """
@@ -90,10 +89,7 @@ def update_from_mdoc(mdocs_glob: str):
                 state.acquisition.detector_dimensions = (int(dims[0]), int(dims[1]))
 
                 # Detect K3/EER based on dimensions
-                if (
-                    "5760" in mdoc_data["image_size"]
-                    or "11520" in mdoc_data["image_size"]
-                ):
+                if "5760" in mdoc_data["image_size"] or "11520" in mdoc_data["image_size"]:
                     state.acquisition.eer_fractions_per_frame = 32
                     print("[STATE] Detected K3/EER camera, set fractions to 32")
 
@@ -113,10 +109,7 @@ def update_from_mdoc(mdocs_glob: str):
 
 
 def export_for_project(
-    project_name: str,
-    movies_glob: str,
-    mdocs_glob: str,
-    selected_jobs: List[str],
+    project_name: str, movies_glob: str, mdocs_glob: str, selected_jobs: List[str]
 ) -> Dict[str, Any]:
     """
     Export clean configuration for project creation.
@@ -157,9 +150,7 @@ def export_for_project(
         "microscope": state.microscope.dict(),
         "acquisition": state.acquisition.dict(),
         "computing": state.computing.dict(),
-        "jobs": {
-            job: state.jobs[job].dict() for job in selected_jobs if job in state.jobs
-        },
+        "jobs": {job: state.jobs[job].dict() for job in selected_jobs if job in state.jobs},
     }
 
     return export
@@ -173,10 +164,7 @@ def save_state_to_file(path: Path):
             "acquisition": state.acquisition.dict(),
             "computing": state.computing.dict(),
             "jobs": {name: params.dict() for name, params in state.jobs.items()},
-            "metadata": {
-                "created_at": state.created_at.isoformat(),
-                "modified_at": state.modified_at.isoformat(),
-            },
+            "metadata": {"created_at": state.created_at.isoformat(), "modified_at": state.modified_at.isoformat()},
         }
 
         with open(path, "w") as f:
@@ -311,38 +299,14 @@ def get_ui_state_legacy() -> Dict[str, Any]:
     """
     ui_state = {
         # Flat parameters for backward compatibility
-        "pixel_size_angstrom": {
-            "value": state.microscope.pixel_size_angstrom,
-            "source": "user",
-        },
-        "acceleration_voltage_kv": {
-            "value": state.microscope.acceleration_voltage_kv,
-            "source": "user",
-        },
-        "spherical_aberration_mm": {
-            "value": state.microscope.spherical_aberration_mm,
-            "source": "user",
-        },
-        "amplitude_contrast": {
-            "value": state.microscope.amplitude_contrast,
-            "source": "user",
-        },
-        "dose_per_tilt": {
-            "value": state.acquisition.dose_per_tilt,
-            "source": "user",
-        },
-        "detector_dimensions": {
-            "value": state.acquisition.detector_dimensions,
-            "source": "user",
-        },
-        "tilt_axis_degrees": {
-            "value": state.acquisition.tilt_axis_degrees,
-            "source": "user",
-        },
-        "eer_fractions_per_frame": {
-            "value": state.acquisition.eer_fractions_per_frame,
-            "source": "user",
-        }
+        "pixel_size_angstrom": {"value": state.microscope.pixel_size_angstrom, "source": "user"},
+        "acceleration_voltage_kv": {"value": state.microscope.acceleration_voltage_kv, "source": "user"},
+        "spherical_aberration_mm": {"value": state.microscope.spherical_aberration_mm, "source": "user"},
+        "amplitude_contrast": {"value": state.microscope.amplitude_contrast, "source": "user"},
+        "dose_per_tilt": {"value": state.acquisition.dose_per_tilt, "source": "user"},
+        "detector_dimensions": {"value": state.acquisition.detector_dimensions, "source": "user"},
+        "tilt_axis_degrees": {"value": state.acquisition.tilt_axis_degrees, "source": "user"},
+        "eer_fractions_per_frame": {"value": state.acquisition.eer_fractions_per_frame, "source": "user"}
         if state.acquisition.eer_fractions_per_frame
         else None,
         # Hierarchical format

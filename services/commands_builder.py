@@ -1,32 +1,18 @@
 # services/command_builders.py
 from pathlib import Path
-from typing import Dict, Any, Optional, List
-from services.parameter_models import (
-    ImportMoviesParams,
-    FsMotionCtfParams,
-    TsAlignmentParams,
-    ComputingParams,
-    AlignmentMethod,
-)
+from typing import Dict, Any, List
+import shlex
+from services.parameter_models import ImportMoviesParams, FsMotionCtfParams, TsAlignmentParams, AlignmentMethod
 
 
 class BaseCommandBuilder:
     """Base class for all command builders"""
 
     def format_paths(self, paths: Dict[str, Path]) -> Dict[str, str]:
-        """Convert Path objects to strings"""
         return {k: str(v) for k, v in paths.items()}
 
-    def add_optional_param(
-        self, cmd_parts: List[str], flag: str, value: Any, condition: bool = True
-    ):
-        """Add parameter only if condition is met"""
-        if (
-            condition
-            and value is not None
-            and str(value) != "None"
-            and str(value) != ""
-        ):
+    def add_optional_param(self, cmd_parts: List[str], flag: str, value: Any, condition: bool = True):
+        if condition and value is not None and str(value) != "None" and str(value) != "":
             cmd_parts.extend([flag, str(value)])
 
 
@@ -62,16 +48,17 @@ class ImportMoviesCommandBuilder(BaseCommandBuilder):
             cmd_parts.extend(["--do_at_most", str(params.do_at_most)])
 
         # Add paths
-        if "input_dir" in paths:
+        if "mdoc_dir" in paths:
             # The input glob should be relative to the mdoc dir
-            input_pattern = str(paths["input_dir"]) + "/*.mdoc"
+            input_pattern = str(paths["mdoc_dir"]) + "/*.mdoc"
             cmd_parts.extend(["--i", input_pattern])
 
-        if "output_dir" in paths:
-            cmd_parts.extend(["--o", str(paths["output_dir"])])
+        if "job_dir" in paths:
+            # Use job_dir as the output dir
+            cmd_parts.extend(["--o", str(paths["job_dir"]) + "/"])
 
-        if "pipeline_control" in paths:
-            cmd_parts.extend(["--pipeline_control", str(paths["pipeline_control"])])
+        # Note: 'pipeline_control' is not typically in paths,
+        # it's a RELION env var set by schemer.
 
         return " ".join(cmd_parts)
 
@@ -83,10 +70,14 @@ class FsMotionCtfCommandBuilder(BaseCommandBuilder):
         # Step 1: Create settings
         create_settings_parts = [
             "WarpTools create_settings",
-            "--folder_data ../../frames",
-            "--extension '*.eer'",
-            "--folder_processing ./warp_frameseries",
-            "--output ./warp_frameseries.settings",
+            "--folder_data",
+            shlex.quote(str(paths["frames_dir"])),  # Use path from get_input_assets
+            "--extension",
+            "'*.eer'",  # Keep quotes for glob
+            "--folder_processing",
+            shlex.quote(str(paths["warp_dir"])),
+            "--output",
+            shlex.quote(str(paths["warp_settings"])),
             "--angpix",
             str(params.pixel_size),
             "--eer_ngroups",
@@ -94,30 +85,43 @@ class FsMotionCtfCommandBuilder(BaseCommandBuilder):
         ]
 
         if params.gain_path and params.gain_path != "None":
-            create_settings_parts.extend(["--gain_reference", params.gain_path])
+            create_settings_parts.extend(["--gain_reference", shlex.quote(params.gain_path)])
             if params.gain_operations and params.gain_operations != "None":
-                create_settings_parts.extend(
-                    ["--gain_operations", params.gain_operations]
-                )
+                create_settings_parts.extend(["--gain_operations", shlex.quote(params.gain_operations)])
 
         # Step 2: Run motion correction and CTF estimation
         run_main_parts = [
             "WarpTools fs_motion_and_ctf",
-            "--settings ./warp_frameseries.settings",
-            "--m_grid", params.m_grid,
-            "--m_range_min", str(params.m_range_min),
-            "--m_range_max", str(params.m_range_max),
-            "--m_bfac", str(params.m_bfac),
-            "--c_grid", params.c_grid,
-            "--c_window", str(params.c_window),
-            "--c_range_min", str(params.c_range_min),
-            "--c_range_max", str(params.c_range_max),
-            "--c_defocus_min", str(params.defocus_min_angstroms),
-            "--c_defocus_max", str(params.defocus_max_angstroms),
-            "--c_voltage", str(round(float(params.voltage))),
-            "--c_cs", str(params.cs),
-            "--c_amplitude", str(params.amplitude),
-            "--perdevice", str(params.perdevice),
+            "--settings",
+            shlex.quote(str(paths["warp_settings"])),
+            "--m_grid",
+            params.m_grid,
+            "--m_range_min",
+            str(params.m_range_min),
+            "--m_range_max",
+            str(params.m_range_max),
+            "--m_bfac",
+            str(params.m_bfac),
+            "--c_grid",
+            params.c_grid,
+            "--c_window",
+            str(params.c_window),
+            "--c_range_min",
+            str(params.c_range_min),
+            "--c_range_max",
+            str(params.c_range_max),
+            "--c_defocus_min",
+            str(params.defocus_min_angstroms),
+            "--c_defocus_max",
+            str(params.defocus_max_angstroms),
+            "--c_voltage",
+            str(round(float(params.voltage))),
+            "--c_cs",
+            str(params.cs),
+            "--c_amplitude",
+            str(params.amplitude),
+            "--perdevice",
+            str(params.perdevice),
             "--out_averages",
         ]
 
@@ -125,24 +129,21 @@ class FsMotionCtfCommandBuilder(BaseCommandBuilder):
             run_main_parts.extend(["--do_at_most", str(params.do_at_most)])
 
         # Join WarpTools commands (these will be containerized)
-        warp_commands = " && ".join([
-            " ".join(create_settings_parts),
-            " ".join(run_main_parts),
-        ])
-        
+        warp_commands = " && ".join([" ".join(create_settings_parts), " ".join(run_main_parts)])
+
         # Metadata update runs AFTER container exits (native Python)
         server_dir = Path(__file__).parent.parent
         helper_script = server_dir / "config" / "binAdapters" / "update_fs_metadata.py"
-        
+
         # Use CRBOOST_PYTHON environment variable if set, otherwise fall back to python3
-        metadata_cmd = f"${{CRBOOST_PYTHON:-python3}} {helper_script}"
-        
-        # IMPORTANT: Use '; ' not ' && ' to run metadata OUTSIDE the container
-        # The container service will only wrap up to the first ';'
-        full_command = f"{warp_commands} ; {metadata_cmd}"
-        
-        print(f"[COMMAND BUILDER] Built WarpTools command (containerized) + metadata update (native)")
+        # This part is complex and should be handled by the driver script.
+        # This builder is likely obsolete.
+        # For now, just return the warp command.
+        full_command = warp_commands
+
+        print("[COMMAND BUILDER] Built WarpTools command (containerized)")
         return full_command
+
 
 class TsAlignmentCommandBuilder(BaseCommandBuilder):
     """
@@ -156,21 +157,21 @@ class TsAlignmentCommandBuilder(BaseCommandBuilder):
     def build(self, params: TsAlignmentParams, paths: Dict[str, Path]) -> str:
         # Ensure output directories exist
         mkdir_cmds = [
-            f"mkdir -p {paths['tomostar_dir']}",
-            f"mkdir -p {paths['processing_dir']}",
+            f"mkdir -p {shlex.quote(str(paths['tomostar_dir']))}",
+            f"mkdir -p {shlex.quote(str(paths['warp_dir']))}",
         ]
 
         # === Step 1: WarpTools ts_import ===
         cmd_parts_import = [
             "WarpTools ts_import",
             "--mdocs",
-            str(paths["mdoc_dir"]),
+            shlex.quote(str(paths["mdoc_dir"])),
             "--pattern",
-            "*.mdoc",
+            "'*.mdoc'",
             "--frameseries",
-            str(paths["frameseries_dir"]),
+            shlex.quote(str(paths["frameseries_dir"])),
             "--output",
-            str(paths["tomostar_dir"]),
+            shlex.quote(str(paths["tomostar_dir"])),
             "--tilt_exposure",
             str(params.dose_per_tilt),
             "--override_axis",
@@ -178,8 +179,6 @@ class TsAlignmentCommandBuilder(BaseCommandBuilder):
         ]
 
         # Handle tilt angle inversion
-        # Old code: if self.st.tsInfo.keepHand==1: command.append("--dont_invert")
-        # We assume keepHand=1 maps to invert_tilt_angles=False
         if not params.invert_tilt_angles:
             cmd_parts_import.append("--dont_invert")
 
@@ -190,13 +189,13 @@ class TsAlignmentCommandBuilder(BaseCommandBuilder):
         cmd_parts_settings = [
             "WarpTools create_settings",
             "--folder_data",
-            str(paths["tomostar_dir"]),
+            shlex.quote(str(paths["tomostar_dir"])),
             "--extension",
-            "*.tomostar",
+            "'*.tomostar'",
             "--folder_processing",
-            str(paths["processing_dir"]),
+            shlex.quote(str(paths["warp_dir"])),
             "--output",
-            str(paths["settings_file"]),
+            shlex.quote(str(paths["warp_settings"])),
             "--angpix",
             str(params.pixel_size),  # Original pixel size
             "--exposure",
@@ -206,12 +205,9 @@ class TsAlignmentCommandBuilder(BaseCommandBuilder):
         ]
 
         # Add optional gain reference
-        self.add_optional_param(
-            cmd_parts_settings, "--gain_reference", params.gain_path
-        )
-        self.add_optional_param(
-            cmd_parts_settings, "--gain_operations", params.gain_operations
-        )
+        self.add_optional_param(cmd_parts_settings, "--gain_reference", params.gain_path)
+        if params.gain_path:
+            self.add_optional_param(cmd_parts_settings, "--gain_operations", params.gain_operations)
 
         # === Step 3: WarpTools ts_aretomo / ts_etomo_patches ===
         cmd_parts_align = []
@@ -220,7 +216,7 @@ class TsAlignmentCommandBuilder(BaseCommandBuilder):
             cmd_parts_align = [
                 "WarpTools ts_aretomo",
                 "--settings",
-                str(paths["settings_file"]),
+                shlex.quote(str(paths["warp_settings"])),
                 "--angpix",
                 str(params.rescale_angpixs),  # Target pixel size
                 "--alignz",
@@ -237,27 +233,17 @@ class TsAlignmentCommandBuilder(BaseCommandBuilder):
 
             # Add axis refinement if iter > 0
             if params.axis_iter > 0:
-                cmd_parts_align.extend(
-                    [
-                        "--axis_iter",
-                        str(params.axis_iter),
-                        "--axis_batch",
-                        str(params.axis_batch),
-                    ]
-                )
+                cmd_parts_align.extend(["--axis_iter", str(params.axis_iter), "--axis_batch", str(params.axis_batch)])
 
         elif params.alignment_method == AlignmentMethod.IMOD:
             cmd_parts_align = [
                 "WarpTools ts_etomo_patches",
                 "--settings",
-                str(paths["settings_file"]),
+                shlex.quote(str(paths["warp_settings"])),
                 "--angpix",
                 str(params.rescale_angpixs),  # Target pixel size
-                # Old code: "--patch_size",str(float(self.args.imod_patch_size_and_overlap.split(":")[0])*10)
-                # Assuming imod_patch_size is the first part, multiplied by 10
                 "--patch_size",
                 str(int(params.imod_patch_size * 10)),
-                # Note: The 'overlap' parameter doesn't seem to be used by ts_etomo_patches
             ]
 
         else:
@@ -268,12 +254,7 @@ class TsAlignmentCommandBuilder(BaseCommandBuilder):
 
         # === Combine all commands ===
         full_command = " && ".join(
-            [
-                " ".join(mkdir_cmds),
-                " ".join(cmd_parts_import),
-                " ".join(cmd_parts_settings),
-                " ".join(cmd_parts_align),
-            ]
+            [" ".join(mkdir_cmds), " ".join(cmd_parts_import), " ".join(cmd_parts_settings), " ".join(cmd_parts_align)]
         )
 
         print(f"[COMMAND BUILDER] Built TsAlignment command")

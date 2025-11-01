@@ -1,17 +1,74 @@
 # ui/projects_tab.py (SIMPLIFIED & FIXED)
 import asyncio
-import glob
 import json
 import math
 from pathlib import Path
 from nicegui import ui
 from backend import CryoBoostBackend
+from services.parameter_models import JobType
 from ui.utils import create_path_input_with_picker
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 from app_state import state as app_state, update_from_mdoc
-from services.job_config import JobConfig
-from services.job_types import JobType
+from typing import List, Dict, Any
+from enum import Enum
+
+class JobConfig:
+    """Central configuration for job pipeline ordering and metadata"""
+    
+    # Define job order and dependencies
+    PIPELINE_ORDER = [
+        JobType.IMPORT_MOVIES,
+        JobType.FS_MOTION_CTF,
+        JobType.TS_ALIGNMENT,
+        # Future jobs (commented out for now):
+        # JobType.TS_CTF,
+        # JobType.DENOISE_TRAIN,
+        # JobType.DENOISE_PREDICT,
+        # JobType.TS_RECONSTRUCT,
+        # JobType.TEMPLATE_MATCH,
+        # JobType.EXTRACT_CANDIDATES,
+        # JobType.SUBTOMO_RECONSTRUCT,
+    ]
+    
+    # Job metadata for UI display
+    JOB_METADATA = {
+        JobType.IMPORT_MOVIES: {
+            'icon': '',
+            'short_name': 'Import',
+            'description': 'Import raw movies and mdocs',
+        },
+        JobType.FS_MOTION_CTF: {
+            'icon': '',
+            'short_name': 'Motion & CTF',
+            'description': 'Motion correction and CTF estimation',
+        },
+        JobType.TS_ALIGNMENT: {
+            'icon': '',
+            'short_name': 'Alignment',
+            'description': 'Tilt series alignment',
+        },
+    }
+    
+    @classmethod
+    def get_ordered_jobs(cls) -> List[JobType]:
+        """Get jobs in pipeline execution order"""
+        return cls.PIPELINE_ORDER.copy()
+    
+    @classmethod
+    def get_job_display_name(cls, job_type: JobType) -> str:
+        """Get display name for a job"""
+        return cls.JOB_METADATA.get(job_type, {}).get('short_name', job_type.value)
+    
+    @classmethod
+    def get_job_icon(cls, job_type: JobType) -> str:
+        """Get icon for a job"""
+        return cls.JOB_METADATA.get(job_type, {}).get('icon', '📦')
+    
+    @classmethod
+    def get_job_description(cls, job_type: JobType) -> str:
+        """Get description for a job"""
+        return cls.JOB_METADATA.get(job_type, {}).get('description', '')
 
 
 def _snake_to_title(snake_str: str) -> str:
@@ -68,9 +125,7 @@ def build_projects_tab(backend: CryoBoostBackend):
                 "amplitude": app_state.microscope.amplitude_contrast,
                 "eer_ngroups": app_state.acquisition.eer_fractions_per_frame or 32,
             },
-            JobType.TS_ALIGNMENT: {
-                "thickness_nm": app_state.acquisition.sample_thickness_nm,
-            },
+            JobType.TS_ALIGNMENT: {"thickness_nm": app_state.acquisition.sample_thickness_nm},
         }
 
         mapping = sync_mappings.get(job_type, {})
@@ -86,9 +141,7 @@ def build_projects_tab(backend: CryoBoostBackend):
                     )
                     return False
             elif job_value != global_value:
-                print(
-                    f"[SYNC CHECK] {job_type.value}.{field}: job={job_value}, global={global_value} → OUT OF SYNC"
-                )
+                print(f"[SYNC CHECK] {job_type.value}.{field}: job={job_value}, global={global_value} → OUT OF SYNC")
                 return False
 
         return True
@@ -111,30 +164,9 @@ def build_projects_tab(backend: CryoBoostBackend):
 
             ui.run(
                 lambda: ui.notify(
-                    f"Synced {JobConfig.get_job_display_name(job_type)} with global params",
-                    type="positive",
+                    f"Synced {JobConfig.get_job_display_name(job_type)} with global params", type="positive"
                 )
             )
-
-        # Update sync function to trigger UI updates:
-
-    # async def sync_job_with_global(job_type: JobType):
-    #     """Sync a job's parameters with global state"""
-    #     job_model = app_state.jobs.get(job_type.value)
-    #     if job_model:
-    #         job_model.sync_from_pipeline_state(app_state)
-
-    #         # Update UI inputs for numeric fields
-    #         card_data = state["job_cards"].get(job_type, {})
-    #         if "param_updaters" in card_data:
-    #             for updater_fn in card_data["param_updaters"].values():
-    #                 updater_fn()  # Refresh UI
-
-    #         ui.notify(
-    #             f"Synced {JobConfig.get_job_display_name(job_type)} with global params",
-    #             type="positive",
-    #         )
-    #         update_job_card_sync_indicator(job_type)
 
     def update_job_card_sync_indicator(job_type: JobType):
         """Update sync indicator on job card"""
@@ -166,12 +198,8 @@ def build_projects_tab(backend: CryoBoostBackend):
             update_from_mdoc(mdocs_path)
 
             # Update the display values
-            state["auto_detected_values"]["pixel_size"] = (
-                app_state.microscope.pixel_size_angstrom
-            )
-            state["auto_detected_values"]["dose_per_tilt"] = (
-                app_state.acquisition.dose_per_tilt
-            )
+            state["auto_detected_values"]["pixel_size"] = app_state.microscope.pixel_size_angstrom
+            state["auto_detected_values"]["dose_per_tilt"] = app_state.acquisition.dose_per_tilt
             dims = app_state.acquisition.detector_dimensions
             state["auto_detected_values"]["image_size"] = f"{dims[0]}x{dims[1]}"
 
@@ -225,7 +253,7 @@ def build_projects_tab(backend: CryoBoostBackend):
             eer_info_label.set_text(
                 f"{grouping} → {rendered} frames, {lost} lost ({lost / frames * 100:.1f}%) | {dose_per_frame:.2f} e⁻/Å²"
             )
-        except Exception as e:
+        except Exception:
             pass
 
     # =============================================================================
@@ -272,9 +300,7 @@ def build_projects_tab(backend: CryoBoostBackend):
 
         with pipeline_container:
             if not state["selected_jobs"]:
-                ui.label("No jobs selected. Click buttons above to add jobs.").classes(
-                    "text-xs text-gray-500 italic"
-                )
+                ui.label("No jobs selected. Click buttons above to add jobs.").classes("text-xs text-gray-500 italic")
                 return
 
             for idx, job_type in enumerate(state["selected_jobs"]):
@@ -303,18 +329,11 @@ def build_projects_tab(backend: CryoBoostBackend):
 
                 # Sync indicator (only before run)
                 if not state["pipeline_running"]:
-                    sync_badge = ui.badge("out of sync", color="orange").classes(
-                        "text-xs"
-                    )
+                    sync_badge = ui.badge("out of sync", color="orange").classes("text-xs")
                     sync_badge.set_visibility(not is_synced)
 
                     sync_button = (
-                        ui.button(
-                            icon="sync",
-                            on_click=lambda j=job_type: asyncio.create_task(
-                                confirm_sync_job(j)
-                            ),
-                        )
+                        ui.button(icon="sync", on_click=lambda j=job_type: asyncio.create_task(confirm_sync_job(j)))
                         .props("flat dense round size=sm")
                         .classes("text-blue-600")
                     )
@@ -326,10 +345,9 @@ def build_projects_tab(backend: CryoBoostBackend):
 
                 # Remove button (only before create)
                 if not state["project_created"]:
-                    ui.button(
-                        icon="close",
-                        on_click=lambda j=job_type: remove_job_from_pipeline(j),
-                    ).props("flat dense round size=sm").classes("text-red-600")
+                    ui.button(icon="close", on_click=lambda j=job_type: remove_job_from_pipeline(j)).props(
+                        "flat dense round size=sm"
+                    ).classes("text-red-600")
 
             # Content area - changes based on state
             content_container = ui.column().classes("w-full")
@@ -388,15 +406,11 @@ def build_projects_tab(backend: CryoBoostBackend):
                         def model_to_ui():
                             nonlocal current_display_value
                             current_val = getattr(job_model, field_name)
-                            new_display = (
-                                str(current_val) if current_val is not None else ""
-                            )
+                            new_display = str(current_val) if current_val is not None else ""
                             if new_display != current_display_value:
                                 ui_element.value = new_display
                                 current_display_value = new_display
-                                print(
-                                    f"[UI UPDATE] {job_type.value}.{field_name} → {new_display}"
-                                )
+                                print(f"[UI UPDATE] {job_type.value}.{field_name} → {new_display}")
 
                         # UI → Model handler
                         def ui_to_model():
@@ -413,16 +427,14 @@ def build_projects_tab(backend: CryoBoostBackend):
                                     if parsed != current_val:
                                         setattr(job_model, field_name, parsed)
                                         current_display_value = str(parsed)
-                                        print(
-                                            f"[MODEL UPDATE] {job_type.value}.{field_name} ← {parsed}"
-                                        )
+                                        print(f"[MODEL UPDATE] {job_type.value}.{field_name} ← {parsed}")
                                         update_job_card_sync_indicator(job_type)
                                 else:
                                     # Set default for empty
                                     default = -1 if "do_at_most" in field_name else 0
                                     setattr(job_model, field_name, default)
                                     ui_element.value = str(default)
-                            except (ValueError, Exception) as e:
+                            except (ValueError, Exception):
                                 # Revert to current model value on error
                                 current = getattr(job_model, field_name, 0)
                                 ui_element.value = str(current)
@@ -436,18 +448,11 @@ def build_projects_tab(backend: CryoBoostBackend):
                     param_updaters[param_name] = updater_fn
 
                 elif isinstance(value, str):
-                    if (
-                        param_name == "alignment_method"
-                        and job_type == JobType.TS_ALIGNMENT
-                    ):
+                    if param_name == "alignment_method" and job_type == JobType.TS_ALIGNMENT:
                         options = ["AreTomo", "IMOD", "Relion"]
-                        element = ui.select(
-                            label=label, options=options, value=value
-                        ).props("dense outlined")
+                        element = ui.select(label=label, options=options, value=value).props("dense outlined")
                     else:
-                        element = ui.input(label=label, value=value).props(
-                            "dense outlined"
-                        )
+                        element = ui.input(label=label, value=value).props("dense outlined")
 
                     element.bind_value(job_model, param_name)
 
@@ -472,16 +477,12 @@ def build_projects_tab(backend: CryoBoostBackend):
 
         with ui.row().classes("w-full bg-gray-100 rounded-t p-1 gap-1") as tab_row:
             logs_btn = (
-                ui.button(
-                    "Logs", icon="description", on_click=lambda: show_panel("logs")
-                )
+                ui.button("Logs", icon="description", on_click=lambda: show_panel("logs"))
                 .props("flat dense")
                 .classes("text-xs")
             )
             params_btn = (
-                ui.button(
-                    "Parameters", icon="settings", on_click=lambda: show_panel("params")
-                )
+                ui.button("Parameters", icon="settings", on_click=lambda: show_panel("params"))
                 .props("flat dense")
                 .classes("text-xs")
             )
@@ -500,9 +501,7 @@ def build_projects_tab(backend: CryoBoostBackend):
         with logs_panel:
             with ui.row().classes("w-full justify-end mb-2"):
                 ui.button(
-                    "Refresh",
-                    icon="refresh",
-                    on_click=lambda: asyncio.create_task(refresh_job_logs(job_type)),
+                    "Refresh", icon="refresh", on_click=lambda: asyncio.create_task(refresh_job_logs(job_type))
                 ).props("dense size=sm outline")
 
             with ui.grid(columns=2).classes("w-full gap-2"):
@@ -520,23 +519,16 @@ def build_projects_tab(backend: CryoBoostBackend):
 
         with params_panel:
             ui.label("Job Parameters Snapshot").classes("text-xs font-medium mb-2")
-            ui.label("Parameters used when job was started:").classes(
-                "text-xs text-gray-600 mb-2"
-            )
+            ui.label("Parameters used when job was started:").classes("text-xs text-gray-600 mb-2")
 
-            params_json = json.dumps(
-                state["params_snapshot"].get(job_type, {}), indent=2
-            )
+            params_json = json.dumps(state["params_snapshot"].get(job_type, {}), indent=2)
             ui.code(params_json, language="json").classes("w-full text-xs")
 
         with files_panel:
             build_file_browser(job_type, job_index)
 
         # Store monitor components in EXISTING dict
-        state["job_cards"][job_type]["monitor"] = {
-            "stdout": stdout_log,
-            "stderr": stderr_log,
-        }
+        state["job_cards"][job_type]["monitor"] = {"stdout": stdout_log, "stderr": stderr_log}
 
     # Fix the file browser - update build_file_browser to show better debugging:
 
@@ -551,16 +543,10 @@ def build_projects_tab(backend: CryoBoostBackend):
         job_dir = Path(state["current_project_path"]) / job_dir_rel
 
         # Status label
-        status_label = ui.label("Waiting for job to start...").classes(
-            "text-xs text-gray-500 font-mono mb-1"
-        )
+        status_label = ui.label("Waiting for job to start...").classes("text-xs text-gray-500 font-mono mb-1")
 
-        current_path_label = ui.label(str(job_dir)).classes(
-            "text-xs text-gray-600 font-mono mb-2"
-        )
-        file_list_container = ui.column().classes(
-            "w-full border rounded p-2 bg-gray-50 max-h-96 overflow-auto"
-        )
+        current_path_label = ui.label(str(job_dir)).classes("text-xs text-gray-600 font-mono mb-2")
+        file_list_container = ui.column().classes("w-full border rounded p-2 bg-gray-50 max-h-96 overflow-auto")
 
         async def browse_directory(path: Path):
             file_list_container.clear()
@@ -570,18 +556,12 @@ def build_projects_tab(backend: CryoBoostBackend):
             if not path.exists():
                 status_label.set_text(f"Directory not yet created: {path.name}")
                 with file_list_container:
-                    ui.label(f"Job directory will be created when job starts").classes(
-                        "text-xs text-blue-600"
-                    )
-                    ui.label(f"Expected path: {path}").classes(
-                        "text-xs text-gray-500 mt-2 font-mono"
-                    )
+                    ui.label("Job directory will be created when job starts").classes("text-xs text-blue-600")
+                    ui.label(f"Expected path: {path}").classes("text-xs text-gray-500 mt-2 font-mono")
 
                     # Show button to retry
                     ui.button(
-                        "Check again",
-                        icon="refresh",
-                        on_click=lambda: asyncio.create_task(browse_directory(path)),
+                        "Check again", icon="refresh", on_click=lambda: asyncio.create_task(browse_directory(path))
                     ).props("outline dense size=sm").classes("mt-2")
                 return
 
@@ -592,43 +572,27 @@ def build_projects_tab(backend: CryoBoostBackend):
                 if path != job_dir and path.parent.exists():
                     with (
                         ui.row()
-                        .classes(
-                            "items-center gap-2 cursor-pointer hover:bg-gray-200 p-1 rounded"
-                        )
-                        .on(
-                            "click",
-                            lambda p=path.parent: asyncio.create_task(
-                                browse_directory(p)
-                            ),
-                        )
+                        .classes("items-center gap-2 cursor-pointer hover:bg-gray-200 p-1 rounded")
+                        .on("click", lambda p=path.parent: asyncio.create_task(browse_directory(p)))
                     ):
                         ui.icon("folder_open").classes("text-sm")
                         ui.label("..").classes("text-xs")
 
                 # List contents
                 try:
-                    items = sorted(
-                        path.iterdir(), key=lambda p: (not p.is_dir(), p.name)
-                    )
+                    items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name))
 
                     if not items:
-                        ui.label(
-                            "Directory is empty (job may not have started yet)"
-                        ).classes("text-xs text-gray-500 italic")
+                        ui.label("Directory is empty (job may not have started yet)").classes(
+                            "text-xs text-gray-500 italic"
+                        )
 
                     for item in items:
                         if item.is_dir():
                             with (
                                 ui.row()
-                                .classes(
-                                    "items-center gap-2 cursor-pointer hover:bg-gray-200 p-1 rounded"
-                                )
-                                .on(
-                                    "click",
-                                    lambda i=item: asyncio.create_task(
-                                        browse_directory(i)
-                                    ),
-                                )
+                                .classes("items-center gap-2 cursor-pointer hover:bg-gray-200 p-1 rounded")
+                                .on("click", lambda i=item: asyncio.create_task(browse_directory(i)))
                             ):
                                 ui.icon("folder").classes("text-sm text-blue-600")
                                 ui.label(item.name).classes("text-xs")
@@ -641,14 +605,10 @@ def build_projects_tab(backend: CryoBoostBackend):
                                     )
                                     .on("click", lambda i=item: view_file(i))
                                 ):
-                                    ui.icon("insert_drive_file").classes(
-                                        "text-sm text-gray-600"
-                                    )
+                                    ui.icon("insert_drive_file").classes("text-sm text-gray-600")
                                     ui.label(item.name).classes("text-xs")
                                 size_kb = item.stat().st_size // 1024
-                                ui.label(f"{size_kb} KB").classes(
-                                    "text-xs text-gray-500"
-                                )
+                                ui.label(f"{size_kb} KB").classes("text-xs text-gray-500")
 
                 except PermissionError:
                     ui.label("Permission denied").classes("text-xs text-red-600")
@@ -676,14 +636,9 @@ def build_projects_tab(backend: CryoBoostBackend):
                     with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
                         content = f.read(50000)  # Limit to 50KB
 
-                    with (
-                        ui.dialog() as dialog,
-                        ui.card().classes("w-[60rem] max-w-full"),
-                    ):
+                    with ui.dialog() as dialog, ui.card().classes("w-[60rem] max-w-full"):
                         ui.label(file_path.name).classes("text-sm font-medium mb-2")
-                        ui.code(content).classes(
-                            "w-full max-h-96 overflow-auto text-xs"
-                        )
+                        ui.code(content).classes("w-full max-h-96 overflow-auto text-xs")
                         ui.button("Close", on_click=dialog.close).props("flat")
 
                     dialog.open()
@@ -713,20 +668,12 @@ def build_projects_tab(backend: CryoBoostBackend):
     async def confirm_sync_job(job_type: JobType):
         """Show confirmation dialog before syncing"""
         with ui.dialog() as dialog, ui.card():
-            ui.label(
-                f"Sync {JobConfig.get_job_display_name(job_type)} with global parameters?"
-            ).classes("text-sm")
-            ui.label("This will overwrite job-specific parameter changes.").classes(
-                "text-xs text-gray-600"
-            )
+            ui.label(f"Sync {JobConfig.get_job_display_name(job_type)} with global parameters?").classes("text-sm")
+            ui.label("This will overwrite job-specific parameter changes.").classes("text-xs text-gray-600")
             with ui.row().classes("w-full justify-end gap-2 mt-4"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
                 ui.button(
-                    "Sync",
-                    on_click=lambda: (
-                        asyncio.create_task(sync_job_with_global(job_type)),
-                        dialog.close(),
-                    ),
+                    "Sync", on_click=lambda: (asyncio.create_task(sync_job_with_global(job_type)), dialog.close())
                 ).props("color=primary")
         dialog.open()
 
@@ -798,11 +745,7 @@ def build_projects_tab(backend: CryoBoostBackend):
             project_path=state["current_project_path"],
             scheme_name=state["current_scheme_name"],
             selected_jobs=[j.value for j in state["selected_jobs"]],
-            required_paths=[
-                project_location_input.value,
-                movies_path_input.value,
-                mdocs_path_input.value,
-            ],
+            required_paths=[project_location_input.value, movies_path_input.value, mdocs_path_input.value],
         )
 
         run_button.props(remove="loading")
@@ -828,9 +771,7 @@ def build_projects_tab(backend: CryoBoostBackend):
     async def _monitor_pipeline_progress():
         """Monitor overall pipeline progress"""
         while state["current_project_path"] and not stop_button.props.get("disabled"):
-            progress = await backend.get_pipeline_progress(
-                state["current_project_path"]
-            )
+            progress = await backend.get_pipeline_progress(state["current_project_path"])
             if not progress or progress.get("status") != "ok":
                 break
             total = progress.get("total", 0)
@@ -840,16 +781,12 @@ def build_projects_tab(backend: CryoBoostBackend):
 
             if total > 0:
                 progress_bar.value = completed / total
-                progress_message.text = (
-                    f"{completed}/{total} ({running} running, {failed} failed)"
-                )
+                progress_message.text = f"{completed}/{total} ({running} running, {failed} failed)"
 
             if progress.get("is_complete") and total > 0:
                 msg = "Complete" if failed == 0 else f"Done ({failed} failed)"
                 project_status.set_text(msg)
-                project_status.classes(
-                    add="text-green-600" if failed == 0 else "text-red-600"
-                )
+                project_status.classes(add="text-green-600" if failed == 0 else "text-red-600")
                 stop_button.props("disabled")
                 run_button.props(remove="disabled")
                 break
@@ -866,9 +803,7 @@ def build_projects_tab(backend: CryoBoostBackend):
         monitor = card_data["monitor"]
         job_index = card_data["job_index"]
 
-        logs = await backend.get_pipeline_job_logs(
-            state["current_project_path"], job_type.value, str(job_index)
-        )
+        logs = await backend.get_pipeline_job_logs(state["current_project_path"], job_type.value, str(job_index))
 
         monitor["stdout"].clear()
         monitor["stdout"].push(logs.get("stdout", "No output"))
@@ -944,9 +879,7 @@ def build_projects_tab(backend: CryoBoostBackend):
         ui.label("DATA IMPORT").classes("text-xs font-bold text-gray-700")
 
         with ui.row().classes("w-full gap-2 items-end"):
-            ui.button("DEBUG", on_click=debug_current_state).props(
-                "outline dense size=sm"
-            )
+            ui.button("DEBUG", on_click=debug_current_state).props("outline dense size=sm")
             movies_path_input = create_path_input_with_picker(
                 label="Movies",
                 mode="directory",
@@ -963,15 +896,11 @@ def build_projects_tab(backend: CryoBoostBackend):
             )
             mdocs_path_input.classes("flex-grow")
 
-            ui.button(
-                "Detect", on_click=auto_detect_metadata, icon="auto_fix_high"
-            ).props("dense size=sm")
+            ui.button("Detect", on_click=auto_detect_metadata, icon="auto_fix_high").props("dense size=sm")
             detection_status = ui.label("").classes("text-xs text-gray-500")
 
         # MICROSCOPE & ACQUISITION
-        ui.label("MICROSCOPE & ACQUISITION").classes(
-            "text-xs font-bold text-gray-700 mt-3"
-        )
+        ui.label("MICROSCOPE & ACQUISITION").classes("text-xs font-bold text-gray-700 mt-3")
 
         with ui.row().classes("w-full gap-2"):
             with ui.column().classes("gap-1"):
@@ -1019,11 +948,7 @@ def build_projects_tab(backend: CryoBoostBackend):
                 )
 
             with ui.column().classes("gap-1"):
-                image_size_input = (
-                    ui.input(label="Detector")
-                    .props("dense outlined readonly")
-                    .classes("w-32")
-                )
+                image_size_input = ui.input(label="Detector").props("dense outlined readonly").classes("w-32")
 
                 eer_grouping_input = (
                     ui.input(label="EER Group")
@@ -1033,9 +958,7 @@ def build_projects_tab(backend: CryoBoostBackend):
                 )
 
                 target_dose_input = (
-                    ui.input(label="Target Dose")
-                    .props("dense outlined type=number step=0.01")
-                    .classes("w-32")
+                    ui.input(label="Target Dose").props("dense outlined type=number step=0.01").classes("w-32")
                 )
 
         eer_info_label = ui.label("").classes("text-xs text-blue-600 ml-1")
@@ -1053,17 +976,12 @@ def build_projects_tab(backend: CryoBoostBackend):
             ]
         )
 
-        # PROJECT & PIPELINE
         ui.label("PROJECT & PIPELINE").classes("text-xs font-bold text-gray-700 mt-3")
 
         with ui.row().classes("w-full gap-2"):
-            project_name_input = (
-                ui.input("Name").props("dense outlined").classes("w-48")
-            )
+            project_name_input = ui.input("Name").props("dense outlined").classes("w-48")
             project_location_input = create_path_input_with_picker(
-                label="Location",
-                mode="directory",
-                default_value="/users/artem.kushner/dev/crboost_server/projects",
+                label="Location", mode="directory", default_value="/users/artem.kushner/dev/crboost_server/projects"
             )
             project_location_input.classes("flex-grow")
 
@@ -1091,15 +1009,11 @@ def build_projects_tab(backend: CryoBoostBackend):
         pipeline_container = ui.column().classes("w-full")
 
         with pipeline_container:
-            ui.label("No jobs selected. Click buttons above to add jobs.").classes(
-                "text-xs text-gray-500 italic"
-            )
+            ui.label("No jobs selected. Click buttons above to add jobs.").classes("text-xs text-gray-500 italic")
 
         # Control buttons
         with ui.row().classes("gap-2 mt-2"):
-            create_button = ui.button("CREATE", on_click=handle_create_project).props(
-                "dense size=sm color=primary"
-            )
+            create_button = ui.button("CREATE", on_click=handle_create_project).props("dense size=sm color=primary")
 
             with ui.row().classes("items-center gap-1 ml-4"):
                 ui.label("Active:").classes("text-xs")
@@ -1108,18 +1022,14 @@ def build_projects_tab(backend: CryoBoostBackend):
                 project_status = ui.label("No project").classes("text-xs text-gray-600")
 
             with ui.row().classes("gap-1 ml-auto"):
-                run_button = ui.button(
-                    "RUN", on_click=handle_run_pipeline, icon="play_arrow"
-                ).props("disabled dense size=sm")
+                run_button = ui.button("RUN", on_click=handle_run_pipeline, icon="play_arrow").props(
+                    "disabled dense size=sm"
+                )
                 stop_button = ui.button(
-                    "STOP",
-                    on_click=lambda: ui.notify("Stop not implemented", type="warning"),
-                    icon="stop",
+                    "STOP", on_click=lambda: ui.notify("Stop not implemented", type="warning"), icon="stop"
                 ).props("disabled dense size=sm")
 
-        progress_bar = ui.linear_progress(value=0, show_value=False).classes(
-            "hidden w-full"
-        )
+        progress_bar = ui.linear_progress(value=0, show_value=False).classes("hidden w-full")
         progress_message = ui.label("").classes("text-xs text-gray-600 hidden")
 
     # Add after UI construction, at the end of build_projects_tab:
@@ -1152,9 +1062,7 @@ def build_projects_tab(backend: CryoBoostBackend):
 
         for input_element in global_inputs:
             input_element.on("blur", on_global_param_change)
-            input_element.on_value_change(
-                lambda: asyncio.create_task(update_sync_indicators_after_delay())
-            )
+            input_element.on_value_change(lambda: asyncio.create_task(update_sync_indicators_after_delay()))
 
     async def update_sync_indicators_after_delay():
         """Update sync indicators after a short delay to allow value propagation"""

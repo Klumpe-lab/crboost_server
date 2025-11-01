@@ -1,22 +1,14 @@
 # backend.py
+from __future__ import annotations
 import asyncio
 import json
-import os
-import uuid
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List
 import pandas as pd
-from services.metadata_service import update_fs_motion_ctf_metadata
-import yaml
-import subprocess
-import glob
-import xml.etree.ElementTree as ET
-
-from services.config_service import get_config_service
+from services.parameter_models import JobType
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
-from services.job_types import JobType
 
 # NEW: Import the global state and mutators
 from app_state import (
@@ -29,7 +21,6 @@ from app_state import (
 
 from pydantic import BaseModel
 from pathlib import Path
-import uuid
 
 
 class User(BaseModel):
@@ -51,8 +42,6 @@ class CryoBoostBackend:
         # Store a reference to global state (for services that need it)
         self.app_state = app_state
         print(f"[BACKEND] Initialized with state reference")
-
-    # In backend.py, replace string-based job handling:
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
         """Get parameters for a specific job"""
