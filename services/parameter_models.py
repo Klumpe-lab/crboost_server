@@ -8,6 +8,10 @@ import pandas as pd
 import starfile
 from datetime import datetime
 
+if TYPE_CHECKING:
+    # This forward ref is still needed by AbstractJobParams and its children
+    from app_state import PipelineState
+
 
 class Partition(str, Enum):
     CPU = "c"
@@ -519,7 +523,7 @@ class TsAlignmentParams(AbstractJobParams):
             return None
 
     @classmethod
-    def from_pipeline_state(cls, state: "PipelineState") -> Self:  # <-- ADDED QUOTES
+    def from_pipeline_state(cls, state: "PipelineState") -> Self:
         """Create from global pipeline state"""
         return cls(
             thickness_nm=state.acquisition.sample_thickness_nm,
@@ -530,7 +534,7 @@ class TsAlignmentParams(AbstractJobParams):
             gain_path=state.acquisition.gain_reference_path,
         )
 
-    def sync_from_pipeline_state(self, state: "PipelineState") -> Self:  # <-- ADDED QUOTES
+    def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
         """Update acquisition params from global state IN-PLACE"""
         self.thickness_nm = state.acquisition.sample_thickness_nm
         self.pixel_size = state.microscope.pixel_size_angstrom
@@ -571,7 +575,6 @@ class TsAlignmentParams(AbstractJobParams):
         }
 
 
-
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
         JobType.IMPORT_MOVIES: ImportMoviesParams,
@@ -580,42 +583,6 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     }
 
 
-class PipelineState(BaseModel):
-    """Central state with hierarchical organization"""
-
-    model_config = ConfigDict(validate_assignment=True)
-
-    microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
-    acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
-    computing: ComputingParams = Field(default_factory=ComputingParams)
-    jobs: Dict[str, AbstractJobParams] = Field(default_factory=dict)
-
-    # Metadata
-    created_at: datetime = Field(default_factory=datetime.now)
-    modified_at: datetime = Field(default_factory=datetime.now)
-
-    def populate_job(self, job_type: JobType, job_star_path: Optional[Path] = None):
-        param_classes = jobtype_paramclass()
-        param_class = param_classes.get(job_type)
-
-        if not param_class:
-            raise ValueError(f"Unknown job type: {job_type}")
-
-        # Try loading template defaults first
-        job_params = param_class.from_job_star(job_star_path) if job_star_path else None
-
-        # Create new from state OR sync existing with current state
-        if job_params is None:
-            job_params = param_class.from_pipeline_state(self)
-            print(f"[STATE] Created {job_type.value} from pipeline state")
-        else:
-            job_params.sync_from_pipeline_state(self)
-            print(f"[STATE] Loaded {job_type.value} from job.star and synced with pipeline state")
-
-        # Store in jobs dict (UI binds to this)
-        self.jobs[job_type.value] = job_params
-        self.update_modified()
-
-    def update_modified(self):
-        """Update the modified timestamp"""
-        self.modified_at = datetime.now()
+# -----------------------------------------------------------------
+# --- PipelineState class has been MOVED to app_state.py ---
+# -----------------------------------------------------------------
