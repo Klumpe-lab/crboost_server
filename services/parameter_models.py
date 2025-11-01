@@ -166,6 +166,15 @@ class AbstractJobParams(BaseModel):
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
         return self  # Default: no syncing needed
 
+    # --- NEW METADATA METHODS ---
+    def is_driver_job(self) -> bool:
+        """Returns True if this job uses a Python driver, False if it's a direct command."""
+        return False  # Default to false (simple command)
+
+    def get_tool_name(self) -> str:
+        """Returns the container tool name (e.g., 'relion_import', 'warptools')."""
+        raise NotImplementedError("Subclass must implement get_tool_name()")
+
 
 class ImportMoviesParams(AbstractJobParams):
     """Parameters for import movies job - implements JobParamsProtocol"""
@@ -188,6 +197,12 @@ class ImportMoviesParams(AbstractJobParams):
     optics_group_name: str = "opticsGroup1"
     do_at_most: int = Field(default=-1)
     invert_defocus_hand: bool = False
+
+    # --- NEW: Implemented metadata methods ---
+    def get_tool_name(self) -> str:
+        return "relion_import"
+
+    # Note: is_driver_job() is intentionally omitted to use the 'False' default
 
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
@@ -302,6 +317,13 @@ class FsMotionCtfParams(AbstractJobParams):
     # Optional gain reference
     gain_path: Optional[str] = None
     gain_operations: Optional[str] = None
+
+    # --- NEW: Implemented metadata methods ---
+    def is_driver_job(self) -> bool:
+        return True  # This job uses a Python driver
+
+    def get_tool_name(self) -> str:
+        return "warptools"  # The driver will use this tool
 
     # Helper properties
     @property
@@ -472,6 +494,13 @@ class TsAlignmentParams(AbstractJobParams):
     imod_patch_size: int = Field(default=200)
     imod_overlap: int = Field(default=50)
 
+    # --- NEW: Implemented metadata methods ---
+    def is_driver_job(self) -> bool:
+        return True  # This job also uses a Python driver
+
+    def get_tool_name(self) -> str:
+        return "aretomo"  # The driver will use this tool (or 'warptools')
+
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
         """Load from job.star template"""
@@ -581,8 +610,3 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
         JobType.FS_MOTION_CTF: FsMotionCtfParams,
         JobType.TS_ALIGNMENT: TsAlignmentParams,
     }
-
-
-# -----------------------------------------------------------------
-# --- PipelineState class has been MOVED to app_state.py ---
-# -----------------------------------------------------------------

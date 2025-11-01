@@ -10,13 +10,9 @@ import json
 from pydantic import BaseModel
 from services.commands_builder import ImportMoviesCommandBuilder, BaseCommandBuilder
 from services.parameter_models import (
-    AcquisitionParams,
-    ComputingParams,
-    ImportMoviesParams,
-    FsMotionCtfParams,
-    TsAlignmentParams,
-    AlignmentMethod,
-    JobType,  # <-- Import JobType
+    # --- UPDATED: Import AbstractJobParams ---
+    AbstractJobParams,
+    JobType,
 )
 
 from .starfile_service import StarfileService
@@ -41,9 +37,10 @@ class PipelineOrchestratorService:
         self.project_service = None
 
         # Map job names to their corresponding builder class
-        # Only simple, non-wrapper jobs remain here (jobs that don't use drivers)
+        # --- NOTE: This map ONLY contains non-driver jobs ---
         self.job_builders: Dict[str, BaseCommandBuilder] = {
             JobType.IMPORT_MOVIES.value: ImportMoviesCommandBuilder()
+            # As you add more simple (non-driver) jobs, add them here.
         }
 
     async def create_custom_scheme(
@@ -56,16 +53,6 @@ class PipelineOrchestratorService:
     ):
         """
         Creates a custom Relion scheme with the selected jobs.
-
-        Args:
-            project_dir: Absolute path to the project directory
-            new_scheme_name: Name for the new scheme
-            base_template_path: Path to template scheme directory
-            selected_jobs: List of job names to include
-            additional_bind_paths: Extra paths to bind in containers
-
-        Returns:
-            Dict with success status
         """
         try:
             # Initialize project service with absolute project root
@@ -123,6 +110,7 @@ class PipelineOrchestratorService:
                 job_run_dir = paths["job_dir"]
                 job_run_dir.mkdir(parents=True, exist_ok=True)
 
+                # --- UPDATED: Pass job_model (not job_name) to builder ---
                 final_command_for_fn_exe = self._build_job_command(job_name, job_model, paths, all_binds, server_dir)
 
                 print(f"[PIPELINE] fn_exe for {job_name}: {final_command_for_fn_exe}")
@@ -179,79 +167,72 @@ class PipelineOrchestratorService:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
+    # -----------------------------------------------------------------
+    # --- METHOD REPLACED ---
+    # -----------------------------------------------------------------
     def _build_job_command(
-        self, job_name: str, job_model: BaseModel, paths: Dict[str, Path], all_binds: List[str], server_dir: Path
+        self,
+        job_name: str,
+        job_model: AbstractJobParams,
+        paths: Dict[str, Path],
+        all_binds: List[str],
+        server_dir: Path,
     ) -> str:
         """
-        Build the fn_exe command for a job.
+        Build the fn_exe command for a job using model metadata.
 
-        For simple jobs (like importmovies): Build command + wrap in container
-        For complex jobs (like fsMotionAndCtf): Point to driver script
-
-        Args:
-            job_name: Name of the job
-            job_model: Pydantic model with job parameters
-            paths: Dict of ALL paths (absolute) for this job
-            all_binds: List of paths to bind in container
-            server_dir: Absolute path to server root
-
-        Returns:
-            Complete shell command to put in fn_exe
+        - If model.is_driver_job() is True, it points to the Python driver script.
+        - Otherwise, it uses the correct CommandBuilder from self.job_builders.
         """
-        # Define the host python executable
-        host_python_exe = server_dir / "venv" / "bin" / "python3"
-        if not host_python_exe.exists():
-            print(f"[PIPELINE WARNING] VENV Python not found at {host_python_exe}")
-            host_python_exe = "python3"  # Fallback to system python
 
-        # Environment setup for drivers
-        env_setup = f"export PYTHONPATH={server_dir}:${{PYTHONPATH}};"
+        # 1. Check if the job model says it's a driver-based job
+        if job_model.is_driver_job():
+            host_python_exe = server_dir / "venv" / "bin" / "python3"
+            if not host_python_exe.exists():
+                print(f"[PIPELINE WARNING] VENV Python not found at {host_python_exe}, falling back to 'python3'")
+                host_python_exe = "python3"  # Fallback to system python
 
-        # *** FIX: Use JobType enum values for comparison ***
+            # Environment setup for drivers
+            env_setup = f"export PYTHONPATH={server_dir}:${{PYTHONPATH}};"
 
-        if job_name == JobType.IMPORT_MOVIES.value:
-            # Simple job - build command and wrap in container ourselves
-            from .container_service import get_container_service
+            # This small if/elif block maps driver jobs to their scripts
+            # This is still scalable, as we only add one line per *driver* job
+            if job_name == JobType.FS_MOTION_CTF.value:
+                driver_script_path = server_dir / "drivers" / "fs_motion_and_ctf.py"
+            elif job_name == JobType.TS_ALIGNMENT.value:
+                driver_script_path = server_dir / "drivers" / "ts_alignment.py"
+            else:
+                # This case handles if a job is marked as a driver but not mapped here
+                return f"echo 'ERROR: Job type \"{job_name}\" is a driver job but has no driver script mapped in orchestrator'; exit 1;"
 
+            return f"{env_setup} {host_python_exe} {driver_script_path}"
+
+        # 2. If not a driver job, it's a simple command. Use a CommandBuilder.
+        else:
             builder = self.job_builders.get(job_name)
             if not builder:
-                return f"echo 'ERROR: No builder for {job_name}'; exit 1;"
+                return f"echo 'ERROR: No command builder found for simple job \"{job_name}\"'; exit 1;"
 
             try:
-                # Build the raw command
+                # Build the raw command using the builder class
                 raw_command = builder.build(job_model, paths)
 
+                # Get the container tool name from the model's metadata
+                tool_name = job_model.get_tool_name()
+
                 # Wrap in container
-                container_svc = get_container_service()
+                container_svc = self.backend.container_service
                 return container_svc.wrap_command_for_tool(
-                    command=raw_command, cwd=paths["job_dir"], tool_name="relion_import", additional_binds=all_binds
+                    command=raw_command, cwd=paths["job_dir"], tool_name=tool_name, additional_binds=all_binds
                 )
             except Exception as e:
                 print(f"[PIPELINE ERROR] Failed to build command for {job_name}: {e}")
                 return f"echo 'ERROR: Failed to build command for {job_name}: {e}'; exit 1;"
 
-        elif job_name == JobType.FS_MOTION_CTF.value:
-            # Complex job - use driver script
-            driver_script_path = server_dir / "drivers" / "fs_motion_and_ctf.py"
-            return f"{env_setup} {host_python_exe} {driver_script_path}"
-
-        elif job_name == JobType.TS_ALIGNMENT.value:
-            # Complex job - use driver script
-            driver_script_path = server_dir / "drivers" / "ts_alignment.py"
-            return f"{env_setup} {host_python_exe} {driver_script_path}"
-
-        else:
-            # Unknown job type
-            return f"echo 'ERROR: Job type \"{job_name}\" not implemented with drivers'; exit 1;"
-
     def _create_scheme_star(self, scheme_dir: Path, scheme_name: str, selected_jobs: List[str]):
         """
         Create the scheme.star file that defines the pipeline flow.
-
-        Args:
-            scheme_dir: Directory where scheme.star will be created
-            scheme_name: Name of the scheme
-            selected_jobs: List of job names in execution order
+        (No changes to this method)
         """
         # General scheme metadata
         scheme_general_df = pd.DataFrame(

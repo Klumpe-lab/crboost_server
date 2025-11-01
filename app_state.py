@@ -80,7 +80,8 @@ class PipelineState(BaseModel):
 
 state = PipelineState(computing=ComputingParams.from_conf_yaml(Path("config/conf.yaml")))
 
-print(f"[APP STATE] Initialized with computing: {state.computing.dict()}")
+# --- UPDATED: Use .model_dump() ---
+print(f"[APP STATE] Initialized with computing: {state.computing.model_dump()}")
 
 # --- DELETED: Redundant state initialization ---
 # state = PipelineState()
@@ -192,6 +193,7 @@ def export_for_project(
     except Exception as e:
         print(f"[WARN] Could not load containers from conf.yaml: {e}")
 
+    # --- UPDATED: Use .model_dump() ---
     export = {
         "metadata": {
             "config_version": "2.0",
@@ -205,10 +207,10 @@ def export_for_project(
             "gain_reference": state.acquisition.gain_reference_path,
         },
         "containers": containers,
-        "microscope": state.microscope.dict(),
-        "acquisition": state.acquisition.dict(),
-        "computing": state.computing.dict(),
-        "jobs": {job: state.jobs[job].dict() for job in selected_jobs if job in state.jobs},
+        "microscope": state.microscope.model_dump(),
+        "acquisition": state.acquisition.model_dump(),
+        "computing": state.computing.model_dump(),
+        "jobs": {job: state.jobs[job].model_dump() for job in selected_jobs if job in state.jobs},
     }
 
     return export
@@ -217,11 +219,12 @@ def export_for_project(
 def save_state_to_file(path: Path):
     """Save current state to JSON file"""
     try:
+        # --- UPDATED: Use .model_dump() ---
         state_dict = {
-            "microscope": state.microscope.dict(),
-            "acquisition": state.acquisition.dict(),
-            "computing": state.computing.dict(),
-            "jobs": {name: params.dict() for name, params in state.jobs.items()},
+            "microscope": state.microscope.model_dump(),
+            "acquisition": state.acquisition.model_dump(),
+            "computing": state.computing.model_dump(),
+            "jobs": {name: params.model_dump() for name, params in state.jobs.items()},
             "metadata": {"created_at": state.created_at.isoformat(), "modified_at": state.modified_at.isoformat()},
         }
 
@@ -302,28 +305,4 @@ def _sync_job_with_global_params(job_name: str):
 # --- DELETED: _parse_mdoc function is now in MdocService ---
 
 
-def get_ui_state_legacy() -> Dict[str, Any]:
-    """
-    Get state in legacy flat format for backward compatibility.
-    This is a READ operation, doesn't mutate state.
-    """
-    ui_state = {
-        # Flat parameters for backward compatibility
-        "pixel_size_angstrom": {"value": state.microscope.pixel_size_angstrom, "source": "user"},
-        "acceleration_voltage_kv": {"value": state.microscope.acceleration_voltage_kv, "source": "user"},
-        "spherical_aberration_mm": {"value": state.microscope.spherical_aberration_mm, "source": "user"},
-        "amplitude_contrast": {"value": state.microscope.amplitude_contrast, "source": "user"},
-        "dose_per_tilt": {"value": state.acquisition.dose_per_tilt, "source": "user"},
-        "detector_dimensions": {"value": state.acquisition.detector_dimensions, "source": "user"},
-        "tilt_axis_degrees": {"value": state.acquisition.tilt_axis_degrees, "source": "user"},
-        "eer_fractions_per_frame": {"value": state.acquisition.eer_fractions_per_frame, "source": "user"}
-        if state.acquisition.eer_fractions_per_frame
-        else None,
-        # Hierarchical format
-        "microscope": state.microscope.dict(),
-        "acquisition": state.acquisition.dict(),
-        "computing": state.computing.dict(),
-        "jobs": {name: params.dict() for name, params in state.jobs.items()},
-    }
-
-    return {k: v for k, v in ui_state.items() if v is not None}
+# --- DELETED: get_ui_state_legacy function ---
