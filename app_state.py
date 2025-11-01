@@ -6,26 +6,84 @@ This is the single source of truth for all application state.
 
 import glob
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional, Type
 from datetime import datetime
 import json
+
+# --- NEW: Imports for moved PipelineState ---
+from pydantic import BaseModel, Field, ConfigDict
+
+# --- UPDATED: Imports from parameter_models ---
 from services.parameter_models import (
     JobType,
-    PipelineState,
-    ComputingParams,
     MicroscopeParams,
     AcquisitionParams,
+    ComputingParams,
+    AbstractJobParams,
     ImportMoviesParams,
     FsMotionCtfParams,
     TsAlignmentParams,
+    jobtype_paramclass,  # <-- NEW
 )
+
+# --- NEW: Import the MdocService ---
+from services.mdoc_service import get_mdoc_service
+
+
+# -----------------------------------------------------------------
+# --- PipelineState class MOVED HERE from parameter_models.py ---
+# -----------------------------------------------------------------
+class PipelineState(BaseModel):
+    """Central state with hierarchical organization"""
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
+    acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
+    computing: ComputingParams = Field(default_factory=ComputingParams)
+    jobs: Dict[str, AbstractJobParams] = Field(default_factory=dict)
+
+    # Metadata
+    created_at: datetime = Field(default_factory=datetime.now)
+    modified_at: datetime = Field(default_factory=datetime.now)
+
+    def populate_job(self, job_type: JobType, job_star_path: Optional[Path] = None):
+        param_classes = jobtype_paramclass()
+        param_class = param_classes.get(job_type)
+
+        if not param_class:
+            raise ValueError(f"Unknown job type: {job_type}")
+
+        # Try loading template defaults first
+        job_params = param_class.from_job_star(job_star_path) if job_star_path else None
+
+        # Create new from state OR sync existing with current state
+        if job_params is None:
+            job_params = param_class.from_pipeline_state(self)
+            print(f"[STATE] Created {job_type.value} from pipeline state")
+        else:
+            job_params.sync_from_pipeline_state(self)
+            print(f"[STATE] Loaded {job_type.value} from job.star and synced with pipeline state")
+
+        # Store in jobs dict (UI binds to this)
+        self.jobs[job_type.value] = job_params
+        self.update_modified()
+
+    def update_modified(self):
+        """Update the modified timestamp"""
+        self.modified_at = datetime.now()
+
+
+# -----------------------------------------------------------------
+# --- Global State Initialization ---
+# -----------------------------------------------------------------
 
 state = PipelineState(computing=ComputingParams.from_conf_yaml(Path("config/conf.yaml")))
 
 print(f"[APP STATE] Initialized with computing: {state.computing.dict()}")
 
-
-state = PipelineState()
+# --- DELETED: Redundant state initialization ---
+# state = PipelineState()
 
 
 def prepare_job_params(job_name_or_type):
@@ -57,16 +115,16 @@ def update_from_mdoc(mdocs_glob: str):
     Parse first mdoc file and update microscope/acquisition params.
     This mutates state.microscope and state.acquisition.
     """
-    mdoc_files = glob.glob(mdocs_glob)
-    if not mdoc_files:
-        print(f"[WARN] No mdoc files found at: {mdocs_glob}")
+    # --- UPDATED: Use MdocService ---
+    print(f"[STATE] Parsing mdoc glob: {mdocs_glob}")
+    mdoc_service = get_mdoc_service()
+    mdoc_data = mdoc_service.get_autodetect_params(mdocs_glob)
+
+    if not mdoc_data:
+        print(f"[WARN] No mdoc data found or parsed from: {mdocs_glob}")
         return
 
     try:
-        mdoc_path = Path(mdoc_files[0])
-        print(f"[STATE] Parsing mdoc: {mdoc_path}")
-        mdoc_data = _parse_mdoc(mdoc_path)
-
         # Update microscope params
         if "pixel_spacing" in mdoc_data:
             state.microscope.pixel_size_angstrom = mdoc_data["pixel_spacing"]
@@ -99,10 +157,10 @@ def update_from_mdoc(mdocs_glob: str):
         for job_name in list(state.jobs.keys()):
             _sync_job_with_global_params(job_name)
 
-        print(f"[STATE] Updated from mdoc: {len(mdoc_files)} files found")
+        print(f"[STATE] Updated from mdoc")
 
     except Exception as e:
-        print(f"[ERROR] Failed to parse mdoc {mdoc_files[0]}: {e}")
+        print(f"[ERROR] Failed to update state from mdoc data: {e}")
         import traceback
 
         traceback.print_exc()
@@ -120,8 +178,8 @@ def export_for_project(
     # Ensure all selected jobs have params
     for job in selected_jobs:
         if job not in state.jobs:
-            template_path = Path("config/Schemes/warp_tomo_prep") / job / "job.star"
-            prepare_job_params(job, template_path if template_path.exists() else None)
+            # Note: prepare_job_params takes job_name_or_type, not template_path
+            prepare_job_params(job)
 
     # Read containers from config
     containers = {}
@@ -241,55 +299,7 @@ def _sync_job_with_global_params(job_name: str):
     print(f"[STATE] Synced {job_name} with global params")
 
 
-def _parse_mdoc(mdoc_path: Path) -> Dict[str, Any]:
-    """Parse mdoc file for key metadata"""
-    result = {}
-    header_data = {}
-    first_section = {}
-    in_zvalue_section = False
-
-    with open(mdoc_path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-
-            if line.startswith("[ZValue"):
-                in_zvalue_section = True
-            elif in_zvalue_section and "=" in line:
-                key, value = [x.strip() for x in line.split("=", 1)]
-                first_section[key] = value
-            elif not in_zvalue_section and "=" in line:
-                key, value = [x.strip() for x in line.split("=", 1)]
-                header_data[key] = value
-
-    # Extract values, preferring header, falling back to first section
-    if "PixelSpacing" in header_data:
-        result["pixel_spacing"] = float(header_data["PixelSpacing"])
-    elif "PixelSpacing" in first_section:
-        result["pixel_spacing"] = float(first_section["PixelSpacing"])
-
-    if "Voltage" in header_data:
-        result["voltage"] = float(header_data["Voltage"])
-    elif "Voltage" in first_section:
-        result["voltage"] = float(first_section["Voltage"])
-
-    if "ImageSize" in header_data:
-        result["image_size"] = header_data["ImageSize"].replace(" ", "x")
-    elif "ImageSize" in first_section:
-        result["image_size"] = first_section["ImageSize"].replace(" ", "x")
-
-    if "ExposureDose" in first_section:
-        result["exposure_dose"] = float(first_section["ExposureDose"])
-    elif "ExposureDose" in header_data:
-        result["exposure_dose"] = float(header_data["ExposureDose"])
-
-    if "TiltAxisAngle" in first_section:
-        result["tilt_axis_angle"] = float(first_section["TiltAxisAngle"])
-    elif "Tilt axis angle" in header_data:
-        result["tilt_axis_angle"] = float(header_data["Tilt axis angle"])
-
-    return result
+# --- DELETED: _parse_mdoc function is now in MdocService ---
 
 
 def get_ui_state_legacy() -> Dict[str, Any]:

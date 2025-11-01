@@ -6,12 +6,17 @@ from services.parameter_models import JobType, jobtype_paramclass, AbstractJobPa
 from services.starfile_service import StarfileService
 import os
 import glob
+import asyncio  # <-- NEW: Needed for subprocess logic
+import json     # <-- NEW: Needed for saving params
 from typing import TYPE_CHECKING
 
+# --- NEW: Import for saving project params ---
+from app_state import export_for_project
+
+from services.mdoc_service import get_mdoc_service
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
-
 
 
 class DataImportService:
@@ -20,48 +25,8 @@ class DataImportService:
     This includes parsing mdocs, creating symlinks, and rewriting mdocs with prefixes.
     """
 
-    def _parse_mdoc(self, mdoc_path: Path) -> Dict[str, Any]:
-        header_lines = []
-        data_sections = []
-        current_section = {}
-        in_zvalue_section = False
-
-        with open(mdoc_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-
-                if line.startswith("[ZValue"):
-                    if current_section:
-                        data_sections.append(current_section)
-                    current_section = {"ZValue": line.split("=")[1].strip().strip("]")}
-                    in_zvalue_section = True
-                elif in_zvalue_section and "=" in line:
-                    key, value = [x.strip() for x in line.split("=", 1)]
-                    current_section[key] = value
-                elif not in_zvalue_section:
-                    header_lines.append(line)
-
-        if current_section:
-            data_sections.append(current_section)
-
-        return {"header": "\n".join(header_lines), "data": data_sections}
-
-    def _write_mdoc(self, mdoc_data: Dict[str, Any], output_path: Path):
-        """
-        Writes a parsed mdoc data structure back to a file.
-        Lifts logic from `mdocMeta.writeMdoc`.
-        """
-        with open(output_path, "w") as f:
-            f.write(mdoc_data["header"] + "\n")
-            for section in mdoc_data["data"]:
-                z_value = section.pop("ZValue", None)
-                if z_value is not None:
-                    f.write(f"[ZValue = {z_value}]\n")
-                for key, value in section.items():
-                    f.write(f"{key} = {value}\n")
-                f.write("\n")
+    def __init__(self):
+        self.mdoc_service = get_mdoc_service()
 
     async def setup_project_data(
         self, project_dir: Path, movies_glob: str, mdocs_glob: str, import_prefix: str
@@ -84,7 +49,8 @@ class DataImportService:
 
             for mdoc_path_str in mdoc_files:
                 mdoc_path = Path(mdoc_path_str)
-                parsed_mdoc = self._parse_mdoc(mdoc_path)
+                
+                parsed_mdoc = self.mdoc_service.parse_mdoc_file(mdoc_path)
 
                 for section in parsed_mdoc["data"]:
                     if "SubFramePath" not in section:
@@ -106,7 +72,8 @@ class DataImportService:
                         os.symlink(source_movie_path.resolve(), link_path)
 
                 new_mdoc_path = mdoc_dir / f"{import_prefix}{mdoc_path.name}"
-                self._write_mdoc(parsed_mdoc, new_mdoc_path)
+                
+                self.mdoc_service.write_mdoc_file(parsed_mdoc, new_mdoc_path)
 
             return {"success": True, "message": f"Imported {len(mdoc_files)} tilt-series."}
         except Exception as e:
@@ -132,7 +99,6 @@ class ProjectService:
         if not self.project_root:
             raise ValueError("Project root not set. Call set_project_root() first.")
 
-        # Get the param class for this job
         job_type = JobType.from_string(job_name)
         param_classes = jobtype_paramclass()
         param_class = param_classes.get(job_type)
@@ -140,7 +106,6 @@ class ProjectService:
         if not param_class:
             raise ValueError(f"Unknown job type: {job_name}")
 
-        # This check is now valid because param_class is Type[AbstractJobParams]
         category = param_class.JOB_CATEGORY
         return self.project_root / category.value / f"job{job_number:03d}"
 
@@ -162,12 +127,8 @@ class ProjectService:
         if not param_class:
             raise ValueError(f"Unknown job type: {job_name}")
 
-        # Get this job's directory
         job_dir = self.get_job_dir(job_name, job_number)
-
-        # Collect upstream outputs
         upstream_outputs = {}
-        # param_class is now Type[AbstractJobParams], so this call is type-safe
         input_requirements = param_class.get_input_requirements()
 
         for logical_name, upstream_job_type_str in input_requirements.items():
@@ -185,7 +146,6 @@ class ProjectService:
             upstream_job_dir = self.get_job_dir(upstream_job_type_str, upstream_job_num)
             upstream_outputs[upstream_job_type_str] = upstream_param_class.get_output_assets(upstream_job_dir)
 
-        # Pass self.project_root to get_input_assets
         input_paths = param_class.get_input_assets(job_dir, self.project_root, upstream_outputs)
         output_paths = param_class.get_output_assets(job_dir)
         all_paths = {**input_paths, **output_paths}
@@ -227,14 +187,145 @@ class ProjectService:
 
     async def _prepopulate_qsub_script(self, qsub_script_path: Path):
         ...
-        # TODO: Implement this later. Just grab values from computing and replace them in XXXparam1XXX etc.
-        # replacements = self.backend.app_state.computing.get_qsub_replacements()
+        # TODO: Implement this later
 
-        # with open(qsub_script_path, 'r') as f:
-        #     content = f.read()
+    # -----------------------------------------------------------------
+    # --- METHOD MOVED FROM backend.py ---
+    # -----------------------------------------------------------------
+    async def initialize_new_project(
+        self,
+        project_name: str,
+        project_base_path: str,
+        selected_jobs: List[str],
+        movies_glob: str,
+        mdocs_glob: str,
+    ):
+        """
+        The main orchestration logic for creating a new project.
+        Moved from CryoBoostBackend.
+        """
+        try:
+            project_dir = Path(project_base_path).expanduser() / project_name
+            base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+            scheme_name = f"scheme_{project_name}"
 
-        # for placeholder, value in replacements.items():
-        #     content = content.replace(placeholder, value)
+            if project_dir.exists():
+                return {
+                    "success": False,
+                    "error": f"Project directory '{project_dir}' already exists.",
+                }
 
-        # with open(qsub_script_path, 'w') as f:
-        #     f.write(content)
+            import_prefix = f"{project_name}_"
+            
+            # --- UPDATED: Call method on self ---
+            structure_result = await self.create_project_structure(
+                project_dir, movies_glob, mdocs_glob, import_prefix
+            )
+
+            if not structure_result["success"]:
+                return structure_result
+
+            params_json_path = project_dir / "project_params.json"
+            try:
+                # Use the mutator function to export config
+                clean_config = export_for_project(
+                    project_name=project_name,
+                    movies_glob=movies_glob,
+                    mdocs_glob=mdocs_glob,
+                    selected_jobs=selected_jobs,
+                )
+
+                with open(params_json_path, "w") as f:
+                    json.dump(clean_config, f, indent=2)
+
+                print(f"[PROJECT_SERVICE] Saved parameters to {params_json_path}")
+
+                if not params_json_path.exists():
+                    raise FileNotFoundError(
+                        f"Parameter file was not created at {params_json_path}"
+                    )
+
+                file_size = params_json_path.stat().st_size
+                if file_size == 0:
+                    raise ValueError(f"Parameter file is empty: {params_json_path}")
+
+                print(f"[PROJECT_SERVICE] Verified parameter file: {file_size} bytes")
+
+            except Exception as e:
+                print(f"[ERROR] Failed to save project_params.json: {e}")
+                import traceback
+                traceback.print_exc()
+                return {
+                    "success": False,
+                    "error": f"Project created but failed to save parameters: {str(e)}",
+                }
+
+            # Collect bind paths
+            additional_bind_paths = {
+                str(Path(project_base_path).expanduser().resolve()),
+                str(Path(movies_glob).parent.resolve()),
+                str(Path(mdocs_glob).parent.resolve()),
+            }
+
+            # Create the scheme
+            # --- UPDATED: Access orchestrator via self.backend ---
+            scheme_result = await self.backend.pipeline_orchestrator.create_custom_scheme(
+                project_dir,
+                scheme_name,
+                base_template_path,
+                selected_jobs,
+                additional_bind_paths=list(additional_bind_paths),
+            )
+
+            if not scheme_result["success"]:
+                return scheme_result
+
+            # Initialize Relion project
+            print(f"[PROJECT_SERVICE] Initializing Relion project in {project_dir}...")
+            pipeline_star_path = project_dir / "default_pipeline.star"
+
+            init_command = "unset DISPLAY && relion --tomo --do_projdir ."
+
+            # --- UPDATED: Access container_service via self.backend ---
+            container_init_command = self.backend.container_service.wrap_command_for_tool(
+                command=init_command,
+                cwd=project_dir,
+                tool_name="relion",
+                additional_binds=list(additional_bind_paths),
+            )
+
+            process = await asyncio.create_subprocess_shell(
+                container_init_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=project_dir,
+            )
+
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    process.communicate(), timeout=30.0
+                )
+                if process.returncode != 0:
+                    print(f"[RELION INIT ERROR] {stderr.decode()}")
+            except asyncio.TimeoutError:
+                print("[ERROR] Relion project initialization timed out.")
+                process.kill()
+                await process.wait()
+
+            if not pipeline_star_path.exists():
+                return {
+                    "success": False,
+                    "error": f"Failed to create default_pipeline.star.",
+                }
+
+            return {
+                "success": True,
+                "message": f"Project '{project_name}' created and initialized successfully.",
+                "project_path": str(project_dir),
+                "params_file": str(params_json_path),
+            }
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": f"Project creation failed: {str(e)}"}
