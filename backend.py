@@ -54,12 +54,13 @@ class CryoBoostBackend:
                 return {
                     "success": True,
                     "params": job_model.model_dump(),
-                }  # Pydantic V2
+                } 
             else:
                 return {"success": False, "error": f"Unknown job type {job_name}"}
         except ValueError as e:
             return {"success": False, "error": str(e)}
 
+    #SUS
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
         if not template_path.is_dir():
