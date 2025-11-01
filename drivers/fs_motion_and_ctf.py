@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 import os
+import shlex
 from pathlib import Path
 
 # Add the server root to PYTHONPATH (set by fn_exe command)
@@ -30,24 +31,13 @@ def run_command(command: str, cwd: Path):
     Helper to run a shell command, stream output, and check for errors.
     This will run the main apptainer command.
     """
-    print(f"[DRIVER] Executing: {command}", flush=True)
-    # We use Popen to stream stdout/stderr in real-time
-    process = subprocess.Popen(
-        command,
-        shell=True,
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    # Stream stdout
+    # print(f"[DRIVER] Executing: {command}", flush=True) # <-- REMOVED THIS LINE
+    process = subprocess.Popen(command, shell=True, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     print("--- CONTAINER STDOUT ---", flush=True)
     if process.stdout:
         for line in iter(process.stdout.readline, ""):
             print(line, end="", flush=True)
 
-    # Stream stderr
     print("--- CONTAINER STDERR ---", file=sys.stderr, flush=True)
     stderr_output = ""
     if process.stderr:
@@ -58,45 +48,37 @@ def run_command(command: str, cwd: Path):
     process.wait()
 
     if process.returncode != 0:
-        raise subprocess.CalledProcessError(
-            process.returncode, command, None, stderr_output
-        )
+        raise subprocess.CalledProcessError(process.returncode, command, None, stderr_output)
 
 
-def build_warp_commands(params: FsMotionCtfParams, job_dir: Path, paths: dict) -> str:
+def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> str:
     """
-    Builds the multi-step WarpTools command string.
-    
-    WarpTools expects paths RELATIVE to where it's executed (job_dir).
-    We hardcode known relative paths - no computation needed.
+    Builds the multi-step WarpTools command string using absolute paths.
     """
     
-    # HARDCODED: frames is always at ../../frames from External/job002
-    frames_dir_rel = "../../frames"
-    
-    # HARDCODED: gain reference (if provided) is typically at ../../gain.mrc or similar
+    # Get absolute paths from the 'paths' dict
+    frames_dir_abs = shlex.quote(str(paths["frames_dir"]))
+    warp_dir_abs = shlex.quote(str(paths["warp_dir"]))
+    settings_file_abs = shlex.quote(str(paths["warp_settings"]))
+
     gain_path_str = ""
     if params.gain_path and params.gain_path != "None":
-        # If gain path is absolute, assume it's at project root level
-        gain_abs = Path(params.gain_path)
-        if gain_abs.is_absolute():
-            # Just use the filename, assume it's also accessible via ../..
-            gain_path_str = f"../../{gain_abs.name}"
-        else:
-            gain_path_str = params.gain_path
-    
+        gain_path_str = shlex.quote(params.gain_path)
+
     gain_ops_str = params.gain_operations if params.gain_operations else ""
 
     create_settings_parts = [
         "WarpTools create_settings",
-        f"--folder_data {frames_dir_rel}",  # Always ../../frames
-        "--extension '*.eer'", 
-        "--folder_processing ./warp_frameseries",
-        "--output ./warp_frameseries.settings",
-        "--angpix", str(params.pixel_size),
-        "--eer_ngroups", str(params.eer_ngroups),
+        f"--folder_data {frames_dir_abs}",
+        "--extension '*.eer'",
+        f"--folder_processing {warp_dir_abs}",
+        f"--output {settings_file_abs}",
+        "--angpix",
+        str(params.pixel_size),
+        "--eer_ngroups",
+        str(params.eer_ngroups),
     ]
-    
+
     if gain_path_str:
         create_settings_parts.extend(["--gain_reference", gain_path_str])
         if gain_ops_str:
@@ -104,32 +86,44 @@ def build_warp_commands(params: FsMotionCtfParams, job_dir: Path, paths: dict) -
 
     run_main_parts = [
         "WarpTools fs_motion_and_ctf",
-        "--settings ./warp_frameseries.settings",
-        "--m_grid", params.m_grid,
-        "--m_range_min", str(params.m_range_min),
-        "--m_range_max", str(params.m_range_max),
-        "--m_bfac", str(params.m_bfac),
-        "--c_grid", params.c_grid,
-        "--c_window", str(params.c_window),
-        "--c_range_min", str(params.c_range_min),
-        "--c_range_max", str(params.c_range_max),
-        "--c_defocus_min", str(params.defocus_min_microns),
-        "--c_defocus_max", str(params.defocus_max_microns),
-        "--c_voltage", str(round(float(params.voltage))),
-        "--c_cs", str(params.cs),
-        "--c_amplitude", str(params.amplitude),
-        "--perdevice", str(params.perdevice),
+        f"--settings {settings_file_abs}",
+        "--m_grid",
+        params.m_grid,
+        "--m_range_min",
+        str(params.m_range_min),
+        "--m_range_max",
+        str(params.m_range_max),
+        "--m_bfac",
+        str(params.m_bfac),
+        "--c_grid",
+        params.c_grid,
+        "--c_window",
+        str(params.c_window),
+        "--c_range_min",
+        str(params.c_range_min),
+        "--c_range_max",
+        str(params.c_range_max),
+         # WarpTools fs_motion_and_ctf expects microns
+        "--c_defocus_min",
+        str(params.defocus_min_microns),
+        "--c_defocus_max",
+        str(params.defocus_max_microns),
+        "--c_voltage",
+        str(round(float(params.voltage))),
+        "--c_cs",
+        str(params.cs),
+        "--c_amplitude",
+        str(params.amplitude),
+        "--perdevice",
+        str(params.perdevice),
         "--out_averages",
     ]
-    
+
     if params.do_at_most > 0:
         run_main_parts.extend(["--do_at_most", str(params.do_at_most)])
-    
+
     # These commands are run *inside* the container
-    return " && ".join([
-        " ".join(create_settings_parts),
-        " ".join(run_main_parts),
-    ])
+    return " && ".join([" ".join(create_settings_parts), " ".join(run_main_parts)])
 
 
 def main():
@@ -158,17 +152,14 @@ def main():
         for key, path in paths.items():
             print(f"  {key}: {path}", flush=True)
 
-        # 2. Build the *inner* WarpTools command (converts to relative paths)
-        warp_command = build_warp_commands(params, job_dir, paths)
+        # 2. Build the *inner* WarpTools command (now using absolute paths)
+        warp_command = build_warp_commands(params, paths)
         print(f"[DRIVER] Built inner command: {warp_command[:200]}...", flush=True)
 
         # 3. Get container service to build the *full apptainer* command
         container_svc = get_container_service()
         apptainer_command = container_svc.wrap_command_for_tool(
-            command=warp_command,
-            cwd=job_dir,
-            tool_name="warptools",
-            additional_binds=additional_binds,
+            command=warp_command, cwd=job_dir, tool_name="warptools", additional_binds=additional_binds
         )
 
         # 4. Run the containerized computation
@@ -176,9 +167,7 @@ def main():
         run_command(apptainer_command, cwd=job_dir)
 
         # 5. Run the metadata processing step
-        print(
-            "[DRIVER] Computation finished. Starting metadata processing.", flush=True
-        )
+        print("[DRIVER] Computation finished. Starting metadata processing.", flush=True)
         translator = MetadataTranslator(StarfileService())
 
         # All paths are ABSOLUTE - use them directly

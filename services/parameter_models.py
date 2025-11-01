@@ -1,44 +1,12 @@
 # services/parameter_models.py
+from __future__ import annotations
 from pydantic import BaseModel, Field, field_validator, ConfigDict
-from typing import ClassVar, Optional, Dict, Tuple, Self, Union, Any, TYPE_CHECKING
+from typing import ClassVar, Optional, Dict, Tuple, Self, Union, Any, TYPE_CHECKING, Type
 from enum import Enum
 from pathlib import Path
 import pandas as pd
 import starfile
 from datetime import datetime
-
-if TYPE_CHECKING:
-    from services.parameter_models import PipelineState
-
-# ============= BASE & PROTOCOL =============
-
-
-# class JobParamsProtocol:
-#     """
-#     Protocol defining the interface all job parameters must implement.
-#     This is documentation + type hints, not enforced inheritance.
-#     """
-
-#     @classmethod
-#     def from_job_star(cls, star_path: Path) -> Optional[Self]:
-#         """Load default values from job.star template"""
-#         ...
-
-#     @classmethod
-#     def from_pipeline_state(cls, state: "PipelineState") -> Self:
-#         """Create fresh instance using current global state values"""
-#         ...
-
-#     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
-#         """
-#         Update microscope/acquisition fields from global state IN-PLACE.
-#         This is called when global params change and user wants to sync.
-#         IMPORTANT: Modifies self and returns self (for chaining).
-#         """
-#         ...
-
-
-# ============= ENUMS =============
 
 
 class Partition(str, Enum):
@@ -66,9 +34,7 @@ class AlignmentMethod(str, Enum):
 class MicroscopeParams(BaseModel):
     """Microscope-specific parameters"""
 
-    model_config = ConfigDict(
-        validate_assignment=True
-    )  # Enable validation on assignment
+    model_config = ConfigDict(validate_assignment=True)  # Enable validation on assignment
 
     microscope_type: MicroscopeType = MicroscopeType.CUSTOM
     pixel_size_angstrom: float = Field(default=1.35, ge=0.5, le=10.0)
@@ -111,7 +77,7 @@ class ComputingParams(BaseModel):
     threads: int = Field(default=8, ge=1, le=128)
 
     @classmethod
-    def from_conf_yaml(cls, config_path: Path) -> "ComputingParams":
+    def from_conf_yaml(cls, config_path: Path) -> Self:
         """Extract computing params from conf.yaml"""
         from services.config_service import get_config_service
 
@@ -136,92 +102,74 @@ class ComputingParams(BaseModel):
             print(f"[ERROR] Failed to parse computing config: {e}")
             return cls()
 
-    def get_qsub_replacements(self) -> Dict[str, str]:
-        """
-        Generate qsub template replacements from computing params.
-        This replaces hardcoded values in project_service.
-        """
-        return {
-            "XXXextra1XXX": "8",  # nodes (could make configurable later)
-            "XXXextra2XXX": "",  # mpi_per_node (empty = let relion handle)
-            "XXXextra3XXX": self.partition.value,
-            "XXXextra4XXX": str(self.gpu_count),
-            "XXXextra5XXX": f"{self.memory_gb}G",
-            "XXXthreadsXXX": str(self.threads),
-        }
-
-
-# ============= JOB-SPECIFIC PARAMETER MODELS =============
-
 
 class JobCategory(str, Enum):
     """Where different job types live in the project"""
+
     IMPORT = "Import"
     EXTERNAL = "External"
     MOTIONCORR = "MotionCorr"
     CTFFIND = "CtfFind"
 
-class JobParamsBase(BaseModel):
-    """
-    Base class for all job parameter models.
-    Defines the interface for path resolution and dependencies.
-    """
-    
+
+class JobType(str, Enum):
+    """Enumeration of all pipeline job types"""
+
+    IMPORT_MOVIES = "importmovies"
+    FS_MOTION_CTF = "fsMotionAndCtf"
+    TS_ALIGNMENT = "aligntiltsWarp"
+
+    @classmethod
+    def from_string(cls, value: str) -> Self:
+        """Safe conversion from string with better error message"""
+        try:
+            return cls(value)
+        except ValueError:
+            valid = [e.value for e in cls]
+            raise ValueError(f"Unknown job type '{value}'. Valid types: {valid}")
+
+    @property
+    def display_name(self) -> str:
+        """Human-readable name"""
+        return self.value.replace("_", " ").title()
+
+
+class AbstractJobParams(BaseModel):
+    """Abstract base class for all job parameter models."""
+
     model_config = ConfigDict(validate_assignment=True)
-    
-    # Class-level metadata (not fields)
-    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL  # Default, override in subclasses
-    
-    # === ABSTRACT METHODS (implement in subclasses) ===
-    
+    JOB_CATEGORY: ClassVar[JobCategory]
+
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
-        """Define all outputs this job produces. MUST override in subclass."""
         raise NotImplementedError("Subclass must implement get_output_assets()")
-    
+
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
-        """
-        Define what inputs this job needs.
-        Returns dict of {logical_name: upstream_job_type}
-        """
         return {}  # Default: no dependencies
-    
+
     @staticmethod
     def get_input_assets(
-        job_dir: Path, 
-        upstream_outputs: Dict[str, Dict[str, Path]]
+        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
     ) -> Dict[str, Path]:
-        """
-        Given upstream job outputs, define where this job's inputs come from.
-        upstream_outputs: {job_type: {asset_name: Path}}
-        """
-        return {"job_dir": job_dir}  # Default: just the job dir
-    
-    # === FACTORY METHODS (all subclasses should implement) ===
-    
+        return {"job_dir": job_dir, "project_root": project_root}  # Default: job dir + project root
+
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        """Load default values from job.star template"""
         return None  # Default: no template loading
-    
+
     @classmethod
     def from_pipeline_state(cls, state: "PipelineState") -> Self:
-        """Create fresh instance using current global state values"""
         raise NotImplementedError("Subclass must implement from_pipeline_state()")
-    
+
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
-        """Update microscope/acquisition fields from global state IN-PLACE"""
         return self  # Default: no syncing needed
 
 
-
-
-class ImportMoviesParams(BaseModel):
+class ImportMoviesParams(AbstractJobParams):
     """Parameters for import movies job - implements JobParamsProtocol"""
 
     model_config = ConfigDict(validate_assignment=True)
-
 
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
 
@@ -247,9 +195,7 @@ class ImportMoviesParams(BaseModel):
             return None
 
         try:
-            data: Dict[str, Union[pd.DataFrame, Dict[str, Any]]] = starfile.read(
-                star_path, always_dict=True
-            )
+            data: Dict[str, Union[pd.DataFrame, Dict[str, Any]]] = starfile.read(star_path, always_dict=True)
 
             job_data = data.get("job")
             if job_data is None:
@@ -316,21 +262,15 @@ class ImportMoviesParams(BaseModel):
 
     @staticmethod
     def get_input_assets(
-        job_dir: Path, upstream_outputs: Dict[str, Dict[str, Path]]
+        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
     ) -> Dict[str, Path]:
-        project_root = job_dir.parent.parent
-        return {
-            "job_dir": job_dir,
-            "frames_dir": project_root / "frames",
-            "mdoc_dir": project_root / "mdoc",
-        }
+        return {"job_dir": job_dir, "frames_dir": project_root / "frames", "mdoc_dir": project_root / "mdoc"}
 
 
-class FsMotionCtfParams(BaseModel):
+class FsMotionCtfParams(AbstractJobParams):
     """Parameters for WarpTools motion correction and CTF"""
 
     model_config = ConfigDict(validate_assignment=True)
-
 
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
@@ -402,9 +342,7 @@ class FsMotionCtfParams(BaseModel):
             return None
 
         try:
-            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(
-                star_path, always_dict=True
-            )
+            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
 
             joboptions = data.get("joboptions_values")
             if joboptions is None or not isinstance(joboptions, pd.DataFrame):
@@ -448,7 +386,7 @@ class FsMotionCtfParams(BaseModel):
             cs=state.microscope.spherical_aberration_mm,
             amplitude=state.microscope.amplitude_contrast,
             eer_ngroups=state.acquisition.eer_fractions_per_frame or 32,
-            gain_path=state.acquisition.gain_reference_path,  # Pull from acquisition
+            gain_path=state.acquisition.gain_reference_path,
         )
 
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
@@ -482,11 +420,10 @@ class FsMotionCtfParams(BaseModel):
 
     @staticmethod
     def get_input_assets(
-        job_dir: Path, upstream_outputs: Dict[str, Dict[str, Path]]
+        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
     ) -> Dict[str, Path]:
         """Map upstream outputs to this job's inputs"""
         import_outputs = upstream_outputs.get("importmovies", {})
-        project_root = job_dir.parent.parent
 
         return {
             "job_dir": job_dir,
@@ -498,7 +435,7 @@ class FsMotionCtfParams(BaseModel):
         }
 
 
-class TsAlignmentParams(BaseModel):
+class TsAlignmentParams(AbstractJobParams):
     """Parameters for tilt series alignment"""
 
     model_config = ConfigDict(validate_assignment=True)
@@ -509,15 +446,11 @@ class TsAlignmentParams(BaseModel):
     dose_per_tilt: float = Field(default=3.0)
     tilt_axis_angle: float = Field(default=-95.0)
     invert_tilt_angles: bool = False
-    thickness_nm: float = Field(
-        default=300.0, ge=50.0, le=2000.0
-    )  # Used for AreTomo alignz
+    thickness_nm: float = Field(default=300.0, ge=50.0, le=2000.0)  # Used for AreTomo alignz
 
     # Job-specific
     alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
-    rescale_angpixs: float = Field(
-        default=12.0, ge=2.0, le=50.0
-    )  # Target angpix for alignment
+    rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)  # Target angpix for alignment
     tomo_dimensions: str = Field(default="4096x4096x2048")  # Unbinned tomo dimensions
     do_at_most: int = Field(default=-1)
     perdevice: int = Field(default=1, ge=0, le=8)
@@ -545,9 +478,7 @@ class TsAlignmentParams(BaseModel):
             return None
 
         try:
-            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(
-                star_path, always_dict=True
-            )
+            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
 
             job_data = data.get("job")
             if job_data is None:
@@ -591,7 +522,7 @@ class TsAlignmentParams(BaseModel):
             return None
 
     @classmethod
-    def from_pipeline_state(cls, state: "PipelineState") -> Self:
+    def from_pipeline_state(cls, state: "PipelineState") -> Self:  # <-- ADDED QUOTES
         """Create from global pipeline state"""
         return cls(
             thickness_nm=state.acquisition.sample_thickness_nm,
@@ -602,7 +533,7 @@ class TsAlignmentParams(BaseModel):
             gain_path=state.acquisition.gain_reference_path,
         )
 
-    def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
+    def sync_from_pipeline_state(self, state: "PipelineState") -> Self:  # <-- ADDED QUOTES
         """Update acquisition params from global state IN-PLACE"""
         self.thickness_nm = state.acquisition.sample_thickness_nm
         self.pixel_size = state.microscope.pixel_size_angstrom
@@ -629,10 +560,9 @@ class TsAlignmentParams(BaseModel):
 
     @staticmethod
     def get_input_assets(
-        job_dir: Path, upstream_outputs: Dict[str, Dict[str, Path]]
+        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
     ) -> Dict[str, Path]:
         motion_outputs = upstream_outputs.get("fsMotionAndCtf", {})
-        project_root = job_dir.parent.parent
         return {
             "job_dir": job_dir,
             "input_star": motion_outputs.get("output_star"),
@@ -647,6 +577,14 @@ class TsAlignmentParams(BaseModel):
 # ============= MAIN PIPELINE STATE =============
 
 
+def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
+    return {
+        JobType.IMPORT_MOVIES: ImportMoviesParams,
+        JobType.FS_MOTION_CTF: FsMotionCtfParams,
+        JobType.TS_ALIGNMENT: TsAlignmentParams,
+    }
+
+
 class PipelineState(BaseModel):
     """Central state with hierarchical organization"""
 
@@ -655,20 +593,14 @@ class PipelineState(BaseModel):
     microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
     acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
     computing: ComputingParams = Field(default_factory=ComputingParams)
-    jobs: Dict[str, BaseModel] = Field(default_factory=dict)
+    jobs: Dict[str, AbstractJobParams] = Field(default_factory=dict)
 
     # Metadata
     created_at: datetime = Field(default_factory=datetime.now)
     modified_at: datetime = Field(default_factory=datetime.now)
 
-    def populate_job(self, job_type: "JobType", job_star_path: Optional[Path] = None):
-        """
-        Generic job population using the param class's factory methods.
-        This replaces the giant if/elif chain.
-        """
-        from services.job_types import get_job_param_classes
-
-        param_classes = get_job_param_classes()
+    def populate_job(self, job_type: JobType, job_star_path: Optional[Path] = None):
+        param_classes = jobtype_paramclass()
         param_class = param_classes.get(job_type)
 
         if not param_class:
@@ -683,9 +615,7 @@ class PipelineState(BaseModel):
             print(f"[STATE] Created {job_type.value} from pipeline state")
         else:
             job_params.sync_from_pipeline_state(self)
-            print(
-                f"[STATE] Loaded {job_type.value} from job.star and synced with pipeline state"
-            )
+            print(f"[STATE] Loaded {job_type.value} from job.star and synced with pipeline state")
 
         # Store in jobs dict (UI binds to this)
         self.jobs[job_type.value] = job_params

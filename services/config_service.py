@@ -10,10 +10,6 @@ from functools import lru_cache
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 
-# --- NEW: Define project root based on this file's location ---
-# Path(__file__) -> /.../crboost_server/services/config_service.py
-# .parent        -> /.../crboost_server/services
-# .parent        -> /.../crboost_server (This is our project root)
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "conf.yaml"
 
@@ -21,12 +17,13 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "conf.yaml"
 
 
 class SubmissionConfig(BaseModel):
-    HeadNode: str
-    SshCommand: str
-    Environment: str
+
+    HeadNode     : str
+    SshCommand   : str
+    Environment  : str
     ClusterStatus: str
-    Helpssh: str
-    HelpConflict: str
+    Helpssh      : str
+    HelpConflict : str
 
 
 class LocalConfig(BaseModel):
@@ -34,12 +31,14 @@ class LocalConfig(BaseModel):
 
 
 class Alias(BaseModel):
-    Job: str
+
+    Job      : str
     Parameter: str
-    Alias: str
+    Alias    : str
 
 
 class ComputingPartition(BaseModel):
+
     """Simple partition definition - no Parameter wrappers"""
     NrGPU: int
     NrCPU: int
@@ -53,12 +52,13 @@ class NodeSharingConfig(BaseModel):
 
 
 class ComputingConfig(BaseModel):
-    QueSize: Dict[str, int]
-    NODE_Sharing: NodeSharingConfig = Field(alias='NODE-Sharing')
-    JOBTypesCompute: Dict[str, List[str]]
+
+    QueSize            : Dict[str, int]
+    NODE_Sharing       : NodeSharingConfig = Field(alias='NODE-Sharing')
+    JOBTypesCompute    : Dict[str, List[str]]
     JOBTypesApplication: Dict[str, List[str]]
-    JOBMaxNodes: Dict[str, List[int]]
-    JOBsPerDevice: Dict[str, Dict[str, int]]
+    JOBMaxNodes        : Dict[str, List[int]]
+    JOBsPerDevice      : Dict[str, Dict[str, int]]
     
     # Simplified partitions
     c: Optional[ComputingPartition] = None
@@ -148,12 +148,9 @@ class ConfigService:
 _config_service_instance = None
 
 @lru_cache()
-def get_config_service() -> ConfigService: # <-- REMOVED config_path argument
+def get_config_service() -> ConfigService:
     """Get or create the config service singleton"""
     global _config_service_instance
     if _config_service_instance is None:
-        # --- MODIFIED ---
-        # Use the absolute path defined at the top of the file
         _config_service_instance = ConfigService(DEFAULT_CONFIG_PATH)
-        # --- END MODIFIED ---
     return _config_service_instance
