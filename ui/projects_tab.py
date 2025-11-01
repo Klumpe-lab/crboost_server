@@ -11,7 +11,6 @@ from typing import Dict, Any, List
 
 from app_state import state as app_state, update_from_mdoc
 from typing import List, Dict, Any
-from enum import Enum
 
 class JobConfig:
     """Central configuration for job pipeline ordering and metadata"""
@@ -275,8 +274,6 @@ def build_projects_tab(backend: CryoBoostBackend):
 
         rebuild_pipeline_cards()
 
-    # Fix remove_job_from_pipeline to clean up properly:
-
     def remove_job_from_pipeline(job_type: JobType):
         """Remove a job from the selected pipeline"""
         if state["project_created"]:
@@ -289,8 +286,6 @@ def build_projects_tab(backend: CryoBoostBackend):
             if job_type in state["job_cards"]:
                 del state["job_cards"][job_type]
             rebuild_pipeline_cards()
-
-    # Replace rebuild_pipeline_cards to NOT clear job_cards:
 
     def rebuild_pipeline_cards():
         """Rebuild all job cards"""
@@ -463,8 +458,6 @@ def build_projects_tab(backend: CryoBoostBackend):
         state["job_cards"][job_type]["param_updaters"] = param_updaters
         return param_inputs
 
-    # Ensure monitoring section doesn't cause KeyError:
-
     def build_monitoring_section(job_type: JobType, job_index: int):
         """Build monitoring section with tabs (logs, params, files)"""
 
@@ -530,9 +523,6 @@ def build_projects_tab(backend: CryoBoostBackend):
         # Store monitor components in EXISTING dict
         state["job_cards"][job_type]["monitor"] = {"stdout": stdout_log, "stderr": stderr_log}
 
-    # Fix the file browser - update build_file_browser to show better debugging:
-
-    # Fix build_file_browser to wait for directory to be created:
 
     def build_file_browser(job_type: JobType, job_index: int):
         """Build simple file browser"""
@@ -792,7 +782,6 @@ def build_projects_tab(backend: CryoBoostBackend):
                 break
             await asyncio.sleep(5)
 
-    # Fix refresh_job_logs - get job_index from card_data, not monitor:
 
     async def refresh_job_logs(job_type: JobType):
         """Manually refresh logs for a job"""
@@ -814,7 +803,6 @@ def build_projects_tab(backend: CryoBoostBackend):
         # FIX: Use ui.run to safely show notifications from background tasks
         ui.run(lambda: ui.notify("Logs refreshed", type="positive"))
 
-    # Fix monitor_all_jobs similarly:
 
     async def monitor_all_jobs():
         """Auto-refresh logs for all jobs - no notifications here"""

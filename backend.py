@@ -10,7 +10,8 @@ from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
 from services.pipeline_runner import PipelineRunnerService
 
-from app_state import state as app_state, prepare_job_params, update_from_mdoc, get_ui_state_legacy
+# --- UPDATED: Removed get_ui_state_legacy ---
+from app_state import state as app_state, prepare_job_params, update_from_mdoc
 
 from pydantic import BaseModel
 from pathlib import Path
@@ -75,16 +76,18 @@ class CryoBoostBackend:
             mdocs_glob=mdocs_glob,
         )
 
+    # --- UPDATED: Returns the hierarchical model dump ---
     async def get_initial_parameters(self) -> Dict[str, Any]:
         """Get the default parameters to populate the UI"""
-        return get_ui_state_legacy()
+        return self.app_state.model_dump()
 
+    # --- UPDATED: Returns the hierarchical model dump ---
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
         """Run mdoc autodetection and return the updated state"""
         print(f"[BACKEND] Autodetecting from {mdocs_glob}")
 
         update_from_mdoc(mdocs_glob)
-        return get_ui_state_legacy()
+        return self.app_state.model_dump()
 
     async def run_shell_command(
         self, command: str, cwd: Path = None, tool_name: str = None, additional_binds: List[str] = None
@@ -157,7 +160,7 @@ class CryoBoostBackend:
     # --- Internal helper methods are GONE ---
     # -----------------------------------------------------------------
     # async def _run_relion_schemer(...):  <-- DELETED
-    # async def _monitor_schemer(...):     <-- DELETED
+    # async def _monitor_schemer(...):      <-- DELETED
 
     async def get_eer_frames_per_tilt(self, eer_file_path: str) -> int:
         """Extract number of frames per tilt from EER file"""
