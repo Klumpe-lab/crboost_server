@@ -9,7 +9,6 @@ from ui.utils import JobConfig, _snake_to_title
 from typing import Dict, Any
 
 
-# +++ HELPER FUNCTION FROM OLD FILE +++
 def get_job_directory(job_type: JobType, job_index: int) -> str:
     """Get the job directory name based on type"""
     if job_type == JobType.IMPORT_MOVIES:

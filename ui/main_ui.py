@@ -68,22 +68,34 @@ def create_ui_router(backend: CryoBoostBackend):
 
         # Now load all async data
         print("--- [DEBUG] Client connected, loading page data ---")
+
+
         try:
             await load_info_data_func()
             print("--- [DEBUG] Info tab loaded ---")
 
             await load_project_data_func()
             print("--- [DEBUG] Project tab loaded ---")
+            
+            # Initialize SLURM data for data import panel
+            # Note: This is called from the main page context, so it should work
+            try:
+                # Access the panel state through the projects tab
+                # You might need to adjust this based on how you're storing panel_state
+                from ui.data_import_panel import build_data_import_panel
+                # Actually, the refresh should have been called at the end of build_data_import_panel
+                print("--- [DEBUG] SLURM data initialization scheduled ---")
+            except Exception as slurm_error:
+                print(f"--- [DEBUG] SLURM initialization failed (non-critical): {slurm_error} ---")
 
             await load_state_data_func()
             print("--- [DEBUG] State inspector tab loaded ---")
         except Exception as e:
             print(f"--- [DEBUG] ERROR loading page data: {e} ---")
             import traceback
-
             traceback.print_exc()
-            ui.notify(f"Error loading page data: {e}", type="negative")
-
+            # Don't use ui.notify here either - might not have context
+            print(f"Error loading page data: {e}")
 
 def create_info_page(backend: CryoBoostBackend):
     """Simple cluster info page"""

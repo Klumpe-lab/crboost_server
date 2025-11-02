@@ -16,6 +16,8 @@ from app_state import state as app_state, prepare_job_params, update_from_mdoc
 from pydantic import BaseModel
 from pathlib import Path
 
+from services.slurm_service import SlurmService
+
 
 class User(BaseModel):
     """Represents an authenticated user."""
@@ -23,7 +25,7 @@ class User(BaseModel):
     username: str
 
 
-HARDCODED_USER = User(username="artem.kushner")
+HARDCODED_USER = "artem.kushner"
 
 
 class CryoBoostBackend:
@@ -32,6 +34,8 @@ class CryoBoostBackend:
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
+        self.username = HARDCODED_USER  # Make sure to store it
+        self.slurm_service = SlurmService(HARDCODED_USER)
 
         # --- NEW: Initialize the runner service ---
         self.pipeline_runner = PipelineRunnerService(self)
@@ -132,6 +136,41 @@ class CryoBoostBackend:
             print(f"[ERROR] Exception in run_shell_command: {e}")
             return {"success": False, "output": "", "error": str(e)}
 
+    async def get_user_slurm_jobs(self, force_refresh: bool = False) -> Dict[str, Any]:
+        """Get user's SLURM jobs"""
+        try:
+            jobs = await self.slurm_service.get_user_jobs(force_refresh=force_refresh)
+            print(f"[DEBUG] Backend returning {len(jobs)} jobs")
+            return {
+                "success": True,
+                "jobs": [
+                    {
+                        "job_id": j.job_id,
+                        "name": j.name,
+                        "partition": j.partition,
+                        "state": j.state,
+                        "time": j.time,
+                        "nodes": j.nodes,
+                        "nodelist": j.nodelist,
+                    }
+                    for j in jobs
+                ],
+            }
+        except Exception as e:
+            print(f"[ERROR] Failed to get user jobs: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
+    async def get_slurm_summary(self, force_refresh: bool = False) -> Dict[str, Any]:
+        """Get cluster summary"""
+        try:
+            summary = await self.slurm_service.get_cluster_summary()
+            return {"success": True, "summary": summary}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
 
@@ -180,3 +219,49 @@ class CryoBoostBackend:
         except Exception as e:
             print(f"Error getting EER frames: {e}")
             return None
+
+    async def get_slurm_partitions(self) -> Dict[str, Any]:
+        """Get SLURM partition information"""
+        try:
+            partitions = await self.slurm_service.get_partitions_info()
+            return {
+                "success": True,
+                "partitions": [
+                    {
+                        "name": p.name,
+                        "state": p.state,
+                        "nodes": p.nodes,
+                        "max_time": p.max_time,
+                        "cpus": p.available_cpus,
+                        "gpus": p.available_gpus,
+                        "gpu_type": p.gpu_type,
+                        "memory": p.default_mem_per_cpu,
+                    }
+                    for p in partitions
+                ],
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_slurm_nodes(self, partition: str = None) -> Dict[str, Any]:
+        """Get SLURM node information"""
+        try:
+            nodes = await self.slurm_service.get_nodes_info(partition)
+            return {
+                "success": True,
+                "nodes": [
+                    {
+                        "name": n.name,
+                        "partition": n.partition,
+                        "state": n.state,
+                        "cpus": n.cpus,
+                        "memory_mb": n.memory_mb,
+                        "gpus": n.gpus,
+                        "gpu_type": n.gpu_type,
+                        "features": n.features or [],
+                    }
+                    for n in nodes
+                ],
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
