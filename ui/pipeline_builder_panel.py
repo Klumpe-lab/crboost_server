@@ -369,17 +369,18 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
         current_path_label = ui.label(str(job_dir)).classes("text-xs text-gray-600 font-mono mb-2")
         file_list_container = ui.column().classes("w-full border rounded p-2 bg-gray-50 max-h-96 overflow-auto")
 
-        async def browse_directory(path: Path):
+        def browse_directory(path: Path):
+            """Browse directory synchronously"""
             file_list_container.clear()
             current_path_label.set_text(str(path))
 
             try:
-                if not await asyncio.to_thread(path.exists):
+                if not path.exists():
                     status_label.set_text(f"Directory not yet created: {path.name}")
                     with file_list_container:
                         ui.label("Directory will be created when job starts").classes("text-xs text-blue-600")
                         ui.button(
-                            "Check again", icon="refresh", on_click=lambda: asyncio.create_task(browse_directory(path))
+                            "Check again", icon="refresh", on_click=lambda: browse_directory(path)
                         ).props("outline dense size=sm mt-2")
                     return
 
@@ -387,27 +388,25 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
 
                 with file_list_container:
                     # Parent directory
-                    if path != job_dir and await asyncio.to_thread(path.parent.exists):
+                    if path != job_dir and path.parent.exists():
                         with (
                             ui.row()
                             .classes("items-center gap-2 cursor-pointer hover:bg-gray-200 p-1 rounded w-full")
-                            .on("click", lambda p=path.parent: asyncio.create_task(browse_directory(p)))
+                            .on("click", lambda p=path.parent: browse_directory(p))
                         ):
                             ui.icon("folder_open").classes("text-sm")
                             ui.label("..").classes("text-xs")
 
-                    items = await asyncio.to_thread(
-                        lambda: sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name))
-                    )
+                    items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name))
                     if not items:
                         ui.label("Directory is empty.").classes("text-xs text-gray-500 italic")
 
                     for item in items:
-                        if await asyncio.to_thread(item.is_dir):
+                        if item.is_dir():
                             with (
                                 ui.row()
                                 .classes("items-center gap-2 cursor-pointer hover:bg-gray-200 p-1 rounded w-full")
-                                .on("click", lambda i=item: asyncio.create_task(browse_directory(i)))
+                                .on("click", lambda i=item: browse_directory(i))
                             ):
                                 ui.icon("folder").classes("text-sm text-blue-600")
                                 ui.label(item.name).classes("text-xs")
@@ -415,18 +414,19 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
                             with ui.row().classes("items-center gap-2 w-full"):
                                 with (
                                     ui.row()
-                                    .classes(
-                                        "items-center gap-2 cursor-pointer hover:bg-gray-200 p-1 rounded flex-grow"
-                                    )
+                                    .classes("items-center gap-2 cursor-pointer hover:bg-gray-200 p-1 rounded flex-grow")
                                     .on("click", lambda i=item: view_file(i))
                                 ):
                                     ui.icon("insert_drive_file").classes("text-sm text-gray-600")
                                     ui.label(item.name).classes("text-xs")
-                                item_stat = await asyncio.to_thread(item.stat)
-                                ui.label(f"{item_stat.st_size // 1024} KB").classes("text-xs text-gray-500 ml-auto")
+                                size_kb = item.stat().st_size // 1024
+                                ui.label(f"{size_kb} KB").classes("text-xs text-gray-500 ml-auto")
             except Exception as e:
                 with file_list_container:
                     ui.label(f"Error listing directory: {e}").classes("text-xs text-red-600")
+
+        # Initial call (also synchronous now)
+        browse_directory(job_dir)
 
         def view_file(file_path: Path):
             """Show file content in a dialog"""
@@ -494,7 +494,7 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
         monitor["stderr"].push(logs.get("stderr", "No errors"))
 
         if notify:
-            ui.notify("Logs refreshed", type="positive")
+            ui.run(lambda: ui.notify("Logs refreshed", type="positive"))
 
     def update_job_card_sync_indicator(job_type: JobType):
         """Update sync indicator on job card"""
