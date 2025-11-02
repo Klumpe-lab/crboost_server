@@ -2,7 +2,66 @@ import asyncio
 from pathlib import Path
 from nicegui import ui
 from local_file_picker import local_file_picker
+# ui/utils.py
+from nicegui import ui
+from services.parameter_models import JobType
+from typing import List, Dict, Any
 
+
+class JobConfig:
+    """Central configuration for job pipeline ordering and metadata"""
+    
+    PIPELINE_ORDER = [
+        JobType.IMPORT_MOVIES,
+        JobType.FS_MOTION_CTF,
+        JobType.TS_ALIGNMENT,
+    ]
+    
+    JOB_METADATA = {
+        JobType.IMPORT_MOVIES: {
+            'icon': '📥',
+            'short_name': 'Import',
+            'description': 'Import raw movies and mdocs',
+        },
+        JobType.FS_MOTION_CTF: {
+            'icon': '⚡', 
+            'short_name': 'Motion & CTF',
+            'description': 'Motion correction and CTF estimation',
+        },
+        JobType.TS_ALIGNMENT: {
+            'icon': '🔧',
+            'short_name': 'Alignment', 
+            'description': 'Tilt series alignment',
+        },
+    }
+    
+    @classmethod
+    def get_ordered_jobs(cls) -> List[JobType]:
+        return cls.PIPELINE_ORDER.copy()
+    
+    @classmethod
+    def get_job_display_name(cls, job_type: JobType) -> str:
+        return cls.JOB_METADATA.get(job_type, {}).get('short_name', job_type.value)
+    
+    @classmethod
+    def get_job_icon(cls, job_type: JobType) -> str:
+        return cls.JOB_METADATA.get(job_type, {}).get('icon', '📦')
+    
+    @classmethod
+    def get_job_description(cls, job_type: JobType) -> str:
+        return cls.JOB_METADATA.get(job_type, {}).get('description', '')
+
+def _snake_to_title(snake_str: str) -> str:
+    return " ".join(word.capitalize() for word in snake_str.split("_"))
+
+# Keep your existing create_path_input_with_picker function here
+def create_path_input_with_picker(label: str, mode: str = "directory", glob_pattern: str = None, default_value: str = None):
+    """Create a path input with file picker button"""
+    # Your existing implementation here
+    with ui.input(label=label, value=default_value).props("dense outlined").classes("w-full") as input_field:
+        with input_field.add_slot("append"):
+            ui.button(icon="folder", on_click=lambda: None).props("dense flat")
+    return input_field
 
 def create_path_input_with_picker(label: str, mode: str, glob_pattern: str = '', default_value: str = '') -> ui.input:
     """A factory for creating a text input with a file/folder picker button."""
