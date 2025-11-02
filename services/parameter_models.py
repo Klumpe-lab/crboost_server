@@ -379,7 +379,7 @@ class FsMotionCtfParams(AbstractJobParams):
             ).to_dict()
 
             return cls(
-                pixel_size=1.35,  # Will be synced from pipeline state
+                pixel_size=1.35,  
                 voltage=300.0,
                 cs=2.7,
                 amplitude=0.1,
