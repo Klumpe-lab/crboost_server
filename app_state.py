@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, ConfigDict
 
 # --- UPDATED: Imports from parameter_models ---
 from services.parameter_models import (
-    JobType,
+    JobType,  # <-- Ensured this is here
     MicroscopeParams,
     AcquisitionParams,
     ComputingParams,
@@ -23,7 +23,7 @@ from services.parameter_models import (
     ImportMoviesParams,
     FsMotionCtfParams,
     TsAlignmentParams,
-    jobtype_paramclass,  # <-- NEW
+    jobtype_paramclass,
 )
 
 # --- NEW: Import the MdocService ---
@@ -80,11 +80,7 @@ class PipelineState(BaseModel):
 
 state = PipelineState(computing=ComputingParams.from_conf_yaml(Path("config/conf.yaml")))
 
-# --- UPDATED: Use .model_dump() ---
 print(f"[APP STATE] Initialized with computing: {state.computing.model_dump()}")
-
-# --- DELETED: Redundant state initialization ---
-# state = PipelineState()
 
 
 def prepare_job_params(job_name_or_type):
@@ -193,7 +189,6 @@ def export_for_project(
     except Exception as e:
         print(f"[WARN] Could not load containers from conf.yaml: {e}")
 
-    # --- UPDATED: Use .model_dump() ---
     export = {
         "metadata": {
             "config_version": "2.0",
@@ -219,7 +214,6 @@ def export_for_project(
 def save_state_to_file(path: Path):
     """Save current state to JSON file"""
     try:
-        # --- UPDATED: Use .model_dump() ---
         state_dict = {
             "microscope": state.microscope.model_dump(),
             "acquisition": state.acquisition.model_dump(),
@@ -302,7 +296,55 @@ def _sync_job_with_global_params(job_name: str):
     print(f"[STATE] Synced {job_name} with global params")
 
 
-# --- DELETED: _parse_mdoc function is now in MdocService ---
+# --- NEW: Function moved from projects_tab.py ---
+def is_job_synced_with_global(job_type: JobType) -> bool:
+    """Check if job params match global params - with proper comparison"""
+    job_model = state.jobs.get(job_type.value)  # Use global 'state'
+    if not job_model:
+        return True
+
+    # Define sync mappings for each job type with tolerance for floating point
+    sync_mappings = {
+        JobType.IMPORT_MOVIES: {
+            "pixel_size": state.microscope.pixel_size_angstrom,  # Use global 'state'
+            "voltage": state.microscope.acceleration_voltage_kv,  # ...etc
+            "spherical_aberration": state.microscope.spherical_aberration_mm,
+            "amplitude_contrast": state.microscope.amplitude_contrast,
+            "dose_per_tilt_image": state.acquisition.dose_per_tilt,
+            "tilt_axis_angle": state.acquisition.tilt_axis_degrees,
+            "invert_defocus_hand": state.acquisition.invert_defocus_hand,
+        },
+        JobType.FS_MOTION_CTF: {
+            "pixel_size": state.microscope.pixel_size_angstrom,
+            "voltage": state.microscope.acceleration_voltage_kv,
+            "cs": state.microscope.spherical_aberration_mm,
+            "amplitude": state.microscope.amplitude_contrast,
+            "eer_ngroups": state.acquisition.eer_fractions_per_frame or 32,
+        },
+        JobType.TS_ALIGNMENT: {"thickness_nm": state.acquisition.sample_thickness_nm},
+    }
+
+    mapping = sync_mappings.get(job_type, {})
+
+    for field, global_value in mapping.items():
+        job_value = getattr(job_model, field, None)
+
+        # Handle floating point comparison with tolerance
+        if isinstance(global_value, float) and isinstance(job_value, float):
+            if abs(job_value - global_value) > 1e-6:
+                print(f"[SYNC CHECK] {job_type.value}.{field}: job={job_value}, global={global_value} → OUT OF SYNC")
+                return False
+        elif job_value != global_value:
+            print(f"[SYNC CHECK] {job_type.value}.{field}: job={job_value}, global={global_value} → OUT OF SYNC")
+            return False
+
+    return True
 
 
-# --- DELETED: get_ui_state_legacy function ---
+# --- NEW: Function to handle sync logic ---
+def sync_job_with_global(job_type: JobType):
+    """Syncs a specific job's model with the current global state."""
+    job_model = state.jobs.get(job_type.value)
+    if job_model and hasattr(job_model, "sync_from_pipeline_state"):
+        job_model.sync_from_pipeline_state(state)
+        print(f"[STATE] Synced {job_type.value} from global state")
