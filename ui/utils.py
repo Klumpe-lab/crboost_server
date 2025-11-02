@@ -8,6 +8,8 @@ from services.parameter_models import JobType
 from typing import List, Dict, Any
 
 
+# In ui/utils.py, update the JobConfig class:
+
 class JobConfig:
     """Central configuration for job pipeline ordering and metadata"""
     
@@ -15,23 +17,45 @@ class JobConfig:
         JobType.IMPORT_MOVIES,
         JobType.FS_MOTION_CTF,
         JobType.TS_ALIGNMENT,
+        JobType.TS_CTF,
+        JobType.TS_RECONSTRUCT,
+        JobType.DENOISE_TRAIN,
+        JobType.TEMPLATE_MATCH,
+        JobType.SUBTOMO_RECONSTRUCT,
     ]
     
     JOB_METADATA = {
         JobType.IMPORT_MOVIES: {
-            'icon': '📥',
             'short_name': 'Import',
             'description': 'Import raw movies and mdocs',
         },
         JobType.FS_MOTION_CTF: {
-            'icon': '⚡', 
             'short_name': 'Motion & CTF',
             'description': 'Motion correction and CTF estimation',
         },
         JobType.TS_ALIGNMENT: {
-            'icon': '🔧',
-            'short_name': 'Alignment', 
+            'short_name': 'Alignment',
             'description': 'Tilt series alignment',
+        },
+        JobType.TS_CTF: {
+            'short_name': 'TS CTF',
+            'description': 'Tilt series CTF refinement',
+        },
+        JobType.TS_RECONSTRUCT: {
+            'short_name': 'Reconstruct',
+            'description': 'Tomogram reconstruction',
+        },
+        JobType.DENOISE_TRAIN: {
+            'short_name': 'Denoise',
+            'description': 'Train and apply denoising',
+        },
+        JobType.TEMPLATE_MATCH: {
+            'short_name': 'Template Match',
+            'description': 'Template matching for particle picking',
+        },
+        JobType.SUBTOMO_RECONSTRUCT: {
+            'short_name': 'Subtomo Avg',
+            'description': 'Subtomogram averaging',
         },
     }
     
@@ -42,10 +66,6 @@ class JobConfig:
     @classmethod
     def get_job_display_name(cls, job_type: JobType) -> str:
         return cls.JOB_METADATA.get(job_type, {}).get('short_name', job_type.value)
-    
-    @classmethod
-    def get_job_icon(cls, job_type: JobType) -> str:
-        return cls.JOB_METADATA.get(job_type, {}).get('icon', '📦')
     
     @classmethod
     def get_job_description(cls, job_type: JobType) -> str:
