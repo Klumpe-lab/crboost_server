@@ -35,13 +35,13 @@ class AlignmentMethod(str, Enum):
 class MicroscopeParams(BaseModel):
     """Microscope-specific parameters"""
 
-    model_config = ConfigDict(validate_assignment=True)  # Enable validation on assignment
+    model_config = ConfigDict(validate_assignment=True)
 
-    microscope_type: MicroscopeType = MicroscopeType.CUSTOM
-    pixel_size_angstrom: float = Field(default=1.35, ge=0.5, le=10.0)
-    acceleration_voltage_kv: float = Field(default=300.0)
-    spherical_aberration_mm: float = Field(default=2.7, ge=0.0, le=10.0)
-    amplitude_contrast: float = Field(default=0.1, ge=0.0, le=1.0)
+    microscope_type        : MicroscopeType = MicroscopeType.CUSTOM
+    pixel_size_angstrom    : float          = Field(default=1.35, ge=0.5, le=10.0)
+    acceleration_voltage_kv: float          = Field(default=300.0)
+    spherical_aberration_mm: float          = Field(default=2.7, ge=0.0, le=10.0)
+    amplitude_contrast     : float          = Field(default=0.1, ge=0.0, le=1.0)
 
     @field_validator("acceleration_voltage_kv")
     @classmethod
@@ -116,9 +116,14 @@ class JobCategory(str, Enum):
 class JobType(str, Enum):
     """Enumeration of all pipeline job types"""
 
-    IMPORT_MOVIES = "importmovies"
-    FS_MOTION_CTF = "fsMotionAndCtf"
-    TS_ALIGNMENT = "aligntiltsWarp"
+    IMPORT_MOVIES       = "importmovies"
+    FS_MOTION_CTF       = "fsMotionAndCtf"
+    TS_ALIGNMENT        = "aligntiltsWarp"
+    TS_CTF              = "tsCtf"
+    TS_RECONSTRUCT      = "tsReconstruct"
+    DENOISE_TRAIN       = "denoiseTrain"
+    TEMPLATE_MATCH      = "templateMatching"
+    SUBTOMO_RECONSTRUCT = "sta"
 
     @classmethod
     def from_string(cls, value: str) -> Self:

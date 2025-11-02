@@ -39,26 +39,54 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
         shared_state["selected_jobs"].append(job_type)
         shared_state["selected_jobs"].sort(key=lambda j: JobConfig.PIPELINE_ORDER.index(j))
 
+        # Try to prepare job params, but don't fail if not implemented
         if job_type.value not in app_state.jobs:
-            from app_state import prepare_job_params
+            try:
+                from app_state import prepare_job_params
+                prepare_job_params(job_type.value)
+            except Exception as e:
+                print(f"[WARN] Job {job_type.value} not implemented yet: {e}")
 
-            prepare_job_params(job_type.value)
-
-        # Initialize job_card state
+        # Always initialize job_card state, even for unimplemented jobs
         if job_type not in shared_state["job_cards"]:
-            # +++ FIX 1: INITIALIZE 'is_synced' KEY HERE +++
-            # This was the root cause of the binding error.
             shared_state["job_cards"][job_type] = {
                 "job_index": len(shared_state["selected_jobs"]),
-                "status": "pending",  # for pending/running/success/failed
-                "active_monitor_tab": "logs",  # for inner logs/params/files
-                "is_synced": is_job_synced_with_global(job_type),  # <-- THIS WAS MISSING
+                "status": "pending",
+                "active_monitor_tab": "logs",
+                "is_synced": True,  # Default to synced for unimplemented jobs
             }
 
-        # Set active tab to the newly added one
         shared_state["active_job_tab"] = job_type.value
-
         rebuild_pipeline_ui()
+
+    def toggle_job_in_pipeline(job_type: JobType):
+        """Toggle a job in/out of the pipeline"""
+        if job_type in shared_state["selected_jobs"]:
+            remove_job_from_pipeline(job_type)
+        else:
+            add_job_to_pipeline(job_type)
+        
+        update_job_button(job_type)
+
+
+    def update_job_button(job_type: JobType):
+        """Update the appearance of a job button based on selection state"""
+        btn = shared_state.get("job_buttons", {}).get(job_type)
+        if not btn:
+            return
+        
+        name = JobConfig.get_job_display_name(job_type)
+        is_selected = job_type in shared_state["selected_jobs"]
+        
+        if is_selected:
+            btn.props("color=primary")
+            btn.classes(remove="outline", add="")
+            btn.set_text(f"− {name}")
+        else:
+            btn.props("color=grey")
+            btn.classes(remove="", add="outline")
+            btn.set_text(f"+ {name}")
+
 
     def remove_job_from_pipeline(job_type: JobType):
         """Remove a job from the selected pipeline"""
@@ -77,6 +105,7 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
                     shared_state["selected_jobs"][0].value if shared_state["selected_jobs"] else None
                 )
 
+            update_job_button(job_type)  # <-- ADD THIS LINE
             rebuild_pipeline_ui()
 
     def rebuild_pipeline_ui():
@@ -84,8 +113,14 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
         Rebuild the entire pipeline UI (config or monitoring tabs)
         based on the 'pipeline_running' state.
         """
+        # Hide job selector when pipeline is running (DON'T recreate it!)
+        job_selector_container = shared_state.get("job_selector_container")
+        if job_selector_container:
+            job_selector_container.set_visibility(not shared_state["pipeline_running"])
+        
         container = panel_state["pipeline_container"]
         container.clear()
+    
 
         if not shared_state["selected_jobs"]:
             with container:
@@ -102,6 +137,11 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
             else:
                 build_monitoring_tabs()
 
+
+
+
+
+
     def build_configuration_tabs():
         """Builds the PARAMETER EDITING tabs (before run)"""
 
@@ -114,36 +154,41 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
                     with ui.row().classes("items-center gap-2"):
                         ui.label(f"{idx + 1}. {name}").classes("text-sm")
 
-                        # +++ FIX 2: BIND TO THE STATE DICTIONARY, NOT THE ENUM +++
-                        job_card_state = shared_state["job_cards"][job_type]
+                        # Only show sync badge for implemented jobs
+                        if job_type.value in app_state.jobs:
+                            job_card_state = shared_state["job_cards"][job_type]
 
-                        sync_badge = ui.badge("out of sync", color="orange").classes("text-xs")
-                        sync_badge.bind_visibility_from(job_card_state, "is_synced", backward=lambda s: not s)
+                            sync_badge = ui.badge("out of sync", color="orange").classes("text-xs")
+                            sync_badge.bind_visibility_from(job_card_state, "is_synced", backward=lambda s: not s)
+                            job_card_state["sync_badge"] = sync_badge
 
-                        # Store badge in state
-                        job_card_state["sync_badge"] = sync_badge
+                            sync_button = (
+                                ui.button(
+                                    icon="sync",
+                                    on_click=lambda e, j=job_type: (e.stopPropagation(), asyncio.create_task(confirm_sync_job(j))),
+                                ).props("flat dense round size=xs").classes("text-blue-600")
+                            )
+                            sync_button.bind_visibility_from(job_card_state, "is_synced", backward=lambda s: not s)
+                            job_card_state["sync_button"] = sync_button
 
-                        # Remove button
+                        # Remove button (always show before project creation)
                         if not shared_state["project_created"]:
                             ui.button(
                                 icon="close",
                                 on_click=lambda e, j=job_type: (e.stopPropagation(), remove_job_from_pipeline(j)),
                             ).props("flat dense round size=xs").classes("text-red-600 -mr-2")
 
-        with (
-            ui.tab_panels()
-            .bind_value(shared_state, "active_job_tab")
-            .props("animated")
-            .classes("w-full bg-transparent")
-        ):
+        with ui.tab_panels().bind_value(shared_state, "active_job_tab").props("animated").classes("w-full bg-transparent"):
             for job_type in shared_state["selected_jobs"]:
                 with ui.tab_panel(name=job_type.value).classes("p-0 pt-4"):
                     job_model = app_state.jobs.get(job_type.value)
                     if job_model:
-                        # Build the parameters section
                         build_parameters_section(job_type, job_model)
                     else:
-                        ui.label(f"Error loading model for {job_type.value}")
+                        # Show placeholder for unimplemented jobs
+                        with ui.card().classes("w-full p-8 text-center"):
+                            ui.label(f"{JobConfig.get_job_display_name(job_type)}").classes("text-lg font-semibold mb-2")
+                            ui.label("This job is not yet implemented").classes("text-sm text-gray-500")
 
     def build_monitoring_tabs():
         """Builds the JOB MONITORING tabs (after run) - SIMPLIFIED"""
@@ -509,40 +554,45 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
     # ==================================
     # UI CONSTRUCTION
     # ==================================
+    # In build_pipeline_builder_panel, replace the UI construction section:
+
     with ui.column().classes("w-full h-full gap-3 p-3 overflow-y-auto"):
         # PIPELINE BUILDER HEADER
         ui.label("PIPELINE BUILDER").classes("text-xs font-bold text-gray-700 uppercase tracking-wide")
-
-        # Job selection buttons
-        with ui.card().classes("w-full p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200"):
+        
+        # Job selection buttons (hidden when running)
+        shared_state["job_selector_container"] = ui.card().classes(
+            "w-full p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200"
+        )
+        
+        with shared_state["job_selector_container"]:
             ui.label("Available Jobs").classes("text-sm font-medium mb-3 text-gray-700")
             with ui.row().classes("w-full gap-2 flex-wrap"):
                 for job_type in JobConfig.get_ordered_jobs():
-                    icon = JobConfig.get_job_icon(job_type)
                     name = JobConfig.get_job_display_name(job_type)
                     desc = JobConfig.get_job_description(job_type)
-
-                    with (
-                        ui.button(on_click=lambda j=job_type: add_job_to_pipeline(j))
-                        .props("outline dense")
-                        .classes("text-xs min-w-24")
-                    ):
-                        with ui.column().classes("items-center gap-1 p-1"):
-                            ui.label(icon).classes("text-lg")
-                            ui.label(name).classes("text-xs font-medium")
-                    ui.tooltip(desc)
-
+                    
+                    btn = ui.button(
+                        on_click=lambda j=job_type: toggle_job_in_pipeline(j)
+                    ).props("dense").classes("text-xs")
+                    
+                    shared_state.setdefault("job_buttons", {})[job_type] = btn
+                    update_job_button(job_type)
+                    btn.tooltip(desc)
+        
         # Pipeline jobs container (for tabs)
         ui.label("Pipeline Jobs").classes("text-sm font-medium text-gray-700 mt-4")
         panel_state["pipeline_container"] = ui.column().classes(
             "w-full max-h-[60vh] overflow-y-auto border rounded-lg p-3 bg-gray-50/50"
         )
+        
+        # DON'T call rebuild here - it will be called when jobs are added
+        # rebuild_pipeline_ui()  # <-- REMOVE THIS LINE
+        
+        # Just show initial empty state
+        with panel_state["pipeline_container"]:
+            ui.label("No jobs selected").classes("text-xs text-gray-500 italic text-center p-4")
+        callbacks["rebuild_pipeline_ui"] = rebuild_pipeline_ui
+        callbacks["update_job_card_sync_indicator"] = update_job_card_sync_indicator
 
-        # Initial build
-        rebuild_pipeline_ui()
-
-    # --- Register Callbacks ---
-    callbacks["rebuild_pipeline_ui"] = rebuild_pipeline_ui
-    callbacks["update_job_card_sync_indicator"] = update_job_card_sync_indicator
-
-    return panel_state
+        return panel_state

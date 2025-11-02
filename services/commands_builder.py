@@ -62,8 +62,3 @@ class ImportMoviesCommandBuilder(BaseCommandBuilder):
 
         return " ".join(cmd_parts)
 
-
-# --- DELETED ---
-# The FsMotionCtfCommandBuilder and TsAlignmentCommandBuilder classes
-# have been removed. This logic is now handled by the driver scripts
-# in the drivers/ directory.

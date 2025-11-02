@@ -78,12 +78,20 @@ def build_projects_tab(backend: CryoBoostBackend):
         "params_snapshot": {},
         "project_created": False,
         "pipeline_running": False,
+        "panels_built": False,  # <-- ADD THIS FLAG
     }
 
     # Callback functions that panels can use
     callbacks = {
         "rebuild_pipeline_cards": None
     }
+
+    # Guard against double-build
+    if state.get("panels_built", False):
+        print("[WARN] Panels already built!")
+        async def noop():
+            pass
+        return noop
 
     # Create the split layout
     with ui.splitter(value=50).classes('w-full h-[calc(100vh-100px)]') as splitter:
@@ -94,6 +102,8 @@ def build_projects_tab(backend: CryoBoostBackend):
         with splitter.after:
             # Right panel: Pipeline Builder
             pipeline_state = build_pipeline_builder_panel(backend, state, callbacks)
+    
+    state["panels_built"] = True  # <-- SET FLAG AFTER BUILD
 
     # Return the combined load function
     async def load_page_data():
