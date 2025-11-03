@@ -13,3 +13,91 @@ body {
 .primary-button:hover {
     background-color: #959595 !important;
 }
+
+
+
+/* Clean, minimal styling inspired by ribosome.xyz */
+body { 
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 14px;
+    background-color: #f8f9fa;
+}
+
+/* Remove all drop shadows */
+.q-card {
+    box-shadow: none !important;
+}
+
+.q-btn {
+    box-shadow: none !important;
+}
+
+/* Clean card styling with subtle borders */
+.panel-card {
+    border: 1px solid #e0e0e0 !important;
+    border-radius: 4px;
+    background: white;
+}
+
+/* Primary button styling */
+.primary-button {
+    background-color: #4a90e2 !important; 
+    color: white !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.primary-button:hover {
+    background-color: #357abd !important;
+}
+
+/* Section headers */
+.section-header {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    color: #666;
+    text-transform: uppercase;
+}
+
+/* Input styling */
+.q-field--outlined .q-field__control {
+    border-radius: 4px;
+}
+
+/* Tab styling - clean borders */
+.q-tab {
+    border: 1px solid #e0e0e0;
+    border-bottom: none;
+    margin-right: 2px;
+}
+
+.q-tab--active {
+    background: white;
+    border-bottom: 1px solid white;
+    margin-bottom: -1px;
+    z-index: 1;
+}
+
+.q-tab-panels {
+    border: 1px solid #e0e0e0;
+    background: white;
+}
+
+/* Status indicators */
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+/* Clean splitter */
+.q-splitter__separator {
+    background: #e0e0e0 !important;
+    width: 1px !important;
+}
+
+.q-splitter__separator:hover {
+    background: #bdbdbd !important;
+}

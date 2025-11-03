@@ -5,22 +5,22 @@ import shutil
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+import json
 
 from pydantic import BaseModel
-from services.commands_builder import (
-    ImportMoviesCommandBuilder, FsMotionCtfCommandBuilder, 
-    TsAlignmentCommandBuilder, BaseCommandBuilder
-)
+from services.commands_builder import ImportMoviesCommandBuilder, BaseCommandBuilder
 from services.parameter_models import (
-    AcquisitionParams, ImportMoviesParams, FsMotionCtfParams, 
-    TsAlignmentParams, AlignmentMethod
+    # --- UPDATED: Import AbstractJobParams ---
+    AbstractJobParams,
+    JobType,
 )
 
 from .starfile_service import StarfileService
 from .config_service import get_config_service
-from .container_service import get_container_service
+from .project_service import ProjectService
 
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
 
@@ -29,242 +29,277 @@ class PipelineOrchestratorService:
     """
     Orchestrates the creation and execution of Relion pipelines.
     """
-    
-    def __init__(self, backend_instance: 'CryoBoostBackend'):
+
+    def __init__(self, backend_instance: "CryoBoostBackend"):
         self.backend = backend_instance
         self.star_handler = StarfileService()
         self.config_service = get_config_service()
-        self.container_service = get_container_service()
-        
+        self.project_service = None
+
         # Map job names to their corresponding builder class
+        # --- NOTE: This map ONLY contains non-driver jobs ---
         self.job_builders: Dict[str, BaseCommandBuilder] = {
-            'importmovies': ImportMoviesCommandBuilder(),
-            'fsMotionAndCtf': FsMotionCtfCommandBuilder(),
-            'tsAlignment': TsAlignmentCommandBuilder(),
+            JobType.IMPORT_MOVIES.value: ImportMoviesCommandBuilder()
+            # As you add more simple (non-driver) jobs, add them here.
         }
 
-    def _get_job_tool(self, job_name: str, job_model: BaseModel) -> str:
-        """Get the correct tool name for container service"""
-        if job_name == 'importmovies':
-            return 'relion_import'
-        
-        if job_name == 'fsMotionAndCtf':
-            return 'warptools'
-            
-        if job_name == 'tsAlignment':
-            if isinstance(job_model, TsAlignmentParams):
-                if job_model.alignment_method == AlignmentMethod.ARETOMO:
-                    return 'aretomo'
-                if job_model.alignment_method == AlignmentMethod.IMOD:
-                    return 'imod'
-                if job_model.alignment_method == AlignmentMethod.RELION:
-                    return 'relion'
-            return 'aretomo'
-            
-        return 'relion'
-
-    def _get_job_paths(
+    async def create_custom_scheme(
         self,
-        job_name: str,
-        job_index: int,
-        selected_jobs: List[str],
-        acquisition_params: AcquisitionParams,
         project_dir: Path,
-        job_dir: Path
-    ) -> Dict[str, Path]:
-        """Construct the relative input/output paths for a job"""
-        paths = {}
-        
-        def get_job_dir_by_name(name: str) -> Optional[str]:
-            try:
-                idx = selected_jobs.index(name)
-                if name == 'importmovies':
-                    return f"Import/job{idx+1:03d}"
-                else:
-                    return f"External/job{idx+1:03d}"
-            except ValueError:
-                return None
-
-        if job_name == 'importmovies':
-            paths['input_dir'] = Path(f"../../{project_dir.name}/mdoc")
-            paths['output_dir'] = Path(".")
-            paths['pipeline_control'] = Path(".")
-            
-        elif job_name == 'fsMotionAndCtf':
-            import_dir = get_job_dir_by_name('importmovies')
-            if import_dir:
-                paths['input_star'] = Path(f"../{import_dir}/movies.star")
-            
-            paths['output_star'] = Path("movies_mic.star")
-            if acquisition_params.gain_reference_path:
-                paths['gain_reference'] = Path(acquisition_params.gain_reference_path)
-
-        elif job_name == 'tsAlignment':
-            motion_dir = get_job_dir_by_name('fsMotionAndCtf')
-            if motion_dir:
-                paths['input_star'] = Path(f"../{motion_dir}/movies_mic.star")
-
-            paths['output_dir'] = Path(".")
-            paths['output_star'] = Path("aligned.star")
-
-        return paths
-
-    def _build_job_command(
-        self, 
-        job_name: str, 
-        job_model: BaseModel,
-        paths: Dict[str, Path]
-    ) -> str:
-        """Dispatcher function to call the correct command builder"""
-        
-        print(f"[PIPELINE] Building command for {job_name} with params: {job_model.model_dump()}")
-        
-        builder = self.job_builders.get(job_name)
-        
-        if builder:
-            try:
-                command = builder.build(job_model, paths)
-                print(f"[PIPELINE] Built command: {command[:200]}...")  # Log first 200 chars
-                return command
-            except Exception as e:
-                print(f"[PIPELINE ERROR] Failed to build command for {job_name}: {e}")
-                import traceback
-                traceback.print_exc()
-                return f"echo 'ERROR: Failed to build command for {job_name}: {e}'; exit 1;"
-        else:
-            return f"echo 'ERROR: Job type \"{job_name}\" not implemented'; exit 1;"
-
-    async def create_custom_scheme(self, 
-        project_dir: Path, 
-        new_scheme_name: str, 
-        base_template_path: Path, 
-        selected_jobs: List[str], 
-        additional_bind_paths: List[str]
+        new_scheme_name: str,
+        base_template_path: Path,
+        selected_jobs: List[str],
+        additional_bind_paths: List[str],
     ):
+        """
+        Creates a custom Relion scheme with the selected jobs.
+        """
         try:
+            # Initialize project service with absolute project root
+            self.project_service = ProjectService(self.backend)
+            self.project_service.set_project_root(project_dir)
+
+            # Create scheme directory
             new_scheme_dir = project_dir / "Schemes" / new_scheme_name
             new_scheme_dir.mkdir(parents=True, exist_ok=True)
             base_scheme_name = base_template_path.name
 
+            # Get the server root dir (where this file lives)
+            server_dir = Path(__file__).parent.parent.resolve()
+
+            # Combine all bind paths
+            all_binds = list(set(additional_bind_paths + [str(server_dir)]))
+
+            # Process each selected job
             for job_index, job_name in enumerate(selected_jobs):
-                job_number_str = f"job{job_index+1:03d}"
-                
+                job_number = job_index + 1  # 1-indexed
+                job_number_str = f"job{job_number:03d}"
+
+                # Copy job template
                 source_job_dir = base_template_path / job_name
                 dest_job_dir = new_scheme_dir / job_name
                 if dest_job_dir.exists():
                     shutil.rmtree(dest_job_dir)
                 shutil.copytree(source_job_dir, dest_job_dir)
 
+                # Read job.star template
                 job_star_path = dest_job_dir / "job.star"
                 if not job_star_path.exists():
-                    continue
+                    print(f"[PIPELINE WARNING] No job.star found for {job_name}")
+                    exit(f"[PIPELINE WARNING] No job.star found for {job_name}. Something went horribly wrong")
 
                 job_data = self.star_handler.read(job_star_path)
-                params_df = job_data.get('joboptions_values')
+
+                params_df = job_data.get("joboptions_values")
                 if params_df is None:
+                    print(f"[PIPELINE WARNING] No joboptions_values in job.star for {job_name}")
                     continue
 
-                # Get the job model from global state
+                # Get job model from app state
                 job_model = self.backend.app_state.jobs.get(job_name)
                 if not job_model:
                     print(f"[PIPELINE WARNING] Job {job_name} not in state, skipping")
                     continue
-                
-                # Get the tool name
-                tool_name = self._get_job_tool(job_name, job_model)
-                if not tool_name:
-                    print(f"[PIPELINE WARNING] No tool mapping for job {job_name}, skipping containerization")
-                    continue
 
-                # Get the paths
-                job_dir_name = "Import" if job_name == 'importmovies' else "External"
-                job_run_dir = project_dir / job_dir_name / job_number_str
-                
-                paths = self._get_job_paths(
-                    job_name,
-                    job_index,
-                    selected_jobs,
-                    self.backend.app_state.acquisition,
-                    project_dir.parent / project_dir.name,
-                    job_run_dir
+                paths = self.project_service.resolve_job_paths(job_name, job_number, selected_jobs)
+
+                print(f"[PIPELINE] Resolved paths for {job_name}:")
+                for key, path in paths.items():
+                    print(f"  {key}: {path}")
+
+                job_run_dir = paths["job_dir"]
+                job_run_dir.mkdir(parents=True, exist_ok=True)
+
+                # --- UPDATED: Pass job_model (not job_name) to builder ---
+                final_command_for_fn_exe = self._build_job_command(job_name, job_model, paths, all_binds, server_dir)
+
+                print(f"[PIPELINE] fn_exe for {job_name}: {final_command_for_fn_exe}")
+
+                params_json_path = job_run_dir / "job_params.json"
+
+                data_to_serialize = {
+                    "job_model": job_model.model_dump(),
+                    "paths": {k: str(v) for k, v in paths.items()},  # Convert Path to str
+                    "additional_binds": all_binds,
+                }
+
+                try:
+                    with open(params_json_path, "w") as f:
+                        json.dump(data_to_serialize, f, indent=2)
+                    print(f"[PIPELINE] Saved job params to {params_json_path}")
+                except Exception as e:
+                    print(f"[PIPELINE ERROR] Failed to save {params_json_path}: {e}")
+
+                # === UPDATE JOB.STAR WITH fn_exe ===
+                params_df.loc[params_df["rlnJobOptionVariable"] == "fn_exe", "rlnJobOptionValue"] = (
+                    final_command_for_fn_exe
                 )
 
-                # Build the raw command
-                raw_command = self._build_job_command(job_name, job_model, paths)
+                # TODO
+                # Clear other_args (we don't use it for now, but should actually write it to the starfile for relion compatibility)
+                params_df.loc[params_df["rlnJobOptionVariable"] == "other_args", "rlnJobOptionValue"] = ""
 
-                # Wrap command with container
-                final_containerized_command = self.container_service.wrap_command_for_tool(
-                    command=raw_command,
-                    cwd=project_dir,
-                    tool_name=tool_name,
-                    additional_binds=additional_bind_paths
-                )
-                
-                # Update job.star
-                params_df.loc[params_df['rlnJobOptionVariable'] == 'fn_exe', 'rlnJobOptionValue'] = final_containerized_command
-                params_df.loc[params_df['rlnJobOptionVariable'] == 'other_args', 'rlnJobOptionValue'] = ''
+                # Remove template parameter placeholders
+                params_to_remove = [f"param{i}_{s}" for i in range(1, 11) for s in ["label", "value"]]
+                cleanup_mask = ~params_df["rlnJobOptionVariable"].isin(params_to_remove)
+                job_data["joboptions_values"] = params_df[cleanup_mask].reset_index(drop=True)
 
-                # Clean up parameter fields
-                params_to_remove = [f'param{i}_{s}' for i in range(1, 11) for s in ['label', 'value']]
-                cleanup_mask = ~params_df['rlnJobOptionVariable'].isin(params_to_remove)
-                job_data['joboptions_values'] = params_df[cleanup_mask].reset_index(drop=True)
-
-                # Update scheme name references
-                print(f"Updating scheme name from '{base_scheme_name}' to '{new_scheme_name}' in {job_name}/job.star")
+                # Replace scheme name references
                 for block_name, block_data in job_data.items():
                     if isinstance(block_data, pd.DataFrame):
-                        for col in block_data.select_dtypes(include=['object']):
+                        for col in block_data.select_dtypes(include=["object"]):
                             if block_data[col].str.contains(base_scheme_name).any():
-                                block_data[col] = block_data[col].str.replace(base_scheme_name, new_scheme_name, regex=False)
-                
+                                block_data[col] = block_data[col].str.replace(
+                                    base_scheme_name, new_scheme_name, regex=False
+                                )
+
+                # Write updated job.star
                 self.star_handler.write(job_data, job_star_path)
 
-            # Create scheme.star file
-            scheme_general_df = pd.DataFrame({'rlnSchemeName': [f'Schemes/{new_scheme_name}/'], 'rlnSchemeCurrentNodeName': ['WAIT']})
-            scheme_floats_df = pd.DataFrame({
-                'rlnSchemeFloatVariableName': ['do_at_most', 'maxtime_hr', 'wait_sec'],
-                'rlnSchemeFloatVariableValue': [500.0, 48.0, 180.0],
-                'rlnSchemeFloatVariableResetValue': [500.0, 48.0, 180.0]
-            })
-            scheme_operators_df = pd.DataFrame({
-                'rlnSchemeOperatorName': ['EXIT', 'EXIT_maxtime', 'WAIT'],
-                'rlnSchemeOperatorType': ['exit', 'exit_maxtime', 'wait'],
-                'rlnSchemeOperatorOutput': ['undefined'] * 3,
-                'rlnSchemeOperatorInput1': ['undefined', 'maxtime_hr', 'wait_sec'],
-                'rlnSchemeOperatorInput2': ['undefined'] * 3
-            })
-            scheme_jobs_df = pd.DataFrame({
-                'rlnSchemeJobNameOriginal': selected_jobs,
-                'rlnSchemeJobName': selected_jobs,
-                'rlnSchemeJobMode': ['continue'] * len(selected_jobs),
-                'rlnSchemeJobHasStarted': [0] * len(selected_jobs)
-            })
-
-            edges = [{'rlnSchemeEdgeInputNodeName': 'WAIT', 'rlnSchemeEdgeOutputNodeName': 'EXIT_maxtime'}]
-            edges.append({'rlnSchemeEdgeInputNodeName': 'EXIT_maxtime', 'rlnSchemeEdgeOutputNodeName': selected_jobs[0]})
-            for i in range(len(selected_jobs) - 1):
-                edges.append({'rlnSchemeEdgeInputNodeName': selected_jobs[i], 'rlnSchemeEdgeOutputNodeName': selected_jobs[i+1]})
-            edges.append({'rlnSchemeEdgeInputNodeName': selected_jobs[-1], 'rlnSchemeEdgeOutputNodeName': 'EXIT'})
-
-            scheme_edges_df = pd.DataFrame(edges)
-            for df in [scheme_edges_df]:
-                df['rlnSchemeEdgeIsFork'] = 0
-                df['rlnSchemeEdgeOutputNodeNameIfTrue'] = 'undefined'
-                df['rlnSchemeEdgeBooleanVariable'] = 'undefined'
-            
-            scheme_star_data = {
-                'scheme_general': scheme_general_df, 'scheme_floats': scheme_floats_df,
-                'scheme_operators': scheme_operators_df, 'scheme_jobs': scheme_jobs_df,
-                'scheme_edges': scheme_edges_df
-            }
-
-            scheme_star_path = new_scheme_dir / "scheme.star"
-            self.star_handler.write(scheme_star_data, scheme_star_path)
-            print(f" Created complete scheme file at: {scheme_star_path}")
-
+            self._create_scheme_star(new_scheme_dir, new_scheme_name, selected_jobs)
+            print(f"[PIPELINE] Created complete scheme at: {new_scheme_dir}")
             return {"success": True}
+
         except Exception as e:
-            print(f" ERROR creating custom scheme: {e}")
+            print(f"[PIPELINE ERROR] Failed to create custom scheme: {e}")
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": str(e)}
+
+    # -----------------------------------------------------------------
+    # --- METHOD REPLACED ---
+    # -----------------------------------------------------------------
+    def _build_job_command(
+        self,
+        job_name: str,
+        job_model: AbstractJobParams,
+        paths: Dict[str, Path],
+        all_binds: List[str],
+        server_dir: Path,
+    ) -> str:
+        """
+        Build the fn_exe command for a job using model metadata.
+
+        - If model.is_driver_job() is True, it points to the Python driver script.
+        - Otherwise, it uses the correct CommandBuilder from self.job_builders.
+        """
+
+        # 1. Check if the job model says it's a driver-based job
+        if job_model.is_driver_job():
+            host_python_exe = server_dir / "venv" / "bin" / "python3"
+            if not host_python_exe.exists():
+                print(f"[PIPELINE WARNING] VENV Python not found at {host_python_exe}, falling back to 'python3'")
+                host_python_exe = "python3"  # Fallback to system python
+
+            # Environment setup for drivers
+            env_setup = f"export PYTHONPATH={server_dir}:${{PYTHONPATH}};"
+
+            # This small if/elif block maps driver jobs to their scripts
+            # This is still scalable, as we only add one line per *driver* job
+            if job_name == JobType.FS_MOTION_CTF.value:
+                driver_script_path = server_dir / "drivers" / "fs_motion_and_ctf.py"
+            elif job_name == JobType.TS_ALIGNMENT.value:
+                driver_script_path = server_dir / "drivers" / "ts_alignment.py"
+            else:
+                # This case handles if a job is marked as a driver but not mapped here
+                return f"echo 'ERROR: Job type \"{job_name}\" is a driver job but has no driver script mapped in orchestrator'; exit 1;"
+
+            return f"{env_setup} {host_python_exe} {driver_script_path}"
+
+        # 2. If not a driver job, it's a simple command. Use a CommandBuilder.
+        else:
+            builder = self.job_builders.get(job_name)
+            if not builder:
+                return f"echo 'ERROR: No command builder found for simple job \"{job_name}\"'; exit 1;"
+
+            try:
+                # Build the raw command using the builder class
+                raw_command = builder.build(job_model, paths)
+
+                # Get the container tool name from the model's metadata
+                tool_name = job_model.get_tool_name()
+
+                # Wrap in container
+                container_svc = self.backend.container_service
+                return container_svc.wrap_command_for_tool(
+                    command=raw_command, cwd=paths["job_dir"], tool_name=tool_name, additional_binds=all_binds
+                )
+            except Exception as e:
+                print(f"[PIPELINE ERROR] Failed to build command for {job_name}: {e}")
+                return f"echo 'ERROR: Failed to build command for {job_name}: {e}'; exit 1;"
+
+    def _create_scheme_star(self, scheme_dir: Path, scheme_name: str, selected_jobs: List[str]):
+        """
+        Create the scheme.star file that defines the pipeline flow.
+        (No changes to this method)
+        """
+        # General scheme metadata
+        scheme_general_df = pd.DataFrame(
+            {"rlnSchemeName": [f"Schemes/{scheme_name}/"], "rlnSchemeCurrentNodeName": ["WAIT"]}
+        )
+
+        # Float variables (pipeline control parameters)
+        scheme_floats_df = pd.DataFrame(
+            {
+                "rlnSchemeFloatVariableName": ["do_at_most", "maxtime_hr", "wait_sec"],
+                "rlnSchemeFloatVariableValue": [500.0, 48.0, 180.0],
+                "rlnSchemeFloatVariableResetValue": [500.0, 48.0, 180.0],
+            }
+        )
+
+        # Operators (control flow nodes)
+        scheme_operators_df = pd.DataFrame(
+            {
+                "rlnSchemeOperatorName": ["EXIT", "EXIT_maxtime", "WAIT"],
+                "rlnSchemeOperatorType": ["exit", "exit_maxtime", "wait"],
+                "rlnSchemeOperatorOutput": ["undefined"] * 3,
+                "rlnSchemeOperatorInput1": ["undefined", "maxtime_hr", "wait_sec"],
+                "rlnSchemeOperatorInput2": ["undefined"] * 3,
+            }
+        )
+
+        # Jobs in the scheme
+        scheme_jobs_df = pd.DataFrame(
+            {
+                "rlnSchemeJobNameOriginal": selected_jobs,
+                "rlnSchemeJobName": selected_jobs,
+                "rlnSchemeJobMode": ["continue"] * len(selected_jobs),
+                "rlnSchemeJobHasStarted": [0] * len(selected_jobs),
+            }
+        )
+
+        # Edges (pipeline flow)
+        edges = [
+            {"rlnSchemeEdgeInputNodeName": "WAIT", "rlnSchemeEdgeOutputNodeName": "EXIT_maxtime"},
+            {"rlnSchemeEdgeInputNodeName": "EXIT_maxtime", "rlnSchemeEdgeOutputNodeName": selected_jobs[0]},
+        ]
+
+        # Connect jobs sequentially
+        for i in range(len(selected_jobs) - 1):
+            edges.append(
+                {"rlnSchemeEdgeInputNodeName": selected_jobs[i], "rlnSchemeEdgeOutputNodeName": selected_jobs[i + 1]}
+            )
+
+        # Connect last job to EXIT
+        edges.append({"rlnSchemeEdgeInputNodeName": selected_jobs[-1], "rlnSchemeEdgeOutputNodeName": "EXIT"})
+
+        scheme_edges_df = pd.DataFrame(edges)
+
+        # Add edge metadata
+        scheme_edges_df["rlnSchemeEdgeIsFork"] = 0
+        scheme_edges_df["rlnSchemeEdgeOutputNodeNameIfTrue"] = "undefined"
+        scheme_edges_df["rlnSchemeEdgeBooleanVariable"] = "undefined"
+
+        # Combine all blocks into scheme.star
+        scheme_star_data = {
+            "scheme_general": scheme_general_df,
+            "scheme_floats": scheme_floats_df,
+            "scheme_operators": scheme_operators_df,
+            "scheme_jobs": scheme_jobs_df,
+            "scheme_edges": scheme_edges_df,
+        }
+
+        scheme_star_path = scheme_dir / "scheme.star"
+        self.star_handler.write(scheme_star_data, scheme_star_path)
+        print(f"[PIPELINE] Created scheme.star at: {scheme_star_path}")
