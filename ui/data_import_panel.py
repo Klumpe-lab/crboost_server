@@ -427,7 +427,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
             panel_state["progress_bar"] = ui.linear_progress(value=0, show_value=False).classes("w-full hidden")
             panel_state["progress_message"] = ui.label("").classes("text-xs text-gray-600 hidden w-full text-center")
 
-        # SLURM CONFIGURATION
         ui.label("SLURM CONFIGURATION").classes("text-xs font-semibold text-black uppercase tracking-wider mb-3 mt-6")
 
         slurm_inputs = build_slurm_job_config(backend, panel_state)

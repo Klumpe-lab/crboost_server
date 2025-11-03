@@ -10,7 +10,7 @@ def build_slurm_job_config(backend, panel_state: Dict[str, Any]) -> Dict[str, An
     Build SLURM job configuration inputs.
     Returns dict with input references.
     """
-    ui.label("SLURM Job Configuration").classes("text-sm font-medium mb-3")
+    # ui.label("SLURM Job Configuration").classes("text-sm font-medium mb-3")
     
     slurm_inputs = {}
     
