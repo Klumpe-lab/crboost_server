@@ -1,4 +1,4 @@
-# ui/data_import_panel.py (UPDATED)
+# ui/data_import_panel.py (REFINED)
 import asyncio
 import math
 from nicegui import ui
@@ -11,12 +11,10 @@ from typing import Dict, Any
 def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Dict[str, Any]):
     """Build the left panel for data import and project configuration"""
 
-    # Local state for this panel
     panel_state = {
         "parameter_inputs": [],
         "movies_path_input": None,
         "mdocs_path_input": None,
-        "detection_status": None,
         "project_name_input": None,
         "project_location_input": None,
         "create_button": None,
@@ -34,46 +32,35 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
         if not movies_path or not mdocs_path:
             return
 
-        panel_state["detection_status"].set_text("Detecting...")
-
         try:
-            # This updates global state
             update_from_mdoc(mdocs_path)
 
-            # Update the display values
             shared_state["auto_detected_values"]["pixel_size"] = app_state.microscope.pixel_size_angstrom
             shared_state["auto_detected_values"]["dose_per_tilt"] = app_state.acquisition.dose_per_tilt
             dims = app_state.acquisition.detector_dimensions
             shared_state["auto_detected_values"]["image_size"] = f"{dims[0]}x{dims[1]}"
 
-            # CRITICAL: Force sync all jobs and update UI
             for job_type in shared_state["selected_jobs"]:
                 job_model = app_state.jobs.get(job_type.value)
                 if job_model and hasattr(job_model, "sync_from_pipeline_state"):
                     job_model.sync_from_pipeline_state(app_state)
-                    print(f"[AUTO-DETECT] Synced {job_type.value} with detected values")
 
-                # Update UI inputs
                 card_data = shared_state["job_cards"].get(job_type, {})
                 if "param_updaters" in card_data:
                     for param_name, updater_fn in card_data["param_updaters"].items():
-                        updater_fn()  # Refresh UI input values
+                        updater_fn()
 
-                # Update sync indicator
                 if "update_job_card_sync_indicator" in callbacks:
                     callbacks["update_job_card_sync_indicator"](job_type)
 
-            # Update global parameter displays
             pixel_size_input.value = str(app_state.microscope.pixel_size_angstrom)
             dose_per_tilt_input.value = str(app_state.acquisition.dose_per_tilt)
             tilt_axis_input.value = str(app_state.acquisition.tilt_axis_degrees)
-            update_image_size_display()  # Update detector size
+            update_image_size_display()
 
-            panel_state["detection_status"].set_text("Complete")
-            ui.notify("Parameters detected and synced to all jobs", type="positive")
+            ui.notify("Parameters detected and synced", type="positive")
 
         except Exception as e:
-            panel_state["detection_status"].set_text("Failed")
             ui.notify(f"Detection failed: {e}", type="negative")
             print(f"[ERROR] Auto-detect failed: {e}")
 
@@ -85,7 +72,7 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
             grouping = int(eer_grouping_input.value)
             frames = shared_state["auto_detected_values"].get("frames_per_tilt", 40)
             if frames == 0:
-                return  # Avoid division by zero
+                return
 
             dose_per_frame = (total_dose / frames) * grouping
             rendered = math.floor(frames / grouping)
@@ -103,12 +90,11 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
         mdocs = panel_state["mdocs_path_input"].value
 
         if not all([name, location, movies, mdocs, shared_state["selected_jobs"]]):
-            ui.notify("All fields, and at least one job, are required", type="negative")
+            ui.notify("All fields and at least one job required", type="negative")
             return
 
         panel_state["create_button"].props("loading")
 
-        # Capture parameter snapshots
         for job_type in shared_state["selected_jobs"]:
             shared_state["params_snapshot"][job_type] = get_job_param_snapshot(job_type)
 
@@ -131,7 +117,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
             panel_state["project_status"].set_text("Ready")
             panel_state["run_button"].props(remove="disabled")
 
-            # Disable all configuration inputs
             panel_state["project_name_input"].disable()
             panel_state["project_location_input"].disable()
             panel_state["movies_path_input"].disable()
@@ -143,8 +128,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
 
             if "rebuild_pipeline_ui" in callbacks:
                 callbacks["rebuild_pipeline_ui"]()
-            ui.notify("Project created. Job parameters are now locked.", type="info")
-
         else:
             ui.notify(f"Error: {result.get('error')}", type="negative")
 
@@ -168,7 +151,7 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
 
         panel_state["run_button"].props(remove="loading")
         if result.get("success"):
-            shared_state["pipeline_running"] = True  # Set the flag
+            shared_state["pipeline_running"] = True
 
             pid = result.get("pid", "N/A")
             ui.notify(f"Started (PID: {pid})", type="positive")
@@ -180,7 +163,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                 callbacks["rebuild_pipeline_ui"]()
             asyncio.create_task(monitor_all_jobs())
             asyncio.create_task(_monitor_pipeline_progress())
-
             asyncio.create_task(monitor_job_statuses())
 
         else:
@@ -189,7 +171,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
             panel_state["progress_message"].classes("hidden")
 
     async def _monitor_pipeline_progress():
-        """Monitor overall pipeline progress"""
         try:
             while shared_state["current_project_path"] and shared_state["pipeline_running"]:
                 progress = await backend.get_pipeline_progress(shared_state["current_project_path"])
@@ -197,7 +178,7 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                 if not progress or progress.get("status") != "ok":
                     panel_state["project_status"].set_text("Monitoring Error")
                     panel_state["project_status"].classes(add="text-red-600")
-                    break  # Exit loop on error
+                    break
 
                 total = progress.get("total", 0)
                 completed = progress.get("completed", 0)
@@ -212,7 +193,7 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                     msg = "Complete" if failed == 0 else f"Done ({failed} failed)"
                     panel_state["project_status"].set_text(msg)
                     panel_state["project_status"].classes(add="text-green-600" if failed == 0 else "text-red-600")
-                    break  # Exit loop on complete
+                    break
 
                 await asyncio.sleep(5)
 
@@ -222,17 +203,11 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
             panel_state["project_status"].classes(add="text-red-600")
 
         finally:
-            # This logic runs on success (break), error (break), or exception
-            print("Overall progress monitoring loop finished.")
-            shared_state["pipeline_running"] = False  # Signal completion/failure
+            shared_state["pipeline_running"] = False
             panel_state["stop_button"].props("disabled")
             panel_state["run_button"].props(remove="disabled").props(remove="loading")
 
     async def monitor_job_statuses():
-        """
-        Monitors the status of individual jobs (pending/running/success/failed)
-        and updates the shared state to reflect in the UI.
-        """
         try:
             while shared_state["pipeline_running"] and shared_state["current_project_path"]:
                 import random
@@ -246,34 +221,28 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
 
                 for job_type in shared_state["selected_jobs"]:
                     status = job_statuses.get(job_type.value, "pending")
-
                     if shared_state["job_cards"][job_type]["status"] != status:
                         shared_state["job_cards"][job_type]["status"] = status
 
-                await asyncio.sleep(3)  # Poll for status every 3 seconds
+                await asyncio.sleep(3)
 
         except Exception as e:
             print(f"[ERROR] Job status monitor failed: {e}")
 
         finally:
-            print("Job status monitoring loop finished.")
             for job_type in shared_state["selected_jobs"]:
                 if shared_state["job_cards"][job_type]["status"] == "running":
-                    shared_state["job_cards"][job_type]["status"] = "failed"  # Or 'unknown'
+                    shared_state["job_cards"][job_type]["status"] = "failed"
 
     async def monitor_all_jobs():
-        """Auto-refresh logs for all jobs"""
         last_content = {}
-
         await asyncio.sleep(1)
 
         while shared_state["pipeline_running"] and shared_state["current_project_path"]:
             try:
                 for job_type in shared_state["selected_jobs"]:
                     card_data = shared_state["job_cards"].get(job_type)
-
                     if not card_data or "monitor" not in card_data or not card_data["monitor"]:
-                        # UI hasn't built the log panel for this tab yet, skip
                         continue
 
                     monitor = card_data["monitor"]
@@ -286,7 +255,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                     if job_type not in last_content:
                         last_content[job_type] = {"stdout": "", "stderr": ""}
 
-                    # Only update if content changed (silent refresh)
                     if logs.get("stdout", "") != last_content[job_type]["stdout"]:
                         monitor["stdout"].clear()
                         monitor["stdout"].push(logs.get("stdout", "No output"))
@@ -301,22 +269,19 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
 
             except Exception as e:
                 print(f"[ERROR] Log monitoring loop failed: {e}")
-                await asyncio.sleep(10)  # Wait longer on error
+                await asyncio.sleep(10)
 
     def get_job_param_snapshot(job_type):
-        """Capture current parameters for a job"""
         job_model = app_state.jobs.get(job_type.value)
         if job_model:
             return job_model.model_dump()
         return {}
 
     def update_job_card_sync_indicator(job_type):
-        """Update sync indicator on job card"""
         if "update_job_card_sync_indicator" in callbacks:
             callbacks["update_job_card_sync_indicator"](job_type)
 
     def refresh_all_job_parameter_displays():
-        """Force refresh all job parameter input displays"""
         for job_type in shared_state["selected_jobs"]:
             card_data = shared_state["job_cards"].get(job_type, {})
             if "param_updaters" in card_data:
@@ -329,60 +294,76 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
         if image_size_input:
             image_size_input.set_value(f"{dims[0]}x{dims[1]}")
 
-    # UI Construction
-    with ui.column().classes("w-full h-full gap-3 p-3 overflow-y-auto"):
-        # DATA IMPORT SECTION
-        ui.label("DATA IMPORT").classes("text-xs font-bold text-gray-700 uppercase tracking-wide")
+    # === UI CONSTRUCTION ===
+    with (
+        ui.column()
+        .classes("w-full h-full overflow-y-auto")
+        .style("padding: 20px; gap: 0px; font-family: 'IBM Plex Sans', sans-serif;")
+    ):
+        # DATA IMPORT & PROJECT
+        with ui.row().classes("w-full items-center justify-between mb-3"):
+            ui.label("DATA IMPORT & PROJECT").classes("text-xs font-semibold text-black uppercase tracking-wider")
+            panel_state["create_button"] = (
+                ui.button("Create Project", on_click=handle_create_project)
+                .props("dense flat no-caps")
+                .style(
+                    "background: #f3f4f6; color: #1f2937; padding: 6px 16px; border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;"
+                )
+            )
 
-        with ui.card().classes("w-full p-4 bg-blue-50/50 border border-blue-200"):
-            with ui.column().classes("w-full gap-3"):
-                with ui.row().classes("w-full gap-2 items-end"):
-                    panel_state["movies_path_input"] = create_path_input_with_picker(
-                        label="Movies Directory",
-                        mode="directory",
-                        glob_pattern="*.eer",
-                        default_value="/users/artem.kushner/dev/001_CopiaTestSet/frames/*.eer",
-                    ).classes("flex-grow min-w-0")
+        with ui.column().classes("w-full mb-6").style("gap: 10px;"):
+            # Project Name and Location
+            with ui.row().classes("w-full").style("gap: 10px;"):
+                panel_state["project_name_input"] = ui.input("Project Name").props("dense outlined").classes("flex-1")
+                panel_state["project_location_input"] = create_path_input_with_picker(
+                    label="Location", mode="directory", default_value="/users/artem.kushner/dev/crboost_server/projects"
+                ).classes("flex-1")
 
-                    panel_state["mdocs_path_input"] = create_path_input_with_picker(
-                        label="MDOCs Directory",
-                        mode="directory",
-                        glob_pattern="*.mdoc",
-                        default_value="/users/artem.kushner/dev/001_CopiaTestSet/mdoc/*.mdoc",
-                    ).classes("flex-grow min-w-0")
+            # Movies
+            panel_state["movies_path_input"] = create_path_input_with_picker(
+                label="Movies",
+                mode="directory",
+                glob_pattern="*.eer",
+                default_value="/users/artem.kushner/dev/001_CopiaTestSet/frames/*.eer",
+            ).classes("w-full")
 
-                    detect_btn = (
-                        ui.button("Detect", on_click=auto_detect_metadata, icon="auto_fix_high")
-                        .props("dense")
-                        .classes("min-w-20")
-                    )
-                    panel_state["detection_status"] = ui.label("").classes("text-xs text-gray-500 min-w-20")
+            # MDocs with detect button
+            with ui.row().classes("w-full items-end").style("gap: 8px;"):
+                panel_state["mdocs_path_input"] = create_path_input_with_picker(
+                    label="MDocs",
+                    mode="directory",
+                    glob_pattern="*.mdoc",
+                    default_value="/users/artem.kushner/dev/001_CopiaTestSet/mdoc/*.mdoc",
+                ).classes("flex-1")
 
-        # MICROSCOPE & ACQUISITION SECTION
-        ui.label("MICROSCOPE & ACQUISITION").classes("text-xs font-bold text-gray-700 uppercase tracking-wide mt-4")
+                ui.button(icon="settings", on_click=auto_detect_metadata).props("dense flat round").style(
+                    "background: #f3f4f6; color: #6b7280; width: 32px; height: 32px;"
+                ).tooltip("Auto-detect parameters")
 
-        with ui.card().classes("w-full p-4 bg-green-50/50 border border-green-200"):
-            with ui.grid(columns=3).classes("w-full gap-3"):
-                # Column 1
+        # MICROSCOPE & ACQUISITION
+        ui.label("MICROSCOPE & ACQUISITION").classes(
+            "text-xs font-semibold text-black uppercase tracking-wider mb-3 mt-6"
+        )
+
+        with ui.column().classes("w-full mb-6").style("gap: 10px;"):
+            with ui.grid(columns=3).classes("w-full").style("gap: 10px;"):
                 pixel_size_input = (
                     ui.input(label="Pixel Size (Å)").props("dense outlined type=number step=0.01").classes("w-full")
                 )
                 voltage_input = ui.input(label="Voltage (kV)").props("dense outlined type=number").classes("w-full")
                 cs_input = ui.input(label="Cs (mm)").props("dense outlined type=number step=0.1").classes("w-full")
 
-                # Column 2
                 amplitude_contrast_input = (
                     ui.input(label="Amplitude Contrast").props("dense outlined type=number step=0.01").classes("w-full")
                 )
                 dose_per_tilt_input = (
-                    ui.input(label="Dose per Tilt").props("dense outlined type=number step=0.1").classes("w-full")
+                    ui.input(label="Dose/Tilt").props("dense outlined type=number step=0.1").classes("w-full")
                 )
                 tilt_axis_input = (
                     ui.input(label="Tilt Axis (°)").props("dense outlined type=number step=0.1").classes("w-full")
                 )
 
-                # Column 3
-                image_size_input = ui.input(label="Detector Size").props("dense outlined readonly").classes("w-full")
+                image_size_input = ui.input(label="Detector").props("dense outlined readonly").classes("w-full")
                 eer_grouping_input = (
                     ui.input(label="EER Grouping").props("dense outlined type=number").classes("w-full")
                 )
@@ -390,7 +371,7 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                     ui.input(label="Target Dose").props("dense outlined type=number step=0.01").classes("w-full")
                 )
 
-            eer_info_label = ui.label("").classes("text-xs text-blue-600 mt-2")
+            eer_info_label = ui.label("").classes("text-xs text-gray-500 mt-1")
 
         # Bind values
         pixel_size_input.bind_value(app_state.microscope, "pixel_size_angstrom")
@@ -411,76 +392,55 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                 tilt_axis_input,
                 eer_grouping_input,
                 target_dose_input,
-                image_size_input,  # Also disable image size input
+                image_size_input,
             ]
         )
 
-        # PROJECT CONFIGURATION SECTION
-        ui.label("PROJECT CONFIGURATION").classes("text-xs font-bold text-gray-700 uppercase tracking-wide mt-4")
+        # PIPELINE CONTROL
+        ui.label("PIPELINE CONTROL").classes("text-xs font-semibold text-black uppercase tracking-wider mb-3 mt-6")
 
-        with ui.card().classes("w-full p-4 bg-purple-50/50 border border-purple-200"):
-            with ui.column().classes("w-full gap-3"):
-                with ui.grid(columns=2).classes("w-full gap-3"):
-                    panel_state["project_name_input"] = (
-                        ui.input("Project Name").props("dense outlined").classes("w-full")
+        with ui.column().classes("w-full mb-6").style("gap: 10px;"):
+            with ui.row().classes("w-full items-center").style("gap: 8px;"):
+                ui.label("Active:").classes("text-xs font-medium text-gray-500")
+                panel_state["active_project_label"] = ui.label("None").classes("text-xs text-gray-900")
+                ui.label("|").classes("text-xs text-gray-400")
+                panel_state["project_status"] = ui.label("No project").classes("text-xs text-gray-600")
+
+            with ui.row().classes("w-full").style("gap: 10px;"):
+                panel_state["run_button"] = (
+                    ui.button("Run Pipeline", on_click=handle_run_pipeline)
+                    .props("disabled dense flat no-caps")
+                    .classes("flex-1")
+                    .style(
+                        "background: #f3f4f6; color: #1f2937; border-radius: 3px; border: 1px solid #e5e7eb; font-weight: 500;"
                     )
-                    panel_state["project_location_input"] = create_path_input_with_picker(
-                        label="Project Location",
-                        mode="directory",
-                        default_value="/users/artem.kushner/dev/crboost_server/projects",
-                    ).classes("w-full")
-
-                panel_state["create_button"] = (
-                    ui.button("CREATE PROJECT", on_click=handle_create_project)
-                    .props("dense color=primary")
-                    .classes("w-full")
+                )
+                panel_state["stop_button"] = (
+                    ui.button("Stop")
+                    .props("disabled dense flat no-caps")
+                    .classes("flex-1")
+                    .style(
+                        "background: #f3f4f6; color: #1f2937; border-radius: 3px; border: 1px solid #e5e7eb; font-weight: 500;"
+                    )
                 )
 
-        # PROJECT STATUS SECTION
-        ui.label("PIPELINE CONTROL").classes("text-xs font-bold text-gray-700 uppercase tracking-wide mt-4")
+            panel_state["progress_bar"] = ui.linear_progress(value=0, show_value=False).classes("w-full hidden")
+            panel_state["progress_message"] = ui.label("").classes("text-xs text-gray-600 hidden w-full text-center")
 
-        with ui.card().classes("w-full p-4 bg-orange-50/50 border border-orange-200"):
-            with ui.column().classes("w-full gap-3"):
-                # Status row
-                with ui.row().classes("w-full items-center justify-between"):
-                    with ui.row().classes("items-center gap-2"):
-                        ui.label("Active Project:").classes("text-xs font-medium")
-                        panel_state["active_project_label"] = ui.label("None").classes(
-                            "text-xs text-gray-600 font-mono"
-                        )
-                        ui.label("|").classes("text-xs text-gray-400")
-                        panel_state["project_status"] = ui.label("No project").classes("text-xs text-gray-600")
+        # SLURM CONFIGURATION
+        ui.label("SLURM CONFIGURATION").classes("text-xs font-semibold text-black uppercase tracking-wider mb-3 mt-6")
 
-                with ui.row().classes("w-full gap-2"):
-                    panel_state["run_button"] = (
-                        ui.button("RUN PIPELINE", on_click=handle_run_pipeline, icon="play_arrow")
-                        .props("disabled dense")
-                        .classes("flex-1")
-                    )
-                    panel_state["stop_button"] = (
-                        ui.button("STOP", icon="stop").props("disabled dense").classes("flex-1")
-                    )
+        slurm_inputs = build_slurm_job_config(backend, panel_state)
+        panel_state["slurm_inputs"] = slurm_inputs
 
-                panel_state["progress_bar"] = ui.linear_progress(value=0, show_value=False).classes("w-full hidden")
-                panel_state["progress_message"] = ui.label("").classes(
-                    "text-xs text-gray-600 hidden w-full text-center"
-                )
-
-        ui.label("SLURM CONFIGURATION").classes("text-xs font-bold text-gray-700 uppercase tracking-wide mt-4")
-
-        with ui.card().classes("w-full p-4 bg-cyan-50/50 border border-cyan-200"):
-            slurm_inputs = build_slurm_job_config(backend, panel_state)
-            panel_state["slurm_inputs"] = slurm_inputs
-
-            with ui.expansion("Cluster Overview", icon="info").props("dense").classes("w-full mt-3"):
-                with ui.column().classes("w-full gap-3 p-3"):
-                    overview_state = build_cluster_overview(backend, panel_state)
-                    panel_state["cluster_overview"] = overview_state
+        with ui.expansion("Cluster Overview", icon="info").props("dense").classes("w-full mt-3"):
+            with ui.column().classes("w-full gap-3 p-3"):
+                overview_state = build_cluster_overview(backend, panel_state)
+                panel_state["cluster_overview"] = overview_state
 
         async def delayed_slurm_init():
             await asyncio.sleep(0.5)
             try:
-                # Load partitions for the config dropdown
                 partitions_result = await backend.get_slurm_partitions()
                 if partitions_result.get("success"):
                     partitions = partitions_result["partitions"]
@@ -495,7 +455,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                     if partition_names:
                         slurm_inputs["partition"].value = partition_names[0]
 
-                # Load cluster overview
                 if "refresh_cluster_data" in overview_state:
                     await overview_state["refresh_cluster_data"]()
 
@@ -508,7 +467,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
         target_dose_input.on_value_change(calculate_eer_grouping)
         update_image_size_display()
 
-        # Add global parameter change listeners
         def setup_global_param_listeners():
             def on_global_param_change():
                 for job_type in shared_state["selected_jobs"]:

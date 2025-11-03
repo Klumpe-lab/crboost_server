@@ -70,18 +70,17 @@ def build_projects_tab(backend: CryoBoostBackend):
     
     # Shared state between panels
     state = {
-        "selected_jobs": [],
+        "selected_jobs"       : [],
         "current_project_path": None,
-        "current_scheme_name": None,
+        "current_scheme_name" : None,
         "auto_detected_values": {},
-        "job_cards": {},
-        "params_snapshot": {},
-        "project_created": False,
-        "pipeline_running": False,
-        "panels_built": False,  # <-- ADD THIS FLAG
+        "job_cards"           : {},
+        "params_snapshot"     : {},
+        "project_created"     : False,
+        "pipeline_running"    : False,
+        "panels_built"        : False,
     }
 
-    # Callback functions that panels can use
     callbacks = {
         "rebuild_pipeline_cards": None
     }
