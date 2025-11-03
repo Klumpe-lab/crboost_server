@@ -17,31 +17,28 @@ class Partition(str, Enum):
     CPU = "c"
     GPU = "g"
 
-
 class MicroscopeType(str, Enum):
     KRIOS_G3 = "Krios_G3"
     KRIOS_G4 = "Krios_G4"
-    GLACIOS = "Glacios"
-    TALOS = "Talos"
-    CUSTOM = "Custom"
-
+    GLACIOS  = "Glacios"
+    TALOS    = "Talos"
+    CUSTOM   = "Custom"
 
 class AlignmentMethod(str, Enum):
     ARETOMO = "AreTomo"
-    IMOD = "IMOD"
-    RELION = "Relion"
-
+    IMOD    = "IMOD"
+    RELION  = "Relion"
 
 class MicroscopeParams(BaseModel):
     """Microscope-specific parameters"""
 
     model_config = ConfigDict(validate_assignment=True)
 
-    microscope_type        : MicroscopeType = MicroscopeType.CUSTOM
-    pixel_size_angstrom    : float          = Field(default=1.35, ge=0.5, le=10.0)
-    acceleration_voltage_kv: float          = Field(default=300.0)
-    spherical_aberration_mm: float          = Field(default=2.7, ge=0.0, le=10.0)
-    amplitude_contrast     : float          = Field(default=0.1, ge=0.0, le=1.0)
+    microscope_type         : MicroscopeType = MicroscopeType.CUSTOM
+    pixel_size_angstrom     : float          = Field(default=1.35, ge=0.5, le=10.0)
+    acceleration_voltage_kv: float           = Field(default=300.0)
+    spherical_aberration_mm: float           = Field(default=2.7, ge=0.0, le=10.0)
+    amplitude_contrast      : float          = Field(default=0.1, ge=0.0, le=1.0)
 
     @field_validator("acceleration_voltage_kv")
     @classmethod
@@ -57,14 +54,14 @@ class AcquisitionParams(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)
 
-    dose_per_tilt: float = Field(default=3.0, ge=0.1, le=9.0)
-    detector_dimensions: Tuple[int, int] = (4096, 4096)
-    tilt_axis_degrees: float = Field(default=-95.0, ge=-180.0, le=180.0)
-    eer_fractions_per_frame: Optional[int] = Field(default=None, ge=1, le=100)
-    sample_thickness_nm: float = Field(default=300.0, ge=50.0, le=2000.0)
-    gain_reference_path: Optional[str] = None
-    invert_tilt_angles: bool = False
-    invert_defocus_hand: bool = False
+    dose_per_tilt          : float           = Field(default=3.0, ge=0.1, le=9.0)
+    detector_dimensions    : Tuple[int, int] = (4096, 4096)
+    tilt_axis_degrees      : float           = Field(default=-95.0, ge=-180.0, le=180.0)
+    eer_fractions_per_frame: Optional[int]   = Field(default=None, ge=1, le=100)
+    sample_thickness_nm    : float           = Field(default=300.0, ge=50.0, le=2000.0)
+    gain_reference_path    : Optional[str]   = None
+    invert_tilt_angles     : bool            = False
+    invert_defocus_hand    : bool            = False
 
 
 class ComputingParams(BaseModel):
@@ -73,9 +70,9 @@ class ComputingParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     partition: Partition = Partition.GPU
-    gpu_count: int = Field(default=1, ge=0, le=8)
-    memory_gb: int = Field(default=32, ge=4, le=512)
-    threads: int = Field(default=8, ge=1, le=128)
+    gpu_count: int       = Field(default=1, ge=0, le=8)
+    memory_gb: int       = Field(default=32, ge=4, le=512)
+    threads  : int       = Field(default=8, ge=1, le=128)
 
     @classmethod
     def from_conf_yaml(cls, config_path: Path) -> Self:
@@ -152,29 +149,28 @@ class AbstractJobParams(BaseModel):
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
-        return {}  # Default: no dependencies
+        return {}  
 
     @staticmethod
     def get_input_assets(
         job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
     ) -> Dict[str, Path]:
-        return {"job_dir": job_dir, "project_root": project_root}  # Default: job dir + project root
+        return {"job_dir": job_dir, "project_root": project_root}  
 
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        return None  # Default: no template loading
+        return None  
 
     @classmethod
     def from_pipeline_state(cls, state: "PipelineState") -> Self:
         raise NotImplementedError("Subclass must implement from_pipeline_state()")
 
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
-        return self  # Default: no syncing needed
+        return self  
 
-    # --- NEW METADATA METHODS ---
     def is_driver_job(self) -> bool:
         """Returns True if this job uses a Python driver, False if it's a direct command."""
-        return False  # Default to false (simple command)
+        return False  
 
     def get_tool_name(self) -> str:
         """Returns the container tool name (e.g., 'relion_import', 'warptools')."""
@@ -188,26 +184,21 @@ class ImportMoviesParams(AbstractJobParams):
 
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
 
-    # From microscope
-    pixel_size: float = Field(ge=0.5, le=10.0)
-    voltage: float = Field(ge=50.0)
+    pixel_size          : float = Field(ge=0.5, le=10.0)
+    voltage             : float = Field(ge=50.0)
     spherical_aberration: float = Field(ge=0.0)
-    amplitude_contrast: float = Field(ge=0.0, le=1.0)
+    amplitude_contrast  : float = Field(ge=0.0, le=1.0)
 
-    # From acquisition
     dose_per_tilt_image: float = Field(ge=0.1)
-    tilt_axis_angle: float = Field(ge=-180.0, le=180.0)
+    tilt_axis_angle    : float = Field(ge=-180.0, le=180.0)
 
-    # Job-specific
-    optics_group_name: str = "opticsGroup1"
-    do_at_most: int = Field(default=-1)
+    optics_group_name  : str  = "opticsGroup1"
+    do_at_most         : int  = Field(default=-1)
     invert_defocus_hand: bool = False
 
-    # --- NEW: Implemented metadata methods ---
     def get_tool_name(self) -> str:
         return "relion_import"
 
-    # Note: is_driver_job() is intentionally omitted to use the 'False' default
 
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
@@ -222,7 +213,6 @@ class ImportMoviesParams(AbstractJobParams):
             if job_data is None:
                 return None
 
-            # Convert DataFrame to dict if needed
             if isinstance(job_data, pd.DataFrame):
                 if len(job_data) == 0:
                     return None
@@ -231,14 +221,14 @@ class ImportMoviesParams(AbstractJobParams):
                 job_params: Dict[str, Any] = job_data
 
             return cls(
-                pixel_size=float(job_params.get("nominal_pixel_size", 1.35)),
-                voltage=float(job_params.get("voltage", 300)),
-                spherical_aberration=float(job_params.get("spherical_aberration", 2.7)),
-                amplitude_contrast=float(job_params.get("amplitude_contrast", 0.1)),
-                dose_per_tilt_image=float(job_params.get("dose_per_tilt_image", 3.0)),
-                tilt_axis_angle=float(job_params.get("nominal_tilt_axis_angle", -95.0)),
-                optics_group_name=job_params.get("optics_group_name", "opticsGroup1"),
-                invert_defocus_hand=bool(job_params.get("invert_defocus_hand", False)),
+                pixel_size           = float(job_params.get("nominal_pixel_size", 1.35)),
+                voltage              = float(job_params.get("voltage", 300)),
+                spherical_aberration = float(job_params.get("spherical_aberration", 2.7)),
+                amplitude_contrast   = float(job_params.get("amplitude_contrast", 0.1)),
+                dose_per_tilt_image  = float(job_params.get("dose_per_tilt_image", 3.0)),
+                tilt_axis_angle      = float(job_params.get("nominal_tilt_axis_angle", -95.0)),
+                optics_group_name    = job_params.get("optics_group_name", "opticsGroup1"),
+                invert_defocus_hand  = bool(job_params.get("invert_defocus_hand", False)),
             )
         except Exception as e:
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
@@ -248,38 +238,38 @@ class ImportMoviesParams(AbstractJobParams):
     def from_pipeline_state(cls, state: "PipelineState") -> Self:
         """Create from global pipeline state"""
         return cls(
-            pixel_size=state.microscope.pixel_size_angstrom,
-            voltage=state.microscope.acceleration_voltage_kv,
-            spherical_aberration=state.microscope.spherical_aberration_mm,
-            amplitude_contrast=state.microscope.amplitude_contrast,
-            dose_per_tilt_image=state.acquisition.dose_per_tilt,
-            tilt_axis_angle=state.acquisition.tilt_axis_degrees,
-            invert_defocus_hand=state.acquisition.invert_defocus_hand,
+            pixel_size           = state.microscope.pixel_size_angstrom,
+            voltage              = state.microscope.acceleration_voltage_kv,
+            spherical_aberration = state.microscope.spherical_aberration_mm,
+            amplitude_contrast   = state.microscope.amplitude_contrast,
+            dose_per_tilt_image  = state.acquisition.dose_per_tilt,
+            tilt_axis_angle      = state.acquisition.tilt_axis_degrees,
+            invert_defocus_hand  = state.acquisition.invert_defocus_hand,
         )
 
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
         """Update microscope/acquisition params from global state IN-PLACE"""
-        self.pixel_size = state.microscope.pixel_size_angstrom
-        self.voltage = state.microscope.acceleration_voltage_kv
+        self.pixel_size           = state.microscope.pixel_size_angstrom
+        self.voltage              = state.microscope.acceleration_voltage_kv
         self.spherical_aberration = state.microscope.spherical_aberration_mm
-        self.amplitude_contrast = state.microscope.amplitude_contrast
-        self.dose_per_tilt_image = state.acquisition.dose_per_tilt
-        self.tilt_axis_angle = state.acquisition.tilt_axis_degrees
-        self.invert_defocus_hand = state.acquisition.invert_defocus_hand
+        self.amplitude_contrast   = state.microscope.amplitude_contrast
+        self.dose_per_tilt_image  = state.acquisition.dose_per_tilt
+        self.tilt_axis_angle      = state.acquisition.tilt_axis_degrees
+        self.invert_defocus_hand  = state.acquisition.invert_defocus_hand
         return self
 
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
         return {
-            "job_dir": job_dir,
+            "job_dir"         : job_dir,
             "tilt_series_star": job_dir / "tilt_series.star",
-            "tilt_series_dir": job_dir / "tilt_series",
-            "log": job_dir / "log.txt",
+            "tilt_series_dir" : job_dir / "tilt_series",
+            "log"             : job_dir / "log.txt",
         }
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
-        return {}  # ImportMovies has no upstream dependencies
+        return {}  
 
     @staticmethod
     def get_input_assets(
@@ -295,42 +285,34 @@ class FsMotionCtfParams(AbstractJobParams):
 
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
-    # From microscope (synced from global)
     pixel_size: float = Field(ge=0.5, le=10.0)
-    voltage: float = Field(ge=50.0)
-    cs: float = Field(ge=0.0)
-    amplitude: float = Field(ge=0.0, le=1.0)
+    voltage   : float = Field(ge=50.0)
+    cs        : float = Field(ge=0.0)
+    amplitude : float = Field(ge=0.0, le=1.0)
 
-    # EER specific (from acquisition)
     eer_ngroups: int = Field(default=32, ge=1)
 
-    # Motion correction parameters (from job.star)
     m_range_min_max: str = "500:10"
-    m_bfac: int = Field(default=-500)
-    m_grid: str = "1x1x3"
+    m_bfac         : int = Field(default=-500)
+    m_grid         : str = "1x1x3"
 
-    # CTF parameters
-    c_range_min_max: str = "30:6.0"
-    c_defocus_min_max: str = "1.1:8"  # microns
-    c_grid: str = "2x2x1"
-    c_window: int = Field(default=512, ge=128)
+    c_range_min_max  : str = "30:6.0"
+    c_defocus_min_max: str = "1.1:8"         
+    c_grid           : str = "2x2x1"
+    c_window         : int = Field(default=512, ge=128)
 
-    # Processing control
-    perdevice: int = Field(default=1, ge=0, le=8)
+    perdevice : int = Field(default=1, ge=0, le=8)
     do_at_most: int = Field(default=-1)
 
-    # Optional gain reference
-    gain_path: Optional[str] = None
+    gain_path      : Optional[str] = None
     gain_operations: Optional[str] = None
 
-    # --- NEW: Implemented metadata methods ---
     def is_driver_job(self) -> bool:
-        return True  # This job uses a Python driver
+        return True  
 
     def get_tool_name(self) -> str:
         return "warptools"  # The driver will use this tool
 
-    # Helper properties
     @property
     def m_range_min(self) -> int:
         return int(self.m_range_min_max.split(":")[0])
@@ -378,27 +360,26 @@ class FsMotionCtfParams(AbstractJobParams):
 
             df: pd.DataFrame = joboptions
 
-            # Create parameter dictionary - safely access DataFrame columns
             param_dict: Dict[str, str] = pd.Series(
                 df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
             ).to_dict()
 
             return cls(
-                pixel_size=1.35,  
-                voltage=300.0,
-                cs=2.7,
-                amplitude=0.1,
-                eer_ngroups=int(param_dict.get("param1_value", "32")),
-                gain_path=param_dict.get("param2_value"),
-                gain_operations=param_dict.get("param3_value"),
-                m_range_min_max=param_dict.get("param4_value", "500:10"),
-                m_bfac=int(param_dict.get("param5_value", "-500")),
-                m_grid=param_dict.get("param6_value", "1x1x3"),
-                c_range_min_max=param_dict.get("param7_value", "30:6.0"),
-                c_defocus_min_max=param_dict.get("param8_value", "1.1:8"),
-                c_grid=param_dict.get("param9_value", "2x2x1"),
-                perdevice=int(param_dict.get("param10_value", "1")),
-                c_window=512,
+                pixel_size        = 1.35,
+                voltage           = 300.0,
+                cs                = 2.7,
+                amplitude         = 0.1,
+                eer_ngroups       = int(param_dict.get("param1_value", "32")),
+                gain_path         = param_dict.get("param2_value"),
+                gain_operations   = param_dict.get("param3_value"),
+                m_range_min_max   = param_dict.get("param4_value", "500:10"),
+                m_bfac            = int(param_dict.get("param5_value", "-500")),
+                m_grid            = param_dict.get("param6_value", "1x1x3"),
+                c_range_min_max   = param_dict.get("param7_value", "30:6.0"),
+                c_defocus_min_max = param_dict.get("param8_value", "1.1:8"),
+                c_grid            = param_dict.get("param9_value", "2x2x1"),
+                perdevice         = int(param_dict.get("param10_value", "1")),
+                c_window          = 512,
             )
 
         except Exception as e:
@@ -409,34 +390,34 @@ class FsMotionCtfParams(AbstractJobParams):
     def from_pipeline_state(cls, state: "PipelineState") -> Self:
         """Create from global pipeline state"""
         return cls(
-            pixel_size=state.microscope.pixel_size_angstrom,
-            voltage=state.microscope.acceleration_voltage_kv,
-            cs=state.microscope.spherical_aberration_mm,
-            amplitude=state.microscope.amplitude_contrast,
-            eer_ngroups=state.acquisition.eer_fractions_per_frame or 32,
-            gain_path=state.acquisition.gain_reference_path,
+            pixel_size  = state.microscope.pixel_size_angstrom,
+            voltage     = state.microscope.acceleration_voltage_kv,
+            cs          = state.microscope.spherical_aberration_mm,
+            amplitude   = state.microscope.amplitude_contrast,
+            eer_ngroups = state.acquisition.eer_fractions_per_frame or 32,
+            gain_path   = state.acquisition.gain_reference_path,
         )
 
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
         """Update microscope/acquisition params from global state IN-PLACE"""
-        self.pixel_size = state.microscope.pixel_size_angstrom
-        self.voltage = state.microscope.acceleration_voltage_kv
-        self.cs = state.microscope.spherical_aberration_mm
-        self.amplitude = state.microscope.amplitude_contrast
+        self.pixel_size  = state.microscope.pixel_size_angstrom
+        self.voltage     = state.microscope.acceleration_voltage_kv
+        self.cs          = state.microscope.spherical_aberration_mm
+        self.amplitude   = state.microscope.amplitude_contrast
         self.eer_ngroups = state.acquisition.eer_fractions_per_frame or 32
-        self.gain_path = state.acquisition.gain_reference_path  # Sync gain path
+        self.gain_path   = state.acquisition.gain_reference_path
         return self
 
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
         """Define all outputs this job produces"""
         return {
-            "job_dir": job_dir,
-            "output_star": job_dir / "fs_motion_and_ctf.star",
+            "job_dir"        : job_dir,
+            "output_star"    : job_dir / "fs_motion_and_ctf.star",
             "tilt_series_dir": job_dir / "tilt_series",
-            "warp_dir": job_dir / "warp_frameseries",
-            "warp_settings": job_dir / "warp_frameseries.settings",
-            "xml_pattern": str(job_dir / "warp_frameseries" / "*.xml"),
+            "warp_dir"       : job_dir / "warp_frameseries",
+            "warp_settings"  : job_dir / "warp_frameseries.settings",
+            "xml_pattern"    : str(job_dir / "warp_frameseries" / "*.xml"),
         }
 
     @staticmethod
@@ -454,12 +435,12 @@ class FsMotionCtfParams(AbstractJobParams):
         import_outputs = upstream_outputs.get("importmovies", {})
 
         return {
-            "job_dir": job_dir,
-            "input_star": import_outputs.get("tilt_series_star"),
+            "job_dir"    : job_dir,
+            "input_star" : import_outputs.get("tilt_series_star"),
             "output_star": job_dir / "fs_motion_and_ctf.star",
-            "warp_dir": job_dir / "warp_frameseries",
-            "frames_dir": project_root / "frames",
-            "mdoc_dir": project_root / "mdoc",
+            "warp_dir"   : job_dir / "warp_frameseries",
+            "frames_dir" : project_root / "frames",
+            "mdoc_dir"   : project_root / "mdoc",
         }
 
 
@@ -470,36 +451,34 @@ class TsAlignmentParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
     # Synced from global state
-    pixel_size: float = Field(default=1.35)  # Original pixel size
-    dose_per_tilt: float = Field(default=3.0)
-    tilt_axis_angle: float = Field(default=-95.0)
-    invert_tilt_angles: bool = False
-    thickness_nm: float = Field(default=300.0, ge=50.0, le=2000.0)  # Used for AreTomo alignz
+    pixel_size        : float = Field(default=1.35)                     
+    dose_per_tilt     : float = Field(default=3.0)
+    tilt_axis_angle   : float = Field(default=-95.0)
+    invert_tilt_angles: bool  = False
+    thickness_nm      : float = Field(default=300.0, ge=50.0, le=2000.0) 
 
     # Job-specific
     alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
-    rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)  # Target angpix for alignment
-    tomo_dimensions: str = Field(default="4096x4096x2048")  # Unbinned tomo dimensions
-    do_at_most: int = Field(default=-1)
-    perdevice: int = Field(default=1, ge=0, le=8)
+    rescale_angpixs : float           = Field(default=12.0, ge=2.0, le=50.0)  
+    tomo_dimensions : str             = Field(default="4096x4096x2048")      
+    do_at_most      : int             = Field(default=-1)
+    perdevice       : int             = Field(default=1, ge=0, le=8)
 
     # Optional gain
     gain_path: Optional[str] = None
     gain_operations: Optional[str] = None
 
     # AreTomo specific
-    tilt_cor: int = Field(default=1)  # 0: no, 1: tiltcor, 2: patch-based
-    out_imod: int = Field(default=0)
-    patch_x: int = Field(default=5, ge=1)
-    patch_y: int = Field(default=5, ge=1)
-    axis_iter: int = Field(default=3, ge=0)
+    tilt_cor  : int = Field(default=1)       
+    out_imod  : int = Field(default=0)
+    patch_x   : int = Field(default=5, ge=1)
+    patch_y   : int = Field(default=5, ge=1)
+    axis_iter : int = Field(default=3, ge=0)
     axis_batch: int = Field(default=5, ge=1)
 
-    # IMOD specific
     imod_patch_size: int = Field(default=200)
-    imod_overlap: int = Field(default=50)
+    imod_overlap   : int = Field(default=50)
 
-    # --- NEW: Implemented metadata methods ---
     def is_driver_job(self) -> bool:
         return True  # This job also uses a Python driver
 
@@ -538,19 +517,19 @@ class TsAlignmentParams(AbstractJobParams):
                 rescale_angpixs=float(
                     job_params.get("binning", 12.0)
                 ),  # Assuming 'binning' was a misnomer for target angpix
-                thickness_nm=float(job_params.get("thickness", 300.0)),
-                tomo_dimensions=job_params.get("tomo_dimensions", "4096x4096x2048"),
-                gain_path=job_params.get("gain_path"),
-                gain_operations=job_params.get("gain_operations"),
-                perdevice=int(job_params.get("perdevice", 1)),
-                tilt_cor=int(job_params.get("tilt_cor", 1)),
-                out_imod=int(job_params.get("out_imod", 0)),
-                patch_x=int(job_params.get("patch_x", 5)),
-                patch_y=int(job_params.get("patch_y", 5)),
-                axis_iter=int(job_params.get("axis_iter", 3)),
-                axis_batch=int(job_params.get("axis_batch", 5)),
-                imod_patch_size=int(job_params.get("imod_patch_size", 200)),
-                imod_overlap=int(job_params.get("imod_overlap", 50)),
+                thickness_nm    = float(job_params.get("thickness", 300.0)),
+                tomo_dimensions = job_params.get("tomo_dimensions", "4096x4096x2048"),
+                gain_path       = job_params.get("gain_path"),
+                gain_operations = job_params.get("gain_operations"),
+                perdevice       = int(job_params.get("perdevice", 1)),
+                tilt_cor        = int(job_params.get("tilt_cor", 1)),
+                out_imod        = int(job_params.get("out_imod", 0)),
+                patch_x         = int(job_params.get("patch_x", 5)),
+                patch_y         = int(job_params.get("patch_y", 5)),
+                axis_iter       = int(job_params.get("axis_iter", 3)),
+                axis_batch      = int(job_params.get("axis_batch", 5)),
+                imod_patch_size = int(job_params.get("imod_patch_size", 200)),
+                imod_overlap    = int(job_params.get("imod_overlap", 50)),
             )
         except Exception as e:
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
@@ -560,33 +539,33 @@ class TsAlignmentParams(AbstractJobParams):
     def from_pipeline_state(cls, state: "PipelineState") -> Self:
         """Create from global pipeline state"""
         return cls(
-            thickness_nm=state.acquisition.sample_thickness_nm,
-            pixel_size=state.microscope.pixel_size_angstrom,
-            dose_per_tilt=state.acquisition.dose_per_tilt,
-            tilt_axis_angle=state.acquisition.tilt_axis_degrees,
-            invert_tilt_angles=state.acquisition.invert_tilt_angles,
-            gain_path=state.acquisition.gain_reference_path,
+            thickness_nm       = state.acquisition.sample_thickness_nm,
+            pixel_size         = state.microscope.pixel_size_angstrom,
+            dose_per_tilt      = state.acquisition.dose_per_tilt,
+            tilt_axis_angle    = state.acquisition.tilt_axis_degrees,
+            invert_tilt_angles = state.acquisition.invert_tilt_angles,
+            gain_path          = state.acquisition.gain_reference_path,
         )
 
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
         """Update acquisition params from global state IN-PLACE"""
-        self.thickness_nm = state.acquisition.sample_thickness_nm
-        self.pixel_size = state.microscope.pixel_size_angstrom
-        self.dose_per_tilt = state.acquisition.dose_per_tilt
-        self.tilt_axis_angle = state.acquisition.tilt_axis_degrees
+        self.thickness_nm       = state.acquisition.sample_thickness_nm
+        self.pixel_size         = state.microscope.pixel_size_angstrom
+        self.dose_per_tilt      = state.acquisition.dose_per_tilt
+        self.tilt_axis_angle    = state.acquisition.tilt_axis_degrees
         self.invert_tilt_angles = state.acquisition.invert_tilt_angles
-        self.gain_path = state.acquisition.gain_reference_path
+        self.gain_path          = state.acquisition.gain_reference_path
         return self
 
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
         return {
-            "job_dir": job_dir,
-            "output_star": job_dir / "aligned_tilt_series.star",
+            "job_dir"        : job_dir,
+            "output_star"    : job_dir / "aligned_tilt_series.star",
             "tilt_series_dir": job_dir / "tilt_series",
-            "warp_dir": job_dir / "warp_tiltseries",
-            "warp_settings": job_dir / "warp_tiltseries.settings",
-            "tomostar_dir": job_dir / "tomostar",
+            "warp_dir"       : job_dir / "warp_tiltseries",
+            "warp_settings"  : job_dir / "warp_tiltseries.settings",
+            "tomostar_dir"   : job_dir / "tomostar",
         }
 
     @staticmethod
@@ -599,13 +578,13 @@ class TsAlignmentParams(AbstractJobParams):
     ) -> Dict[str, Path]:
         motion_outputs = upstream_outputs.get("fsMotionAndCtf", {})
         return {
-            "job_dir": job_dir,
-            "input_star": motion_outputs.get("output_star"),
+            "job_dir"        : job_dir,
+            "input_star"     : motion_outputs.get("output_star"),
             "frameseries_dir": motion_outputs.get("warp_dir"),
-            "output_star": job_dir / "aligned_tilt_series.star",
-            "mdoc_dir": project_root / "mdoc",
-            "tomostar_dir": job_dir / "tomostar",
-            "warp_dir": job_dir / "warp_tiltseries",
+            "output_star"    : job_dir / "aligned_tilt_series.star",
+            "mdoc_dir"       : project_root / "mdoc",
+            "tomostar_dir"   : job_dir / "tomostar",
+            "warp_dir"       : job_dir / "warp_tiltseries",
         }
 
 
@@ -613,5 +592,5 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
         JobType.IMPORT_MOVIES: ImportMoviesParams,
         JobType.FS_MOTION_CTF: FsMotionCtfParams,
-        JobType.TS_ALIGNMENT: TsAlignmentParams,
+        JobType.TS_ALIGNMENT : TsAlignmentParams,
     }

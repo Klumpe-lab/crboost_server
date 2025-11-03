@@ -6,11 +6,10 @@ from services.parameter_models import JobType, jobtype_paramclass, AbstractJobPa
 from services.starfile_service import StarfileService
 import os
 import glob
-import asyncio  # <-- NEW: Needed for subprocess logic
-import json     # <-- NEW: Needed for saving params
+import asyncio  
+import json     
 from typing import TYPE_CHECKING
 
-# --- NEW: Import for saving project params ---
 from app_state import export_for_project
 
 from services.mdoc_service import get_mdoc_service
@@ -158,7 +157,7 @@ class ProjectService:
         """Creates the project directory structure and imports the raw data."""
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
-            self.set_project_root(project_dir)  # Set root for path resolution
+            self.set_project_root(project_dir)  
 
             (project_dir / "Schemes").mkdir(exist_ok=True)
             (project_dir / "Logs").mkdir(exist_ok=True)
@@ -189,9 +188,6 @@ class ProjectService:
         ...
         # TODO: Implement this later
 
-    # -----------------------------------------------------------------
-    # --- METHOD MOVED FROM backend.py ---
-    # -----------------------------------------------------------------
     async def initialize_new_project(
         self,
         project_name: str,
@@ -217,7 +213,6 @@ class ProjectService:
 
             import_prefix = f"{project_name}_"
             
-            # --- UPDATED: Call method on self ---
             structure_result = await self.create_project_structure(
                 project_dir, movies_glob, mdocs_glob, import_prefix
             )
@@ -268,7 +263,6 @@ class ProjectService:
             }
 
             # Create the scheme
-            # --- UPDATED: Access orchestrator via self.backend ---
             scheme_result = await self.backend.pipeline_orchestrator.create_custom_scheme(
                 project_dir,
                 scheme_name,
@@ -286,7 +280,6 @@ class ProjectService:
 
             init_command = "unset DISPLAY && relion --tomo --do_projdir ."
 
-            # --- UPDATED: Access container_service via self.backend ---
             container_init_command = self.backend.container_service.wrap_command_for_tool(
                 command=init_command,
                 cwd=project_dir,

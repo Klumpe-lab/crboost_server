@@ -155,10 +155,6 @@ class PipelineRunnerService:
             yield job_statuses
             await asyncio.sleep(5)
 
-    # -----------------------------------------------------------------
-    # --- Internal Helper Methods (Moved from backend.py) ---
-    # -----------------------------------------------------------------
-
     async def _run_relion_schemer(
         self, project_dir: Path, scheme_name: str, additional_bind_paths: List[str]
     ):

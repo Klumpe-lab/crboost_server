@@ -1,16 +1,13 @@
 # services/pipeline_orchestrator_service.py
 
-import asyncio
 import shutil
 import pandas as pd
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, List
 import json
 
-from pydantic import BaseModel
 from services.commands_builder import ImportMoviesCommandBuilder, BaseCommandBuilder
 from services.parameter_models import (
-    # --- UPDATED: Import AbstractJobParams ---
     AbstractJobParams,
     JobType,
 )
@@ -110,7 +107,6 @@ class PipelineOrchestratorService:
                 job_run_dir = paths["job_dir"]
                 job_run_dir.mkdir(parents=True, exist_ok=True)
 
-                # --- UPDATED: Pass job_model (not job_name) to builder ---
                 final_command_for_fn_exe = self._build_job_command(job_name, job_model, paths, all_binds, server_dir)
 
                 print(f"[PIPELINE] fn_exe for {job_name}: {final_command_for_fn_exe}")
@@ -119,7 +115,7 @@ class PipelineOrchestratorService:
 
                 data_to_serialize = {
                     "job_model": job_model.model_dump(),
-                    "paths": {k: str(v) for k, v in paths.items()},  # Convert Path to str
+                    "paths": {k: str(v) for k, v in paths.items()}, 
                     "additional_binds": all_binds,
                 }
 
@@ -167,9 +163,6 @@ class PipelineOrchestratorService:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
-    # -----------------------------------------------------------------
-    # --- METHOD REPLACED ---
-    # -----------------------------------------------------------------
     def _build_job_command(
         self,
         job_name: str,
@@ -196,7 +189,6 @@ class PipelineOrchestratorService:
             env_setup = f"export PYTHONPATH={server_dir}:${{PYTHONPATH}};"
 
             # This small if/elif block maps driver jobs to their scripts
-            # This is still scalable, as we only add one line per *driver* job
             if job_name == JobType.FS_MOTION_CTF.value:
                 driver_script_path = server_dir / "drivers" / "fs_motion_and_ctf.py"
             elif job_name == JobType.TS_ALIGNMENT.value:

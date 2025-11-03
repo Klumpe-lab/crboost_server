@@ -37,7 +37,6 @@ class CryoBoostBackend:
         self.username = HARDCODED_USER  # Make sure to store it
         self.slurm_service = SlurmService(HARDCODED_USER)
 
-        # --- NEW: Initialize the runner service ---
         self.pipeline_runner = PipelineRunnerService(self)
 
         # Store a reference to global state (for services that need it)
@@ -80,12 +79,10 @@ class CryoBoostBackend:
             mdocs_glob=mdocs_glob,
         )
 
-    # --- UPDATED: Returns the hierarchical model dump ---
     async def get_initial_parameters(self) -> Dict[str, Any]:
         """Get the default parameters to populate the UI"""
         return self.app_state.model_dump()
 
-    # --- UPDATED: Returns the hierarchical model dump ---
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
         """Run mdoc autodetection and return the updated state"""
         print(f"[BACKEND] Autodetecting from {mdocs_glob}")
@@ -174,10 +171,6 @@ class CryoBoostBackend:
     async def get_slurm_info(self):
         return await self.run_shell_command("sinfo")
 
-    # -----------------------------------------------------------------
-    # --- All pipeline methods are now delegated to PipelineRunnerService ---
-    # -----------------------------------------------------------------
-
     async def start_pipeline(
         self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]
     ):
@@ -194,12 +187,6 @@ class CryoBoostBackend:
         # We must iterate over the async generator from the service
         async for update in self.pipeline_runner.monitor_pipeline_jobs(project_path, selected_jobs):
             yield update
-
-    # -----------------------------------------------------------------
-    # --- Internal helper methods are GONE ---
-    # -----------------------------------------------------------------
-    # async def _run_relion_schemer(...):  <-- DELETED
-    # async def _monitor_schemer(...):      <-- DELETED
 
     async def get_eer_frames_per_tilt(self, eer_file_path: str) -> int:
         """Extract number of frames per tilt from EER file"""

@@ -7,7 +7,6 @@ from .state_inspector_tab import build_state_inspector_tab
 
 HARDCODED_USER = "artem.kushner"
 
-
 def create_ui_router(backend: CryoBoostBackend):
     @ui.page("/")
     async def projects_page(client: Client):
@@ -42,7 +41,6 @@ def create_ui_router(backend: CryoBoostBackend):
             </style>
         """)
 
-        # Hamburger menu in top-left corner
         with ui.button(icon="menu").props("flat dense round").classes("fixed top-2 left-2 z-50").style(
             "background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"
         ):
@@ -53,7 +51,6 @@ def create_ui_router(backend: CryoBoostBackend):
                 ui.separator()
                 ui.label(f"User: {HARDCODED_USER}").classes("text-xs text-gray-500 px-4 py-2")
 
-        # Shared state between panels
         state = {
             "selected_jobs": [],
             "current_project_path": None,
@@ -67,7 +64,6 @@ def create_ui_router(backend: CryoBoostBackend):
 
         callbacks = {}
 
-        # Main split layout - full viewport height, minimal padding
         with ui.splitter(value=30).classes("w-full").style(
             "height: 100vh; padding: 10px 20px;"
         ) as splitter:
@@ -92,7 +88,6 @@ def create_ui_router(backend: CryoBoostBackend):
             </style>
         """)
 
-        # Hamburger menu
         with ui.button(icon="menu").props("flat dense round").classes("fixed top-2 left-2 z-50").style(
             "background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"
         ):

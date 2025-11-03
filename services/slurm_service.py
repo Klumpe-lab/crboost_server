@@ -75,7 +75,6 @@ class SlurmService:
         age = (datetime.now() - self._cache_timestamp[key]).total_seconds()
         return age < self._cache_ttl
     
-# In services/slurm_service.py, update the get_partitions_info method:
 
     async def get_partitions_info(self, force_refresh: bool = False) -> List[SlurmPartition]:
         """Get information about available partitions"""
@@ -92,7 +91,6 @@ class SlurmService:
             print(f"[ERROR] Failed to get partition info: {stderr}")
             return []
         
-        # Use dict to deduplicate by partition name, keeping first occurrence
         partitions_dict = {}
         
         for line in stdout.strip().split('\n'):
@@ -181,7 +179,6 @@ class SlurmService:
             gres = parts[5]
             features = parts[6].split(',') if parts[6] != "(null)" else []
             
-            # Parse GPU info
             gpu_count = 0
             gpu_type = None
             if gres and gres != "(null)":
