@@ -2,9 +2,9 @@
 import asyncio
 import math
 from nicegui import ui
+from ui.slurm_components import build_cluster_overview, build_slurm_job_config
 from ui.utils import create_path_input_with_picker
-from app_state import state as app_state, update_from_mdoc, sync_job_with_global, is_job_synced_with_global
-from services.parameter_models import JobType
+from app_state import state as app_state, update_from_mdoc
 from typing import Dict, Any
 
 
@@ -141,10 +141,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
             for el in panel_state["parameter_inputs"]:
                 el.disable()
 
-            # ---
-            # NOTE: Disabling job parameters now needs to happen
-            # in pipeline_builder_panel.py
-            # ---
             if "rebuild_pipeline_ui" in callbacks:
                 callbacks["rebuild_pipeline_ui"]()
             ui.notify("Project created. Job parameters are now locked.", type="info")
@@ -180,20 +176,12 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
             panel_state["run_button"].props("disabled")
             panel_state["stop_button"].props(remove="disabled")
 
-            # +++ FIX 1: CALL THE CALLBACK +++
-            # This tells the pipeline_builder_panel to rebuild
-            # itself in "Monitoring" mode.
             if "rebuild_pipeline_ui" in callbacks:
                 callbacks["rebuild_pipeline_ui"]()
-            # +++ END FIX 1 +++
-
-            # Start monitoring tasks
             asyncio.create_task(monitor_all_jobs())
             asyncio.create_task(_monitor_pipeline_progress())
 
-            # +++ FIX 2: START JOB STATUS MONITORING +++
             asyncio.create_task(monitor_job_statuses())
-            # +++ END FIX 2 +++
 
         else:
             panel_state["project_status"].set_text(f"Failed: {result.get('error')}")
@@ -240,7 +228,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
             panel_state["stop_button"].props("disabled")
             panel_state["run_button"].props(remove="disabled").props(remove="loading")
 
-    # +++ FIX 2 (Continued): ADD THE NEW FUNCTION +++
     async def monitor_job_statuses():
         """
         Monitors the status of individual jobs (pending/running/success/failed)
@@ -248,13 +235,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
         """
         try:
             while shared_state["pipeline_running"] and shared_state["current_project_path"]:
-                # --- TODO: IMPLEMENT YOUR BACKEND CALL HERE ---
-                # You need a backend endpoint that returns the status of each job.
-                # Example:
-                # job_statuses = await backend.get_all_job_statuses(shared_state["current_project_path"])
-                # e.g., job_statuses = {"import_movies": "success", "fs_motion_ctf": "running", "ts_alignment": "pending"}
-
-                # --- Mock data for testing (REMOVE THIS) ---
                 import random
 
                 job_statuses = {}
@@ -263,12 +243,10 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                         job_statuses[jt.value] = "success"
                         continue
                     job_statuses[jt.value] = random.choice(["pending", "running", "success", "failed"])
-                # --- End Mock data ---
 
                 for job_type in shared_state["selected_jobs"]:
                     status = job_statuses.get(job_type.value, "pending")
 
-                    # Update state only if it changed
                     if shared_state["job_cards"][job_type]["status"] != status:
                         shared_state["job_cards"][job_type]["status"] = status
 
@@ -279,21 +257,14 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
 
         finally:
             print("Job status monitoring loop finished.")
-            # Once the main progress loop sets pipeline_running=False, this loop will exit.
-            # We can do final status check here if needed.
-
-            # Example: Mark any remaining 'running' jobs as 'failed' or 'unknown'
             for job_type in shared_state["selected_jobs"]:
                 if shared_state["job_cards"][job_type]["status"] == "running":
                     shared_state["job_cards"][job_type]["status"] = "failed"  # Or 'unknown'
-
-    # +++ END FIX 2 +++
 
     async def monitor_all_jobs():
         """Auto-refresh logs for all jobs"""
         last_content = {}
 
-        # Wait for monitoring UI to be built
         await asyncio.sleep(1)
 
         while shared_state["pipeline_running"] and shared_state["current_project_path"]:
@@ -301,11 +272,9 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                 for job_type in shared_state["selected_jobs"]:
                     card_data = shared_state["job_cards"].get(job_type)
 
-                    # +++ FIX 3: ADDED CHECK FOR 'monitor' KEY AND VALUE +++
                     if not card_data or "monitor" not in card_data or not card_data["monitor"]:
                         # UI hasn't built the log panel for this tab yet, skip
                         continue
-                    # +++ END FIX 3 +++
 
                     monitor = card_data["monitor"]
                     job_index = card_data["job_index"]
@@ -482,7 +451,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                         ui.label("|").classes("text-xs text-gray-400")
                         panel_state["project_status"] = ui.label("No project").classes("text-xs text-gray-600")
 
-                # Control buttons
                 with ui.row().classes("w-full gap-2"):
                     panel_state["run_button"] = (
                         ui.button("RUN PIPELINE", on_click=handle_run_pipeline, icon="play_arrow")
@@ -493,290 +461,49 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                         ui.button("STOP", icon="stop").props("disabled dense").classes("flex-1")
                     )
 
-                # Progress
                 panel_state["progress_bar"] = ui.linear_progress(value=0, show_value=False).classes("w-full hidden")
                 panel_state["progress_message"] = ui.label("").classes(
                     "text-xs text-gray-600 hidden w-full text-center"
                 )
 
-        # In ui/data_import_panel.py, add after the PROJECT STATUS section:
-
         ui.label("SLURM CONFIGURATION").classes("text-xs font-bold text-gray-700 uppercase tracking-wide mt-4")
 
         with ui.card().classes("w-full p-4 bg-cyan-50/50 border border-cyan-200"):
-            with ui.column().classes("w-full gap-3"):
-                # Job Configuration Inputs
-                ui.label("Job Resource Requirements").classes("text-sm font-medium mb-2")
+            slurm_inputs = build_slurm_job_config(backend, panel_state)
+            panel_state["slurm_inputs"] = slurm_inputs
 
-                with ui.grid(columns=3).classes("w-full gap-3"):
-                    # Column 1
-                    partition_input = (
-                        ui.select(label="Partition", options=[], value=None).props("dense outlined").classes("w-full")
-                    )
+            with ui.expansion("Cluster Overview", icon="info").props("dense").classes("w-full mt-3"):
+                with ui.column().classes("w-full gap-3 p-3"):
+                    overview_state = build_cluster_overview(backend, panel_state)
+                    panel_state["cluster_overview"] = overview_state
 
-                    nodes_input = (
-                        ui.input(label="Nodes", value="1").props("dense outlined type=number min=1").classes("w-full")
-                    )
-
-                    constraint_input = (
-                        ui.input(label="Constraint", value="g2|g3|g4", placeholder="e.g. g2|g3|g4")
-                        .props("dense outlined")
-                        .classes("w-full")
-                    )
-
-                    # Column 2
-                    cpus_input = (
-                        ui.input(label="CPUs per Task", value="16")
-                        .props("dense outlined type=number min=1")
-                        .classes("w-full")
-                    )
-
-                    gpus_input = (
-                        ui.input(label="GPUs", value="4").props("dense outlined type=number min=0").classes("w-full")
-                    )
-
-                    memory_input = (
-                        ui.input(label="Memory (GB)", value="96")
-                        .props("dense outlined type=number min=1")
-                        .classes("w-full")
-                    )
-
-                    # Column 3
-                    time_input = (
-                        ui.input(label="Time Limit", value="5:00:00", placeholder="HH:MM:SS")
-                        .props("dense outlined")
-                        .classes("w-full")
-                    )
-
-                    ntasks_input = (
-                        ui.input(label="Tasks per Node", value="1")
-                        .props("dense outlined type=number min=1")
-                        .classes("w-full")
-                    )
-
-                # Store inputs in panel state
-                panel_state["slurm_inputs"] = {
-                    "partition": partition_input,
-                    "nodes": nodes_input,
-                    "cpus": cpus_input,
-                    "gpus": gpus_input,
-                    "memory": memory_input,
-                    "time": time_input,
-                    "ntasks": ntasks_input,
-                    "constraint": constraint_input,
-                }
-
-                # Cluster Overview (collapsed by default)
-                with (
-                    ui.expansion("Cluster Overview", icon="info")
-                    .props("dense")
-                    .classes("w-full mt-2") as overview_expansion
-                ):
-                    with ui.column().classes("w-full gap-3 p-3"):
-                        # Summary row with refresh
-                        with ui.row().classes("w-full items-center justify-between mb-2"):
-                            ui.label("Cluster Status").classes("text-xs font-medium")
-                            refresh_btn = ui.button(
-                                icon="refresh",
-                                on_click=lambda: asyncio.create_task(refresh_slurm_info(force_refresh=True))
-                            ).props("dense flat round size=sm").classes("text-blue-600")
-                            refresh_btn.tooltip("Refresh cluster info")
-
-                        # Summary stats container
-                        summary_container = ui.row().classes("w-full gap-4 mb-3")
-
-                        # Partition details
-                        with ui.row().classes("w-full items-center gap-2 mb-2"):
-                            ui.label("View Partition:").classes("text-xs font-medium")
-                            partition_view_select = (
-                                ui.select(
-                                    options=[],
-                                    value=None,
-                                    on_change=lambda e: asyncio.create_task(load_partition_details(e.value)),
-                                )
-                                .props("dense outlined")
-                                .classes("flex-grow")
-                            )
-
-                        partition_details = ui.column().classes("w-full")
-
-                        # User jobs section
-                        with ui.expansion("My Jobs", icon="work").props("dense").classes("w-full"):
-                            jobs_container = ui.column().classes("w-full gap-2")
-
-        # Store references
-        panel_state["slurm_summary"] = summary_container
-        panel_state["partition_view_select"] = partition_view_select
-        panel_state["partition_details"] = partition_details
-        panel_state["jobs_container"] = jobs_container
-        panel_state["refresh_btn"] = refresh_btn
-
-        async def refresh_slurm_info(force_refresh: bool = False):
-            """Refresh all SLURM information - works in any context"""
+        async def delayed_slurm_init():
+            await asyncio.sleep(0.5)
             try:
-                refresh_btn.props("loading")
-                if force_refresh:
-                    backend.slurm_service.clear_cache()
-                    print("[DEBUG] SLURM cache cleared")
-
-                summary_result = await backend.get_slurm_summary()
-                if summary_result.get("success"):
-                    summary = summary_result["summary"]
-                    
-                    # Clear and update summary container
-                    summary_container.clear()
-                    with summary_container:
-                        with ui.row().classes("gap-4"):
-                            with ui.column().classes("items-center"):
-                                ui.label(str(summary["total_partitions"])).classes("text-lg font-semibold text-blue-600")
-                                ui.label("Partitions").classes("text-xs text-gray-600")
-                            
-                            with ui.column().classes("items-center"):
-                                ui.label(str(summary["total_nodes"])).classes("text-lg font-semibold text-green-600")
-                                ui.label("Nodes").classes("text-xs text-gray-600")
-                            
-                            with ui.column().classes("items-center"):
-                                ui.label(str(summary["total_gpus"])).classes("text-lg font-semibold text-purple-600")
-                                ui.label("GPUs").classes("text-xs text-gray-600")
-                            
-                            with ui.column().classes("items-center"):
-                                ui.label(f"{summary['running_jobs']}/{summary['user_jobs']}").classes("text-lg font-semibold text-orange-600")
-                                ui.label("My Jobs").classes("text-xs text-gray-600")
-                
-                # Get partitions
+                # Load partitions for the config dropdown
                 partitions_result = await backend.get_slurm_partitions()
                 if partitions_result.get("success"):
                     partitions = partitions_result["partitions"]
-                    # Deduplicate partition names
                     unique_partitions = {}
                     for p in partitions:
                         name = p["name"]
                         if name not in unique_partitions:
                             unique_partitions[name] = p
-                    
+
                     partition_names = sorted(unique_partitions.keys())
-                    
-                    # Update both selects
-                    partition_input.options = partition_names
-                    partition_view_select.options = partition_names
-                    
-                    # Set default partition if not set
+                    slurm_inputs["partition"].options = partition_names
                     if partition_names:
-                        if not partition_input.value:
-                            partition_input.value = partition_names[0]
-                        if not partition_view_select.value:
-                            partition_view_select.value = partition_names[0]
-                            await load_partition_details(partition_names[0])
-                
-                # Get user jobs with force refresh flag
-                jobs_result = await backend.get_user_slurm_jobs(force_refresh=force_refresh)
-                if jobs_result.get("success"):
-                    jobs = jobs_result["jobs"]
-                    
-                    # Clear and update jobs container
-                    jobs_container.clear()
-                    with jobs_container:
-                        if not jobs:
-                            ui.label("No active jobs").classes("text-xs text-gray-500 italic")
-                        else:
-                            for job in jobs:
-                                state_color = {
-                                    "RUNNING": "green",
-                                    "PENDING": "orange",
-                                    "COMPLETED": "blue",
-                                    "FAILED": "red"
-                                }.get(job["state"], "gray")
-                                
-                                with ui.row().classes("w-full items-center gap-2 p-2 border rounded bg-white"):
-                                    ui.badge(job["state"], color=state_color).classes("text-xs")
-                                    ui.label(job["name"]).classes("text-xs font-medium flex-grow")
-                                    ui.label(f"ID: {job['job_id']}").classes("text-xs text-gray-500 font-mono")
-                                    ui.label(job["time"]).classes("text-xs text-gray-500")
-                
-                print("[INFO] SLURM info refreshed successfully")
-                
+                        slurm_inputs["partition"].value = partition_names[0]
+
+                # Load cluster overview
+                if "refresh_cluster_data" in overview_state:
+                    await overview_state["refresh_cluster_data"]()
+
+                print("[INFO] SLURM components initialized")
             except Exception as e:
-                print(f"[ERROR] SLURM refresh failed: {e}")
-                import traceback
-                traceback.print_exc()
-            finally:
-                refresh_btn.props(remove="loading")
+                print(f"[WARN] SLURM initialization failed: {e}")
 
-        async def load_partition_details(partition_name: str):
-            """Load and display partition details - works in any context"""
-            if not partition_name:
-                return
-
-            try:
-                # Clear the container
-                partition_details.clear()
-
-                nodes_result = await backend.get_slurm_nodes(partition_name)
-                if nodes_result.get("success"):
-                    nodes = nodes_result["nodes"]
-
-                    # Update partition details
-                    with partition_details:
-                        ui.label(f"{partition_name} Nodes").classes("text-xs font-medium mt-2 mb-1")
-
-                        if not nodes:
-                            ui.label("No nodes available").classes("text-xs text-gray-500 italic")
-                        else:
-                            # Group nodes by state for summary
-                            state_counts = {}
-                            for node in nodes:
-                                state = node["state"].lower()
-                                state_counts[state] = state_counts.get(state, 0) + 1
-
-                            # Show state summary
-                            with ui.row().classes("w-full gap-2 mb-2"):
-                                for state, count in sorted(state_counts.items()):
-                                    state_color = {
-                                        "idle": "green",
-                                        "allocated": "blue",
-                                        "mix": "orange",
-                                        "down": "red",
-                                        "drain": "red",
-                                    }.get(state, "gray")
-                                    ui.badge(f"{state}: {count}", color=state_color).classes("text-xs")
-
-                            # Show first 6 nodes as examples
-                            with ui.grid(columns=2).classes("w-full gap-2"):
-                                for node in nodes[:6]:
-                                    state_color = {
-                                        "idle": "green",
-                                        "allocated": "blue",
-                                        "alloc": "blue",
-                                        "mix": "orange",
-                                        "down": "red",
-                                        "drain": "red",
-                                        "comp": "orange",
-                                    }.get(node["state"].lower(), "gray")
-
-                                    with ui.card().classes("p-2 bg-white"):
-                                        with ui.row().classes("w-full items-center justify-between mb-1"):
-                                            ui.label(node["name"]).classes("text-xs font-medium font-mono")
-                                            ui.badge(node["state"], color=state_color).classes("text-xs")
-
-                                        with ui.column().classes("gap-1"):
-                                            ui.label(f"{node['cpus']} CPUs").classes("text-xs text-gray-600")
-                                            ui.label(f"{node['memory_mb']} MB").classes("text-xs text-gray-600")
-                                            if node["gpus"] > 0:
-                                                gpu_label = f"{node['gpus']} x {node['gpu_type'] or 'GPU'}"
-                                                ui.label(gpu_label).classes("text-xs text-purple-600 font-medium")
-
-                            if len(nodes) > 6:
-                                ui.label(f"+ {len(nodes) - 6} more nodes").classes("text-xs text-gray-500 italic mt-2")
-
-            except Exception as e:
-                print(f"[ERROR] Failed to load partition details: {e}")
-                with partition_details:
-                    ui.label(f"Error loading nodes: {e}").classes("text-xs text-red-600")
-
-        # Store callbacks
-        panel_state["refresh_slurm_info"] = refresh_slurm_info
-        panel_state["load_partition_details"] = load_partition_details
-        # Set up event handlers
+        asyncio.create_task(delayed_slurm_init())
         dose_per_tilt_input.on_value_change(calculate_eer_grouping)
         target_dose_input.on_value_change(calculate_eer_grouping)
         update_image_size_display()
@@ -804,18 +531,5 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                 input_element.on("blur", on_global_param_change)
 
         setup_global_param_listeners()
-
-    async def delayed_slurm_init():
-        await asyncio.sleep(0.5)  # Give UI time to initialize
-        try:
-            await refresh_slurm_info()
-            print("[INFO] Initial SLURM data loaded")
-        except Exception as e:
-            print(f"[WARN] Initial SLURM load failed: {e}")
-
-    asyncio.create_task(delayed_slurm_init())
-
-    # Store callback for external access
-    panel_state["refresh_slurm_info"] = refresh_slurm_info
 
     return panel_state
