@@ -616,7 +616,7 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
     with (
         ui.column()
         .classes("w-full h-full overflow-y-auto")
-        .style("padding: 20px; gap: 0px; font-family: 'IBM Plex Sans', sans-serif;")
+        .style("padding: 10px; gap: 0px; font-family: 'IBM Plex Sans', sans-serif;") 
     ):
         with ui.row().classes("w-full items-center justify-between mb-4").style("gap: 12px;"):
             job_tags_container = ui.row().classes("flex-1 flex-wrap").style("gap: 8px;")
