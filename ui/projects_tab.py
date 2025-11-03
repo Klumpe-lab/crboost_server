@@ -94,16 +94,14 @@ def build_projects_tab(backend: CryoBoostBackend):
         return noop
 
     # Create the split layout
-    with ui.splitter(value=50).classes('w-full h-[calc(100vh-100px)]') as splitter:
+    with ui.splitter(value=30).classes('w-full h-[calc(100vh-100px)]') as splitter:
         with splitter.before:
-            # Left panel: Data Import & Project Configuration
             data_import_state = build_data_import_panel(backend, state, callbacks)
             
         with splitter.after:
-            # Right panel: Pipeline Builder
             pipeline_state = build_pipeline_builder_panel(backend, state, callbacks)
     
-    state["panels_built"] = True  # <-- SET FLAG AFTER BUILD
+    state["panels_built"] = True  
 
     # Return the combined load function
     async def load_page_data():
