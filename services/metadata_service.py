@@ -99,29 +99,24 @@ class MetadataTranslator:
             Dict with success status and message
         """
         try:
-            # 1. Parse WarpTools XML files
             xml_pattern = str(job_dir / warp_folder / "*.xml")
             warp_data = WarpXmlParser(xml_pattern)
             print(f"[METADATA] Parsed {len(warp_data.data_df)} XML files")
             
-            # 2. Read input tilt series STAR file
             star_data = self.starfile_service.read(input_star_path)
             tilt_series_df = star_data.get('global', pd.DataFrame())
             
             if tilt_series_df.empty:
                 raise ValueError(f"No tilt series data in {input_star_path}")
             
-            # 3. Read individual tilt series STAR files
             all_tilts_df = self._load_all_tilt_series(
                 input_star_path.parent, tilt_series_df
             )
             
-            # 4. Update metadata
             updated_df = self._merge_warp_metadata(
                 all_tilts_df, warp_data.data_df, job_dir / warp_folder
             )
             
-            # 5. Write output STAR file
             self._write_updated_star(
                 updated_df, tilt_series_df, output_star_path
             )
@@ -162,7 +157,6 @@ class MetadataTranslator:
                 print(f"[WARN] Tilt series file not found: {ts_path}")
                 continue
             
-            # Read the individual tilt series file
             ts_data = self.starfile_service.read(ts_path)
             ts_df = next(iter(ts_data.values()))  # Get first data block
             
@@ -209,7 +203,6 @@ class MetadataTranslator:
         Write updated metadata to STAR file.
         Replicates old tiltSeriesMeta.writeTiltSeries() behavior.
         """
-        # Create output directory structure
         output_path.parent.mkdir(parents=True, exist_ok=True)
         tilt_series_dir = output_path.parent / "tilt_series"
         tilt_series_dir.mkdir(exist_ok=True)

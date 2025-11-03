@@ -90,7 +90,6 @@ class ConfigService:
     
     def __init__(self, config_path: Path):
         if not config_path.exists():
-            # This error message will now be correct
             raise FileNotFoundError(f"Configuration file not found at: {config_path}")
         
         with open(config_path, 'r') as f:

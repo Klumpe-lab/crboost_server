@@ -10,12 +10,10 @@ from typing import Dict, Any, List, Optional, Type
 from datetime import datetime
 import json
 
-# --- NEW: Imports for moved PipelineState ---
 from pydantic import BaseModel, Field, ConfigDict
 
-# --- UPDATED: Imports from parameter_models ---
 from services.parameter_models import (
-    JobType,  # <-- Ensured this is here
+    JobType,  
     MicroscopeParams,
     AcquisitionParams,
     ComputingParams,
@@ -26,22 +24,18 @@ from services.parameter_models import (
     jobtype_paramclass,
 )
 
-# --- NEW: Import the MdocService ---
 from services.mdoc_service import get_mdoc_service
 
 
-# -----------------------------------------------------------------
-# --- PipelineState class MOVED HERE from parameter_models.py ---
-# -----------------------------------------------------------------
 class PipelineState(BaseModel):
     """Central state with hierarchical organization"""
 
     model_config = ConfigDict(validate_assignment=True)
 
-    microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
-    acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
-    computing: ComputingParams = Field(default_factory=ComputingParams)
-    jobs: Dict[str, AbstractJobParams] = Field(default_factory=dict)
+    microscope : MicroscopeParams             = Field(default_factory=MicroscopeParams)
+    acquisition: AcquisitionParams            = Field(default_factory=AcquisitionParams)
+    computing  : ComputingParams              = Field(default_factory=ComputingParams)
+    jobs       : Dict[str, AbstractJobParams] = Field(default_factory=dict)
 
     # Metadata
     created_at: datetime = Field(default_factory=datetime.now)
@@ -74,14 +68,7 @@ class PipelineState(BaseModel):
         self.modified_at = datetime.now()
 
 
-# -----------------------------------------------------------------
-# --- Global State Initialization ---
-# -----------------------------------------------------------------
-
 state = PipelineState(computing=ComputingParams.from_conf_yaml(Path("config/conf.yaml")))
-
-print(f"[APP STATE] Initialized with computing: {state.computing.model_dump()}")
-
 
 def prepare_job_params(job_name_or_type):
     """
@@ -95,10 +82,8 @@ def prepare_job_params(job_name_or_type):
     template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
     job_star_path = template_base / job_type.value / "job.star"
 
-    # Use populate_job but then force sync with current global state
     state.populate_job(job_type, job_star_path if job_star_path.exists() else None)
 
-    # Ensure the job is synced with current global state
     job_model = state.jobs.get(job_type.value)
     if job_model and hasattr(job_model, "sync_from_pipeline_state"):
         job_model.sync_from_pipeline_state(state)
@@ -143,18 +128,15 @@ def update_from_mdoc(mdocs_glob: str):
             if len(dims) == 2:
                 state.acquisition.detector_dimensions = (int(dims[0]), int(dims[1]))
 
-                # Detect K3/EER based on dimensions
                 if "5760" in mdoc_data["image_size"] or "11520" in mdoc_data["image_size"]:
                     state.acquisition.eer_fractions_per_frame = 32
                     print("[STATE] Detected K3/EER camera, set fractions to 32")
 
         state.update_modified()
 
-        # Update any existing jobs with new global values
         for job_name in list(state.jobs.keys()):
             _sync_job_with_global_params(job_name)
 
-        print(f"[STATE] Updated from mdoc")
 
     except Exception as e:
         print(f"[ERROR] Failed to update state from mdoc data: {e}")
@@ -166,19 +148,12 @@ def update_from_mdoc(mdocs_glob: str):
 def export_for_project(
     project_name: str, movies_glob: str, mdocs_glob: str, selected_jobs: List[str]
 ) -> Dict[str, Any]:
-    """
-    Export clean configuration for project creation.
-    This reads from state but doesn't mutate it.
-    """
     print("[STATE] Exporting project config")
 
-    # Ensure all selected jobs have params
     for job in selected_jobs:
         if job not in state.jobs:
-            # Note: prepare_job_params takes job_name_or_type, not template_path
             prepare_job_params(job)
 
-    # Read containers from config
     containers = {}
     try:
         import yaml
@@ -329,7 +304,6 @@ def is_job_synced_with_global(job_type: JobType) -> bool:
     for field, global_value in mapping.items():
         job_value = getattr(job_model, field, None)
 
-        # Handle floating point comparison with tolerance
         if isinstance(global_value, float) and isinstance(job_value, float):
             if abs(job_value - global_value) > 1e-6:
                 print(f"[SYNC CHECK] {job_type.value}.{field}: job={job_value}, global={global_value} → OUT OF SYNC")
@@ -341,7 +315,6 @@ def is_job_synced_with_global(job_type: JobType) -> bool:
     return True
 
 
-# --- NEW: Function to handle sync logic ---
 def sync_job_with_global(job_type: JobType):
     """Syncs a specific job's model with the current global state."""
     job_model = state.jobs.get(job_type.value)

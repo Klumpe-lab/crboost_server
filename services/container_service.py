@@ -6,10 +6,8 @@ import shlex
 from typing import List, Optional, Tuple
 from services.config_service import get_config_service
 
-# --- All color constants removed ---
 
 class Colors:
-    # Kept helper methods as class methods
     @classmethod
     def _parse_container_command(cls, command: str) -> Tuple[str, List[str], str, str]:
         """Parse the containerized command into components."""
@@ -50,11 +48,10 @@ class Colors:
                     lines[-1] += f" {part} \\"
                 continue
 
-            # Split into command and arguments
             try:
                 tokens = shlex.split(part)
             except ValueError:
-                tokens = part.split() # Fallback for unquoted strings
+                tokens = part.split() 
             
             if not tokens:
                 continue
@@ -65,9 +62,6 @@ class Colors:
             for token_idx, token in enumerate(tokens):
                 token_len = len(token) + 1  # +1 for space
 
-                # Start new line if:
-                # 1. Would exceed max width
-                # 2. Token is a flag (starts with --)
                 should_break = False
                 if line_length + token_len > max_width and token_idx > 0:
                     should_break = True
@@ -82,7 +76,6 @@ class Colors:
                 current_line += token + " "
                 line_length += token_len
 
-            # Add the completed line
             if current_line.strip():
                 lines.append(current_line.rstrip())
 
@@ -104,7 +97,7 @@ class Colors:
                 if len(parts) > 4:
                     return f"{parts[0]}/{parts[1]}/.../{parts[-2]}/{parts[-1]}"
             except Exception:
-                pass # Handle non-path strings
+                pass 
             return p
 
         lines = [
@@ -162,7 +155,6 @@ class ContainerService:
         return self.config.get_container_for_tool(tool_name)
 
     def wrap_command_for_tool(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
-        # The driver will only call this, so we just call the single command wrapper
         return self._wrap_single_command(command, cwd, tool_name, additional_binds)
 
     def _wrap_single_command(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
@@ -243,8 +235,6 @@ class ContainerService:
         clean_env_cmd = "unset " + " ".join(clean_env_vars)
         final_command = f"{clean_env_cmd}; {apptainer_cmd}"
 
-        # This log will be printed by the driver script into run.out
-        # It is now plain-text and formatted.
         print(Colors.format_command_log(tool_name, final_command, cwd, container_path))
 
         return final_command

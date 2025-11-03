@@ -294,14 +294,11 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
         if image_size_input:
             image_size_input.set_value(f"{dims[0]}x{dims[1]}")
 
-    # === UI CONSTRUCTION ===
     with (
         ui.column()
         .classes("w-full h-full overflow-y-auto")
-        .style(
-            "padding: 10px; gap: 0px; font-family: 'IBM Plex Sans', sans-serif;")  # Changed from padding: 20px
-        ):
-        # DATA IMPORT & PROJECT
+        .style("padding: 10px; gap: 0px; font-family: 'IBM Plex Sans', sans-serif;")
+    ):
         with ui.row().classes("w-full items-center justify-between mb-3"):
             ui.label("DATA IMPORT & PROJECT").classes("text-xs font-semibold text-black uppercase tracking-wider")
             panel_state["create_button"] = (
@@ -341,7 +338,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                     "background: #f3f4f6; color: #6b7280; width: 32px; height: 32px;"
                 ).tooltip("Auto-detect parameters")
 
-        # MICROSCOPE & ACQUISITION
         ui.label("MICROSCOPE & ACQUISITION").classes(
             "text-xs font-semibold text-black uppercase tracking-wider mb-3 mt-6"
         )
@@ -396,7 +392,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
                 image_size_input,
             ]
         )
-
 
         ui.label("SLURM CONFIGURATION").classes("text-xs font-semibold text-black uppercase tracking-wider mb-3 mt-6")
 

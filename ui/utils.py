@@ -8,7 +8,6 @@ from services.parameter_models import JobType
 from typing import List, Dict, Any
 
 
-# In ui/utils.py, update the JobConfig class:
 
 class JobConfig:
     """Central configuration for job pipeline ordering and metadata"""
@@ -74,14 +73,13 @@ class JobConfig:
 def _snake_to_title(snake_str: str) -> str:
     return " ".join(word.capitalize() for word in snake_str.split("_"))
 
-# Keep your existing create_path_input_with_picker function here
-def create_path_input_with_picker(label: str, mode: str = "directory", glob_pattern: str = None, default_value: str = None):
-    """Create a path input with file picker button"""
-    # Your existing implementation here
-    with ui.input(label=label, value=default_value).props("dense outlined").classes("w-full") as input_field:
-        with input_field.add_slot("append"):
-            ui.button(icon="folder", on_click=lambda: None).props("dense flat")
-    return input_field
+# def create_path_input_with_picker(label: str, mode: str = "directory", glob_pattern: str = None, default_value: str = None):
+#     """Create a path input with file picker button"""
+#     # Your existing implementation here
+#     with ui.input(label=label, value=default_value).props("dense outlined").classes("w-full") as input_field:
+#         with input_field.add_slot("append"):
+#             ui.button(icon="folder", on_click=lambda: None).props("dense flat")
+#     return input_field
 
 def create_path_input_with_picker(label: str, mode: str, glob_pattern: str = '', default_value: str = '') -> ui.input:
     """A factory for creating a text input with a file/folder picker button."""

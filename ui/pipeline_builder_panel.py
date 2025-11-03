@@ -612,7 +612,6 @@ def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callback
         else:
             ui.notify(f"Failed: {result.get('error')}", type="negative")
 
-    # === UI CONSTRUCTION ===
     with (
         ui.column()
         .classes("w-full h-full overflow-y-auto")
