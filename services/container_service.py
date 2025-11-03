@@ -4,37 +4,23 @@ from pathlib import Path
 import re
 import shlex
 from typing import List, Optional, Tuple
-
 from services.config_service import get_config_service
 
+# --- All color constants removed ---
 
 class Colors:
-    """ANSI color codes for terminal output"""
-
-    HEADER = "\033[95m"
-    BLUE = "\033[94m"
-    CYAN = "\033[96m"
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    RED = "\033[91m"
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    DIM = "\033[2m"
-
+    # Kept helper methods as class methods
     @classmethod
     def _parse_container_command(cls, command: str) -> Tuple[str, List[str], str, str]:
         """Parse the containerized command into components."""
         env_match = re.match(r"(.*?)(apptainer|singularity)", command, re.DOTALL)
-        env_cleanup = (
-            env_match.group(1).strip().rstrip(";").strip() if env_match else ""
-        )
+        env_cleanup = env_match.group(1).strip().rstrip(";").strip() if env_match else ""
 
         bind_pattern = r"-B\s+([^\s]+)"
         bind_paths = re.findall(bind_pattern, command)
 
         container_match = re.search(r"([^\s]+\.sif)", command)
         container_path = container_match.group(1) if container_match else "unknown"
-
         inner_match = re.search(r"bash -c '(.+)'$", command)
         inner_command = inner_match.group(1) if inner_match else "unknown"
 
@@ -65,7 +51,11 @@ class Colors:
                 continue
 
             # Split into command and arguments
-            tokens = part.split()
+            try:
+                tokens = shlex.split(part)
+            except ValueError:
+                tokens = part.split() # Fallback for unquoted strings
+            
             if not tokens:
                 continue
 
@@ -78,12 +68,11 @@ class Colors:
                 # Start new line if:
                 # 1. Would exceed max width
                 # 2. Token is a flag (starts with --)
-                # 3. Previous token was a long value
                 should_break = False
                 if line_length + token_len > max_width and token_idx > 0:
                     should_break = True
-                elif token.startswith("--") and token_idx > 0:
-                    should_break = True
+                elif token.startswith("--") and token_idx > 0 and not tokens[token_idx-1].startswith("--"):
+                     should_break = True
 
                 if should_break:
                     lines.append(current_line.rstrip() + " \\")
@@ -95,99 +84,70 @@ class Colors:
 
             # Add the completed line
             if current_line.strip():
-                # Add continuation if not last part
-                if part_idx < len(logical_splits) - 1:
-                    lines.append(current_line.rstrip())
-                else:
-                    lines.append(current_line.rstrip())
+                lines.append(current_line.rstrip())
 
         return lines
 
     @classmethod
-    def format_command_log(
-        cls,
-        tool_name: str,
-        command: str,
-        cwd: Path,
-        container_path: Optional[str] = None,
-    ) -> str:
+    def format_command_log(cls, tool_name: str, command: str, cwd: Path, container_path: Optional[str] = None) -> str:
         """
-        Format a command execution log with colors and proper structure.
-        This is the SINGLE place where commands are logged.
+        Format a command execution log with simple, clean formatting.
         """
-        env_cleanup, bind_paths, parsed_container, inner_command = (
-            cls._parse_container_command(command)
-        )
-
+        env_cleanup, bind_paths, parsed_container, inner_command = cls._parse_container_command(command)
         display_container = container_path or parsed_container
 
-        def shorten_path(p: str, max_len: int = 50) -> str:
+        def shorten_path(p: str, max_len: int = 70) -> str:
             if len(p) <= max_len:
                 return p
-            parts = p.split("/")
-            if len(parts) > 3:
-                return f"{'/'.join(parts[:2])}/.../{parts[-1]}"
+            try:
+                parts = Path(p).parts
+                if len(parts) > 4:
+                    return f"{parts[0]}/{parts[1]}/.../{parts[-2]}/{parts[-1]}"
+            except Exception:
+                pass # Handle non-path strings
             return p
 
         lines = [
-            f"{cls.BOLD}{cls.CYAN}╭─ CONTAINER EXECUTION{cls.RESET}",
-            f"{cls.CYAN}│{cls.RESET} {cls.BOLD}Tool:{cls.RESET}      {cls.GREEN}{tool_name}{cls.RESET}",
-            f"{cls.CYAN}│{cls.RESET} {cls.BOLD}Container:{cls.RESET} {cls.DIM}{shorten_path(display_container)}{cls.RESET}",
-            f"{cls.CYAN}│{cls.RESET} {cls.BOLD}CWD:{cls.RESET}       {cls.YELLOW}{cwd}{cls.RESET}",
+            f"--- [ CONTAINER EXECUTION ] ---",
+            f"  Tool:      {tool_name}",
+            f"  CWD:       {cwd}",
+            f"  Image:     {shorten_path(display_container)}",
         ]
 
-        # Environment cleanup section
         if env_cleanup:
-            lines.append(f"{cls.CYAN}│{cls.RESET}")
-            lines.append(
-                f"{cls.CYAN}│{cls.RESET} {cls.BOLD}Environment cleanup:{cls.RESET}"
-            )
-            if env_cleanup.startswith("unset"):
-                vars_to_unset = env_cleanup.replace("unset", "").strip().split()
-                for i, var in enumerate(vars_to_unset):
-                    prefix = "    unset " if i == 0 else "          "
-                    suffix = " \\" if i < len(vars_to_unset) - 1 else ""
-                    lines.append(
-                        f"{cls.CYAN}│{cls.RESET} {cls.DIM}{prefix}{var}{suffix}{cls.RESET}"
-                    )
+            lines.append("")
+            lines.append("  Environment:")
+            env_vars = env_cleanup.replace("unset", "").strip().split()
+            if env_vars:
+                lines.append("    unset \\")
+                # Group vars for readability, e.g., 5 per line
+                for i in range(0, len(env_vars), 5):
+                    line_vars = env_vars[i:i+5]
+                    line = "        " + " ".join(line_vars)
+                    if i + 5 < len(env_vars):
+                        line += " \\"
+                    lines.append(line)
 
-        # Container invocation section
-        lines.append(f"{cls.CYAN}│{cls.RESET}")
-        lines.append(
-            f"{cls.CYAN}│{cls.RESET} {cls.BOLD}Container invocation:{cls.RESET}"
-        )
-        lines.append(
-            f"{cls.CYAN}│{cls.RESET}   {cls.BLUE}apptainer run --nv --cleanenv \\{cls.RESET}"
-        )
-
-        # Bind paths
+        lines.append("")
+        lines.append("  Command:")
+        lines.append("    apptainer run --nv --cleanenv \\")
+        
         if bind_paths:
-            for i, bind in enumerate(bind_paths):
-                suffix = " \\" if i < len(bind_paths) - 1 else " \\"
-                if ":ro" in bind:
-                    base_bind = bind.replace(":ro", "")
-                    display_bind = f"{base_bind} {cls.DIM}(read-only){cls.RESET}"
-                else:
-                    display_bind = bind
-                lines.append(
-                    f"{cls.CYAN}│{cls.RESET}     {cls.BLUE}-B{cls.RESET} {cls.YELLOW}{display_bind}{cls.RESET}{cls.BLUE}{suffix}{cls.RESET}"
-                )
+             for bind in bind_paths:
+                # The path already contains ":ro" if it's read-only
+                lines.append(f"        -B {bind} \\")
 
-        # Container path
-        lines.append(
-            f"{cls.CYAN}│{cls.RESET}     {cls.DIM}{shorten_path(parsed_container)} \\{cls.RESET}"
-        )
-
-        # Inner command section with proper line breaking
+        lines.append(f"        {shorten_path(parsed_container)} \\")
+        lines.append(f"        bash -c '")
+        
         if inner_command and inner_command != "unknown":
-            lines.append(f"{cls.CYAN}│{cls.RESET}")
-            lines.append(f"{cls.CYAN}│{cls.RESET} {cls.BOLD}Inner command:{cls.RESET}")
-
-            formatted_lines = cls._format_inner_command(inner_command, indent=3)
+            # Indent inner command
+            formatted_lines = cls._format_inner_command(inner_command, indent=12)
             for line in formatted_lines:
-                lines.append(f"{cls.CYAN}│{cls.RESET} {cls.GREEN}{line}{cls.RESET}")
-
-        lines.append(f"{cls.CYAN}╰{'─' * 70}{cls.RESET}")
+                lines.append(f"{line}")
+        
+        lines.append(f"        '")
+        lines.append("-" * 70)
 
         return "\n".join(lines)
 
@@ -201,19 +161,15 @@ class ContainerService:
     def get_container_path(self, tool_name: str) -> Optional[str]:
         return self.config.get_container_for_tool(tool_name)
 
-    def wrap_command_for_tool(
-        self,
-        command: str,
-        cwd: Path,
-        tool_name: str,
-        additional_binds: List[str] = None,
-    ) -> str:
-        """Wrap a command for containerized execution"""
+    def wrap_command_for_tool(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
+        # The driver will only call this, so we just call the single command wrapper
+        return self._wrap_single_command(command, cwd, tool_name, additional_binds)
+
+    def _wrap_single_command(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
+        """Wrap a single command in container"""
         container_path = self.get_container_path(tool_name)
         if not container_path:
-            print(
-                f"[CONTAINER WARN] No container found for tool '{tool_name}', running natively"
-            )
+            print(f"[CONTAINER WARN] No container found for tool '{tool_name}', running natively")
             return command
 
         binds = set()
@@ -228,7 +184,6 @@ class ContainerService:
                 if path.exists():
                     binds.add(str(path))
 
-        # Add HPC paths
         hpc_paths = [
             "/usr/bin",
             "/usr/lib64/slurm",
@@ -252,6 +207,7 @@ class ContainerService:
             bind_args.extend(["-B", path])
 
         inner_command_quoted = shlex.quote(command)
+
         apptainer_cmd_parts = [
             "apptainer",
             "run",
@@ -265,6 +221,7 @@ class ContainerService:
         ]
 
         apptainer_cmd = " ".join(apptainer_cmd_parts)
+
         clean_env_vars = [
             "SINGULARITY_BIND",
             "APPTAINER_BIND",
@@ -280,14 +237,14 @@ class ContainerService:
             "CONDA_DEFAULT_ENV",
             "CONDA_PROMPT_MODIFIER",
         ]
-
-        # Check if relion tool (better than substring check)
         if "relion" in tool_name.lower():
             clean_env_vars.extend(["DISPLAY", "XAUTHORITY"])
 
         clean_env_cmd = "unset " + " ".join(clean_env_vars)
         final_command = f"{clean_env_cmd}; {apptainer_cmd}"
 
+        # This log will be printed by the driver script into run.out
+        # It is now plain-text and formatted.
         print(Colors.format_command_log(tool_name, final_command, cwd, container_path))
 
         return final_command
