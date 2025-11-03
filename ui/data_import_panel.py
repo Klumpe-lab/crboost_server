@@ -298,8 +298,9 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
     with (
         ui.column()
         .classes("w-full h-full overflow-y-auto")
-        .style("padding: 20px; gap: 0px; font-family: 'IBM Plex Sans', sans-serif;")
-    ):
+        .style(
+            "padding: 10px; gap: 0px; font-family: 'IBM Plex Sans', sans-serif;")  # Changed from padding: 20px
+        ):
         # DATA IMPORT & PROJECT
         with ui.row().classes("w-full items-center justify-between mb-3"):
             ui.label("DATA IMPORT & PROJECT").classes("text-xs font-semibold text-black uppercase tracking-wider")
@@ -396,36 +397,6 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
             ]
         )
 
-        # PIPELINE CONTROL
-        ui.label("PIPELINE CONTROL").classes("text-xs font-semibold text-black uppercase tracking-wider mb-3 mt-6")
-
-        with ui.column().classes("w-full mb-6").style("gap: 10px;"):
-            with ui.row().classes("w-full items-center").style("gap: 8px;"):
-                ui.label("Active:").classes("text-xs font-medium text-gray-500")
-                panel_state["active_project_label"] = ui.label("None").classes("text-xs text-gray-900")
-                ui.label("|").classes("text-xs text-gray-400")
-                panel_state["project_status"] = ui.label("No project").classes("text-xs text-gray-600")
-
-            with ui.row().classes("w-full").style("gap: 10px;"):
-                panel_state["run_button"] = (
-                    ui.button("Run Pipeline", on_click=handle_run_pipeline)
-                    .props("disabled dense flat no-caps")
-                    .classes("flex-1")
-                    .style(
-                        "background: #f3f4f6; color: #1f2937; border-radius: 3px; border: 1px solid #e5e7eb; font-weight: 500;"
-                    )
-                )
-                panel_state["stop_button"] = (
-                    ui.button("Stop")
-                    .props("disabled dense flat no-caps")
-                    .classes("flex-1")
-                    .style(
-                        "background: #f3f4f6; color: #1f2937; border-radius: 3px; border: 1px solid #e5e7eb; font-weight: 500;"
-                    )
-                )
-
-            panel_state["progress_bar"] = ui.linear_progress(value=0, show_value=False).classes("w-full hidden")
-            panel_state["progress_message"] = ui.label("").classes("text-xs text-gray-600 hidden w-full text-center")
 
         ui.label("SLURM CONFIGURATION").classes("text-xs font-semibold text-black uppercase tracking-wider mb-3 mt-6")
 
