@@ -140,3 +140,8 @@ class CryoBoostBackend:
         except Exception as e:
             print(f"Error getting EER frames: {e}")
             return None
+
+
+    async def load_existing_project(self, project_path: str) -> Dict[str, Any]:
+        """Load an existing project for continuation"""
+        return await self.project_service.load_project_state(project_path)

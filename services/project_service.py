@@ -2,7 +2,7 @@
 import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from services.parameter_models import JobType, jobtype_paramclass, AbstractJobParams
+from services.parameter_models import JobType, jobtype_paramclass
 from services.starfile_service import StarfileService
 import os
 import glob
@@ -315,3 +315,166 @@ class ProjectService:
             import traceback
             traceback.print_exc()
             return {"success": False, "error": f"Project creation failed: {str(e)}"}
+
+    async def discover_existing_jobs(self, project_path: str) -> Dict[str, Any]:
+        """
+        Scan project directory for completed jobs.
+        Returns: {
+            "success": bool,
+            "jobs": [{"type": str, "number": int, "status": "success"|"failed"}, ...],
+            "next_job_number": int,
+            "can_continue": bool,
+            "error": str (optional)
+        }
+        """
+        try:
+            project_dir = Path(project_path)
+            if not project_dir.exists():
+                return {"success": False, "error": f"Project path not found: {project_path}"}
+            
+            self.set_project_root(project_dir)
+            
+            discovered_jobs = []
+            
+            # Walk through all job category directories
+            from services.parameter_models import JobCategory
+            for category in JobCategory:
+                category_dir = project_dir / category.value
+                if not category_dir.exists():
+                    continue
+                
+                # Find all job directories matching job###
+                import re
+                job_pattern = re.compile(r'^job(\d{3})$')
+                
+                for job_dir in category_dir.iterdir():
+                    if not job_dir.is_dir():
+                        continue
+                    
+                    match = job_pattern.match(job_dir.name)
+                    if not match:
+                        continue
+                    
+                    job_number = int(match.group(1))
+                    
+                    # Read job_params.json to get job type
+                    params_file = job_dir / "job_params.json"
+                    if not params_file.exists():
+                        print(f"[DISCOVERY] Skipping {job_dir} - no job_params.json")
+                        continue
+                    
+                    try:
+                        with open(params_file, 'r') as f:
+                            params_data = json.load(f)
+                        
+                        job_type = params_data.get("job_type")
+                        if not job_type:
+                            print(f"[DISCOVERY] Skipping {job_dir} - no job_type in params")
+                            continue
+                        
+                        # Check for sentinel files
+                        success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
+                        failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
+                        
+                        if success_file.exists():
+                            status = "success"
+                        elif failure_file.exists():
+                            status = "failed"
+                        else:
+                            # Job exists but hasn't completed - skip it
+                            print(f"[DISCOVERY] Skipping {job_dir} - no sentinel file")
+                            continue
+                        
+                        discovered_jobs.append({
+                            "type": job_type,
+                            "number": job_number,
+                            "status": status
+                        })
+                        
+                    except Exception as e:
+                        print(f"[DISCOVERY] Error reading {params_file}: {e}")
+                        continue
+            
+            # Sort by job number
+            discovered_jobs.sort(key=lambda j: j["number"])
+            
+            # Determine next job number
+            if discovered_jobs:
+                next_job_number = max(j["number"] for j in discovered_jobs) + 1
+            else:
+                next_job_number = 1
+            
+            # Can continue if we have at least one job
+            can_continue = len(discovered_jobs) > 0
+            
+            return {
+                "success": True,
+                "jobs": discovered_jobs,
+                "next_job_number": next_job_number,
+                "can_continue": can_continue
+            }
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
+
+    async def load_project_state(self, project_path: str) -> Dict[str, Any]:
+        """
+        Load existing project configuration and discovered job state.
+        Returns: {
+            "success": bool,
+            "project_name": str,
+            "selected_jobs": List[str],
+            "discovered_jobs": List[dict],
+            "next_job_number": int,
+            "movies_glob": str,
+            "mdocs_glob": str,
+            "error": str (optional)
+        }
+        """
+        try:
+            project_dir = Path(project_path)
+            if not project_dir.exists():
+                return {"success": False, "error": f"Project path not found: {project_path}"}
+            
+            # Load project parameters
+            params_file = project_dir / "project_params.json"
+            if not params_file.exists():
+                return {"success": False, "error": "No project_params.json found - not a valid CryoBoost project"}
+            
+            with open(params_file, 'r') as f:
+                project_params = json.load(f)
+            
+            # Extract project name from metadata
+            project_name = project_params.get("metadata", {}).get("project_name")
+            
+            # Extract selected_jobs from the jobs keys
+            selected_jobs = list(project_params.get("jobs", {}).keys())
+            
+            # Extract data source paths
+            data_sources = project_params.get("data_sources", {})
+            movies_glob = data_sources.get("frames_glob", "")
+            mdocs_glob = data_sources.get("mdocs_glob", "")
+            
+            # Discover existing jobs
+            discovery_result = await self.discover_existing_jobs(project_path)
+            if not discovery_result["success"]:
+                return discovery_result
+            
+            return {
+                "success": True,
+                "project_name": project_name,
+                "selected_jobs": selected_jobs,
+                "discovered_jobs": discovery_result["jobs"],
+                "next_job_number": discovery_result["next_job_number"],
+                "can_continue": discovery_result["can_continue"],
+                "movies_glob": movies_glob,
+                "mdocs_glob": mdocs_glob,
+            }
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}

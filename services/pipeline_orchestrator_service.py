@@ -109,6 +109,7 @@ class PipelineOrchestratorService:
                 params_json_path = job_run_dir / "job_params.json"
 
                 data_to_serialize = {
+                    "job_type": JobType.value, 
                     "job_model": job_model.model_dump(),
                     "paths": {k: str(v) for k, v in paths.items()},
                     "additional_binds": all_binds,
