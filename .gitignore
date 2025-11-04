@@ -10,3 +10,6 @@ user_jobs
 projects/**
 projects
 **env
+
+q_*.md
+**/q_*.md
