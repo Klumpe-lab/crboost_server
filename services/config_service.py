@@ -8,10 +8,10 @@ import yaml
 from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "conf.yaml"
+CRBOOST_ROOT = Path(__file__).parent.parent.resolve()
+DEFAULT_CONFIG_PATH = CRBOOST_ROOT / "config" / "conf.yaml"
 
 # -----------------------------------------------------------------
 

@@ -665,6 +665,7 @@ def build_pipeline_builder_panel(backend:CryoBoostBackend, shared_state: Dict[st
                 "text-xs text-gray-500 italic text-center p-8"
             )
 
+
     callbacks["rebuild_pipeline_ui"] = rebuild_pipeline_ui
     callbacks["update_job_card_sync_indicator"] = update_job_card_sync_indicator
 
