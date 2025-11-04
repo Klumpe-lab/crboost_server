@@ -97,8 +97,6 @@ def update_from_mdoc(mdocs_glob: str):
     Parse first mdoc file and update microscope/acquisition params.
     This mutates state.microscope and state.acquisition.
     """
-    # --- UPDATED: Use MdocService ---
-    print(f"[STATE] Parsing mdoc glob: {mdocs_glob}")
     mdoc_service = get_mdoc_service()
     mdoc_data = mdoc_service.get_autodetect_params(mdocs_glob)
 

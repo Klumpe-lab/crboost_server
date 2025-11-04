@@ -1,6 +1,7 @@
 # ui/data_import_panel.py (REFINED)
 import asyncio
 import math
+from backend import CryoBoostBackend
 from nicegui import ui
 from ui.slurm_components import build_cluster_overview, build_slurm_job_config
 from ui.utils import create_path_input_with_picker
@@ -8,7 +9,7 @@ from app_state import state as app_state, update_from_mdoc
 from typing import Dict, Any
 
 
-def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Dict[str, Any]):
+def build_data_import_panel(backend:CryoBoostBackend, shared_state: Dict[str, Any], callbacks: Dict[str, Any]):
     """Build the left panel for data import and project configuration"""
 
     panel_state = {
@@ -406,7 +407,7 @@ def build_data_import_panel(backend, shared_state: Dict[str, Any], callbacks: Di
         async def delayed_slurm_init():
             await asyncio.sleep(0.5)
             try:
-                partitions_result = await backend.get_slurm_partitions()
+                partitions_result = await backend.slurm_service.get_slurm_partitions()
                 if partitions_result.get("success"):
                     partitions = partitions_result["partitions"]
                     unique_partitions = {}

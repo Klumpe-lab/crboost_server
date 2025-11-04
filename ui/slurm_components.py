@@ -1,6 +1,7 @@
 # ui/slurm_components.py (NEW FILE)
 """Modular SLURM UI components"""
 import asyncio
+from backend import CryoBoostBackend
 from nicegui import ui
 from typing import Dict, Any, Callable
 
@@ -71,7 +72,7 @@ def build_slurm_job_config(backend, panel_state: Dict[str, Any]) -> Dict[str, An
     return slurm_inputs
 
 
-def build_cluster_overview(backend, panel_state: Dict[str, Any]) -> Dict[str, Any]:
+def build_cluster_overview(backend:CryoBoostBackend, panel_state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Build cluster overview section with jobs, partitions, and nodes.
     Returns dict with container references and refresh callback.
@@ -115,7 +116,7 @@ def build_cluster_overview(backend, panel_state: Dict[str, Any]) -> Dict[str, An
                 backend.slurm_service.clear_cache()
             
             # Get partitions
-            partitions_result = await backend.get_slurm_partitions()
+            partitions_result = await backend.slurm_service.get_slurm_partitions()
             if partitions_result.get("success"):
                 partitions = partitions_result["partitions"]
                 unique_partitions = {}
@@ -150,7 +151,7 @@ def build_cluster_overview(backend, panel_state: Dict[str, Any]) -> Dict[str, An
                     await load_partition_nodes(partition_names[0])
             
             # Get user jobs
-            jobs_result = await backend.get_user_slurm_jobs(force_refresh=force_refresh)
+            jobs_result = await backend.slurm_service.get_user_slurm_jobs(force_refresh=force_refresh)
             if jobs_result.get("success"):
                 jobs = jobs_result["jobs"]
                 
@@ -205,7 +206,7 @@ def build_cluster_overview(backend, panel_state: Dict[str, Any]) -> Dict[str, An
         try:
             nodes_container.clear()
             
-            nodes_result = await backend.get_slurm_nodes(partition_name)
+            nodes_result = await backend.slurm_service.get_slurm_nodes(partition_name)
             if nodes_result.get("success"):
                 nodes = nodes_result["nodes"]
                 

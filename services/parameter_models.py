@@ -311,7 +311,7 @@ class FsMotionCtfParams(AbstractJobParams):
         return True  
 
     def get_tool_name(self) -> str:
-        return "warptools"  # The driver will use this tool
+        return "warptools"  
 
     @property
     def m_range_min(self) -> int:

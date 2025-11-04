@@ -17,8 +17,6 @@ def _format_state_for_display(state_obj) -> Dict[str, Any]:
     """
     try:
         state_dict = state_obj.dict()
-        
-        # Convert datetime objects to strings
         if 'created_at' in state_dict:
             state_dict['created_at'] = state_dict['created_at'].isoformat() if isinstance(state_dict['created_at'], datetime) else str(state_dict['created_at'])
         if 'modified_at' in state_dict:
@@ -100,9 +98,9 @@ def build_state_inspector_tab():
             return {
                 "modified_at": app_state.modified_at.isoformat() if hasattr(app_state.modified_at, 'isoformat') else str(app_state.modified_at),
                 "jobs_loaded": len(app_state.jobs),
-                "job_names": list(app_state.jobs.keys()),
-                "microscope": app_state.microscope.microscope_type.value if hasattr(app_state.microscope.microscope_type, 'value') else str(app_state.microscope.microscope_type),
-                "partition": app_state.computing.partition.value if hasattr(app_state.computing.partition, 'value') else str(app_state.computing.partition),
+                "job_names"  : list(app_state.jobs.keys()),
+                "microscope" : app_state.microscope.microscope_type.value if hasattr(app_state.microscope.microscope_type, 'value') else str(app_state.microscope.microscope_type),
+                "partition"  : app_state.computing.partition.value if hasattr(app_state.computing.partition, 'value') else str(app_state.computing.partition),
             }
         except Exception as e:
             return {"error": str(e)}
@@ -352,13 +350,10 @@ def build_state_inspector_tab():
                                                 ui.label(f"{param_name}:").classes('text-xs font-medium text-gray-600')
                                                 ui.label(str(value)).classes('text-xs font-mono text-gray-800')
                 
-                # Initial load
                 refresh_jobs_display()
                 
-                # Add refresh button for jobs
                 ui.button('Refresh Jobs', on_click=lambda: refresh_jobs_display(), icon='refresh').props('dense size=sm flat').classes('mt-2')
     
-    # Return async load function
     async def load_state_inspector():
         """Async function to load initial state data"""
         try:
