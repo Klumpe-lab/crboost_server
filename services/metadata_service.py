@@ -566,6 +566,55 @@ class MetadataTranslator:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
+    def update_ts_ctf_metadata(
+        self,
+        job_dir: Path,
+        input_star_path: Path,
+        output_star_path: Path,
+        warp_folder: str = "warp_tiltseries"
+    ) -> Dict:
+        """
+        Updates STAR files with CTF data from WarpTools ts_ctf.
+        Ported from old tsCtf.py::updateMetaData
+        """
+        try:
+            print(f"[METADATA] Starting tsCTF update for {input_star_path}")
+            
+            # Parse WarpTools XML files
+            xml_pattern = str(job_dir / warp_folder / "*.xml")
+            warp_data = WarpXmlParser(xml_pattern)
+            print(f"[METADATA] Parsed {len(warp_data.data_df)} XML files")
+            
+            # Read input tilt series data
+            input_star_dir = input_star_path.parent
+            in_star_data = self.starfile_service.read(input_star_path)
+            in_ts_df = in_star_data.get('global')
+            
+            if in_ts_df is None:
+                raise ValueError(f"No 'global' block in {input_star_path}")
+            
+            # Load all tilt series data
+            all_tilts_df = self._load_all_tilt_series(input_star_dir, in_ts_df)
+            
+            # Update with CTF parameters
+            updated_df = self._merge_ctf_metadata(all_tilts_df, warp_data.data_df)
+            
+            # Write updated STAR files
+            self._write_updated_ctf_star(updated_df, in_ts_df, output_star_path)
+            
+            return {
+                "success": True,
+                "message": f"Updated {len(updated_df)} tilts with CTF metadata",
+                "output_path": str(output_star_path)
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] tsCTF metadata update failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
+
 
 def update_fs_motion_ctf_metadata(
     job_dir: Path,
@@ -580,54 +629,6 @@ def update_fs_motion_ctf_metadata(
     return translator.update_fs_motion_and_ctf_metadata(
         job_dir, input_star, output_star
     )
-
-def update_ts_ctf_metadata(
-    self,
-    job_dir: Path,
-    input_star_path: Path,
-    output_star_path: Path,
-    warp_folder: str = "warp_tiltseries"
-) -> Dict:
-    """
-    Updates STAR files with CTF data from WarpTools ts_ctf.
-    Ported from old tsCtf.py::updateMetaData
-    """
-    try:
-        print(f"[METADATA] Starting tsCTF update for {input_star_path}")
-        
-        # Parse WarpTools XML files
-        xml_pattern = str(job_dir / warp_folder / "*.xml")
-        warp_data = WarpXmlParser(xml_pattern)
-        print(f"[METADATA] Parsed {len(warp_data.data_df)} XML files")
-        
-        # Read input tilt series data
-        input_star_dir = input_star_path.parent
-        in_star_data = self.starfile_service.read(input_star_path)
-        in_ts_df = in_star_data.get('global')
-        
-        if in_ts_df is None:
-            raise ValueError(f"No 'global' block in {input_star_path}")
-        
-        # Load all tilt series data
-        all_tilts_df = self._load_all_tilt_series(input_star_dir, in_ts_df)
-        
-        # Update with CTF parameters
-        updated_df = self._merge_ctf_metadata(all_tilts_df, warp_data.data_df)
-        
-        # Write updated STAR files
-        self._write_updated_ctf_star(updated_df, in_ts_df, output_star_path)
-        
-        return {
-            "success": True,
-            "message": f"Updated {len(updated_df)} tilts with CTF metadata",
-            "output_path": str(output_star_path)
-        }
-        
-    except Exception as e:
-        print(f"[ERROR] tsCTF metadata update failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return {"success": False, "error": str(e)}
 
 
 def _merge_ctf_metadata(

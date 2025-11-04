@@ -522,11 +522,10 @@ class TsAlignmentParams(AbstractJobParams):
                 gain_path       = job_params.get("gain_path"),
                 gain_operations = job_params.get("gain_operations"),
                 perdevice       = int(job_params.get("perdevice", 1)),
-                # tilt_cor        = int(job_params.get("tilt_cor", 1)),
-                # out_imod        = int(job_params.get("out_imod", 0)),
                 patch_x         = int(job_params.get("patch_x", 5)),
                 patch_y         = int(job_params.get("patch_y", 5)),
-                axis_iter       = int(job_params.get("axis_iter", 3)),
+                axis_iter       = int(job_params.get("axis_iter", 1)),
+                # axis_iter       = int(job_params.get("axis_iter", 3)),
                 axis_batch      = int(job_params.get("axis_batch", 5)),
                 imod_patch_size = int(job_params.get("imod_patch_size", 200)),
                 imod_overlap    = int(job_params.get("imod_overlap", 50)),
@@ -594,17 +593,15 @@ class TsCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
     # CTF parameters
-    window: int = Field(default=512, ge=128, le=2048)
-    range_min_max: str = Field(default="30:4")  # Resolution range in Angstrom
-    defocus_min_max: str = Field(default="0.5:8")  # Defocus range in microns
-    defocus_hand: str = Field(default="set_flip")  # set_flip or set_normal
+    window         : int = Field(default=512, ge=128, le=2048)
+    range_min_max  : str = Field(default="30:4")                # Resolution range in Angstrom
+    defocus_min_max: str = Field(default="0.5:8")               # Defocus range in microns
+    defocus_hand   : str = Field(default="set_flip")            # set_flip or set_normal
     
     # GPU settings
-    perdevice: int = Field(default=1, ge=0, le=8)
-    
-    # Synced from global state
-    voltage: float = Field(default=300.0)
-    cs: float = Field(default=2.7)
+    perdevice: int   = Field(default=1, ge=0, le=8)
+    voltage  : float = Field(default=300.0)
+    cs       : float = Field(default=2.7)
     amplitude: float = Field(default=0.1)
 
     def is_driver_job(self) -> bool:
@@ -648,11 +645,11 @@ class TsCtfParams(AbstractJobParams):
             ).to_dict()
 
             return cls(
-                window=int(param_dict.get("param1_value", "512")),
-                range_min_max=param_dict.get("param2_value", "30:4"),
-                defocus_min_max=param_dict.get("param3_value", "0.5:8"),
-                defocus_hand=param_dict.get("param4_value", "set_flip"),
-                perdevice=int(param_dict.get("param5_value", "1")),
+                window          = int(param_dict.get("param1_value", "512")),
+                range_min_max   = param_dict.get("param2_value", "30:4"),
+                defocus_min_max = param_dict.get("param3_value", "0.5:8"),
+                defocus_hand    = param_dict.get("param4_value", "set_flip"),
+                perdevice       = int(param_dict.get("param5_value", "1")),
             )
 
         except Exception as e:
@@ -678,12 +675,12 @@ class TsCtfParams(AbstractJobParams):
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
         return {
-            "job_dir": job_dir,
-            "output_star": job_dir / "ts_ctf_tilt_series.star",
+            "job_dir"        : job_dir,
+            "output_star"    : job_dir / "ts_ctf_tilt_series.star",
             "tilt_series_dir": job_dir / "tilt_series",
-            "warp_dir": job_dir / "warp_tiltseries",
-            "warp_settings": job_dir / "warp_tiltseries.settings",
-            "xml_pattern": str(job_dir / "warp_tiltseries" / "*.xml"),
+            "warp_dir"       : job_dir / "warp_tiltseries",
+            "warp_settings"  : job_dir / "warp_tiltseries.settings",
+            "xml_pattern"    : str(job_dir / "warp_tiltseries" / "*.xml"),
         }
 
     @staticmethod
@@ -696,12 +693,12 @@ class TsCtfParams(AbstractJobParams):
     ) -> Dict[str, Path]:
         alignment_outputs = upstream_outputs.get("aligntiltsWarp", {})
         return {
-            "job_dir": job_dir,
-            "input_star": alignment_outputs.get("output_star"),
+            "job_dir"        : job_dir,
+            "input_star"     : alignment_outputs.get("output_star"),
             "frameseries_dir": alignment_outputs.get("warp_dir"),
-            "output_star": job_dir / "ts_ctf_tilt_series.star",
-            "warp_dir": job_dir / "warp_tiltseries",
-            "tomostar_dir": job_dir / "tomostar",
+            "output_star"    : job_dir / "ts_ctf_tilt_series.star",
+            "warp_dir"       : job_dir / "warp_tiltseries",
+            "tomostar_dir"   : job_dir / "tomostar",
         }
 
 

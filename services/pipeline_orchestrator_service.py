@@ -7,10 +7,7 @@ from typing import Dict, List
 import json
 
 from services.commands_builder import ImportMoviesCommandBuilder, BaseCommandBuilder
-from services.parameter_models import (
-    AbstractJobParams,
-    JobType,
-)
+from services.parameter_models import AbstractJobParams, JobType
 
 from .starfile_service import StarfileService
 from .config_service import get_config_service
@@ -37,7 +34,6 @@ class PipelineOrchestratorService:
         # --- NOTE: This map ONLY contains non-driver jobs ---
         self.job_builders: Dict[str, BaseCommandBuilder] = {
             JobType.IMPORT_MOVIES.value: ImportMoviesCommandBuilder()
-            # As you add more simple (non-driver) jobs, add them here.
         }
 
     async def create_custom_scheme(
@@ -72,7 +68,6 @@ class PipelineOrchestratorService:
                 job_number = job_index + 1  # 1-indexed
                 job_number_str = f"job{job_number:03d}"
 
-                # Copy job template
                 source_job_dir = base_template_path / job_name
                 dest_job_dir = new_scheme_dir / job_name
                 if dest_job_dir.exists():
@@ -115,7 +110,7 @@ class PipelineOrchestratorService:
 
                 data_to_serialize = {
                     "job_model": job_model.model_dump(),
-                    "paths": {k: str(v) for k, v in paths.items()}, 
+                    "paths": {k: str(v) for k, v in paths.items()},
                     "additional_binds": all_binds,
                 }
 
@@ -193,26 +188,22 @@ class PipelineOrchestratorService:
                 driver_script_path = server_dir / "drivers" / "fs_motion_and_ctf.py"
             elif job_name == JobType.TS_ALIGNMENT.value:
                 driver_script_path = server_dir / "drivers" / "ts_alignment.py"
+            elif job_name == JobType.TS_CTF.value:
+                driver_script_path = server_dir / "drivers" / "ts_ctf.py"
             else:
                 # This case handles if a job is marked as a driver but not mapped here
                 return f"echo 'ERROR: Job type \"{job_name}\" is a driver job but has no driver script mapped in orchestrator'; exit 1;"
 
             return f"{env_setup} {host_python_exe} {driver_script_path}"
 
-        # 2. If not a driver job, it's a simple command. Use a CommandBuilder.
         else:
             builder = self.job_builders.get(job_name)
             if not builder:
                 return f"echo 'ERROR: No command builder found for simple job \"{job_name}\"'; exit 1;"
 
             try:
-                # Build the raw command using the builder class
                 raw_command = builder.build(job_model, paths)
-
-                # Get the container tool name from the model's metadata
                 tool_name = job_model.get_tool_name()
-
-                # Wrap in container
                 container_svc = self.backend.container_service
                 return container_svc.wrap_command_for_tool(
                     command=raw_command, cwd=paths["job_dir"], tool_name=tool_name, additional_binds=all_binds
