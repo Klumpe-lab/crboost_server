@@ -2,9 +2,10 @@
 import asyncio
 import json
 from pathlib import Path
+from backend import CryoBoostBackend
 from nicegui import ui
 from services.parameter_models import JobType
-from app_state import state as app_state, sync_job_with_global, is_job_synced_with_global
+from app_state import state as app_state, is_job_synced_with_global
 from ui.utils import JobConfig, _snake_to_title
 from typing import Dict, Any
 
@@ -18,15 +19,15 @@ def get_job_directory(job_type: JobType, job_index: int) -> str:
         return f"{job_name}/job{job_index:03d}"
 
 
-def build_pipeline_builder_panel(backend, shared_state: Dict[str, Any], callbacks: Dict[str, Any]):
+def build_pipeline_builder_panel(backend:CryoBoostBackend, shared_state: Dict[str, Any], callbacks: Dict[str, Any]):
     """Build the right panel for pipeline construction and monitoring"""
 
     panel_state = {
         "pipeline_container": None,
         "job_tabs_container": None,
-        "run_button": None,
-        "stop_button": None,
-        "status_label": None,
+        "run_button"        : None,
+        "stop_button"       : None,
+        "status_label"      : None,
     }
 
     if "active_job_tab" not in shared_state:
