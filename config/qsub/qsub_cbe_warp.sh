@@ -25,12 +25,12 @@ which python3
 python3 --version
 
 
-
 export CRBOOST_SERVER_DIR="/users/<user>/dev/crboost_server/"
-VENV_PYTHON="/users/<user>/dev/crboost_server/venv/bin/python3"
+export VENV_PYTHON="/users/<user>/dev/crboost_server/venv/bin/python3"
 export PYTHONPATH="${VENV_PYTHON}:${PYTHONPATH}"
 
-echo "--- SLURM JOB START ---"
+
+echo "--- SLURM JOB BEGAN ---"
 echo "Node: $(hostname)"
 
 JOB_DIR=$(dirname "XXXoutfileXXX")

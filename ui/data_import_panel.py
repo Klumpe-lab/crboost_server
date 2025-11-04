@@ -114,7 +114,6 @@ def build_data_import_panel(backend:CryoBoostBackend, shared_state: Dict[str, An
             shared_state["project_created"] = True
 
             ui.notify(result["message"], type="positive")
-            panel_state["active_project_label"].set_text(name)
             panel_state["project_status"].set_text("Ready")
             panel_state["run_button"].props(remove="disabled")
 
