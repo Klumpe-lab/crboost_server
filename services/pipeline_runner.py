@@ -15,7 +15,7 @@ class PipelineRunnerService:
     """
 
     def __init__(self, backend_instance: "CryoBoostBackend"):
-        self.backend = backend_instance  # Used to access container_service, etc.
+        self.backend = backend_instance 
         self.active_schemer_process: asyncio.subprocess.Process | None = None
 
     async def start_pipeline(
@@ -158,18 +158,14 @@ class PipelineRunnerService:
     async def _run_relion_schemer(
         self, project_dir: Path, scheme_name: str, additional_bind_paths: List[str]
     ):
-        """
-        Run relion_schemer to execute the pipeline scheme.
-        (Logic moved from backend.py)
-        """
         try:
             run_command = (
                 f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --verb 2"
             )
 
-            # Access container_service via the backend instance
-            container_svc = self.backend.container_service
-            full_run_command = container_svc.wrap_command_for_tool(
+            container_service = self.backend.container_service
+
+            full_run_command = container_service.wrap_command_for_tool(
                 command=run_command,
                 cwd=project_dir,
                 tool_name="relion_schemer",

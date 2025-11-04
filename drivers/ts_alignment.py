@@ -110,8 +110,8 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path]) 
             "--alignz", str(int(params.thickness_nm * 10)),
             "--perdevice", str(params.perdevice),
             "--patches", f"{params.patch_x}x{params.patch_y}",
-            "--out_imod", str(params.out_imod),
-            "--tilt_cor", str(params.tilt_cor),
+            # "--out_imod", str(params.out_imod),
+            # "--tilt_cor", str(params.tilt_cor),
         ]
         if params.axis_iter > 0:
             cmd_parts_align.extend([
@@ -189,7 +189,7 @@ def main():
             input_star_path=input_star_abs,
             output_star_path=output_star_abs,
             tomo_dimensions=params.tomo_dimensions,
-            alignment_program=params.alignment_method.value # Pass "Aretomo" or "Imod"
+            alignment_method=params.alignment_method.value
         )
 
         if not result['success']:

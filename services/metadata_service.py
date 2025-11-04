@@ -10,9 +10,10 @@ from pathlib import Path
 import sys
 from typing import Dict, Optional
 import xml.etree.ElementTree as ET
+import numpy as np
 import pandas as pd
 from services.starfile_service import StarfileService
-import numpy as np
+from services.parameter_models import AlignmentMethod
 
 
 class WarpXmlParser:
@@ -78,6 +79,67 @@ class MetadataTranslator:
     
     def __init__(self, starfile_service: Optional[StarfileService] = None):
         self.starfile_service = starfile_service or StarfileService()
+
+    def _read_aretomo_aln_file(self, aln_file: Path) -> Optional[np.ndarray]:
+        """Parses AreTomo .aln file."""
+        if not aln_file.exists():
+            print(f"Warning: {aln_file} not found")
+            return None
+        
+        
+        data = []
+        with open(aln_file, "r") as f:
+            for line in f:
+                if line.startswith("# Local Alignment"):
+                    break
+                if not line.startswith("#"):
+                    try:
+                        numbers = [float(x) for x in line.split()]
+                        if numbers:
+                            data.append(numbers)
+                    except ValueError:
+                        continue
+        
+        if not data:
+            print(f"Warning: No alignment data found in {aln_file}")
+            return None
+            
+        return np.array(data)
+
+    def _read_imod_xf_tlt_files(self, xf_file: Path, tlt_file: Path) -> Optional[np.ndarray]:
+        """Parses IMOD .xf and .tlt files."""
+        if not xf_file.exists() or not tlt_file.exists():
+            print(f"Warning: {xf_file} or {tlt_file} not found")
+            return None
+        
+        
+        df1 = pd.read_csv(
+            xf_file, delim_whitespace=True, header=None,
+            names=["m1", "m2", "m3", "m4", "tx", "ty"],
+        )
+        df2 = pd.read_csv(
+            tlt_file, delim_whitespace=True, header=None, names=["tilt_angle"]
+        )
+        combined = pd.concat([df1, df2], axis=1)
+
+        results_x, results_y, titlAng = [], [], []
+        for index, row in combined.iterrows():
+            M = np.array([[row["m1"], row["m2"]], [row["m3"], row["m4"]]])
+            M = np.linalg.inv(M)
+            v = np.array([row["tx"], row["ty"]]) * -1
+            result = np.dot(M, v)
+            angle = np.degrees(np.arctan2(M[1, 0], M[0, 0]))
+            results_x.append(result[0])
+            results_y.append(result[1])
+            titlAng.append(angle)
+
+        data_np = np.zeros((len(combined), 10))
+        data_np[:, 0] = np.arange(0, len(combined))  # Index
+        data_np[:, 1] = titlAng  # ZRot
+        data_np[:, 3] = results_x  # XShift
+        data_np[:, 4] = results_y  # YShift
+        data_np[:, 9] = combined["tilt_angle"]  # TiltAngle
+        return data_np
     
     def update_fs_motion_and_ctf_metadata(
         self,
@@ -302,44 +364,64 @@ class MetadataTranslator:
     def update_ts_alignment_metadata(
         self,
         job_dir: Path,
-        input_star_path: Path, # Absolute path to *original* tiltseries.star
-        output_star_path: Path, # Path for new aligned_tilt_series.star
-        tomo_dimensions: str, # e.g., "4096x4096x2048"
-        alignment_program: str, # "Aretomo" or "Imod"
+        input_star_path: Path,
+        output_star_path: Path,
+        tomo_dimensions: str,
+        alignment_method: str,
     ) -> Dict:
-        """
-        Updates STAR files with alignment data from AreTomo/Imod.
-        Ported from old tsAlignment.py::updateMetaData
-        """
         try:
             print(f"[METADATA] Starting tsAlignment update for {input_star_path}")
             
-            # 1. Read the *input* tilt series STAR (e.g., from fsMotionAndCtf)
-            # We need the absolute path to resolve the individual tilt_series files
+            # Convert string to enum
+            alignment_method_enum = AlignmentMethod(alignment_method)
+            print(f"[METADATA] Using alignment method: {alignment_method_enum.value}")
+
+            # Read input tilt series STAR
             input_star_dir = input_star_path.parent
             in_star_data = self.starfile_service.read(input_star_path)
             in_ts_df = in_star_data.get('global')
             if in_ts_df is None:
                 raise ValueError(f"No 'global' block in {input_star_path}")
 
-            # 2. Prepare output paths
+            # Get pixel size
+            pixel_size_col = None
+            for col in ['rlnMicrographOriginalPixelSize', 'rlnTomoTiltSeriesPixelSize', 'rlnMicrographPixelSize']:
+                if col in in_ts_df.columns:
+                    pixel_size_col = col
+                    break
+            
+            if pixel_size_col is None:
+                # Fallback to reading from first tilt series
+                first_ts_file = in_ts_df["rlnTomoTiltSeriesStarFile"].iloc[0]
+                first_ts_path = (input_star_dir / first_ts_file).resolve()
+                if first_ts_path.exists():
+                    first_ts_data = self.starfile_service.read(first_ts_path)
+                    first_ts_df = next(iter(first_ts_data.values()))
+                    if 'rlnMicrographPixelSize' in first_ts_df.columns:
+                        pixS = float(first_ts_df['rlnMicrographPixelSize'].iloc[0])
+                    else:
+                        pixS = 1.35
+                else:
+                    pixS = 1.35
+            else:
+                pixS = float(in_ts_df[pixel_size_col].iloc[0])
+
+            print(f"[METADATA] Using pixel size: {pixS} Å")
+
+            # Prepare output paths
             output_star_path.parent.mkdir(parents=True, exist_ok=True)
             output_tilts_dir = output_star_path.parent / "tilt_series"
             output_tilts_dir.mkdir(exist_ok=True)
 
-            pixS = float(in_ts_df["rlnTomoTiltSeriesPixelSize"].iloc[0])
             ts_id_failed = []
-            
-            # This will hold the individual star files
-            updated_tilt_dfs = {} 
-            all_tilts_list = [] # This will hold all tilts for the new .all_tilts_df
+            updated_tilt_dfs = {}
+            all_tilts_list = []
 
-            # 3. Loop over each tilt series defined in the input global star
+            # Loop over each tilt series
             for _, ts_row in in_ts_df.iterrows():
                 ts_star_file_rel = ts_row["rlnTomoTiltSeriesStarFile"]
-                ts_id = Path(ts_star_file_rel).stem # e.g., "Position_1"
+                ts_id = Path(ts_star_file_rel).stem
                 
-                # Read the individual tilt star file (e.g., .../job002/tilt_series/Position_1.star)
                 ts_star_path_abs = (input_star_dir / ts_star_file_rel).resolve()
                 if not ts_star_path_abs.exists():
                     print(f"[WARN] Missing tilt star: {ts_star_path_abs}, skipping {ts_id}")
@@ -347,71 +429,108 @@ class MetadataTranslator:
                     continue
 
                 ts_data_in = self.starfile_service.read(ts_star_path_abs)
-                ts_tilts_df = next(iter(ts_data_in.values())).copy() # Get first data block
+                ts_tilts_df = next(iter(ts_data_in.values())).copy()
 
-                # 4. Find and parse alignment file for this tilt series
+                # Find and parse alignment file
                 aln_data = None
-                if alignment_program == "Aretomo":
+                if alignment_method_enum == AlignmentMethod.ARETOMO:
                     aln_file = job_dir / f"warp_tiltseries/tiltstack/{ts_id}/{ts_id}.st.aln"
+                    print(f"[DEBUG] Looking for AreTomo alignment file: {aln_file}")
                     aln_data = self._read_aretomo_aln_file(aln_file)
-                elif alignment_program == "Imod":
+                elif alignment_method_enum == AlignmentMethod.IMOD:
                     xf_file = job_dir / f"warp_tiltseries/tiltstack/{ts_id}/{ts_id}.xf"
                     tlt_file = job_dir / f"warp_tiltseries/tiltstack/{ts_id}/{ts_id}.tlt"
+                    print(f"[DEBUG] Looking for IMOD alignment files: {xf_file}, {tlt_file}")
                     aln_data = self._read_imod_xf_tlt_files(xf_file, tlt_file)
-                else:
-                    raise ValueError(f"Unknown alignment program: {alignment_program}")
 
                 if aln_data is None:
                     print(f"[WARN] Alignment failed/file missing for {ts_id}, skipping.")
                     ts_id_failed.append(ts_id)
                     continue
                 
-                # 5. Apply alignment data to the tilt DataFrame
-                # Ported from old logic
-                aln_data = aln_data[aln_data[:, 0].argsort()] # Sort by index
+                print(f"[DEBUG] Found alignment data with {len(aln_data)} entries")
+                
+                # Apply alignment data
+                aln_data = aln_data[aln_data[:, 0].argsort()]
                 keys_rel = [Path(p).name for p in ts_tilts_df["rlnMicrographMovieName"]]
+                print(f"[DEBUG] Tilt series has {len(keys_rel)} movies: {keys_rel[:3]}...")
 
-                # We need the .tomostar file to map indices
                 tomostar_file = job_dir / f"tomostar/{ts_id}.tomostar"
                 if not tomostar_file.exists():
                     print(f"[WARN] Missing {tomostar_file} for {ts_id}, skipping.")
                     ts_id_failed.append(ts_id)
                     continue
                 
-                tomostar_df = self.starfile_service.read(tomostar_file)['global']
+                # Read tomostar file - it has direct data, no 'global' block
+                print(f"[DEBUG] Reading tomostar file: {tomostar_file}")
+                tomostar_data = self.starfile_service.read(tomostar_file)
+                print(f"[DEBUG] Tomostar data keys: {list(tomostar_data.keys())}")
+                
+                # Tomostar files have the data directly, not in a 'global' block
+                # Get the first (and only) data block
+                tomostar_df = next(iter(tomostar_data.values()))
+                print(f"[DEBUG] Tomostar has {len(tomostar_df)} entries, columns: {list(tomostar_df.columns)}")
+                
+                # Check if we have the right number of alignment entries
+                if len(aln_data) != len(tomostar_df):
+                    print(f"[WARN] Alignment data ({len(aln_data)}) and tomostar entries ({len(tomostar_df)}) don't match for {ts_id}")
+                    ts_id_failed.append(ts_id)
+                    continue
 
+                # Apply alignment transformations to each tilt
+                applied_count = 0
                 for index, tomo_row in tomostar_df.iterrows():
-                    key_tomo = Path(tomo_row["wrpMovieName"]).name
+                    # Get the movie name from wrpMovieName column
+                    if 'wrpMovieName' not in tomo_row:
+                        print(f"[WARN] No wrpMovieName in tomostar row {index}, skipping.")
+                        continue
+                    
+                    movie_path = tomo_row['wrpMovieName']
+                    key_tomo = Path(movie_path).name
+                    
                     try:
                         position = keys_rel.index(key_tomo)
                     except ValueError:
-                        print(f"[WARN] Movie {key_tomo} from {tomostar_file} not found in {ts_star_path_abs}, skipping tilt.")
-                        continue
+                        # Try with different extensions
+                        key_base = Path(movie_path).stem
+                        matching_positions = [i for i, k in enumerate(keys_rel) if Path(k).stem == key_base]
+                        if len(matching_positions) == 1:
+                            position = matching_positions[0]
+                            print(f"[DEBUG] Found match by stem: {key_base} -> position {position}")
+                        else:
+                            print(f"[WARN] Movie {key_tomo} (stem: {key_base}) from {tomostar_file} not found in {ts_star_path_abs}, skipping tilt. Available: {[k for k in keys_rel if key_base in k][:3]}...")
+                            continue
 
+                    # Apply alignment transformations
                     ts_tilts_df.at[position, "rlnTomoXTilt"] = 0
-                    ts_tilts_df.at[position, "rlnTomoYTilt"] = -1.0 * aln_data[index, 9] # multTiltAngle = -1
+                    ts_tilts_df.at[position, "rlnTomoYTilt"] = -1.0 * aln_data[index, 9]  # multTiltAngle = -1
                     ts_tilts_df.at[position, "rlnTomoZRot"] = aln_data[index, 1]
                     ts_tilts_df.at[position, "rlnTomoXShiftAngst"] = aln_data[index, 3] * pixS
                     ts_tilts_df.at[position, "rlnTomoYShiftAngst"] = aln_data[index, 4] * pixS
+                    applied_count += 1
+
+                print(f"[DEBUG] Applied alignment to {applied_count}/{len(tomostar_df)} tilts")
                 
-                # Store for writing
+                if applied_count == 0:
+                    print(f"[WARN] No alignment applied for {ts_id}, skipping.")
+                    ts_id_failed.append(ts_id)
+                    continue
+
                 updated_tilt_dfs[ts_id] = ts_tilts_df
-                # Add ts_row data to all individual tilts for merging
                 ts_row_df = pd.concat([pd.DataFrame(ts_row).T] * len(ts_tilts_df), ignore_index=True)
                 ts_row_df.index = ts_tilts_df.index
                 all_tilts_list.append(pd.concat([ts_row_df, ts_tilts_df], axis=1))
 
-            # 6. Check for total failure
+            # Check for total failure
             if len(ts_id_failed) == len(in_ts_df):
                 raise Exception("Alignment failed for all tilt series. Check job logs.")
 
-            # 7. Write new individual STAR files
+            # Write new individual STAR files
             for ts_id, tilts_df in updated_tilt_dfs.items():
                 out_ts_star = output_tilts_dir / f"{ts_id}.star"
                 self.starfile_service.write({ts_id: tilts_df}, out_ts_star)
 
-            # 8. Create and write new main STAR file
-            # Filter out failed tilt series
+            # Create and write new main STAR file
             out_ts_df = in_ts_df[~in_ts_df["rlnTomoName"].isin(ts_id_failed)].copy()
             
             # Update paths to point to new tilt_series directory
@@ -425,9 +544,12 @@ class MetadataTranslator:
             out_ts_df["rlnTomoSizeY"] = int(dims[1])
             out_ts_df["rlnTomoSizeZ"] = int(dims[2])
             
+            # Add pixel size column for downstream jobs
+            out_ts_df["rlnTomoTiltSeriesPixelSize"] = pixS
+            
             self.starfile_service.write({'global': out_ts_df}, output_star_path)
 
-            # 9. (Optional) Write .all_tilts_df if needed
+            # Write .all_tilts_df if needed
             if all_tilts_list:
                 all_tilts_df = pd.concat(all_tilts_list, ignore_index=True)
                 self.starfile_service.write(
@@ -439,66 +561,12 @@ class MetadataTranslator:
             return {"success": True, "message": f"Wrote {len(out_ts_df)} aligned tilt series."}
 
         except Exception as e:
-            print(f"[ERROR] tsAlignment metadata update failed: {e}", file=sys.stderr)
+            print(f"[ERROR] tsAlignment metadata update failed: {e}")
             import traceback
-            traceback.print_exc(file=sys.stderr)
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
 
-    def _read_aretomo_aln_file(self, aln_file: Path) -> Optional[np.ndarray]:
-        """Parses AreTomo .aln file."""
-        if not aln_file.exists():
-            print(f"Warning: {aln_file} not found", file=sys.stderr)
-            return None
-        data = []
-        with open(aln_file, "r") as f:
-            for line in f:
-                if line.startswith("# Local Alignment"):
-                    break
-                if not line.startswith("#"):
-                    try:
-                        numbers = [float(x) for x in line.split()]
-                        if numbers:
-                            data.append(numbers)
-                    except ValueError:
-                        continue
-        return np.array(data) if data else None
 
-    def _read_imod_xf_tlt_files(self, xf_file: Path, tlt_file: Path) -> Optional[np.ndarray]:
-        """Parses IMOD .xf and .tlt files."""
-        if not xf_file.exists() or not tlt_file.exists():
-            print(f"Warning: {xf_file} or {tlt_file} not found", file=sys.stderr)
-            return None
-        
-        df1 = pd.read_csv(
-            xf_file, delim_whitespace=True, header=None,
-            names=["m1", "m2", "m3", "m4", "tx", "ty"],
-        )
-        df2 = pd.read_csv(
-            tlt_file, delim_whitespace=True, header=None, names=["tilt_angle"]
-        )
-        combined = pd.concat([df1, df2], axis=1)
-
-        results_x, results_y, titlAng = [], [], []
-        for index, row in combined.iterrows():
-            M = np.array([[row["m1"], row["m2"]], [row["m3"], row["m4"]]])
-            M = np.linalg.inv(M)
-            v = np.array([row["tx"], row["ty"]]) * -1
-            result = np.dot(M, v)
-            angle = np.degrees(np.arctan2(M[1, 0], M[0, 0]))
-            results_x.append(result[0])
-            results_y.append(result[1])
-            titlAng.append(angle)
-
-        data_np = np.zeros((len(combined), 10))
-        data_np[:, 0] = np.arange(0, len(combined)) # Index
-        data_np[:, 1] = titlAng # ZRot
-        data_np[:, 3] = results_x # XShift
-        data_np[:, 4] = results_y # YShift
-        data_np[:, 9] = combined["tilt_angle"] # TiltAngle
-        return data_np
-
-
-# Convenience function for easy import
 def update_fs_motion_ctf_metadata(
     job_dir: Path,
     input_star: Path,
@@ -512,3 +580,143 @@ def update_fs_motion_ctf_metadata(
     return translator.update_fs_motion_and_ctf_metadata(
         job_dir, input_star, output_star
     )
+
+def update_ts_ctf_metadata(
+    self,
+    job_dir: Path,
+    input_star_path: Path,
+    output_star_path: Path,
+    warp_folder: str = "warp_tiltseries"
+) -> Dict:
+    """
+    Updates STAR files with CTF data from WarpTools ts_ctf.
+    Ported from old tsCtf.py::updateMetaData
+    """
+    try:
+        print(f"[METADATA] Starting tsCTF update for {input_star_path}")
+        
+        # Parse WarpTools XML files
+        xml_pattern = str(job_dir / warp_folder / "*.xml")
+        warp_data = WarpXmlParser(xml_pattern)
+        print(f"[METADATA] Parsed {len(warp_data.data_df)} XML files")
+        
+        # Read input tilt series data
+        input_star_dir = input_star_path.parent
+        in_star_data = self.starfile_service.read(input_star_path)
+        in_ts_df = in_star_data.get('global')
+        
+        if in_ts_df is None:
+            raise ValueError(f"No 'global' block in {input_star_path}")
+        
+        # Load all tilt series data
+        all_tilts_df = self._load_all_tilt_series(input_star_dir, in_ts_df)
+        
+        # Update with CTF parameters
+        updated_df = self._merge_ctf_metadata(all_tilts_df, warp_data.data_df)
+        
+        # Write updated STAR files
+        self._write_updated_ctf_star(updated_df, in_ts_df, output_star_path)
+        
+        return {
+            "success": True,
+            "message": f"Updated {len(updated_df)} tilts with CTF metadata",
+            "output_path": str(output_star_path)
+        }
+        
+    except Exception as e:
+        print(f"[ERROR] tsCTF metadata update failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+def _merge_ctf_metadata(
+    self,
+    tilts_df: pd.DataFrame,
+    warp_df: pd.DataFrame
+) -> pd.DataFrame:
+    """
+    Merge CTF parameters from WarpTools into tilt series DataFrame.
+    Ported from old tsCtf.py::updateMetaData
+    """
+    updated_df = tilts_df.copy()
+    
+    for index, row in updated_df.iterrows():
+        key = row['cryoBoostKey']
+        
+        # Clean key to match WarpTools format
+        clean_key = key.replace("_EER.eer.mrc", "").replace("_EER.mrc", "").replace(".mrc", "")
+        
+        # Find matching WarpTools data
+        matches = warp_df[warp_df['cryoBoostKey'] == clean_key]
+        
+        if matches.empty:
+            print(f"[WARN] No CTF data for {clean_key}")
+            continue
+        
+        warp_row = matches.iloc[0]
+        
+        # Calculate defocus values (convert microns to Angstroms)
+        defocus_u = (float(warp_row['defocus_value']) + float(warp_row['defocus_delta'])) * 10000
+        defocus_v = (float(warp_row['defocus_value']) - float(warp_row['defocus_delta'])) * 10000
+        defocus_angle = float(warp_row['defocus_angle'])
+        astigmatism = defocus_u - defocus_v
+        
+        # Update CTF parameters
+        updated_df.at[index, 'rlnDefocusU'] = defocus_u
+        updated_df.at[index, 'rlnDefocusV'] = defocus_v
+        updated_df.at[index, 'rlnDefocusAngle'] = defocus_angle
+        updated_df.at[index, 'rlnCtfAstigmatism'] = astigmatism
+        
+        # Add CTF image path if available
+        base_name = clean_key
+        updated_df.at[index, 'rlnCtfImage'] = \
+            f"{warp_row['folder']}/powerspectrum/{base_name}.mrc"
+    
+    return updated_df
+
+
+def _write_updated_ctf_star(
+    self,
+    tilts_df: pd.DataFrame,
+    tilt_series_df: pd.DataFrame,
+    output_path: Path
+):
+    """
+    Write updated CTF metadata to STAR files.
+    Replicates old tiltSeriesMeta.writeTiltSeries() behavior.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    tilt_series_dir = output_path.parent / "tilt_series"
+    tilt_series_dir.mkdir(exist_ok=True)
+    
+    # Extract tilt series info
+    num_ts_cols = len(tilt_series_df.columns)
+    ts_df = tilts_df.iloc[:, :num_ts_cols].copy()
+    ts_df = ts_df.drop('cryoBoostKey', axis=1, errors='ignore')
+    ts_df = ts_df.drop_duplicates().reset_index(drop=True)
+    
+    # Update paths to point to new tilt_series directory
+    ts_df['rlnTomoTiltSeriesStarFile'] = ts_df['rlnTomoTiltSeriesStarFile'].apply(
+        lambda x: f"tilt_series/{Path(x).name}"
+    )
+    
+    # Write main tilt series STAR file
+    self.starfile_service.write({'global': ts_df}, output_path)
+    
+    # Write individual tilt series files
+    for ts_name in ts_df['rlnTomoName']:
+        # Get all tilts for this tilt series
+        ts_tilts = tilts_df[tilts_df['rlnTomoName'] == ts_name].copy()
+        
+        # Extract only the per-tilt columns
+        ts_tilts_only = ts_tilts.iloc[:, num_ts_cols:].copy()
+        
+        # Remove the cryoBoostKey helper column
+        if 'cryoBoostKey' in ts_tilts_only.columns:
+            ts_tilts_only = ts_tilts_only.drop('cryoBoostKey', axis=1)
+        
+        ts_file = tilt_series_dir / f"{ts_name}.star"
+        self.starfile_service.write({ts_name: ts_tilts_only}, ts_file)
+    
+    print(f"[METADATA] Wrote updated CTF STAR files to {output_path}")
