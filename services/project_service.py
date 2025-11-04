@@ -98,9 +98,9 @@ class ProjectService:
         if not self.project_root:
             raise ValueError("Project root not set. Call set_project_root() first.")
 
-        job_type = JobType.from_string(job_name)
+        job_type      = JobType.from_string(job_name)
         param_classes = jobtype_paramclass()
-        param_class = param_classes.get(job_type)
+        param_class   = param_classes.get(job_type)
 
         if not param_class:
             raise ValueError(f"Unknown job type: {job_name}")
@@ -109,13 +109,6 @@ class ProjectService:
         return self.project_root / category.value / f"job{job_number:03d}"
 
     def resolve_job_paths(self, job_name: str, job_number: int, selected_jobs: List[str]) -> Dict[str, Path]:
-        """
-        Resolve all paths for a job by:
-        1. Getting outputs from upstream jobs
-        2. Calling the job's get_input_assets() with those outputs
-        3. Merging with the job's own output assets
-        Returns: All paths (inputs + outputs) as absolute Paths
-        """
         if not self.project_root:
             raise ValueError("Project root not set")
 

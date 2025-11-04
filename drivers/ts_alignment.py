@@ -6,9 +6,8 @@ import sys
 import os
 import shlex
 from pathlib import Path
+import traceback
 
-# Add the server root to PYTHONPATH (set by fn_exe command)
-# This allows us to import 'services'
 server_dir = Path(__file__).parent.parent
 sys.path.append(str(server_dir))
 # ----------------------------------------
@@ -28,7 +27,6 @@ def run_command(command: str, cwd: Path):
     """
     Helper to run a shell command, stream output, and check for errors.
     """
-    # print(f"[DRIVER] Executing: {command}", flush=True) # <-- REMOVED THIS LINE
     process = subprocess.Popen(command, shell=True, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     print("--- CONTAINER STDOUT ---", flush=True)
     if process.stdout:
@@ -58,11 +56,11 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path]) 
     gain_ops_str = params.gain_operations if params.gain_operations else ""
     
     # Paths from the JSON (are all absolute)
-    mdoc_dir = shlex.quote(str(paths['mdoc_dir']))
+    mdoc_dir        = shlex.quote(str(paths['mdoc_dir']))
     frameseries_dir = shlex.quote(str(paths['frameseries_dir']))
-    tomostar_dir = shlex.quote(str(paths['tomostar_dir']))
-    processing_dir = shlex.quote(str(paths['warp_dir'])) # Use 'warp_dir' for processing
-    settings_file = shlex.quote(str(paths['warp_settings']))
+    tomostar_dir    = shlex.quote(str(paths['tomostar_dir']))
+    processing_dir  = shlex.quote(str(paths['warp_dir']))         # Use 'warp_dir' for processing
+    settings_file   = shlex.quote(str(paths['warp_settings']))
 
     mkdir_cmds = [
         f"mkdir -p {tomostar_dir}",
@@ -110,8 +108,6 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path]) 
             "--alignz", str(int(params.thickness_nm * 10)),
             "--perdevice", str(params.perdevice),
             "--patches", f"{params.patch_x}x{params.patch_y}",
-            # "--out_imod", str(params.out_imod),
-            # "--tilt_cor", str(params.tilt_cor),
         ]
         if params.axis_iter > 0:
             cmd_parts_align.extend([
@@ -170,10 +166,10 @@ def main():
         # 3. Get container service to build the *full apptainer* command
         container_svc = get_container_service()
         apptainer_command = container_svc.wrap_command_for_tool(
-            command=align_command_str,
-            cwd=job_dir,
-            tool_name="warptools", # Assuming same container as fs_motion
-            additional_binds=params_data["additional_binds"]
+            command          = align_command_str,
+            cwd              = job_dir,
+            tool_name        = "warptools",                     
+            additional_binds = params_data["additional_binds"]
         )
         
         # 4. Run the containerized computation
@@ -203,9 +199,7 @@ def main():
         sys.exit(0)
 
     except Exception as e:
-        print(f"[DRIVER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
         print(str(e), file=sys.stderr, flush=True)
-        import traceback
         traceback.print_exc(file=sys.stderr)
         
         failure_file.touch()
