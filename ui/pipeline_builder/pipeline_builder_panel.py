@@ -23,6 +23,7 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
         "stop_button": None,
         "status_label": None,
         "status_timer": None,
+        "continuation_container": None,  # Add this
     }
 
     if "active_job_tab" not in shared_state:
@@ -102,6 +103,22 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
 
     def rebuild_pipeline_ui():
         update_status_label()
+
+        # UPDATE: Handle continuation controls visibility
+        if panel_state["continuation_container"]:
+            should_show_continuation = shared_state.get("continuation_mode", False)
+            panel_state["continuation_container"].set_visibility(should_show_continuation)
+            
+            # If continuation mode is active and we haven't built controls yet, build them
+            if should_show_continuation:
+                # Clear any existing content first
+                panel_state["continuation_container"].clear()
+                with panel_state["continuation_container"]:
+                    build_continuation_controls(backend, shared_state, {
+                        **callbacks,
+                        "rebuild_pipeline_ui": rebuild_pipeline_ui,
+                        "check_and_update_statuses": check_and_update_statuses
+                    })
 
         if "job_tags_container" in shared_state:
             should_hide = shared_state["pipeline_running"] or shared_state.get("continuation_mode", False)
@@ -268,13 +285,10 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
     with ui.column().classes("w-full h-full overflow-y-auto").style(
         "padding: 10px; gap: 0px; font-family: 'IBM Plex Sans', sans-serif;"
     ):
-        # Continuation controls (only shown when loading existing project)
-        if shared_state.get("continuation_mode"):
-            build_continuation_controls(backend, shared_state, {
-                **callbacks,
-                "rebuild_pipeline_ui": rebuild_pipeline_ui,
-                "check_and_update_statuses": check_and_update_statuses
-            })
+        # === REPLACE THE OLD CONTINUATION CONTROLS WITH THIS ===
+        panel_state["continuation_container"] = ui.column().classes("w-full")
+        panel_state["continuation_container"].set_visibility(False)
+        # === END REPLACEMENT ===
         
         # Job tags and controls
         with ui.row().classes("w-full items-center justify-between mb-4").style("gap: 12px;"):

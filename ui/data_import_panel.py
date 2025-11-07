@@ -143,8 +143,7 @@ def build_data_import_panel(backend: CryoBoostBackend, shared_state: Dict[str, A
 
         # Rebuild UI to show loaded jobs
         if "rebuild_pipeline_ui" in callbacks:
-            callbacks["rebuild_pipeline_ui"]()
-
+            callbacks["rebuild_pipeline_ui"]()  # This should already be there
 
         ui.notify(f"Loaded project: {result['project_name']}", type="positive")
 

@@ -13,9 +13,16 @@ from typing import Dict, Any
 
 
 def get_job_status(job_type: JobType) -> JobStatus:
-    """Query status from job model"""
+    """Query status from job model, handle reset jobs properly"""
     job_model = app_state.jobs.get(job_type.value)
-    return job_model.execution_status if job_model else JobStatus.UNKNOWN
+    if not job_model:
+        return JobStatus.UNKNOWN
+    
+    # If job has been reset (no relion_job_name) but is marked as something other than scheduled, fix it
+    if not job_model.relion_job_name and job_model.execution_status != JobStatus.SCHEDULED:
+        job_model.execution_status = JobStatus.SCHEDULED
+        
+    return job_model.execution_status
 
 
 def get_status_color(job_type: JobType) -> str:

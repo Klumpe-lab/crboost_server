@@ -115,10 +115,30 @@ def generate_params(job_type_str: str, project_path: Path, job_number: int) -> D
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--job_type", required=True, help="JobType string (e.g., tsAlignment)")
-    parser.add_argument("--project_path", required=True, type=Path, help="Absolute path to the project root")
-    parser.add_argument("--job_number", required=True, type=int, help="The new job number (e.g., 7)")
+    parser.add_argument("--job_type", type=str, help="Job type string")
+    parser.add_argument("--project_path", type=Path, help="Project directory") 
+    parser.add_argument("--job_number", type=int, help="Job number")
     args = parser.parse_args()
+
+    # ADD THIS DEBUGGING
+    print(f"[DEBUG PARAM_GENERATOR] Received job_type: '{args.job_type}'")
+    print(f"[DEBUG PARAM_GENERATOR] Received job_number: {args.job_number}")
+    print(f"[DEBUG PARAM_GENERATOR] Project path: {args.project_path}")
+    
+    # If job_type is a number, try to look it up
+    if args.job_type and args.job_type.isdigit():
+        print(f"[DEBUG PARAM_GENERATOR] Job type is a number, looking up in scheme...")
+        from services.continuation_service import PipelineManipulationService
+        scheme_name = f"scheme_{args.project_path.name}"
+        pipeline_service = PipelineManipulationService(None)
+        job_info = pipeline_service.get_job_info_by_number(args.project_path, int(args.job_type), scheme_name)
+        
+        if job_info and job_info.get("job_type"):
+            args.job_type = job_info["job_type"]
+            print(f"[DEBUG PARAM_GENERATOR] Resolved job type to: '{args.job_type}'")
+        else:
+            raise ValueError(f"Could not resolve job type from number '{args.job_type}'")
+    
 
     try:
         final_params = generate_params(args.job_type, args.project_path.resolve(), args.job_number)

@@ -20,11 +20,11 @@ class StatusSyncService:
     
     def __init__(self, backend):
         self.backend = backend
-    
+
     async def sync_all_jobs(self, project_path: str) -> Dict[str, bool]:
         """
         Read pipeline.star and update job models. Returns dict of what changed.
-        Returns: {"importmovies": True, "fsMotionAndCtf": False, ...}
+        Handles reset jobs by looking for new job instances.
         """
         pipeline_star = Path(project_path) / "default_pipeline.star"
         if not pipeline_star.exists():
@@ -35,23 +35,49 @@ class StatusSyncService:
         processes = data.get("pipeline_processes", pd.DataFrame())
         
         changes = {}
-        for job_name, job_model in self.backend.app_state.jobs.items():
-            old_status = job_model.execution_status
+        
+        # First pass: update jobs that are found in pipeline.star
+        found_jobs = set()
+        for _, row in processes.iterrows():
+            job_path = row["rlnPipeLineProcessName"]
+            job_type = self._extract_job_type(project_path, job_path)
             
-            matching_row = self._find_job_in_star(processes, job_name, project_path)
-            
-            if matching_row is not None:
-                status_str = matching_row["rlnPipeLineProcessStatusLabel"]
+            if job_type != "unknown" and job_type in self.backend.app_state.jobs:
+                job_model = self.backend.app_state.jobs[job_type]
+                old_status = job_model.execution_status
+                
+                status_str = row["rlnPipeLineProcessStatusLabel"]
                 new_status = JobStatus.SCHEDULED if status_str == "Scheduled" else JobStatus(status_str)
+                
+                # Update job model
                 job_model.execution_status = new_status
-                job_model.relion_job_name = matching_row["rlnPipeLineProcessName"]
-                job_model.relion_job_number = self._extract_job_number(matching_row["rlnPipeLineProcessName"])
-            else:
-                job_model.execution_status = JobStatus.SCHEDULED
-                job_model.relion_job_name = None
-                job_model.relion_job_number = None
-            
-            changes[job_name] = (old_status != job_model.execution_status)
+                job_model.relion_job_name = job_path
+                job_model.relion_job_number = self._extract_job_number(job_path)
+                
+                changes[job_type] = (old_status != job_model.execution_status)
+                found_jobs.add(job_type)
+        
+        # Second pass: handle jobs not found in pipeline.star (reset jobs)
+        for job_type, job_model in self.backend.app_state.jobs.items():
+            if job_type not in found_jobs:
+                old_status = job_model.execution_status
+                
+                # If job has a relion_job_name but isn't in pipeline, it was reset
+                if job_model.relion_job_name and not job_model.relion_job_name.startswith(job_type):
+                    job_model.execution_status = JobStatus.SCHEDULED
+                    job_model.relion_job_name = None
+                    job_model.relion_job_number = None
+                    changes[job_type] = (old_status != JobStatus.SCHEDULED)
+                # If job is scheduled but has no relion_job_name, that's fine
+                elif job_model.execution_status == JobStatus.SCHEDULED and not job_model.relion_job_name:
+                    # This is a reset job waiting to be run - no change needed
+                    pass
+                # If job has unexpected status but no pipeline entry, reset to scheduled
+                elif job_model.execution_status not in [JobStatus.SCHEDULED, JobStatus.UNKNOWN]:
+                    job_model.execution_status = JobStatus.SCHEDULED
+                    job_model.relion_job_name = None
+                    job_model.relion_job_number = None
+                    changes[job_type] = True
         
         return changes
     
@@ -66,18 +92,38 @@ class StatusSyncService:
         return None
     
     def _extract_job_type(self, project_path: str, job_path: str) -> str:
+        """Extract job type from job path, handling both old and new job instances"""
+        
+        # Handle "Import" job
         if "Import/job" in job_path:
             return "importmovies"
         
+        # For other jobs, try to read job_params.json
         job_dir = Path(project_path) / job_path.rstrip('/')
         params_file = job_dir / "job_params.json"
         
         if params_file.exists():
             try:
                 with open(params_file, 'r') as f:
-                    return json.load(f).get("job_type", "unknown")
+                    params_data = json.load(f)
+                job_type = params_data.get("job_type", "unknown")
+                
+                # Verify this is the current job instance, not a trashed one
+                # by checking if the job number matches what's expected
+                if job_type != "unknown":
+                    return job_type
             except:
-                return "unknown"
+                pass
+        
+        # Fallback: try to infer from directory structure and pipeline order
+        if "External/job" in job_path:
+            # This is a bit hacky but works for linear pipelines
+            # You might need to adjust this based on your pipeline structure
+            job_number = self._extract_job_number(job_path)
+            pipeline_order = ["importmovies", "fsMotionAndCtf", "aligntiltsWarp", "tsCtf", "tsReconstruct"]
+            if 0 <= job_number - 1 < len(pipeline_order):
+                return pipeline_order[job_number - 1]
+        
         return "unknown"
     
     def _extract_job_number(self, job_path: str) -> int:
