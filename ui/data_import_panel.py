@@ -41,7 +41,6 @@ def build_data_import_panel(backend: CryoBoostBackend, shared_state: Dict[str, A
 
             with ui.row().classes("w-full justify-end mt-4").style("gap: 8px;"):
                 ui.button("Cancel", on_click=dialog.close).props("flat")
-                # Remove asyncio.create_task wrapper - just call directly
                 ui.button("Load", on_click=lambda: load_project(project_path_input.value, dialog)).props("flat")
 
         dialog.open()
@@ -259,7 +258,8 @@ def build_data_import_panel(backend: CryoBoostBackend, shared_state: Dict[str, A
 
             ui.notify(result["message"], type="positive")
             panel_state["project_status"].set_text("Ready")
-            panel_state["run_button"].props(remove="disabled")
+            if "enable_run_button" in callbacks:
+                callbacks["enable_run_button"]()
 
             panel_state["project_name_input"].disable()
             panel_state["project_location_input"].disable()
@@ -275,145 +275,6 @@ def build_data_import_panel(backend: CryoBoostBackend, shared_state: Dict[str, A
         else:
             ui.notify(f"Error: {result.get('error')}", type="negative")
 
-    async def handle_run_pipeline():
-        panel_state["project_status"].classes(remove="text-red-600 text-green-600")
-        panel_state["run_button"].props("loading")
-        panel_state["project_status"].set_text("Starting...")
-        panel_state["progress_bar"].classes(remove="hidden").value = 0
-        panel_state["progress_message"].classes(remove="hidden").set_text("Starting...")
-
-        result = await backend.start_pipeline(
-            project_path=shared_state["current_project_path"],
-            scheme_name=shared_state["current_scheme_name"],
-            selected_jobs=[j.value for j in shared_state["selected_jobs"]],
-            required_paths=[
-                panel_state["project_location_input"].value,
-                panel_state["movies_path_input"].value,
-                panel_state["mdocs_path_input"].value,
-            ],
-        )
-
-        panel_state["run_button"].props(remove="loading")
-        if result.get("success"):
-            shared_state["pipeline_running"] = True
-
-            pid = result.get("pid", "N/A")
-            ui.notify(f"Started (PID: {pid})", type="positive")
-            panel_state["project_status"].set_text(f"Running ({pid})")
-            panel_state["run_button"].props("disabled")
-            panel_state["stop_button"].props(remove="disabled")
-
-            if "rebuild_pipeline_ui" in callbacks:
-                callbacks["rebuild_pipeline_ui"]()
-            asyncio.create_task(monitor_all_jobs())
-            asyncio.create_task(_monitor_pipeline_progress())
-            asyncio.create_task(monitor_job_statuses())
-
-        else:
-            panel_state["project_status"].set_text(f"Failed: {result.get('error')}")
-            panel_state["progress_bar"].classes("hidden")
-            panel_state["progress_message"].classes("hidden")
-
-    async def _monitor_pipeline_progress():
-        try:
-            while shared_state["current_project_path"] and shared_state["pipeline_running"]:
-                progress = await backend.get_pipeline_progress(shared_state["current_project_path"])
-
-                if not progress or progress.get("status") != "ok":
-                    panel_state["project_status"].set_text("Monitoring Error")
-                    panel_state["project_status"].classes(add="text-red-600")
-                    break
-
-                total = progress.get("total", 0)
-                completed = progress.get("completed", 0)
-                running = progress.get("running", 0)
-                failed = progress.get("failed", 0)
-
-                if total > 0:
-                    panel_state["progress_bar"].value = completed / total
-                    panel_state["progress_message"].text = f"{completed}/{total} ({running} running, {failed} failed)"
-
-                if progress.get("is_complete") and total > 0:
-                    msg = "Complete" if failed == 0 else f"Done ({failed} failed)"
-                    panel_state["project_status"].set_text(msg)
-                    panel_state["project_status"].classes(add="text-green-600" if failed == 0 else "text-red-600")
-                    break
-
-                await asyncio.sleep(5)
-
-        except Exception as e:
-            print(f"[ERROR] Pipeline monitor failed: {e}")
-            panel_state["project_status"].set_text("Monitor Failed")
-            panel_state["project_status"].classes(add="text-red-600")
-
-        finally:
-            shared_state["pipeline_running"] = False
-            panel_state["stop_button"].props("disabled")
-            panel_state["run_button"].props(remove="disabled").props(remove="loading")
-
-    async def monitor_job_statuses():
-        try:
-            while shared_state["pipeline_running"] and shared_state["current_project_path"]:
-                import random
-
-                job_statuses = {}
-                for jt in shared_state["selected_jobs"]:
-                    if shared_state["job_cards"][jt]["status"] == "success":
-                        job_statuses[jt.value] = "success"
-                        continue
-                    job_statuses[jt.value] = random.choice(["pending", "running", "success", "failed"])
-
-                for job_type in shared_state["selected_jobs"]:
-                    status = job_statuses.get(job_type.value, "pending")
-                    if shared_state["job_cards"][job_type]["status"] != status:
-                        shared_state["job_cards"][job_type]["status"] = status
-
-                await asyncio.sleep(3)
-
-        except Exception as e:
-            print(f"[ERROR] Job status monitor failed: {e}")
-
-        finally:
-            for job_type in shared_state["selected_jobs"]:
-                if shared_state["job_cards"][job_type]["status"] == "running":
-                    shared_state["job_cards"][job_type]["status"] = "failed"
-
-    async def monitor_all_jobs():
-        last_content = {}
-        await asyncio.sleep(1)
-
-        while shared_state["pipeline_running"] and shared_state["current_project_path"]:
-            try:
-                for job_type in shared_state["selected_jobs"]:
-                    card_data = shared_state["job_cards"].get(job_type)
-                    if not card_data or "monitor" not in card_data or not card_data["monitor"]:
-                        continue
-
-                    monitor = card_data["monitor"]
-                    job_index = card_data["job_index"]
-
-                    logs = await backend.get_pipeline_job_logs(
-                        shared_state["current_project_path"], job_type.value, str(job_index)
-                    )
-
-                    if job_type not in last_content:
-                        last_content[job_type] = {"stdout": "", "stderr": ""}
-
-                    if logs.get("stdout", "") != last_content[job_type]["stdout"]:
-                        monitor["stdout"].clear()
-                        monitor["stdout"].push(logs.get("stdout", "No output"))
-                        last_content[job_type]["stdout"] = logs.get("stdout", "")
-
-                    if logs.get("stderr", "") != last_content[job_type]["stderr"]:
-                        monitor["stderr"].clear()
-                        monitor["stderr"].push(logs.get("stderr", "No errors"))
-                        last_content[job_type]["stderr"] = logs.get("stderr", "")
-
-                await asyncio.sleep(5)
-
-            except Exception as e:
-                print(f"[ERROR] Log monitoring loop failed: {e}")
-                await asyncio.sleep(10)
 
     def get_job_param_snapshot(job_type):
         job_model = app_state.jobs.get(job_type.value)

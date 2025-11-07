@@ -11,7 +11,7 @@ from services.container_service import get_container_service
 from services.pipeline_runner import PipelineRunnerService
 from app_state import state as app_state, prepare_job_params, update_from_mdoc
 from pathlib import Path
-
+from services.continuation_service import ContinuationService, PipelineManipulationService, SchemeManipulationService
 from services.slurm_service import SlurmService
 
 HARDCODED_USER = "artem.kushner"
@@ -19,13 +19,18 @@ HARDCODED_USER = "artem.kushner"
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
-        self.username = HARDCODED_USER  # Make sure to store it
+        self.username = HARDCODED_USER
         self.server_dir = server_dir
         self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service = get_container_service()
         self.slurm_service = SlurmService(HARDCODED_USER)
         self.pipeline_runner = PipelineRunnerService(self)
+
+        self.pipeline_manipulation = PipelineManipulationService(self)
+        self.scheme_manipulation = SchemeManipulationService(self)
+        self.continuation = ContinuationService(self)
+        
         self.app_state = app_state
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
@@ -70,6 +75,7 @@ class CryoBoostBackend:
         self, command: str, cwd: Path = None, tool_name: str = None, additional_binds: List[str] = None
     ):
         """Runs a shell command, optionally using specified tool's container."""
+        # (This method is unchanged)
         try:
             if tool_name:
                 print(f"[DEBUG] Running command with tool: {tool_name}")
@@ -114,15 +120,13 @@ class CryoBoostBackend:
     ):
         return await self.pipeline_runner.start_pipeline(project_path, scheme_name, selected_jobs, required_paths)
 
-    async def get_pipeline_progress(self, project_path: str):
-        return await self.pipeline_runner.get_pipeline_progress(project_path)
+    async def get_pipeline_overview(self, project_path: str):
+        """Gets a high-level overview and detailed statuses of all jobs."""
+        return await self.pipeline_runner.get_pipeline_overview(project_path)
 
-    async def get_pipeline_job_logs(self, project_path: str, job_type: str, job_number: str) -> Dict[str, str]:
-        return await self.pipeline_runner.get_pipeline_job_logs(project_path, job_type, job_number)
-
-    async def monitor_pipeline_jobs(self, project_path: str, selected_jobs: List[str]) -> AsyncGenerator:
-        async for update in self.pipeline_runner.monitor_pipeline_jobs(project_path, selected_jobs):
-            yield update
+    async def get_job_logs(self, project_path: str, job_name: str) -> Dict[str, str]:
+        """Gets logs for a specific job *path* (e.g., "External/job003/")."""
+        return await self.pipeline_runner.get_job_logs(project_path, job_name)
 
     async def get_eer_frames_per_tilt(self, eer_file_path: str) -> int:
         try:
@@ -141,7 +145,25 @@ class CryoBoostBackend:
             print(f"Error getting EER frames: {e}")
             return None
 
-
     async def load_existing_project(self, project_path: str) -> Dict[str, Any]:
         """Load an existing project for continuation"""
         return await self.project_service.load_project_state(project_path)
+
+    async def debug_pipeline_status(self, project_path: str):
+        """Debug method to check pipeline status directly"""
+        pipeline_star = Path(project_path) / "default_pipeline.star"
+        
+        if not pipeline_star.exists():
+            return {"error": "Pipeline file not found"}
+        
+        try:
+            with open(pipeline_star, 'r') as f:
+                content = f.read()
+            
+            return {
+                "success": True,
+                "content": content,
+                "exists": True
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}

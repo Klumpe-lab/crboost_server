@@ -232,10 +232,6 @@ def load_state_from_file(path: Path):
     except Exception as e:
         print(f"[ERROR] Failed to load state from {path}: {e}")
 
-
-# ============= HELPER FUNCTIONS =============
-
-
 def _sync_job_with_global_params(job_name: str):
     """
     Sync a job's params with current global state values.
@@ -268,8 +264,6 @@ def _sync_job_with_global_params(job_name: str):
 
     print(f"[STATE] Synced {job_name} with global params")
 
-
-# --- NEW: Function moved from projects_tab.py ---
 def is_job_synced_with_global(job_type: JobType) -> bool:
     """Check if job params match global params - with proper comparison"""
     job_model = state.jobs.get(job_type.value)  # Use global 'state'
@@ -311,7 +305,6 @@ def is_job_synced_with_global(job_type: JobType) -> bool:
             return False
 
     return True
-
 
 def sync_job_with_global(job_type: JobType):
     """Syncs a specific job's model with the current global state."""

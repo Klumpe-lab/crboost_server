@@ -12,6 +12,12 @@ if TYPE_CHECKING:
     # This forward ref is still needed by AbstractJobParams and its children
     from app_state import PipelineState
 
+class JobStatus(str, Enum):
+    SUCCEEDED = "Succeeded"
+    FAILED    = "Failed"
+    RUNNING   = "Running"
+    SCHEDULED   = "Scheduled"  # We'll use this for jobs in scheme but not pipeline
+    UNKNOWN   = "Unknown"
 
 class Partition(str, Enum):
     CPU = "c"
@@ -80,7 +86,7 @@ class ComputingParams(BaseModel):
         from services.config_service import get_config_service
 
         try:
-            config_service = get_config_service(str(config_path))
+            config_service = get_config_service()
             gpu_partition = config_service.find_gpu_partition()
 
             if gpu_partition:
@@ -124,7 +130,6 @@ class JobType(str, Enum):
 
     @classmethod
     def from_string(cls, value: str) -> Self:
-        """Safe conversion from string with better error message"""
         try:
             return cls(value)
         except ValueError:
@@ -142,6 +147,23 @@ class AbstractJobParams(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)
     JOB_CATEGORY: ClassVar[JobCategory]
+
+    execution_status : JobStatus     = Field(default=JobStatus.SCHEDULED)
+    relion_job_name  : Optional[str] = None                                
+    relion_job_number: Optional[int] = None                               
+
+    @property
+    def display_status(self) -> str:
+        """Human-readable status"""
+        return self.execution_status.value
+
+    @property 
+    def has_succeeded(self) -> bool:
+        return self.execution_status == JobStatus.SUCCEEDED
+
+    @property
+    def is_running(self) -> bool:
+        return self.execution_status == JobStatus.RUNNING
 
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
@@ -175,7 +197,6 @@ class AbstractJobParams(BaseModel):
     def get_tool_name(self) -> str:
         """Returns the container tool name (e.g., 'relion_import', 'warptools')."""
         raise NotImplementedError("Subclass must implement get_tool_name()")
-
 
 class ImportMoviesParams(AbstractJobParams):
     """Parameters for import movies job - implements JobParamsProtocol"""
@@ -277,7 +298,6 @@ class ImportMoviesParams(AbstractJobParams):
     ) -> Dict[str, Path]:
         return {"job_dir": job_dir, "frames_dir": project_root / "frames", "mdoc_dir": project_root / "mdoc"}
 
-
 class FsMotionCtfParams(AbstractJobParams):
     """Parameters for WarpTools motion correction and CTF"""
 
@@ -292,14 +312,13 @@ class FsMotionCtfParams(AbstractJobParams):
 
     eer_ngroups: int = Field(default=32, ge=1)
 
-    m_range_min_max: str = "500:10"
-    m_bfac         : int = Field(default=-500)
-    m_grid         : str = "1x1x3"
-
-    c_range_min_max  : str = "30:6.0"
-    c_defocus_min_max: str = "1.1:8"         
-    c_grid           : str = "2x2x1"
-    c_window         : int = Field(default=512, ge=128)
+    m_range_min_max   : str = "500:10"
+    m_bfac            : int = Field(default=-500)
+    m_grid            : str = "1x1x3"
+    c_range_min_max   : str = "30:6.0"
+    c_defocus_min_max: str  = "1.1:8"
+    c_grid            : str = "2x2x1"
+    c_window          : int = Field(default=512, ge=128)
 
     perdevice : int = Field(default=1, ge=0, le=8)
     do_at_most: int = Field(default=-1)
@@ -442,7 +461,6 @@ class FsMotionCtfParams(AbstractJobParams):
             "frames_dir" : project_root / "frames",
             "mdoc_dir"   : project_root / "mdoc",
         }
-
 
 class TsAlignmentParams(AbstractJobParams):
     """Parameters for tilt series alignment"""
