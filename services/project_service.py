@@ -315,16 +315,11 @@ class ProjectService:
             return {"success": False, "error": f"Project creation failed: {str(e)}"}
 
     async def load_project_state(self, project_path: str) -> Dict[str, Any]:
-        """
-        Load existing project configuration and get job status from the
-        pipeline_runner service (which updates job models directly).
-        """
         try:
             project_dir = Path(project_path)
             if not project_dir.exists():
                 return {"success": False, "error": f"Project path not found: {project_path}"}
             
-            # 1. Load project parameters (our source of truth for *planned* jobs)
             params_file = project_dir / "project_params.json"
             if not params_file.exists():
                 return {"success": False, "error": "No project_params.json found"}
@@ -334,53 +329,64 @@ class ProjectService:
             
             project_name = project_params.get("metadata", {}).get("project_name")
             selected_jobs = list(project_params.get("jobs", {}).keys())
-            
             data_sources = project_params.get("data_sources", {})
-            movies_glob = data_sources.get("frames_glob", "")
-            mdocs_glob = data_sources.get("mdocs_glob", "")
             
-            # 2. Get *actual* run statuses - this now updates the job models directly
-            updated_jobs = await self.backend.pipeline_runner.get_pipeline_job_statuses(project_path)
-
-            # 3. Build final job states - now much simpler!
-            final_job_states = []
-            can_continue = False
-            last_job_number = 0
+            # Load job models from SAVED job_params.json files, not templates
+            from services.parameter_models import jobtype_paramclass, JobType
+            param_classes = jobtype_paramclass()
             
-            for i, job_type in enumerate(selected_jobs, 1):
-                job_number = i
+            for job_type_str in selected_jobs:
+                job_type = JobType.from_string(job_type_str)
+                param_class = param_classes.get(job_type)
                 
-                # Get the updated job model with execution status
-                job_model = updated_jobs.get(job_type)
+                if not param_class:
+                    print(f"[LOAD] Unknown job type: {job_type_str}")
+                    continue
+                
+                # Find the saved job_params.json in the job directory
+                category = param_class.JOB_CATEGORY
+                category_dir = project_dir / category.value
+                
+                job_model = None
+                if category_dir.exists():
+                    # Find job directories (should only be one per job type in linear pipeline)
+                    job_dirs = sorted(category_dir.glob("job*"))
+                    for job_dir in job_dirs:
+                        saved_params_file = job_dir / "job_params.json"
+                        if saved_params_file.exists():
+                            try:
+                                with open(saved_params_file, 'r') as f:
+                                    saved_data = json.load(f)
+                                
+                                # Verify this is the right job type
+                                if saved_data.get("job_type") == job_type_str:
+                                    # Deserialize the saved job model
+                                    job_model = param_class(**saved_data["job_model"])
+                                    print(f"[LOAD] Loaded {job_type_str} from {saved_params_file}")
+                                    break
+                            except Exception as e:
+                                print(f"[LOAD ERROR] Failed to load {saved_params_file}: {e}")
+                
+                # Fallback: if no saved params found, create from project_params.json
+                if not job_model:
+                    print(f"[LOAD] No saved params for {job_type_str}, using project_params.json")
+                    if job_type_str in project_params.get("jobs", {}):
+                        job_model = param_class(**project_params["jobs"][job_type_str])
+                
+                # Store in app_state
                 if job_model:
-                    status = job_model.execution_status
-                    relion_job_num = job_model.relion_job_number
-                else:
-                    status = JobStatus.SCHEDULED
-                    relion_job_num = None
-                
-                final_job_states.append({
-                    "type": job_type,
-                    "number": job_number,
-                    "status": status.value,
-                    "relion_job_number": relion_job_num
-                })
-                
-                if status == JobStatus.SUCCEEDED:
-                    can_continue = True
-                    last_job_number = job_number
-
+                    self.backend.app_state.jobs[job_type_str] = job_model
+            
+            # Sync statuses from pipeline.star (this updates execution_status, relion_job_name, etc.)
+            await self.backend.pipeline_runner.status_sync.sync_all_jobs(project_path)
+            
             return {
                 "success": True,
                 "project_name": project_name,
                 "selected_jobs": selected_jobs,
-                "discovered_jobs": final_job_states,
-                "next_job_number": last_job_number + 1,
-                "can_continue": can_continue,
-                "movies_glob": movies_glob,
-                "mdocs_glob": mdocs_glob,
+                "movies_glob": data_sources.get("frames_glob", ""),
+                "mdocs_glob": data_sources.get("mdocs_glob", ""),
             }
-            
         except Exception as e:
             import traceback
             traceback.print_exc()

@@ -15,6 +15,78 @@ if TYPE_CHECKING:
     from backend import CryoBoostBackend
 
 
+class StatusSyncService:
+    """Syncs job model statuses from pipeline.star - single source of truth"""
+    
+    def __init__(self, backend):
+        self.backend = backend
+    
+    async def sync_all_jobs(self, project_path: str) -> Dict[str, bool]:
+        """
+        Read pipeline.star and update job models. Returns dict of what changed.
+        Returns: {"importmovies": True, "fsMotionAndCtf": False, ...}
+        """
+        pipeline_star = Path(project_path) / "default_pipeline.star"
+        if not pipeline_star.exists():
+            return {}
+        
+        star_handler = self.backend.pipeline_orchestrator.star_handler
+        data = star_handler.read(pipeline_star)
+        processes = data.get("pipeline_processes", pd.DataFrame())
+        
+        changes = {}
+        for job_name, job_model in self.backend.app_state.jobs.items():
+            old_status = job_model.execution_status
+            
+            matching_row = self._find_job_in_star(processes, job_name, project_path)
+            
+            if matching_row is not None:
+                status_str = matching_row["rlnPipeLineProcessStatusLabel"]
+                new_status = JobStatus.SCHEDULED if status_str == "Scheduled" else JobStatus(status_str)
+                job_model.execution_status = new_status
+                job_model.relion_job_name = matching_row["rlnPipeLineProcessName"]
+                job_model.relion_job_number = self._extract_job_number(matching_row["rlnPipeLineProcessName"])
+            else:
+                job_model.execution_status = JobStatus.SCHEDULED
+                job_model.relion_job_name = None
+                job_model.relion_job_number = None
+            
+            changes[job_name] = (old_status != job_model.execution_status)
+        
+        return changes
+    
+    def _find_job_in_star(self, processes: pd.DataFrame, job_type: str, project_path: str):
+        if processes.empty:
+            return None
+        for _, row in processes.iterrows():
+            job_path = row["rlnPipeLineProcessName"]
+            detected_type = self._extract_job_type(project_path, job_path)
+            if detected_type == job_type:
+                return row
+        return None
+    
+    def _extract_job_type(self, project_path: str, job_path: str) -> str:
+        if "Import/job" in job_path:
+            return "importmovies"
+        
+        job_dir = Path(project_path) / job_path.rstrip('/')
+        params_file = job_dir / "job_params.json"
+        
+        if params_file.exists():
+            try:
+                with open(params_file, 'r') as f:
+                    return json.load(f).get("job_type", "unknown")
+            except:
+                return "unknown"
+        return "unknown"
+    
+    def _extract_job_number(self, job_path: str) -> int:
+        try:
+            return int(job_path.rstrip('/').split('job')[-1])
+        except:
+            return 0
+
+
 class PipelineRunnerService:
     """
     Handles the execution and monitoring of Relion pipelines.
@@ -23,6 +95,7 @@ class PipelineRunnerService:
     def __init__(self, backend_instance: "CryoBoostBackend"):
         self.backend = backend_instance
         self.active_schemer_process: asyncio.subprocess.Process | None = None
+        self.status_sync = StatusSyncService(backend_instance)  
 
     async def start_pipeline(
         self,
