@@ -150,7 +150,35 @@ class AbstractJobParams(BaseModel):
 
     execution_status : JobStatus     = Field(default=JobStatus.SCHEDULED)
     relion_job_name  : Optional[str] = None                                
-    relion_job_number: Optional[int] = None                               
+    relion_job_number: Optional[int] = None
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Enforce immutability for started/completed jobs"""
+        # Always allow these metadata fields to update
+        if name in ['execution_status', 'relion_job_name', 'relion_job_number']:
+            super().__setattr__(name, value)
+            return
+        
+        # Allow internal Pydantic machinery (fields that start with underscore)
+        if name.startswith('_'):
+            super().__setattr__(name, value)
+            return
+        
+        # Check if we're in initialization (object doesn't have status yet)
+        try:
+            current_status = object.__getattribute__(self, 'execution_status')
+        except AttributeError:
+            # We're in __init__, allow everything
+            super().__setattr__(name, value)
+            return
+        
+        # Only allow param changes if job hasn't started
+        if current_status != JobStatus.SCHEDULED:
+            print(f"[IMMUTABLE] Blocked change to '{name}' on {current_status.value} job")
+            return
+        
+        # Job is SCHEDULED, allow the change
+        super().__setattr__(name, value)
 
     @property
     def display_status(self) -> str:
@@ -269,6 +297,9 @@ class ImportMoviesParams(AbstractJobParams):
         )
 
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
+        """Update params from global state - only works for SCHEDULED jobs"""
+        if self.execution_status != JobStatus.SCHEDULED:
+            return self
         """Update microscope/acquisition params from global state IN-PLACE"""
         self.pixel_size           = state.microscope.pixel_size_angstrom
         self.voltage              = state.microscope.acceleration_voltage_kv
@@ -418,7 +449,9 @@ class FsMotionCtfParams(AbstractJobParams):
         )
 
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
-        """Update microscope/acquisition params from global state IN-PLACE"""
+        """Update params from global state - only works for SCHEDULED jobs"""
+        if self.execution_status != JobStatus.SCHEDULED:
+            return self
         self.pixel_size  = state.microscope.pixel_size_angstrom
         self.voltage     = state.microscope.acceleration_voltage_kv
         self.cs          = state.microscope.spherical_aberration_mm
@@ -565,7 +598,9 @@ class TsAlignmentParams(AbstractJobParams):
         )
 
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
-        """Update acquisition params from global state IN-PLACE"""
+        """Update params from global state - only works for SCHEDULED jobs"""
+        if self.execution_status != JobStatus.SCHEDULED:
+            return self
         self.thickness_nm       = state.acquisition.sample_thickness_nm
         self.pixel_size         = state.microscope.pixel_size_angstrom
         self.dose_per_tilt      = state.acquisition.dose_per_tilt
@@ -684,7 +719,9 @@ class TsCtfParams(AbstractJobParams):
         )
 
     def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
-        """Update microscope params from global state IN-PLACE"""
+        """Update params from global state - only works for SCHEDULED jobs"""
+        if self.execution_status != JobStatus.SCHEDULED:
+            return self
         self.voltage = state.microscope.acceleration_voltage_kv
         self.cs = state.microscope.spherical_aberration_mm
         self.amplitude = state.microscope.amplitude_contrast
