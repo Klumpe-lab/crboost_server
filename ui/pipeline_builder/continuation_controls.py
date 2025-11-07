@@ -105,34 +105,54 @@ async def _handle_delete_job(job_type: JobType, backend, shared_state, callbacks
             ui.button("Cancel", on_click=dialog.close).props("flat")
             ui.button(
                 "Delete",
-                on_click=lambda: asyncio.create_task(
-                    _confirm_delete_job(job_type, job_number, dialog, backend, shared_state, callbacks)
-                )
+                on_click=lambda: _confirm_delete_job(job_type, job_number, dialog, backend, shared_state, callbacks)
             ).props("flat").style("color: #dc2626;")
     
     dialog.open()
 
 
-async def _confirm_delete_job(job_type, job_number, dialog, backend, shared_state, callbacks):
+async def _confirm_delete_job(job_type: JobType, job_number, dialog, backend, shared_state, callbacks):
     """Actually delete the job"""
     dialog.close()
-    
     ui.notify(f"Deleting job{job_number:03d}...", type="info")
-    
-    result = await backend.continuation.delete_and_reset_job(
-        project_path=shared_state["current_project_path"],
-        job_number=job_number,
-        scheme_name=shared_state["current_scheme_name"]
-    )
-    
-    if result.get("success"):
-        ui.notify(result.get("message", "Job deleted successfully"), type="positive")
-        
-        # Sync statuses from pipeline.star
-        await backend.pipeline_runner.status_sync.sync_all_jobs(shared_state["current_project_path"])
-        
-        # Rebuild UI
-        if "rebuild_pipeline_ui" in callbacks:
-            callbacks["rebuild_pipeline_ui"]()
-    else:
-        ui.notify(f"Failed to delete: {result.get('error')}", type="negative")
+
+    try:
+        # Remove the await since it's a synchronous function
+        result = backend.continuation.delete_and_reset_job(
+            project_path=shared_state["current_project_path"],
+            job_number=job_number,
+            scheme_name=shared_state["current_scheme_name"]
+        )
+
+        if result.get("success"):
+            ui.notify(result.get("message", "Job deleted successfully"), type="positive")
+            
+            # Sync statuses from pipeline.star
+            await backend.pipeline_runner.status_sync.sync_all_jobs(shared_state["current_project_path"])
+            
+            # Remove the job from selected_jobs and job_cards
+            if job_type in shared_state["selected_jobs"]:
+                shared_state["selected_jobs"].remove(job_type)
+            
+            if job_type in shared_state["job_cards"]:
+                # Stop any timers for this job
+                job_state = shared_state["job_cards"][job_type]
+                if job_state.get("logs_timer"):
+                    job_state["logs_timer"].cancel()
+                del shared_state["job_cards"][job_type]
+            
+            # Reset the job model
+            job_model = app_state.jobs.get(job_type.value)
+            if job_model:
+                job_model.execution_status = JobStatus.SCHEDULED
+                job_model.relion_job_name = None
+                job_model.relion_job_number = None
+            
+            # Rebuild UI
+            if "rebuild_pipeline_ui" in callbacks:
+                callbacks["rebuild_pipeline_ui"]()
+        else:
+            ui.notify(f"Failed to delete: {result.get('error')}", type="negative")
+            
+    except Exception as e:
+        ui.notify(f"Error during deletion: {str(e)}", type="negative")

@@ -4,11 +4,11 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1     
 #SBATCH --constraint="g2|g3|g4"
-#SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:2             
-#SBATCH --mem=48G
-#SBATCH --time=0:30:00
-#SBATCH --time=0:30:00
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1             
+#SBATCH --mem=16G
+#SBATCH --time=0:15:00
+#SBATCH --time=0:15:00
 #SBATCH --output=XXXoutfileXXX
 #SBATCH --error=XXXerrfileXXX
 

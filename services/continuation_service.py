@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import pandas as pd
 import shutil
+from services.parameter_models import JobStatus
 from services.starfile_service import StarfileService
 import json
 
@@ -17,8 +18,12 @@ class SchemeManipulationService:
         self,
         project_path: Path,
         scheme_name: str,
-        job_type: str
+        job_type: str  # Make sure this is a string, not a number
     ) -> Dict[str, Any]:
+        # ADD DEBUGGING
+        print(f"[DEBUG SCHEME_RESET] Resetting job_type: '{job_type}' (type: {type(job_type)})")
+        
+        # Rest of your existing code...
         """
         Reset a job in scheme.star to allow re-running.
         
@@ -490,7 +495,6 @@ class ContinuationService:
         ) -> Dict[str, Any]:
             """
             Complete operation to delete a job and reset it for re-running.
-            ...
             """
             project_dir = Path(project_path)
             
@@ -512,8 +516,6 @@ class ContinuationService:
                 job_type = job_info.get("job_type")
                 job_name_full = job_info.get("job_name")
 
-                # --- Fallback logic removed from here ---
-                
                 if not job_type:
                     return {
                         "success": False,
@@ -521,6 +523,11 @@ class ContinuationService:
                     }
                 
                 print(f"[CONTINUATION] Found job type: {job_type}")
+                
+                # Step 1.5: Get the job model BEFORE deletion so we can reset it
+                from services.parameter_models import JobType
+                job_type_enum = JobType.from_string(job_type)
+                job_model = self.backend.app_state.jobs.get(job_type)
                 
                 # Step 2: Delete from pipeline
                 print(f"[CONTINUATION] Deleting {job_info['job_name']} from pipeline")
@@ -556,6 +563,22 @@ class ContinuationService:
                     }
                 
                 print(f"[CONTINUATION] Reset in scheme: {scheme_result}")
+                
+                # === CRITICAL: Reset the job model in app_state ===
+                if job_model:
+                    print(f"[CONTINUATION] Resetting job model for {job_type}")
+                    # COMPLETELY reset the job model
+                    job_model.execution_status = JobStatus.SCHEDULED
+                    job_model.relion_job_name = None
+                    job_model.relion_job_number = None
+                    
+                    # Re-sync from pipeline state to get default parameters
+                    from app_state import state as app_state
+                    job_model.sync_from_pipeline_state(app_state)
+                    
+                    print(f"[CONTINUATION] Job model reset: status={job_model.execution_status}, job_name={job_model.relion_job_name}")
+                else:
+                    print(f"[CONTINUATION] Warning: No job model found for {job_type} in app_state")
                 
                 # Step 4: Get next job number (read current counter)
                 pipeline_star_path = project_dir / "default_pipeline.star"

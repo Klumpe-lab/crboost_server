@@ -25,7 +25,6 @@ except ImportError as e:
     sys.exit(1)
 
 
-# --- DRIVER BOOTSTRAP ---
 def get_driver_context():
     """
     Parses args, finds paths, and ensures job_params.json exists.
