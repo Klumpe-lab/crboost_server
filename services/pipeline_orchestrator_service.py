@@ -20,9 +20,6 @@ if TYPE_CHECKING:
 
 
 class PipelineOrchestratorService:
-    """
-    Orchestrates the creation and execution of Relion pipelines.
-    """
 
     def __init__(self, backend_instance: "CryoBoostBackend"):
         self.backend = backend_instance
@@ -32,9 +29,7 @@ class PipelineOrchestratorService:
 
         # Map job names to their corresponding builder class
         # --- NOTE: This map ONLY contains non-driver jobs ---
-        self.job_builders: Dict[str, BaseCommandBuilder] = {
-            JobType.IMPORT_MOVIES.value: ImportMoviesCommandBuilder()
-        }
+        self.job_builders: Dict[str, BaseCommandBuilder] = {JobType.IMPORT_MOVIES.value: ImportMoviesCommandBuilder()}
 
     async def create_custom_scheme(
         self,
@@ -106,12 +101,13 @@ class PipelineOrchestratorService:
 
                 print(f"[PIPELINE] fn_exe for {job_name}: {final_command_for_fn_exe}")
 
-                params_json_path = job_run_dir / "job_params.json"
+                params_json_path  = job_run_dir / "job_params.json"
+                job_type          = JobType.from_string(job_name)
 
                 data_to_serialize = {
-                    "job_type": JobType.value, 
-                    "job_model": job_model.model_dump(),
-                    "paths": {k: str(v) for k, v in paths.items()},
+                    "job_type"        : job_type.value,
+                    "job_model"       : job_model.model_dump(),
+                    "paths"           : {k: str(v) for k, v in paths.items()},
                     "additional_binds": all_binds,
                 }
 
@@ -122,7 +118,6 @@ class PipelineOrchestratorService:
                 except Exception as e:
                     print(f"[PIPELINE ERROR] Failed to save {params_json_path}: {e}")
 
-                # === UPDATE JOB.STAR WITH fn_exe ===
                 params_df.loc[params_df["rlnJobOptionVariable"] == "fn_exe", "rlnJobOptionValue"] = (
                     final_command_for_fn_exe
                 )
@@ -176,6 +171,13 @@ class PipelineOrchestratorService:
 
         # 1. Check if the job model says it's a driver-based job
         if job_model.is_driver_job():
+            if not self.project_service or not self.project_service.project_root:
+                        return (
+                            "echo 'ERROR: Project root not set in project_service "
+                            "during fn_exe build'; exit 1;"
+                        )
+            project_root_str = str(self.project_service.project_root.resolve())
+
             host_python_exe = server_dir / "venv" / "bin" / "python3"
             if not host_python_exe.exists():
                 print(f"[PIPELINE WARNING] VENV Python not found at {host_python_exe}, falling back to 'python3'")
@@ -195,7 +197,11 @@ class PipelineOrchestratorService:
                 # This case handles if a job is marked as a driver but not mapped here
                 return f"echo 'ERROR: Job type \"{job_name}\" is a driver job but has no driver script mapped in orchestrator'; exit 1;"
 
-            return f"{env_setup} {host_python_exe} {driver_script_path}"
+            return (
+                        f"{env_setup} {host_python_exe} {driver_script_path} "
+                        f"--job_type {job_name} "
+                        f"--project_path {project_root_str}"
+                    )
 
         else:
             builder = self.job_builders.get(job_name)

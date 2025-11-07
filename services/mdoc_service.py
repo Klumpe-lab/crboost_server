@@ -124,8 +124,6 @@ class MdocService:
                 f.write("\n")
 
 
-# --- Singleton setup ---
-
 _mdoc_service_instance = None
 
 

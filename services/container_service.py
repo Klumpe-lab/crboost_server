@@ -18,9 +18,9 @@ class Colors:
         bind_paths = re.findall(bind_pattern, command)
 
         container_match = re.search(r"([^\s]+\.sif)", command)
-        container_path = container_match.group(1) if container_match else "unknown"
-        inner_match = re.search(r"bash -c '(.+)'$", command)
-        inner_command = inner_match.group(1) if inner_match else "unknown"
+        container_path  = container_match.group(1) if container_match else "unknown"
+        inner_match     = re.search(r"bash -c '(.+)'$", command)
+        inner_command   = inner_match.group(1) if inner_match else "unknown"
 
         return env_cleanup, bind_paths, container_path, inner_command
 

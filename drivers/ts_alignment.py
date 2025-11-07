@@ -5,6 +5,7 @@ import subprocess
 import sys
 import os
 import shlex
+import argparse
 from pathlib import Path
 import traceback
 
@@ -22,6 +23,90 @@ except ImportError as e:
     print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
     print(f"Error: {e}", file=sys.stderr)
     sys.exit(1)
+
+
+# --- DRIVER BOOTSTRAP ---
+def get_driver_context():
+    """
+    Parses args, finds paths, and ensures job_params.json exists.
+    Returns:
+        - params_data (dict): The full, raw loaded JSON data.
+        - job_dir (Path): The current job directory.
+        - project_path (Path): The root project directory.
+        - job_type (str): The job_type string.
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--job_type", required=True, help="JobType string (e.g., tsAlignment)")
+    parser.add_argument("--project_path", required=True, type=Path, help="Absolute path to the project root")
+    
+    args, unknown = parser.parse_known_args()
+    
+    job_type = args.job_type
+    project_path = args.project_path.resolve()
+    job_dir = Path.cwd().resolve() # Relion sets CWD to the job dir
+    params_file = job_dir / "job_params.json"
+    
+    params_data = None
+
+    if not params_file.exists():
+        print(f"job_params.json not found. Generating for new job...")
+        try:
+            # 1. Get job number from CWD (e.g., "job007" -> 7)
+            job_number = int(job_dir.name.replace('job', ''))
+            
+            # 2. Find server root and param_generator.py
+            # sys.argv[0] is this script
+            current_server_root = Path(sys.argv[0]).parent.parent.resolve()
+            param_generator_script = current_server_root / "services" / "param_generator.py"
+            
+            # 3. Find python executable (use the one running this script)
+            python_exe = sys.executable 
+            
+            # 4. Build command to call the generator
+            cmd = [
+                str(python_exe),
+                str(param_generator_script),
+                "--job_type", job_type,
+                "--project_path", str(project_path),
+                "--job_number", str(job_number)
+            ]
+            
+            # 5. Run command. Must inherit PYTHONPATH from fn_exe setup
+            env = os.environ.copy()
+            if str(current_server_root) not in env.get("PYTHONPATH", ""):
+                 env["PYTHONPATH"] = f"{current_server_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
+
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=job_dir, env=env)
+
+            if result.returncode != 0:
+                print(f"--- Param Generator STDOUT ---\n{result.stdout}", file=sys.stderr)
+                print(f"--- Param Generator STDERR ---\n{result.stderr}", file=sys.stderr)
+                raise Exception(f"param_generator.py failed. See stderr.")
+            
+            # 6. Save the generator's stdout to file
+            params_json_str = result.stdout
+            if not params_json_str:
+                 raise Exception("param_generator.py gave no output.")
+            
+            with open(params_file, 'w') as f:
+                f.write(params_json_str)
+            
+            params_data = json.loads(params_json_str)
+            print(f"Successfully generated and saved {params_file}")
+
+        except Exception as e:
+            print(f"FATAL: Could not generate job_params.json: {e}", file=sys.stderr)
+            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
+            sys.exit(1) # Exit with failure
+            
+    else:
+        # File already exists (standard run)
+        with open(params_file, 'r') as f:
+            params_data = json.load(f)
+
+    return params_data, job_dir, project_path, job_type
+# --- END DRIVER BOOTSTRAP ---
+
 
 def run_command(command: str, cwd: Path):
     """
@@ -59,7 +144,7 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path]) 
     mdoc_dir        = shlex.quote(str(paths['mdoc_dir']))
     frameseries_dir = shlex.quote(str(paths['frameseries_dir']))
     tomostar_dir    = shlex.quote(str(paths['tomostar_dir']))
-    processing_dir  = shlex.quote(str(paths['warp_dir']))         # Use 'warp_dir' for processing
+    processing_dir  = shlex.quote(str(paths['warp_dir']))        # Use 'warp_dir' for processing
     settings_file   = shlex.quote(str(paths['warp_settings']))
 
     mkdir_cmds = [
@@ -137,22 +222,32 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path]) 
 
 def main():
     print("[DRIVER] tsAlignment driver started.", flush=True)
-    job_dir = Path.cwd()
-    params_file = job_dir / "job_params.json"
+
+    # --- NEW BOOTSTRAP CALL ---
+    try:
+        # This function gets CWD=job_dir and ensures params exist
+        params_data, job_dir, project_path, job_type = get_driver_context()
+    except Exception as e:
+        # Bootstrap failed, write failure file and exit
+        job_dir = Path.cwd() # Try to get CWD for failure file
+        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
+        print(f"[DRIVER] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    # --- END BOOTSTRAP CALL ---
+    
     success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
     failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
 
     try:
-        # 1. Load parameters
-        print(f"[DRIVER] Loading params from {params_file}", flush=True)
-        with open(params_file, 'r') as f:
-            params_data = json.load(f)
+        # 1. Load parameters (already done by bootstrap)
+        print(f"[DRIVER] Params loaded for job type {job_type} in {job_dir}", flush=True)
         
         params = TsAlignmentParams(**params_data['job_model'])
         # Paths are Dict[str, str] of absolute paths
         paths_str_dict = params_data['paths']
         # Convert to Path objects for local use
         paths = {k: Path(v) for k, v in paths_str_dict.items()}
+        additional_binds = params_data["additional_binds"]
 
         
         # Get I/O STAR files (already absolute)
@@ -168,8 +263,8 @@ def main():
         apptainer_command = container_svc.wrap_command_for_tool(
             command          = align_command_str,
             cwd              = job_dir,
-            tool_name        = "warptools",                     
-            additional_binds = params_data["additional_binds"]
+            tool_name        = "warptools",              
+            additional_binds = additional_binds
         )
         
         # 4. Run the containerized computation

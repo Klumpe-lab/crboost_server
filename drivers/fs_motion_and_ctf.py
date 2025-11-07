@@ -7,6 +7,7 @@ import subprocess
 import sys
 import os
 import shlex
+import argparse
 from pathlib import Path
 
 # Add the server root to PYTHONPATH (set by fn_exe command)
@@ -24,6 +25,89 @@ except ImportError as e:
     print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
     print(f"Error: {e}", file=sys.stderr)
     sys.exit(1)
+
+
+# --- DRIVER BOOTSTRAP ---
+def get_driver_context():
+    """
+    Parses args, finds paths, and ensures job_params.json exists.
+    Returns:
+        - params_data (dict): The full, raw loaded JSON data.
+        - job_dir (Path): The current job directory.
+        - project_path (Path): The root project directory.
+        - job_type (str): The job_type string.
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--job_type", required=True, help="JobType string (e.g., tsAlignment)")
+    parser.add_argument("--project_path", required=True, type=Path, help="Absolute path to the project root")
+    
+    args, unknown = parser.parse_known_args()
+    
+    job_type = args.job_type
+    project_path = args.project_path.resolve()
+    job_dir = Path.cwd().resolve() # Relion sets CWD to the job dir
+    params_file = job_dir / "job_params.json"
+    
+    params_data = None
+
+    if not params_file.exists():
+        print(f"job_params.json not found. Generating for new job...")
+        try:
+            # 1. Get job number from CWD (e.g., "job007" -> 7)
+            job_number = int(job_dir.name.replace('job', ''))
+            
+            # 2. Find server root and param_generator.py
+            # sys.argv[0] is this script: /path/to/server/drivers/fs_motion_and_ctf.py
+            current_server_root = Path(sys.argv[0]).parent.parent.resolve()
+            param_generator_script = current_server_root / "services" / "param_generator.py"
+            
+            # 3. Find python executable (use the one running this script)
+            python_exe = sys.executable 
+            
+            # 4. Build command to call the generator
+            cmd = [
+                str(python_exe),
+                str(param_generator_script),
+                "--job_type", job_type,
+                "--project_path", str(project_path),
+                "--job_number", str(job_number)
+            ]
+            
+            # 5. Run command. Must inherit PYTHONPATH from fn_exe setup
+            env = os.environ.copy()
+            if str(current_server_root) not in env.get("PYTHONPATH", ""):
+                 env["PYTHONPATH"] = f"{current_server_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
+
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=job_dir, env=env)
+
+            if result.returncode != 0:
+                print(f"--- Param Generator STDOUT ---\n{result.stdout}", file=sys.stderr)
+                print(f"--- Param Generator STDERR ---\n{result.stderr}", file=sys.stderr)
+                raise Exception(f"param_generator.py failed. See stderr.")
+            
+            # 6. Save the generator's stdout to file
+            params_json_str = result.stdout
+            if not params_json_str:
+                 raise Exception("param_generator.py gave no output.")
+            
+            with open(params_file, 'w') as f:
+                f.write(params_json_str)
+            
+            params_data = json.loads(params_json_str)
+            print(f"Successfully generated and saved {params_file}")
+
+        except Exception as e:
+            print(f"FATAL: Could not generate job_params.json: {e}", file=sys.stderr)
+            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
+            sys.exit(1) # Exit with failure
+            
+    else:
+        # File already exists (standard run)
+        with open(params_file, 'r') as f:
+            params_data = json.load(f)
+
+    return params_data, job_dir, project_path, job_type
+# --- END DRIVER BOOTSTRAP ---
 
 
 def run_command(command: str, cwd: Path):
@@ -129,18 +213,24 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> st
 def main():
     print("[DRIVER] fs_motion_and_ctf driver started.", flush=True)
 
-    # Relion sets the CWD to the job directory
-    job_dir = Path.cwd()
-    params_file = job_dir / "job_params.json"
+    # --- NEW BOOTSTRAP CALL ---
+    try:
+        # This function gets CWD=job_dir and ensures params exist
+        params_data, job_dir, project_path, job_type = get_driver_context()
+    except Exception as e:
+        # Bootstrap failed, write failure file and exit
+        job_dir = Path.cwd() # Try to get CWD for failure file
+        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
+        print(f"[DRIVER] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+    # --- END BOOTSTRAP CALL ---
+
     success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
     failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
 
     try:
-        # 1. Load parameters from JSON
-        print(f"[DRIVER] Loading params from {params_file}", flush=True)
-        with open(params_file, "r") as f:
-            params_data = json.load(f)
-
+        # 1. Load parameters (already done by bootstrap)
+        print(f"[DRIVER] Params loaded for job type {job_type} in {job_dir}", flush=True)
         params = FsMotionCtfParams(**params_data["job_model"])
 
         # Paths are ALL ABSOLUTE from orchestrator
@@ -171,7 +261,7 @@ def main():
         translator = MetadataTranslator(StarfileService())
 
         # All paths are ABSOLUTE - use them directly
-        input_star_abs = paths["input_star"]
+        input_star_abs  = paths["input_star"]
         output_star_abs = paths["output_star"]
 
         print(f"[DRIVER] Input STAR (absolute): {input_star_abs}", flush=True)
@@ -179,10 +269,10 @@ def main():
         print(f"[DRIVER] Input STAR exists: {input_star_abs.exists()}", flush=True)
 
         result = translator.update_fs_motion_and_ctf_metadata(
-            job_dir=job_dir,
-            input_star_path=input_star_abs,  # Already absolute
-            output_star_path=output_star_abs,  # Already absolute
-            warp_folder="warp_frameseries",
+            job_dir          = job_dir,
+            input_star_path  = input_star_abs,       # Already absolute
+            output_star_path = output_star_abs,      # Already absolute
+            warp_folder      = "warp_frameseries",
         )
 
         if not result["success"]:

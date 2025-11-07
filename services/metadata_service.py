@@ -566,6 +566,96 @@ class MetadataTranslator:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
+    def _merge_ctf_metadata(
+        self,
+        tilts_df: pd.DataFrame,
+        warp_df: pd.DataFrame
+    ) -> pd.DataFrame:
+        """
+        Merge CTF parameters from WarpTools into tilt series DataFrame.
+        Ported from old tsCtf.py::updateMetaData
+        """
+        updated_df = tilts_df.copy()
+        
+        for index, row in updated_df.iterrows():
+            key = row['cryoBoostKey']
+            
+            # Clean key to match WarpTools format
+            clean_key = key.replace("_EER.eer.mrc", "").replace("_EER.mrc", "").replace(".mrc", "")
+            
+            # Find matching WarpTools data
+            matches = warp_df[warp_df['cryoBoostKey'] == clean_key]
+            
+            if matches.empty:
+                print(f"[WARN] No CTF data for {clean_key}")
+                continue
+            
+            warp_row = matches.iloc[0]
+            
+            # Calculate defocus values (convert microns to Angstroms)
+            defocus_u = (float(warp_row['defocus_value']) + float(warp_row['defocus_delta'])) * 10000
+            defocus_v = (float(warp_row['defocus_value']) - float(warp_row['defocus_delta'])) * 10000
+            defocus_angle = float(warp_row['defocus_angle'])
+            astigmatism = defocus_u - defocus_v
+            
+            # Update CTF parameters
+            updated_df.at[index, 'rlnDefocusU'] = defocus_u
+            updated_df.at[index, 'rlnDefocusV'] = defocus_v
+            updated_df.at[index, 'rlnDefocusAngle'] = defocus_angle
+            updated_df.at[index, 'rlnCtfAstigmatism'] = astigmatism
+            
+            # Add CTF image path if available
+            base_name = clean_key
+            updated_df.at[index, 'rlnCtfImage'] = \
+                f"{warp_row['folder']}/powerspectrum/{base_name}.mrc"
+        
+        return updated_df
+
+    def _write_updated_ctf_star(
+        self,
+        tilts_df: pd.DataFrame,
+        tilt_series_df: pd.DataFrame,
+        output_path: Path
+    ):
+        """
+        Write updated CTF metadata to STAR files.
+        Replicates old tiltSeriesMeta.writeTiltSeries() behavior.
+        """
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        tilt_series_dir = output_path.parent / "tilt_series"
+        tilt_series_dir.mkdir(exist_ok=True)
+        
+        # Extract tilt series info
+        num_ts_cols = len(tilt_series_df.columns)
+        ts_df = tilts_df.iloc[:, :num_ts_cols].copy()
+        ts_df = ts_df.drop('cryoBoostKey', axis=1, errors='ignore')
+        ts_df = ts_df.drop_duplicates().reset_index(drop=True)
+        
+        # Update paths to point to new tilt_series directory
+        ts_df['rlnTomoTiltSeriesStarFile'] = ts_df['rlnTomoTiltSeriesStarFile'].apply(
+            lambda x: f"tilt_series/{Path(x).name}"
+        )
+        
+        # Write main tilt series STAR file
+        self.starfile_service.write({'global': ts_df}, output_path)
+        
+        # Write individual tilt series files
+        for ts_name in ts_df['rlnTomoName']:
+            # Get all tilts for this tilt series
+            ts_tilts = tilts_df[tilts_df['rlnTomoName'] == ts_name].copy()
+            
+            # Extract only the per-tilt columns
+            ts_tilts_only = ts_tilts.iloc[:, num_ts_cols:].copy()
+            
+            # Remove the cryoBoostKey helper column
+            if 'cryoBoostKey' in ts_tilts_only.columns:
+                ts_tilts_only = ts_tilts_only.drop('cryoBoostKey', axis=1)
+            
+            ts_file = tilt_series_dir / f"{ts_name}.star"
+            self.starfile_service.write({ts_name: ts_tilts_only}, ts_file)
+        
+        print(f"[METADATA] Wrote updated CTF STAR files to {output_path}")
+
     def update_ts_ctf_metadata(
         self,
         job_dir: Path,
@@ -616,108 +706,3 @@ class MetadataTranslator:
 
 
 
-def update_fs_motion_ctf_metadata(
-    job_dir: Path,
-    input_star: Path,
-    output_star: Path
-) -> Dict:
-    """
-    Convenience function to update fsMotionAndCtf metadata.
-    Call this after the WarpTools job completes.
-    """
-    translator = MetadataTranslator()
-    return translator.update_fs_motion_and_ctf_metadata(
-        job_dir, input_star, output_star
-    )
-
-
-def _merge_ctf_metadata(
-    self,
-    tilts_df: pd.DataFrame,
-    warp_df: pd.DataFrame
-) -> pd.DataFrame:
-    """
-    Merge CTF parameters from WarpTools into tilt series DataFrame.
-    Ported from old tsCtf.py::updateMetaData
-    """
-    updated_df = tilts_df.copy()
-    
-    for index, row in updated_df.iterrows():
-        key = row['cryoBoostKey']
-        
-        # Clean key to match WarpTools format
-        clean_key = key.replace("_EER.eer.mrc", "").replace("_EER.mrc", "").replace(".mrc", "")
-        
-        # Find matching WarpTools data
-        matches = warp_df[warp_df['cryoBoostKey'] == clean_key]
-        
-        if matches.empty:
-            print(f"[WARN] No CTF data for {clean_key}")
-            continue
-        
-        warp_row = matches.iloc[0]
-        
-        # Calculate defocus values (convert microns to Angstroms)
-        defocus_u = (float(warp_row['defocus_value']) + float(warp_row['defocus_delta'])) * 10000
-        defocus_v = (float(warp_row['defocus_value']) - float(warp_row['defocus_delta'])) * 10000
-        defocus_angle = float(warp_row['defocus_angle'])
-        astigmatism = defocus_u - defocus_v
-        
-        # Update CTF parameters
-        updated_df.at[index, 'rlnDefocusU'] = defocus_u
-        updated_df.at[index, 'rlnDefocusV'] = defocus_v
-        updated_df.at[index, 'rlnDefocusAngle'] = defocus_angle
-        updated_df.at[index, 'rlnCtfAstigmatism'] = astigmatism
-        
-        # Add CTF image path if available
-        base_name = clean_key
-        updated_df.at[index, 'rlnCtfImage'] = \
-            f"{warp_row['folder']}/powerspectrum/{base_name}.mrc"
-    
-    return updated_df
-
-
-def _write_updated_ctf_star(
-    self,
-    tilts_df: pd.DataFrame,
-    tilt_series_df: pd.DataFrame,
-    output_path: Path
-):
-    """
-    Write updated CTF metadata to STAR files.
-    Replicates old tiltSeriesMeta.writeTiltSeries() behavior.
-    """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    tilt_series_dir = output_path.parent / "tilt_series"
-    tilt_series_dir.mkdir(exist_ok=True)
-    
-    # Extract tilt series info
-    num_ts_cols = len(tilt_series_df.columns)
-    ts_df = tilts_df.iloc[:, :num_ts_cols].copy()
-    ts_df = ts_df.drop('cryoBoostKey', axis=1, errors='ignore')
-    ts_df = ts_df.drop_duplicates().reset_index(drop=True)
-    
-    # Update paths to point to new tilt_series directory
-    ts_df['rlnTomoTiltSeriesStarFile'] = ts_df['rlnTomoTiltSeriesStarFile'].apply(
-        lambda x: f"tilt_series/{Path(x).name}"
-    )
-    
-    # Write main tilt series STAR file
-    self.starfile_service.write({'global': ts_df}, output_path)
-    
-    # Write individual tilt series files
-    for ts_name in ts_df['rlnTomoName']:
-        # Get all tilts for this tilt series
-        ts_tilts = tilts_df[tilts_df['rlnTomoName'] == ts_name].copy()
-        
-        # Extract only the per-tilt columns
-        ts_tilts_only = ts_tilts.iloc[:, num_ts_cols:].copy()
-        
-        # Remove the cryoBoostKey helper column
-        if 'cryoBoostKey' in ts_tilts_only.columns:
-            ts_tilts_only = ts_tilts_only.drop('cryoBoostKey', axis=1)
-        
-        ts_file = tilt_series_dir / f"{ts_name}.star"
-        self.starfile_service.write({ts_name: ts_tilts_only}, ts_file)
-    
-    print(f"[METADATA] Wrote updated CTF STAR files to {output_path}")
