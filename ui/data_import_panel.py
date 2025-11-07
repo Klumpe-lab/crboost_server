@@ -145,6 +145,7 @@ def build_data_import_panel(backend: CryoBoostBackend, shared_state: Dict[str, A
         if "rebuild_pipeline_ui" in callbacks:
             callbacks["rebuild_pipeline_ui"]()
 
+
         ui.notify(f"Loaded project: {result['project_name']}", type="positive")
 
     async def auto_detect_metadata():

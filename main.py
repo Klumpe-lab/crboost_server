@@ -12,7 +12,6 @@ from nicegui import ui
 
 from backend import CryoBoostBackend
 
-# --- CHANGED: This is now a regular synchronous function ---
 def setup_app():
     """Configures and returns the FastAPI app."""
     app = FastAPI()
@@ -27,8 +26,6 @@ def setup_app():
     
     backend = CryoBoostBackend(Path.cwd())
     create_ui_router(backend) 
-
-    # ui.run_with *must* be called before uvicorn.run
     ui.run_with(app, title="CryoBoost Server")
     return app
 
