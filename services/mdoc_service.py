@@ -5,6 +5,7 @@ Service for parsing, writing, and extracting data from .mdoc files.
 
 import glob
 from pathlib import Path
+import sys
 from typing import Dict, Any
 from functools import lru_cache
 
@@ -73,7 +74,7 @@ class MdocService:
             return result
 
         except Exception as e:
-            print(f"[ERROR] MdocService failed to parse {mdoc_path}: {e}")
+            print(f"[ERROR] MdocService failed to parse {mdoc_path}: {e}", file=sys.stderr)
             return {}
 
     def parse_mdoc_file(self, mdoc_path: Path) -> Dict[str, Any]:

@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import starfile
 from datetime import datetime
+import sys
 
 if TYPE_CHECKING:
     # This forward ref is still needed by AbstractJobParams and its children
@@ -72,7 +73,6 @@ class AcquisitionParams(BaseModel):
 
 class ComputingParams(BaseModel):
     """Computing resource parameters"""
-
     model_config = ConfigDict(validate_assignment=True)
 
     partition: Partition = Partition.GPU
@@ -103,7 +103,7 @@ class ComputingParams(BaseModel):
             return cls()
 
         except Exception as e:
-            print(f"[ERROR] Failed to parse computing config: {e}")
+            print(f"[ERROR] Failed to parse computing config: {e}", file=sys.stderr)
             return cls()
 
 
@@ -728,32 +728,35 @@ class TsCtfParams(AbstractJobParams):
         return self
 
     @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        return {"alignment": "aligntiltsWarp"}
+
+    # In parameter_models.py - TsCtfParams class
+
+    @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+        """Output paths for this job"""
         return {
             "job_dir"        : job_dir,
             "output_star"    : job_dir / "ts_ctf_tilt_series.star",
             "tilt_series_dir": job_dir / "tilt_series",
             "warp_dir"       : job_dir / "warp_tiltseries",
             "warp_settings"  : job_dir / "warp_tiltseries.settings",
+            "tomostar_dir"   : job_dir / "tomostar",
             "xml_pattern"    : str(job_dir / "warp_tiltseries" / "*.xml"),
         }
-
-    @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
-        return {"alignment": "aligntiltsWarp"}
 
     @staticmethod
     def get_input_assets(
         job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
     ) -> Dict[str, Path]:
+        """Input paths from upstream jobs"""
         alignment_outputs = upstream_outputs.get("aligntiltsWarp", {})
         return {
-            "job_dir"        : job_dir,
-            "input_star"     : alignment_outputs.get("output_star"),
-            "frameseries_dir": alignment_outputs.get("warp_dir"),
-            "output_star"    : job_dir / "ts_ctf_tilt_series.star",
-            "warp_dir"       : job_dir / "warp_tiltseries",
-            "tomostar_dir"   : job_dir / "tomostar",
+            "input_star"      : alignment_outputs.get("output_star"),
+            "frameseries_dir" : alignment_outputs.get("warp_dir"),
+            "warp_settings_in": alignment_outputs.get("warp_settings"),
+            "tomostar_dir_in" : alignment_outputs.get("tomostar_dir"),
         }
 
 

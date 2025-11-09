@@ -69,9 +69,72 @@ class WarpXmlParser:
         return pd.DataFrame([data])
     
     def _parse_tilt_series_xml(self, xml_path: str) -> pd.DataFrame:
-        """Parse tilt series XML (for future use)"""
-        # Implement if needed for tilt series alignment
-        raise NotImplementedError("Tilt series XML parsing not yet implemented")
+        """Parse tilt series XML to extract per-tilt CTF parameters"""
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+        
+        # Parse GridCTF (Defocus) - this determines how many valid entries we have
+        grid_ctf = root.find('GridCTF')
+        defocus_values = []
+        z_values = []
+        for node in grid_ctf.findall('Node'):
+            value = float(node.get('Value'))
+            z = int(node.get('Z'))
+            defocus_values.append(value)
+            z_values.append(z)
+        
+        num_entries = len(defocus_values)  # This is the authoritative count
+        
+        # Parse GridCTFDefocusDelta
+        grid_delta = root.find('GridCTFDefocusDelta')
+        delta_values = []
+        for node in grid_delta.findall('Node'):
+            value = float(node.get('Value'))
+            delta_values.append(value)
+            
+        # Parse GridCTFDefocusAngle
+        grid_angle = root.find('GridCTFDefocusAngle')
+        angle_values = []
+        for node in grid_angle.findall('Node'):
+            value = float(node.get('Value'))
+            angle_values.append(value)
+            
+        # Parse MoviePath - get ALL movie names, then slice to match grid length
+        movie_paths_all = []
+        for path in root.find('MoviePath').text.split('\n'):
+            if path.strip():  # Skip empty lines
+                # Get basename and remove extensions
+                movie_name = os.path.basename(path).replace('_EER.eer', '')
+                movie_name = movie_name.replace(".tif", "")
+                movie_name = movie_name.replace(".eer", "")
+                movie_paths_all.append(movie_name)
+        
+        # CRITICAL: Only use the first num_entries movies (grids might be shorter if some failed)
+        movie_paths = movie_paths_all[:num_entries]
+        
+        # Verify all arrays have the same length
+        if not (len(defocus_values) == len(delta_values) == len(angle_values) == len(movie_paths)):
+            print(f"[WARN] Array length mismatch in {xml_path}:")
+            print(f"  defocus: {len(defocus_values)}, delta: {len(delta_values)}, "
+                f"angle: {len(angle_values)}, movies: {len(movie_paths)}")
+            # Truncate all to the shortest length
+            min_len = min(len(defocus_values), len(delta_values), len(angle_values), len(movie_paths))
+            defocus_values = defocus_values[:min_len]
+            delta_values = delta_values[:min_len]
+            angle_values = angle_values[:min_len]
+            movie_paths = movie_paths[:min_len]
+            z_values = z_values[:min_len]
+        
+        # Create DataFrame
+        df = pd.DataFrame({
+            'Z': z_values,
+            'defocus_value': defocus_values,
+            'defocus_delta': delta_values,
+            'defocus_angle': angle_values,
+            'cryoBoostKey': movie_paths
+        })
+        
+        return df
 
 
 class MetadataTranslator:
@@ -200,18 +263,14 @@ class MetadataTranslator:
         base_dir: Path, 
         tilt_series_df: pd.DataFrame
     ) -> pd.DataFrame:
-        """
-        Load all individual tilt series STAR files into one merged DataFrame.
-        This replicates the old tiltSeriesMeta.readTiltSeries() behavior.
-        """
+        """Load all individual tilt series STAR files into one merged DataFrame."""
         all_tilts = []
-        tilt_series_rows = []
         
-        project_root = base_dir.parent.parent  # Import/job001 -> Import -> project_root
-        
+        # Paths in the STAR file are relative to the STAR file's directory
+        # NOT to the project root!
         for i, (_, ts_row) in enumerate(tilt_series_df.iterrows()):
             ts_file = ts_row["rlnTomoTiltSeriesStarFile"]
-            ts_path = project_root / ts_file
+            ts_path = base_dir / ts_file  # Use base_dir directly, not project_root!
             
             print(f"[METADATA] Looking for tilt series file: {ts_path}", flush=True)
             
@@ -227,8 +286,7 @@ class MetadataTranslator:
                 lambda x: Path(x).stem
             )
             
-            # CRITICAL: Replicate the OLD behavior - repeat the tilt_series row for each tilt
-            # This creates a dataframe with ts_row repeated len(ts_df) times
+            # Repeat the tilt_series row for each tilt
             ts_row_repeated = pd.concat(
                 [pd.DataFrame(ts_row).T] * len(ts_df), 
                 ignore_index=True
@@ -238,20 +296,19 @@ class MetadataTranslator:
             merged = pd.concat([ts_row_repeated.reset_index(drop=True), ts_df.reset_index(drop=True)], axis=1)
             
             all_tilts.append(merged)
-        
+    
         if not all_tilts:
             raise ValueError("No tilt series files could be loaded. Check paths in input STAR file.")
         
         # Concatenate all tilt series vertically
         all_tilts_df = pd.concat(all_tilts, ignore_index=True)
         
-        # Move cryoBoostKey to the end (old code did this)
+        # Move cryoBoostKey to the end
         key_values = all_tilts_df['cryoBoostKey']
         all_tilts_df = all_tilts_df.drop('cryoBoostKey', axis=1)
         all_tilts_df['cryoBoostKey'] = key_values
         
         print(f"[METADATA] Loaded {len(all_tilts_df)} individual tilts from {len(tilt_series_df)} tilt series")
-        print(f"[METADATA] Columns in merged dataframe: {list(all_tilts_df.columns[:10])}...")
         
         return all_tilts_df
 
@@ -571,23 +628,31 @@ class MetadataTranslator:
         tilts_df: pd.DataFrame,
         warp_df: pd.DataFrame
     ) -> pd.DataFrame:
-        """
-        Merge CTF parameters from WarpTools into tilt series DataFrame.
-        Ported from old tsCtf.py::updateMetaData
-        """
+        """Merge CTF parameters from WarpTools into tilt series DataFrame."""
         updated_df = tilts_df.copy()
         
         for index, row in updated_df.iterrows():
             key = row['cryoBoostKey']
             
-            # Clean key to match WarpTools format
+            # More comprehensive key cleaning to match WarpTools format
             clean_key = key.replace("_EER.eer.mrc", "").replace("_EER.mrc", "").replace(".mrc", "")
+            clean_key = clean_key.replace("_EER", "").replace(".eer", "")
             
-            # Find matching WarpTools data
+            # Also try matching by the base filename without extensions
+            base_key = Path(key).stem
+            base_key = base_key.replace("_EER", "")
+            
+            # Find matching WarpTools data - try multiple key formats
             matches = warp_df[warp_df['cryoBoostKey'] == clean_key]
+            if matches.empty:
+                matches = warp_df[warp_df['cryoBoostKey'] == base_key]
+            if matches.empty:
+                # Try partial matching for cases like "001[10.00]" vs "001_10.00"
+                clean_key_alt = clean_key.replace("[", "_").replace("]", "")
+                matches = warp_df[warp_df['cryoBoostKey'].str.contains(clean_key_alt, na=False)]
             
             if matches.empty:
-                print(f"[WARN] No CTF data for {clean_key}")
+                print(f"[WARN] No CTF data for {key} (tried: {clean_key}, {base_key})")
                 continue
             
             warp_row = matches.iloc[0]
@@ -598,17 +663,12 @@ class MetadataTranslator:
             defocus_angle = float(warp_row['defocus_angle'])
             astigmatism = defocus_u - defocus_v
             
-            # Update CTF parameters
+            # ONLY update CTF parameters (like the old code)
             updated_df.at[index, 'rlnDefocusU'] = defocus_u
             updated_df.at[index, 'rlnDefocusV'] = defocus_v
             updated_df.at[index, 'rlnDefocusAngle'] = defocus_angle
             updated_df.at[index, 'rlnCtfAstigmatism'] = astigmatism
             
-            # Add CTF image path if available
-            base_name = clean_key
-            updated_df.at[index, 'rlnCtfImage'] = \
-                f"{warp_row['folder']}/powerspectrum/{base_name}.mrc"
-        
         return updated_df
 
     def _write_updated_ctf_star(
