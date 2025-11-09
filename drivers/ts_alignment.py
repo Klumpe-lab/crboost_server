@@ -34,78 +34,61 @@ def get_driver_context():
         - project_path (Path): The root project directory.
         - job_type (str): The job_type string.
     """
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--job_type", required=True, help="JobType string (e.g., tsAlignment)")
-    parser.add_argument("--project_path", required=True, type=Path, help="Absolute path to the project root")
+    parser = argparse.ArgumentParser(allow_abbrev=False)
+    parser.add_argument("--job_type", required=True, help="JobType string")
+    parser.add_argument("--project_path", required=True, type=Path, help="Project root")
     
     args, unknown = parser.parse_known_args()
     
     job_type = args.job_type
     project_path = args.project_path.resolve()
-    job_dir = Path.cwd().resolve() # Relion sets CWD to the job dir
+    job_dir = Path.cwd().resolve()
     params_file = job_dir / "job_params.json"
     
-    params_data = None
-
     if not params_file.exists():
-        print(f"job_params.json not found. Generating for new job...")
+        print(f"[DRIVER] Generating job_params.json...", file=sys.stderr)
         try:
-            # 1. Get job number from CWD (e.g., "job007" -> 7)
             job_number = int(job_dir.name.replace('job', ''))
-            
-            # 2. Find server root and param_generator.py
-            # sys.argv[0] is this script
             current_server_root = Path(sys.argv[0]).parent.parent.resolve()
             param_generator_script = current_server_root / "services" / "param_generator.py"
+            python_exe = sys.executable
             
-            # 3. Find python executable (use the one running this script)
-            python_exe = sys.executable 
-            
-            # 4. Build command to call the generator
             cmd = [
                 str(python_exe),
                 str(param_generator_script),
                 "--job_type", job_type,
                 "--project_path", str(project_path),
-                "--job_number", str(job_number)
+                "--job_number", str(job_number),
+                "--output_file", str(params_file)  # NEW: Tell it where to write
             ]
             
-            # 5. Run command. Must inherit PYTHONPATH from fn_exe setup
             env = os.environ.copy()
             if str(current_server_root) not in env.get("PYTHONPATH", ""):
-                 env["PYTHONPATH"] = f"{current_server_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
+                env["PYTHONPATH"] = f"{current_server_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
 
             result = subprocess.run(cmd, capture_output=True, text=True, cwd=job_dir, env=env)
 
             if result.returncode != 0:
-                print(f"--- Param Generator STDOUT ---\n{result.stdout}", file=sys.stderr)
-                print(f"--- Param Generator STDERR ---\n{result.stderr}", file=sys.stderr)
-                raise Exception(f"param_generator.py failed. See stderr.")
+                print(f"[DRIVER] Param generator failed:", file=sys.stderr)
+                print(result.stderr, file=sys.stderr)
+                raise Exception(f"param_generator.py failed with exit code {result.returncode}")
             
-            # 6. Save the generator's stdout to file
-            params_json_str = result.stdout
-            if not params_json_str:
-                 raise Exception("param_generator.py gave no output.")
+            # Check that file was created
+            if not params_file.exists():
+                raise Exception(f"param_generator.py didn't create {params_file}")
             
-            with open(params_file, 'w') as f:
-                f.write(params_json_str)
-            
-            params_data = json.loads(params_json_str)
-            print(f"Successfully generated and saved {params_file}")
+            print(f"[DRIVER] Generated {params_file}", file=sys.stderr)
 
         except Exception as e:
-            print(f"FATAL: Could not generate job_params.json: {e}", file=sys.stderr)
+            print(f"[DRIVER] FATAL: Could not generate job_params.json: {e}", file=sys.stderr)
             (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            sys.exit(1) # Exit with failure
-            
-    else:
-        # File already exists (standard run)
-        with open(params_file, 'r') as f:
-            params_data = json.load(f)
+            sys.exit(1)
+    
+    # Read the file (whether it existed or was just created)
+    with open(params_file, 'r') as f:
+        params_data = json.load(f)
 
     return params_data, job_dir, project_path, job_type
-# --- END DRIVER BOOTSTRAP ---
-
 
 def run_command(command: str, cwd: Path):
     """
