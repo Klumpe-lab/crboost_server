@@ -1,20 +1,21 @@
-# ui/job_tab_component.py
+# ui/pipeline_builder/job_tab_component.py
 """
 Single job tab rendering component.
 Handles Parameters, Logs, and Files sub-tabs for a given job.
+REFACTORED to use direct state access and remove sync logic.
 """
 import asyncio
 from pathlib import Path
 from nicegui import ui
-from services.parameter_models import JobType, JobStatus
-from app_state import state as app_state, is_job_synced_with_global
+from services.project_state import AlignmentMethod, JobStatus, JobType, get_project_state # Use the new global state getter
 from ui.utils import _snake_to_title
-from typing import Dict, Any
+from typing import Dict, Any, Set
 
 
 def get_job_status(job_type: JobType) -> JobStatus:
     """Query status from job model, handle reset jobs properly"""
-    job_model = app_state.jobs.get(job_type.value)
+    state = get_project_state() # Get current state
+    job_model = state.jobs.get(job_type)
     if not job_model:
         return JobStatus.UNKNOWN
     
@@ -52,7 +53,8 @@ def render_job_tab(
     Render a complete job tab with sub-tabs.
     Returns dict with UI element references for surgical updates.
     """
-    job_model = app_state.jobs.get(job_type.value)
+    state = get_project_state()
+    job_model = state.jobs.get(job_type)
     if not job_model:
         ui.label(f"Error: Job model for {job_type.value} not found.").classes("text-xs text-red-600")
         return {}
@@ -87,7 +89,7 @@ def render_job_tab(
         ui.button(
             "Refresh",
             icon="refresh",
-            on_click=lambda: _force_status_refresh(backend, shared_state, callbacks)  # Remove asyncio.create_task
+            on_click=lambda: _force_status_refresh(backend, shared_state, callbacks) 
         ).props("dense flat no-caps").style(
             "background: #f3f4f6; color: #1f2937; padding: 4px 12px; border-radius: 3px; font-size: 11px;"
         )
@@ -121,7 +123,8 @@ def _switch_monitor_tab(job_type, tab_name, backend, shared_state, callbacks):
     
     container = job_state.get("monitor_content_container")
     if container:
-        job_model = app_state.jobs.get(job_type.value)
+        state = get_project_state()
+        job_model = state.jobs.get(job_type)
         is_frozen = is_job_frozen(job_type)
 
         container.clear()
@@ -133,10 +136,25 @@ def _switch_monitor_tab(job_type, tab_name, backend, shared_state, callbacks):
             elif tab_name == "files":
                 _render_files_tab(job_type, job_model, shared_state)
 
+# --- Fields to exclude from the generic parameter UI ---
+BASE_JOB_FIELDS: Set[str] = {
+    'execution_status', 'relion_job_name', 'relion_job_number'
+}
+GLOBAL_PROPERTIES: Set[str] = {
+    'microscope', 'acquisition', 'pixel_size', 'voltage', 
+    'spherical_aberration', 'amplitude_contrast', 'dose_per_tilt', 
+    'tilt_axis_angle', 'thickness_nm', 'eer_ngroups', 'gain_path', 
+    'invert_tilt_angles'
+}
 
 def _render_config_tab(job_type, job_model, is_frozen, shared_state, callbacks):
-    """Render parameters sub-tab"""
+    """
+    Render parameters sub-tab.
+    REFACTORED to bind job-specific params to job_model and
+    global params to job_model.microscope / job_model.acquisition.
+    """
     if is_frozen:
+        # ... (Frozen message - no change) ...
         status_color = get_status_color(job_type)
         icon_map = {
             JobStatus.SUCCEEDED: "check_circle",
@@ -144,7 +162,6 @@ def _render_config_tab(job_type, job_model, is_frozen, shared_state, callbacks):
             JobStatus.RUNNING: "sync"
         }
         icon = icon_map.get(job_model.execution_status, "info")
-        
         with ui.row().classes("w-full items-center mb-3 p-2").style(
             f"background: #fafafa; border-left: 3px solid {status_color}; border-radius: 3px;"
         ):
@@ -153,9 +170,11 @@ def _render_config_tab(job_type, job_model, is_frozen, shared_state, callbacks):
                 "text-xs text-gray-700"
             )
 
+    # --- Inputs & Outputs (no change) ---
     ui.label("Inputs & Outputs").classes("text-xs font-semibold text-black mb-2")
     with ui.column().classes("w-full mb-4 p-3").style("background: #fafafa; border-radius: 3px; gap: 8px;"):
         if shared_state.get("project_created"):
+            # This relies on the backend snapshot, which is fine
             paths_data = shared_state.get("params_snapshot", {}).get(job_type, {}).get("paths", {})
             if paths_data:
                 for key, value in paths_data.items():
@@ -169,62 +188,84 @@ def _render_config_tab(job_type, job_model, is_frozen, shared_state, callbacks):
         else:
             ui.label("Paths will be generated when project is created").classes("text-xs text-gray-500 italic")
 
-    ui.label("Parameters").classes("text-xs font-semibold text-black mb-2")
+    # --- REFACTORED PARAMETER RENDERING ---
     
-    job_params = job_model.model_dump()
-    with ui.grid(columns=3).classes("w-full").style("gap: 10px;"):
-        for param_name, value in job_params.items():
-            label = _snake_to_title(param_name)
+    # 1. Job-Specific Parameters
+    ui.label("Job-Specific Parameters").classes("text-xs font-semibold text-black mb-2")
+    job_specific_fields = set(job_model.model_fields.keys()) - BASE_JOB_FIELDS
+    
+    if not job_specific_fields:
+        ui.label("This job has no job-specific parameters.").classes("text-xs text-gray-500 italic mb-4")
+    else:
+        with ui.grid(columns=3).classes("w-full mb-4").style("gap: 10px;"):
+            for param_name in sorted(list(job_specific_fields)):
+                label = _snake_to_title(param_name)
+                value = getattr(job_model, param_name)
 
-            if isinstance(value, bool):
-                element = ui.checkbox(label, value=value).props("dense")
-                if not is_frozen:
-                    element.bind_value(job_model, param_name)
-                    element.on_value_change(lambda j=job_type: _update_sync_indicator(j, callbacks))
-                else:
-                    element.disable()
+                if isinstance(value, bool):
+                    element = ui.checkbox(label, value=value).props("dense")
+                    if not is_frozen:
+                        element.bind_value(job_model, param_name)
+                    else:
+                        element.disable()
+                
+                elif isinstance(value, (int, float)) or value is None:
+                    element = ui.input(label=label, value=str(value) if value is not None else "").props("outlined dense").classes("w-full")
+                    element.enabled = not is_frozen
+                    if is_frozen:
+                        element.classes("bg-gray-50")
+                    else:
+                        # Bind directly to the model. Pydantic will handle type conversion.
+                        element.bind_value(job_model, param_name)
 
-            elif isinstance(value, (int, float)):
-                element = ui.input(label=label, value=str(value)).props("outlined dense").classes("w-full")
-                element.enabled = not is_frozen
-
-                if is_frozen:
-                    element.classes("bg-gray-50")
-                else:
-                    def create_blur_handler(field_name, is_float, input_element):
-                        def on_blur():
-                            try:
-                                val = input_element.value.strip()
-                                parsed = (float(val) if is_float else int(float(val))) if val else 0
-                                if "do_at_most" in field_name and not val:
-                                    parsed = -1
-                                setattr(job_model, field_name, parsed)
-                                _update_sync_indicator(job_type, callbacks)
-                            except:
-                                input_element.value = str(getattr(job_model, field_name, 0))
-                        return on_blur
+                elif isinstance(value, str):
+                    if param_name == "alignment_method" and job_type == JobType.TS_ALIGNMENT:
+                        element = ui.select(
+                            label=label, options=[e.value for e in AlignmentMethod], value=value
+                        ).props("outlined dense").classes("w-full")
+                    else:
+                        element = ui.input(label=label, value=value).props("outlined dense").classes("w-full")
                     
-                    element.on("blur", create_blur_handler(param_name, isinstance(value, float), element))
+                    element.enabled = not is_frozen
+                    if is_frozen:
+                        element.classes("bg-gray-50")
+                    else:
+                        element.bind_value(job_model, param_name)
+                
+                # NO sync indicator callback!
 
-            elif isinstance(value, str):
-                if param_name == "alignment_method" and job_type == JobType.TS_ALIGNMENT:
-                    element = ui.select(
-                        label=label, options=["AreTomo", "IMOD", "Relion"], value=value
-                    ).props("outlined dense").classes("w-full")
-                else:
-                    element = ui.input(label=label, value=value).props("outlined dense").classes("w-full")
-                
-                element.enabled = not is_frozen
-                
-                if is_frozen:
-                    element.classes("bg-gray-50")
-                else:
-                    element.bind_value(job_model, param_name)
-                    element.on_value_change(lambda j=job_type: _update_sync_indicator(j, callbacks))
+    # 2. Global Experimental Parameters (Accessed via properties)
+    ui.label("Global Experimental Parameters").classes("text-xs font-semibold text-black mb-2")
+    with ui.grid(columns=3).classes("w-full").style("gap: 10px;"):
+        # These inputs are ALWAYS bound to the global state, via the job_model properties
+        # They are disabled because they should be edited in the Data Import panel
+        ui.input('Pixel Size (Å)').bind_value(
+            job_model.microscope, 'pixel_size_angstrom'
+        ).props("dense outlined readonly").tooltip("Global parameter (edit in Data Import)")
+        
+        ui.input('Voltage (kV)').bind_value(
+            job_model.microscope, 'acceleration_voltage_kv'
+        ).props("dense outlined readonly").tooltip("Global parameter (edit in Data Import)")
+        
+        ui.input('Cs (mm)').bind_value(
+            job_model.microscope, 'spherical_aberration_mm'
+        ).props("dense outlined readonly").tooltip("Global parameter (edit in Data Import)")
+        
+        ui.input('Amplitude Contrast').bind_value(
+            job_model.microscope, 'amplitude_contrast'
+        ).props("dense outlined readonly").tooltip("Global parameter (edit in Data Import)")
+        
+        ui.input('Dose per Tilt').bind_value(
+            job_model.acquisition, 'dose_per_tilt'
+        ).props("dense outlined readonly").tooltip("Global parameter (edit in Data Import)")
+
+        ui.input('Tilt Axis (°)').bind_value(
+            job_model.acquisition, 'tilt_axis_degrees'
+        ).props("dense outlined readonly").tooltip("Global parameter (edit in Data Import)")
 
 
 def _render_logs_tab(job_type, job_model, backend, shared_state):
-    """Render logs sub-tab"""
+    """Render logs sub-tab (No change needed)"""
     job_state = shared_state["job_cards"][job_type]
     
     if job_state.get("logs_timer"):
@@ -260,13 +301,13 @@ def _render_logs_tab(job_type, job_model, backend, shared_state):
 
 
 def _render_files_tab(job_type, job_model, shared_state):
-    """Render files browser sub-tab"""
+    """Render files browser sub-tab (No change needed)"""
     project_path = shared_state.get("current_project_path")
     
     if not project_path or not job_model.relion_job_name:
         ui.label("Job has not run yet. Files will appear once it starts.").classes("text-xs text-gray-500 italic")
         return
-    
+        
     job_dir = Path(project_path) / job_model.relion_job_name.rstrip("/")
 
     ui.label("Job Directory Browser").classes("text-xs font-semibold text-black mb-2")
@@ -347,12 +388,13 @@ def _render_files_tab(job_type, job_model, shared_state):
 
 
 async def _refresh_job_logs(job_type, backend, shared_state):
-    """Fetch and update logs"""
+    """Fetch and update logs (No change needed)"""
     card_data = shared_state["job_cards"].get(job_type)
     if not card_data:
         return
 
-    job_model = app_state.jobs.get(job_type.value)
+    state = get_project_state()
+    job_model = state.jobs.get(job_type)
     if not job_model or not job_model.relion_job_name:
         if card_data.get("logs_timer"):
             card_data["logs_timer"].cancel()
@@ -378,13 +420,8 @@ async def _refresh_job_logs(job_type, backend, shared_state):
 
 
 def _force_status_refresh(backend, shared_state, callbacks):
-    """Force a status refresh"""
+    """Force a status refresh (No change needed)"""
     ui.notify("Refreshing statuses...", timeout=1)
     if "check_and_update_statuses" in callbacks:
         asyncio.create_task(callbacks["check_and_update_statuses"]())
 
-
-def _update_sync_indicator(job_type, callbacks):
-    """Update sync indicator"""
-    if "update_job_card_sync_indicator" in callbacks:
-        callbacks["update_job_card_sync_indicator"](job_type)

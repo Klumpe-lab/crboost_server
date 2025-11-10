@@ -1,13 +1,15 @@
-# ui/pipeline_builder_panel.py
+# ui/pipeline_builder/pipeline_builder_panel.py
 """
 Pipeline builder panel orchestrator.
 Handles layout, job selection, and coordinates sub-components.
 """
+
 import asyncio
+from pathlib import Path
 from backend import CryoBoostBackend
 from nicegui import ui
-from services.parameter_models import JobType, JobStatus
-from app_state import state as app_state
+from services.project_state import JobStatus, JobType
+from services.state_service import get_state_service  # <-- Refactored import
 from ui.utils import JobConfig
 from ui.pipeline_builder.job_tab_component import render_job_tab, get_status_color, get_job_status
 from ui.pipeline_builder.continuation_controls import build_continuation_controls
@@ -17,35 +19,46 @@ from typing import Dict, Any
 def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[str, Any], callbacks: Dict[str, Any]):
     """Build the right panel for pipeline construction and monitoring"""
 
+    # --- REFACTORED: Get the state service ---
+    state_service = get_state_service()
+
     panel_state = {
         "job_tabs_container": None,
         "run_button": None,
         "stop_button": None,
         "status_label": None,
         "status_timer": None,
-        "continuation_container": None,  # Add this
+        "continuation_container": None,
     }
 
     if "active_job_tab" not in shared_state:
         shared_state["active_job_tab"] = None
-    
+
     if "job_cards" not in shared_state:
         shared_state["job_cards"] = {}
 
     def add_job_to_pipeline(job_type: JobType):
         if job_type in shared_state["selected_jobs"]:
             return
-        
+
         shared_state["selected_jobs"].append(job_type)
         shared_state["selected_jobs"].sort(key=lambda j: JobConfig.PIPELINE_ORDER.index(j))
 
-        if job_type.value not in app_state.jobs:
-            from app_state import prepare_job_params
-            prepare_job_params(job_type.value)
-        
+        # --- REFACTORED: Replaced prepare_job_params ---
+        state = state_service.state
+        if job_type not in state.jobs:
+            # This is the new, correct way to initialize a job
+            template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+            job_star_path = template_base / job_type.value / "job.star"
+
+            # Call the synchronous method on the state object itself
+            state.ensure_job_initialized(job_type, job_star_path if job_star_path.exists() else None)
+        # --- END REFACTOR ---
+
         # Reset status for new pipelines
         if not shared_state.get("continuation_mode", False):
-            job_model = app_state.jobs.get(job_type.value)
+            # --- REFACTORED: Get model from new state ---
+            job_model = state.jobs.get(job_type)  # <-- Use JobType enum as key
             if job_model:
                 job_model.execution_status = JobStatus.SCHEDULED
                 job_model.relion_job_name = None
@@ -66,7 +79,7 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
             remove_job_from_pipeline(job_type)
         else:
             add_job_to_pipeline(job_type)
-        
+
         update_job_tag_button(job_type)
 
     def remove_job_from_pipeline(job_type: JobType):
@@ -76,7 +89,7 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
 
         if job_type in shared_state["selected_jobs"]:
             shared_state["selected_jobs"].remove(job_type)
-            
+
             if job_type in shared_state["job_cards"]:
                 job_state = shared_state["job_cards"][job_type]
                 if job_state.get("logs_timer"):
@@ -87,14 +100,14 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
                 shared_state["active_job_tab"] = (
                     shared_state["selected_jobs"][0].value if shared_state["selected_jobs"] else None
                 )
-            
+
             rebuild_pipeline_ui()
 
     def stop_all_timers():
         if panel_state.get("status_timer"):
             panel_state["status_timer"].cancel()
             panel_state["status_timer"] = None
-        
+
         for job_type in shared_state.get("job_cards", {}):
             job_state = shared_state["job_cards"][job_type]
             if job_state.get("logs_timer"):
@@ -104,21 +117,22 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
     def rebuild_pipeline_ui():
         update_status_label()
 
-        # UPDATE: Handle continuation controls visibility
         if panel_state["continuation_container"]:
             should_show_continuation = shared_state.get("continuation_mode", False)
             panel_state["continuation_container"].set_visibility(should_show_continuation)
-            
-            # If continuation mode is active and we haven't built controls yet, build them
+
             if should_show_continuation:
-                # Clear any existing content first
                 panel_state["continuation_container"].clear()
                 with panel_state["continuation_container"]:
-                    build_continuation_controls(backend, shared_state, {
-                        **callbacks,
-                        "rebuild_pipeline_ui": rebuild_pipeline_ui,
-                        "check_and_update_statuses": check_and_update_statuses
-                    })
+                    build_continuation_controls(
+                        backend,
+                        shared_state,
+                        {
+                            **callbacks,
+                            "rebuild_pipeline_ui": rebuild_pipeline_ui,
+                            "check_and_update_statuses": check_and_update_statuses,
+                        },
+                    )
 
         if "job_tags_container" in shared_state:
             should_hide = shared_state["pipeline_running"] or shared_state.get("continuation_mode", False)
@@ -149,27 +163,30 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
             if panel_state.get("status_timer"):
                 panel_state["status_timer"].deactivate()
             return
-        
+
         project_path = shared_state.get("current_project_path")
         if not project_path:
             return
 
+        # This function is now correctly refactored in pipeline_runner
         changes = await backend.pipeline_runner.status_sync.sync_all_jobs(project_path)
-        
+
         if any(changes.values()):
             refresh_status_indicators()
 
     def refresh_status_indicators():
+        # This function requires no changes, as get_status_color/get_job_status
+        # were already refactored in their own file to use the new state.
         for job_type in shared_state["selected_jobs"]:
             color = get_status_color(job_type)
             status_text = get_job_status(job_type).value
-            
+
             card = shared_state.get("job_cards", {}).get(job_type, {})
-            
+
             if dot := card.get("ui_status_dot"):
                 if not dot.is_deleted:
                     dot.style(f"background: {color};")
-            
+
             if job_type.value == shared_state.get("active_job_tab"):
                 if label := card.get("ui_status_label"):
                     if not label.is_deleted:
@@ -212,8 +229,7 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
                     with ui.row().classes("items-center gap-2"):
                         ui.label(name).classes("text-sm")
                         status_dot = ui.element("div").style(
-                            f"width: 6px; height: 6px; border-radius: 50%; "
-                            f"background: {get_status_color(job_type)};"
+                            f"width: 6px; height: 6px; border-radius: 50%; background: {get_status_color(job_type)};"
                         )
                         if job_type in shared_state["job_cards"]:
                             shared_state["job_cards"][job_type]["ui_status_dot"] = status_dot
@@ -222,10 +238,12 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
         with ui.column().classes("w-full"):
             for job_type in shared_state["selected_jobs"]:
                 if shared_state["active_job_tab"] == job_type.value:
-                    render_job_tab(job_type, backend, shared_state, {
-                        **callbacks,
-                        "check_and_update_statuses": check_and_update_statuses
-                    })
+                    render_job_tab(
+                        job_type,
+                        backend,
+                        shared_state,
+                        {**callbacks, "check_and_update_statuses": check_and_update_statuses},
+                    )
 
     def update_job_tag_button(job_type: JobType):
         btn = shared_state.get("job_buttons", {}).get(job_type)
@@ -244,26 +262,28 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
         if not shared_state["project_created"]:
             ui.notify("Create a project first", type="warning")
             return
-        
+
         panel_state["run_button"].props("loading")
-        
+
         result = await backend.start_pipeline(
             project_path=shared_state["current_project_path"],
             scheme_name=shared_state["current_scheme_name"],
             selected_jobs=[j.value for j in shared_state["selected_jobs"]],
             required_paths=[],
         )
-        
+
         panel_state["run_button"].props(remove="loading")
-        
+
         if result.get("success"):
             shared_state["pipeline_running"] = True
-            
+
+            # --- REFACTORED: Get state ---
+            state = state_service.state
             for job_type in shared_state["selected_jobs"]:
-                job_model = app_state.jobs.get(job_type.value)
+                job_model = state.jobs.get(job_type)  # <-- Use JobType enum as key
                 if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
                     job_model.execution_status = JobStatus.SCHEDULED
-            
+
             if panel_state.get("status_timer"):
                 panel_state["status_timer"].activate()
             else:
@@ -272,24 +292,24 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
                 )
 
             await check_and_update_statuses()
-            
+
             ui.notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
             panel_state["run_button"].props("disable")
             panel_state["stop_button"].props(remove="disable")
-            
+
             rebuild_pipeline_ui()
         else:
             ui.notify(f"Failed: {result.get('error')}", type="negative")
 
     # Main panel layout
-    with ui.column().classes("w-full h-full overflow-y-auto").style(
-        "padding: 10px; gap: 0px; font-family: 'IBM Plex Sans', sans-serif;"
+    with (
+        ui.column()
+        .classes("w-full h-full overflow-y-auto")
+        .style("padding: 10px; gap: 0px; font-family: 'IBM Plex Sans', sans-serif;")
     ):
-        # === REPLACE THE OLD CONTINUATION CONTROLS WITH THIS ===
         panel_state["continuation_container"] = ui.column().classes("w-full")
         panel_state["continuation_container"].set_visibility(False)
-        # === END REPLACEMENT ===
-        
+
         # Job tags and controls
         with ui.row().classes("w-full items-center justify-between mb-4").style("gap: 12px;"):
             job_tags_container = ui.row().classes("flex-1 flex-wrap").style("gap: 8px;")
@@ -299,25 +319,33 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
                 for job_type in JobConfig.get_ordered_jobs():
                     name = JobConfig.get_job_display_name(job_type)
                     is_selected = job_type in shared_state["selected_jobs"]
-                    btn = ui.button(name, on_click=lambda j=job_type: toggle_job_in_pipeline(j)).props(
-                        "no-caps dense flat"
-                    ).style(
-                        f"padding: 6px 16px; border-radius: 3px; font-weight: 500; "
-                        f"background: {'#dbeafe' if is_selected else '#f3f4f6'}; "
-                        f"color: {'#1e40af' if is_selected else '#6b7280'}; "
-                        f"border: 1px solid {'#93c5fd' if is_selected else '#e5e7eb'};"
+                    btn = (
+                        ui.button(name, on_click=lambda j=job_type: toggle_job_in_pipeline(j))
+                        .props("no-caps dense flat")
+                        .style(
+                            f"padding: 6px 16px; border-radius: 3px; font-weight: 500; "
+                            f"background: {'#dbeafe' if is_selected else '#f3f4f6'}; "
+                            f"color: {'#1e40af' if is_selected else '#6b7280'}; "
+                            f"border: 1px solid {'#93c5fd' if is_selected else '#e5e7eb'};"
+                        )
                     )
                     shared_state.setdefault("job_buttons", {})[job_type] = btn
 
             with ui.row().classes("items-center").style("gap: 10px;"):
                 panel_state["status_label"] = ui.label("No jobs selected").classes("text-xs text-gray-600")
-                panel_state["run_button"] = ui.button(
-                    "Run Pipeline", icon="play_arrow", on_click=handle_run_pipeline
-                ).props("dense flat no-caps").style(
-                    "background: #f3f4f6; color: #1f2937; padding: 6px 20px; border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;"
+                panel_state["run_button"] = (
+                    ui.button("Run Pipeline", icon="play_arrow", on_click=handle_run_pipeline)
+                    .props("dense flat no-caps")
+                    .style(
+                        "background: #f3f4f6; color: #1f2937; padding: 6px 20px; border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;"
+                    )
                 )
-                panel_state["stop_button"] = ui.button("Stop", icon="stop").props("dense flat no-caps disable").style(
-                    "background: #f3f4f6; color: #1f2937; padding: 6px 20px; border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;"
+                panel_state["stop_button"] = (
+                    ui.button("Stop", icon="stop")
+                    .props("dense flat no-caps disable")
+                    .style(
+                        "background: #f3f4f6; color: #1f2937; padding: 6px 20px; border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;"
+                    )
                 )
 
         # Job tabs container
@@ -330,10 +358,11 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[s
 
     # Expose callbacks
     callbacks["rebuild_pipeline_ui"] = rebuild_pipeline_ui
-    callbacks["update_job_card_sync_indicator"] = lambda job_type: None  # Handled in component
+    # --- REMOVED: Obsolete callback ---
+    # callbacks["update_job_card_sync_indicator"] = lambda job_type: None
     callbacks["stop_all_timers"] = stop_all_timers
-    callbacks["enable_run_button"] = lambda: panel_state["run_button"].props(remove="disable") if panel_state[
-        "run_button"
-    ] else None
+    callbacks["enable_run_button"] = (
+        lambda: panel_state["run_button"].props(remove="disable") if panel_state["run_button"] else None
+    )
 
     return panel_state

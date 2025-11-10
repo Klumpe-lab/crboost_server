@@ -2,15 +2,16 @@
 import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from services.parameter_models import JobStatus, JobType, jobtype_paramclass
+from services.project_state import JobType, jobtype_paramclass
 from services.starfile_service import StarfileService
 import os
 import glob
-import asyncio  
-import json     
+import asyncio
+import json
 from typing import TYPE_CHECKING
-from app_state import export_for_project
-from services.mdoc_service import get_mdoc_service
+
+# from services.state_old.app_state import export_for_project
+from services.state_old.mdoc_service import get_mdoc_service
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
@@ -46,7 +47,7 @@ class DataImportService:
 
             for mdoc_path_str in mdoc_files:
                 mdoc_path = Path(mdoc_path_str)
-                
+
                 parsed_mdoc = self.mdoc_service.parse_mdoc_file(mdoc_path)
 
                 for section in parsed_mdoc["data"]:
@@ -69,7 +70,7 @@ class DataImportService:
                         os.symlink(source_movie_path.resolve(), link_path)
 
                 new_mdoc_path = mdoc_dir / f"{import_prefix}{mdoc_path.name}"
-                
+
                 self.mdoc_service.write_mdoc_file(parsed_mdoc, new_mdoc_path)
 
             return {"success": True, "message": f"Imported {len(mdoc_files)} tilt-series."}
@@ -96,9 +97,9 @@ class ProjectService:
         if not self.project_root:
             raise ValueError("Project root not set. Call set_project_root() first.")
 
-        job_type      = JobType.from_string(job_name)
+        job_type = JobType.from_string(job_name)
         param_classes = jobtype_paramclass()
-        param_class   = param_classes.get(job_type)
+        param_class = param_classes.get(job_type)
 
         if not param_class:
             raise ValueError(f"Unknown job type: {job_name}")
@@ -133,7 +134,7 @@ class ProjectService:
             if not upstream_param_class:
                 raise ValueError(f"Unknown upstream job type: {upstream_job_type_str}")
 
-            upstream_job_dir                        = self.get_job_dir(upstream_job_type_str, upstream_job_num)
+            upstream_job_dir = self.get_job_dir(upstream_job_type_str, upstream_job_num)
             upstream_outputs[upstream_job_type_str] = upstream_param_class.get_output_assets(upstream_job_dir)
 
         input_paths = param_class.get_input_assets(job_dir, self.project_root, upstream_outputs)
@@ -148,7 +149,7 @@ class ProjectService:
         """Creates the project directory structure and imports the raw data."""
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
-            self.set_project_root(project_dir)  
+            self.set_project_root(project_dir)
 
             (project_dir / "Schemes").mkdir(exist_ok=True)
             (project_dir / "Logs").mkdir(exist_ok=True)
@@ -180,12 +181,7 @@ class ProjectService:
         # TODO: Implement this later
 
     async def initialize_new_project(
-        self,
-        project_name: str,
-        project_base_path: str,
-        selected_jobs: List[str],
-        movies_glob: str,
-        mdocs_glob: str,
+        self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
     ):
         """
         The main orchestration logic for creating a new project.
@@ -197,16 +193,11 @@ class ProjectService:
             scheme_name = f"scheme_{project_name}"
 
             if project_dir.exists():
-                return {
-                    "success": False,
-                    "error": f"Project directory '{project_dir}' already exists.",
-                }
+                return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
 
             import_prefix = f"{project_name}_"
-            
-            structure_result = await self.create_project_structure(
-                project_dir, movies_glob, mdocs_glob, import_prefix
-            )
+
+            structure_result = await self.create_project_structure(project_dir, movies_glob, mdocs_glob, import_prefix)
 
             if not structure_result["success"]:
                 return structure_result
@@ -227,9 +218,7 @@ class ProjectService:
                 print(f"[PROJECT_SERVICE] Saved parameters to {params_json_path}")
 
                 if not params_json_path.exists():
-                    raise FileNotFoundError(
-                        f"Parameter file was not created at {params_json_path}"
-                    )
+                    raise FileNotFoundError(f"Parameter file was not created at {params_json_path}")
 
                 file_size = params_json_path.stat().st_size
                 if file_size == 0:
@@ -240,11 +229,9 @@ class ProjectService:
             except Exception as e:
                 print(f"[ERROR] Failed to save project_params.json: {e}")
                 import traceback
+
                 traceback.print_exc()
-                return {
-                    "success": False,
-                    "error": f"Project created but failed to save parameters: {str(e)}",
-                }
+                return {"success": False, "error": f"Project created but failed to save parameters: {str(e)}"}
 
             # Collect bind paths
             additional_bind_paths = {
@@ -272,23 +259,15 @@ class ProjectService:
             init_command = "unset DISPLAY && relion --tomo --do_projdir ."
 
             container_init_command = self.backend.container_service.wrap_command_for_tool(
-                command=init_command,
-                cwd=project_dir,
-                tool_name="relion",
-                additional_binds=list(additional_bind_paths),
+                command=init_command, cwd=project_dir, tool_name="relion", additional_binds=list(additional_bind_paths)
             )
 
             process = await asyncio.create_subprocess_shell(
-                container_init_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=project_dir,
+                container_init_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
             )
 
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=30.0
-                )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
                 if process.returncode != 0:
                     print(f"[RELION INIT ERROR] {stderr.decode()}")
             except asyncio.TimeoutError:
@@ -297,10 +276,7 @@ class ProjectService:
                 await process.wait()
 
             if not pipeline_star_path.exists():
-                return {
-                    "success": False,
-                    "error": f"Failed to create default_pipeline.star.",
-                }
+                return {"success": False, "error": f"Failed to create default_pipeline.star."}
 
             return {
                 "success": True,
@@ -311,6 +287,7 @@ class ProjectService:
 
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": f"Project creation failed: {str(e)}"}
 
@@ -319,34 +296,35 @@ class ProjectService:
             project_dir = Path(project_path)
             if not project_dir.exists():
                 return {"success": False, "error": f"Project path not found: {project_path}"}
-            
+
             params_file = project_dir / "project_params.json"
             if not params_file.exists():
                 return {"success": False, "error": "No project_params.json found"}
-            
-            with open(params_file, 'r') as f:
+
+            with open(params_file, "r") as f:
                 project_params = json.load(f)
-            
-            project_name  = project_params.get("metadata", {}).get("project_name")
+
+            project_name = project_params.get("metadata", {}).get("project_name")
             selected_jobs = list(project_params.get("jobs", {}).keys())
-            data_sources  = project_params.get("data_sources", {})
-            
+            data_sources = project_params.get("data_sources", {})
+
             # Load job models from SAVED job_params.json files, not templates
-            from services.parameter_models import jobtype_paramclass, JobType
+            from services.state_old.parameter_models import jobtype_paramclass, JobType
+
             param_classes = jobtype_paramclass()
-            
+
             for job_type_str in selected_jobs:
                 job_type = JobType.from_string(job_type_str)
                 param_class = param_classes.get(job_type)
-                
+
                 if not param_class:
                     print(f"[LOAD] Unknown job type: {job_type_str}")
                     continue
-                
+
                 # Find the saved job_params.json in the job directory
                 category = param_class.JOB_CATEGORY
                 category_dir = project_dir / category.value
-                
+
                 job_model = None
                 if category_dir.exists():
                     # Find job directories (should only be one per job type in linear pipeline)
@@ -355,9 +333,9 @@ class ProjectService:
                         saved_params_file = job_dir / "job_params.json"
                         if saved_params_file.exists():
                             try:
-                                with open(saved_params_file, 'r') as f:
+                                with open(saved_params_file, "r") as f:
                                     saved_data = json.load(f)
-                                
+
                                 # Verify this is the right job type
                                 if saved_data.get("job_type") == job_type_str:
                                     # Deserialize the saved job model
@@ -366,18 +344,18 @@ class ProjectService:
                                     break
                             except Exception as e:
                                 print(f"[LOAD ERROR] Failed to load {saved_params_file}: {e}")
-                
+
                 # Fallback: if no saved params found, create from project_params.json
                 if not job_model:
                     print(f"[LOAD] No saved params for {job_type_str}, using project_params.json")
                     if job_type_str in project_params.get("jobs", {}):
                         job_model = param_class(**project_params["jobs"][job_type_str])
-                
+
                 if job_model:
                     self.backend.app_state.jobs[job_type_str] = job_model
-            
+
             await self.backend.pipeline_runner.status_sync.sync_all_jobs(project_path)
-            
+
             return {
                 "success": True,
                 "project_name": project_name,
@@ -387,5 +365,6 @@ class ProjectService:
             }
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": str(e)}

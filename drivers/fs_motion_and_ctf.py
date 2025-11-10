@@ -10,13 +10,14 @@ import shlex
 import argparse
 from pathlib import Path
 
+from services.project_state import FsMotionCtfParams
+
 # Add the server root to PYTHONPATH (set by fn_exe command)
 # This allows us to import 'services'
 server_dir = Path(__file__).parent.parent
 sys.path.append(str(server_dir))
 
 try:
-    from services.parameter_models import FsMotionCtfParams
     from services.metadata_service import MetadataTranslator
     from services.starfile_service import StarfileService
     from services.container_service import get_container_service
@@ -184,9 +185,9 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> st
         "--c_voltage",
         str(round(float(params.voltage))),
         "--c_cs",
-        str(params.cs),
+        str(params.microscope.spherical_aberration_mm),
         "--c_amplitude",
-        str(params.amplitude),
+        str(params.microscope.amplitude_contrast),
         "--perdevice",
         str(params.perdevice),
         "--out_averages",

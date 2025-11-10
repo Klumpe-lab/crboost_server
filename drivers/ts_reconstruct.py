@@ -9,12 +9,13 @@ import shutil
 from pathlib import Path
 import traceback
 
+from services.project_state import TsReconstructParams
+
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 try:
     from services.metadata_service import MetadataTranslator
-    from services.parameter_models import TsReconstructParams
     from services.starfile_service import StarfileService
     from services.container_service import get_container_service
 except ImportError as e:

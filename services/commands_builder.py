@@ -2,7 +2,8 @@
 from pathlib import Path
 from typing import Dict, Any, List
 import shlex
-from services.parameter_models import ImportMoviesParams 
+
+from services.project_state import ImportMoviesParams
 
 
 class BaseCommandBuilder:
@@ -35,13 +36,13 @@ class ImportMoviesCommandBuilder(BaseCommandBuilder):
             "--Q0",
             str(params.amplitude_contrast),
             "--dose_per_tilt_image",
-            str(params.dose_per_tilt_image),
+            str(params.acquisition.dose_per_tilt),
             "--nominal_tilt_axis_angle",
             str(params.tilt_axis_angle),
         ]
 
         # Add optional parameters
-        if params.invert_defocus_hand:
+        if params.acquisition.invert_defocus_hand:
             cmd_parts.append("--invert_defocus_hand")
 
         if params.do_at_most > 0:

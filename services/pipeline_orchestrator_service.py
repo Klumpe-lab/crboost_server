@@ -1,5 +1,4 @@
 # services/pipeline_orchestrator_service.py
-
 import shutil
 import pandas as pd
 from pathlib import Path
@@ -7,10 +6,10 @@ from typing import Dict, List
 import json
 
 from services.commands_builder import ImportMoviesCommandBuilder, BaseCommandBuilder
-from services.parameter_models import AbstractJobParams, JobType
+from services.config_service import get_config_service
+from services.project_state import AbstractJobParams, JobType
 
 from .starfile_service import StarfileService
-from .config_service import get_config_service
 from .project_service import ProjectService
 
 from typing import TYPE_CHECKING
@@ -20,7 +19,6 @@ if TYPE_CHECKING:
 
 
 class PipelineOrchestratorService:
-
     def __init__(self, backend_instance: "CryoBoostBackend"):
         self.backend = backend_instance
         self.star_handler = StarfileService()
@@ -101,13 +99,13 @@ class PipelineOrchestratorService:
 
                 print(f"[PIPELINE] fn_exe for {job_name}: {final_command_for_fn_exe}")
 
-                params_json_path  = job_run_dir / "job_params.json"
-                job_type          = JobType.from_string(job_name)
+                params_json_path = job_run_dir / "job_params.json"
+                job_type = JobType.from_string(job_name)
 
                 data_to_serialize = {
-                    "job_type"        : job_type.value,
-                    "job_model"       : job_model.model_dump(),
-                    "paths"           : {k: str(v) for k, v in paths.items()},
+                    "job_type": job_type.value,
+                    "job_model": job_model.model_dump(),
+                    "paths": {k: str(v) for k, v in paths.items()},
                     "additional_binds": all_binds,
                 }
 
@@ -172,10 +170,7 @@ class PipelineOrchestratorService:
         # 1. Check if the job model says it's a driver-based job
         if job_model.is_driver_job():
             if not self.project_service or not self.project_service.project_root:
-                        return (
-                            "echo 'ERROR: Project root not set in project_service "
-                            "during fn_exe build'; exit 1;"
-                        )
+                return "echo 'ERROR: Project root not set in project_service during fn_exe build'; exit 1;"
             project_root_str = str(self.project_service.project_root.resolve())
 
             host_python_exe = server_dir / "venv" / "bin" / "python3"
@@ -200,10 +195,10 @@ class PipelineOrchestratorService:
                 return f"echo 'ERROR: Job type \"{job_name}\" is a driver job but has no driver script mapped in orchestrator'; exit 1;"
 
             return (
-                        f"{env_setup} {host_python_exe} {driver_script_path} "
-                        f"--job_type {job_name} "
-                        f"--project_path {project_root_str}"
-                    )
+                f"{env_setup} {host_python_exe} {driver_script_path} "
+                f"--job_type {job_name} "
+                f"--project_path {project_root_str}"
+            )
 
         else:
             builder = self.job_builders.get(job_name)

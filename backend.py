@@ -1,18 +1,18 @@
-# backend.py
 from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List
 import pandas as pd
-from services.parameter_models import JobType
+
+# Refactored imports
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
 from services.pipeline_runner import PipelineRunnerService
-from app_state import state as app_state, prepare_job_params, update_from_mdoc
-from pathlib import Path
 from services.continuation_service import ContinuationService, PipelineManipulationService, SchemeManipulationService
+from services.project_state import JobType
 from services.slurm_service import SlurmService
+from services.state_service import get_state_service  # Get the singleton getter
 
 HARDCODED_USER = "artem.kushner"
 
@@ -27,25 +27,41 @@ class CryoBoostBackend:
         self.slurm_service = SlurmService(HARDCODED_USER)
         self.pipeline_runner = PipelineRunnerService(self)
 
+        # Correctly get the state service singleton
+        self.state_service = get_state_service()
+
         self.pipeline_manipulation = PipelineManipulationService(self)
         self.scheme_manipulation = SchemeManipulationService(self)
         self.continuation = ContinuationService(self)
-        
-        self.app_state = app_state
+
+        # self.app_state = app_state  # <--- REMOVED THIS
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
-        """Get parameters for a specific job"""
+        """Get parameters for a specific job, initializing if not present."""
         try:
             job_type = JobType.from_string(job_name)
-            job_model = prepare_job_params(job_type)  
+            state = self.state_service.state
+
+            job_model = state.jobs.get(job_type)
+            if not job_model:
+                print(f"[BACKEND] Job {job_type} not in state, initializing from template.")
+                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+                job_star_path = template_base / job_type.value / "job.star"
+
+                await self.state_service.ensure_job_initialized(
+                    job_type, job_star_path if job_star_path.exists() else None
+                )
+                job_model = state.jobs.get(job_type)  # Get it again
+
             if job_model:
                 return {"success": True, "params": job_model.model_dump()}
             else:
-                return {"success": False, "error": f"Unknown job type {job_name}"}
+                # This should not happen if ensure_job_initialized works
+                return {"success": False, "error": f"Failed to initialize job {job_name}"}
         except ValueError as e:
             return {"success": False, "error": str(e)}
 
-    #TODO
+    # TODO
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
         if not template_path.is_dir():
@@ -65,11 +81,13 @@ class CryoBoostBackend:
         )
 
     async def get_initial_parameters(self) -> Dict[str, Any]:
-        return self.app_state.model_dump()
+        """Returns a dump of the current project state."""
+        return self.state_service.state.model_dump(mode="json", exclude={"project_path"})
 
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
-        update_from_mdoc(mdocs_glob)
-        return self.app_state.model_dump()
+        """Runs mdoc update and returns the entire updated state."""
+        await self.state_service.update_from_mdoc(mdocs_glob)
+        return self.state_service.state.model_dump(mode="json", exclude={"project_path"})
 
     async def run_shell_command(
         self, command: str, cwd: Path = None, tool_name: str = None, additional_binds: List[str] = None
@@ -147,23 +165,21 @@ class CryoBoostBackend:
 
     async def load_existing_project(self, project_path: str) -> Dict[str, Any]:
         """Load an existing project for continuation"""
+        # This now just passes through to project_service, which
+        # should be using state_service.load_project
         return await self.project_service.load_project_state(project_path)
 
     async def debug_pipeline_status(self, project_path: str):
         """Debug method to check pipeline status directly"""
         pipeline_star = Path(project_path) / "default_pipeline.star"
-        
+
         if not pipeline_star.exists():
             return {"error": "Pipeline file not found"}
-        
+
         try:
-            with open(pipeline_star, 'r') as f:
+            with open(pipeline_star, "r") as f:
                 content = f.read()
-            
-            return {
-                "success": True,
-                "content": content,
-                "exists": True
-            }
+
+            return {"success": True, "content": content, "exists": True}
         except Exception as e:
             return {"success": False, "error": str(e)}
