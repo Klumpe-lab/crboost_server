@@ -10,7 +10,7 @@ from datetime import datetime
 import sys
 
 if TYPE_CHECKING:
-    from app_state import PipelineState
+    from services.state_old.app_state import PipelineState
 
 class JobStatus(str, Enum):
     SUCCEEDED = "Succeeded"
@@ -87,7 +87,7 @@ class ComputingParams(BaseModel):
     @classmethod
     def from_conf_yaml(cls, config_path: Path) -> Self:
         """Extract computing params from conf.yaml"""
-        from services.config_service import get_config_service
+        from services.state_old.config_service import get_config_service
 
         try:
             config_service = get_config_service()
@@ -507,14 +507,12 @@ class TsAlignmentParams(AbstractJobParams):
     model_config = ConfigDict(validate_assignment=True)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
-    # Synced from global state
     pixel_size        : float = Field(default=1.35)                     
     dose_per_tilt     : float = Field(default=3.0)
     tilt_axis_angle   : float = Field(default=-95.0)
     invert_tilt_angles: bool  = False
     thickness_nm      : float = Field(default=300.0, ge=50.0, le=2000.0) 
 
-    # Job-specific
     alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
     rescale_angpixs : float           = Field(default=12.0, ge=2.0, le=50.0)  
     tomo_dimensions : str             = Field(default="4096x4096x2048")      
@@ -522,7 +520,6 @@ class TsAlignmentParams(AbstractJobParams):
     perdevice       : int             = Field(default=1, ge=0, le=8)
     mdoc_pattern    : str             = Field(default="*.mdoc")  # NEW: Make pattern configurable
 
-    # Optional gain
     gain_path: Optional[str] = None
     gain_operations: Optional[str] = None
 
@@ -865,7 +862,6 @@ class TsReconstructParams(AbstractJobParams):
             "warp_settings_in": ctf_outputs.get("warp_settings"),
             "tomostar_dir_in" : ctf_outputs.get("tomostar_dir"),
         }
-
 
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {

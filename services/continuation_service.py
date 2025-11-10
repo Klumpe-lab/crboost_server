@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 import pandas as pd
 import shutil
-from services.parameter_models import JobStatus
+from services.project_state import JobStatus
 from services.starfile_service import StarfileService
 import json
 
@@ -525,7 +525,7 @@ class ContinuationService:
                 print(f"[CONTINUATION] Found job type: {job_type}")
                 
                 # Step 1.5: Get the job model BEFORE deletion so we can reset it
-                from services.parameter_models import JobType
+                from services.state_old.parameter_models import JobType
                 job_type_enum = JobType.from_string(job_type)
                 job_model = self.backend.app_state.jobs.get(job_type)
                 
@@ -573,8 +573,7 @@ class ContinuationService:
                     job_model.relion_job_number = None
                     
                     # Re-sync from pipeline state to get default parameters
-                    from app_state import state as app_state
-                    job_model.sync_from_pipeline_state(app_state)
+                    # job_model.sync_from_pipeline_state(app_state)
                     
                     print(f"[CONTINUATION] Job model reset: status={job_model.execution_status}, job_name={job_model.relion_job_name}")
                 else:

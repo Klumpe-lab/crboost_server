@@ -4,9 +4,9 @@ Pipeline continuation controls - delete/re-add jobs.
 Only shown when loading an existing project.
 """
 import asyncio
+from backend import CryoBoostBackend
 from nicegui import ui
-from services.parameter_models import JobType, JobStatus
-from app_state import state as app_state
+from services.project_state import JobStatus, JobType
 from typing import Dict, Any
 
 
@@ -39,9 +39,9 @@ def build_continuation_controls(backend, shared_state: Dict[str, Any], callbacks
     return {"jobs_container": jobs_container}
 
 
-def _render_job_row(job_type: JobType, backend, shared_state, callbacks):
+def _render_job_row(job_type: JobType, backend:CryoBoostBackend, shared_state, callbacks):
     """Render a single job row with status and delete button"""
-    job_model = app_state.jobs.get(job_type.value)
+    job_model = backend.state_service.state.jobs.get(job_type)
     if not job_model:
         return
     
@@ -111,7 +111,7 @@ async def _handle_delete_job(job_type: JobType, backend, shared_state, callbacks
     dialog.open()
 
 
-async def _confirm_delete_job(job_type: JobType, job_number, dialog, backend, shared_state, callbacks):
+async def _confirm_delete_job(job_type: JobType, job_number, dialog, backend:CryoBoostBackend, shared_state, callbacks):
     """Actually delete the job"""
     dialog.close()
     ui.notify(f"Deleting job{job_number:03d}...", type="info")
@@ -142,7 +142,7 @@ async def _confirm_delete_job(job_type: JobType, job_number, dialog, backend, sh
                 del shared_state["job_cards"][job_type]
             
             # Reset the job model
-            job_model = app_state.jobs.get(job_type.value)
+            job_model = backend.state_service.state.jobs.get(job_type)
             if job_model:
                 job_model.execution_status = JobStatus.SCHEDULED
                 job_model.relion_job_name = None

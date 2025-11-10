@@ -12,8 +12,8 @@ from typing import Dict, Optional
 import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
+from services.project_state import AlignmentMethod
 from services.starfile_service import StarfileService
-from services.parameter_models import AlignmentMethod
 
 
 class WarpXmlParser:
@@ -435,8 +435,7 @@ class MetadataTranslator:
         try:
             print(f"[METADATA] Starting tsAlignment update for {input_star_path}")
             print(f"[METADATA] Using project root: {project_root}")
-            alignment_method_enum = AlignmentMethod(alignment_method)          
-            # Read input tilt series STAR - resolve paths relative to project root
+            alignment_method_enum = AlignmentMethod(alignment_method)  
             input_star_dir = input_star_path.parent
             in_star_data = self.starfile_service.read(input_star_path)
             in_ts_df = in_star_data.get('global')

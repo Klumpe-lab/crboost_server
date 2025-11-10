@@ -10,13 +10,14 @@ from pathlib import Path
 from typing import Dict
 import traceback
 
+from services.project_state import TsCtfParams
+
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 try:
     from services.metadata_service import MetadataTranslator
-    from services.parameter_models import TsCtfParams
-    from services.starfile_service import StarfileService # Added for translator
+    from services.starfile_service import StarfileService  
     from services.container_service import get_container_service
 except ImportError as e:
     print(f"FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
@@ -37,31 +38,35 @@ def get_driver_context():
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument("--job_type", required=True, help="JobType string")
     parser.add_argument("--project_path", required=True, type=Path, help="Project root")
-    
+
     args, unknown = parser.parse_known_args()
-    
+
     job_type = args.job_type
     project_path = args.project_path.resolve()
     job_dir = Path.cwd().resolve()
     params_file = job_dir / "job_params.json"
-    
+
     if not params_file.exists():
         print(f"[DRIVER] Generating job_params.json...", file=sys.stderr)
         try:
-            job_number = int(job_dir.name.replace('job', ''))
+            job_number = int(job_dir.name.replace("job", ""))
             current_server_root = Path(sys.argv[0]).parent.parent.resolve()
             param_generator_script = current_server_root / "services" / "param_generator.py"
             python_exe = sys.executable
-            
+
             cmd = [
                 str(python_exe),
                 str(param_generator_script),
-                "--job_type", job_type,
-                "--project_path", str(project_path),
-                "--job_number", str(job_number),
-                "--output_file", str(params_file)  # NEW: Tell it where to write
+                "--job_type",
+                job_type,
+                "--project_path",
+                str(project_path),
+                "--job_number",
+                str(job_number),
+                "--output_file",
+                str(params_file),  # NEW: Tell it where to write
             ]
-            
+
             env = os.environ.copy()
             if str(current_server_root) not in env.get("PYTHONPATH", ""):
                 env["PYTHONPATH"] = f"{current_server_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
@@ -72,23 +77,24 @@ def get_driver_context():
                 print(f"[DRIVER] Param generator failed:", file=sys.stderr)
                 print(result.stderr, file=sys.stderr)
                 raise Exception(f"param_generator.py failed with exit code {result.returncode}")
-            
+
             # Check that file was created
             if not params_file.exists():
                 raise Exception(f"param_generator.py didn't create {params_file}")
-            
+
             print(f"[DRIVER] Generated {params_file}", file=sys.stderr)
 
         except Exception as e:
             print(f"[DRIVER] FATAL: Could not generate job_params.json: {e}", file=sys.stderr)
             (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
             sys.exit(1)
-    
+
     # Read the file (whether it existed or was just created)
-    with open(params_file, 'r') as f:
+    with open(params_file, "r") as f:
         params_data = json.load(f)
 
     return params_data, job_dir, project_path, job_type
+
 
 # --- Re-usable run_command from other drivers ---
 def run_command(command: str, cwd: Path):
@@ -125,13 +131,16 @@ def main():
         params_data, job_dir, project_path, job_type = get_driver_context()
     except Exception as e:
         # Bootstrap failed, write failure file and exit
-        job_dir = Path.cwd() # Try to get CWD for failure file
+        job_dir = Path.cwd()  # Try to get CWD for failure file
         (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
         print(f"[DRIVER] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
         sys.exit(1)
     # --- END BOOTSTRAP CALL ---
 
-    print(f"Node: {Path('/etc/hostname').read_text().strip() if Path('/etc/hostname').exists() else 'unknown'}", flush=True)
+    print(
+        f"Node: {Path('/etc/hostname').read_text().strip() if Path('/etc/hostname').exists() else 'unknown'}",
+        flush=True,
+    )
     print(f"CWD (Job Directory): {job_dir}", flush=True)
     print("[DRIVER] tsCTF driver started.", flush=True)
 
@@ -146,7 +155,7 @@ def main():
         params = TsCtfParams(**params_data["job_model"])
         paths = {k: Path(v) for k, v in params_data["paths"].items()}
         additional_binds = params_data["additional_binds"]
-        
+
         # Use 'paths' dict for all assets
         input_assets = paths
         output_assets = paths
@@ -187,24 +196,21 @@ def main():
             print(f"[DRIVER] Executing command {i}/3...", flush=True)
 
             wrapped_command = container_service.wrap_command_for_tool(
-                command=command, 
-                cwd=job_dir, 
-                tool_name=params.get_tool_name(), 
-                additional_binds=additional_binds
+                command=command, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
             )
-            
+
             run_command(wrapped_command, cwd=job_dir)
-            
+
             print(f"[DRIVER] Command {i} completed successfully", flush=True)
 
         print("[DRIVER] Computation finished. Starting metadata processing.", flush=True)
         metadata_service = MetadataTranslator(StarfileService())
         result = metadata_service.update_ts_ctf_metadata(
-            job_dir          = job_dir,
-            input_star_path  = input_assets["input_star"],
-            output_star_path = output_assets["output_star"],
-            project_root     = project_path,
-            warp_folder      = "warp_tiltseries",
+            job_dir=job_dir,
+            input_star_path=input_assets["input_star"],
+            output_star_path=output_assets["output_star"],
+            project_root=project_path,
+            warp_folder="warp_tiltseries",
         )
 
         if not result["success"]:
@@ -237,13 +243,13 @@ def copy_previous_metadata(input_assets: Dict[str, Path], output_assets: Dict[st
 
     # This logic relies on 'input_assets' having the paths from the *previous* job.
     # The 'param_generator' and 'resolve_job_paths' must provide this correctly.
-    
+
     # 'frameseries_dir' is the output 'warp_dir' of the *previous* job
     # 'warp_settings' is the output 'warp_settings' of the *previous* job
-    
+
     prev_settings = input_assets["warp_settings_in"]
     prev_tomostar = input_assets["tomostar_dir_in"]
-    prev_warp_dir = input_assets["frameseries_dir"] # This is the input warp_dir
+    prev_warp_dir = input_assets["frameseries_dir"]  # This is the input warp_dir
 
     # Copy warp_tiltseries settings
     if prev_settings.exists():
@@ -251,7 +257,6 @@ def copy_previous_metadata(input_assets: Dict[str, Path], output_assets: Dict[st
         print(f"[DRIVER] Copied settings: {prev_settings} -> {output_assets['warp_settings']}", flush=True)
     else:
         print(f"[DRIVER] WARNING: Previous settings not found at {prev_settings}", flush=True)
-
 
     # Copy tomostar directory
     if prev_tomostar.exists():
@@ -262,7 +267,6 @@ def copy_previous_metadata(input_assets: Dict[str, Path], output_assets: Dict[st
     else:
         print(f"[DRIVER] WARNING: Previous tomostar not found at {prev_tomostar}", flush=True)
 
-
     # Copy existing warp_tiltseries XML files
     if prev_warp_dir.exists():
         if output_assets["warp_dir"].exists():
@@ -272,17 +276,18 @@ def copy_previous_metadata(input_assets: Dict[str, Path], output_assets: Dict[st
     else:
         print(f"[DRIVER] WARNING: Previous warp dir not found at {prev_warp_dir}", flush=True)
 
+
 def build_check_defocus_hand_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
     """Build command to check defocus handness"""
     # Use the *output* settings file path for this job
-    settings_file = shlex.quote(str(input_assets['warp_settings']))
+    settings_file = shlex.quote(str(input_assets["warp_settings"]))
     return f"WarpTools ts_defocus_hand --settings {settings_file} --check"
 
 
 def build_set_defocus_hand_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
     """Build command to set defocus handness based on check result"""
-    settings_file = shlex.quote(str(input_assets['warp_settings']))
-    
+    settings_file = shlex.quote(str(input_assets["warp_settings"]))
+
     # Determine flip setting based on correlation result
     # Positive correlation = 'no flip', negative correlation = 'flip'
     # You need to capture the correlation result from the check command
@@ -295,7 +300,7 @@ def build_set_defocus_hand_command(params: TsCtfParams, input_assets: Dict[str, 
 
 def build_ctf_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
     """Build command for CTF determination"""
-    settings_file = shlex.quote(str(input_assets['warp_settings']))
+    settings_file = shlex.quote(str(input_assets["warp_settings"]))
     return (
         f"WarpTools ts_ctf "
         f"--settings {settings_file} "
@@ -304,9 +309,9 @@ def build_ctf_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str
         f"--range_high {params.range_max} "
         f"--defocus_min {params.defocus_min} "
         f"--defocus_max {params.defocus_max} "
-        f"--voltage {int(round(params.voltage))} "  
-        f"--cs {params.cs} "
-        f"--amplitude {params.amplitude} "
+        f"--voltage {int(round(params.voltage))} "
+        f"--cs {params.microscope.spherical_aberration_mm} "
+        f"--amplitude {params.microscope.amplitude_contrast} "
         f"--perdevice {params.perdevice}"
     )
 
