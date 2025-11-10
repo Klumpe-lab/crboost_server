@@ -8,6 +8,7 @@ import json
 from services.commands_builder import ImportMoviesCommandBuilder, BaseCommandBuilder
 from services.config_service import get_config_service
 from services.project_state import AbstractJobParams, JobType
+from services.state_service import get_state_service
 
 from .starfile_service import StarfileService
 from .project_service import ProjectService
@@ -24,6 +25,8 @@ class PipelineOrchestratorService:
         self.star_handler = StarfileService()
         self.config_service = get_config_service()
         self.project_service = None
+        # --- NEW: Get state service ---
+        self.state_service = get_state_service()
 
         # Map job names to their corresponding builder class
         # --- NOTE: This map ONLY contains non-driver jobs ---
@@ -39,6 +42,7 @@ class PipelineOrchestratorService:
     ):
         """
         Creates a custom Relion scheme with the selected jobs.
+        --- REFACTORED to use new StateService ---
         """
         try:
             # Initialize project service with absolute project root
@@ -80,10 +84,19 @@ class PipelineOrchestratorService:
                     print(f"[PIPELINE WARNING] No joboptions_values in job.star for {job_name}")
                     continue
 
-                # Get job model from app state
-                job_model = self.backend.app_state.jobs.get(job_name)
+                # --- NEW: Get job model from the new StateService ---
+                state = self.backend.state_service.state
+                try:
+                    job_type_enum = JobType(job_name)
+                    job_model = state.jobs.get(job_type_enum)
+                except ValueError:
+                    print(f"[PIPELINE WARNING] Unknown job type string: {job_name}")
+                    job_model = None
+                # --- END NEW BLOCK ---
+
                 if not job_model:
-                    print(f"[PIPELINE WARNING] Job {job_name} not in state, skipping")
+                    # This can happen if initialize_new_project didn't run or failed
+                    print(f"[PIPELINE WARNING] Job {job_name} not in state, skipping scheme creation for it.")
                     continue
 
                 paths = self.project_service.resolve_job_paths(job_name, job_number, selected_jobs)
@@ -100,11 +113,12 @@ class PipelineOrchestratorService:
                 print(f"[PIPELINE] fn_exe for {job_name}: {final_command_for_fn_exe}")
 
                 params_json_path = job_run_dir / "job_params.json"
-                job_type = JobType.from_string(job_name)
+                job_type = JobType.from_string(job_name)  # or use job_type_enum from above
 
+                # This is the "trace file" you wanted, created at the last moment
                 data_to_serialize = {
                     "job_type": job_type.value,
-                    "job_model": job_model.model_dump(),
+                    "job_model": job_model.model_dump(),  # Serializes the Pydantic model
                     "paths": {k: str(v) for k, v in paths.items()},
                     "additional_binds": all_binds,
                 }
@@ -162,9 +176,7 @@ class PipelineOrchestratorService:
     ) -> str:
         """
         Build the fn_exe command for a job using model metadata.
-
-        - If model.is_driver_job() is True, it points to the Python driver script.
-        - Otherwise, it uses the correct CommandBuilder from self.job_builders.
+        (This function is now correct, as it receives the new job_model)
         """
 
         # 1. Check if the job model says it's a driver-based job
@@ -188,7 +200,7 @@ class PipelineOrchestratorService:
                 driver_script_path = server_dir / "drivers" / "ts_alignment.py"
             elif job_name == JobType.TS_CTF.value:
                 driver_script_path = server_dir / "drivers" / "ts_ctf.py"
-            elif job_name == JobType.TS_RECONSTRUCT:
+            elif job_name == JobType.TS_RECONSTRUCT.value:  # Fixed enum check
                 driver_script_path = server_dir / "drivers" / "ts_reconstruct.py"
             else:
                 # This case handles if a job is marked as a driver but not mapped here
@@ -201,6 +213,7 @@ class PipelineOrchestratorService:
             )
 
         else:
+            # This handles non-driver jobs (like importmovies)
             builder = self.job_builders.get(job_name)
             if not builder:
                 return f"echo 'ERROR: No command builder found for simple job \"{job_name}\"'; exit 1;"

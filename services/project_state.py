@@ -12,28 +12,14 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 import json
 import sys
-from pydantic import BaseModel, Field, field_validator, ConfigDict
-from typing import ClassVar, Optional, Dict, Tuple, Self, Union, Any, TYPE_CHECKING, Type
-from enum import Enum
-from pathlib import Path
+from pydantic import field_validator, ConfigDict
+from typing import ClassVar, Tuple, Self, Union, TYPE_CHECKING
 import pandas as pd
 import starfile
-from datetime import datetime
-import sys
 
-# services/parameter_models.py
-from pydantic import BaseModel, Field, field_validator, ConfigDict
-from typing import ClassVar, Optional, Dict, Tuple, Self, Union, Any, TYPE_CHECKING, Type
-from enum import Enum
-from pathlib import Path
-import pandas as pd
-import starfile
-from datetime import datetime
-import sys
 
 if TYPE_CHECKING:
-    # Use TYPE_CHECKING to avoid circular import at runtime
-    from services.project_state import ProjectState, PipelineState  # PipelineState for compatibility if needed
+    from services.project_state import ProjectState 
 
 class JobStatus(str, Enum):
     SUCCEEDED = "Succeeded"

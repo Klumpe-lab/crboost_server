@@ -2,16 +2,16 @@
 import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from services.project_state import JobType, jobtype_paramclass
-from services.starfile_service import StarfileService
 import os
 import glob
 import asyncio
 import json
 from typing import TYPE_CHECKING
 
-# from services.state_old.app_state import export_for_project
-from services.state_old.mdoc_service import get_mdoc_service
+from services.project_state import JobType, jobtype_paramclass
+from services.starfile_service import StarfileService
+from services.state_service import get_state_service  # Use new service
+from services.mdoc_service import get_mdoc_service  # This was already correct
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
@@ -21,6 +21,7 @@ class DataImportService:
     """
     Handles the core logic of preparing raw data for a CryoBoost project.
     This includes parsing mdocs, creating symlinks, and rewriting mdocs with prefixes.
+    (This class seems correct and uses the new mdoc_service, no changes needed)
     """
 
     def __init__(self):
@@ -84,10 +85,15 @@ class ProjectService:
         self.data_importer = DataImportService()
         self.star_handler = StarfileService()
         self.project_root: Optional[Path] = None
+        # --- NEW: Get the state service instance ---
+        self.state_service = get_state_service()
 
     def set_project_root(self, project_dir: Path):
-        """Set the project root for path resolution"""
+        """Set the project root for path resolution and update state."""
         self.project_root = project_dir.resolve()
+        # --- NEW: Update the single source of truth ---
+        if self.backend and self.backend.state_service:
+            self.backend.state_service.state.project_path = self.project_root
 
     def get_job_dir(self, job_name: str, job_number: int) -> Path:
         """
@@ -149,7 +155,7 @@ class ProjectService:
         """Creates the project directory structure and imports the raw data."""
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
-            self.set_project_root(project_dir)
+            self.set_project_root(project_dir)  # This now also updates the state
 
             (project_dir / "Schemes").mkdir(exist_ok=True)
             (project_dir / "Logs").mkdir(exist_ok=True)
@@ -185,7 +191,7 @@ class ProjectService:
     ):
         """
         The main orchestration logic for creating a new project.
-        Moved from CryoBoostBackend.
+        --- REFACTORED to use new StateService ---
         """
         try:
             project_dir = Path(project_base_path).expanduser() / project_name
@@ -197,6 +203,13 @@ class ProjectService:
 
             import_prefix = f"{project_name}_"
 
+            # --- NEW: Get state service and update state *before* doing anything else ---
+            state_service = self.backend.state_service
+            state = state_service.state
+            state.project_name = project_name
+            state.project_path = project_dir  # This will be set again in create_project_structure, which is fine
+
+            # This creates dirs and calls self.set_project_root()
             structure_result = await self.create_project_structure(project_dir, movies_glob, mdocs_glob, import_prefix)
 
             if not structure_result["success"]:
@@ -204,16 +217,22 @@ class ProjectService:
 
             params_json_path = project_dir / "project_params.json"
             try:
-                # Use the mutator function to export config
-                clean_config = export_for_project(
-                    project_name=project_name,
-                    movies_glob=movies_glob,
-                    mdocs_glob=mdocs_glob,
-                    selected_jobs=selected_jobs,
-                )
+                # --- NEW: Ensure all selected jobs are initialized in the state ---
+                # This populates state.jobs from job.star templates
+                print(f"[PROJECT_SERVICE] Initializing jobs in state: {selected_jobs}")
+                for job_str in selected_jobs:
+                    try:
+                        job_type = JobType(job_str)
+                        job_star_path = base_template_path / job_type.value / "job.star"
+                        await state_service.ensure_job_initialized(
+                            job_type, job_star_path if job_star_path.exists() else None
+                        )
+                    except ValueError:
+                        print(f"[WARN] Skipping unknown job '{job_str}' during state initialization.")
 
-                with open(params_json_path, "w") as f:
-                    json.dump(clean_config, f, indent=2)
+                # --- NEW: Save the populated ProjectState model ---
+                # This replaces the old export_for_project() and manual json.dump()
+                await state_service.save_project(params_json_path)
 
                 print(f"[PROJECT_SERVICE] Saved parameters to {params_json_path}")
 
@@ -240,7 +259,12 @@ class ProjectService:
                 str(Path(mdocs_glob).parent.resolve()),
             }
 
+            # Add gain ref path if it exists
+            if state.acquisition.gain_reference_path:
+                additional_bind_paths.add(str(Path(state.acquisition.gain_reference_path).parent.resolve()))
+
             # Create the scheme
+            # This will now read job models from the new state service
             scheme_result = await self.backend.pipeline_orchestrator.create_custom_scheme(
                 project_dir,
                 scheme_name,
@@ -292,6 +316,10 @@ class ProjectService:
             return {"success": False, "error": f"Project creation failed: {str(e)}"}
 
     async def load_project_state(self, project_path: str) -> Dict[str, Any]:
+        """
+        Loads a project using the new StateService.
+        --- REFACTORED ---
+        """
         try:
             project_dir = Path(project_path)
             if not project_dir.exists():
@@ -301,67 +329,56 @@ class ProjectService:
             if not params_file.exists():
                 return {"success": False, "error": "No project_params.json found"}
 
-            with open(params_file, "r") as f:
-                project_params = json.load(f)
+            # --- NEW: Bridge for missing data ---
+            # Manually read data_sources, as it's not in the new ProjectState model
+            movies_glob = ""
+            mdocs_glob = ""
+            try:
+                with open(params_file, "r") as f:
+                    raw_params_data = json.load(f)
 
-            project_name = project_params.get("metadata", {}).get("project_name")
-            selected_jobs = list(project_params.get("jobs", {}).keys())
-            data_sources = project_params.get("data_sources", {})
+                # Check for old data_sources key
+                data_sources = raw_params_data.get("data_sources", {})
+                if data_sources:
+                    movies_glob = data_sources.get("frames_glob", "")
+                    mdocs_glob = data_sources.get("mdocs_glob", "")
 
-            # Load job models from SAVED job_params.json files, not templates
-            from services.state_old.parameter_models import jobtype_paramclass, JobType
+                # Also check for data stored in 'acquisition' model for newer saves
+                if not movies_glob and "acquisition" in raw_params_data:
+                    # This assumes you might store them here, adjust if not
+                    movies_glob = raw_params_data["acquisition"].get("frames_glob", "")
+                if not mdocs_glob and "acquisition" in raw_params_data:
+                    mdocs_glob = raw_params_data["acquisition"].get("mdocs_glob", "")
 
-            param_classes = jobtype_paramclass()
+            except Exception as e:
+                print(f"[LOAD_PROJECT] Warning: could not parse raw JSON for data_sources: {e}")
 
-            for job_type_str in selected_jobs:
-                job_type = JobType.from_string(job_type_str)
-                param_class = param_classes.get(job_type)
+            # --- NEW: Use the StateService to load the project ---
+            # This will replace the global singleton state
+            load_success = await self.backend.state_service.load_project(params_file)
 
-                if not param_class:
-                    print(f"[LOAD] Unknown job type: {job_type_str}")
-                    continue
+            if not load_success:
+                return {"success": False, "error": f"StateService failed to load project from {params_file}"}
 
-                # Find the saved job_params.json in the job directory
-                category = param_class.JOB_CATEGORY
-                category_dir = project_dir / category.value
+            # Get the new state that was just loaded
+            state = self.backend.state_service.state
 
-                job_model = None
-                if category_dir.exists():
-                    # Find job directories (should only be one per job type in linear pipeline)
-                    job_dirs = sorted(category_dir.glob("job*"))
-                    for job_dir in job_dirs:
-                        saved_params_file = job_dir / "job_params.json"
-                        if saved_params_file.exists():
-                            try:
-                                with open(saved_params_file, "r") as f:
-                                    saved_data = json.load(f)
+            # Set the project root for this service instance
+            self.set_project_root(project_dir)
 
-                                # Verify this is the right job type
-                                if saved_data.get("job_type") == job_type_str:
-                                    # Deserialize the saved job model
-                                    job_model = param_class(**saved_data["job_model"])
-                                    print(f"[LOAD] Loaded {job_type_str} from {saved_params_file}")
-                                    break
-                            except Exception as e:
-                                print(f"[LOAD ERROR] Failed to load {saved_params_file}: {e}")
-
-                # Fallback: if no saved params found, create from project_params.json
-                if not job_model:
-                    print(f"[LOAD] No saved params for {job_type_str}, using project_params.json")
-                    if job_type_str in project_params.get("jobs", {}):
-                        job_model = param_class(**project_params["jobs"][job_type_str])
-
-                if job_model:
-                    self.backend.app_state.jobs[job_type_str] = job_model
-
+            # Sync job statuses from the pipeline.star file
             await self.backend.pipeline_runner.status_sync.sync_all_jobs(project_path)
+
+            # Extract data from the new state for the UI
+            project_name = state.project_name
+            selected_jobs = [job_type.value for job_type in state.jobs.keys()]
 
             return {
                 "success": True,
                 "project_name": project_name,
                 "selected_jobs": selected_jobs,
-                "movies_glob": data_sources.get("frames_glob", ""),
-                "mdocs_glob": data_sources.get("mdocs_glob", ""),
+                "movies_glob": movies_glob,  # Return the manually recovered value
+                "mdocs_glob": mdocs_glob,  # Return the manually recovered value
             }
         except Exception as e:
             import traceback
