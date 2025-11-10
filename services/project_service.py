@@ -327,9 +327,9 @@ class ProjectService:
             with open(params_file, 'r') as f:
                 project_params = json.load(f)
             
-            project_name = project_params.get("metadata", {}).get("project_name")
+            project_name  = project_params.get("metadata", {}).get("project_name")
             selected_jobs = list(project_params.get("jobs", {}).keys())
-            data_sources = project_params.get("data_sources", {})
+            data_sources  = project_params.get("data_sources", {})
             
             # Load job models from SAVED job_params.json files, not templates
             from services.parameter_models import jobtype_paramclass, JobType
@@ -373,11 +373,9 @@ class ProjectService:
                     if job_type_str in project_params.get("jobs", {}):
                         job_model = param_class(**project_params["jobs"][job_type_str])
                 
-                # Store in app_state
                 if job_model:
                     self.backend.app_state.jobs[job_type_str] = job_model
             
-            # Sync statuses from pipeline.star (this updates execution_status, relion_job_name, etc.)
             await self.backend.pipeline_runner.status_sync.sync_all_jobs(project_path)
             
             return {

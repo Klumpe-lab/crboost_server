@@ -193,6 +193,8 @@ class PipelineOrchestratorService:
                 driver_script_path = server_dir / "drivers" / "ts_alignment.py"
             elif job_name == JobType.TS_CTF.value:
                 driver_script_path = server_dir / "drivers" / "ts_ctf.py"
+            elif job_name == JobType.TS_RECONSTRUCT:
+                driver_script_path = server_dir / "drivers" / "ts_reconstruct.py"
             else:
                 # This case handles if a job is marked as a driver but not mapped here
                 return f"echo 'ERROR: Job type \"{job_name}\" is a driver job but has no driver script mapped in orchestrator'; exit 1;"

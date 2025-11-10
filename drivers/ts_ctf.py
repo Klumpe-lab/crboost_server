@@ -200,10 +200,11 @@ def main():
         print("[DRIVER] Computation finished. Starting metadata processing.", flush=True)
         metadata_service = MetadataTranslator(StarfileService())
         result = metadata_service.update_ts_ctf_metadata(
-            job_dir=job_dir,
-            input_star_path=input_assets["input_star"],
-            output_star_path=output_assets["output_star"],
-            warp_folder="warp_tiltseries",
+            job_dir          = job_dir,
+            input_star_path  = input_assets["input_star"],
+            output_star_path = output_assets["output_star"],
+            project_root     = project_path,
+            warp_folder      = "warp_tiltseries",
         )
 
         if not result["success"]:

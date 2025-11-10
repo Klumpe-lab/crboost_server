@@ -10,14 +10,13 @@ from datetime import datetime
 import sys
 
 if TYPE_CHECKING:
-    # This forward ref is still needed by AbstractJobParams and its children
     from app_state import PipelineState
 
 class JobStatus(str, Enum):
     SUCCEEDED = "Succeeded"
     FAILED    = "Failed"
     RUNNING   = "Running"
-    SCHEDULED   = "Scheduled"  # We'll use this for jobs in scheme but not pipeline
+    SCHEDULED = "Scheduled"  # We'll use this for jobs in scheme but not pipeline
     UNKNOWN   = "Unknown"
 
 class Partition(str, Enum):
@@ -55,7 +54,6 @@ class MicroscopeParams(BaseModel):
             print(f"[WARN] Voltage {v} not in standard values {allowed}")
         return v
 
-
 class AcquisitionParams(BaseModel):
     """Data acquisition parameters"""
 
@@ -69,7 +67,13 @@ class AcquisitionParams(BaseModel):
     gain_reference_path    : Optional[str]   = None
     invert_tilt_angles     : bool            = False
     invert_defocus_hand    : bool            = False
-
+    
+    acquisition_software   : str             = Field(default="SerialEM") 
+    nominal_magnification  : Optional[int]   = None
+    spot_size              : Optional[int]   = None
+    camera_name            : Optional[str]   = None
+    binning                : Optional[int]   = Field(default=1, ge=1)
+    frame_dose             : Optional[float] = None  
 
 class ComputingParams(BaseModel):
     """Computing resource parameters"""
@@ -106,15 +110,13 @@ class ComputingParams(BaseModel):
             print(f"[ERROR] Failed to parse computing config: {e}", file=sys.stderr)
             return cls()
 
-
 class JobCategory(str, Enum):
     """Where different job types live in the project"""
 
-    IMPORT = "Import"
-    EXTERNAL = "External"
+    IMPORT     = "Import"
+    EXTERNAL   = "External"
     MOTIONCORR = "MotionCorr"
-    CTFFIND = "CtfFind"
-
+    CTFFIND    = "CtfFind"
 
 class JobType(str, Enum):
     """Enumeration of all pipeline job types"""
@@ -140,7 +142,6 @@ class JobType(str, Enum):
     def display_name(self) -> str:
         """Human-readable name"""
         return self.value.replace("_", " ").title()
-
 
 class AbstractJobParams(BaseModel):
     """Abstract base class for all job parameter models."""
@@ -333,7 +334,6 @@ class FsMotionCtfParams(AbstractJobParams):
     """Parameters for WarpTools motion correction and CTF"""
 
     model_config = ConfigDict(validate_assignment=True)
-
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
     pixel_size: float = Field(ge=0.5, le=10.0)
@@ -343,13 +343,22 @@ class FsMotionCtfParams(AbstractJobParams):
 
     eer_ngroups: int = Field(default=32, ge=1)
 
+    # Motion correction
     m_range_min_max   : str = "500:10"
     m_bfac            : int = Field(default=-500)
     m_grid            : str = "1x1x3"
+    
+    # CTF estimation
     c_range_min_max   : str = "30:6.0"
-    c_defocus_min_max: str  = "1.1:8"
+    c_defocus_min_max : str = "1.1:8"
     c_grid            : str = "2x2x1"
     c_window          : int = Field(default=512, ge=128)
+    c_use_sum         : bool = False  # NEW: Use average spectrum instead of individual frames
+    
+    # Output options
+    out_average_halves: bool = True
+    out_skip_first    : int = 0       # Skip first N frames
+    out_skip_last     : int = 0       # Skip last N frames
 
     perdevice : int = Field(default=1, ge=0, le=8)
     do_at_most: int = Field(default=-1)
@@ -387,14 +396,6 @@ class FsMotionCtfParams(AbstractJobParams):
     def defocus_max_microns(self) -> float:
         return float(self.c_defocus_min_max.split(":")[1])
 
-    @property
-    def defocus_min_angstroms(self) -> float:
-        return self.defocus_min_microns * 10000.0
-
-    @property
-    def defocus_max_angstroms(self) -> float:
-        return self.defocus_max_microns * 10000.0
-
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
         """Load from job.star template"""
@@ -430,6 +431,11 @@ class FsMotionCtfParams(AbstractJobParams):
                 c_grid            = param_dict.get("param9_value", "2x2x1"),
                 perdevice         = int(param_dict.get("param10_value", "1")),
                 c_window          = 512,
+                # NEW: Set defaults for new parameters
+                c_use_sum         = param_dict.get("param11_value", "False").lower() == "true",
+                out_average_halves= param_dict.get("param12_value", "False").lower() == "true",
+                out_skip_first    = int(param_dict.get("param13_value", "0")),
+                out_skip_last     = int(param_dict.get("param14_value", "0")),
             )
 
         except Exception as e:
@@ -514,17 +520,15 @@ class TsAlignmentParams(AbstractJobParams):
     tomo_dimensions : str             = Field(default="4096x4096x2048")      
     do_at_most      : int             = Field(default=-1)
     perdevice       : int             = Field(default=1, ge=0, le=8)
+    mdoc_pattern    : str             = Field(default="*.mdoc")  # NEW: Make pattern configurable
 
     # Optional gain
     gain_path: Optional[str] = None
     gain_operations: Optional[str] = None
 
-    # AreTomo specific
-    # tilt_cor  : int = Field(default=1)       
-    # out_imod  : int = Field(default=0)
-    patch_x   : int = Field(default=5, ge=1)
-    patch_y   : int = Field(default=5, ge=1)
-    axis_iter : int = Field(default=3, ge=0)
+    patch_x   : int = Field(default=2, ge=0)  #  default to 2 to match old code
+    patch_y   : int = Field(default=2, ge=0)  #  default to 2 to match old code
+    axis_iter : int = Field(default=1, ge=0)
     axis_batch: int = Field(default=5, ge=1)
 
     imod_patch_size: int = Field(default=200)
@@ -534,7 +538,7 @@ class TsAlignmentParams(AbstractJobParams):
         return True  # This job also uses a Python driver
 
     def get_tool_name(self) -> str:
-        return "aretomo"  # The driver will use this tool (or 'warptools')
+        return "warptools"  # The driver will use this tool (or 'warptools')
 
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
@@ -562,22 +566,31 @@ class TsAlignmentParams(AbstractJobParams):
             except ValueError:
                 method = AlignmentMethod.ARETOMO
 
+            # Handle patch parameters - old code used string like "2x2"
+            patch_str = job_params.get("aretomo_patches", "2x2")
+            patch_x, patch_y = 2, 2
+            if "x" in patch_str:
+                patch_x, patch_y = map(int, patch_str.split("x"))
+            
+            # Handle axis refinement - old code used string like "3:5"
+            axis_str = job_params.get("refineTiltAxis_iter_and_batch", "3:5")
+            axis_iter, axis_batch = 3, 5
+            if ":" in axis_str:
+                axis_iter, axis_batch = map(int, axis_str.split(":"))
+
             return cls(
                 alignment_method=method,
-                # 'binning' from job.star is now 'rescale_angpixs'
-                rescale_angpixs=float(
-                    job_params.get("binning", 12.0)
-                ),  # Assuming 'binning' was a misnomer for target angpix
-                thickness_nm    = float(job_params.get("thickness", 300.0)),
+                rescale_angpixs=float(job_params.get("rescale_angpixs", 12.0)),
+                thickness_nm    = float(job_params.get("aretomo_sample_thickness", 300.0)),
                 tomo_dimensions = job_params.get("tomo_dimensions", "4096x4096x2048"),
                 gain_path       = job_params.get("gain_path"),
                 gain_operations = job_params.get("gain_operations"),
                 perdevice       = int(job_params.get("perdevice", 1)),
-                patch_x         = int(job_params.get("patch_x", 5)),
-                patch_y         = int(job_params.get("patch_y", 5)),
-                axis_iter       = int(job_params.get("axis_iter", 1)),
-                # axis_iter       = int(job_params.get("axis_iter", 3)),
-                axis_batch      = int(job_params.get("axis_batch", 5)),
+                mdoc_pattern    = job_params.get("mdoc_pattern", "*.mdoc"),
+                patch_x         = patch_x,
+                patch_y         = patch_y,
+                axis_iter       = axis_iter,
+                axis_batch      = axis_batch,
                 imod_patch_size = int(job_params.get("imod_patch_size", 200)),
                 imod_overlap    = int(job_params.get("imod_overlap", 50)),
             )
@@ -647,7 +660,7 @@ class TsCtfParams(AbstractJobParams):
 
     # CTF parameters
     window         : int = Field(default=512, ge=128, le=2048)
-    range_min_max  : str = Field(default="30:4")                # Resolution range in Angstrom
+    range_min_max  : str = Field(default="30:6.0")                # Resolution range in Angstrom
     defocus_min_max: str = Field(default="0.5:8")               # Defocus range in microns
     defocus_hand   : str = Field(default="set_flip")            # set_flip or set_normal
     
@@ -753,18 +766,112 @@ class TsCtfParams(AbstractJobParams):
         """Input paths from upstream jobs"""
         alignment_outputs = upstream_outputs.get("aligntiltsWarp", {})
         return {
-            "input_star"      : alignment_outputs.get("output_star"),
+            "input_star"      : alignment_outputs.get("output_star"),  
             "frameseries_dir" : alignment_outputs.get("warp_dir"),
             "warp_settings_in": alignment_outputs.get("warp_settings"),
             "tomostar_dir_in" : alignment_outputs.get("tomostar_dir"),
         }
 
+class TsReconstructParams(AbstractJobParams):
+    """Parameters for tomogram reconstruction"""
+
+    model_config = ConfigDict(validate_assignment=True)
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+
+    # Reconstruction parameters
+    rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
+    halfmap_frames : int   = Field(default=1, ge=0, le=1)          # Boolean as int
+    deconv         : int   = Field(default=1, ge=0, le=1)          # Boolean as int
+    perdevice      : int   = Field(default=1, ge=0, le=8)
+    
+    # Synced from global state
+    pixel_size: float = Field(default=1.35)
+
+    def is_driver_job(self) -> bool:
+        return True
+
+    def get_tool_name(self) -> str:
+        return "warptools"
+
+    @classmethod
+    def from_job_star(cls, star_path: Path) -> Optional[Self]:
+        """Load from job.star template"""
+        if not star_path or not star_path.exists():
+            return None
+
+        try:
+            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
+
+            joboptions = data.get("joboptions_values")
+            if joboptions is None or not isinstance(joboptions, pd.DataFrame):
+                return None
+
+            df: pd.DataFrame = joboptions
+            param_dict: Dict[str, str] = pd.Series(
+                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
+            ).to_dict()
+
+            return cls(
+                rescale_angpixs = float(param_dict.get("param1_value", "12.0")),
+                halfmap_frames  = int(param_dict.get("param2_value", "1")),
+                deconv          = int(param_dict.get("param3_value", "1")),
+                perdevice       = int(param_dict.get("param4_value", "1")),
+            )
+
+        except Exception as e:
+            print(f"[WARN] Could not parse job.star at {star_path}: {e}")
+            return None
+
+    @classmethod
+    def from_pipeline_state(cls, state: "PipelineState") -> Self:
+        """Create from global pipeline state"""
+        return cls(
+            pixel_size=state.microscope.pixel_size_angstrom,
+        )
+
+    def sync_from_pipeline_state(self, state: "PipelineState") -> Self:
+        """Update params from global state - only works for SCHEDULED jobs"""
+        if self.execution_status != JobStatus.SCHEDULED:
+            return self
+        self.pixel_size = state.microscope.pixel_size_angstrom
+        return self
+
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        return {"ctf": "tsCtf"}
+
+    @staticmethod
+    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+        """Output paths for this job"""
+        return {
+            "job_dir"           : job_dir,
+            "output_star"       : job_dir / "tomograms.star",
+            "tilt_series_dir"   : job_dir / "tilt_series",
+            "warp_dir"          : job_dir / "warp_tiltseries",
+            "warp_settings"     : job_dir / "warp_tiltseries.settings",
+            "tomostar_dir"      : job_dir / "tomostar",
+            "reconstruction_dir": job_dir / "warp_tiltseries" / "reconstruction",
+        }
+
+    @staticmethod
+    def get_input_assets(
+        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
+    ) -> Dict[str, Path]:
+        """Input paths from upstream jobs"""
+        ctf_outputs = upstream_outputs.get("tsCtf", {})
+        return {
+            "input_star"      : ctf_outputs.get("output_star"),
+            "warp_dir_in"     : ctf_outputs.get("warp_dir"),
+            "warp_settings_in": ctf_outputs.get("warp_settings"),
+            "tomostar_dir_in" : ctf_outputs.get("tomostar_dir"),
+        }
 
 
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
         JobType.IMPORT_MOVIES: ImportMoviesParams,
         JobType.FS_MOTION_CTF: FsMotionCtfParams,
-        JobType.TS_ALIGNMENT : TsAlignmentParams,
+        JobType.TS_ALIGNMENT: TsAlignmentParams,
         JobType.TS_CTF: TsCtfParams,
+        JobType.TS_RECONSTRUCT: TsReconstructParams,
     }

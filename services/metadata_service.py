@@ -209,20 +209,9 @@ class MetadataTranslator:
         job_dir: Path,
         input_star_path: Path,
         output_star_path: Path,
+        project_root: Path,  # NEW: Required parameter
         warp_folder: str = "warp_frameseries"
     ) -> Dict:
-        """
-        Main entry point: Update tilt series STAR file with WarpTools results
-        
-        Args:
-            job_dir: Job directory (e.g., External/job002)
-            input_star_path: Input tilt series STAR (from importmovies)
-            output_star_path: Output STAR path (fs_motion_and_ctf.star)
-            warp_folder: Name of WarpTools output folder
-            
-        Returns:
-            Dict with success status and message
-        """
         try:
             xml_pattern = str(job_dir / warp_folder / "*.xml")
             warp_data = WarpXmlParser(xml_pattern)
@@ -234,9 +223,8 @@ class MetadataTranslator:
             if tilt_series_df.empty:
                 raise ValueError(f"No tilt series data in {input_star_path}")
             
-            all_tilts_df = self._load_all_tilt_series(
-                input_star_path.parent, tilt_series_df
-            )
+            # ALWAYS use project root for path resolution
+            all_tilts_df = self._load_all_tilt_series(project_root, input_star_path, tilt_series_df)
             
             updated_df = self._merge_warp_metadata(
                 all_tilts_df, warp_data.data_df, job_dir / warp_folder
@@ -246,11 +234,7 @@ class MetadataTranslator:
                 updated_df, tilt_series_df, output_star_path
             )
             
-            return {
-                "success": True,
-                "message": f"Updated {len(updated_df)} tilts with WarpTools metadata",
-                "output_path": str(output_star_path)
-            }
+            return {"success": True, "message": f"Updated {len(updated_df)} tilts", "output_path": str(output_star_path)}
             
         except Exception as e:
             print(f"[ERROR] Metadata update failed: {e}")
@@ -260,47 +244,73 @@ class MetadataTranslator:
 
     def _load_all_tilt_series(
         self, 
-        base_dir: Path, 
+        project_root: Path,
+        input_star_path: Path,  # NEW: Pass the input STAR file path
         tilt_series_df: pd.DataFrame
     ) -> pd.DataFrame:
-        """Load all individual tilt series STAR files into one merged DataFrame."""
+        """Load all individual tilt series STAR files into one merged DataFrame.
+        Resolves paths relative to the input STAR file's directory.
+        """
         all_tilts = []
         
-        # Paths in the STAR file are relative to the STAR file's directory
-        # NOT to the project root!
+        input_star_dir = input_star_path.parent
+        print(f"[METADATA] Loading tilt series relative to: {input_star_dir}")
+        
         for i, (_, ts_row) in enumerate(tilt_series_df.iterrows()):
             ts_file = ts_row["rlnTomoTiltSeriesStarFile"]
-            ts_path = base_dir / ts_file  # Use base_dir directly, not project_root!
             
-            print(f"[METADATA] Looking for tilt series file: {ts_path}", flush=True)
+            # Try multiple path resolution strategies in order of likelihood:
+            paths_to_try = [
+                input_star_dir / ts_file,  # 1. Relative to input STAR file (most likely)
+                project_root / ts_file,    # 2. Relative to project root
+            ]
             
-            if not ts_path.exists():
-                print(f"[WARN] Tilt series file not found: {ts_path}")
+            ts_path = None
+            for path in paths_to_try:
+                print(f"[DEBUG] Trying path: {path}")
+                print(f"[DEBUG]   Path exists: {path.exists()}")
+                if path.exists():
+                    ts_path = path
+                    print(f"[DEBUG]   ✓ Using this path")
+                    break
+                else:
+                    print(f"[DEBUG]   ✗ Path does not exist")
+            
+            if ts_path is None:
+                print(f"[WARN] Tilt series file not found: {ts_file}")
+                print(f"[WARN] Tried the following locations:")
+                for path in paths_to_try:
+                    print(f"[WARN]   - {path}")
                 continue
             
-            ts_data = self.starfile_service.read(ts_path)
-            ts_df = next(iter(ts_data.values()))  # Get first data block
+            print(f"[METADATA] Loading tilt series from: {ts_path}")
             
-            # Create a lookup key from the movie name
-            ts_df['cryoBoostKey'] = ts_df['rlnMicrographMovieName'].apply(
-                lambda x: Path(x).stem
-            )
-            
-            # Repeat the tilt_series row for each tilt
-            ts_row_repeated = pd.concat(
-                [pd.DataFrame(ts_row).T] * len(ts_df), 
-                ignore_index=True
-            )
-            
-            # Merge horizontally: [tilt_series columns | individual tilt columns]
-            merged = pd.concat([ts_row_repeated.reset_index(drop=True), ts_df.reset_index(drop=True)], axis=1)
-            
-            all_tilts.append(merged)
-    
-        if not all_tilts:
-            raise ValueError("No tilt series files could be loaded. Check paths in input STAR file.")
+            try:
+                ts_data = self.starfile_service.read(ts_path)
+                ts_df = next(iter(ts_data.values()))
+                
+                # Create a lookup key from the movie name
+                ts_df['cryoBoostKey'] = ts_df['rlnMicrographMovieName'].apply(
+                    lambda x: Path(x).stem
+                )
+                
+                # Repeat the tilt_series row for each tilt
+                ts_row_repeated = pd.concat(
+                    [pd.DataFrame(ts_row).T] * len(ts_df), 
+                    ignore_index=True
+                )
+                
+                # Merge horizontally
+                merged = pd.concat([ts_row_repeated.reset_index(drop=True), ts_df.reset_index(drop=True)], axis=1)
+                all_tilts.append(merged)
+                
+            except Exception as e:
+                print(f"[ERROR] Failed to load tilt series file {ts_path}: {e}")
+                continue
         
-        # Concatenate all tilt series vertically
+        if not all_tilts:
+            raise ValueError(f"No tilt series files could be loaded. Checked relative to: {input_star_dir}")
+        
         all_tilts_df = pd.concat(all_tilts, ignore_index=True)
         
         # Move cryoBoostKey to the end
@@ -309,7 +319,6 @@ class MetadataTranslator:
         all_tilts_df['cryoBoostKey'] = key_values
         
         print(f"[METADATA] Loaded {len(all_tilts_df)} individual tilts from {len(tilt_series_df)} tilt series")
-        
         return all_tilts_df
 
     def _write_updated_star(
@@ -366,11 +375,7 @@ class MetadataTranslator:
     ) -> pd.DataFrame:
         """
         Merge WarpTools XML data into tilt series DataFrame
-        
-        Key transformations:
-        - Update paths to point to motion-corrected averages
-        - Convert CTF values from microns to Angstroms
-        - Add CTF quality metrics
+        EXACTLY matches old CryoBoost behavior
         """
         updated_df = tilts_df.copy()
         
@@ -387,7 +392,7 @@ class MetadataTranslator:
             warp_row = matches.iloc[0]
             base_name = key.replace(".eer", "").replace(".tif", "")
             
-            # Update paths to motion-corrected outputs
+            # OLD LOGIC: Update paths to motion-corrected outputs
             updated_df.at[index, 'rlnMicrographName'] = \
                 f"{warp_row['folder']}/average/{base_name}.mrc"
             updated_df.at[index, 'rlnMicrographNameEven'] = \
@@ -395,45 +400,43 @@ class MetadataTranslator:
             updated_df.at[index, 'rlnMicrographNameOdd'] = \
                 f"{warp_row['folder']}/average/odd/{base_name}.mrc"
             
-            # Update CTF parameters (convert microns to Angstroms)
+            # OLD LOGIC: Update CTF parameters (convert microns to Angstroms)
             defocus_angstroms = warp_row['defocus_value'] * 10000.0
             delta_angstroms = warp_row['defocus_delta'] * 10000.0
             
             updated_df.at[index, 'rlnDefocusU'] = defocus_angstroms
-            updated_df.at[index, 'rlnDefocusV'] = defocus_angstroms
+            updated_df.at[index, 'rlnDefocusV'] = defocus_angstroms  # Same as DefocusU in old code
             updated_df.at[index, 'rlnCtfAstigmatism'] = delta_angstroms
             updated_df.at[index, 'rlnDefocusAngle'] = warp_row['defocus_angle']
             
-            # Add CTF diagnostic outputs
+            # OLD LOGIC: Add all the placeholder values exactly as in old code
             updated_df.at[index, 'rlnCtfImage'] = \
                 f"{warp_row['folder']}/powerspectrum/{base_name}.mrc"
             
-            # Placeholder values (WarpTools doesn't provide these directly)
-            updated_df.at[index, 'rlnAccumMotionTotal'] = 0.000001
-            updated_df.at[index, 'rlnAccumMotionEarly'] = 0.000001
-            updated_df.at[index, 'rlnAccumMotionLate'] = 0.000001
-            updated_df.at[index, 'rlnCtfMaxResolution'] = 0.000001
+            # These exact placeholder values from old code
+            updated_df.at[index, 'rlnAccumMotionTotal']   = 0.000001
+            updated_df.at[index, 'rlnAccumMotionEarly']   = 0.000001
+            updated_df.at[index, 'rlnAccumMotionLate']    = 0.000001
+            updated_df.at[index, 'rlnCtfMaxResolution']   = 0.000001
             updated_df.at[index, 'rlnMicrographMetadata'] = "None"
-            updated_df.at[index, 'rlnCtfFigureOfMerit'] = "None"
+            updated_df.at[index, 'rlnCtfFigureOfMerit']   = "None"
         
         return updated_df
-    
+
     def update_ts_alignment_metadata(
         self,
         job_dir: Path,
         input_star_path: Path,
         output_star_path: Path,
+        project_root: Path,  # NEW: Required parameter
         tomo_dimensions: str,
         alignment_method: str,
     ) -> Dict:
         try:
             print(f"[METADATA] Starting tsAlignment update for {input_star_path}")
-            
-            # Convert string to enum
-            alignment_method_enum = AlignmentMethod(alignment_method)
-            print(f"[METADATA] Using alignment method: {alignment_method_enum.value}")
-
-            # Read input tilt series STAR
+            print(f"[METADATA] Using project root: {project_root}")
+            alignment_method_enum = AlignmentMethod(alignment_method)          
+            # Read input tilt series STAR - resolve paths relative to project root
             input_star_dir = input_star_path.parent
             in_star_data = self.starfile_service.read(input_star_path)
             in_ts_df = in_star_data.get('global')
@@ -721,14 +724,12 @@ class MetadataTranslator:
         job_dir: Path,
         input_star_path: Path,
         output_star_path: Path,
+        project_root: Path,
         warp_folder: str = "warp_tiltseries"
     ) -> Dict:
-        """
-        Updates STAR files with CTF data from WarpTools ts_ctf.
-        Ported from old tsCtf.py::updateMetaData
-        """
         try:
             print(f"[METADATA] Starting tsCTF update for {input_star_path}")
+            print(f"[METADATA] Using project root: {project_root}")
             
             # Parse WarpTools XML files
             xml_pattern = str(job_dir / warp_folder / "*.xml")
@@ -736,15 +737,14 @@ class MetadataTranslator:
             print(f"[METADATA] Parsed {len(warp_data.data_df)} XML files")
             
             # Read input tilt series data
-            input_star_dir = input_star_path.parent
             in_star_data = self.starfile_service.read(input_star_path)
             in_ts_df = in_star_data.get('global')
             
             if in_ts_df is None:
                 raise ValueError(f"No 'global' block in {input_star_path}")
             
-            # Load all tilt series data
-            all_tilts_df = self._load_all_tilt_series(input_star_dir, in_ts_df)
+            # Load all tilt series data - pass input_star_path for proper path resolution
+            all_tilts_df = self._load_all_tilt_series(project_root, input_star_path, in_ts_df)
             
             # Update with CTF parameters
             updated_df = self._merge_ctf_metadata(all_tilts_df, warp_data.data_df)
@@ -764,5 +764,71 @@ class MetadataTranslator:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
+    def update_ts_reconstruct_metadata(
+        self,
+        job_dir: Path,
+        input_star_path: Path,
+        output_star_path: Path,
+        warp_folder: str,
+        rescale_angpixs: float,
+        frame_pixel_size: float,
+    ) -> Dict:
+        """
+        Updates STAR files with tomogram reconstruction paths.
+        Ported from old tsReconstruct.py::updateMetaData
+        """
+        try:
+            print(f"[METADATA] Starting tsReconstruct update for {input_star_path}")
+            
+            # Read input tilt series data
+            input_star_dir = input_star_path.parent
+            in_star_data = self.starfile_service.read(input_star_path)
+            in_ts_df = in_star_data.get('global')
+            
+            if in_ts_df is None:
+                raise ValueError(f"No 'global' block in {input_star_path}")
+            
+            # Create output dataframe
+            out_ts_df = in_ts_df.copy()
+            
+            # Format resolution string
+            rec_res = f"{rescale_angpixs:.2f}"
+            
+            # Calculate binning factor
+            binning = rescale_angpixs / frame_pixel_size
+            
+            # Update paths for each tilt series
+            for index, row in out_ts_df.iterrows():
+                ts_name = row["rlnTomoName"]
+                
+                # Build reconstruction paths
+                rec_name = f"{warp_folder}/reconstruction/{ts_name}_{rec_res}Apx.mrc"
+                rec_half1 = f"{warp_folder}/reconstruction/even/{ts_name}_{rec_res}Apx.mrc"
+                rec_half2 = f"{warp_folder}/reconstruction/odd/{ts_name}_{rec_res}Apx.mrc"
+                
+                # Update dataframe
+                out_ts_df.at[index, "rlnTomoReconstructedTomogram"] = rec_name
+                out_ts_df.at[index, "rlnTomoReconstructedTomogramHalf1"] = rec_half1
+                out_ts_df.at[index, "rlnTomoReconstructedTomogramHalf2"] = rec_half2
+                out_ts_df.at[index, "rlnTomoTiltSeriesPixelSize"] = frame_pixel_size
+                out_ts_df.at[index, "rlnTomoTomogramBinning"] = binning
+            
+            # Write output STAR file
+            output_star_path.parent.mkdir(parents=True, exist_ok=True)
+            self.starfile_service.write({'global': out_ts_df}, output_star_path)
+            
+            print(f"[METADATA] Wrote tomograms.star to {output_star_path}")
+            
+            return {
+                "success": True,
+                "message": f"Updated {len(out_ts_df)} tomograms with reconstruction paths",
+                "output_path": str(output_star_path)
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] tsReconstruct metadata update failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
 
 
