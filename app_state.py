@@ -96,6 +96,7 @@ def update_from_mdoc(mdocs_glob: str):
     """
     Parse first mdoc file and update microscope/acquisition params.
     This mutates state.microscope and state.acquisition.
+    Enhanced to match old CryoBoost logic.
     """
     mdoc_service = get_mdoc_service()
     mdoc_data = mdoc_service.get_autodetect_params(mdocs_glob)
@@ -111,14 +112,24 @@ def update_from_mdoc(mdocs_glob: str):
         if "voltage" in mdoc_data:
             state.microscope.acceleration_voltage_kv = mdoc_data["voltage"]
 
-        # Update acquisition params
+        # Update acquisition params with NEW fields
         if "exposure_dose" in mdoc_data:
-            dose = mdoc_data["exposure_dose"] * 1.5  # Scale as per original logic
-            dose = max(0.1, min(9.0, dose))  # Clamp
-            state.acquisition.dose_per_tilt = dose
+            # OLD LOGIC: Use the scaled value that mdoc_service now calculates
+            state.acquisition.dose_per_tilt = mdoc_data.get("dose_per_tilt", mdoc_data["exposure_dose"] * 1.5)
+            # Also store frame dose if available
+            if "frame_dose" in mdoc_data:
+                state.acquisition.frame_dose = mdoc_data["frame_dose"]
 
         if "tilt_axis_angle" in mdoc_data:
             state.acquisition.tilt_axis_degrees = mdoc_data["tilt_axis_angle"]
+
+        # NEW: Set acquisition software and related parameters
+        if "acquisition_software" in mdoc_data:
+            state.acquisition.acquisition_software = mdoc_data["acquisition_software"]
+            
+        # NEW: Set inversion logic based on acquisition software
+        if "invert_tilt_angles" in mdoc_data:
+            state.acquisition.invert_tilt_angles = mdoc_data["invert_tilt_angles"]
 
         # Parse detector dimensions
         if "image_size" in mdoc_data:
@@ -126,20 +137,32 @@ def update_from_mdoc(mdocs_glob: str):
             if len(dims) == 2:
                 state.acquisition.detector_dimensions = (int(dims[0]), int(dims[1]))
 
-                if "5760" in mdoc_data["image_size"] or "11520" in mdoc_data["image_size"]:
-                    state.acquisition.eer_fractions_per_frame = 32
-                    print("[STATE] Detected K3/EER camera, set fractions to 32")
+        # NEW: Enhanced EER detection
+        if "eer_fractions_per_frame" in mdoc_data:
+            state.acquisition.eer_fractions_per_frame = mdoc_data["eer_fractions_per_frame"]
+        elif "5760" in str(mdoc_data.get("image_size", "")) or "11520" in str(mdoc_data.get("image_size", "")):
+            state.acquisition.eer_fractions_per_frame = 32
+            print("[STATE] Detected K3/EER camera, set fractions to 32")
+
+        # NEW: Set additional acquisition parameters
+        if "nominal_magnification" in mdoc_data:
+            state.acquisition.nominal_magnification = mdoc_data["nominal_magnification"]
+        if "spot_size" in mdoc_data:
+            state.acquisition.spot_size = mdoc_data["spot_size"]
+        if "binning" in mdoc_data:
+            state.acquisition.binning = mdoc_data["binning"]
 
         state.update_modified()
 
+        # Sync all jobs with updated global parameters
         for job_name in list(state.jobs.keys()):
             _sync_job_with_global_params(job_name)
 
+        print(f"[STATE] Updated from mdoc: {mdoc_data}")
 
     except Exception as e:
         print(f"[ERROR] Failed to update state from mdoc data: {e}")
         import traceback
-
         traceback.print_exc()
 
 
@@ -148,6 +171,8 @@ def export_for_project(
 ) -> Dict[str, Any]:
     print("[STATE] Exporting project config")
 
+    mdoc_stats = analyze_all_mdocs(mdocs_glob)
+
     for job in selected_jobs:
         if job not in state.jobs:
             prepare_job_params(job)
@@ -155,7 +180,6 @@ def export_for_project(
     containers = {}
     try:
         import yaml
-
         with open("config/conf.yaml") as f:
             conf = yaml.safe_load(f)
             containers = conf.get("containers", {})
@@ -168,6 +192,7 @@ def export_for_project(
             "created_by": "CryoBoost Parameter Manager",
             "created_at": datetime.now().isoformat(),
             "project_name": project_name,
+            "mdoc_analysis": mdoc_stats, 
         },
         "data_sources": {
             "frames_glob": movies_glob,
@@ -235,7 +260,7 @@ def load_state_from_file(path: Path):
 def _sync_job_with_global_params(job_name: str):
     """
     Sync a job's params with current global state values.
-    Called after mdoc detection or when job is first created.
+    Enhanced to handle new acquisition fields.
     """
     if job_name not in state.jobs:
         return
@@ -261,20 +286,29 @@ def _sync_job_with_global_params(job_name: str):
         job.tilt_axis_angle = state.acquisition.tilt_axis_degrees
     if hasattr(job, "eer_ngroups"):
         job.eer_ngroups = state.acquisition.eer_fractions_per_frame or 32
+        
+    # NEW: Sync additional acquisition fields for alignment jobs
+    if job_name == "tsAlignment":
+        if hasattr(job, "thickness_nm"):
+            job.thickness_nm = state.acquisition.sample_thickness_nm
+        if hasattr(job, "invert_tilt_angles"):
+            job.invert_tilt_angles = state.acquisition.invert_tilt_angles
+        if hasattr(job, "gain_path"):
+            job.gain_path = state.acquisition.gain_reference_path
 
     print(f"[STATE] Synced {job_name} with global params")
 
 def is_job_synced_with_global(job_type: JobType) -> bool:
     """Check if job params match global params - with proper comparison"""
-    job_model = state.jobs.get(job_type.value)  # Use global 'state'
+    job_model = state.jobs.get(job_type.value)
     if not job_model:
         return True
 
     # Define sync mappings for each job type with tolerance for floating point
     sync_mappings = {
         JobType.IMPORT_MOVIES: {
-            "pixel_size": state.microscope.pixel_size_angstrom,  # Use global 'state'
-            "voltage": state.microscope.acceleration_voltage_kv,  # ...etc
+            "pixel_size": state.microscope.pixel_size_angstrom,
+            "voltage": state.microscope.acceleration_voltage_kv,
             "spherical_aberration": state.microscope.spherical_aberration_mm,
             "amplitude_contrast": state.microscope.amplitude_contrast,
             "dose_per_tilt_image": state.acquisition.dose_per_tilt,
@@ -288,13 +322,27 @@ def is_job_synced_with_global(job_type: JobType) -> bool:
             "amplitude": state.microscope.amplitude_contrast,
             "eer_ngroups": state.acquisition.eer_fractions_per_frame or 32,
         },
-        JobType.TS_ALIGNMENT: {"thickness_nm": state.acquisition.sample_thickness_nm},
+        JobType.TS_ALIGNMENT: {
+            "thickness_nm": state.acquisition.sample_thickness_nm,
+            "pixel_size": state.microscope.pixel_size_angstrom,
+            "dose_per_tilt": state.acquisition.dose_per_tilt,
+            "tilt_axis_angle": state.acquisition.tilt_axis_degrees,
+            "invert_tilt_angles": state.acquisition.invert_tilt_angles,
+            "gain_path": state.acquisition.gain_reference_path,
+        },
     }
 
     mapping = sync_mappings.get(job_type, {})
 
     for field, global_value in mapping.items():
         job_value = getattr(job_model, field, None)
+
+        # Handle None comparisons
+        if global_value is None and job_value is None:
+            continue
+        if global_value is None or job_value is None:
+            print(f"[SYNC CHECK] {job_type.value}.{field}: job={job_value}, global={global_value} → OUT OF SYNC (None mismatch)")
+            return False
 
         if isinstance(global_value, float) and isinstance(job_value, float):
             if abs(job_value - global_value) > 1e-6:
@@ -305,6 +353,31 @@ def is_job_synced_with_global(job_type: JobType) -> bool:
             return False
 
     return True
+
+def analyze_all_mdocs(mdocs_glob: str) -> Dict[str, Any]:
+    """
+    Comprehensive analysis of all mdoc files.
+    Returns statistics and consistency checks.
+    """
+    mdoc_service = get_mdoc_service()
+    mdoc_stats = mdoc_service.parse_all_mdoc_files(mdocs_glob)
+    
+    if not mdoc_stats:
+        return {"error": "No mdoc files found or could not be parsed"}
+    
+    # Update state with comprehensive findings
+    if mdoc_stats.get("consistent_params"):
+        print(f"[STATE] All {mdoc_stats['tilt_series_count']} tilt series have consistent parameters")
+    else:
+        print(f"[WARN] Inconsistent parameters detected across {mdoc_stats['tilt_series_count']} tilt series")
+    
+    # Update tilt range information
+    if "tilt_range" in mdoc_stats:
+        min_tilt, max_tilt = mdoc_stats["tilt_range"]
+        print(f"[STATE] Tilt range: {min_tilt:.1f}° to {max_tilt:.1f}°")
+    
+    return mdoc_stats
+
 
 def sync_job_with_global(job_type: JobType):
     """Syncs a specific job's model with the current global state."""

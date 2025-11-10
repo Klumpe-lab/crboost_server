@@ -40,11 +40,6 @@ def load_project_config(project_path: Path) -> Dict[str, Any]:
         return json.load(f)
 
 def generate_params(job_type_str: str, project_path: Path, job_number: int) -> Dict[str, Any]:
-    """
-    The core logic. Re-creates the context to build job_params.json.
-    """
-    
-    # 1. Load project's master config file
     try:
         project_config = load_project_config(project_path)
     except Exception as e:

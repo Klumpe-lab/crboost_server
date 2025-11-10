@@ -117,10 +117,10 @@ def run_command(command: str, cwd: Path):
     if process.returncode != 0:
         raise subprocess.CalledProcessError(process.returncode, command, None, stderr_output)
 
-
 def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> str:
     """
     Builds the multi-step WarpTools command string using absolute paths.
+    Matches old CryoBoost logic exactly.
     """
     
     # Get absolute paths from the 'paths' dict
@@ -134,18 +134,24 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> st
 
     gain_ops_str = params.gain_operations if params.gain_operations else ""
 
+    # OLD LOGIC: Use NEGATIVE eer_ngroups for fractions
+    eer_groups_val = str(params.eer_ngroups)
+    # Check if we're dealing with EER files by looking at frame extension
+    frame_ext = paths.get("frames_dir", Path()).suffix
+    if frame_ext.lower() == ".eer":
+        eer_groups_val = f"-{params.eer_ngroups}"  # Negative for fractions like old code
+
     create_settings_parts = [
         "WarpTools create_settings",
         f"--folder_data {frames_dir_abs}",
-        "--extension '*.eer'",
+        "--extension '*" + frame_ext + "'",  # Use actual extension
         f"--folder_processing {warp_dir_abs}",
         f"--output {settings_file_abs}",
         "--angpix",
         str(params.pixel_size),
         "--eer_ngroups",
-        f"-{str(params.eer_ngroups)}",
+        eer_groups_val,  # Use corrected value
     ]
-
 
     if gain_path_str:
         create_settings_parts.extend(["--gain_reference", gain_path_str])
@@ -171,7 +177,6 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> st
         str(params.c_range_min),
         "--c_range_max",
         str(params.c_range_max),
-         # WarpTools fs_motion_and_ctf expects microns
         "--c_defocus_min",
         str(params.defocus_min_microns),
         "--c_defocus_max",
@@ -185,13 +190,24 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> st
         "--perdevice",
         str(params.perdevice),
         "--out_averages",
+        "--out_skip_first",
+        str(params.out_skip_first),
+        "--out_skip_last",
+        str(params.out_skip_last),
     ]
+
+    # OLD LOGIC: Conditionally add flags - INCLUDING c_use_sum
+    if params.out_average_halves:
+        run_main_parts.append("--out_average_halves")
+    
+    if params.c_use_sum:
+        run_main_parts.append("--c_use_sum")
 
     if params.do_at_most > 0:
         run_main_parts.extend(["--do_at_most", str(params.do_at_most)])
 
+    # These commands are run *inside* the container
     return " && ".join([" ".join(create_settings_parts), " ".join(run_main_parts)])
-
 
 def main():
     print("[DRIVER] fs_motion_and_ctf driver started.", flush=True)
@@ -199,7 +215,9 @@ def main():
     # --- NEW BOOTSTRAP CALL ---
     try:
         # This function gets CWD=job_dir and ensures params exist
+
         params_data, job_dir, project_path, job_type = get_driver_context()
+        
     except Exception as e:
         # Bootstrap failed, write failure file and exit
         job_dir = Path.cwd() # Try to get CWD for failure file
@@ -214,9 +232,9 @@ def main():
     try:
         # 1. Load parameters (already done by bootstrap)
         print(f"[DRIVER] Params loaded for job type {job_type} in {job_dir}", flush=True)
-        params = FsMotionCtfParams(**params_data["job_model"])
 
-        # Paths are ALL ABSOLUTE from orchestrator
+
+        params = FsMotionCtfParams(**params_data["job_model"])
         paths = {k: Path(v) for k, v in params_data["paths"].items()}
         additional_binds = params_data["additional_binds"]
 
@@ -243,6 +261,7 @@ def main():
         print("[DRIVER] Computation finished. Starting metadata processing.", flush=True)
         translator = MetadataTranslator(StarfileService())
 
+
         # All paths are ABSOLUTE - use them directly
         input_star_abs  = paths["input_star"]
         output_star_abs = paths["output_star"]
@@ -252,10 +271,11 @@ def main():
         print(f"[DRIVER] Input STAR exists: {input_star_abs.exists()}", flush=True)
 
         result = translator.update_fs_motion_and_ctf_metadata(
-            job_dir          = job_dir,
-            input_star_path  = input_star_abs,       # Already absolute
-            output_star_path = output_star_abs,      # Already absolute
-            warp_folder      = "warp_frameseries",
+            job_dir=job_dir,
+            input_star_path=paths["input_star"],
+            output_star_path=paths["output_star"],
+            project_root=project_path,  # NEW: Pass project root
+            warp_folder="warp_frameseries",
         )
 
         if not result["success"]:
@@ -275,7 +295,6 @@ def main():
 
         traceback.print_exc(file=sys.stderr)
 
-        # Create failure file
         failure_file.touch()
         print("[DRIVER] Job failed.", flush=True)
         sys.exit(1)
