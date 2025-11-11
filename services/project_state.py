@@ -324,7 +324,6 @@ class ImportMoviesParams(AbstractJobParams):
 class FsMotionCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
-    # JOB-SPECIFIC PARAMETERS ONLY
     m_range_min_max   : str           = "500:10"
     m_bfac            : int           = Field(default=-500)
     m_grid            : str           = "1x1x3"
@@ -344,7 +343,6 @@ class FsMotionCtfParams(AbstractJobParams):
     def is_driver_job(self) -> bool: return True
     def get_tool_name(self) -> str: return "warptools"
 
-    # --- PROPERTIES START HERE ---
     @property
     def m_range_min(self) -> int:
         return int(self.m_range_min_max.split(":")[0])
@@ -385,19 +383,19 @@ class FsMotionCtfParams(AbstractJobParams):
             
             # Load ONLY job-specific parameters
             return cls(
-                gain_operations=param_dict.get("param3_value"),
-                m_range_min_max=param_dict.get("param4_value", "500:10"),
-                m_bfac=int(param_dict.get("param5_value", "-500")),
-                m_grid=param_dict.get("param6_value", "1x1x3"),
-                c_range_min_max=param_dict.get("param7_value", "30:6.0"),
-                c_defocus_min_max=param_dict.get("param8_value", "1.1:8"),
-                c_grid=param_dict.get("param9_value", "2x2x1"),
-                perdevice=int(param_dict.get("param10_value", "1")),
-                c_window=512, # Not in old star
-                c_use_sum=param_dict.get("param11_value", "False").lower() == "true",
-                out_average_halves=param_dict.get("param12_value", "False").lower() == "true",
-                out_skip_first=int(param_dict.get("param13_value", "0")),
-                out_skip_last=int(param_dict.get("param14_value", "0")),
+                gain_operations    = param_dict.get("param3_value") ,
+                m_range_min_max    = param_dict.get("param4_value", "500:10") ,
+                m_bfac             = int(param_dict.get("param5_value", "-500")) ,
+                m_grid             = param_dict.get("param6_value", "1x1x3") ,
+                c_range_min_max    = param_dict.get("param7_value", "30:6.0") ,
+                c_defocus_min_max  = param_dict.get("param8_value", "1.1:8") ,
+                c_grid             = param_dict.get("param9_value", "2x2x1") ,
+                perdevice          = int(param_dict.get("param10_value", "1")) ,
+                c_window           = 512 ,
+                c_use_sum          = param_dict.get("param11_value", "False").lower() == "true",
+                out_average_halves = True,
+                out_skip_first     = int(param_dict.get("param13_value", "0")) ,
+                out_skip_last      = int(param_dict.get("param14_value", "0")) ,
             )
         except Exception as e:
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
@@ -436,18 +434,18 @@ class TsAlignmentParams(AbstractJobParams):
 
     # JOB-SPECIFIC PARAMETERS ONLY
     alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
-    rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
-    tomo_dimensions: str = Field(default="4096x4096x2048")
-    do_at_most: int = Field(default=-1)
-    perdevice: int = Field(default=1, ge=0, le=8)
-    mdoc_pattern: str = Field(default="*.mdoc")
-    gain_operations: Optional[str] = None
-    patch_x: int = Field(default=2, ge=0)
-    patch_y: int = Field(default=2, ge=0)
-    axis_iter: int = Field(default=1, ge=0)
-    axis_batch: int = Field(default=5, ge=1)
-    imod_patch_size: int = Field(default=200)
-    imod_overlap: int = Field(default=50)
+    rescale_angpixs  : float          = Field(default=12.0, ge=2.0, le=50.0)
+    tomo_dimensions : str             = Field(default="4096x4096x2048")
+    do_at_most      : int             = Field(default=-1)
+    perdevice       : int             = Field(default=1, ge=0, le=8)
+    mdoc_pattern    : str             = Field(default="*.mdoc")
+    gain_operations : Optional[str]   = None
+    patch_x         : int             = Field(default=2, ge=0)
+    patch_y         : int             = Field(default=2, ge=0)
+    axis_iter       : int             = Field(default=1, ge=0)
+    axis_batch      : int             = Field(default=5, ge=1)
+    imod_patch_size : int             = Field(default=200)
+    imod_overlap    : int             = Field(default=50)
 
     # NO pixel_size, dose_per_tilt, tilt_axis_angle, invert_tilt_angles, thickness_nm, gain_path
     # They are accessed via properties.
