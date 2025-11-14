@@ -1,10 +1,7 @@
 #!/usr/bin/env python3
-import json
 import shlex
 import sys
 import os
-import argparse
-import subprocess
 from pathlib import Path
 from typing import Dict
 import traceback
@@ -14,17 +11,87 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 try:
-    # --- NEW: Import shared driver logic ---
     from drivers.driver_base import get_driver_context, run_command
     from services.project_state import TsCtfParams
     from services.metadata_service import MetadataTranslator
     from services.starfile_service import StarfileService
     from services.container_service import get_container_service
 except ImportError as e:
-    print(f"FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
+    print("FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
     print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
     print(f"Error: {e}", file=sys.stderr)
     sys.exit(1)
+
+
+def copy_previous_metadata(input_assets: Dict[str, Path], output_assets: Dict[str, Path]):
+    """Copy necessary metadata files including XML files from warp_tiltseries"""
+    # THESE ARE THE SOURCE PATHS FROM THE UPSTREAM JOB
+    upstream_settings = input_assets["upstream_settings"]  # CHANGE THIS
+    upstream_tomostar = input_assets["upstream_tomostar"]  # AND THIS
+    upstream_warp_dir = input_assets["upstream_warp_dir"]
+    
+    print(f"[DEBUG] Copying from upstream:")
+    print(f"[DEBUG]   Settings: {upstream_settings} (exists: {upstream_settings.exists()})")
+    print(f"[DEBUG]   Tomostar: {upstream_tomostar} (exists: {upstream_tomostar.exists()})")
+    print(f"[DEBUG]   Warp dir: {upstream_warp_dir} (exists: {upstream_warp_dir.exists()})")
+    
+    # Copy settings file FROM UPSTREAM
+    if upstream_settings.exists():
+        shutil.copy2(upstream_settings, output_assets["warp_settings"])
+        print(f"[DEBUG] Copied settings file from {upstream_settings} to {output_assets['warp_settings']}")
+    else:
+        print(f"[DRIVER] ERROR: Previous settings not found at {upstream_settings}", flush=True)
+        # This is fatal - we can't continue without the settings file
+        raise FileNotFoundError(f"Upstream settings file not found: {upstream_settings}")
+
+    # Copy tomostar files FROM UPSTREAM
+    if upstream_tomostar.exists():
+        output_assets["tomostar_dir"].mkdir(parents=True, exist_ok=True)
+        tomostar_files = list(upstream_tomostar.glob("*.tomostar"))
+        for tomostar_file in tomostar_files:
+            shutil.copy2(tomostar_file, output_assets["tomostar_dir"])
+        print(f"[DEBUG] Copied {len(tomostar_files)} tomostar files")
+    else:
+        print(f"[DRIVER] WARNING: Previous tomostar not found at {upstream_tomostar}", flush=True)
+
+    # Copy XML files FROM UPSTREAM warp_tiltseries
+    if upstream_warp_dir.exists():
+        output_assets["warp_dir"].mkdir(parents=True, exist_ok=True)
+        xml_files = list(upstream_warp_dir.glob("*.xml"))
+        for xml_file in xml_files:
+            shutil.copy2(xml_file, output_assets["warp_dir"])
+        print(f"[DEBUG] Copied {len(xml_files)} XML files from {upstream_warp_dir}")
+    else:
+        print(f"[DRIVER] WARNING: Previous warp directory not found at {upstream_warp_dir}", flush=True)
+
+def build_check_defocus_hand_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
+    settings_file = shlex.quote(str(input_assets["warp_settings"]))
+    return f"WarpTools ts_defocus_hand --settings {settings_file} --check"
+
+
+def build_set_defocus_hand_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
+    settings_file = shlex.quote(str(input_assets["warp_settings"]))
+    if params.defocus_hand == "set_flip":
+        return f"WarpTools ts_defocus_hand --settings {settings_file} --set_flip"
+    else:
+        return f"WarpTools ts_defocus_hand --settings {settings_file} --set_noflip"
+
+
+def build_ctf_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
+    settings_file = shlex.quote(str(input_assets["warp_settings"]))
+    return (
+        f"WarpTools ts_ctf "
+        f"--settings {settings_file} "
+        f"--window {params.window} "
+        f"--range_low {params.range_min} "
+        f"--range_high {params.range_max} "
+        f"--defocus_min {params.defocus_min} "
+        f"--defocus_max {params.defocus_max} "
+        f"--voltage {int(round(params.voltage))} "   
+        f"--cs {params.spherical_aberration} "      
+        f"--amplitude {params.amplitude_contrast} "  
+        f"--perdevice {params.perdevice}"
+    )
 
 
 def main():
@@ -33,7 +100,6 @@ def main():
     print("--- SLURM JOB START ---", flush=True)
 
     try:
-        # --- NEW BOOTSTRAP CALL ---
         (
             project_state,
             params,  # This is now the state-aware TsCtfParams object
@@ -69,17 +135,17 @@ def main():
         if not paths["input_star"].exists():
             raise FileNotFoundError(f"Input STAR file not found: {paths['input_star']}")
 
-        # 2. Copy settings and tomostar from previous job
+        # 2. Copy settings and tomostar from previous job (SELECTIVELY)
         print("[DRIVER] Copying settings and metadata from alignment job...", flush=True)
         copy_previous_metadata(paths, paths)
 
         # 3. Build and execute WarpTools commands
         print("[DRIVER] Building WarpTools commands...", flush=True)
-        container_service = get_container_service()
+        container_service  = get_container_service()
 
         check_hand_command = build_check_defocus_hand_command(params, paths)
-        set_hand_command = build_set_defocus_hand_command(params, paths)
-        ctf_command = build_ctf_command(params, paths)
+        set_hand_command   = build_set_defocus_hand_command(params, paths)
+        ctf_command        = build_ctf_command(params, paths)
 
         # 4. Execute commands in container
         print("[DRIVER] Executing container commands...", flush=True)
@@ -95,11 +161,11 @@ def main():
         print("[DRIVER] Computation finished. Starting metadata processing.", flush=True)
         metadata_service = MetadataTranslator(StarfileService())
         result = metadata_service.update_ts_ctf_metadata(
-            job_dir=job_dir,
-            input_star_path=paths["input_star"],
-            output_star_path=paths["output_star"],
-            project_root=project_path,
-            warp_folder="warp_tiltseries",
+            job_dir          = job_dir,
+            input_star_path  = paths["input_star"],
+            output_star_path = paths["output_star"],
+            project_root     = project_path,
+            warp_folder      = "warp_tiltseries",
         )
 
         if not result["success"]:
@@ -114,68 +180,12 @@ def main():
         sys.exit(0)
 
     except Exception as e:
-        print(f"[DRIVER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
+        print("[DRIVER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
         print(f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
         failure_file.touch()
         print("--- SLURM JOB END (Exit Code: 1) ---", file=sys.stderr, flush=True)
         sys.exit(1)
-
-
-def copy_previous_metadata(input_assets: Dict[str, Path], output_assets: Dict[str, Path]):
-    """Copy settings and tomostar from alignment job"""
-    prev_settings = input_assets["warp_settings_in"]
-    prev_tomostar = input_assets["tomostar_dir_in"]
-    prev_warp_dir = input_assets["frameseries_dir"]
-
-    if prev_settings.exists():
-        shutil.copy2(prev_settings, output_assets["warp_settings"])
-    else:
-        print(f"[DRIVER] WARNING: Previous settings not found at {prev_settings}", flush=True)
-
-    if prev_tomostar.exists():
-        if output_assets["tomostar_dir"].exists():
-            shutil.rmtree(output_assets["tomostar_dir"])
-        shutil.copytree(prev_tomostar, output_assets["tomostar_dir"])
-    else:
-        print(f"[DRIVER] WARNING: Previous tomostar not found at {prev_tomostar}", flush=True)
-
-    if prev_warp_dir.exists():
-        if output_assets["warp_dir"].exists():
-            shutil.rmtree(output_assets["warp_dir"])
-        shutil.copytree(prev_warp_dir, output_assets["warp_dir"])
-    else:
-        print(f"[DRIVER] WARNING: Previous warp dir not found at {prev_warp_dir}", flush=True)
-
-
-def build_check_defocus_hand_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
-    settings_file = shlex.quote(str(input_assets["warp_settings"]))
-    return f"WarpTools ts_defocus_hand --settings {settings_file} --check"
-
-
-def build_set_defocus_hand_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
-    settings_file = shlex.quote(str(input_assets["warp_settings"]))
-    if params.defocus_hand == "set_flip":
-        return f"WarpTools ts_defocus_hand --settings {settings_file} --set_flip"
-    else:
-        return f"WarpTools ts_defocus_hand --settings {settings_file} --set_noflip"
-
-
-def build_ctf_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
-    settings_file = shlex.quote(str(input_assets["warp_settings"]))
-    return (
-        f"WarpTools ts_ctf "
-        f"--settings {settings_file} "
-        f"--window {params.window} "
-        f"--range_low {params.range_min} "
-        f"--range_high {params.range_max} "
-        f"--defocus_min {params.defocus_min} "
-        f"--defocus_max {params.defocus_max} "
-        f"--voltage {int(round(params.voltage))} "          # Property access
-        f"--cs {params.spherical_aberration} "         # Property access
-        f"--amplitude {params.amplitude_contrast} "    # Property access
-        f"--perdevice {params.perdevice}"
-    )
 
 
 if __name__ == "__main__":

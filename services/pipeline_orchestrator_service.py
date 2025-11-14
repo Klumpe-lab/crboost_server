@@ -7,7 +7,7 @@ import json
 
 from services.commands_builder import ImportMoviesCommandBuilder, BaseCommandBuilder
 from services.config_service import get_config_service
-from services.project_state import AbstractJobParams, JobType
+from services.project_state import AbstractJobParams, JobCategory, JobType
 from services.state_service import get_state_service
 
 from .starfile_service import StarfileService
@@ -25,11 +25,9 @@ class PipelineOrchestratorService:
         self.star_handler = StarfileService()
         self.config_service = get_config_service()
         self.project_service = None
-        # --- NEW: Get state service ---
         self.state_service = get_state_service()
 
         # Map job names to their corresponding builder class
-        # --- NOTE: This map ONLY contains non-driver jobs ---
         self.job_builders: Dict[str, BaseCommandBuilder] = {JobType.IMPORT_MOVIES.value: ImportMoviesCommandBuilder()}
 
     async def create_custom_scheme(
@@ -42,7 +40,7 @@ class PipelineOrchestratorService:
     ):
         """
         Creates a custom Relion scheme with the selected jobs.
-        --- REFACTORED to use new StateService ---
+        Uses standardized path resolution based on old cryoboost conventions.
         """
         try:
             # Initialize project service with absolute project root
@@ -84,7 +82,7 @@ class PipelineOrchestratorService:
                     print(f"[PIPELINE WARNING] No joboptions_values in job.star for {job_name}")
                     continue
 
-                # --- NEW: Get job model from the new StateService ---
+                # Get job model from the StateService
                 state = self.backend.state_service.state
                 try:
                     job_type_enum = JobType(job_name)
@@ -92,33 +90,37 @@ class PipelineOrchestratorService:
                 except ValueError:
                     print(f"[PIPELINE WARNING] Unknown job type string: {job_name}")
                     job_model = None
-                # --- END NEW BLOCK ---
 
                 if not job_model:
-                    # This can happen if initialize_new_project didn't run or failed
                     print(f"[PIPELINE WARNING] Job {job_name} not in state, skipping scheme creation for it.")
                     continue
 
-                paths = self.project_service.resolve_job_paths(job_name, job_number, selected_jobs)
-
-                print(f"[PIPELINE] Resolved paths for {job_name}:")
-                for key, path in paths.items():
-                    print(f"  {key}: {path}")
-
+                # --- UPDATED: Use standardized path resolution ---
+                paths = self._resolve_job_paths_standardized(job_name, job_number, selected_jobs, project_dir)
+                
+                # Create job directory and validate critical paths
                 job_run_dir = paths["job_dir"]
                 job_run_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Validate that required input files exist for non-import jobs
+                if job_name != "importmovies":
+                    input_star = paths.get("input_star")
+                    if input_star and not input_star.exists():
+                        print(f"[PIPELINE WARNING] Input STAR file not found for {job_name}: {input_star}")
+                        # Don't fail here, but log the warning
+
+                params_json_path = job_run_dir / "job_params.json"
 
                 final_command_for_fn_exe = self._build_job_command(job_name, job_model, paths, all_binds, server_dir)
 
                 print(f"[PIPELINE] fn_exe for {job_name}: {final_command_for_fn_exe}")
 
-                params_json_path = job_run_dir / "job_params.json"
-                job_type = JobType.from_string(job_name)  # or use job_type_enum from above
+                job_type = JobType.from_string(job_name)
 
-                # This is the "trace file" you wanted, created at the last moment
+                # Create the job parameters file with standardized paths
                 data_to_serialize = {
                     "job_type": job_type.value,
-                    "job_model": job_model.model_dump(),  # Serializes the Pydantic model
+                    "job_model": job_model.model_dump(),
                     "paths": {k: str(v) for k, v in paths.items()},
                     "additional_binds": all_binds,
                 }
@@ -127,15 +129,16 @@ class PipelineOrchestratorService:
                     with open(params_json_path, "w") as f:
                         json.dump(data_to_serialize, f, indent=2)
                     print(f"[PIPELINE] Saved job params to {params_json_path}")
+                    print(f"[PIPELINE] Paths for {job_name}: {list(paths.keys())}")
                 except Exception as e:
                     print(f"[PIPELINE ERROR] Failed to save {params_json_path}: {e}")
 
+                # Update the fn_exe parameter in job.star
                 params_df.loc[params_df["rlnJobOptionVariable"] == "fn_exe", "rlnJobOptionValue"] = (
                     final_command_for_fn_exe
                 )
 
-                # TODO
-                # Clear other_args (we don't use it for now, but should actually write it to the starfile for relion compatibility)
+                # Clear other_args
                 params_df.loc[params_df["rlnJobOptionVariable"] == "other_args", "rlnJobOptionValue"] = ""
 
                 # Remove template parameter placeholders
@@ -162,9 +165,132 @@ class PipelineOrchestratorService:
         except Exception as e:
             print(f"[PIPELINE ERROR] Failed to create custom scheme: {e}")
             import traceback
-
             traceback.print_exc()
             return {"success": False, "error": str(e)}
+
+    def _resolve_job_paths_standardized(self, job_name: str, job_number: int, selected_jobs: List[str], project_dir: Path) -> Dict[str, Path]:
+        """
+        Standardized path resolution using JobType and JobCategory enums.
+        """
+        # Convert string to enum
+        try:
+            job_type = JobType(job_name)
+        except ValueError:
+            # Fallback for unknown job types
+            job_type = None
+
+        # Determine job directory based on category
+        if job_type == JobType.IMPORT_MOVIES:
+            job_dir = project_dir / JobCategory.IMPORT.value / f"job{job_number:03d}"
+        else:
+            job_dir = project_dir / JobCategory.EXTERNAL.value / f"job{job_number:03d}"
+        
+        base_paths = {
+            "job_dir"     : job_dir,
+            "project_root": project_dir,
+            "frames_dir"  : project_dir / "frames",
+            "mdoc_dir"    : project_dir / "mdoc",
+        }
+        
+        # Job-specific path templates using enums
+        if job_type == JobType.IMPORT_MOVIES:
+            return {
+                **base_paths,
+                "tilt_series_dir": base_paths["job_dir"] / "tilt_series",
+                "output_star"    : base_paths["job_dir"] / "tilt_series.star",
+                "tomostar_dir"   : base_paths["job_dir"] / "tomostar",
+            }
+        
+        elif job_type == JobType.FS_MOTION_CTF:
+            # Find the import job that this depends on
+            # import_job_num = self._find_upstream_job_number(JobType.IMPORT_MOVIES.value, selected_jobs, job_number)
+            # import_job_dir = project_dir / JobCategory.IMPORT.value / f"job{import_job_num:03d}"
+
+            import_job_dir = self._get_upstream_job_dir(JobType.IMPORT_MOVIES, selected_jobs, job_number, project_dir)
+    
+            
+            return {
+                **base_paths,
+                "input_star"     : import_job_dir / "tilt_series.star",
+                "output_star"    : base_paths["job_dir"] / "fs_motion_and_ctf.star",
+                "warp_dir"       : base_paths["job_dir"] / "warp_frameseries",
+                "warp_settings"  : base_paths["job_dir"] / "warp_frameseries.settings",
+                "tilt_series_dir": base_paths["job_dir"] / "tilt_series",
+            }
+        
+        elif job_type == JobType.TS_ALIGNMENT:
+            # Find the fsMotion job that this depends on  
+            # fsmotion_job_num = self._find_upstream_job_number(JobType.FS_MOTION_CTF.value, selected_jobs, job_number)
+            # fsmotion_job_dir = project_dir / JobCategory.EXTERNAL.value / f"job{fsmotion_job_num:03d}"
+            
+            fsmotion_job_dir = self._get_upstream_job_dir(JobType.FS_MOTION_CTF, selected_jobs, job_number, project_dir)
+            return {
+                **base_paths,
+                "input_star"     : fsmotion_job_dir / "fs_motion_and_ctf.star",
+                "output_star"    : base_paths["job_dir"] / "aligned_tilt_series.star",
+                "warp_dir"       : base_paths["job_dir"] / "warp_tiltseries",
+                "warp_settings"  : base_paths["job_dir"] / "warp_tiltseries.settings",
+                "tomostar_dir"   : base_paths["job_dir"] / "tomostar",
+                "frameseries_dir": fsmotion_job_dir / "warp_frameseries",                # This is what the alignment job needs
+            }
+            
+        # In the _resolve_job_paths_standardized method for TS_CTF:
+
+        # In the _resolve_job_paths_standardized method for TS_CTF:
+
+        elif job_type == JobType.TS_CTF:
+            # Find the alignment job that this depends on
+            # align_job_num = self._find_upstream_job_number(JobType.TS_ALIGNMENT.value, selected_jobs, job_number)
+            # align_job_dir = project_dir / JobCategory.EXTERNAL.value / f"job{align_job_num:03d}"
+            
+            align_job_dir = self._get_upstream_job_dir(JobType.TS_ALIGNMENT, selected_jobs, job_number, project_dir)
+            return {
+                **base_paths,
+                "input_star": align_job_dir / "aligned_tilt_series.star",
+                "output_star": base_paths["job_dir"] / "ts_ctf_tilt_series.star",
+                "warp_dir": base_paths["job_dir"] / "warp_tiltseries",
+                "warp_settings": base_paths["job_dir"] / "warp_tiltseries.settings",  # DESTINATION
+                "tomostar_dir": base_paths["job_dir"] / "tomostar",  # DESTINATION
+                # UPSTREAM SOURCES:
+                "upstream_warp_dir": align_job_dir / "warp_tiltseries",      # Source for XML files
+                "upstream_settings": align_job_dir / "warp_tiltseries.settings",  # Source for settings
+                "upstream_tomostar": align_job_dir / "tomostar",             # Source for tomostar
+            }
+            
+        # In the _resolve_job_paths_standardized method for TS_RECONSTRUCT:
+
+        elif job_type == JobType.TS_RECONSTRUCT:
+            # Find the tsCtf job that this depends on
+            # tsctf_job_num = self._find_upstream_job_number(JobType.TS_CTF.value, selected_jobs, job_number)
+            # tsctf_job_dir = project_dir / JobCategory.EXTERNAL.value / f"job{tsctf_job_num:03d}"
+            
+            tsctf_job_dir = self._get_upstream_job_dir(JobType.TS_CTF, selected_jobs, job_number, project_dir)
+            return {
+                **base_paths,
+                "input_star"   : tsctf_job_dir / "ts_ctf_tilt_series.star",
+                "output_star"  : base_paths["job_dir"] / "tomograms.star",
+                "warp_dir"     : base_paths["job_dir"] / "warp_tiltseries",
+                "warp_settings": base_paths["job_dir"] / "warp_tiltseries.settings",   # DESTINATION
+                "tomostar_dir" : base_paths["job_dir"] / "tomostar",                   # DESTINATION
+                # UPSTREAM SOURCES:
+                "upstream_warp_dir": tsctf_job_dir / "warp_tiltseries",      # Source for XML files
+                "upstream_settings": tsctf_job_dir / "warp_tiltseries.settings",  # Source for settings
+                "upstream_tomostar": tsctf_job_dir / "tomostar",             # Source for tomostar
+            }
+        
+        # Default case for other job types or unknown jobs
+        else:
+            return base_paths
+
+    def _find_upstream_job_number(self, upstream_job_type: str, selected_jobs: List[str], current_job_num: int) -> int:
+        """
+        Find the job number of an upstream job type.
+        """
+        try:
+            upstream_idx = selected_jobs.index(upstream_job_type)
+            return upstream_idx + 1  # Jobs are 1-indexed
+        except ValueError:
+            raise ValueError(f"Current job requires {upstream_job_type} but it's not in selected jobs")
 
     def _build_job_command(
         self,
@@ -176,8 +302,13 @@ class PipelineOrchestratorService:
     ) -> str:
         """
         Build the fn_exe command for a job using model metadata.
-        (This function is now correct, as it receives the new job_model)
+        Uses JobType enums for cleaner code.
         """
+        # Convert to enum for cleaner comparisons
+        try:
+            job_type = JobType(job_name)
+        except ValueError:
+            job_type = None
 
         # 1. Check if the job model says it's a driver-based job
         if job_model.is_driver_job():
@@ -188,29 +319,28 @@ class PipelineOrchestratorService:
             host_python_exe = server_dir / "venv" / "bin" / "python3"
             if not host_python_exe.exists():
                 print(f"[PIPELINE WARNING] VENV Python not found at {host_python_exe}, falling back to 'python3'")
-                host_python_exe = "python3"  # Fallback to system python
+                host_python_exe = "python3"
 
             # Environment setup for drivers
             env_setup = f"export PYTHONPATH={server_dir}:${{PYTHONPATH}};"
 
-            # This small if/elif block maps driver jobs to their scripts
-            if job_name == JobType.FS_MOTION_CTF.value:
-                driver_script_path = server_dir / "drivers" / "fs_motion_and_ctf.py"
-            elif job_name == JobType.TS_ALIGNMENT.value:
-                driver_script_path = server_dir / "drivers" / "ts_alignment.py"
-            elif job_name == JobType.TS_CTF.value:
-                driver_script_path = server_dir / "drivers" / "ts_ctf.py"
-            elif job_name == JobType.TS_RECONSTRUCT.value:  # Fixed enum check
-                driver_script_path = server_dir / "drivers" / "ts_reconstruct.py"
-            else:
-                # This case handles if a job is marked as a driver but not mapped here
-                return f"echo 'ERROR: Job type \"{job_name}\" is a driver job but has no driver script mapped in orchestrator'; exit 1;"
+            # Map driver jobs to their scripts using enums
+            driver_scripts = {
+                JobType.FS_MOTION_CTF : "fs_motion_and_ctf.py",
+                JobType.TS_ALIGNMENT  : "ts_alignment.py",
+                JobType.TS_CTF        : "ts_ctf.py",
+                JobType.TS_RECONSTRUCT: "ts_reconstruct.py",
+            }
 
-            return (
-                f"{env_setup} {host_python_exe} {driver_script_path} "
-                f"--job_type {job_name} "
-                f"--project_path {project_root_str}"
-            )
+            if job_type in driver_scripts:
+                driver_script_path = server_dir / "drivers" / driver_scripts[job_type]
+                return (
+                    f"{env_setup} {host_python_exe} {driver_script_path} "
+                    f"--job_type {job_name} "
+                    f"--project_path {project_root_str}"
+                )
+            else:
+                return f"echo 'ERROR: Job type \"{job_name}\" is a driver job but has no driver script mapped in orchestrator'; exit 1;"
 
         else:
             # This handles non-driver jobs (like importmovies)
@@ -228,6 +358,20 @@ class PipelineOrchestratorService:
             except Exception as e:
                 print(f"[PIPELINE ERROR] Failed to build command for {job_name}: {e}")
                 return f"echo 'ERROR: Failed to build command for {job_name}: {e}'; exit 1;"
+
+    def _get_upstream_job_dir(self, upstream_job_type: JobType, selected_jobs: List[str], current_job_num: int, project_dir: Path) -> Path:
+        """
+        Helper method to get the directory of an upstream job.
+        """
+        upstream_job_num = self._find_upstream_job_number(upstream_job_type.value, selected_jobs, current_job_num)
+        
+        # Determine the category for the upstream job
+        if upstream_job_type == JobType.IMPORT_MOVIES:
+            category = JobCategory.IMPORT
+        else:
+            category = JobCategory.EXTERNAL
+            
+        return project_dir / category.value / f"job{upstream_job_num:03d}"
 
     def _create_scheme_star(self, scheme_dir: Path, scheme_name: str, selected_jobs: List[str]):
         """

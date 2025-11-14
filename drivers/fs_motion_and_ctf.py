@@ -26,15 +26,14 @@ except ImportError as e:
     sys.exit(1)
 
 
-# This function is job-specific, so it stays here
 def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> str:
     """
     Builds the multi-step WarpTools command string using absolute paths.
     """
     
     # Get absolute paths from the 'paths' dict
-    frames_dir_abs = shlex.quote(str(paths["frames_dir"]))
-    warp_dir_abs = shlex.quote(str(paths["warp_dir"]))
+    frames_dir_abs    = shlex.quote(str(paths["frames_dir"]))
+    warp_dir_abs      = shlex.quote(str(paths["warp_dir"]))
     settings_file_abs = shlex.quote(str(paths["warp_settings"]))
 
     # --- THIS IS THE CALL THAT WAS FAILING ---
@@ -127,13 +126,11 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> st
     return " && ".join([" ".join(create_settings_parts), " ".join(run_main_parts)])
 
 
+
 def main():
     print("[DRIVER] fs_motion_and_ctf driver started.", flush=True)
 
     try:
-        # --- NEW BOOTSTRAP CALL ---
-        # This replaces the old get_driver_context()
-        # 'params' is now the fully instantiated, state-aware FsMotionCtfParams object
         (
             project_state,
             params,
@@ -154,33 +151,37 @@ def main():
     failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
 
     try:
-        # 1. Load paths and binds from the local params file
+        # 1. Load paths and validate critical ones exist
         print(f"[DRIVER] Params loaded for job type {job_type} in {job_dir}", flush=True)
         paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
         additional_binds = local_params_data["additional_binds"]
 
-        # 2. Build the *inner* WarpTools command
-        # We pass the state-aware 'params' object
+        # CRITICAL: Validate that input_star exists
+        input_star_path = paths.get("input_star")
+        if not input_star_path or not input_star_path.exists():
+            raise FileNotFoundError(f"Required input STAR file not found: {input_star_path}")
+
+        print(f"[DRIVER] Using input STAR: {input_star_path}", flush=True)
+
+        # 2. Build and run the WarpTools command
         warp_command = build_warp_commands(params, paths)
         print(f"[DRIVER] Built inner command: {warp_command[:200]}...", flush=True)
 
-        # 3. Get container service to build the *full apptainer* command
         container_svc = get_container_service()
         apptainer_command = container_svc.wrap_command_for_tool(
             command=warp_command, cwd=job_dir, tool_name="warptools", additional_binds=additional_binds
         )
 
-        # 4. Run the containerized computation (using shared function)
         print(f"[DRIVER] Executing container...", flush=True)
         run_command(apptainer_command, cwd=job_dir)
 
-        # 5. Run the metadata processing step
+        # 3. Update metadata
         print("[DRIVER] Computation finished. Starting metadata processing.", flush=True)
         translator = MetadataTranslator(StarfileService())
 
         result = translator.update_fs_motion_and_ctf_metadata(
             job_dir=job_dir,
-            input_star_path=paths["input_star"],
+            input_star_path=input_star_path,  # Use the validated path
             output_star_path=paths["output_star"],
             project_root=project_path,
             warp_folder="warp_frameseries",
@@ -191,7 +192,7 @@ def main():
 
         print("[DRIVER] Metadata processing successful.", flush=True)
 
-        # 6. Create success file
+        # 4. Create success file
         success_file.touch()
         print("[DRIVER] Job finished successfully.", flush=True)
         sys.exit(0)

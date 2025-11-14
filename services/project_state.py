@@ -268,7 +268,6 @@ class AbstractJobParams(BaseModel):
     # NO from_pipeline_state
     # NO sync_from_pipeline_state
 
-
 class ImportMoviesParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
 
@@ -401,32 +400,39 @@ class FsMotionCtfParams(AbstractJobParams):
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
             return None
 
-    # Asset definitions
+
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+        """Standardized output paths matching old cryoboost"""
         return {
             "job_dir": job_dir,
             "output_star": job_dir / "fs_motion_and_ctf.star",
-            "tilt_series_dir": job_dir / "tilt_series",
             "warp_dir": job_dir / "warp_frameseries",
             "warp_settings": job_dir / "warp_frameseries.settings",
-            "xml_pattern": str(job_dir / "warp_frameseries" / "*.xml"),
+            # Note: tilt_series_dir is created but contains the same input star files
+            # The actual output is in fs_motion_and_ctf.star
         }
+
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"import": "importmovies"}
-    @staticmethod
+
+    @staticmethod  
     def get_input_assets(
         job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
     ) -> Dict[str, Path]:
+        """Standardized input paths - SIMPLIFIED"""
         import_outputs = upstream_outputs.get("importmovies", {})
+        
         return {
             "job_dir": job_dir,
-            "input_star": import_outputs.get("tilt_series_star"),
+            "project_root": project_root,
+            "input_star": import_outputs.get("output_star"),  # tilt_series.star from import
             "output_star": job_dir / "fs_motion_and_ctf.star",
-            "warp_dir": job_dir / "warp_frameseries",
             "frames_dir": project_root / "frames",
             "mdoc_dir": project_root / "mdoc",
+            "warp_dir": job_dir / "warp_frameseries",
+            "warp_settings": job_dir / "warp_frameseries.settings",
         }
 
 class TsAlignmentParams(AbstractJobParams):

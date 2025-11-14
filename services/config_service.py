@@ -15,10 +15,6 @@ from typing import List, Dict, Optional
 CRBOOST_ROOT = "/users/artem.kushner/dev/crboost_server/"
 DEFAULT_CONFIG_PATH = os.path.join(CRBOOST_ROOT, "config", "conf.yaml")
 
-
-# -----------------------------------------------------------------
-
-
 class SubmissionConfig(BaseModel):
     HeadNode: str
     SshCommand: str
@@ -61,9 +57,9 @@ class ComputingConfig(BaseModel):
     JOBsPerDevice: Dict[str, Dict[str, int]]
 
     # Simplified partitions
-    c: Optional[ComputingPartition] = None
-    m: Optional[ComputingPartition] = None
-    g: Optional[ComputingPartition] = None
+    c     : Optional[ComputingPartition] = None
+    m     : Optional[ComputingPartition] = None
+    g     : Optional[ComputingPartition] = None
     g_p100: Optional[ComputingPartition] = Field(None, alias="g-p100")
     g_v100: Optional[ComputingPartition] = Field(None, alias="g-v100")
     g_a100: Optional[ComputingPartition] = Field(None, alias="g-a100")
@@ -72,15 +68,15 @@ class ComputingConfig(BaseModel):
 class Config(BaseModel):
     """Root configuration model"""
 
-    submission: List[SubmissionConfig]
-    local: LocalConfig
-    aliases: List[Alias]
-    meta_data: Dict[str, List[Dict[str, str]]]
+    submission : List[SubmissionConfig]
+    local      : LocalConfig
+    aliases    : List[Alias]
+    meta_data  : Dict[str, List[Dict[str, str]]]
     microscopes: Dict[str, List[Dict[str, str]]]
-    star_file: Optional[Dict[str, str]] = None
-    containers: Optional[Dict[str, str]] = None
-    computing: ComputingConfig
-    filepath: Dict[str, str]
+    star_file  : Optional[Dict[str, str]] = None
+    containers : Optional[Dict[str, str]] = None
+    computing  : ComputingConfig
+    filepath   : Dict[str, str]
 
     class Config:
         extra = "ignore"
@@ -115,15 +111,13 @@ class ConfigService:
     def tools(self) -> Dict[str, Dict[str, str]]:
         return {
             # Relion tools
-            "relion": {"container": "relion", "type": "container"},
-            "relion_import": {"container": "relion", "type": "container"},
+            "relion"        : {"container": "relion", "type": "container"},
+            "relion_import" : {"container": "relion", "type": "container"},
             "relion_schemer": {"container": "relion", "type": "container"},
-            # Warp/AreTomo tools
-            "warptools": {"container": "warp_aretomo", "type": "container"},
-            "aretomo": {"container": "warp_aretomo", "type": "container"},
-            # Other tools
-            "cryocare": {"container": "cryocare", "type": "container"},
-            "pytom": {"container": "pytom", "type": "container"},
+            "warptools"     : {"container": "warp_aretomo", "type": "container"},
+            "aretomo"       : {"container": "warp_aretomo", "type": "container"},
+            "cryocare"      : {"container": "cryocare", "type": "container"},
+            "pytom"         : {"container": "pytom", "type": "container"},
         }
 
     def get_container_for_tool(self, tool_name: str) -> Optional[str]:
