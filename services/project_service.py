@@ -18,11 +18,6 @@ if TYPE_CHECKING:
 
 
 class DataImportService:
-    """
-    Handles the core logic of preparing raw data for a CryoBoost project.
-    This includes parsing mdocs, creating symlinks, and rewriting mdocs with prefixes.
-    (This class seems correct and uses the new mdoc_service, no changes needed)
-    """
 
     def __init__(self):
         self.mdoc_service = get_mdoc_service()
@@ -85,13 +80,11 @@ class ProjectService:
         self.data_importer = DataImportService()
         self.star_handler = StarfileService()
         self.project_root: Optional[Path] = None
-        # --- NEW: Get the state service instance ---
         self.state_service = get_state_service()
 
     def set_project_root(self, project_dir: Path):
         """Set the project root for path resolution and update state."""
         self.project_root = project_dir.resolve()
-        # --- NEW: Update the single source of truth ---
         if self.backend and self.backend.state_service:
             self.backend.state_service.state.project_path = self.project_root
 
@@ -143,9 +136,9 @@ class ProjectService:
             upstream_job_dir = self.get_job_dir(upstream_job_type_str, upstream_job_num)
             upstream_outputs[upstream_job_type_str] = upstream_param_class.get_output_assets(upstream_job_dir)
 
-        input_paths = param_class.get_input_assets(job_dir, self.project_root, upstream_outputs)
+        input_paths  = param_class.get_input_assets(job_dir, self.project_root, upstream_outputs)
         output_paths = param_class.get_output_assets(job_dir)
-        all_paths = {**input_paths, **output_paths}
+        all_paths    = {**input_paths, **output_paths}
 
         return all_paths
 
@@ -385,3 +378,72 @@ class ProjectService:
 
             traceback.print_exc()
             return {"success": False, "error": str(e)}
+
+    def resolve_job_paths_standardized(self, job_name: str, job_number: int, selected_jobs: List[str]) -> Dict[str, Path]:
+        """
+        Standardized path resolution based on old cryoboost conventions.
+        """
+        if not self.project_root:
+            raise ValueError("Project root not set")
+
+        job_dir = self.get_job_dir(job_name, job_number)
+        
+        # Base paths that all jobs need
+        base_paths = {
+            "job_dir"     : job_dir,
+            "project_root": self.project_root,
+            "frames_dir"  : self.project_root / "frames",
+            "mdoc_dir"    : self.project_root / "mdoc",
+        }
+        
+        # Job-specific path templates
+        if job_name == "importmovies":
+            return {
+                **base_paths,
+                "tilt_series_dir": job_dir / "tilt_series",
+                "output_star"    : job_dir / "tilt_series.star",
+            }
+        
+        elif job_name == "fsMotionAndCtf":
+            # Find the import job that this depends on
+            import_job_num = self._find_upstream_job_number("importmovies", selected_jobs, job_number)
+            import_job_dir = self.get_job_dir("importmovies", import_job_num)
+            
+            return {
+                **base_paths,
+                "job_dir"        : job_dir,
+                "input_star"     : import_job_dir / "tilt_series.star",     # CRITICAL: This was missing
+                "output_star"    : job_dir / "fs_motion_and_ctf.star",
+                "warp_dir"       : job_dir / "warp_frameseries",
+                "warp_settings"  : job_dir / "warp_frameseries.settings",
+                "tilt_series_dir": job_dir / "tilt_series",                 # For output
+            }
+        
+        elif job_name == "alignTiltsWarp":
+            # Find the fsMotion job that this depends on  
+            fsmotion_job_num = self._find_upstream_job_number("fsMotionAndCtf", selected_jobs, job_number)
+            fsmotion_job_dir = self.get_job_dir("fsMotionAndCtf", fsmotion_job_num)
+            
+            return {
+                **base_paths,
+                "job_dir"      : job_dir,
+                "input_star"   : fsmotion_job_dir / "fs_motion_and_ctf.star",
+                "output_star"  : job_dir / "aligned_tilt_series.star",
+                "warp_dir"     : job_dir / "warp_tiltseries",
+                "warp_settings": job_dir / "warp_tiltseries.settings",
+                "tomostar_dir" : job_dir / "tomostar",
+            }
+        
+
+        else:
+            return base_paths
+
+    def _find_upstream_job_number(self, upstream_job_type: str, selected_jobs: List[str], current_job_num: int) -> int:
+        """
+        Find the job number of an upstream job type.
+        """
+        try:
+            upstream_idx = selected_jobs.index(upstream_job_type)
+            return upstream_idx + 1  # Jobs are 1-indexed
+        except ValueError:
+            raise ValueError(f"Current job requires {upstream_job_type} but it's not in selected jobs")

@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # drivers/ts_alignment.py
-import json
-import subprocess
 import sys
-import os
 import shlex
 import pandas as pd
 from pathlib import Path
@@ -12,35 +9,27 @@ import traceback
 server_dir = Path(__file__).parent.parent
 sys.path.append(str(server_dir))
 
-try:
-    # --- NEW: Import shared driver logic ---
-    from drivers.driver_base import get_driver_context, run_command
-    from services.project_state import AlignmentMethod, TsAlignmentParams
-    from services.metadata_service import MetadataTranslator
-    from services.starfile_service import StarfileService
-    from services.container_service import get_container_service
-except ImportError as e:
-    print(f"FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
-    print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
-    print(f"Error: {e}", file=sys.stderr)
-    sys.exit(1)
+from drivers.driver_base import get_driver_context, run_command
+from services.project_state import AlignmentMethod, TsAlignmentParams
+from services.metadata_service import MetadataTranslator
+from services.starfile_service import StarfileService
+from services.container_service import get_container_service
 
 
 def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], num_tomograms: int) -> str:
     """Builds the multi-step WarpTools alignment command string matching old logic."""
 
-    # --- THIS IS THE CALL THAT WAS FAILING ---
     gain_path_str = ""
     if params.gain_path and params.gain_path != "None":
         gain_path_str = shlex.quote(params.gain_path)
 
     gain_ops_str = params.gain_operations if params.gain_operations else ""
 
-    mdoc_dir = shlex.quote(str(paths["mdoc_dir"]))
+    mdoc_dir        = shlex.quote(str(paths["mdoc_dir"]))
     frameseries_dir = shlex.quote(str(paths["frameseries_dir"]))
-    tomostar_dir = shlex.quote(str(paths["tomostar_dir"]))
-    processing_dir = shlex.quote(str(paths["warp_dir"]))
-    settings_file = shlex.quote(str(paths["warp_settings"]))
+    tomostar_dir    = shlex.quote(str(paths["tomostar_dir"]))
+    processing_dir  = shlex.quote(str(paths["warp_dir"]))
+    settings_file   = shlex.quote(str(paths["warp_settings"]))
 
     mkdir_cmds = [f"mkdir -p {tomostar_dir}", f"mkdir -p {processing_dir}"]
 
@@ -56,9 +45,9 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
         "--output",
         tomostar_dir,
         "--tilt_exposure",
-        str(params.dose_per_tilt),  # Property access
+        str(params.dose_per_tilt), 
         "--override_axis",
-        str(params.tilt_axis_angle), # Property access
+        str(params.tilt_axis_angle), 
     ]
 
     if not params.invert_tilt_angles: # Property access
@@ -78,9 +67,9 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
         "--output",
         settings_file,
         "--angpix",
-        str(params.pixel_size), # Property access
+        str(params.pixel_size),
         "--exposure",
-        str(params.dose_per_tilt), # Property access
+        str(params.dose_per_tilt), 
         "--tomo_dimensions",
         params.tomo_dimensions,
     ]
@@ -132,13 +121,10 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
 
 
 def main():
-    print("[DRIVER] tsAlignment driver started.", flush=True)
-
     try:
-        # --- NEW BOOTSTRAP CALL ---
         (
             project_state,
-            params,  # This is now the state-aware TsAlignmentParams object
+            params, 
             local_params_data,
             job_dir,
             project_path,
@@ -161,7 +147,7 @@ def main():
         paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
         additional_binds = local_params_data["additional_binds"]
 
-        input_star_abs = paths["input_star"]
+        input_star_abs  = paths["input_star"]
         output_star_abs = paths["output_star"]
 
         star_data = StarfileService().read(input_star_abs)
@@ -178,21 +164,19 @@ def main():
             command=align_command_str, cwd=job_dir, tool_name="warptools", additional_binds=additional_binds
         )
 
-        # 4. Run the containerized computation
         print("[DRIVER] Executing container...", flush=True)
         run_command(apptainer_command, cwd=job_dir)
 
-        # 5. Run metadata processing
         print("[DRIVER] Alignment finished. Starting metadata processing.", flush=True)
         translator = MetadataTranslator(StarfileService())
 
         result = translator.update_ts_alignment_metadata(
-            job_dir=job_dir,
-            input_star_path=input_star_abs,
-            output_star_path=output_star_abs,
-            tomo_dimensions=params.tomo_dimensions,
-            project_root=project_path,
-            alignment_method=params.alignment_method.value,
+            job_dir          = job_dir,
+            input_star_path  = input_star_abs,
+            output_star_path = output_star_abs,
+            tomo_dimensions  = params.tomo_dimensions,
+            project_root     = project_path,
+            alignment_method = params.alignment_method.value,
         )
 
         if not result["success"]:
@@ -200,13 +184,12 @@ def main():
 
         print("[DRIVER] Metadata processing successful.", flush=True)
 
-        # 6. Create success file
         success_file.touch()
         print("[DRIVER] Job finished successfully.", flush=True)
         sys.exit(0)
 
     except Exception as e:
-        print(f"[DRIVER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
+        print("[DRIVER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
         print(str(e), file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
         failure_file.touch()

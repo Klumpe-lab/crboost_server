@@ -52,7 +52,8 @@ def get_driver_context() -> Tuple[ProjectState, AbstractJobParams, dict, Path, P
     """
     Primary bootstrap function for all drivers.
 
-    This function is the new "single source of truth" for driver initialization.
+    This function is the "handshake" for all drivers' initialization.
+
     It:
     1. Parses CLI args (--project_path, --job_type).
     2. Loads the *entire* global ProjectState from `project_params.json`.
@@ -76,10 +77,9 @@ def get_driver_context() -> Tuple[ProjectState, AbstractJobParams, dict, Path, P
     parser.add_argument("--project_path", required=True, type=Path, help="Project root")
 
     args, _ = parser.parse_known_args()
-
-    project_path = args.project_path.resolve()
-    job_dir = Path.cwd().resolve()
-    job_type = JobType.from_string(args.job_type)
+    project_path      = args.project_path.resolve()
+    job_dir           = Path.cwd().resolve()
+    job_type          = JobType.from_string(args.job_type)
     local_params_file = job_dir / "job_params.json"
 
     # 1. Load the global state
@@ -98,8 +98,6 @@ def get_driver_context() -> Tuple[ProjectState, AbstractJobParams, dict, Path, P
 
     # 3. Load the local job_params.json for paths and binds
     if not local_params_file.exists():
-        # The orchestrator should *always* create this.
-        # The old param_generator.py fallback was a bug.
         raise FileNotFoundError(f"Job-specific job_params.json not found at {local_params_file}")
 
     with open(local_params_file, "r") as f:
@@ -117,7 +115,7 @@ def get_driver_context() -> Tuple[ProjectState, AbstractJobParams, dict, Path, P
 
     return (
         project_state,
-        job_model,  # This is the state-aware model
+        job_model        ,  # This is the state-aware model
         local_params_data,  # This contains 'paths' and 'additional_binds'
         job_dir,
         project_path,
