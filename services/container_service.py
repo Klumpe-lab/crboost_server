@@ -7,7 +7,6 @@ from typing import List, Optional, Tuple
 
 from services.config_service import get_config_service
 
-
 class Colors:
     @classmethod
     def _parse_container_command(cls, command: str) -> Tuple[str, List[str], str, str]:
@@ -145,7 +144,6 @@ class Colors:
 
         return "\n".join(lines)
 
-
 class ContainerService:
     def __init__(self):
         self.config = get_config_service()
@@ -239,7 +237,6 @@ class ContainerService:
         print(Colors.format_command_log(tool_name, final_command, cwd, container_path))
 
         return final_command
-
 
 _container_service = None
 

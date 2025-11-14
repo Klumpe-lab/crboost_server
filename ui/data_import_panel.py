@@ -5,12 +5,11 @@ from pathlib import Path
 import math
 from backend import CryoBoostBackend
 from nicegui import ui
+from services.project_state import get_state_service
 from ui.slurm_components import build_cluster_overview, build_slurm_job_config
 from ui.utils import create_path_input_with_picker
 
 # --- REFACTORED IMPORTS ---
-from services.state_service import get_state_service
-from services.project_state import get_project_state
 from typing import Dict, Any
 
 
@@ -20,18 +19,18 @@ def build_data_import_panel(backend: CryoBoostBackend, shared_state: Dict[str, A
     state_service = get_state_service()
     
     panel_state = {
-        "parameter_inputs": [],
-        "movies_path_input": None,
-        "mdocs_path_input": None,
-        "project_name_input": None,
+        "parameter_inputs"      : [],
+        "movies_path_input"     : None,
+        "mdocs_path_input"      : None,
+        "project_name_input"    : None,
         "project_location_input": None,
-        "create_button": None,
-        "active_project_label": None,
-        "project_status": None,
-        "run_button": None,
-        "stop_button": None,
-        "progress_bar": None,
-        "progress_message": None,
+        "create_button"         : None,
+        "active_project_label"  : None,
+        "project_status"        : None,
+        "run_button"            : None,
+        "stop_button"           : None,
+        "progress_bar"          : None,
+        "progress_message"      : None,
     }
 
     async def handle_open_project():

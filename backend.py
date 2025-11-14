@@ -10,29 +10,25 @@ from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
 from services.pipeline_runner import PipelineRunnerService
 from services.continuation_service import ContinuationService, PipelineManipulationService, SchemeManipulationService
-from services.project_state import JobType
+from services.project_state import JobType, get_state_service
 from services.slurm_service import SlurmService
-from services.state_service import get_state_service  # Get the singleton getter
 
 HARDCODED_USER = "artem.kushner"
 
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
-        self.username = HARDCODED_USER
-        self.server_dir = server_dir
-        self.project_service = ProjectService(self)
+        self.username              = HARDCODED_USER
+        self.server_dir            = server_dir
+        self.project_service       = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
-        self.container_service = get_container_service()
-        self.slurm_service = SlurmService(HARDCODED_USER)
-        self.pipeline_runner = PipelineRunnerService(self)
-
-        # Correctly get the state service singleton
-        self.state_service = get_state_service()
-
+        self.container_service     = get_container_service()
+        self.slurm_service         = SlurmService(HARDCODED_USER)
+        self.pipeline_runner       = PipelineRunnerService(self)
+        self.state_service         = get_state_service()
         self.pipeline_manipulation = PipelineManipulationService(self)
-        self.scheme_manipulation = SchemeManipulationService(self)
-        self.continuation = ContinuationService(self)
+        self.scheme_manipulation   = SchemeManipulationService(self)
+        self.continuation          = ContinuationService(self)
 
         # self.app_state = app_state  # <--- REMOVED THIS
 

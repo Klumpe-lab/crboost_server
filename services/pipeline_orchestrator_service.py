@@ -4,30 +4,72 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List
 import json
-
-from services.commands_builder import ImportMoviesCommandBuilder, BaseCommandBuilder
 from services.config_service import get_config_service
-from services.project_state import AbstractJobParams, JobCategory, JobType
-from services.state_service import get_state_service
-
+from services.project_state import AbstractJobParams, JobCategory, JobType, get_state_service
 from .starfile_service import StarfileService
 from .project_service import ProjectService
-
 from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
 
+from typing import Any
+from services.project_state import ImportMoviesParams
+
+class BaseCommandBuilder:
+    def format_paths(self, paths: Dict[str, Path]) -> Dict[str, str]:
+        return {k: str(v) for k, v in paths.items()}
+
+    def add_optional_param(self, cmd_parts: List[str], flag: str, value: Any, condition: bool = True):
+        if condition and value is not None and str(value) != "None" and str(value) != "":
+            cmd_parts.extend([flag, str(value)])
+
+class ImportMoviesCommandBuilder(BaseCommandBuilder):
+    """Build import movies command from params"""
+
+    def build(self, params: ImportMoviesParams, paths: Dict[str, Path]) -> str:
+        """Build the relion_import command"""
+        cmd_parts = [
+            "relion_import",
+            "--do_movies",
+            "--optics_group_name",
+            params.optics_group_name,
+            "--angpix",
+            str(params.pixel_size),
+            "--kV",
+            str(params.voltage),
+            "--Cs",
+            str(params.spherical_aberration),
+            "--Q0",
+            str(params.amplitude_contrast),
+            "--dose_per_tilt_image",
+            str(params.acquisition.dose_per_tilt),
+            "--nominal_tilt_axis_angle",
+            str(params.tilt_axis_angle),
+        ]
+
+        if params.acquisition.invert_defocus_hand:
+            cmd_parts.append("--invert_defocus_hand")
+
+        if params.do_at_most > 0:
+            cmd_parts.extend(["--do_at_most", str(params.do_at_most)])
+
+        if "mdoc_dir" in paths:
+            input_pattern = str(paths["mdoc_dir"]) + "/*.mdoc"
+            cmd_parts.extend(["--i", input_pattern])
+
+        if "job_dir" in paths:
+            cmd_parts.extend(["--o", str(paths["job_dir"]) + "/"])
+
+        return " ".join(cmd_parts)
 
 class PipelineOrchestratorService:
     def __init__(self, backend_instance: "CryoBoostBackend"):
-        self.backend = backend_instance
-        self.star_handler = StarfileService()
-        self.config_service = get_config_service()
+        self.backend         = backend_instance
+        self.star_handler    = StarfileService()
+        self.config_service  = get_config_service()
         self.project_service = None
-        self.state_service = get_state_service()
+        self.state_service   = get_state_service()
 
-        # Map job names to their corresponding builder class
         self.job_builders: Dict[str, BaseCommandBuilder] = {JobType.IMPORT_MOVIES.value: ImportMoviesCommandBuilder()}
 
     async def create_custom_scheme(
@@ -198,7 +240,7 @@ class PipelineOrchestratorService:
         # In _resolve_job_paths_standardized method, add this to master_paths:
         master_paths = {
             "warp_frameseries_settings": project_dir / "warp_frameseries.settings",
-            "warp_tiltseries_settings": project_dir / "warp_tiltseries.settings", 
+            "warp_tiltseries_settings": project_dir / "warp_tiltseries.settings",
             "tomostar_dir": project_dir / "tomostar",  # Single tomostar directory for entire project
         }
         # Job-specific path templates using enums
@@ -252,11 +294,11 @@ class PipelineOrchestratorService:
             return {
                 **base_paths,
                 **master_paths,
-                "input_star"       : tsctf_job_dir / "ts_ctf_tilt_series.star",
-                "output_star"      : base_paths["job_dir"] / "tomograms.star",
-                "warp_dir"         : base_paths["job_dir"] / "warp_tiltseries",   # Job-specific output
-                "input_processing" : tsctf_job_dir / "warp_tiltseries",           # Read from CTF job
-                "output_processing": base_paths["job_dir"] / "warp_tiltseries",   # Write to current job
+                "input_star": tsctf_job_dir / "ts_ctf_tilt_series.star",
+                "output_star": base_paths["job_dir"] / "tomograms.star",
+                "warp_dir": base_paths["job_dir"] / "warp_tiltseries",  # Job-specific output
+                "input_processing": tsctf_job_dir / "warp_tiltseries",  # Read from CTF job
+                "output_processing": base_paths["job_dir"] / "warp_tiltseries",  # Write to current job
             }
 
         else:

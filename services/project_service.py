@@ -8,9 +8,8 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
-from services.project_state import JobType, jobtype_paramclass
+from services.project_state import JobType, get_state_service, jobtype_paramclass
 from services.starfile_service import StarfileService
-from services.state_service import get_state_service  # Use new service
 from services.mdoc_service import get_mdoc_service  # This was already correct
 
 if TYPE_CHECKING:
