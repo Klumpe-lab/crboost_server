@@ -13,7 +13,6 @@ server_dir = Path(__file__).parent.parent
 sys.path.append(str(server_dir))
 
 try:
-    # --- NEW: Import shared driver logic ---
     from drivers.driver_base import get_driver_context, run_command
     from services.project_state import FsMotionCtfParams
     from services.metadata_service import MetadataTranslator
@@ -28,42 +27,44 @@ except ImportError as e:
 
 def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> str:
     """
-    Builds the multi-step WarpTools command string using absolute paths.
+    Builds the complete multi-step WarpTools command string using master settings
+    and proper input_processing/output_processing arguments.
     """
-    
-    # Get absolute paths from the 'paths' dict
-    frames_dir_abs    = shlex.quote(str(paths["frames_dir"]))
-    warp_dir_abs      = shlex.quote(str(paths["warp_dir"]))
-    settings_file_abs = shlex.quote(str(paths["warp_settings"]))
 
-    # --- THIS IS THE CALL THAT WAS FAILING ---
-    # It will now work because 'params' is state-aware.
+    # Get absolute paths
+    frames_dir_abs = shlex.quote(str(paths["frames_dir"]))
+    settings_file_abs = shlex.quote(str(paths["warp_frameseries_settings"]))
+    output_processing_abs = shlex.quote(str(paths["output_processing"]))
+
+    # --- Gain reference handling ---
     gain_path_str = ""
     if params.gain_path and params.gain_path != "None":
         gain_path_str = shlex.quote(params.gain_path)
 
     gain_ops_str = params.gain_operations if params.gain_operations else ""
 
+    # --- EER groups handling ---
     eer_groups_val = str(params.eer_ngroups)
-    
-    # Try to find a frame file to check its extension
+
+    # Detect frame extension
     frame_files = list(paths["frames_dir"].glob(f"*.eer"))
     if not frame_files:
-         frame_files = list(paths["frames_dir"].glob(f"*.mrc")) # Add other types if needed
-    
-    frame_ext = ".eer" # Default
+        frame_files = list(paths["frames_dir"].glob(f"*.mrc"))
+
+    frame_ext = ".eer"  # Default
     if frame_files:
         frame_ext = frame_files[0].suffix
-        
+
     if frame_ext.lower() == ".eer":
         eer_groups_val = f"-{params.eer_ngroups}"
         print(f"[DRIVER] Detected EER files, using eer_ngroups: {eer_groups_val}", flush=True)
 
+    # === STEP 1: Create master settings file (only if it doesn't exist) ===
     create_settings_parts = [
         "WarpTools create_settings",
         f"--folder_data {frames_dir_abs}",
-        f"--extension '*{frame_ext}'",  # Use detected extension
-        f"--folder_processing {warp_dir_abs}",
+        f"--extension '*{frame_ext}'",
+        f"--folder_processing {output_processing_abs}",  # Default location, will be overridden
         f"--output {settings_file_abs}",
         "--angpix",
         str(params.pixel_size),
@@ -76,9 +77,11 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> st
         if gain_ops_str:
             create_settings_parts.extend(["--gain_operations", gain_ops_str])
 
+    # === STEP 2: Main motion correction and CTF estimation ===
     run_main_parts = [
         "WarpTools fs_motion_and_ctf",
         f"--settings {settings_file_abs}",
+        f"--output_processing {output_processing_abs}",  # CRITICAL: Override output location to job directory
         "--m_grid",
         params.m_grid,
         "--m_range_min",
@@ -102,9 +105,9 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> st
         "--c_voltage",
         str(round(float(params.voltage))),
         "--c_cs",
-        str(params.spherical_aberration), # Use property
+        str(params.spherical_aberration),
         "--c_amplitude",
-        str(params.amplitude_contrast), # Use property
+        str(params.amplitude_contrast),
         "--perdevice",
         str(params.perdevice),
         "--out_averages",
@@ -114,32 +117,31 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> st
         str(params.out_skip_last),
     ]
 
+    # Add optional flags
     if params.out_average_halves:
         run_main_parts.append("--out_average_halves")
-    
+
     if params.c_use_sum:
         run_main_parts.append("--c_use_sum")
 
     if params.do_at_most > 0:
         run_main_parts.extend(["--do_at_most", str(params.do_at_most)])
 
-    return " && ".join([" ".join(create_settings_parts), " ".join(run_main_parts)])
+    # Combine into final command: only create settings if they don't exist, then run main processing
+    create_settings_cmd = " ".join(create_settings_parts)
+    run_main_cmd = " ".join(run_main_parts)
+    
+    final_command = f"test -f {settings_file_abs} || ({create_settings_cmd}) && {run_main_cmd}"
 
+    print(f"[DRIVER] Built complete command: {final_command}", flush=True)
+    return final_command
 
 
 def main():
     print("[DRIVER] fs_motion_and_ctf driver started.", flush=True)
 
     try:
-        (
-            project_state,
-            params,
-            local_params_data,
-            job_dir,
-            project_path,
-            job_type,
-        ) = get_driver_context()
-        
+        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context()
     except Exception as e:
         job_dir = Path.cwd()
         (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
@@ -163,28 +165,36 @@ def main():
 
         print(f"[DRIVER] Using input STAR: {input_star_path}", flush=True)
 
-        # 2. Build and run the WarpTools command
+        # 2. Ensure output processing directory exists
+        output_processing_dir = paths["output_processing"]
+        output_processing_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[DRIVER] Output processing directory: {output_processing_dir}", flush=True)
+
+        # 3. Build and run the WarpTools command
         warp_command = build_warp_commands(params, paths)
-        print(f"[DRIVER] Built inner command: {warp_command[:200]}...", flush=True)
+        print(f"[DRIVER] Built inner command: {warp_command[:500]}...", flush=True)
 
         container_svc = get_container_service()
         apptainer_command = container_svc.wrap_command_for_tool(
-            command=warp_command, cwd=job_dir, tool_name="warptools", additional_binds=additional_binds
+            command=warp_command, 
+            cwd=job_dir, 
+            tool_name="warptools", 
+            additional_binds=additional_binds
         )
 
         print(f"[DRIVER] Executing container...", flush=True)
         run_command(apptainer_command, cwd=job_dir)
 
-        # 3. Update metadata
+        # 4. Update metadata
         print("[DRIVER] Computation finished. Starting metadata processing.", flush=True)
         translator = MetadataTranslator(StarfileService())
 
         result = translator.update_fs_motion_and_ctf_metadata(
             job_dir=job_dir,
-            input_star_path=input_star_path,  # Use the validated path
+            input_star_path=input_star_path,
             output_star_path=paths["output_star"],
             project_root=project_path,
-            warp_folder="warp_frameseries",
+            warp_folder="warp_frameseries",  # This should match the output_processing directory name
         )
 
         if not result["success"]:
@@ -192,7 +202,7 @@ def main():
 
         print("[DRIVER] Metadata processing successful.", flush=True)
 
-        # 4. Create success file
+        # 5. Create success file
         success_file.touch()
         print("[DRIVER] Job finished successfully.", flush=True)
         sys.exit(0)

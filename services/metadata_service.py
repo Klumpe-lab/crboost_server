@@ -15,7 +15,6 @@ import pandas as pd
 from services.project_state import AlignmentMethod
 from services.starfile_service import StarfileService
 
-
 class WarpXmlParser:
     """Parses WarpTools XML files to extract CTF and processing metadata"""
     
@@ -428,7 +427,7 @@ class MetadataTranslator:
         job_dir: Path,
         input_star_path: Path,
         output_star_path: Path,
-        project_root: Path,  # NEW: Required parameter
+        project_root: Path,
         tomo_dimensions: str,
         alignment_method: str,
     ) -> Dict:
@@ -514,7 +513,10 @@ class MetadataTranslator:
                 keys_rel = [Path(p).name for p in ts_tilts_df["rlnMicrographMovieName"]]
                 print(f"[DEBUG] Tilt series has {len(keys_rel)} movies: {keys_rel[:3]}...")
 
-                tomostar_file = job_dir / f"tomostar/{ts_id}.tomostar"
+                # FIXED: Look for tomostar file in project-level directory, not job directory
+                tomostar_file = project_root / f"tomostar/{ts_id}.tomostar"
+                print(f"[DEBUG] Looking for tomostar file at: {tomostar_file}")
+                
                 if not tomostar_file.exists():
                     print(f"[WARN] Missing {tomostar_file} for {ts_id}, skipping.")
                     ts_id_failed.append(ts_id)
@@ -533,8 +535,17 @@ class MetadataTranslator:
                 # Check if we have the right number of alignment entries
                 if len(aln_data) != len(tomostar_df):
                     print(f"[WARN] Alignment data ({len(aln_data)}) and tomostar entries ({len(tomostar_df)}) don't match for {ts_id}")
-                    ts_id_failed.append(ts_id)
-                    continue
+                    print(f"[DEBUG] Alignment data shape: {aln_data.shape}")
+                    print(f"[DEBUG] Tomostar shape: {tomostar_df.shape}")
+                    # Try to match by available indices
+                    min_len = min(len(aln_data), len(tomostar_df))
+                    if min_len > 0:
+                        print(f"[DEBUG] Using first {min_len} entries from both")
+                        aln_data = aln_data[:min_len]
+                        tomostar_df = tomostar_df.iloc[:min_len]
+                    else:
+                        ts_id_failed.append(ts_id)
+                        continue
 
                 # Apply alignment transformations to each tilt
                 applied_count = 0
@@ -730,7 +741,7 @@ class MetadataTranslator:
             print(f"[METADATA] Starting tsCTF update for {input_star_path}")
             print(f"[METADATA] Using project root: {project_root}")
             
-            # Parse WarpTools XML files
+            # Parse WarpTools XML files from job directory
             xml_pattern = str(job_dir / warp_folder / "*.xml")
             warp_data = WarpXmlParser(xml_pattern)
             print(f"[METADATA] Parsed {len(warp_data.data_df)} XML files")
@@ -796,11 +807,11 @@ class MetadataTranslator:
             # Calculate binning factor
             binning = rescale_angpixs / frame_pixel_size
             
-            # Update paths for each tilt series
+            # Update paths for each tilt series - use job_dir for reconstruction outputs
             for index, row in out_ts_df.iterrows():
                 ts_name = row["rlnTomoName"]
                 
-                # Build reconstruction paths
+                # Build reconstruction paths relative to job directory
                 rec_name = f"{warp_folder}/reconstruction/{ts_name}_{rec_res}Apx.mrc"
                 rec_half1 = f"{warp_folder}/reconstruction/even/{ts_name}_{rec_res}Apx.mrc"
                 rec_half2 = f"{warp_folder}/reconstruction/odd/{ts_name}_{rec_res}Apx.mrc"
@@ -829,5 +840,3 @@ class MetadataTranslator:
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
-
-

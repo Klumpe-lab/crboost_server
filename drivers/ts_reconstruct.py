@@ -2,7 +2,6 @@
 import shlex
 import sys
 import os
-import shutil
 from pathlib import Path
 import traceback
 
@@ -16,59 +15,26 @@ from services.starfile_service import StarfileService
 from services.container_service import get_container_service
 
 
-def copy_previous_metadata(input_assets: dict, output_assets: dict):
-    """Copy necessary metadata files including XML files from warp_tiltseries"""
-    upstream_settings = input_assets["upstream_settings"]  
-    upstream_tomostar = input_assets["upstream_tomostar"] 
-    upstream_warp_dir = input_assets["upstream_warp_dir"]
-    
-    print(f"[DEBUG] Copying from upstream:")
-    print(f"[DEBUG]   Settings: {upstream_settings} (exists: {upstream_settings.exists()})")
-    print(f"[DEBUG]   Tomostar: {upstream_tomostar} (exists: {upstream_tomostar.exists()})")
-    print(f"[DEBUG]   Warp dir: {upstream_warp_dir} (exists: {upstream_warp_dir.exists()})")
-    
-    # Copy settings file FROM UPSTREAM
-    if upstream_settings.exists():
-        shutil.copy2(upstream_settings, output_assets["warp_settings"])
-        print(f"[DEBUG] Copied settings file from {upstream_settings} to {output_assets['warp_settings']}")
-    else:
-        print(f"[DRIVER] ERROR: Previous settings not found at {upstream_settings}", flush=True)
-        raise FileNotFoundError(f"Upstream settings file not found: {upstream_settings}")
-
-    # Copy tomostar files FROM UPSTREAM
-    if upstream_tomostar.exists():
-        output_assets["tomostar_dir"].mkdir(parents=True, exist_ok=True)
-        tomostar_files = list(upstream_tomostar.glob("*.tomostar"))
-        for tomostar_file in tomostar_files:
-            shutil.copy2(tomostar_file, output_assets["tomostar_dir"])
-        print(f"[DEBUG] Copied {len(tomostar_files)} tomostar files")
-    else:
-        print(f"[DRIVER] WARNING: Previous tomostar not found at {upstream_tomostar}", flush=True)
-
-    # CRITICAL: Copy XML files FROM UPSTREAM warp_tiltseries
-    if upstream_warp_dir.exists():
-        output_assets["warp_dir"].mkdir(parents=True, exist_ok=True)
-        xml_files = list(upstream_warp_dir.glob("*.xml"))
-        for xml_file in xml_files:
-            shutil.copy2(xml_file, output_assets["warp_dir"])
-        print(f"[DEBUG] Copied {len(xml_files)} XML files from {upstream_warp_dir}")
-    else:
-        print(f"[DRIVER] WARNING: Previous warp directory not found at {upstream_warp_dir}", flush=True)
-
-
 def build_reconstruct_command(params: TsReconstructParams, paths: dict) -> str:
-    """Build WarpTools ts_reconstruct command with proper output paths"""
-    settings_file = shlex.quote(str(paths['warp_settings']))
+    """Build reconstruction command using input_processing."""
     
+    settings_file     = shlex.quote(str(paths['warp_tiltseries_settings']))
+    input_processing  = shlex.quote(str(paths["input_processing"]))          # From CTF job
+    output_processing = shlex.quote(str(paths["output_processing"]))         # From CTF job
+
+
     return (
         f"WarpTools ts_reconstruct "
         f"--settings {settings_file} "
+        f"--input_processing {input_processing} "  # Read from CTF job
+        f"--output_processing {output_processing} "  # CRITICAL: Write to current job
         f"--angpix {params.rescale_angpixs} "
         f"--halfmap_frames {params.halfmap_frames} "
         f"--deconv {params.deconv} "
         f"--perdevice {params.perdevice} "
         f"--dont_invert"
     )
+
 
 def main():
     """Main driver function for tsReconstruct job"""
@@ -111,9 +77,8 @@ def main():
         if not paths["input_star"].exists():
             raise FileNotFoundError(f"Input STAR file not found: {paths['input_star']}")
 
-        # 2. Copy metadata from previous job
-        print("[DRIVER] Copying metadata from CTF job...", flush=True)
-        copy_previous_metadata(paths, paths)
+        # 2. NO MORE COPYING - WarpTools handles this via input_processing
+        print("[DRIVER] Using WarpTools input_processing for data flow", flush=True)
 
         # 3. Build and execute reconstruction command
         print("[DRIVER] Building WarpTools command...", flush=True)
@@ -140,7 +105,7 @@ def main():
             output_star_path=paths["output_star"],
             warp_folder="warp_tiltseries",
             rescale_angpixs=params.rescale_angpixs,
-            frame_pixel_size=params.pixel_size,  # This was the other failing call
+            frame_pixel_size=params.pixel_size,
         )
 
         if not result["success"]:
