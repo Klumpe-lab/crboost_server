@@ -18,12 +18,10 @@ class SchemeManipulationService:
         self,
         project_path: Path,
         scheme_name: str,
-        job_type: str  # Make sure this is a string, not a number
+        job_type: str 
     ) -> Dict[str, Any]:
-        # ADD DEBUGGING
         print(f"[DEBUG SCHEME_RESET] Resetting job_type: '{job_type}' (type: {type(job_type)})")
         
-        # Rest of your existing code...
         """
         Reset a job in scheme.star to allow re-running.
         

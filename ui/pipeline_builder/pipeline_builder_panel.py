@@ -8,8 +8,7 @@ import asyncio
 from pathlib import Path
 from backend import CryoBoostBackend
 from nicegui import ui
-from services.project_state import JobStatus, JobType
-from services.state_service import get_state_service  # <-- Refactored import
+from services.project_state import JobStatus, JobType, get_state_service
 from ui.utils import JobConfig
 from ui.pipeline_builder.job_tab_component import render_job_tab, get_status_color, get_job_status
 from ui.pipeline_builder.continuation_controls import build_continuation_controls
