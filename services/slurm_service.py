@@ -275,10 +275,9 @@ class SlurmService:
             "gpu_partitions": len(gpu_partitions),
             "user_jobs": len(user_jobs),
             "running_jobs": len([j for j in user_jobs if j.state == "RUNNING"]),
-            "pending_jobs": len([j for j in user_jobs if j.state == "PENDING"]),
+            "pending_jobs": len([j for j in user_jobs if j.state == "SCHEDULED"]),
         }
     
-
     async def get_slurm_partitions(self) -> Dict[str, Any]:
         """Get SLURM partition information"""
         try:
@@ -324,7 +323,6 @@ class SlurmService:
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
-
 
     def clear_cache(self):
         """Clear all cached data"""

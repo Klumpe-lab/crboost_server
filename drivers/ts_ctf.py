@@ -1,211 +1,166 @@
 #!/usr/bin/env python3
-
-import json
+import shlex
 import sys
+import os
 from pathlib import Path
 from typing import Dict
+import traceback
 
-# Add the project root to Python path to import services
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from services.metadata_service import MetadataTranslator
-from services.container_service import get_container_service
-from services.parameter_models import TsCtfParams
+try:
+    from drivers.driver_base import get_driver_context, run_command
+    from services.project_state import TsCtfParams
+    from services.metadata_service import MetadataTranslator
+    from services.starfile_service import StarfileService
+    from services.container_service import get_container_service
+except ImportError as e:
+    print("FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
+    print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
+    print(f"Error: {e}", file=sys.stderr)
+    sys.exit(1)
+
+
+def build_ctf_commands(params: TsCtfParams, paths: dict[str, Path]) -> str:
+    """Build CTF commands using input_processing and output_processing."""
+    
+    settings_file = shlex.quote(str(paths["warp_tiltseries_settings"]))
+    input_processing = shlex.quote(str(paths["input_processing"]))  # From alignment job
+    output_processing = shlex.quote(str(paths["output_processing"]))  # To current job
+
+    # All commands use the same processing overrides
+    check_hand_command = (
+        f"WarpTools ts_defocus_hand "
+        f"--settings {settings_file} "
+        f"--input_processing {input_processing} "
+        f"--check"
+    )
+    
+    if params.defocus_hand == "set_flip":
+        set_hand_command = (
+            f"WarpTools ts_defocus_hand "
+            f"--settings {settings_file} "
+            f"--input_processing {input_processing} "
+            f"--set_flip"
+        )
+    else:
+        set_hand_command = (
+            f"WarpTools ts_defocus_hand "
+            f"--settings {settings_file} "
+            f"--input_processing {input_processing} "
+            f"--set_noflip"
+        )
+
+    ctf_command = (
+        f"WarpTools ts_ctf "
+        f"--settings {settings_file} "
+        f"--input_processing {input_processing} "
+        f"--output_processing {output_processing} "  # CRITICAL: Write to current job
+        f"--window {params.window} "
+        f"--range_low {params.range_min} "
+        f"--range_high {params.range_max} "
+        f"--defocus_min {params.defocus_min} "
+        f"--defocus_max {params.defocus_max} "
+        f"--voltage {int(round(params.voltage))} "
+        f"--cs {params.spherical_aberration} "
+        f"--amplitude {params.amplitude_contrast} "
+        f"--perdevice {params.perdevice}"
+    )
+
+    return " && ".join([check_hand_command, set_hand_command, ctf_command])
 
 
 def main():
     """Main driver function for tsCTF job"""
-    print("Python", sys.version)
-    print("--- SLURM JOB START ---")
-
-    # Get job directory from command line argument
-    if len(sys.argv) < 2:
-        print("ERROR: Job directory argument required")
-        sys.exit(1)
-
-    job_dir = Path(sys.argv[1])
-    print(f"Node: {Path('/etc/hostname').read_text().strip() if Path('/etc/hostname').exists() else 'unknown'}")
-    print(f"Original CWD: {Path.cwd()}")
-    print(f"Target Job Directory: {job_dir}")
-
-    # Change to job directory
-    job_dir.mkdir(parents=True, exist_ok=True)
-    os.chdir(job_dir)
-    print(f"New CWD: {Path.cwd()}")
-
-    print("[DRIVER] tsCTF driver started.")
+    print("Python", sys.version, flush=True)
+    print("--- SLURM JOB START ---", flush=True)
 
     try:
-        # Load job parameters
-        params_path = job_dir / "job_params.json"
-        print(f"[DRIVER] Loading params from {params_path}")
+        (
+            project_state,
+            params,  # This is now the state-aware TsCtfParams object
+            local_params_data,
+            job_dir,
+            project_path,
+            job_type,
+        ) = get_driver_context()
+        
+    except Exception as e:
+        job_dir = Path.cwd()
+        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
+        print(f"[DRIVER] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
 
-        if not params_path.exists():
-            raise FileNotFoundError(f"Job parameters not found at {params_path}")
+    print(
+        f"Node: {Path('/etc/hostname').read_text().strip() if Path('/etc/hostname').exists() else 'unknown'}",
+        flush=True,
+    )
+    print(f"CWD (Job Directory): {job_dir}", flush=True)
+    print("[DRIVER] tsCTF driver started.", flush=True)
 
-        with open(params_path, "r") as f:
-            params_data = json.load(f)
+    success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
+    failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
 
-        params = TsCtfParams(**params_data)
-        print("[DRIVER] Parameters loaded successfully")
+    try:
+        # 1. Load paths and binds
+        print(f"[DRIVER] Params loaded for {job_type}", flush=True)
+        paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
+        additional_binds = local_params_data["additional_binds"]
 
-        # Get input/output assets
-        project_root = job_dir.parent.parent
-        upstream_outputs = {
-            "aligntiltsWarp": {
-                "output_star": project_root / "External" / "job003" / "aligned_tilt_series.star",
-                "warp_dir": project_root / "External" / "job003" / "warp_tiltseries",
-            }
-        }
+        if not paths["input_star"].exists():
+            raise FileNotFoundError(f"Input STAR file not found: {paths['input_star']}")
 
-        input_assets = params.get_input_assets(job_dir, project_root, upstream_outputs)
-        output_assets = params.get_output_assets(job_dir)
+        # 2. NO MORE COPYING - WarpTools handles this via input_processing/output_processing
+        print("[DRIVER] Using WarpTools input_processing/output_processing for data flow", flush=True)
 
-        print("[DRIVER] Received paths:")
-        for key, path in input_assets.items():
-            print(f"  {key}: {path}")
+        # 3. Build and execute WarpTools commands
+        print("[DRIVER] Building WarpTools commands...", flush=True)
+        ctf_command_str = build_ctf_commands(params, paths)
 
-        # Validate input files
-        if not input_assets["input_star"].exists():
-            raise FileNotFoundError(f"Input STAR file not found: {input_assets['input_star']}")
-
-        # Copy settings and tomostar from previous job
-        print("[DRIVER] Copying settings and metadata from alignment job...")
-        copy_previous_metadata(input_assets, output_assets)
-
-        # Build and execute WarpTools commands
-        print("[DRIVER] Building WarpTools commands...")
+        # 4. Execute command in container
+        print("[DRIVER] Executing container command...", flush=True)
         container_service = get_container_service()
+        wrapped_command = container_service.wrap_command_for_tool(
+            command=ctf_command_str, 
+            cwd=job_dir, 
+            tool_name=params.get_tool_name(), 
+            additional_binds=additional_binds
+        )
+        run_command(wrapped_command, cwd=job_dir)
+        print("[DRIVER] CTF processing completed successfully", flush=True)
 
-        # Command 1: Check defocus handness
-        check_hand_command = build_check_defocus_hand_command(params, input_assets)
-        print(f"[DRIVER] Command 1: {check_hand_command}")
-
-        # Command 2: Set defocus handness
-        set_hand_command = build_set_defocus_hand_command(params, input_assets)
-        print(f"[DRIVER] Command 2: {set_hand_command}")
-
-        # Command 3: Run CTF determination
-        ctf_command = build_ctf_command(params, input_assets)
-        print(f"[DRIVER] Command 3: {ctf_command}")
-
-        # Execute commands in container - USE THE SAME PATTERN AS OTHER DRIVERS
-        print("[DRIVER] Executing container commands...")
-
-        for i, command in enumerate([check_hand_command, set_hand_command, ctf_command], 1):
-            print(f"[DRIVER] Executing command {i}/3...")
-
-            # Use container service to wrap the command (same pattern as other drivers)
-            wrapped_command = container_service.wrap_command_for_tool(
-                command=command, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=[str(project_root)]
-            )
-
-            # Execute using subprocess (same pattern as other drivers)
-            import subprocess
-
-            result = subprocess.run(wrapped_command, shell=True, capture_output=True, text=True)
-
-            if result.returncode != 0:
-                print(f"[ERROR] Command {i} failed with return code {result.returncode}")
-                print(f"[ERROR] stdout: {result.stdout}")
-                print(f"[ERROR] stderr: {result.stderr}")
-                raise Exception(f"Command {i} failed: {result.stderr}")
-
-            print(f"[DRIVER] Command {i} completed successfully")
-
-        print("[DRIVER] Computation finished. Starting metadata processing.")
-
-        # Update metadata
-        metadata_service = MetadataTranslator()
+        # 5. Metadata processing
+        print("[DRIVER] Computation finished. Starting metadata processing.", flush=True)
+        metadata_service = MetadataTranslator(StarfileService())
         result = metadata_service.update_ts_ctf_metadata(
             job_dir=job_dir,
-            input_star_path=input_assets["input_star"],
-            output_star_path=output_assets["output_star"],
+            input_star_path=paths["input_star"],
+            output_star_path=paths["output_star"],
+            project_root=project_path,  # Pass project root for proper path resolution
             warp_folder="warp_tiltseries",
         )
 
         if not result["success"]:
             raise Exception(f"Metadata update failed: {result['error']}")
 
-        print("[DRIVER] Metadata processing successful.")
-        print("[DRIVER] Job finished successfully.")
+        print("[DRIVER] Metadata processing successful.", flush=True)
+        print("[DRIVER] Job finished successfully.", flush=True)
 
-        # Create success sentinel
-        success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
+        # 6. Create success sentinel
         success_file.touch()
-        print("--- SLURM JOB END (Exit Code: 0) ---")
-        print("Creating RELION_JOB_EXIT_SUCCESS")
+        print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
+        sys.exit(0)
 
     except Exception as e:
-        print(f"[DRIVER] FATAL ERROR: Job failed.")
-        print(f"{type(e).__name__}: {e}")
-        import traceback
-
-        traceback.print_exc()
-
-        # Create failure sentinel
-        failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
+        print("[DRIVER] FATAL ERROR: Job failed.", file=sys.stderr, flush=True)
+        print(f"{type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
         failure_file.touch()
-        print("--- SLURM JOB END (Exit Code: 1) ---")
-        print("Creating RELION_JOB_EXIT_FAILURE")
+        print("--- SLURM JOB END (Exit Code: 1) ---", file=sys.stderr, flush=True)
         sys.exit(1)
 
 
-def copy_previous_metadata(input_assets: Dict[str, Path], output_assets: Dict[str, Path]):
-    """Copy settings and tomostar from alignment job"""
-    import shutil
-
-    # Copy warp_tiltseries settings
-    prev_settings = input_assets["frameseries_dir"].parent / "warp_tiltseries.settings"
-    if prev_settings.exists():
-        shutil.copy2(prev_settings, output_assets["warp_settings"])
-        print(f"[DRIVER] Copied settings: {prev_settings} -> {output_assets['warp_settings']}")
-
-    # Copy tomostar directory
-    prev_tomostar = input_assets["frameseries_dir"].parent / "tomostar"
-    if prev_tomostar.exists():
-        if output_assets["tomostar_dir"].exists():
-            shutil.rmtree(output_assets["tomostar_dir"])
-        shutil.copytree(prev_tomostar, output_assets["tomostar_dir"])
-        print(f"[DRIVER] Copied tomostar: {prev_tomostar} -> {output_assets['tomostar_dir']}")
-
-    # Copy existing warp_tiltseries XML files
-    if input_assets["frameseries_dir"].exists():
-        if output_assets["warp_dir"].exists():
-            shutil.rmtree(output_assets["warp_dir"])
-        shutil.copytree(input_assets["frameseries_dir"], output_assets["warp_dir"])
-        print(f"[DRIVER] Copied warp directory: {input_assets['frameseries_dir']} -> {output_assets['warp_dir']}")
-
-
-def build_check_defocus_hand_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
-    """Build command to check defocus handness"""
-    return f"WarpTools ts_defocus_hand --settings {input_assets['warp_dir']}.settings --check"
-
-
-def build_set_defocus_hand_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
-    """Build command to set defocus handness"""
-    return f"WarpTools ts_defocus_hand --settings {input_assets['warp_dir']}.settings --{params.defocus_hand}"
-
-
-def build_ctf_command(params: TsCtfParams, input_assets: Dict[str, Path]) -> str:
-    """Build command for CTF determination"""
-    return (
-        f"WarpTools ts_ctf "
-        f"--settings {input_assets['warp_dir']}.settings "
-        f"--window {params.window} "
-        f"--range_low {params.range_min} "
-        f"--range_high {params.range_max} "
-        f"--defocus_min {params.defocus_min} "
-        f"--defocus_max {params.defocus_max} "
-        f"--voltage {params.voltage} "
-        f"--cs {params.cs} "
-        f"--amplitude {params.amplitude} "
-        f"--perdevice {params.perdevice}"
-    )
-
-
 if __name__ == "__main__":
-    import os
-
     main()

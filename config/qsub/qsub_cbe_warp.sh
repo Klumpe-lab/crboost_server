@@ -1,14 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=CryoBoost-Warp
-#SBATCH --constraint="g2|g3|g4"
 #SBATCH --partition=g
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1     
-#SBATCH --cpus-per-task=8
-#SBATCH --gres=gpu:2             
-#SBATCH --mem=48G
-#SBATCH --time=5:00:00
-#SBATCH --time=5:00:00
+#SBATCH --constraint="g2|g3|g4"
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:1             
+#SBATCH --mem=16G
+#SBATCH --time=0:15:00
+#SBATCH --time=0:15:00
 #SBATCH --output=XXXoutfileXXX
 #SBATCH --error=XXXerrfileXXX
 
@@ -24,11 +24,9 @@ module load arrow/16.1.0-gfbf-2023b
 which python3
 python3 --version
 
-
 export CRBOOST_SERVER_DIR="/users/artem.kushner/dev/crboost_server/"
 export VENV_PYTHON="/users/artem.kushner/dev/crboost_server/venv/bin/python3"
 export PYTHONPATH="${VENV_PYTHON}:${PYTHONPATH}"
-
 
 echo "--- SLURM JOB BEGAN ---"
 echo "Node: $(hostname)"
