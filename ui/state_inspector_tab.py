@@ -68,7 +68,7 @@ def build_state_inspector_tab():
     Shows live application state in both JSON and tree formats.
     Returns an async function to load initial data.
     """
-    from app_state import state as app_state
+    from services.state_old.app_state import state as app_state
     
     # State for the tab
     tab_state = {

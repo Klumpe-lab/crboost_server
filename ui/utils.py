@@ -4,8 +4,9 @@ from nicegui import ui
 from local_file_picker import local_file_picker
 # ui/utils.py
 from nicegui import ui
-from services.parameter_models import JobType
 from typing import List, Dict, Any
+
+from services.project_state import JobType
 
 
 

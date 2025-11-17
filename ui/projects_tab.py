@@ -5,16 +5,15 @@ import math
 from pathlib import Path
 from nicegui import ui
 from backend import CryoBoostBackend
-from services.parameter_models import JobType
+from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
 from ui.utils import create_path_input_with_picker
 from typing import Dict, Any, List
 
-from app_state import state as app_state, update_from_mdoc
+from services.state_old.app_state import state as app_state, update_from_mdoc
 from typing import List, Dict, Any
 
 # Import the new panel components
 from ui.data_import_panel import build_data_import_panel
-from ui.pipeline_builder_panel import build_pipeline_builder_panel
 
 def build_projects_tab(backend: CryoBoostBackend):
     """Projects tab with split layout"""
@@ -45,10 +44,10 @@ def build_projects_tab(backend: CryoBoostBackend):
     # Create the split layout
     with ui.splitter(value=30).classes('w-full h-[calc(100vh-100px)]') as splitter:
         with splitter.before:
-            data_import_state = build_data_import_panel(backend, state, callbacks)
+            _ = build_data_import_panel(backend, state, callbacks)
             
         with splitter.after:
-            pipeline_state = build_pipeline_builder_panel(backend, state, callbacks)
+            _ = build_pipeline_builder_panel(backend, state, callbacks)
     
     state["panels_built"] = True  
 

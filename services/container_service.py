@@ -4,8 +4,8 @@ from pathlib import Path
 import re
 import shlex
 from typing import List, Optional, Tuple
-from services.config_service import get_config_service
 
+from services.config_service import get_config_service
 
 class Colors:
     @classmethod
@@ -18,9 +18,9 @@ class Colors:
         bind_paths = re.findall(bind_pattern, command)
 
         container_match = re.search(r"([^\s]+\.sif)", command)
-        container_path = container_match.group(1) if container_match else "unknown"
-        inner_match = re.search(r"bash -c '(.+)'$", command)
-        inner_command = inner_match.group(1) if inner_match else "unknown"
+        container_path  = container_match.group(1) if container_match else "unknown"
+        inner_match     = re.search(r"bash -c '(.+)'$", command)
+        inner_command   = inner_match.group(1) if inner_match else "unknown"
 
         return env_cleanup, bind_paths, container_path, inner_command
 
@@ -144,7 +144,6 @@ class Colors:
 
         return "\n".join(lines)
 
-
 class ContainerService:
     def __init__(self):
         self.config = get_config_service()
@@ -238,7 +237,6 @@ class ContainerService:
         print(Colors.format_command_log(tool_name, final_command, cwd, container_path))
 
         return final_command
-
 
 _container_service = None
 
