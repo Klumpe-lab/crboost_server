@@ -82,7 +82,7 @@ class PipelineOrchestratorService:
     ):
         """
         Creates a custom Relion scheme with the selected jobs.
-        Uses standardized path resolution based on old cryoboost conventions.
+        Updates state with job paths instead of writing sidecar files.
         """
         try:
             # Initialize project service with absolute project root
@@ -137,43 +137,24 @@ class PipelineOrchestratorService:
                     print(f"[PIPELINE WARNING] Job {job_name} not in state, skipping scheme creation for it.")
                     continue
 
-                # --- UPDATED: Use standardized path resolution ---
+                # --- Use standardized path resolution ---
                 paths = self._resolve_job_paths_standardized(job_name, job_number, selected_jobs, project_dir)
 
-                # Create job directory and validate critical paths
-                job_run_dir = paths["job_dir"]
-                job_run_dir.mkdir(parents=True, exist_ok=True)
-
-                # Validate that required input files exist for non-import jobs
-                if job_name != "importmovies":
-                    input_star = paths.get("input_star")
-                    if input_star and not input_star.exists():
-                        print(f"[PIPELINE WARNING] Input STAR file not found for {job_name}: {input_star}")
-                        # Don't fail here, but log the warning
-
-                params_json_path = job_run_dir / "job_params.json"
-
+                # --- SINGLE SOURCE OF TRUTH UPDATE ---
+                # We do NOT create the job directory here anymore. Relion Schemer will do it.
+                # We just calculate where it *will* be.
+                
+                # Update the state object (in-memory) with the calculated paths
+                job_model.paths = {k: str(v) for k, v in paths.items()}
+                job_model.additional_binds = all_binds
+                job_model.relion_job_name = f"{job_model.JOB_CATEGORY.value}/job{job_number:03d}"
+                state.jobs[job_type_enum] = job_model
+                
+                print(f"[PIPELINE] Updated internal state for {job_name} with paths.")
+                
+                # Build command for job.star
                 final_command_for_fn_exe = self._build_job_command(job_name, job_model, paths, all_binds, server_dir)
-
                 print(f"[PIPELINE] fn_exe for {job_name}: {final_command_for_fn_exe}")
-
-                job_type = JobType.from_string(job_name)
-
-                # Create the job parameters file with standardized paths
-                data_to_serialize = {
-                    "job_type": job_type.value,
-                    "job_model": job_model.model_dump(),
-                    "paths": {k: str(v) for k, v in paths.items()},
-                    "additional_binds": all_binds,
-                }
-
-                try:
-                    with open(params_json_path, "w") as f:
-                        json.dump(data_to_serialize, f, indent=2)
-                    print(f"[PIPELINE] Saved job params to {params_json_path}")
-                    print(f"[PIPELINE] Paths for {job_name}: {list(paths.keys())}")
-                except Exception as e:
-                    print(f"[PIPELINE ERROR] Failed to save {params_json_path}: {e}")
 
                 # Update the fn_exe parameter in job.star
                 params_df.loc[params_df["rlnJobOptionVariable"] == "fn_exe", "rlnJobOptionValue"] = (
@@ -201,6 +182,11 @@ class PipelineOrchestratorService:
                 self.star_handler.write(job_data, job_star_path)
 
             self._create_scheme_star(new_scheme_dir, new_scheme_name, selected_jobs)
+            
+            # --- PERSIST STATE ---
+            # Save the updated project_params.json with all the paths we just calculated
+            await self.backend.state_service.save_project()
+            
             print(f"[PIPELINE] Created complete scheme at: {new_scheme_dir}")
             return {"success": True}
 
@@ -216,7 +202,6 @@ class PipelineOrchestratorService:
     ) -> Dict[str, Path]:
         """
         Standardized path resolution using JobType and JobCategory enums.
-        Now uses master settings files and eliminates unnecessary copying.
         """
         try:
             job_type = JobType(job_name)
@@ -237,7 +222,6 @@ class PipelineOrchestratorService:
         }
 
         # MASTER SETTINGS AND DATA PATHS (ONE PER PROJECT)
-        # In _resolve_job_paths_standardized method, add this to master_paths:
         master_paths = {
             "warp_frameseries_settings": project_dir / "warp_frameseries.settings",
             "warp_tiltseries_settings": project_dir / "warp_tiltseries.settings",
@@ -294,11 +278,11 @@ class PipelineOrchestratorService:
             return {
                 **base_paths,
                 **master_paths,
-                "input_star": tsctf_job_dir / "ts_ctf_tilt_series.star",
-                "output_star": base_paths["job_dir"] / "tomograms.star",
-                "warp_dir": base_paths["job_dir"] / "warp_tiltseries",  # Job-specific output
-                "input_processing": tsctf_job_dir / "warp_tiltseries",  # Read from CTF job
-                "output_processing": base_paths["job_dir"] / "warp_tiltseries",  # Write to current job
+                "input_star"       : tsctf_job_dir / "ts_ctf_tilt_series.star",
+                "output_star"      : base_paths["job_dir"] / "tomograms.star",
+                "warp_dir"         : base_paths["job_dir"] / "warp_tiltseries",   # Job-specific output
+                "input_processing" : tsctf_job_dir / "warp_tiltseries",           # Read from CTF job
+                "output_processing": base_paths["job_dir"] / "warp_tiltseries",   # Write to current job
             }
 
         else:
@@ -389,7 +373,6 @@ class PipelineOrchestratorService:
     def _create_scheme_star(self, scheme_dir: Path, scheme_name: str, selected_jobs: List[str]):
         """
         Create the scheme.star file that defines the pipeline flow.
-        (No changes to this method)
         """
         # General scheme metadata
         scheme_general_df = pd.DataFrame(

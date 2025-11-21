@@ -147,10 +147,10 @@ def build_data_import_panel(backend: CryoBoostBackend, shared_state: Dict[str, A
             current_state = state_service.state
 
             # This shared_state logic seems for UI display, let's update it
-            shared_state["auto_detected_values"]["pixel_size"] = current_state.microscope.pixel_size_angstrom
+            shared_state["auto_detected_values"]["pixel_size"]    = current_state.microscope.pixel_size_angstrom
             shared_state["auto_detected_values"]["dose_per_tilt"] = current_state.acquisition.dose_per_tilt
-            dims = current_state.acquisition.detector_dimensions
-            shared_state["auto_detected_values"]["image_size"] = f"{dims[0]}x{dims[1]}"
+            dims                                                  = current_state.acquisition.detector_dimensions
+            shared_state["auto_detected_values"]["image_size"]    = f"{dims[0]}x{dims[1]}"
 
             # --- REMOVED SYNC LOGIC ---
             # The manual sync loop is no longer necessary.
@@ -368,12 +368,5 @@ def build_data_import_panel(backend: CryoBoostBackend, shared_state: Dict[str, A
         dose_per_tilt_input.on_value_change(calculate_eer_grouping)
         target_dose_input.on_value_change(calculate_eer_grouping)
         update_image_size_display()
-
-        # --- REFACTORED LISTENER SETUP ---
-        # All manual sync logic is removed. 
-        # The .bind_value() handles updating the state automatically.
-        # def setup_global_param_listeners():
-        #     pass # No longer needed
-        # setup_global_param_listeners()
 
     return panel_state
