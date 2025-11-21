@@ -19,6 +19,7 @@ from services.container_service import get_container_service
 def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], num_tomograms: int) -> str:
     """Builds the multi-step WarpTools alignment command string using master settings and proper processing args."""
 
+    # [CHANGE] Pydantic access (dot notation) instead of dict lookup
     gain_path_str = ""
     if params.gain_path and params.gain_path != "None":
         gain_path_str = shlex.quote(params.gain_path)
@@ -28,8 +29,12 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
     mdoc_dir = shlex.quote(str(paths["mdoc_dir"]))
     tomostar_dir = shlex.quote(str(paths["tomostar_dir"]))  # Project-level tomostar directory
     settings_file = shlex.quote(str(paths["warp_tiltseries_settings"]))
-    input_processing = shlex.quote(str(paths.get("input_processing", "")))  # From fs_motion
-    output_processing = shlex.quote(str(paths["output_processing"]))  # To current job
+    
+    # Handle optional paths safely
+    input_processing_raw = paths.get("input_processing")
+    input_processing = shlex.quote(str(input_processing_raw)) if input_processing_raw and str(input_processing_raw) != "None" else ""
+    
+    output_processing = shlex.quote(str(paths["output_processing"])) 
 
     # === Step 1: ts_import (only if tomostar doesn't exist) ===
     cmd_parts_import = [
@@ -37,7 +42,7 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
         "--mdocs", mdoc_dir,
         "--pattern", shlex.quote(params.mdoc_pattern),
         "--frameseries", input_processing if input_processing else shlex.quote(str(paths.get("frameseries_dir", ""))),
-        "--output", tomostar_dir,  # Write to project-level tomostar directory
+        "--output", tomostar_dir, 
         "--tilt_exposure", str(params.dose_per_tilt),
         "--override_axis", str(params.tilt_axis_angle),
     ]
@@ -53,7 +58,7 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
         "WarpTools create_settings",
         "--folder_data", tomostar_dir,
         "--extension '*.tomostar'",
-        "--folder_processing", output_processing,  # Default, will be overridden
+        "--folder_processing", output_processing, 
         "--output", settings_file,
         "--angpix", str(params.pixel_size),
         "--exposure", str(params.dose_per_tilt),
@@ -98,7 +103,7 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
         cmd_parts_align.extend(["--do_at_most", str(params.do_at_most)])
 
     # Clean up commands
-    cmd_parts_align = [part for part in cmd_parts_align if part]  # Remove empty strings
+    cmd_parts_align = [part for part in cmd_parts_align if part] 
 
     # Only run import if tomostar doesn't exist, only create settings if they don't exist
     return " && ".join([
@@ -113,7 +118,7 @@ def main():
         (
             project_state,
             params, 
-            local_params_data,
+            local_params_data, # Contains 'paths' and 'additional_binds'
             job_dir,
             project_path,
             job_type,
@@ -132,6 +137,7 @@ def main():
     try:
         # 1. Load paths and binds
         print(f"[DRIVER] Params loaded for job type {job_type} in {job_dir}", flush=True)
+        # Extract paths from the context data
         paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
         additional_binds = local_params_data["additional_binds"]
 
@@ -162,7 +168,7 @@ def main():
             job_dir=job_dir,
             input_star_path=input_star_abs,
             output_star_path=output_star_abs,
-            project_root=project_path,  # Pass project root for proper tomostar resolution
+            project_root=project_path,  
             tomo_dimensions=params.tomo_dimensions,
             alignment_method=params.alignment_method.value,
         )

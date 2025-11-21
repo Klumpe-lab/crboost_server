@@ -1,30 +1,24 @@
 # services/project_state.py
 """
 Unified project state - single source of truth for all parameters.
-Based on the new architecture proposal.
 """
 
 from __future__ import annotations
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Any, Optional, Type
-from pydantic import BaseModel, Field
+from typing import Dict, Any, Optional, Type, List
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 from datetime import datetime
 import json
 import sys
-from pydantic import field_validator, ConfigDict
 from typing import ClassVar, Tuple, Self, Union, TYPE_CHECKING
 import pandas as pd
 import starfile
-from typing import List
-# from services.project_state import JobType, ProjectState, get_project_state, set_project_state
 from services.mdoc_service import get_mdoc_service
-from services.config_service import get_config_service # Added this
-
-
+from services.config_service import get_config_service
 
 if TYPE_CHECKING:
-    from services.project_state import ProjectState 
+    from services.project_state import ProjectState
 
 class JobStatus(str, Enum):
     SUCCEEDED = "Succeeded"
@@ -80,11 +74,11 @@ class JobType(str, Enum):
 class MicroscopeParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
-    microscope_type        : MicroscopeType = MicroscopeType.CUSTOM
-    pixel_size_angstrom    : float          = Field(default=1.35, ge=0.5, le=10.0)
-    acceleration_voltage_kv: float          = Field(default=300.0)
-    spherical_aberration_mm: float          = Field(default=2.7, ge=0.0, le=10.0)
-    amplitude_contrast     : float          = Field(default=0.1, ge=0.0, le=1.0)
+    microscope_type         : MicroscopeType = MicroscopeType.CUSTOM
+    pixel_size_angstrom     : float          = Field(default=1.35, ge=0.5, le=10.0)
+    acceleration_voltage_kv : float          = Field(default=300.0)
+    spherical_aberration_mm : float          = Field(default=2.7, ge=0.0, le=10.0)
+    amplitude_contrast      : float          = Field(default=0.1, ge=0.0, le=1.0)
 
     @field_validator("acceleration_voltage_kv")
     @classmethod
@@ -97,20 +91,20 @@ class MicroscopeParams(BaseModel):
 class AcquisitionParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
-    dose_per_tilt          : float           = Field(default=3.0, ge=0.1, le=9.0)
-    detector_dimensions    : Tuple[int, int] = (4096, 4096)
-    tilt_axis_degrees      : float           = Field(default=-95.0, ge=-180.0, le=180.0)
-    eer_fractions_per_frame: Optional[int]   = Field(default=None, ge=1, le=100)
-    sample_thickness_nm    : float           = Field(default=300.0, ge=50.0, le=2000.0)
-    gain_reference_path    : Optional[str]   = None
-    invert_tilt_angles     : bool            = False
-    invert_defocus_hand    : bool            = False
-    acquisition_software   : str             = Field(default="SerialEM")
-    nominal_magnification  : Optional[int]   = None
-    spot_size              : Optional[int]   = None
-    camera_name            : Optional[str]   = None
-    binning                : Optional[int]   = Field(default=1, ge=1)
-    frame_dose             : Optional[float] = None
+    dose_per_tilt           : float            = Field(default=3.0, ge=0.1, le=9.0)
+    detector_dimensions     : Tuple[int, int]  = (4096, 4096)
+    tilt_axis_degrees       : float            = Field(default=-95.0, ge=-180.0, le=180.0)
+    eer_fractions_per_frame : Optional[int]    = Field(default=None, ge=1, le=100)
+    sample_thickness_nm     : float            = Field(default=300.0, ge=50.0, le=2000.0)
+    gain_reference_path     : Optional[str]    = None
+    invert_tilt_angles      : bool             = False
+    invert_defocus_hand     : bool             = False
+    acquisition_software    : str              = Field(default="SerialEM")
+    nominal_magnification   : Optional[int]    = None
+    spot_size               : Optional[int]    = None
+    camera_name             : Optional[str]    = None
+    binning                 : Optional[int]    = Field(default=1, ge=1)
+    frame_dose              : Optional[float]  = None
 
 class ComputingParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
@@ -147,8 +141,6 @@ class AbstractJobParams(BaseModel):
     Contains NO global parameters, only accessors.
     """
     
-    # model_config = ConfigDict(validate_assignment=True, private_attributes_allowed=True)
-    
     JOB_CATEGORY: ClassVar[JobCategory]
     
     # Job execution metadata only
@@ -156,11 +148,14 @@ class AbstractJobParams(BaseModel):
     relion_job_name: Optional[str] = None
     relion_job_number: Optional[int] = None
     
+    # We store the resolved paths and binds here to persist them in project_params.json
+    paths: Dict[str, str] = Field(default_factory=dict)
+    additional_binds: List[str] = Field(default_factory=list)
+
     # This is now a private attribute, not a Pydantic model field.
     _project_state: Optional["ProjectState"] = None
     
-    
-    # --- Global parameter access via properties - THE KEY INNOVATION ---
+    # --- Global parameter access via properties ---
     
     @property
     def microscope(self) -> MicroscopeParams:
@@ -174,7 +169,6 @@ class AbstractJobParams(BaseModel):
             raise RuntimeError(f"Job {type(self).__name__} not attached to project state")
         return self._project_state.acquisition
         
-    # Example properties for direct access
     @property
     def pixel_size(self) -> float:
         return self.microscope.pixel_size_angstrom
@@ -218,8 +212,9 @@ class AbstractJobParams(BaseModel):
     # --- End of Properties ---
     
     def __setattr__(self, name: str, value: Any) -> None:
-        """Enforce immutability for started/completed jobs"""
-        if name in ['execution_status', 'relion_job_name', 'relion_job_number', '_project_state']:
+        """Enforce immutability for started/completed jobs AND Auto-Save changes"""
+        # 1. Bypass logic for private/internal fields
+        if name in ['execution_status', 'relion_job_name', 'relion_job_number', '_project_state', 'paths', 'additional_binds']:
             super().__setattr__(name, value)
             return
         
@@ -227,6 +222,7 @@ class AbstractJobParams(BaseModel):
             super().__setattr__(name, value)
             return
             
+        # 2. Immutability Check
         try:
             current_status = object.__getattribute__(self, 'execution_status')
         except AttributeError:
@@ -237,7 +233,20 @@ class AbstractJobParams(BaseModel):
             print(f"[IMMUTABLE] Blocked change to '{name}' on {current_status.value} job")
             return
             
+        # 3. Apply Change
         super().__setattr__(name, value)
+        
+        # 4. AUTO-SAVE: If attached to state, persist to disk immediately.
+        # This fixes the UI desync issue.
+        if self._project_state is not None:
+             try:
+                 # We call save() on the project state. 
+                 # This is safe because _project_state is the global singleton.
+                 self._project_state.save()
+                 print(f"[AUTO-SAVE] Persisted change to {name}")
+             except Exception as e:
+                 print(f"[WARN] Auto-save failed for {name}: {e}")
+
 
     @property
     def display_status(self) -> str:
@@ -268,10 +277,7 @@ class AbstractJobParams(BaseModel):
         return False
     def get_tool_name(self) -> str:
         raise NotImplementedError("Subclass must implement get_tool_name()")
-        
-    # --- ELIMINATED METHODS ---
-    # NO from_pipeline_state
-    # NO sync_from_pipeline_state
+
 
 class ImportMoviesParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
@@ -279,9 +285,6 @@ class ImportMoviesParams(AbstractJobParams):
     # JOB-SPECIFIC PARAMETERS ONLY
     optics_group_name: str = "opticsGroup1"
     do_at_most: int = Field(default=-1)
-    
-    # NO pixel_size, voltage, spherical_aberration, etc.
-    # They are accessed via properties from AbstractJobParams
 
     def get_tool_name(self) -> str:
         return "relion_import"
@@ -301,16 +304,14 @@ class ImportMoviesParams(AbstractJobParams):
             else:
                 job_params: Dict[str, Any] = job_data
             
-            # Load ONLY job-specific parameters
             return cls(
                 optics_group_name=job_params.get("optics_group_name", "opticsGroup1"),
-                do_at_most=int(job_params.get("do_at_most", -1)), # Example if this was in the star
+                do_at_most=int(job_params.get("do_at_most", -1)),
             )
         except Exception as e:
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
             return None
             
-    # Asset definition methods
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
         return {
@@ -328,22 +329,21 @@ class ImportMoviesParams(AbstractJobParams):
 class FsMotionCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
-    m_range_min_max   : str           = "500:10"
-    m_bfac            : int           = Field(default=-500)
-    m_grid            : str           = "1x1x3"
-    c_range_min_max   : str           = "30:6.0"
-    c_defocus_min_max : str           = "1.1:8"
-    c_grid            : str           = "2x2x1"
-    c_window          : int           = Field(default=512, ge=128)
-    c_use_sum         : bool          = False
-    out_average_halves: bool          = True
-    out_skip_first    : int           = 0
-    out_skip_last     : int           = 0
-    perdevice         : int           = Field(default=1, ge=0, le=8)
-    do_at_most        : int           = Field(default=-1)
-    gain_operations   : Optional[str] = None
+    m_range_min_max       : str           = "500:10"
+    m_bfac                : int           = Field(default=-500)
+    m_grid                : str           = "1x1x3"
+    c_range_min_max       : str           = "30:6.0"
+    c_defocus_min_max     : str           = "1.1:8"
+    c_grid                : str           = "2x2x1"
+    c_window              : int           = Field(default=512, ge=128)
+    c_use_sum             : bool          = False
+    out_average_halves    : bool          = True
+    out_skip_first        : int           = 0
+    out_skip_last         : int           = 0
+    perdevice             : int           = Field(default=1, ge=0, le=8)
+    do_at_most            : int           = Field(default=-1)
+    gain_operations       : Optional[str] = None
     
-
     def is_driver_job(self) -> bool: return True
     def get_tool_name(self) -> str: return "warptools"
 
@@ -370,7 +370,6 @@ class FsMotionCtfParams(AbstractJobParams):
     @property
     def defocus_max_microns(self) -> float:
         return float(self.c_defocus_min_max.split(":")[1])
-    # --- PROPERTIES END HERE ---
 
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
@@ -385,7 +384,6 @@ class FsMotionCtfParams(AbstractJobParams):
                 df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
             ).to_dict()
             
-            # Load ONLY job-specific parameters
             return cls(
                 gain_operations    = param_dict.get("param3_value") ,
                 m_range_min_max    = param_dict.get("param4_value", "500:10") ,
@@ -408,14 +406,11 @@ class FsMotionCtfParams(AbstractJobParams):
 
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
-        """Standardized output paths matching old cryoboost"""
         return {
             "job_dir": job_dir,
             "output_star": job_dir / "fs_motion_and_ctf.star",
             "warp_dir": job_dir / "warp_frameseries",
             "warp_settings": job_dir / "warp_frameseries.settings",
-            # Note: tilt_series_dir is created but contains the same input star files
-            # The actual output is in fs_motion_and_ctf.star
         }
 
     @staticmethod
@@ -426,13 +421,12 @@ class FsMotionCtfParams(AbstractJobParams):
     def get_input_assets(
         job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
     ) -> Dict[str, Path]:
-        """Standardized input paths - SIMPLIFIED"""
         import_outputs = upstream_outputs.get("importmovies", {})
         
         return {
             "job_dir": job_dir,
             "project_root": project_root,
-            "input_star": import_outputs.get("output_star"),  # tilt_series.star from import
+            "input_star": import_outputs.get("output_star"),
             "output_star": job_dir / "fs_motion_and_ctf.star",
             "frames_dir": project_root / "frames",
             "mdoc_dir": project_root / "mdoc",
@@ -443,7 +437,6 @@ class FsMotionCtfParams(AbstractJobParams):
 class TsAlignmentParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
-    # JOB-SPECIFIC PARAMETERS ONLY
     alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
     rescale_angpixs  : float          = Field(default=12.0, ge=2.0, le=50.0)
     tomo_dimensions : str             = Field(default="4096x4096x2048")
@@ -457,9 +450,6 @@ class TsAlignmentParams(AbstractJobParams):
     axis_batch      : int             = Field(default=5, ge=1)
     imod_patch_size : int             = Field(default=200)
     imod_overlap    : int             = Field(default=50)
-
-    # NO pixel_size, dose_per_tilt, tilt_axis_angle, invert_tilt_angles, thickness_nm, gain_path
-    # They are accessed via properties.
 
     def is_driver_job(self) -> bool: return True
     def get_tool_name(self) -> str: return "warptools"
@@ -501,7 +491,6 @@ class TsAlignmentParams(AbstractJobParams):
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
             return None
             
-    # Asset definitions
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
         return {
@@ -533,20 +522,15 @@ class TsAlignmentParams(AbstractJobParams):
 class TsCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
-    # JOB-SPECIFIC PARAMETERS ONLY
     window: int = Field(default=512, ge=128, le=2048)
     range_min_max: str = Field(default="30:6.0")
     defocus_min_max: str = Field(default="0.5:8")
     defocus_hand: str = Field(default="set_flip")
     perdevice: int = Field(default=1, ge=0, le=8)
-    
-    # NO voltage, cs, amplitude
-    # They are accessed via properties
 
     def is_driver_job(self) -> bool: return True
     def get_tool_name(self) -> str: return "warptools"
 
-    # --- PROPERTIES START HERE ---
     @property
     def range_min(self) -> float:
         return float(self.range_min_max.split(":")[0])
@@ -562,7 +546,6 @@ class TsCtfParams(AbstractJobParams):
     @property
     def defocus_max(self) -> float:
         return float(self.defocus_min_max.split(":")[1])
-    # --- PROPERTIES END HERE ---
 
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
@@ -588,7 +571,6 @@ class TsCtfParams(AbstractJobParams):
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
             return None
 
-    # Asset definitions
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"alignment": "aligntiltsWarp"}
@@ -610,7 +592,7 @@ class TsCtfParams(AbstractJobParams):
         alignment_outputs = upstream_outputs.get("aligntiltsWarp", {})
         return {
             "input_star": alignment_outputs.get("output_star"),
-            "frameseries_dir": alignment_outputs.get("warp_dir"),
+            "warp_dir_in": alignment_outputs.get("warp_dir"),
             "warp_settings_in": alignment_outputs.get("warp_settings"),
             "tomostar_dir_in": alignment_outputs.get("tomostar_dir"),
         }
@@ -618,14 +600,10 @@ class TsCtfParams(AbstractJobParams):
 class TsReconstructParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
-    # JOB-SPECIFIC PARAMETERS ONLY
     rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
     halfmap_frames: int = Field(default=1, ge=0, le=1)
     deconv: int = Field(default=1, ge=0, le=1)
     perdevice: int = Field(default=1, ge=0, le=8)
-    
-    # NO pixel_size
-    # Accessed via property
 
     def is_driver_job(self) -> bool: return True
     def get_tool_name(self) -> str: return "warptools"
@@ -653,7 +631,6 @@ class TsReconstructParams(AbstractJobParams):
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
             return None
 
-    # Asset definitions
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"ctf": "tsCtf"}
@@ -693,22 +670,18 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
-    # Metadata
     project_name: str = "Untitled"
     project_path: Optional[Path] = None
     created_at: datetime = Field(default_factory=datetime.now)
     modified_at: datetime = Field(default_factory=datetime.now)
 
-    # Global experimental parameters - THE single source of truth
     microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
     acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
     computing: ComputingParams = Field(default_factory=lambda: ComputingParams.from_conf_yaml(Path("config/conf.yaml")))
 
-    # Job configurations - these access global params directly via properties
     jobs: Dict[JobType, AbstractJobParams] = Field(default_factory=dict)
 
     def ensure_job_initialized(self, job_type: JobType, template_path: Optional[Path] = None):
-        """Ensure job exists and can access global parameters"""
         if job_type in self.jobs:
             return
 
@@ -718,29 +691,24 @@ class ProjectState(BaseModel):
         if not param_class:
             raise ValueError(f"Unknown job type: {job_type}")
 
-        # Try template first
         job_params = None
         if template_path and template_path.exists():
             job_params = param_class.from_job_star(template_path)
 
         if job_params is None:
-            # Create new, empty job-specific params
             job_params = param_class()
             print(f"[STATE] Initialized {job_type.value} with defaults")
         else:
             print(f"[STATE] Initialized {job_type.value} from job.star template")
 
-        # Attach project state for global parameter access
         if job_params:
             job_params._project_state = self
             self.jobs[job_type] = job_params
             self.update_modified()
 
     def update_modified(self):
-        """Update the modified timestamp"""
         self.modified_at = datetime.now()
 
-    # Serialization
     def save(self, path: Optional[Path] = None):
         """Save the entire project state to a single JSON file."""
         save_path = path or (
@@ -748,33 +716,24 @@ class ProjectState(BaseModel):
         )
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Use Pydantic's model_dump for cleaner serialization
         data = self.model_dump(exclude={"project_path"})
-
-        # Handle non-serializable types manually
         data["project_path"] = str(self.project_path) if self.project_path else None
-
-        # Ensure datetimes are ISO format
         data["created_at"] = self.created_at.isoformat()
         data["modified_at"] = self.modified_at.isoformat()
-
-        # Ensure job keys are strings
         data["jobs"] = {job_type.value: job_params.model_dump() for job_type, job_params in self.jobs.items()}
 
         with open(save_path, "w") as f:
-            json.dump(data, f, indent=2, default=str)  # Add default=str for safety
+            json.dump(data, f, indent=2, default=str)
         print(f"[STATE] Project state saved to {save_path}")
 
     @classmethod
     def load(cls, path: Path):
-        """Load the entire project state from a single JSON file."""
         if not path.exists():
             raise FileNotFoundError(f"Project params file not found: {path}")
 
         with open(path, "r") as f:
             data = json.load(f)
 
-        # Recreate project state
         project_state = cls(
             project_name=data.get("project_name", "Untitled"),
             project_path=Path(data["project_path"]) if data.get("project_path") else None,
@@ -785,7 +744,6 @@ class ProjectState(BaseModel):
             computing=ComputingParams(**data.get("computing", {})),
         )
 
-        # Re-initialize jobs and attach project state
         param_class_map = jobtype_paramclass()
 
         for job_type_str, job_data in data.get("jobs", {}).items():
@@ -794,7 +752,7 @@ class ProjectState(BaseModel):
                 param_class = param_class_map.get(job_type)
                 if param_class:
                     job_params = param_class(**job_data)
-                    job_params._project_state = project_state  # THE KEY: Re-attach state
+                    job_params._project_state = project_state 
                     project_state.jobs[job_type] = job_params
             except ValueError:
                 print(f"[WARN] Skipping unknown job type '{job_type_str}' during load.")
@@ -812,12 +770,8 @@ def get_project_state():
 
 
 def set_project_state(new_state: ProjectState):
-    """Override the global state, e.g., when loading a project."""
     global _project_state
     _project_state = new_state
-
-
-
 
 
 class StateService:
@@ -831,10 +785,6 @@ class StateService:
         return self._project_state
     
     async def update_from_mdoc(self, mdocs_glob: str):
-        """
-        Update global state from mdoc files.
-        This directly mutates the single source of truth.
-        """
         mdoc_service = get_mdoc_service()
         mdoc_data = mdoc_service.get_autodetect_params(mdocs_glob)
         
@@ -845,7 +795,6 @@ class StateService:
         print(f"[STATE] Updating from mdoc: {mdoc_data}")
         
         try:
-            # Update microscope params directly
             if "pixel_spacing" in mdoc_data:
                 self._project_state.microscope.pixel_size_angstrom = mdoc_data["pixel_spacing"]
             if "voltage" in mdoc_data:
@@ -881,24 +830,18 @@ class StateService:
             traceback.print_exc()
     
     async def ensure_job_initialized(self, job_type: JobType, template_path: Optional[Path] = None):
-        """Ensure job exists in the state"""
         self._project_state.ensure_job_initialized(job_type, template_path)
     
     async def load_project(self, project_json_path: Path):
-        """Load project, replacing the current global state"""
         try:
             self._project_state = ProjectState.load(project_json_path)
-            set_project_state(self._project_state) # IMPORTANT: Set the global singleton
+            set_project_state(self._project_state)
             return True
         except Exception as e:
             print(f"[ERROR] Failed to load project state from {project_json_path}: {e}", file=sys.stderr)
             return False
     
     async def save_project(self, save_path: Optional[Path] = None):
-        """
-        Save the current ProjectState model to its designated file.
-        This is a direct serialization of the state object.
-        """
         target_path = save_path or self._project_state.project_path / "project_params.json"
         
         if not target_path:
@@ -909,21 +852,14 @@ class StateService:
     async def export_for_project(
         self, movies_glob: str, mdocs_glob: str, selected_jobs_str: List[str]
     ) -> Dict[str, Any]:
-        """
-        Gathers all state and config data into a single dictionary
-        for project creation and serialization, similar to the old export_for_project.
-        """
         print("[STATE] Exporting comprehensive project config")
         
-        # Get services
         mdoc_service = get_mdoc_service()
         config_service = get_config_service()
         state = self._project_state
         
-        # 1. Analyze Mdocs
         mdoc_stats = mdoc_service.parse_all_mdoc_files(mdocs_glob)
 
-        # 2. Ensure all selected jobs are in the state
         template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
         for job_str in selected_jobs_str:
             try:
@@ -939,7 +875,7 @@ class StateService:
         containers = config_service.containers
         export = {
             "metadata": {
-                "config_version": "3.0", # Bumped version for new state model
+                "config_version": "3.0",
                 "created_by": "CryoBoost Parameter Manager",
                 "created_at": datetime.now().isoformat(),
                 "project_name": state.project_name,

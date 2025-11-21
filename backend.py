@@ -18,19 +18,17 @@ HARDCODED_USER = "artem.kushner"
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
-        self.username              = HARDCODED_USER
-        self.server_dir            = server_dir
-        self.project_service       = ProjectService(self)
-        self.pipeline_orchestrator = PipelineOrchestratorService(self)
-        self.container_service     = get_container_service()
-        self.slurm_service         = SlurmService(HARDCODED_USER)
-        self.pipeline_runner       = PipelineRunnerService(self)
-        self.state_service         = get_state_service()
-        self.pipeline_manipulation = PipelineManipulationService(self)
-        self.scheme_manipulation   = SchemeManipulationService(self)
-        self.continuation          = ContinuationService(self)
-
-        # self.app_state = app_state  # <--- REMOVED THIS
+        self.username                  = HARDCODED_USER
+        self.server_dir                = server_dir
+        self.project_service           = ProjectService(self)
+        self.pipeline_orchestrator     = PipelineOrchestratorService(self)
+        self.container_service         = get_container_service()
+        self.slurm_service             = SlurmService(HARDCODED_USER)
+        self.pipeline_runner           = PipelineRunnerService(self)
+        self.state_service             = get_state_service()
+        self.pipeline_manipulation     = PipelineManipulationService(self)
+        self.scheme_manipulation       = SchemeManipulationService(self)
+        self.continuation              = ContinuationService(self)
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
         """Get parameters for a specific job, initializing if not present."""
@@ -57,7 +55,37 @@ class CryoBoostBackend:
         except ValueError as e:
             return {"success": False, "error": str(e)}
 
-    # TODO
+    async def update_job_parameters(self, job_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Updates parameters for a specific job and PERSISTS to project_params.json.
+        This fixes the synchronization issue where UI changes weren't saved.
+        """
+        try:
+            job_type = JobType.from_string(job_name)
+            
+            # 1. Update the in-memory state
+            state = self.state_service.state
+            job_model = state.jobs.get(job_type)
+            
+            if not job_model:
+                return {"success": False, "error": f"Job {job_name} not initialized"}
+            
+            # Update fields dynamically
+            # The __setattr__ hook in AbstractJobParams will block changes if the job is running/done
+            for key, value in params.items():
+                if hasattr(job_model, key):
+                     setattr(job_model, key, value)
+            
+            # 2. PERSIST TO DISK (The missing link)
+            await self.state_service.save_project()
+            
+            return {"success": True, "params": job_model.model_dump()}
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
         if not template_path.is_dir():
@@ -83,13 +111,14 @@ class CryoBoostBackend:
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
         """Runs mdoc update and returns the entire updated state."""
         await self.state_service.update_from_mdoc(mdocs_glob)
+        # Ensure we save after autodetection
+        await self.state_service.save_project()
         return self.state_service.state.model_dump(mode="json", exclude={"project_path"})
 
     async def run_shell_command(
         self, command: str, cwd: Path = None, tool_name: str = None, additional_binds: List[str] = None
     ):
         """Runs a shell command, optionally using specified tool's container."""
-        # (This method is unchanged)
         try:
             if tool_name:
                 print(f"[DEBUG] Running command with tool: {tool_name}")
@@ -161,8 +190,6 @@ class CryoBoostBackend:
 
     async def load_existing_project(self, project_path: str) -> Dict[str, Any]:
         """Load an existing project for continuation"""
-        # This now just passes through to project_service, which
-        # should be using state_service.load_project
         return await self.project_service.load_project_state(project_path)
 
     async def debug_pipeline_status(self, project_path: str):
