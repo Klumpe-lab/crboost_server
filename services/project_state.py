@@ -209,6 +209,42 @@ class AbstractJobParams(BaseModel):
     def invert_tilt_angles(self) -> bool:
         return self.acquisition.invert_tilt_angles
 
+
+    @property
+    def project_root(self) -> Path:
+        if self._project_state is None or self._project_state.project_path is None:
+            raise RuntimeError("Project path not set in state")
+        return self._project_state.project_path
+
+    @property
+    def master_tomostar_dir(self) -> Path:
+        return self.project_root / "tomostar"
+
+    @property
+    def master_warp_frameseries_settings(self) -> Path:
+        return self.project_root / "warp_frameseries.settings"
+
+    @property
+    def master_warp_tiltseries_settings(self) -> Path:
+        return self.project_root / "warp_tiltseries.settings"
+
+    @property
+    def frames_dir(self) -> Path:
+        return self.project_root / "frames"
+
+    @property
+    def mdoc_dir(self) -> Path:
+        return self.project_root / "mdoc"
+
+    # --- LOGIC MIGRATION ---
+    
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        """
+        Calculates the exact paths required for this job.
+        Replaces the old _resolve_job_paths_standardized in the orchestrator.
+        """
+        raise NotImplementedError("Subclasses must implement resolve_paths")
+
     # --- End of Properties ---
     
     def __setattr__(self, name: str, value: Any) -> None:
@@ -278,7 +314,6 @@ class AbstractJobParams(BaseModel):
     def get_tool_name(self) -> str:
         raise NotImplementedError("Subclass must implement get_tool_name()")
 
-
 class ImportMoviesParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
 
@@ -312,19 +347,17 @@ class ImportMoviesParams(AbstractJobParams):
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
             return None
             
-    @staticmethod
-    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        # Import has no upstream job in the pipeline sense
         return {
-            "job_dir": job_dir,
-            "tilt_series_star": job_dir / "tilt_series.star",
+            "job_dir"        : job_dir,
+            "project_root"   : self.project_root,
+            "frames_dir"     : self.frames_dir,
+            "mdoc_dir"       : self.mdoc_dir,
             "tilt_series_dir": job_dir / "tilt_series",
-            "log": job_dir / "log.txt",
+            "output_star"    : job_dir / "tilt_series.star",
+            "tomostar_dir"   : self.master_tomostar_dir,       # Use master tomostar
         }
-    @staticmethod
-    def get_input_assets(
-        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
-    ) -> Dict[str, Path]:
-        return {"job_dir": job_dir, "frames_dir": project_root / "frames", "mdoc_dir": project_root / "mdoc"}
 
 class FsMotionCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -404,34 +437,30 @@ class FsMotionCtfParams(AbstractJobParams):
             return None
 
 
-    @staticmethod
-    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
-        return {
-            "job_dir": job_dir,
-            "output_star": job_dir / "fs_motion_and_ctf.star",
-            "warp_dir": job_dir / "warp_frameseries",
-            "warp_settings": job_dir / "warp_frameseries.settings",
-        }
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"import": "importmovies"}
 
-    @staticmethod  
-    def get_input_assets(
-        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
-    ) -> Dict[str, Path]:
-        import_outputs = upstream_outputs.get("importmovies", {})
-        
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        if not upstream_job_dir:
+            raise ValueError("FsMotionCtf requires an upstream job directory (Import)")
+
         return {
             "job_dir": job_dir,
-            "project_root": project_root,
-            "input_star": import_outputs.get("output_star"),
-            "output_star": job_dir / "fs_motion_and_ctf.star",
-            "frames_dir": project_root / "frames",
-            "mdoc_dir": project_root / "mdoc",
-            "warp_dir": job_dir / "warp_frameseries",
-            "warp_settings": job_dir / "warp_frameseries.settings",
+            "project_root": self.project_root,
+            "frames_dir": self.frames_dir,
+            "mdoc_dir": self.mdoc_dir,
+            "warp_frameseries_settings": self.master_warp_frameseries_settings,
+            "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
+            "tomostar_dir": self.master_tomostar_dir,
+            
+            # Logic from Orchestrator:
+            "input_star"       : upstream_job_dir / "tilt_series.star",
+            "output_star"      : job_dir / "fs_motion_and_ctf.star",
+            "warp_dir"         : job_dir / "warp_frameseries",
+            "input_processing" : None,
+            "output_processing": job_dir / "warp_frameseries",
         }
 
 class TsAlignmentParams(AbstractJobParams):
@@ -450,6 +479,7 @@ class TsAlignmentParams(AbstractJobParams):
     axis_batch      : int             = Field(default=5, ge=1)
     imod_patch_size : int             = Field(default=200)
     imod_overlap    : int             = Field(default=50)
+
 
     def is_driver_job(self) -> bool: return True
     def get_tool_name(self) -> str: return "warptools"
@@ -471,62 +501,57 @@ class TsAlignmentParams(AbstractJobParams):
             patch_str = job_params.get("aretomo_patches", "2x2")
             patch_x, patch_y = map(int, patch_str.split("x")) if "x" in patch_str else (2, 2)
             axis_str = job_params.get("refineTiltAxis_iter_and_batch", "3:5")
+
             axis_iter, axis_batch = map(int, axis_str.split(":")) if ":" in axis_str else (3, 5)
 
             return cls(
-                alignment_method=method,
-                rescale_angpixs=float(job_params.get("rescale_angpixs", 12.0)),
-                tomo_dimensions=job_params.get("tomo_dimensions", "4096x4096x2048"),
-                gain_operations=job_params.get("gain_operations"),
-                perdevice=int(job_params.get("perdevice", 1)),
-                mdoc_pattern=job_params.get("mdoc_pattern", "*.mdoc"),
-                patch_x=patch_x,
-                patch_y=patch_y,
-                axis_iter=axis_iter,
-                axis_batch=axis_batch,
-                imod_patch_size=int(job_params.get("imod_patch_size", 200)),
-                imod_overlap=int(job_params.get("imod_overlap", 50)),
+                alignment_method = method,
+                rescale_angpixs  = float(job_params.get("rescale_angpixs", 12.0)),
+                tomo_dimensions  = job_params.get("tomo_dimensions", "4096x4096x2048"),
+                gain_operations  = job_params.get("gain_operations"),
+                perdevice        = int(job_params.get("perdevice", 1)),
+                mdoc_pattern     = job_params.get("mdoc_pattern", "*.mdoc"),
+                patch_x          = patch_x,
+                patch_y          = patch_y,
+                axis_iter        = axis_iter,
+                axis_batch       = axis_batch,
+                imod_patch_size  = int(job_params.get("imod_patch_size", 200)),
+                imod_overlap     = int(job_params.get("imod_overlap", 50)),
             )
         except Exception as e:
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
             return None
             
-    @staticmethod
-    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        if not upstream_job_dir:
+            raise ValueError("TsAlignment requires an upstream job directory (FsMotion)")
+
         return {
-            "job_dir": job_dir,
-            "output_star": job_dir / "aligned_tilt_series.star",
-            "tilt_series_dir": job_dir / "tilt_series",
-            "warp_dir": job_dir / "warp_tiltseries",
-            "warp_settings": job_dir / "warp_tiltseries.settings",
-            "tomostar_dir": job_dir / "tomostar",
+            "job_dir"                  : job_dir,
+            "project_root"             : self.project_root,
+            "mdoc_dir"                 : self.mdoc_dir,
+            "warp_frameseries_settings": self.master_warp_frameseries_settings,
+            "warp_tiltseries_settings" : self.master_warp_tiltseries_settings,
+            "tomostar_dir"             : self.master_tomostar_dir,
+            "input_star"               : upstream_job_dir / "fs_motion_and_ctf.star",
+            "output_star"              : job_dir / "aligned_tilt_series.star",
+            "warp_dir"                 : job_dir / "warp_tiltseries",
+            "input_processing"         : upstream_job_dir / "warp_frameseries",         # Read from FsMotion
+            "output_processing"        : job_dir / "warp_tiltseries",                   # Write to current
         }
+
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"motion": "fsMotionAndCtf"}
-    @staticmethod
-    def get_input_assets(
-        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
-    ) -> Dict[str, Path]:
-        motion_outputs = upstream_outputs.get("fsMotionAndCtf", {})
-        return {
-            "job_dir": job_dir,
-            "input_star": motion_outputs.get("output_star"),
-            "frameseries_dir": motion_outputs.get("warp_dir"),
-            "output_star": job_dir / "aligned_tilt_series.star",
-            "mdoc_dir": project_root / "mdoc",
-            "tomostar_dir": job_dir / "tomostar",
-            "warp_dir": job_dir / "warp_tiltseries",
-        }
 
 class TsCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
-    window: int = Field(default=512, ge=128, le=2048)
-    range_min_max: str = Field(default="30:6.0")
+    window         : int = Field(default=512, ge=128, le=2048)
+    range_min_max  : str = Field(default="30:6.0")
     defocus_min_max: str = Field(default="0.5:8")
-    defocus_hand: str = Field(default="set_flip")
-    perdevice: int = Field(default=1, ge=0, le=8)
+    defocus_hand   : str = Field(default="set_flip")
+    perdevice      : int = Field(default=1, ge=0, le=8)
 
     def is_driver_job(self) -> bool: return True
     def get_tool_name(self) -> str: return "warptools"
@@ -574,36 +599,32 @@ class TsCtfParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"alignment": "aligntiltsWarp"}
-    @staticmethod
-    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        if not upstream_job_dir:
+            raise ValueError("TsCtf requires an upstream job directory (Alignment)")
+
         return {
             "job_dir": job_dir,
+            "project_root": self.project_root,
+            "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
+            "tomostar_dir": self.master_tomostar_dir,
+
+            # Logic from Orchestrator:
+            "input_star": upstream_job_dir / "aligned_tilt_series.star",
             "output_star": job_dir / "ts_ctf_tilt_series.star",
-            "tilt_series_dir": job_dir / "tilt_series",
             "warp_dir": job_dir / "warp_tiltseries",
-            "warp_settings": job_dir / "warp_tiltseries.settings",
-            "tomostar_dir": job_dir / "tomostar",
-            "xml_pattern": str(job_dir / "warp_tiltseries" / "*.xml"),
-        }
-    @staticmethod
-    def get_input_assets(
-        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
-    ) -> Dict[str, Path]:
-        alignment_outputs = upstream_outputs.get("aligntiltsWarp", {})
-        return {
-            "input_star": alignment_outputs.get("output_star"),
-            "warp_dir_in": alignment_outputs.get("warp_dir"),
-            "warp_settings_in": alignment_outputs.get("warp_settings"),
-            "tomostar_dir_in": alignment_outputs.get("tomostar_dir"),
+            "input_processing": upstream_job_dir / "warp_tiltseries", # Read from Alignment
+            "output_processing": job_dir / "warp_tiltseries",         # Write to current
         }
 
 class TsReconstructParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
     rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
-    halfmap_frames: int = Field(default=1, ge=0, le=1)
-    deconv: int = Field(default=1, ge=0, le=1)
-    perdevice: int = Field(default=1, ge=0, le=8)
+    halfmap_frames : int   = Field(default=1, ge=0, le=1)
+    deconv         : int   = Field(default=1, ge=0, le=1)
+    perdevice      : int   = Field(default=1, ge=0, le=8)
 
     def is_driver_job(self) -> bool: return True
     def get_tool_name(self) -> str: return "warptools"
@@ -634,29 +655,24 @@ class TsReconstructParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"ctf": "tsCtf"}
-    @staticmethod
-    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        if not upstream_job_dir:
+            raise ValueError("TsReconstruct requires an upstream job directory (Ctf)")
+
         return {
             "job_dir": job_dir,
-            "output_star": job_dir / "tomograms.star",
-            "tilt_series_dir": job_dir / "tilt_series",
-            "warp_dir": job_dir / "warp_tiltseries",
-            "warp_settings": job_dir / "warp_tiltseries.settings",
-            "tomostar_dir": job_dir / "tomostar",
-            "reconstruction_dir": job_dir / "warp_tiltseries" / "reconstruction",
-        }
-    @staticmethod
-    def get_input_assets(
-        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
-    ) -> Dict[str, Path]:
-        ctf_outputs = upstream_outputs.get("tsCtf", {})
-        return {
-            "input_star": ctf_outputs.get("output_star"),
-            "warp_dir_in": ctf_outputs.get("warp_dir"),
-            "warp_settings_in": ctf_outputs.get("warp_settings"),
-            "tomostar_dir_in": ctf_outputs.get("tomostar_dir"),
-        }
+            "project_root": self.project_root,
+            "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
+            "tomostar_dir": self.master_tomostar_dir,
 
+            # Logic from Orchestrator:
+            "input_star": upstream_job_dir / "ts_ctf_tilt_series.star",
+            "output_star": job_dir / "tomograms.star",
+            "warp_dir": job_dir / "warp_tiltseries",
+            "input_processing": upstream_job_dir / "warp_tiltseries", # Read from CTF
+            "output_processing": job_dir / "warp_tiltseries",         # Write to current
+        }
 
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
@@ -760,7 +776,6 @@ class ProjectState(BaseModel):
         print(f"[STATE] Project state loaded from {path}")
         return project_state
 
-_project_state = None
 
 def get_project_state():
     global _project_state
@@ -768,11 +783,12 @@ def get_project_state():
         _project_state = ProjectState()
     return _project_state
 
-
 def set_project_state(new_state: ProjectState):
     global _project_state
     _project_state = new_state
 
+
+_project_state = None
 
 class StateService:
     """Just handles persistence and mdoc updates"""
@@ -898,7 +914,6 @@ class StateService:
         }
 
         return export
-
 
 # Singleton
 _state_service_instance = None
