@@ -2,18 +2,20 @@
 import shutil
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 import json
 from services.config_service import get_config_service
 from services.project_state import AbstractJobParams, JobCategory, JobType, get_state_service
 from .starfile_service import StarfileService
 from .project_service import ProjectService
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
 
 from typing import Any
 from services.project_state import ImportMoviesParams
+
 
 class BaseCommandBuilder:
     def format_paths(self, paths: Dict[str, Path]) -> Dict[str, str]:
@@ -22,6 +24,7 @@ class BaseCommandBuilder:
     def add_optional_param(self, cmd_parts: List[str], flag: str, value: Any, condition: bool = True):
         if condition and value is not None and str(value) != "None" and str(value) != "":
             cmd_parts.extend([flag, str(value)])
+
 
 class ImportMoviesCommandBuilder(BaseCommandBuilder):
     """Build import movies command from params"""
@@ -62,13 +65,14 @@ class ImportMoviesCommandBuilder(BaseCommandBuilder):
 
         return " ".join(cmd_parts)
 
+
 class PipelineOrchestratorService:
     def __init__(self, backend_instance: "CryoBoostBackend"):
-        self.backend         = backend_instance
-        self.star_handler    = StarfileService()
-        self.config_service  = get_config_service()
+        self.backend = backend_instance
+        self.star_handler = StarfileService()
+        self.config_service = get_config_service()
         self.project_service = None
-        self.state_service   = get_state_service()
+        self.state_service = get_state_service()
 
         self.job_builders: Dict[str, BaseCommandBuilder] = {JobType.IMPORT_MOVIES.value: ImportMoviesCommandBuilder()}
 
@@ -137,21 +141,40 @@ class PipelineOrchestratorService:
                     print(f"[PIPELINE WARNING] Job {job_name} not in state, skipping scheme creation for it.")
                     continue
 
-                # --- Use standardized path resolution ---
-                paths = self._resolve_job_paths_standardized(job_name, job_number, selected_jobs, project_dir)
+                # --- NEW: Model-Based Path Resolution ---
+
+                # 1. Calculate Current Job Directory location (Do NOT create it yet)
+                if job_type_enum == JobType.IMPORT_MOVIES:
+                    category = JobCategory.IMPORT
+                else:
+                    category = JobCategory.EXTERNAL
+
+                current_job_dir = project_dir / category.value / f"job{job_number:03d}"
+
+                # 2. Calculate Upstream Job Directory (if applicable)
+                upstream_job_dir = None
+                if job_type_enum != JobType.IMPORT_MOVIES:
+                    try:
+                        # Simple linear dependency: find the job before this one
+                        if job_index > 0:
+                            prev_job_name = selected_jobs[job_index - 1]
+                            prev_job_type = JobType(prev_job_name)
+                            upstream_job_dir = self._get_job_dir_for_type(prev_job_type, selected_jobs, project_dir)
+                    except Exception as e:
+                        print(f"[PIPELINE WARNING] Could not determine upstream dir for {job_name}: {e}")
+
+                # 3. Ask the Model to Resolve its own Paths
+                # This replaces _resolve_job_paths_standardized
+                paths = job_model.resolve_paths(current_job_dir, upstream_job_dir)
 
                 # --- SINGLE SOURCE OF TRUTH UPDATE ---
-                # We do NOT create the job directory here anymore. Relion Schemer will do it.
-                # We just calculate where it *will* be.
-                
-                # Update the state object (in-memory) with the calculated paths
                 job_model.paths = {k: str(v) for k, v in paths.items()}
                 job_model.additional_binds = all_binds
                 job_model.relion_job_name = f"{job_model.JOB_CATEGORY.value}/job{job_number:03d}"
                 state.jobs[job_type_enum] = job_model
-                
+
                 print(f"[PIPELINE] Updated internal state for {job_name} with paths.")
-                
+
                 # Build command for job.star
                 final_command_for_fn_exe = self._build_job_command(job_name, job_model, paths, all_binds, server_dir)
                 print(f"[PIPELINE] fn_exe for {job_name}: {final_command_for_fn_exe}")
@@ -182,11 +205,11 @@ class PipelineOrchestratorService:
                 self.star_handler.write(job_data, job_star_path)
 
             self._create_scheme_star(new_scheme_dir, new_scheme_name, selected_jobs)
-            
+
             # --- PERSIST STATE ---
             # Save the updated project_params.json with all the paths we just calculated
             await self.backend.state_service.save_project()
-            
+
             print(f"[PIPELINE] Created complete scheme at: {new_scheme_dir}")
             return {"success": True}
 
@@ -196,97 +219,6 @@ class PipelineOrchestratorService:
 
             traceback.print_exc()
             return {"success": False, "error": str(e)}
-
-    def _resolve_job_paths_standardized(
-        self, job_name: str, job_number: int, selected_jobs: List[str], project_dir: Path
-    ) -> Dict[str, Path]:
-        """
-        Standardized path resolution using JobType and JobCategory enums.
-        """
-        try:
-            job_type = JobType(job_name)
-        except ValueError:
-            job_type = None
-
-        # Determine job directory based on category
-        if job_type == JobType.IMPORT_MOVIES:
-            job_dir = project_dir / JobCategory.IMPORT.value / f"job{job_number:03d}"
-        else:
-            job_dir = project_dir / JobCategory.EXTERNAL.value / f"job{job_number:03d}"
-
-        base_paths = {
-            "job_dir": job_dir,
-            "project_root": project_dir,
-            "frames_dir": project_dir / "frames",
-            "mdoc_dir": project_dir / "mdoc",
-        }
-
-        # MASTER SETTINGS AND DATA PATHS (ONE PER PROJECT)
-        master_paths = {
-            "warp_frameseries_settings": project_dir / "warp_frameseries.settings",
-            "warp_tiltseries_settings": project_dir / "warp_tiltseries.settings",
-            "tomostar_dir": project_dir / "tomostar",  # Single tomostar directory for entire project
-        }
-        # Job-specific path templates using enums
-        if job_type == JobType.IMPORT_MOVIES:
-            return {
-                **base_paths,
-                "tilt_series_dir": base_paths["job_dir"] / "tilt_series",
-                "output_star": base_paths["job_dir"] / "tilt_series.star",
-                "tomostar_dir": master_paths["tomostar_dir"],  # Use master tomostar
-            }
-
-        elif job_type == JobType.FS_MOTION_CTF:
-            import_job_dir = self._get_upstream_job_dir(JobType.IMPORT_MOVIES, selected_jobs, job_number, project_dir)
-
-            return {
-                **base_paths,
-                **master_paths,
-                "input_star": import_job_dir / "tilt_series.star",
-                "output_star": base_paths["job_dir"] / "fs_motion_and_ctf.star",
-                "warp_dir": base_paths["job_dir"] / "warp_frameseries",  # Job-specific output
-                "input_processing": None,  # No input processing for first Warp job
-                "output_processing": base_paths["job_dir"] / "warp_frameseries",  # Write to job dir
-            }
-
-        elif job_type == JobType.TS_ALIGNMENT:
-            fsmotion_job_dir = self._get_upstream_job_dir(JobType.FS_MOTION_CTF, selected_jobs, job_number, project_dir)
-            return {
-                **base_paths,
-                **master_paths,
-                "input_star": fsmotion_job_dir / "fs_motion_and_ctf.star",
-                "output_star": base_paths["job_dir"] / "aligned_tilt_series.star",
-                "warp_dir": base_paths["job_dir"] / "warp_tiltseries",  # Job-specific output
-                "input_processing": fsmotion_job_dir / "warp_frameseries",  # Read from previous job
-                "output_processing": base_paths["job_dir"] / "warp_tiltseries",  # Write to current job
-            }
-
-        elif job_type == JobType.TS_CTF:
-            align_job_dir = self._get_upstream_job_dir(JobType.TS_ALIGNMENT, selected_jobs, job_number, project_dir)
-            return {
-                **base_paths,
-                **master_paths,
-                "input_star": align_job_dir / "aligned_tilt_series.star",
-                "output_star": base_paths["job_dir"] / "ts_ctf_tilt_series.star",
-                "warp_dir": base_paths["job_dir"] / "warp_tiltseries",  # Job-specific output
-                "input_processing": align_job_dir / "warp_tiltseries",  # Read from alignment job
-                "output_processing": base_paths["job_dir"] / "warp_tiltseries",  # Write to current job
-            }
-
-        elif job_type == JobType.TS_RECONSTRUCT:
-            tsctf_job_dir = self._get_upstream_job_dir(JobType.TS_CTF, selected_jobs, job_number, project_dir)
-            return {
-                **base_paths,
-                **master_paths,
-                "input_star"       : tsctf_job_dir / "ts_ctf_tilt_series.star",
-                "output_star"      : base_paths["job_dir"] / "tomograms.star",
-                "warp_dir"         : base_paths["job_dir"] / "warp_tiltseries",   # Job-specific output
-                "input_processing" : tsctf_job_dir / "warp_tiltseries",           # Read from CTF job
-                "output_processing": base_paths["job_dir"] / "warp_tiltseries",   # Write to current job
-            }
-
-        else:
-            return {**base_paths, **master_paths}
 
     def _build_job_command(
         self,
@@ -355,20 +287,20 @@ class PipelineOrchestratorService:
                 print(f"[PIPELINE ERROR] Failed to build command for {job_name}: {e}")
                 return f"echo 'ERROR: Failed to build command for {job_name}: {e}'; exit 1;"
 
-    def _get_upstream_job_dir(
-        self, upstream_job_type: JobType, selected_jobs: List[str], current_job_num: int, project_dir: Path
-    ) -> Path:
+    def _get_job_dir_for_type(self, target_job_type: JobType, selected_jobs: List[str], project_dir: Path) -> Path:
+        """Helper to determine directory for upstream jobs"""
         try:
-            upstream_idx = selected_jobs.index(upstream_job_type)
-            upstream_job_num = upstream_idx + 1
-        except ValueError:
-            raise ValueError(f"Current job requires {upstream_job_type} but it's not in selected jobs")
-        if upstream_job_type == JobType.IMPORT_MOVIES:
-            category = JobCategory.IMPORT
-        else:
-            category = JobCategory.EXTERNAL
+            idx = selected_jobs.index(target_job_type.value)
+            job_num = idx + 1
 
-        return project_dir / category.value / f"job{upstream_job_num:03d}"
+            if target_job_type == JobType.IMPORT_MOVIES:
+                cat = JobCategory.IMPORT
+            else:
+                cat = JobCategory.EXTERNAL
+
+            return project_dir / cat.value / f"job{job_num:03d}"
+        except ValueError:
+            return None
 
     def _create_scheme_star(self, scheme_dir: Path, scheme_name: str, selected_jobs: List[str]):
         """
