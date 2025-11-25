@@ -676,10 +676,10 @@ class TsReconstructParams(AbstractJobParams):
 
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
-        JobType.IMPORT_MOVIES: ImportMoviesParams,
-        JobType.FS_MOTION_CTF: FsMotionCtfParams,
-        JobType.TS_ALIGNMENT: TsAlignmentParams,
-        JobType.TS_CTF: TsCtfParams,
+        JobType.IMPORT_MOVIES : ImportMoviesParams,
+        JobType.FS_MOTION_CTF : FsMotionCtfParams,
+        JobType.TS_ALIGNMENT  : TsAlignmentParams,
+        JobType.TS_CTF        : TsCtfParams,
         JobType.TS_RECONSTRUCT: TsReconstructParams,
     }
 
