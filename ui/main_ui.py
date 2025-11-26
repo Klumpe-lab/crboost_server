@@ -1,8 +1,9 @@
 # ui/main_ui.py
 """
-Main UI router - refactored to use typed UIStateManager.
+Main UI router.
+Refactored to hydrate state AND restore backend state from disk on load.
 """
-from nicegui import ui, Client
+from nicegui import ui, Client, app
 
 from backend import CryoBoostBackend
 from ui.ui_state import get_ui_state_manager, reset_ui_state_manager
@@ -19,9 +20,25 @@ def create_ui_router(backend: CryoBoostBackend):
     async def projects_page(client: Client):
         """Main projects page with hamburger menu."""
         
-        # Reset UI state for fresh page load
-        # This prevents stale state from previous sessions
-        ui_mgr = reset_ui_state_manager()
+        # 1. Get Manager
+        ui_mgr = get_ui_state_manager()
+        
+        # 2. Hydrate from Browser Storage
+        if 'ui_state' in app.storage.user:
+            ui_mgr.load_from_storage(app.storage.user['ui_state'])
+        
+        # 3. CRITICAL: Resync Backend Memory from Disk
+        # This prevents the "Job model not found" crash on page reload.
+        if ui_mgr.is_project_created and ui_mgr.project_path:
+            print(f"[MAIN_UI] Restoring backend state from {ui_mgr.project_path}")
+            # This loads project_params.json into the singleton ProjectState
+            await backend.load_existing_project(str(ui_mgr.project_path))
+        
+        # 4. Setup Auto-Persistence
+        def persist_state(state):
+            app.storage.user['ui_state'] = state.model_dump(mode='json')
+            
+        ui_mgr.subscribe(persist_state)
         
         # Add custom styles
         ui.add_head_html("""
@@ -114,7 +131,6 @@ def create_ui_router(backend: CryoBoostBackend):
                     "text-xs text-gray-500 px-4 py-2"
                 )
         
-        # Callbacks dict for cross-component communication
         callbacks = {}
         
         # Main layout
@@ -185,63 +201,63 @@ def create_ui_router(backend: CryoBoostBackend):
         
         await client.connected()
 
-        @ui.page("/cluster-info")
-        async def cluster_info_page(client: Client):
-            """Page showing cluster/slurm information."""
-            ui.add_head_html("""
-                <style>
-                    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
-                    
-                    body {
-                        font-family: 'IBM Plex Sans', sans-serif !important;
-                    }
-                </style>
-            """)
+    @ui.page("/cluster-info")
+    async def cluster_info_page(client: Client):
+        """Page showing cluster/slurm information."""
+        ui.add_head_html("""
+            <style>
+                @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+                
+                body {
+                    font-family: 'IBM Plex Sans', sans-serif !important;
+                }
+            </style>
+        """)
+        
+        with ui.column().classes("w-full p-8"):
+            ui.label("Cluster Information").classes("text-2xl font-bold mb-4")
             
-            with ui.column().classes("w-full p-8"):
-                ui.label("Cluster Information").classes("text-2xl font-bold mb-4")
+            # Back button
+            ui.button("Back to Projects", on_click=lambda: ui.navigate.to("/")).props(
+                "flat no-caps"
+            )
+            
+            ui.separator().classes("my-4")
+            
+            # Slurm queue info
+            ui.label("Slurm Queue").classes("text-lg font-bold mt-4 mb-2")
+            
+            queue_container = ui.column().classes("w-full")
+            
+            async def refresh_queue():
+                queue_container.clear()
+                with queue_container:
+                    ui.label("Loading...").classes("text-gray-500")
                 
-                # Back button
-                ui.button("Back to Projects", on_click=lambda: ui.navigate.to("/")).props(
-                    "flat no-caps"
-                )
-                
-                ui.separator().classes("my-4")
-                
-                # Slurm queue info
-                ui.label("Slurm Queue").classes("text-lg font-bold mt-4 mb-2")
-                
-                queue_container = ui.column().classes("w-full")
-                
-                async def refresh_queue():
+                try:
+                    result = await backend.slurm_service.get_queue_status()
                     queue_container.clear()
                     with queue_container:
-                        ui.label("Loading...").classes("text-gray-500")
-                    
-                    try:
-                        result = await backend.slurm_service.get_queue_status()
-                        queue_container.clear()
-                        with queue_container:
-                            if result.get("jobs"):
-                                with ui.table(columns=[
-                                    {"name": "job_id", "label": "Job ID", "field": "job_id"},
-                                    {"name": "name", "label": "Name", "field": "name"},
-                                    {"name": "state", "label": "State", "field": "state"},
-                                    {"name": "time", "label": "Time", "field": "time"},
-                                ], rows=result["jobs"]).classes("w-full"):
-                                    pass
-                            else:
-                                ui.label("No jobs in queue").classes("text-gray-500")
-                    except Exception as e:
-                        queue_container.clear()
-                        with queue_container:
-                            ui.label(f"Error: {e}").classes("text-red-500")
-                
-                ui.button("Refresh Queue", icon="refresh", on_click=refresh_queue).props(
-                    "dense no-caps"
-                )
-                
-                # Initial load
-                await refresh_queue()
+                        if result.get("jobs"):
+                            with ui.table(columns=[
+                                {"name": "job_id", "label": "Job ID", "field": "job_id"},
+                                {"name": "name", "label": "Name", "field": "name"},
+                                {"name": "state", "label": "State", "field": "state"},
+                                {"name": "time", "label": "Time", "field": "time"},
+                            ], rows=result["jobs"]).classes("w-full"):
+                                pass
+                        else:
+                            ui.label("No jobs in queue").classes("text-gray-500")
+                except Exception as e:
+                    queue_container.clear()
+                    with queue_container:
+                        ui.label(f"Error: {e}").classes("text-red-500")
             
-            await client.connected()
+            ui.button("Refresh Queue", icon="refresh", on_click=refresh_queue).props(
+                "dense no-caps"
+            )
+            
+            # Initial load
+            await refresh_queue()
+        
+        await client.connected()

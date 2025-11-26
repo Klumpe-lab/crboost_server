@@ -1,6 +1,8 @@
 # ui/pipeline_builder/job_tab_component.py
 """
-Job tab component - refactored to use typed UIStateManager.
+Job tab component.
+Refactored to use @ui.refreshable for status badges and dots.
+This ensures valid state on every render and avoids stale widget references.
 """
 import asyncio
 from pathlib import Path
@@ -24,46 +26,72 @@ from ui.ui_state import (
 )
 
 # ===========================================
-# Status Helpers
+# REACTIVE COMPONENTS (The Fix)
 # ===========================================
 
-def get_status_class(status: JobStatus) -> str:
-    """Get CSS class for pulsating dots based on status."""
-    mapping = {
+@ui.refreshable
+def render_status_badge(job_type: JobType):
+    """
+    A reactive badge that fetches fresh state on every refresh.
+    No more manually updating DOM classes.
+    """
+    # 1. FETCH FRESH STATE DIRECTLY
+    state = get_project_state()
+    job_model = state.jobs.get(job_type)
+    
+    # Fallback if job missing
+    status = job_model.execution_status if job_model else JobStatus.SCHEDULED
+    
+    # 2. DETERMINE STYLES
+    colors = {
+        JobStatus.SCHEDULED: ("bg-yellow-100", "text-yellow-800"),
+        JobStatus.RUNNING:   ("bg-blue-100", "text-blue-800"),
+        JobStatus.SUCCEEDED: ("bg-green-100", "text-green-800"),
+        JobStatus.FAILED:    ("bg-red-100", "text-red-800"),
+        JobStatus.UNKNOWN:   ("bg-gray-100", "text-gray-800"),
+    }
+    bg, txt = colors.get(status, ("bg-gray-100", "text-gray-800"))
+    
+    # 3. RENDER
+    ui.label(status.value).classes(f"text-xs font-bold px-2 py-0.5 rounded-full {bg} {txt}")
+
+
+@ui.refreshable
+def render_status_dot(job_type: JobType):
+    """
+    A reactive dot that pulses when running.
+    Used in the unified tab switcher.
+    """
+    # 1. FETCH FRESH STATE DIRECTLY
+    state = get_project_state()
+    job_model = state.jobs.get(job_type)
+    
+    status = job_model.execution_status if job_model else JobStatus.SCHEDULED
+
+    # 2. DETERMINE STYLES
+    # CSS classes defined in main_ui.py styles (pulse-running, etc.)
+    class_map = {
         JobStatus.RUNNING: "pulse-running",
         JobStatus.SUCCEEDED: "pulse-success",
         JobStatus.FAILED: "pulse-failed",
     }
-    return mapping.get(status, "pulse-scheduled")
-
-
-def get_status_hex_color(status: JobStatus) -> str:
-    """Get the hex color for the status indicator."""
-    mapping = {
-        JobStatus.RUNNING  : "#3b82f6",   # Blue
-        JobStatus.SUCCEEDED: "#10b981",   # Green
-        JobStatus.FAILED   : "#ef4444",   # Red
+    css_class = class_map.get(status, "pulse-scheduled")
+    
+    color_map = {
+        JobStatus.RUNNING: "#3b82f6",
+        JobStatus.SUCCEEDED: "#10b981",
+        JobStatus.FAILED: "#ef4444",
     }
-    return mapping.get(status, "#fbbf24")  # Yellow for scheduled/unknown
+    color = color_map.get(status, "#fbbf24")
 
-
-def update_badge_color(label, status: JobStatus):
-    """Update the status badge colors."""
-    colors = {
-        JobStatus.SCHEDULED: ("bg-yellow-100", "text-yellow-800"),
-        JobStatus.RUNNING  : ("bg-blue-100", "text-blue-800"),
-        JobStatus.SUCCEEDED: ("bg-green-100", "text-green-800"),
-        JobStatus.FAILED   : ("bg-red-100", "text-red-800"),
-        JobStatus.UNKNOWN  : ("bg-gray-100", "text-gray-800"),
-    }
-    bg, txt = colors.get(status, ("bg-gray-100", "text-gray-800"))
-    label.classes(
-        remove="bg-yellow-100 text-yellow-800 bg-blue-100 text-blue-800 "
-               "bg-green-100 text-green-800 bg-red-100 text-red-800 "
-               "bg-gray-100 text-gray-800"
+    # 3. RENDER
+    ui.element("div").classes(f"status-dot {css_class}").style(
+        f"width: 8px; height: 8px; border-radius: 50%; display: inline-block; background-color: {color};"
     )
-    label.classes(f"{bg} {txt}")
 
+# ===========================================
+# Helpers
+# ===========================================
 
 def is_job_frozen(job_type: JobType) -> bool:
     """Check if a job is frozen (running/succeeded/failed)."""
@@ -81,11 +109,6 @@ def snake_to_title(s: str) -> str:
     """Convert snake_case to Title Case."""
     return " ".join(word.capitalize() for word in s.split("_"))
 
-
-# ===========================================
-# Auto-save handler
-# ===========================================
-
 async def auto_save_state():
     """Save project state after parameter changes."""
     try:
@@ -94,11 +117,9 @@ async def auto_save_state():
     except Exception as e:
         print(f"[UI] Auto-save failed: {e}")
 
-
 def create_save_handler() -> Callable:
     """Create a handler that triggers auto-save."""
     return lambda: asyncio.create_task(auto_save_state())
-
 
 # ===========================================
 # Main Render Function
@@ -112,12 +133,6 @@ def render_job_tab(
 ) -> None:
     """
     Render a complete job tab with header and content.
-    
-    Args:
-        job_type: The type of job to render
-        backend: The CryoBoostBackend instance
-        ui_mgr: The UI state manager
-        callbacks: Dict of callback functions
     """
     state = get_project_state()
     job_model = state.jobs.get(job_type)
@@ -150,12 +165,9 @@ def render_job_tab(
                 with ui.row().classes("items-center gap-2"):
                     ui.label(state.project_name).classes("text-lg font-bold text-gray-800")
                     
-                    # Status badge
-                    status_badge = ui.label(job_model.execution_status.value).classes(
-                        "text-xs font-bold px-2 py-0.5 rounded-full"
-                    )
-                    update_badge_color(status_badge, job_model.execution_status)
-                    widget_refs.status_badge = status_badge
+                    # --- REACTIVE COMPONENT ---
+                    render_status_badge(job_type)
+                    # --------------------------
                 
                 # Timestamps
                 created = (
@@ -189,7 +201,7 @@ def render_job_tab(
                     callbacks,
                 )
                 
-                # Refresh button
+                # Refresh button - now triggers the refreshable
                 ui.button(
                     icon="refresh",
                     on_click=lambda: _force_status_refresh(callbacks),
@@ -622,12 +634,13 @@ def _render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
     browse_directory(job_dir)
 
 
-# ===========================================
-# Helpers
-# ===========================================
-
 def _force_status_refresh(callbacks: Dict[str, Callable]):
-    """Force a status refresh."""
+    """Force a status refresh via the new reactive mechanism."""
     ui.notify("Refreshing statuses...", timeout=1)
+    
+    # Trigger global reactive refresh
+    render_status_badge.refresh()
+    render_status_dot.refresh()
+    
     if "check_and_update_statuses" in callbacks:
         asyncio.create_task(callbacks["check_and_update_statuses"]())
