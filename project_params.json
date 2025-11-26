@@ -1,32 +1,32 @@
 {
   "project_name": "Untitled",
-  "created_at": "2025-11-21T15:28:06.532014",
-  "modified_at": "2025-11-21T15:28:14.640051",
+  "created_at": "2025-11-26T16:49:32.783145",
+  "modified_at": "2025-11-26T16:50:12.237991",
   "microscope": {
     "microscope_type": "Custom",
-    "pixel_size_angstrom": 2.95,
-    "acceleration_voltage_kv": 301.0,
+    "pixel_size_angstrom": 1.35,
+    "acceleration_voltage_kv": 300.0,
     "spherical_aberration_mm": 2.7,
     "amplitude_contrast": 0.1
   },
   "acquisition": {
-    "dose_per_tilt": 2.47,
+    "dose_per_tilt": 3.0,
     "detector_dimensions": [
       4096,
       4096
     ],
-    "tilt_axis_degrees": 84.23,
-    "eer_fractions_per_frame": 32,
+    "tilt_axis_degrees": -95.0,
+    "eer_fractions_per_frame": null,
     "sample_thickness_nm": 300.0,
     "gain_reference_path": null,
-    "invert_tilt_angles": true,
+    "invert_tilt_angles": false,
     "invert_defocus_hand": false,
-    "acquisition_software": "Tomo5",
-    "nominal_magnification": 42000,
-    "spot_size": 7,
+    "acquisition_software": "SerialEM",
+    "nominal_magnification": null,
+    "spot_size": null,
     "camera_name": null,
     "binning": 1,
-    "frame_dose": 1.65
+    "frame_dose": null
   },
   "computing": {
     "partition": "g",

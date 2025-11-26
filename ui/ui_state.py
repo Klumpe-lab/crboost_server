@@ -1,13 +1,7 @@
-# services/ui_state.py
+# ui/ui_state.py
 """
 Typed UI State Management - Single source of truth for all UI state.
-
-Separates:
-  - UIState: Ephemeral UI state (tabs, loading flags, selections) - Pydantic model
-  - WidgetRefs: Non-serializable UI element references - dataclass
-  - UIStateManager: Centralized manager with controlled mutations
-
-This replaces the fragile Dict[str, Any] pattern used previously.
+Refactored to allow pipeline modification AFTER project creation.
 """
 
 from __future__ import annotations
@@ -25,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class MonitorTab(str, Enum):
-    """Explicitly typed tab values - no more string typos"""
+    """Explicitly typed tab values."""
     CONFIG = "config"
     LOGS = "logs"
     FILES = "files"
@@ -63,12 +57,11 @@ class DataImportFormState(BaseModel):
 class UIState(BaseModel):
     """
     Complete UI state - typed and validated.
-    This replaces the `shared_state` dict.
     """
     model_config = ConfigDict(use_enum_values=True, arbitrary_types_allowed=True)
     
     # --- Project Context ---
-    current_project_path: Optional[str] = None  # String for JSON serialization
+    current_project_path: Optional[str] = None
     current_scheme_name: Optional[str] = None
     project_created: bool = False
     continuation_mode: bool = False
@@ -94,13 +87,12 @@ class UIState(BaseModel):
 class JobWidgetRefs:
     """
     Non-serializable UI element references for a single job.
-    Kept separate because these can't be persisted.
     """
-    status_dot: Optional[Any] = None
-    status_badge: Optional[Any] = None
     logs_timer: Optional[Any] = None
     content_container: Optional[Any] = None
     switcher_container: Optional[Any] = None
+    
+    # Log elements need refs to push lines efficiently without full re-render
     monitor_logs: Dict[str, Any] = field(default_factory=dict)
     
     def cleanup(self):
@@ -111,12 +103,9 @@ class JobWidgetRefs:
             except Exception:
                 pass
             self.logs_timer = None
-        self.status_dot = None
-        self.status_badge = None
         self.content_container = None
         self.switcher_container = None
         self.monitor_logs.clear()
-
 
 
 @dataclass
@@ -166,6 +155,7 @@ class PanelWidgetRefs:
         self.mdocs_hint_label = None
         self.status_indicator = None
 
+
 # Pipeline ordering - centralized
 PIPELINE_ORDER: List[JobType] = [
     JobType.IMPORT_MOVIES,
@@ -210,13 +200,7 @@ def get_ordered_jobs() -> List[JobType]:
 
 class UIStateManager:
     """
-    Centralized state manager with controlled mutations.
-    
-    Benefits:
-    - All state changes go through methods (auditable)
-    - Type-safe access via properties
-    - Subscription system for reactivity
-    - Clean separation of serializable state vs widget refs
+    Centralized state manager.
     """
     
     def __init__(self):
@@ -227,6 +211,29 @@ class UIStateManager:
         self._status_timer: Optional[Any] = None
         self._rebuild_callback: Optional[Callable[[], None]] = None
     
+    # ===========================================
+    # Persistence Loading
+    # ===========================================
+    def load_from_storage(self, storage_dict: Dict[str, Any]):
+        """Hydrate state from app.storage.user."""
+        if not storage_dict:
+            return
+        try:
+            print("[UI_STATE] Hydrating from browser storage...")
+            # We construct a new state object merging defaults with stored data
+            restored_state = UIState(**storage_dict)
+            self._state = restored_state
+
+            # Re-initialize widget refs structure for restored jobs
+            for job_str in self._state.selected_jobs:
+                if job_str not in self._job_widget_refs:
+                    self._job_widget_refs[job_str] = JobWidgetRefs()
+            
+            # Since we loaded state, we might need to notify listeners (if any exist yet)
+            self._notify()
+        except Exception as e:
+            print(f"[UI_STATE] Error hydrating state from storage: {e}")
+
     # ===========================================
     # Properties for clean access
     # ===========================================
@@ -295,17 +302,13 @@ class UIStateManager:
     # ===========================================
     
     def add_job(self, job_type: JobType) -> bool:
-        """
-        Add a job to the pipeline. 
-        Returns False if already present or if pipeline is locked.
-        """
         job_str = job_type.value
         
         if job_str in self._state.selected_jobs:
             return False
         
-        if self._state.project_created and not self._state.continuation_mode:
-            return False
+        # REMOVED: Restriction on adding jobs after creation
+        # We now allow building pipeline step-by-step
         
         self._state.selected_jobs.append(job_str)
         self._state.selected_jobs.sort(key=lambda j: get_job_order(JobType(j)))
@@ -322,17 +325,13 @@ class UIStateManager:
         return True
     
     def remove_job(self, job_type: JobType) -> bool:
-        """
-        Remove a job from the pipeline. 
-        Returns False if not present or if pipeline is locked.
-        """
         job_str = job_type.value
         
         if job_str not in self._state.selected_jobs:
             return False
         
-        if self._state.project_created:
-            return False
+        # REMOVED: Restriction on removing jobs after creation
+        # Users can modify pipeline design as long as it's not running
         
         # Cleanup widget refs
         if job_str in self._job_widget_refs:
@@ -354,68 +353,57 @@ class UIStateManager:
         return True
     
     def toggle_job(self, job_type: JobType) -> bool:
-        """Toggle a job's presence in the pipeline."""
         if job_type.value in self._state.selected_jobs:
             return self.remove_job(job_type)
         else:
             return self.add_job(job_type)
     
     def is_job_selected(self, job_type: JobType) -> bool:
-        """Check if a job is in the pipeline."""
         return job_type.value in self._state.selected_jobs
     
     def set_active_job(self, job_type: JobType):
-        """Set the currently active job tab."""
         job_str = job_type.value
         if job_str in self._state.selected_jobs:
             self._state.active_job_tab = job_str
             self._notify()
     
     def get_job_ui_state(self, job_type: JobType) -> JobCardUIState:
-        """Get UI state for a job, creating if needed."""
         job_str = job_type.value
         if job_str not in self._state.job_ui_states:
             self._state.job_ui_states[job_str] = JobCardUIState()
         return self._state.job_ui_states[job_str]
     
     def get_job_widget_refs(self, job_type: JobType) -> JobWidgetRefs:
-        """Get widget refs for a job, creating if needed."""
         job_str = job_type.value
         if job_str not in self._job_widget_refs:
             self._job_widget_refs[job_str] = JobWidgetRefs()
         return self._job_widget_refs[job_str]
     
     def set_job_monitor_tab(self, job_type: JobType, tab: MonitorTab, user_initiated: bool = False):
-        """Switch the monitor tab for a job."""
         ui_state = self.get_job_ui_state(job_type)
         ui_state.active_monitor_tab = tab
         if user_initiated:
             ui_state.user_switched_tab = True
-        # Don't call _notify() here - let the caller handle UI rebuild
     
     # ===========================================
     # Project Lifecycle
     # ===========================================
     
     def set_project_created(self, project_path: Path, scheme_name: str):
-        """Mark project as created with its path and scheme."""
         self._state.current_project_path = str(project_path)
         self._state.current_scheme_name = scheme_name
         self._state.project_created = True
         self._notify()
     
     def set_pipeline_running(self, running: bool):
-        """Update pipeline running state."""
         self._state.pipeline_running = running
         self._notify()
     
     def set_continuation_mode(self, enabled: bool):
-        """Toggle continuation mode."""
         self._state.continuation_mode = enabled
         self._notify()
     
     def load_from_project(self, project_path: Path, scheme_name: str, jobs: List[JobType]):
-        """Load state when opening an existing project."""
         self._state.current_project_path = str(project_path)
         self._state.current_scheme_name = scheme_name
         self._state.project_created = True
@@ -436,7 +424,6 @@ class UIStateManager:
         self._notify()
     
     def reset(self):
-        """Full reset for starting a new session."""
         self.cleanup_all_timers()
         self._state = UIState()
         self._job_widget_refs.clear()
@@ -449,17 +436,14 @@ class UIStateManager:
     
     def update_data_import(
         self,
-
-        project_name     : Optional[str]  = None,
-        project_base_path: Optional[str]  = None,
-        movies_glob      : Optional[str]  = None,
-        mdocs_glob       : Optional[str]  = None,
-        import_prefix    : Optional[str]  = None,
-        movies_valid     : Optional[bool] = None,
-        mdocs_valid      : Optional[bool] = None,
-
+        project_name: Optional[str] = None,
+        project_base_path: Optional[str] = None,
+        movies_glob: Optional[str] = None,
+        mdocs_glob: Optional[str] = None,
+        import_prefix: Optional[str] = None,
+        movies_valid: Optional[bool] = None,
+        mdocs_valid: Optional[bool] = None,
     ):
-        """Update data import form state."""
         di = self._state.data_import
         if project_name is not None:
             di.project_name = project_name
@@ -475,7 +459,6 @@ class UIStateManager:
             di.movies_valid = movies_valid
         if mdocs_valid is not None:
             di.mdocs_valid = mdocs_valid
-        # No notify - form updates are frequent
     
     def update_detected_params(
         self,
@@ -484,7 +467,6 @@ class UIStateManager:
         dose_per_tilt: Optional[float] = None,
         tilt_axis: Optional[float] = None,
     ):
-        """Update auto-detected parameters."""
         di = self._state.data_import
         if pixel_size is not None:
             di.detected_pixel_size = pixel_size
@@ -496,7 +478,6 @@ class UIStateManager:
             di.detected_tilt_axis = tilt_axis
     
     def clear_data_import(self):
-        """Clear the data import form."""
         self._state.data_import = DataImportFormState()
     
     # ===========================================
@@ -504,11 +485,9 @@ class UIStateManager:
     # ===========================================
     
     def set_rebuild_callback(self, callback: Callable[[], None]):
-        """Set the callback to rebuild the pipeline UI."""
         self._rebuild_callback = callback
     
     def request_rebuild(self):
-        """Request a UI rebuild."""
         if self._rebuild_callback:
             self._rebuild_callback()
     
@@ -517,7 +496,6 @@ class UIStateManager:
     # ===========================================
     
     def cleanup_all_timers(self):
-        """Cancel all active timers."""
         if self._status_timer:
             try:
                 self._status_timer.cancel()
@@ -529,7 +507,6 @@ class UIStateManager:
             refs.cleanup()
     
     def cleanup_job_logs_timer(self, job_type: JobType):
-        """Cancel the logs timer for a specific job."""
         refs = self._job_widget_refs.get(job_type.value)
         if refs and refs.logs_timer:
             try:
@@ -543,61 +520,21 @@ class UIStateManager:
     # ===========================================
     
     def subscribe(self, callback: Callable[[UIState], None]) -> Callable[[], None]:
-        """Subscribe to state changes. Returns unsubscribe function."""
         self._subscribers.append(callback)
         return lambda: self._subscribers.remove(callback) if callback in self._subscribers else None
     
     def _notify(self):
-        """Notify all subscribers of state change."""
-        print(f"[UIStateManager] _notify called, {len(self._subscribers)} subscribers, jobs: {self._state.selected_jobs}")
         for sub in self._subscribers:
             try:
                 sub(self._state)
             except Exception as e:
                 print(f"[UIStateManager] Subscriber error: {e}")
-    
-    # ===========================================
-    # Persistence
-    # ===========================================
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize state for persistence (e.g., browser storage)."""
-        return self._state.model_dump(mode="json")
-    
-    def restore_from_dict(self, data: Dict[str, Any]):
-        """Restore state from persisted data."""
-        try:
-            self._state = UIState.model_validate(data)
-            # Rebuild widget refs for loaded jobs
-            for job_str in self._state.selected_jobs:
-                if job_str not in self._job_widget_refs:
-                    self._job_widget_refs[job_str] = JobWidgetRefs()
-            self._notify()
-        except Exception as e:
-            print(f"[UIStateManager] Failed to restore state: {e}")
-    
-    # ===========================================
-    # Debug
-    # ===========================================
-    
-    def debug_dump(self) -> str:
-        """Return a debug string of current state."""
-        return (
-            f"UIState:\n"
-            f"  project_path: {self._state.current_project_path}\n"
-            f"  project_created: {self._state.project_created}\n"
-            f"  pipeline_running: {self._state.pipeline_running}\n"
-            f"  selected_jobs: {self._state.selected_jobs}\n"
-            f"  active_job_tab: {self._state.active_job_tab}\n"
-            f"  continuation_mode: {self._state.continuation_mode}\n"
-        )
 
 
 _ui_state_manager: Optional[UIStateManager] = None
 
 
 def get_ui_state_manager() -> UIStateManager:
-    """Get the global UI state manager singleton."""
     global _ui_state_manager
     if _ui_state_manager is None:
         _ui_state_manager = UIStateManager()
@@ -605,7 +542,6 @@ def get_ui_state_manager() -> UIStateManager:
 
 
 def reset_ui_state_manager():
-    """Reset the global UI state manager. Use when starting fresh."""
     global _ui_state_manager
     if _ui_state_manager:
         _ui_state_manager.cleanup_all_timers()

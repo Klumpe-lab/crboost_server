@@ -1,6 +1,7 @@
 # ui/data_import_panel.py
 """
-Data import panel - refactored to use typed UIStateManager.
+Data import panel.
+Refactored to allow project creation with 0 jobs selected.
 """
 import asyncio
 import glob
@@ -12,9 +13,9 @@ from nicegui import ui
 from backend import CryoBoostBackend
 from services.project_state import JobType, get_state_service, get_project_state
 from ui.ui_state import get_ui_state_manager, UIStateManager
-from local_file_picker import local_file_picker
+from ui.local_file_picker import local_file_picker
 
-# === HARDCODED DEFAULTS (fill these in for your setup) ===
+# === HARDCODED DEFAULTS ===
 DEFAULT_PROJECT_NAME      = "demo_project"
 DEFAULT_PROJECT_BASE_PATH = "/users/artem.kushner/dev/crboost_server/projects"
 DEFAULT_MOVIES_DIR        = "/users/artem.kushner/dev/001_CopiaTestSet/frames"
@@ -22,33 +23,23 @@ DEFAULT_MDOCS_DIR         = "/users/artem.kushner/dev/001_CopiaTestSet/mdoc"
 DEFAULT_MOVIES_EXT        = "*.eer"
 DEFAULT_MDOCS_EXT         = "*.mdoc"
 
-# Pre-compute the glob patterns
 DEFAULT_MOVIES_GLOB = f"{DEFAULT_MOVIES_DIR}/{DEFAULT_MOVIES_EXT}" if DEFAULT_MOVIES_DIR else ""
 DEFAULT_MDOCS_GLOB = f"{DEFAULT_MDOCS_DIR}/{DEFAULT_MDOCS_EXT}" if DEFAULT_MDOCS_DIR else ""
+
 def build_data_import_panel(
     backend: CryoBoostBackend,
     callbacks: Dict[str, Callable],
 ) -> None:
     """
     Build the data import panel (left side of the UI).
-    
-    Handles:
-    - Project name and path input
-    - Movies/mdocs glob patterns
-    - Parameter autodetection
-    - Project creation and loading
     """
     ui_mgr = get_ui_state_manager()
     state_service = get_state_service()
     
     # Validation Functions
-    # ===========================================
-    
     def validate_glob_pattern(pattern: str) -> tuple[bool, int, str]:
-        """Validate a glob pattern and return (is_valid, count, message)."""
         if not pattern or not pattern.strip():
             return False, 0, "No pattern specified"
-        
         try:
             matches = glob.glob(pattern)
             count = len(matches)
@@ -59,22 +50,17 @@ def build_data_import_panel(
             return False, 0, f"Invalid pattern: {e}"
     
     def update_input_validation(input_el, is_valid: bool, message: str):
-        """Safely update input validation state."""
-        if not input_el:
-            return
+        if not input_el: return
         try:
-            # Use the validation property instead of props
             if is_valid:
                 input_el.props(remove="error")
             else:
                 input_el.props("error")
-            # Update hint via tooltip or helper text
             input_el.tooltip(message)
         except Exception as e:
             print(f"[UI] Validation update error: {e}")
     
     def update_movies_validation():
-        """Update movies input validation state."""
         pattern = ui_mgr.data_import.movies_glob
         is_valid, count, msg = validate_glob_pattern(pattern)
         ui_mgr.update_data_import(movies_valid=is_valid)
@@ -82,19 +68,15 @@ def build_data_import_panel(
         input_el = ui_mgr.panel_refs.movies_input
         if input_el:
             update_input_validation(input_el, is_valid, msg)
-            # Update the hint label if we have one
             hint_label = ui_mgr.panel_refs.movies_hint_label
             if hint_label:
                 hint_label.set_text(msg)
                 if is_valid:
-                    hint_label.classes(remove="text-red-500")
-                    hint_label.classes("text-green-600")
+                    hint_label.classes(remove="text-red-500").classes("text-green-600")
                 else:
-                    hint_label.classes(remove="text-green-600")
-                    hint_label.classes("text-red-500")
+                    hint_label.classes(remove="text-green-600").classes("text-red-500")
     
     def update_mdocs_validation():
-        """Update mdocs input validation state."""
         pattern = ui_mgr.data_import.mdocs_glob
         is_valid, count, msg = validate_glob_pattern(pattern)
         ui_mgr.update_data_import(mdocs_valid=is_valid)
@@ -106,38 +88,53 @@ def build_data_import_panel(
             if hint_label:
                 hint_label.set_text(msg)
                 if is_valid:
-                    hint_label.classes(remove="text-red-500")
-                    hint_label.classes("text-green-600")
+                    hint_label.classes(remove="text-red-500").classes("text-green-600")
                 else:
-                    hint_label.classes(remove="text-green-600")
-                    hint_label.classes("text-red-500")
+                    hint_label.classes(remove="text-green-600").classes("text-red-500")
     
     def can_create_project() -> bool:
-        """Check if all required fields are filled for project creation."""
         di = ui_mgr.data_import
         return bool(
             di.project_name.strip()
             and di.project_base_path.strip()
             and di.movies_glob.strip()
             and di.mdocs_glob.strip()
-            and len(ui_mgr.selected_jobs) > 0
+            # REMOVED: Check for selected_jobs > 0
+            # User can now create an empty project and add jobs later
         )
     
     def update_create_button_state():
-        """Enable/disable create button based on form validity."""
         btn = ui_mgr.panel_refs.create_button
         if btn:
             if can_create_project() and not ui_mgr.is_project_created:
                 btn.props(remove="disable")
             else:
                 btn.props("disable")
+
+    def update_locking_state():
+        """
+        Disables sensitive inputs and actions if the pipeline is running.
+        """
+        is_running = ui_mgr.is_running
+        
+        if ui_mgr.panel_refs.autodetect_button:
+            if is_running:
+                ui_mgr.panel_refs.autodetect_button.disable()
+            else:
+                ui_mgr.panel_refs.autodetect_button.enable()
+        
+        if ui_mgr.panel_refs.movies_input:
+            if is_running: ui_mgr.panel_refs.movies_input.disable()
+            else: ui_mgr.panel_refs.movies_input.enable()
+            
+        if ui_mgr.panel_refs.mdocs_input:
+            if is_running: ui_mgr.panel_refs.mdocs_input.disable()
+            else: ui_mgr.panel_refs.mdocs_input.enable()
+
+        update_create_button_state()
     
-    # ===========================================
     # File Picker Handlers
-    # ===========================================
-    
     async def pick_movies_path():
-            """Open directory picker for movies location."""
             picker = local_file_picker(
                 directory=DEFAULT_MOVIES_DIR or "~",
                 mode="directory",
@@ -148,7 +145,6 @@ def build_data_import_panel(
             if result and len(result) > 0:
                 selected_dir = Path(result[0])
                 pattern = str(selected_dir / DEFAULT_MOVIES_EXT)
-                
                 ui_mgr.update_data_import(movies_glob=pattern)
                 
                 input_el = ui_mgr.panel_refs.movies_input
@@ -156,10 +152,9 @@ def build_data_import_panel(
                     input_el.set_value(pattern)
                 
                 update_movies_validation()
-                update_create_button_state()
+                update_locking_state()
         
     async def pick_mdocs_path():
-        """Open directory picker for mdocs location."""
         picker = local_file_picker(
             directory=DEFAULT_MDOCS_DIR or "~",
             mode="directory",
@@ -170,7 +165,6 @@ def build_data_import_panel(
         if result and len(result) > 0:
             selected_dir = Path(result[0])
             pattern = str(selected_dir / DEFAULT_MDOCS_EXT)
-            
             ui_mgr.update_data_import(mdocs_glob=pattern)
             
             input_el = ui_mgr.panel_refs.mdocs_input
@@ -178,10 +172,9 @@ def build_data_import_panel(
                 input_el.set_value(pattern)
             
             update_mdocs_validation()
-            update_create_button_state()
+            update_locking_state()
 
     async def pick_project_path():
-        """Open directory picker for project base path."""
         picker = local_file_picker(
             directory="~",
             mode="directory",
@@ -190,27 +183,25 @@ def build_data_import_panel(
         
         if result and len(result) > 0:
             dir_path = result[0]
-            
             ui_mgr.update_data_import(project_base_path=dir_path)
             
             input_el = ui_mgr.panel_refs.project_path_input
             if input_el:
                 input_el.set_value(dir_path)
             
-            update_create_button_state()
+            update_locking_state()
     
-    # ===========================================
     # Action Handlers
-    # ===========================================
-    
     async def handle_autodetect():
-        """Auto-detect parameters from mdoc files."""
+        if ui_mgr.is_running:
+            ui.notify("Cannot autodetect parameters while pipeline is running", type="warning")
+            return
+
         mdocs_glob = ui_mgr.data_import.mdocs_glob
         if not mdocs_glob:
             ui.notify("Please specify mdoc files first", type="warning")
             return
         
-        # Validate the glob pattern first
         is_valid, count, msg = validate_glob_pattern(mdocs_glob)
         if not is_valid:
             ui.notify(f"Invalid mdoc pattern: {msg}", type="warning")
@@ -223,7 +214,6 @@ def build_data_import_panel(
         try:
             params = await backend.autodetect_parameters(mdocs_glob)
             
-            # Update UI state with detected values
             microscope = params.get("microscope", {})
             acquisition = params.get("acquisition", {})
             
@@ -234,9 +224,7 @@ def build_data_import_panel(
                 tilt_axis=acquisition.get("tilt_axis_degrees"),
             )
             
-            # Refresh the params display
             refresh_params_display()
-            
             ui.notify(f"Parameters detected from {count} mdoc files", type="positive")
         except Exception as e:
             ui.notify(f"Autodetection failed: {e}", type="negative")
@@ -245,9 +233,8 @@ def build_data_import_panel(
                 btn.props(remove="loading")
     
     async def handle_create_project():
-        """Create a new project."""
         if not can_create_project():
-            ui.notify("Please fill all required fields and select at least one job", type="warning")
+            ui.notify("Please fill all required fields", type="warning")
             return
         
         di = ui_mgr.data_import
@@ -270,13 +257,10 @@ def build_data_import_panel(
                 scheme_name = f"scheme_{di.project_name}"
                 
                 ui_mgr.set_project_created(project_path, scheme_name)
-                
                 ui.notify(f"Project '{di.project_name}' created successfully", type="positive")
                 
-                # Update status indicator
                 update_status_indicator()
                 
-                # Trigger pipeline UI rebuild
                 if "rebuild_pipeline_ui" in callbacks:
                     callbacks["rebuild_pipeline_ui"]()
             else:
@@ -286,10 +270,9 @@ def build_data_import_panel(
         finally:
             if btn:
                 btn.props(remove="loading")
-            update_create_button_state()
+            update_locking_state()
     
     async def handle_load_project():
-        """Load an existing project."""
         picker = local_file_picker(
             directory="~",
             mode="directory",
@@ -300,8 +283,6 @@ def build_data_import_panel(
             return
         
         project_dir = Path(result[0])
-        
-        # Find project_params.json
         params_file = project_dir / "project_params.json"
         if not params_file.exists():
             ui.notify("No project_params.json found in selected directory", type="warning")
@@ -315,7 +296,6 @@ def build_data_import_panel(
             load_result = await backend.load_existing_project(str(project_dir))
             
             if load_result.get("success"):
-                # Update UI state
                 project_name = load_result.get("project_name", project_dir.name)
                 selected_jobs = [JobType(j) for j in load_result.get("selected_jobs", [])]
                 
@@ -325,7 +305,6 @@ def build_data_import_panel(
                     jobs=selected_jobs,
                 )
                 
-                # Update form fields
                 movies_glob = load_result.get("movies_glob", "")
                 mdocs_glob = load_result.get("mdocs_glob", "")
                 
@@ -336,7 +315,6 @@ def build_data_import_panel(
                     mdocs_glob=mdocs_glob,
                 )
                 
-                # Update input values using set_value
                 if ui_mgr.panel_refs.project_name_input:
                     ui_mgr.panel_refs.project_name_input.set_value(project_name)
                 if ui_mgr.panel_refs.project_path_input:
@@ -346,7 +324,6 @@ def build_data_import_panel(
                 if ui_mgr.panel_refs.mdocs_input:
                     ui_mgr.panel_refs.mdocs_input.set_value(mdocs_glob)
                 
-                # Update validations
                 update_movies_validation()
                 update_mdocs_validation()
                 
@@ -355,11 +332,9 @@ def build_data_import_panel(
                 
                 ui.notify(f"Project '{project_name}' loaded", type="positive")
                 
-                # Rebuild pipeline UI
                 if "rebuild_pipeline_ui" in callbacks:
                     callbacks["rebuild_pipeline_ui"]()
                 
-                # Start status refresh
                 if "check_and_update_statuses" in callbacks:
                     asyncio.create_task(callbacks["check_and_update_statuses"]())
             else:
@@ -371,15 +346,14 @@ def build_data_import_panel(
         finally:
             if btn:
                 btn.props(remove="loading")
+            update_locking_state()
     
     def refresh_params_display():
-        """Refresh the detected parameters display."""
         container = ui_mgr.panel_refs.params_display_container
         if not container:
             return
         
         container.clear()
-        
         state = get_project_state()
         
         params = [
@@ -397,52 +371,40 @@ def build_data_import_panel(
                     ui.label(value).classes("text-xs font-medium text-gray-700")
     
     def update_status_indicator():
-        """Update the status indicator at the bottom."""
         indicator = ui_mgr.panel_refs.status_indicator
         if indicator:
             if ui_mgr.is_project_created:
                 indicator.set_text(f"Project: {ui_mgr.data_import.project_name}")
-                indicator.classes(remove="text-gray-500")
-                indicator.classes("text-green-600")
+                indicator.classes(remove="text-gray-500").classes("text-green-600")
             else:
                 indicator.set_text("Ready")
-                indicator.classes(remove="text-green-600")
-                indicator.classes("text-gray-500")
-    
-    # ===========================================
-    # Input Change Handlers
-    # ===========================================
+                indicator.classes(remove="text-green-600").classes("text-gray-500")
     
     def on_project_name_change(e):
         value = e.value if hasattr(e, 'value') else e.sender.value
         ui_mgr.update_data_import(project_name=value or "")
-        # Auto-set import prefix
         if value:
             ui_mgr.update_data_import(import_prefix=f"{value}_")
-        update_create_button_state()
+        update_locking_state()
     
     def on_project_path_change(e):
         value = e.value if hasattr(e, 'value') else e.sender.value
         ui_mgr.update_data_import(project_base_path=value or "")
-        update_create_button_state()
+        update_locking_state()
     
     def on_movies_change(e):
         value = e.value if hasattr(e, 'value') else e.sender.value
         ui_mgr.update_data_import(movies_glob=value or "")
         update_movies_validation()
-        update_create_button_state()
+        update_locking_state()
     
     def on_mdocs_change(e):
         value = e.value if hasattr(e, 'value') else e.sender.value
         ui_mgr.update_data_import(mdocs_glob=value or "")
         update_mdocs_validation()
-        update_create_button_state()
+        update_locking_state()
     
-    # ===========================================
     # Build the UI
-    # ===========================================
-    
-    # Initialize panel refs for hint labels (not in dataclass by default)
     ui_mgr.panel_refs.movies_hint_label = None
     ui_mgr.panel_refs.mdocs_hint_label = None
     ui_mgr.panel_refs.status_indicator = None
@@ -454,8 +416,6 @@ def build_data_import_panel(
         ui.label("Project").classes("text-sm font-bold text-gray-700 mb-2")
         
         with ui.card().classes("w-full p-4 mb-4 border border-gray-200 shadow-none"):
-            # Project name
-# Project name - use default directly
             project_name_input = ui.input(
                 label="Project Name",
                 value=DEFAULT_PROJECT_NAME or ui_mgr.data_import.project_name,
@@ -463,7 +423,6 @@ def build_data_import_panel(
             ).props("outlined dense").classes("w-full mb-3")
             ui_mgr.panel_refs.project_name_input = project_name_input
             
-            # Project path with picker
             with ui.row().classes("w-full items-end gap-2 mb-3"):
                 project_path_input = ui.input(
                     label="Project Location",
@@ -477,7 +436,6 @@ def build_data_import_panel(
                     on_click=pick_project_path
                 ).props("flat dense").classes("mb-1")
             
-            # Action buttons
             with ui.row().classes("w-full gap-2"):
                 create_btn = ui.button(
                     "Create Project",
@@ -515,7 +473,6 @@ def build_data_import_panel(
                         on_click=pick_movies_path
                     ).props("flat dense").classes("mb-1")
                 
-                # Hint label for movies
                 movies_hint = ui.label("No pattern specified").classes("text-xs text-gray-500 mt-1")
                 ui_mgr.panel_refs.movies_hint_label = movies_hint
             
@@ -535,11 +492,9 @@ def build_data_import_panel(
                         on_click=pick_mdocs_path
                     ).props("flat dense").classes("mb-1")
                 
-                # Hint label for mdocs
                 mdocs_hint = ui.label("No pattern specified").classes("text-xs text-gray-500 mt-1")
                 ui_mgr.panel_refs.mdocs_hint_label = mdocs_hint
             
-            # Autodetect button
             autodetect_btn = ui.button(
                 "Autodetect from Mdocs",
                 icon="auto_fix_high",
@@ -556,28 +511,15 @@ def build_data_import_panel(
             params_container = ui.column().classes("w-full")
             ui_mgr.panel_refs.params_display_container = params_container
             
-            # Initial render
             refresh_params_display()
         
-        # Status indicator
         with ui.row().classes("w-full mt-4 items-center gap-2"):
             ui.icon("info", size="16px").classes("text-gray-400")
             status_text = "Ready" if not ui_mgr.is_project_created else f"Project: {ui_mgr.data_import.project_name}"
             status_indicator = ui.label(status_text).classes("text-xs text-gray-500")
             ui_mgr.panel_refs.status_indicator = status_indicator
     
-# === Initialize with defaults ===
-    if DEFAULT_PROJECT_NAME and not ui_mgr.data_import.project_name:
-        ui_mgr.update_data_import(
-            project_name=DEFAULT_PROJECT_NAME,
-            project_base_path=DEFAULT_PROJECT_BASE_PATH,
-            movies_glob=str(Path(DEFAULT_MOVIES_DIR) / DEFAULT_MOVIES_EXT) if DEFAULT_MOVIES_DIR else "",
-            mdocs_glob=str(Path(DEFAULT_MDOCS_DIR) / DEFAULT_MDOCS_EXT) if DEFAULT_MDOCS_DIR else "",
-        )
-        # Update input fields
-# Run initial validation after UI is built
-    # Also sync the state manager with the defaults we used
-# Run initial validation after UI is built
+    # Initialize state from defaults
     ui_mgr.update_data_import(
         project_name=DEFAULT_PROJECT_NAME,
         project_base_path=DEFAULT_PROJECT_BASE_PATH,
@@ -586,12 +528,10 @@ def build_data_import_panel(
     )
     update_movies_validation()
     update_mdocs_validation()
-    update_create_button_state()
+    update_locking_state()
     
-    # Subscribe to state changes - when jobs are added/removed, update button
+    # Subscribe to state changes to handle locking logic across UI components
     def on_ui_state_change(state):
-        print(f"[DATA_IMPORT] State changed! Jobs: {len(state.selected_jobs)}, can_create: {can_create_project()}")
-        update_create_button_state()
+        update_locking_state()
     
     ui_mgr.subscribe(on_ui_state_change)
-    print(f"[DATA_IMPORT] Subscribed to UI state changes")
