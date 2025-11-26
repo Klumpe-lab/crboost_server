@@ -858,12 +858,17 @@ class StateService:
             return False
     
     async def save_project(self, save_path: Optional[Path] = None):
-        target_path = save_path or self._project_state.project_path / "project_params.json"
-        
-        if not target_path:
-            raise ValueError("Cannot save project, project_path is not set and no save_path provided.")
-            
-        self._project_state.save(target_path)
+            # Determine target path safely
+            if save_path:
+                target_path = save_path
+            elif self._project_state.project_path:
+                target_path = self._project_state.project_path / "project_params.json"
+            else:
+                # No path to save to - expected during autodetect before project creation
+                print("[STATE] Skipping save - no project path set yet")
+                return
+                
+            self._project_state.save(target_path)
 
     async def export_for_project(
         self, movies_glob: str, mdocs_glob: str, selected_jobs_str: List[str]
