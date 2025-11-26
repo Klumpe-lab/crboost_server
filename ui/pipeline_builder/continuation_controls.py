@@ -9,7 +9,6 @@ from nicegui import ui
 from services.project_state import JobStatus, JobType
 from typing import Dict, Any
 
-
 def build_continuation_controls(backend, shared_state: Dict[str, Any], callbacks: Dict[str, Any]):
     """
     Build the continuation controls panel.
@@ -37,7 +36,6 @@ def build_continuation_controls(backend, shared_state: Dict[str, Any], callbacks
             ).tooltip("Coming soon: Add jobs to pipeline")
     
     return {"jobs_container": jobs_container}
-
 
 def _render_job_row(job_type: JobType, backend:CryoBoostBackend, shared_state, callbacks):
     """Render a single job row with status and delete button"""
@@ -82,7 +80,6 @@ def _render_job_row(job_type: JobType, backend:CryoBoostBackend, shared_state, c
         else:
             ui.label("Scheduled").classes("text-xs text-gray-500 italic")
 
-
 async def _handle_delete_job(job_type: JobType, backend, shared_state, callbacks):
     """Handle delete job with confirmation"""
     job_model = app_state.jobs.get(job_type.value)
@@ -109,7 +106,6 @@ async def _handle_delete_job(job_type: JobType, backend, shared_state, callbacks
             ).props("flat").style("color: #dc2626;")
     
     dialog.open()
-
 
 async def _confirm_delete_job(job_type: JobType, job_number, dialog, backend:CryoBoostBackend, shared_state, callbacks):
     """Actually delete the job"""

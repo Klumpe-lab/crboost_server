@@ -1,275 +1,427 @@
 # ui/pipeline_builder/pipeline_builder_panel.py
 """
-Pipeline builder panel orchestrator.
-Handles layout, job selection, and coordinates sub-components with polling loop.
+Pipeline builder panel - refactored to use typed UIStateManager.
 """
 import asyncio
 from pathlib import Path
-from backend import CryoBoostBackend
+from typing import Dict, Any, Callable
+
 from nicegui import ui
+
+from backend import CryoBoostBackend
 from services.project_state import JobStatus, JobType, get_state_service, get_project_state
-from ui.utils import JobConfig
-from ui.pipeline_builder.job_tab_component import get_status_hex_color, render_job_tab, get_status_class, _update_badge_color
+from ui.ui_state import (
+    get_ui_state_manager,
+    UIStateManager,
+    get_job_display_name,
+    get_ordered_jobs,
+    MonitorTab,
+)
+from ui.pipeline_builder.job_tab_component import (
+    render_job_tab,
+    get_status_class,
+    get_status_hex_color,
+)
 from ui.pipeline_builder.continuation_controls import build_continuation_controls
-from typing import Dict, Any
 
 
-def build_pipeline_builder_panel(backend: CryoBoostBackend, shared_state: Dict[str, Any], callbacks: Dict[str, Any]):
+def build_pipeline_builder_panel(
+    backend: CryoBoostBackend,
+    callbacks: Dict[str, Callable],
+) -> None:
+    """
+    Build the pipeline builder panel.
+    
+    This is the main orchestrator for the right side of the UI.
+    Uses the typed UIStateManager instead of a shared_state dict.
+    """
+    ui_mgr        = get_ui_state_manager()
     state_service = get_state_service()
-
-    panel_state = {
-        "job_tabs_container": None,
-        "run_button": None,
-        "stop_button": None,
-        "status_label": None,
-        "status_timer": None,
-        "continuation_container": None,
-    }
-
-    if "active_job_tab" not in shared_state: shared_state["active_job_tab"] = None
-    if "job_cards" not in shared_state: shared_state["job_cards"] = {}
-
+    
+    # ===========================================
+    # Internal Functions
+    # ===========================================
+    
     def add_job_to_pipeline(job_type: JobType):
-        if job_type in shared_state["selected_jobs"]: return
-        shared_state["selected_jobs"].append(job_type)
-        shared_state["selected_jobs"].sort(key=lambda j: JobConfig.PIPELINE_ORDER.index(j))
-
+        """Add a job to the pipeline and initialize its state."""
+        print(f"[PIPELINE] add_job_to_pipeline called for {job_type.value}")
+        result = ui_mgr.add_job(job_type)
+        print(f"[PIPELINE] ui_mgr.add_job returned: {result}")
+        
+        if not result:
+            if ui_mgr.is_project_created and not ui_mgr.is_continuation_mode:
+                ui.notify("Cannot modify pipeline after project creation", type="warning")
+            return
+        
+        # Initialize in project state
         state = state_service.state
         if job_type not in state.jobs:
             template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
             job_star_path = template_base / job_type.value / "job.star"
-            state.ensure_job_initialized(job_type, job_star_path if job_star_path.exists() else None)
-
-        if not shared_state.get("continuation_mode", False):
+            state.ensure_job_initialized(
+                job_type,
+                job_star_path if job_star_path.exists() else None
+            )
+        
+        # Reset status for new jobs (unless loading existing)
+        if not ui_mgr.is_continuation_mode:
             job_model = state.jobs.get(job_type)
             if job_model:
                 job_model.execution_status = JobStatus.SCHEDULED
                 job_model.relion_job_name = None
                 job_model.relion_job_number = None
-
-        if job_type not in shared_state["job_cards"]:
-            shared_state["job_cards"][job_type] = {"active_monitor_tab": "config"}
-
-        shared_state["active_job_tab"] = job_type.value
-        rebuild_pipeline_ui()
-
-    def toggle_job_in_pipeline(job_type: JobType):
-        if shared_state["project_created"]:
-            ui.notify("Cannot modify pipeline after project creation", type="warning")
-            return
-        if job_type in shared_state["selected_jobs"]: remove_job_from_pipeline(job_type)
-        else: add_job_to_pipeline(job_type)
+        
+        ui_mgr.set_active_job(job_type)
         update_job_tag_button(job_type)
-
+        rebuild_pipeline_ui()
+    
     def remove_job_from_pipeline(job_type: JobType):
-        if shared_state["project_created"]:
-            ui.notify("Cannot modify pipeline after project creation", type="warning")
+        """Remove a job from the pipeline."""
+        if not ui_mgr.remove_job(job_type):
+            if ui_mgr.is_project_created:
+                ui.notify("Cannot modify pipeline after project creation", type="warning")
             return
-        if job_type in shared_state["selected_jobs"]:
-            shared_state["selected_jobs"].remove(job_type)
-            if job_type in shared_state["job_cards"]:
-                if shared_state["job_cards"][job_type].get("logs_timer"):
-                    shared_state["job_cards"][job_type]["logs_timer"].cancel()
-                del shared_state["job_cards"][job_type]
-            if shared_state["active_job_tab"] == job_type.value:
-                shared_state["active_job_tab"] = (shared_state["selected_jobs"][0].value if shared_state["selected_jobs"] else None)
-            rebuild_pipeline_ui()
-
-    def stop_all_timers():
-        if panel_state.get("status_timer"):
-            panel_state["status_timer"].cancel()
-            panel_state["status_timer"] = None
-        for job_type in shared_state.get("job_cards", {}):
-            job_state = shared_state["job_cards"][job_type]
-            if job_state.get("logs_timer"):
-                job_state["logs_timer"].cancel()
-                job_state["logs_timer"] = None
-
-    def rebuild_pipeline_ui():
-        update_status_label()
-        if panel_state["continuation_container"]:
-            should_show = shared_state.get("continuation_mode", False)
-            panel_state["continuation_container"].set_visibility(should_show)
-            if should_show:
-                panel_state["continuation_container"].clear()
-                with panel_state["continuation_container"]:
-                    build_continuation_controls(backend, shared_state, {**callbacks, "rebuild_pipeline_ui": rebuild_pipeline_ui, "check_and_update_statuses": check_and_update_statuses})
-
-        if "job_tags_container" in shared_state:
-            should_hide = shared_state["pipeline_running"] or shared_state.get("continuation_mode", False)
-            shared_state["job_tags_container"].set_visibility(not should_hide)
-
-        container = panel_state["job_tabs_container"]
-        if not container: return
-        container.clear()
-
-        if not shared_state["selected_jobs"]:
-            with container: ui.label("Select jobs from the tags above to build your pipeline").classes("text-xs text-gray-500 italic text-center p-8")
-            return
-
-        if shared_state["active_job_tab"] not in [j.value for j in shared_state["selected_jobs"]]:
-            shared_state["active_job_tab"] = shared_state["selected_jobs"][0].value
-
-        with container: build_unified_job_tabs()
-
-    async def check_and_update_statuses():
-        project_path = shared_state.get("current_project_path")
-        if not project_path: return
-
-        # Sync backend
-        await backend.pipeline_runner.status_sync.sync_all_jobs(project_path)
         
-        state = get_project_state()
-        
-        for job_type in shared_state["selected_jobs"]:
-            job_model = state.jobs.get(job_type)
-            card = shared_state.get("job_cards", {}).get(job_type, {})
-            
-            # Update Tab Dot
-            if dot := card.get("ui_status_dot"):
-                if not dot.is_deleted:
-                    # 1. Update CSS class for animation
-                    dot.classes(remove="pulse-running pulse-success pulse-failed pulse-scheduled")
-                    dot.classes(get_status_class(job_model.execution_status))
-                    
-                    # 2. FORCE UPDATE BACKGROUND COLOR INLINE
-                    # This ensures it is visible even if CSS fails
-                    color = get_status_hex_color(job_model.execution_status)
-                    dot.style(f"background-color: {color};")
-            
-            # Update Badge if active
-            if job_type.value == shared_state.get("active_job_tab"):
-                if badge := card.get("ui_status_label"):
-                    if not badge.is_deleted:
-                        badge.set_text(job_model.execution_status.value)
-                        _update_badge_color(badge, job_model.execution_status)
-
-        # Check completion
-        if shared_state.get("pipeline_running"):
-            overview = await backend.get_pipeline_overview(project_path)
-            if overview.get("is_complete"):
-                shared_state["pipeline_running"] = False
-                stop_all_timers()
-                ui.notify("Pipeline execution finished.", type="positive")
-                rebuild_pipeline_ui()
-
-    def update_status_label():
-        if panel_state["status_label"]:
-            count = len(shared_state["selected_jobs"])
-            if count == 0: panel_state["status_label"].set_text("No jobs selected")
-            elif shared_state["pipeline_running"]: panel_state["status_label"].set_text(f"Pipeline running...")
-            else: panel_state["status_label"].set_text(f"{count} jobs · Ready to run")
-
-    def build_unified_job_tabs():
-        state = get_project_state()
-        def switch_tab(job_type: JobType):
-            shared_state["active_job_tab"] = job_type.value
-            rebuild_pipeline_ui()
-
-        with ui.row().classes("w-full border-b border-gray-200").style("gap: 0;"):
-            for job_type in shared_state["selected_jobs"]:
-                name = JobConfig.get_job_display_name(job_type)
-                is_active = shared_state["active_job_tab"] == job_type.value
-                job_model = state.jobs.get(job_type)
-                status_class = get_status_class(job_model.execution_status) if job_model else "pulse-scheduled"
-                status_color = get_status_hex_color(job_model.execution_status) if job_model else "#fbbf24"
-
-                with ui.button(on_click=lambda j=job_type: switch_tab(j)).props("flat no-caps dense").style(
-                        f"padding: 8px 20px; border-radius: 0; background: {'white' if is_active else '#fafafa'}; "
-                        f"color: {'#1f2937' if is_active else '#6b7280'}; border-top: 2px solid {'#3b82f6' if is_active else 'transparent'}; "
-                        f"border-right: 1px solid #e5e7eb; font-weight: {500 if is_active else 400};"
-                    ):
-                    with ui.row().classes("items-center gap-2"):
-                        ui.label(name).classes("text-sm")
-                        
-                        # FORCE background-color here
-                        status_dot = ui.element("div") \
-                            .classes(f"status-dot {status_class}") \
-                            .style(f"width: 8px; height: 8px; border-radius: 50%; display: inline-block; background-color: {status_color};")
-                        
-                        if job_type in shared_state["job_cards"]:
-                            shared_state["job_cards"][job_type]["ui_status_dot"] = status_dot
-
-        with ui.column().classes("w-full flex-grow overflow-hidden"):
-            for job_type in shared_state["selected_jobs"]:
-                if shared_state["active_job_tab"] == job_type.value:
-                    render_job_tab(job_type, backend, shared_state, {**callbacks, "check_and_update_statuses": check_and_update_statuses})
-
+        update_job_tag_button(job_type)
+        rebuild_pipeline_ui()
+    
+    def toggle_job_in_pipeline(job_type: JobType):
+        """Toggle a job's presence in the pipeline."""
+        if ui_mgr.is_job_selected(job_type):
+            remove_job_from_pipeline(job_type)
+        else:
+            add_job_to_pipeline(job_type)
+    
     def update_job_tag_button(job_type: JobType):
-        btn = shared_state.get("job_buttons", {}).get(job_type)
-        if not btn: return
-        is_selected = job_type in shared_state["selected_jobs"]
+        """Update the visual state of a job tag button."""
+        btn = ui_mgr.panel_refs.job_tag_buttons.get(job_type.value)
+        if not btn:
+            return
+        
+        is_selected = ui_mgr.is_job_selected(job_type)
         btn.style(
             f"padding: 6px 16px; border-radius: 3px; font-weight: 500; "
             f"background: {'#dbeafe' if is_selected else '#f3f4f6'}; "
             f"color: {'#1e40af' if is_selected else '#6b7280'}; "
             f"border: 1px solid {'#93c5fd' if is_selected else '#e5e7eb'};"
         )
+    
+    def update_status_label():
+        """Update the pipeline status label."""
+        label = ui_mgr.panel_refs.status_label
+        if not label:
+            return
+        
+        count = len(ui_mgr.selected_jobs)
+        if count == 0:
+            label.set_text("No jobs selected")
+        elif ui_mgr.is_running:
+            label.set_text("Pipeline running...")
+        else:
+            label.set_text(f"{count} jobs · Ready to run")
+    
+    def rebuild_pipeline_ui():
+        """Rebuild the entire pipeline UI."""
+        update_status_label()
 
+        cont_container = ui_mgr.panel_refs.continuation_container
+        if cont_container:
+            should_show = ui_mgr.is_continuation_mode
+            cont_container.set_visibility(should_show)
+            if should_show:
+                cont_container.clear()
+                with cont_container:
+                    build_continuation_controls(
+                        backend,
+                        ui_mgr,
+                        {
+                            **callbacks,
+                            "rebuild_pipeline_ui": rebuild_pipeline_ui,
+                            "check_and_update_statuses": check_and_update_statuses,
+                        }
+                    )
+        
+        # Handle job tags visibility
+        tags_container = ui_mgr.panel_refs.job_tags_container
+        if tags_container:
+            should_hide = ui_mgr.is_running or ui_mgr.is_continuation_mode
+            tags_container.set_visibility(not should_hide)
+        
+        # Rebuild job tabs
+        tabs_container = ui_mgr.panel_refs.job_tabs_container
+        if not tabs_container:
+            return
+        
+        tabs_container.clear()
+        
+        selected = ui_mgr.selected_jobs
+        if not selected:
+            with tabs_container:
+                ui.label("Select jobs from the tags above to build your pipeline").classes(
+                    "text-xs text-gray-500 italic text-center p-8"
+                )
+            return
+        
+        # Ensure active tab is valid
+        active = ui_mgr.active_job
+        if active not in selected:
+            ui_mgr.set_active_job(selected[0])
+        
+        with tabs_container:
+            build_unified_job_tabs()
+    
+    def build_unified_job_tabs():
+        """Build the tab strip and content for selected jobs."""
+        state = get_project_state()
+        
+        def switch_tab(job_type: JobType):
+            ui_mgr.set_active_job(job_type)
+            rebuild_pipeline_ui()
+        
+        # Tab strip
+        with ui.row().classes("w-full border-b border-gray-200").style("gap: 0;"):
+            for job_type in ui_mgr.selected_jobs:
+                name = get_job_display_name(job_type)
+                is_active = ui_mgr.active_job == job_type
+                job_model = state.jobs.get(job_type)
+                
+                status = job_model.execution_status if job_model else JobStatus.SCHEDULED
+                status_class = get_status_class(status)
+                status_color = get_status_hex_color(status)
+                
+                with ui.button(on_click=lambda j=job_type: switch_tab(j)).props(
+                    "flat no-caps dense"
+                ).style(
+                    f"padding: 8px 20px; border-radius: 0; "
+                    f"background: {'white' if is_active else '#fafafa'}; "
+                    f"color: {'#1f2937' if is_active else '#6b7280'}; "
+                    f"border-top: 2px solid {'#3b82f6' if is_active else 'transparent'}; "
+                    f"border-right: 1px solid #e5e7eb; "
+                    f"font-weight: {500 if is_active else 400};"
+                ):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.label(name).classes("text-sm")
+                        
+                        # Status dot with forced inline color
+                        status_dot = ui.element("div").classes(
+                            f"status-dot {status_class}"
+                        ).style(
+                            f"width: 8px; height: 8px; border-radius: 50%; "
+                            f"display: inline-block; background-color: {status_color};"
+                        )
+                        
+                        # Store ref for updates
+                        refs = ui_mgr.get_job_widget_refs(job_type)
+                        refs.status_dot = status_dot
+        
+        # Tab content
+        with ui.column().classes("w-full flex-grow overflow-hidden"):
+            active = ui_mgr.active_job
+            if active:
+                render_job_tab(
+                    job_type=active,
+                    backend=backend,
+                    ui_mgr=ui_mgr,
+                    callbacks={
+                        **callbacks,
+                        "check_and_update_statuses": check_and_update_statuses,
+                        "rebuild_pipeline_ui": rebuild_pipeline_ui,
+                    }
+                )
+    
+    async def check_and_update_statuses():
+        """Refresh job statuses from the pipeline file."""
+        project_path = ui_mgr.project_path
+        if not project_path:
+            return
+        
+        # Sync from disk
+        await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
+        
+        state = get_project_state()
+        
+        # Update UI for each job
+        for job_type in ui_mgr.selected_jobs:
+            job_model = state.jobs.get(job_type)
+            if not job_model:
+                continue
+            
+            refs = ui_mgr.get_job_widget_refs(job_type)
+            
+            # Update tab dot
+            if refs.status_dot and not refs.status_dot.is_deleted:
+                refs.status_dot.classes(
+                    remove="pulse-running pulse-success pulse-failed pulse-scheduled"
+                )
+                refs.status_dot.classes(get_status_class(job_model.execution_status))
+                color = get_status_hex_color(job_model.execution_status)
+                refs.status_dot.style(f"background-color: {color};")
+            
+            # Update badge if this is the active tab
+            if job_type == ui_mgr.active_job and refs.status_badge:
+                if not refs.status_badge.is_deleted:
+                    refs.status_badge.set_text(job_model.execution_status.value)
+                    _update_badge_color(refs.status_badge, job_model.execution_status)
+        
+        # Check for pipeline completion
+        if ui_mgr.is_running:
+            overview = await backend.get_pipeline_overview(str(project_path))
+            if overview.get("is_complete"):
+                ui_mgr.set_pipeline_running(False)
+                stop_all_timers()
+                ui.notify("Pipeline execution finished.", type="positive")
+                rebuild_pipeline_ui()
+    
+    def stop_all_timers():
+        """Stop all polling timers."""
+        ui_mgr.cleanup_all_timers()
+    
     async def handle_run_pipeline():
-        if not shared_state["project_created"]:
+        """Handle the Run Pipeline button click."""
+        if not ui_mgr.is_project_created:
             ui.notify("Create a project first", type="warning")
             return
-
-        panel_state["run_button"].props("loading")
+        
+        run_btn = ui_mgr.panel_refs.run_button
+        if run_btn:
+            run_btn.props("loading")
+        
         result = await backend.start_pipeline(
-            project_path=shared_state["current_project_path"],
-            scheme_name=shared_state["current_scheme_name"],
-            selected_jobs=[j.value for j in shared_state["selected_jobs"]],
-            required_paths=[],
+            project_path   = str(ui_mgr.project_path),
+            scheme_name    = ui_mgr.scheme_name,
+            selected_jobs  = [j.value for j in ui_mgr.selected_jobs],
+            required_paths = [],
         )
-        panel_state["run_button"].props(remove="loading")
-
+        
+        if run_btn:
+            run_btn.props(remove="loading")
+        
         if result.get("success"):
-            shared_state["pipeline_running"] = True
+            ui_mgr.set_pipeline_running(True)
+            
+            # Reset scheduled jobs
             state = state_service.state
-            for job_type in shared_state["selected_jobs"]:
+            for job_type in ui_mgr.selected_jobs:
                 job_model = state.jobs.get(job_type)
                 if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
                     job_model.execution_status = JobStatus.SCHEDULED
-
-            if panel_state.get("status_timer"): panel_state["status_timer"].cancel()
-            panel_state["status_timer"] = ui.timer(3.0, lambda: asyncio.create_task(check_and_update_statuses()))
+            
+            # Start status polling
+            ui_mgr.status_timer = ui.timer(
+                3.0,
+                lambda: asyncio.create_task(check_and_update_statuses())
+            )
             
             await check_and_update_statuses()
             ui.notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
-            panel_state["run_button"].props("disable")
-            panel_state["stop_button"].props(remove="disable")
+            
+            if run_btn:
+                run_btn.props("disable")
+            stop_btn = ui_mgr.panel_refs.stop_button
+            if stop_btn:
+                stop_btn.props(remove="disable")
+            
             rebuild_pipeline_ui()
         else:
             ui.notify(f"Failed: {result.get('error')}", type="negative")
-
-    with ui.column().classes("w-full h-full overflow-hidden").style("gap: 0px; font-family: 'IBM Plex Sans', sans-serif;"):
+    
+    # ===========================================
+    # Build the UI
+    # ===========================================
+    
+    with ui.column().classes("w-full h-full overflow-hidden").style(
+        "gap: 0px; font-family: 'IBM Plex Sans', sans-serif;"
+    ):
+        # Header section
         with ui.column().classes("w-full p-3 bg-white border-b border-gray-200 shrink-0"):
-            panel_state["continuation_container"] = ui.column().classes("w-full")
-            panel_state["continuation_container"].set_visibility(False)
-
+            # Continuation controls container (hidden by default)
+            cont_container = ui.column().classes("w-full")
+            cont_container.set_visibility(False)
+            ui_mgr.panel_refs.continuation_container = cont_container
+            
+            # Job selection and controls row
             with ui.row().classes("w-full items-center justify-between mb-4").style("gap: 12px;"):
+                # Job tags
                 job_tags_container = ui.row().classes("flex-1 flex-wrap").style("gap: 8px;")
-                shared_state["job_tags_container"] = job_tags_container
+                ui_mgr.panel_refs.job_tags_container = job_tags_container
+                
                 with job_tags_container:
-                    for job_type in JobConfig.get_ordered_jobs():
-                        name = JobConfig.get_job_display_name(job_type)
-                        is_selected = job_type in shared_state["selected_jobs"]
-                        btn = ui.button(name, on_click=lambda j=job_type: toggle_job_in_pipeline(j)).props("no-caps dense flat").style(
-                                f"padding: 6px 16px; border-radius: 3px; font-weight: 500; "
-                                f"background: {'#dbeafe' if is_selected else '#f3f4f6'}; "
-                                f"color: {'#1e40af' if is_selected else '#6b7280'}; "
-                                f"border: 1px solid {'#93c5fd' if is_selected else '#e5e7eb'};"
-                            )
-                        shared_state.setdefault("job_buttons", {})[job_type] = btn
-
+                    for job_type in get_ordered_jobs():
+                        name = get_job_display_name(job_type)
+                        is_selected = ui_mgr.is_job_selected(job_type)
+                        
+                        btn = ui.button(
+                            name,
+                            on_click=lambda j=job_type: toggle_job_in_pipeline(j)
+                        ).props("no-caps dense flat").style(
+                            f"padding: 6px 16px; border-radius: 3px; font-weight: 500; "
+                            f"background: {'#dbeafe' if is_selected else '#f3f4f6'}; "
+                            f"color: {'#1e40af' if is_selected else '#6b7280'}; "
+                            f"border: 1px solid {'#93c5fd' if is_selected else '#e5e7eb'};"
+                        )
+                        ui_mgr.panel_refs.job_tag_buttons[job_type.value] = btn
+                
+                # Pipeline controls
                 with ui.row().classes("items-center").style("gap: 10px;"):
-                    panel_state["status_label"] = ui.label("No jobs selected").classes("text-xs text-gray-600")
-                    panel_state["run_button"] = ui.button("Run Pipeline", icon="play_arrow", on_click=handle_run_pipeline).props("dense flat no-caps").style("background: #f3f4f6; color: #1f2937; padding: 6px 20px; border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;")
-                    panel_state["stop_button"] = ui.button("Stop", icon="stop").props("dense flat no-caps disable").style("background: #f3f4f6; color: #1f2937; padding: 6px 20px; border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;")
+                    status_label = ui.label("No jobs selected").classes("text-xs text-gray-600")
+                    ui_mgr.panel_refs.status_label = status_label
+                    
+                    run_btn = ui.button(
+                        "Run Pipeline",
+                        icon="play_arrow",
+                        on_click=handle_run_pipeline
+                    ).props("dense flat no-caps").style(
+                        "background: #f3f4f6; color: #1f2937; padding: 6px 20px; "
+                        "border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;"
+                    )
+                    ui_mgr.panel_refs.run_button = run_btn
+                    
+                    stop_btn = ui.button("Stop", icon="stop").props(
+                        "dense flat no-caps disable"
+                    ).style(
+                        "background: #f3f4f6; color: #1f2937; padding: 6px 20px; "
+                        "border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;"
+                    )
+                    ui_mgr.panel_refs.stop_button = stop_btn
+        
+        # Job tabs container
+        tabs_container = ui.column().classes("w-full flex-grow overflow-hidden")
+        ui_mgr.panel_refs.job_tabs_container = tabs_container
+        
+        with tabs_container:
+            ui.label("Select jobs from the tags above to build your pipeline").classes(
+                "text-xs text-gray-500 italic text-center p-8"
+            )
+    
+    # ===========================================
+    # Register callbacks
+    # ===========================================
+    
+    ui_mgr.set_rebuild_callback(rebuild_pipeline_ui)
+    
+    callbacks["rebuild_pipeline_ui"]       = rebuild_pipeline_ui
+    callbacks["stop_all_timers"]           = stop_all_timers
+    callbacks["check_and_update_statuses"] = lambda: asyncio.create_task(check_and_update_statuses())
+    callbacks["enable_run_button"]         = lambda: (
+        ui_mgr.panel_refs.run_button.props(remove="disable")
+        if ui_mgr.panel_refs.run_button else None
+    )
+    callbacks["add_job_to_pipeline"] = add_job_to_pipeline
 
-        panel_state["job_tabs_container"] = ui.column().classes("w-full flex-grow overflow-hidden")
-        with panel_state["job_tabs_container"]:
-            ui.label("Select jobs from the tags above to build your pipeline").classes("text-xs text-gray-500 italic text-center p-8")
 
-    callbacks["rebuild_pipeline_ui"] = rebuild_pipeline_ui
-    callbacks["stop_all_timers"] = stop_all_timers
-    callbacks["enable_run_button"] = lambda: panel_state["run_button"].props(remove="disable") if panel_state["run_button"] else None
-
-    return panel_state
+def _update_badge_color(label, status: JobStatus):
+    """Helper to color the status badge."""
+    colors = {
+        JobStatus.SCHEDULED: ("bg-yellow-100", "text-yellow-800"),
+        JobStatus.RUNNING  : ("bg-blue-100", "text-blue-800"),
+        JobStatus.SUCCEEDED: ("bg-green-100", "text-green-800"),
+        JobStatus.FAILED   : ("bg-red-100", "text-red-800"),
+        JobStatus.UNKNOWN  : ("bg-gray-100", "text-gray-800"),
+    }
+    bg, txt = colors.get(status, ("bg-gray-100", "text-gray-800"))
+    label.classes(
+        remove = "bg-yellow-100 text-yellow-800 bg-blue-100 text-blue-800 "
+               "bg-green-100 text-green-800 bg-red-100 text-red-800 "
+               "bg-gray-100 text-gray-800"
+    )
+    label.classes(f"{bg} {txt}")
