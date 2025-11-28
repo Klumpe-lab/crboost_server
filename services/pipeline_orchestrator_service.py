@@ -5,16 +5,13 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import json
 from services.config_service import get_config_service
-from services.project_state import AbstractJobParams, JobCategory, JobType, get_state_service
+from services.project_state import AbstractJobParams, JobCategory, JobType, get_state_service, ImportMoviesParams
 from .starfile_service import StarfileService
 from .project_service import ProjectService
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
-
-from typing import Any
-from services.project_state import ImportMoviesParams
 
 
 class BaseCommandBuilder:
@@ -88,6 +85,11 @@ class PipelineOrchestratorService:
         Creates a custom Relion scheme with the selected jobs.
         Updates state with job paths instead of writing sidecar files.
         """
+        # --- FIX: Guard Clause for empty jobs ---
+        if not selected_jobs:
+            print("[PIPELINE] No jobs selected. Skipping scheme creation.")
+            return {"success": True, "message": "No jobs to schedule."}
+
         try:
             # Initialize project service with absolute project root
             self.project_service = ProjectService(self.backend)
@@ -164,7 +166,6 @@ class PipelineOrchestratorService:
                         print(f"[PIPELINE WARNING] Could not determine upstream dir for {job_name}: {e}")
 
                 # 3. Ask the Model to Resolve its own Paths
-                # This replaces _resolve_job_paths_standardized
                 paths = job_model.resolve_paths(current_job_dir, upstream_job_dir)
 
                 # --- SINGLE SOURCE OF TRUTH UPDATE ---
@@ -207,7 +208,6 @@ class PipelineOrchestratorService:
             self._create_scheme_star(new_scheme_dir, new_scheme_name, selected_jobs)
 
             # --- PERSIST STATE ---
-            # Save the updated project_params.json with all the paths we just calculated
             await self.backend.state_service.save_project()
 
             print(f"[PIPELINE] Created complete scheme at: {new_scheme_dir}")
@@ -230,9 +230,7 @@ class PipelineOrchestratorService:
     ) -> str:
         """
         Build the fn_exe command for a job using model metadata.
-        Uses JobType enums for cleaner code.
         """
-        # Convert to enum for cleaner comparisons
         try:
             job_type = JobType(job_name)
         except ValueError:

@@ -11,6 +11,7 @@ from nicegui import ui
 
 from backend import CryoBoostBackend
 from services.project_state import JobStatus, JobType, get_state_service, get_project_state
+from ui.status_indicator import ReactiveStatusDot
 from ui.ui_state import (
     get_ui_state_manager,
     UIStateManager,
@@ -205,8 +206,8 @@ def build_pipeline_builder_panel(
                 ):
                     with ui.row().classes("items-center gap-2"):
                         ui.label(name).classes("text-sm")
-                        render_status_dot(job_type)
-        
+                        # render_status_dot(job_type)
+                        ReactiveStatusDot(job_type)
         # Tab content
         with ui.column().classes("w-full flex-grow overflow-hidden"):
             active = ui_mgr.active_job
@@ -245,52 +246,107 @@ def build_pipeline_builder_panel(
         """Stop all polling timers."""
         ui_mgr.cleanup_all_timers()
     
+    # In pipeline_builder_panel.py, replace handle_run_pipeline with:
+
     async def handle_run_pipeline():
         """Handle the Run Pipeline button click."""
         if not ui_mgr.is_project_created:
             ui.notify("Create a project first", type="warning")
             return
         
+        if not ui_mgr.selected_jobs:
+            ui.notify("Add at least one job to the pipeline", type="warning")
+            return
+        
         run_btn = ui_mgr.panel_refs.run_button
         if run_btn:
             run_btn.props("loading")
         
-        result = await backend.start_pipeline(
-            project_path   = str(ui_mgr.project_path),
-            scheme_name    = ui_mgr.scheme_name,
-            selected_jobs  = [j.value for j in ui_mgr.selected_jobs],
-            required_paths = [],
-        )
-        
-        if run_btn:
-            run_btn.props(remove="loading")
-        
-        if result.get("success"):
-            ui_mgr.set_pipeline_running(True)
+        try:
+            project_path = ui_mgr.project_path
+            scheme_name = ui_mgr.scheme_name or f"scheme_{state_service.state.project_name}"
+            selected_job_strings = [j.value for j in ui_mgr.selected_jobs]
             
+            # Collect bind paths
             state = state_service.state
-            for job_type in ui_mgr.selected_jobs:
-                job_model = state.jobs.get(job_type)
-                if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
-                    job_model.execution_status = JobStatus.SCHEDULED
+            additional_bind_paths = set()
+            if project_path:
+                additional_bind_paths.add(str(project_path.parent.resolve()))
             
-            ui_mgr.status_timer = ui.timer(
-                3.0,
-                lambda: asyncio.create_task(check_and_update_statuses())
+            # Add data source paths if available
+            di = ui_mgr.data_import
+            if di.movies_glob:
+                try:
+                    additional_bind_paths.add(str(Path(di.movies_glob).parent.resolve()))
+                except:
+                    pass
+            if di.mdocs_glob:
+                try:
+                    additional_bind_paths.add(str(Path(di.mdocs_glob).parent.resolve()))
+                except:
+                    pass
+            
+            # STEP 1: Create/update the scheme with currently selected jobs
+            print(f"[PIPELINE] Creating scheme '{scheme_name}' with jobs: {selected_job_strings}")
+            
+            scheme_result = await backend.pipeline_orchestrator.create_custom_scheme(
+                project_dir=project_path,
+                new_scheme_name=scheme_name,
+                base_template_path=Path.cwd() / "config" / "Schemes" / "warp_tomo_prep",
+                selected_jobs=selected_job_strings,
+                additional_bind_paths=list(additional_bind_paths),
             )
             
-            await check_and_update_statuses()
-            ui.notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
+            if not scheme_result.get("success"):
+                ui.notify(f"Failed to create scheme: {scheme_result.get('error')}", type="negative")
+                return
             
+            print(f"[PIPELINE] Scheme created at: {project_path}/Schemes/{scheme_name}")
+            
+            # STEP 2: Now start the pipeline
+            result = await backend.start_pipeline(
+                project_path=str(project_path),
+                scheme_name=scheme_name,
+                selected_jobs=selected_job_strings,
+                required_paths=[],
+            )
+            
+            if result.get("success"):
+                ui_mgr.set_pipeline_running(True)
+                
+                # Reset statuses for jobs that haven't succeeded
+                for job_type in ui_mgr.selected_jobs:
+                    job_model = state.jobs.get(job_type)
+                    if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
+                        job_model.execution_status = JobStatus.SCHEDULED
+                
+                # Start status polling
+                ui_mgr.status_timer = ui.timer(
+                    3.0,
+                    lambda: asyncio.create_task(check_and_update_statuses())
+                )
+                
+                await check_and_update_statuses()
+                ui.notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
+                
+                if run_btn:
+                    run_btn.props("disable")
+                stop_btn = ui_mgr.panel_refs.stop_button
+                if stop_btn:
+                    stop_btn.props(remove="disable")
+                
+                rebuild_pipeline_ui()
+            else:
+                ui.notify(f"Failed to start: {result.get('error')}", type="negative")
+        
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            ui.notify(f"Error: {e}", type="negative")
+        
+        finally:
             if run_btn:
-                run_btn.props("disable")
-            stop_btn = ui_mgr.panel_refs.stop_button
-            if stop_btn:
-                stop_btn.props(remove="disable")
-            
-            rebuild_pipeline_ui()
-        else:
-            ui.notify(f"Failed: {result.get('error')}", type="negative")
+                run_btn.props(remove="loading")
     
     # ===========================================
     # Build the UI
