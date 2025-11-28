@@ -18,6 +18,7 @@ from services.project_state import (
     get_project_state,
     get_state_service,
 )
+from ui.status_indicator import ReactiveStatusBadge
 from ui.ui_state import (
     get_ui_state_manager,
     UIStateManager,
@@ -166,7 +167,8 @@ def render_job_tab(
                     ui.label(state.project_name).classes("text-lg font-bold text-gray-800")
                     
                     # --- REACTIVE COMPONENT ---
-                    render_status_badge(job_type)
+                    # render_status_badge(job_type)
+                    ReactiveStatusBadge(job_type)
                     # --------------------------
                 
                 # Timestamps
@@ -201,7 +203,6 @@ def render_job_tab(
                     callbacks,
                 )
                 
-                # Refresh button - now triggers the refreshable
                 ui.button(
                     icon="refresh",
                     on_click=lambda: _force_status_refresh(callbacks),

@@ -336,18 +336,64 @@ class PipelineRunnerService:
 
     async def _run_relion_schemer(self, project_dir: Path, scheme_name: str, additional_bind_paths: List[str]):
         try:
+            # ENSURE default_pipeline.star exists
+            pipeline_star = project_dir / "default_pipeline.star"
+            if not pipeline_star.exists():
+                print(f"[RUNNER] default_pipeline.star not found, initializing Relion project...")
+                
+                init_command = "unset DISPLAY && relion --tomo --do_projdir ."
+                container_service = self.backend.container_service
+                init_full_command = container_service.wrap_command_for_tool(
+                    command=init_command,
+                    cwd=project_dir,
+                    tool_name="relion",
+                    additional_binds=additional_bind_paths
+                )
+                
+                init_process = await asyncio.create_subprocess_shell(
+                    init_full_command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=project_dir
+                )
+                
+                try:
+                    stdout, stderr = await asyncio.wait_for(init_process.communicate(), timeout=30.0)
+                    if init_process.returncode != 0:
+                        print(f"[RUNNER] Relion init failed: {stderr.decode()}")
+                        return {"success": False, "error": f"Failed to initialize Relion project: {stderr.decode()}"}
+                    print(f"[RUNNER] Relion project initialized successfully")
+                except asyncio.TimeoutError:
+                    print("[RUNNER] Relion init timed out")
+                    init_process.kill()
+                    await init_process.wait()
+                    return {"success": False, "error": "Relion project initialization timed out"}
+            
+            # Now run the schemer
             run_command = f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --verb 2"
             container_service = self.backend.container_service
             full_run_command = container_service.wrap_command_for_tool(
-                command=run_command, cwd=project_dir, tool_name="relion_schemer", additional_binds=additional_bind_paths
+                command=run_command,
+                cwd=project_dir,
+                tool_name="relion_schemer",
+                additional_binds=additional_bind_paths
             )
+            
             process = await asyncio.create_subprocess_shell(
-                full_run_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
+                full_run_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=project_dir
             )
+            
             self.active_schemer_process = process
             asyncio.create_task(self._monitor_schemer(process, project_dir))
+            
             return {"success": True, "message": f"Workflow started (PID: {process.pid})", "pid": process.pid}
+        
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
 
     async def _monitor_schemer(self, process: asyncio.subprocess.Process, project_dir: Path):

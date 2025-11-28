@@ -17,13 +17,11 @@ from services.project_state import JobType, JobStatus
 if TYPE_CHECKING:
     from nicegui.element import Element
 
-
 class MonitorTab(str, Enum):
     """Explicitly typed tab values."""
     CONFIG = "config"
     LOGS = "logs"
     FILES = "files"
-
 
 class JobCardUIState(BaseModel):
     """UI state for a single job card. Serializable."""
@@ -32,26 +30,25 @@ class JobCardUIState(BaseModel):
     active_monitor_tab: MonitorTab = MonitorTab.CONFIG
     user_switched_tab: bool = False
 
-
 class DataImportFormState(BaseModel):
     """State for the data import form. Cached for restoration."""
     model_config = ConfigDict(use_enum_values=True)
     
-    project_name: str = ""
+    project_name     : str = ""
     project_base_path: str = ""
-    movies_glob: str = ""
-    mdocs_glob: str = ""
-    import_prefix: str = ""
+    movies_glob      : str = ""
+    mdocs_glob       : str = ""
+    import_prefix    : str = ""
     
     # Validation state
     movies_valid: bool = False
-    mdocs_valid: bool = False
+    mdocs_valid : bool = False
     
     # Detected parameters cache
-    detected_pixel_size: Optional[float] = None
-    detected_voltage: Optional[float] = None
+    detected_pixel_size   : Optional[float] = None
+    detected_voltage      : Optional[float] = None
     detected_dose_per_tilt: Optional[float] = None
-    detected_tilt_axis: Optional[float] = None
+    detected_tilt_axis    : Optional[float] = None
 
 
 class UIState(BaseModel):
