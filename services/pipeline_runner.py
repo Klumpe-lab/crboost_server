@@ -34,7 +34,7 @@ class StatusSyncService:
 
         changes = {}
 
-        # --- REFACTORED: Get state from state_service ---
+        # Get state from state_service
         state = self.backend.state_service.state
 
         # First pass: update jobs that are found in pipeline.star
@@ -68,7 +68,9 @@ class StatusSyncService:
                 job_model.relion_job_name = job_path
                 job_model.relion_job_number = self._extract_job_number(job_path)
 
-                changes[job_type_str] = old_status != job_model.execution_status
+                if old_status != job_model.execution_status:
+                    changes[job_type_str] = True
+
                 found_jobs.add(job_type)
 
         # Second pass: handle jobs not found in pipeline.star (reset jobs)
@@ -81,7 +83,8 @@ class StatusSyncService:
                     job_model.execution_status = JobStatus.SCHEDULED
                     job_model.relion_job_name = None
                     job_model.relion_job_number = None
-                    changes[job_type.value] = old_status != JobStatus.SCHEDULED
+                    if old_status != JobStatus.SCHEDULED:
+                        changes[job_type.value] = True
 
                 # If job has unexpected status but no pipeline entry, reset to scheduled
                 elif job_model.execution_status not in [JobStatus.SCHEDULED, JobStatus.UNKNOWN]:
@@ -89,6 +92,14 @@ class StatusSyncService:
                     job_model.relion_job_name = None
                     job_model.relion_job_number = None
                     changes[job_type.value] = True
+
+        # --- AUTO-PERSIST STATUS CHANGES ---
+        if changes:
+            try:
+                print(f"[SYNC] Persisting {len(changes)} status changes to disk.")
+                await self.backend.state_service.save_project()
+            except Exception as e:
+                print(f"[SYNC ERROR] Failed to persist status changes: {e}")
 
         return changes
 
@@ -109,35 +120,9 @@ class StatusSyncService:
         if "Import/job" in job_path:
             return "importmovies"
 
-        # For other jobs, try to read job_params.json
-        job_dir = Path(project_path) / job_path.rstrip("/")
-        params_file = job_dir / "job_params.json"
-
-        if params_file.exists():
-            try:
-                with open(params_file, "r") as f:
-                    params_data = json.load(f)
-                job_type = params_data.get("job_type", "unknown")
-
-                if job_type != "unknown":
-                    return job_type
-            except:
-                pass
-
         # Fallback: try to infer from directory structure and pipeline order
         if "External/job" in job_path:
             job_number = self._extract_job_number(job_path)
-            # This is brittle, but it's the fallback
-            pipeline_order = ["importmovies", "fsMotionAndCtf", "aligntiltsWarp", "tsCtf", "tsReconstruct"]
-            # Adjust index: job001=import, job002=fsMotionCtf
-            # The 'External' jobs start *after* import, so job002 is index 1
-            adjusted_index = job_number - 2
-
-            # This logic is confusing. Let's trace:
-            # Import/job001 -> importmovies (handled above)
-            # External/job002 -> fsMotionAndCtf
-            # External/job003 -> aligntiltsWarp
-
             # A better mapping by job number:
             job_map = {1: "importmovies", 2: "fsMotionAndCtf", 3: "aligntiltsWarp", 4: "tsCtf", 5: "tsReconstruct"}
             if job_number in job_map:
@@ -167,7 +152,6 @@ class PipelineRunnerService:
     ):
         """
         Validates paths and starts the relion_schemer process.
-        (Unchanged)
         """
         project_dir = Path(project_path)
         if not project_dir.is_dir():
@@ -184,12 +168,6 @@ class PipelineRunnerService:
         """
         Get actual execution status for each job from default_pipeline.star
         and update the job models directly.
-
-        Returns:
-        {
-            "importmovies": ImportMoviesParams(execution_status=JobStatus.SUCCEEDED, ...),
-            "fsMotionAndCtf": FsMotionCtfParams(execution_status=JobStatus.RUNNING, ...)
-        }
         """
         pipeline_star = Path(project_path) / "default_pipeline.star"
         if not pipeline_star.exists():
@@ -205,7 +183,6 @@ class PipelineRunnerService:
             if processes.empty:
                 return {}
 
-            # --- REFACTORED ---
             # 1. Get the single source of truth
             state = self.backend.state_service.state
 
@@ -213,8 +190,7 @@ class PipelineRunnerService:
                 job_path = process["rlnPipeLineProcessName"]
                 status_str = process["rlnPipeLineProcessStatusLabel"]
 
-                # This method is robust, it reads job_params.json
-                job_type_str = self._extract_job_type_from_path(project_path, job_path)
+                job_type_str = self.status_sync._extract_job_type(project_path, job_path)
 
                 if job_type_str and job_type_str != "unknown":
                     try:
@@ -225,25 +201,19 @@ class PipelineRunnerService:
                         job_model = state.jobs.get(job_type)
 
                         if not job_model:
-                            # Job is in pipeline.star but not our state? Initialize it.
                             print(f"[RUNNER] Job {job_type} not in state, initializing from template.")
-
                             template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
                             job_star_path = template_base / job_type.value / "job.star"
 
-                            # Use the service to initialize it
                             await self.backend.state_service.ensure_job_initialized(
                                 job_type, job_star_path if job_star_path.exists() else None
                             )
 
-                            # Now it is guaranteed to be in the state
                             job_model = state.jobs.get(job_type)
 
                             if not job_model:
                                 print(f"[RUNNER] Failed to initialize job model for {job_type}, skipping")
                                 continue
-
-                        # --- END REPLACEMENT ---
 
                         job_number_str = job_path.rstrip("/").split("job")[-1]
                         job_number = int(job_number_str)
@@ -275,28 +245,6 @@ class PipelineRunnerService:
 
             traceback.print_exc(file=sys.stderr)
             return {}
-
-    def _extract_job_type_from_path(self, project_path: str, job_path: str) -> str:
-        """Extract job type from job path using job_params.json."""
-
-        # Handle "Import" job, which is a special case
-        if "Import/job" in job_path:
-            return "importmovies"
-
-        # For all other jobs, read the job_params.json
-        job_dir = Path(project_path) / job_path.rstrip("/")
-        params_file = job_dir / "job_params.json"
-
-        if params_file.exists():
-            try:
-                with open(params_file, "r") as f:
-                    params_data = json.load(f)
-                return params_data.get("job_type", "unknown")
-            except Exception:
-                return "unknown"  # Fallback on read error
-        else:
-            # This can happen if the job hasn't been created yet but is in the .star
-            return "unknown"
 
     async def get_pipeline_overview(self, project_path: str):
         """
@@ -346,7 +294,7 @@ class PipelineRunnerService:
             "failed": int(failed),
             "scheduled": int(scheduled),
             "is_complete": is_complete,
-            "jobs": {k: v.model_dump(mode="json") for k, v in job_models.items()},  # Dump models for serialization
+            "jobs": {k: v.model_dump(mode="json") for k, v in job_models.items()},
         }
 
     async def get_job_logs(self, project_path: str, job_name: str) -> Dict[str, str]:
@@ -387,24 +335,68 @@ class PipelineRunnerService:
         return logs
 
     async def _run_relion_schemer(self, project_dir: Path, scheme_name: str, additional_bind_paths: List[str]):
-        # (This method is unchanged)
         try:
+            # ENSURE default_pipeline.star exists
+            pipeline_star = project_dir / "default_pipeline.star"
+            if not pipeline_star.exists():
+                print(f"[RUNNER] default_pipeline.star not found, initializing Relion project...")
+                
+                init_command = "unset DISPLAY && relion --tomo --do_projdir ."
+                container_service = self.backend.container_service
+                init_full_command = container_service.wrap_command_for_tool(
+                    command=init_command,
+                    cwd=project_dir,
+                    tool_name="relion",
+                    additional_binds=additional_bind_paths
+                )
+                
+                init_process = await asyncio.create_subprocess_shell(
+                    init_full_command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=project_dir
+                )
+                
+                try:
+                    stdout, stderr = await asyncio.wait_for(init_process.communicate(), timeout=30.0)
+                    if init_process.returncode != 0:
+                        print(f"[RUNNER] Relion init failed: {stderr.decode()}")
+                        return {"success": False, "error": f"Failed to initialize Relion project: {stderr.decode()}"}
+                    print(f"[RUNNER] Relion project initialized successfully")
+                except asyncio.TimeoutError:
+                    print("[RUNNER] Relion init timed out")
+                    init_process.kill()
+                    await init_process.wait()
+                    return {"success": False, "error": "Relion project initialization timed out"}
+            
+            # Now run the schemer
             run_command = f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --verb 2"
             container_service = self.backend.container_service
             full_run_command = container_service.wrap_command_for_tool(
-                command=run_command, cwd=project_dir, tool_name="relion_schemer", additional_binds=additional_bind_paths
+                command=run_command,
+                cwd=project_dir,
+                tool_name="relion_schemer",
+                additional_binds=additional_bind_paths
             )
+            
             process = await asyncio.create_subprocess_shell(
-                full_run_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
+                full_run_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=project_dir
             )
+            
             self.active_schemer_process = process
             asyncio.create_task(self._monitor_schemer(process, project_dir))
+            
             return {"success": True, "message": f"Workflow started (PID: {process.pid})", "pid": process.pid}
+        
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
 
     async def _monitor_schemer(self, process: asyncio.subprocess.Process, project_dir: Path):
-        # (This method is unchanged)
         async def read_stream(stream, callback):
             while True:
                 line = await stream.readline()

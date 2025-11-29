@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from services.project_state import JobType, get_state_service, jobtype_paramclass
 from services.starfile_service import StarfileService
-from services.mdoc_service import get_mdoc_service  # This was already correct
+from services.mdoc_service import get_mdoc_service
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
@@ -33,6 +33,11 @@ class DataImportService:
             mdoc_dir = project_dir / "mdoc"
             frames_dir.mkdir(exist_ok=True, parents=True)
             mdoc_dir.mkdir(exist_ok=True, parents=True)
+
+            # Safety check if globs are empty (e.g. creating empty project)
+            if not movies_glob or not mdocs_glob:
+                 print("[DATA_IMPORT] Skipping data import - patterns are empty.")
+                 return {"success": True, "message": "Skipped data import (empty patterns)."}
 
             source_movie_dir = Path(movies_glob).parent
             mdoc_files = glob.glob(mdocs_glob)
@@ -175,15 +180,15 @@ class ProjectService:
                 await self._prepopulate_qsub_script(main_qsub_script)
 
     async def _prepopulate_qsub_script(self, qsub_script_path: Path):
-        ...
-        # TODO: Implement this later
+        # TODO: Implement qsub script population if needed
+        pass
 
     async def initialize_new_project(
         self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
     ):
         """
         The main orchestration logic for creating a new project.
-        --- REFACTORED to use new StateService ---
+        Updated to handle empty job lists without crashing.
         """
         try:
             project_dir = Path(project_base_path).expanduser() / project_name
@@ -195,35 +200,36 @@ class ProjectService:
 
             import_prefix = f"{project_name}_"
 
-            # --- NEW: Get state service and update state *before* doing anything else ---
-            state_service = self.backend.state_service
-            state = state_service.state
+            # Update state BEFORE file operations
+            state_service      = self.backend.state_service
+            state              = state_service.state
             state.project_name = project_name
-            state.project_path = project_dir  # This will be set again in create_project_structure, which is fine
+            state.project_path = project_dir
+            state.movies_glob  = movies_glob                
+            state.mdocs_glob   = mdocs_glob                  
 
-            # This creates dirs and calls self.set_project_root()
+            # 1. Create Structure & Import Data
             structure_result = await self.create_project_structure(project_dir, movies_glob, mdocs_glob, import_prefix)
 
             if not structure_result["success"]:
                 return structure_result
 
+            # 2. Init Params & Jobs
             params_json_path = project_dir / "project_params.json"
             try:
-                # --- NEW: Ensure all selected jobs are initialized in the state ---
-                # This populates state.jobs from job.star templates
-                print(f"[PROJECT_SERVICE] Initializing jobs in state: {selected_jobs}")
-                for job_str in selected_jobs:
-                    try:
-                        job_type = JobType(job_str)
-                        job_star_path = base_template_path / job_type.value / "job.star"
-                        await state_service.ensure_job_initialized(
-                            job_type, job_star_path if job_star_path.exists() else None
-                        )
-                    except ValueError:
-                        print(f"[WARN] Skipping unknown job '{job_str}' during state initialization.")
+                if selected_jobs:
+                    print(f"[PROJECT_SERVICE] Initializing jobs in state: {selected_jobs}")
+                    for job_str in selected_jobs:
+                        try:
+                            job_type = JobType(job_str)
+                            job_star_path = base_template_path / job_type.value / "job.star"
+                            await state_service.ensure_job_initialized(
+                                job_type, job_star_path if job_star_path.exists() else None
+                            )
+                        except ValueError:
+                            print(f"[WARN] Skipping unknown job '{job_str}' during state initialization.")
 
-                # --- NEW: Save the populated ProjectState model ---
-                # This replaces the old export_for_project() and manual json.dump()
+                # Save the populated ProjectState model
                 await state_service.save_project(params_json_path)
 
                 print(f"[PROJECT_SERVICE] Saved parameters to {params_json_path}")
@@ -231,32 +237,57 @@ class ProjectService:
                 if not params_json_path.exists():
                     raise FileNotFoundError(f"Parameter file was not created at {params_json_path}")
 
-                file_size = params_json_path.stat().st_size
-                if file_size == 0:
-                    raise ValueError(f"Parameter file is empty: {params_json_path}")
-
-                print(f"[PROJECT_SERVICE] Verified parameter file: {file_size} bytes")
-
             except Exception as e:
                 print(f"[ERROR] Failed to save project_params.json: {e}")
                 import traceback
-
                 traceback.print_exc()
                 return {"success": False, "error": f"Project created but failed to save parameters: {str(e)}"}
 
-            # Collect bind paths
+            # 3. Create Scheme & Init Relion
+            
+            # --- GUARD CLAUSE: Handle Empty Job List ---
+            if not selected_jobs:
+                print("[PROJECT_SERVICE] No jobs selected. Creating empty Relion project, skipping scheme.")
+                
+                pipeline_star_path = project_dir / "default_pipeline.star"
+                init_command = "unset DISPLAY && relion --tomo --do_projdir ."
+                binds = [str(project_dir.resolve())]
+                
+                container_init_command = self.backend.container_service.wrap_command_for_tool(
+                    command=init_command, cwd=project_dir, tool_name="relion", additional_binds=binds
+                )
+                
+                proc = await asyncio.create_subprocess_shell(
+                    container_init_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
+                )
+                
+                # ADD TIMEOUT HERE
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+                    if proc.returncode != 0:
+                        print(f"[RELION INIT ERROR] {stderr.decode()}")
+                except asyncio.TimeoutError:
+                    print("[ERROR] Relion project initialization timed out.")
+                    proc.kill()
+                    await proc.wait()
+                
+                return {
+                    "success": True,
+                    "message": "Project created (empty pipeline).",
+                    "project_path": str(project_dir),
+                    "params_file": str(params_json_path),
+                }
+
+            # If jobs exist, proceed with standard scheme creation
             additional_bind_paths = {
                 str(Path(project_base_path).expanduser().resolve()),
                 str(Path(movies_glob).parent.resolve()),
                 str(Path(mdocs_glob).parent.resolve()),
             }
 
-            # Add gain ref path if it exists
             if state.acquisition.gain_reference_path:
                 additional_bind_paths.add(str(Path(state.acquisition.gain_reference_path).parent.resolve()))
 
-            # Create the scheme
-            # This will now read job models from the new state service
             scheme_result = await self.backend.pipeline_orchestrator.create_custom_scheme(
                 project_dir,
                 scheme_name,
@@ -303,14 +334,12 @@ class ProjectService:
 
         except Exception as e:
             import traceback
-
             traceback.print_exc()
             return {"success": False, "error": f"Project creation failed: {str(e)}"}
 
     async def load_project_state(self, project_path: str) -> Dict[str, Any]:
         """
         Loads a project using the new StateService.
-        --- REFACTORED ---
         """
         try:
             project_dir = Path(project_path)
@@ -321,23 +350,19 @@ class ProjectService:
             if not params_file.exists():
                 return {"success": False, "error": "No project_params.json found"}
 
-            # --- NEW: Bridge for missing data ---
-            # Manually read data_sources, as it's not in the new ProjectState model
+            # Manually read data_sources for compatibility
             movies_glob = ""
             mdocs_glob = ""
             try:
                 with open(params_file, "r") as f:
                     raw_params_data = json.load(f)
 
-                # Check for old data_sources key
                 data_sources = raw_params_data.get("data_sources", {})
                 if data_sources:
                     movies_glob = data_sources.get("frames_glob", "")
                     mdocs_glob = data_sources.get("mdocs_glob", "")
 
-                # Also check for data stored in 'acquisition' model for newer saves
                 if not movies_glob and "acquisition" in raw_params_data:
-                    # This assumes you might store them here, adjust if not
                     movies_glob = raw_params_data["acquisition"].get("frames_glob", "")
                 if not mdocs_glob and "acquisition" in raw_params_data:
                     mdocs_glob = raw_params_data["acquisition"].get("mdocs_glob", "")
@@ -345,23 +370,18 @@ class ProjectService:
             except Exception as e:
                 print(f"[LOAD_PROJECT] Warning: could not parse raw JSON for data_sources: {e}")
 
-            # --- NEW: Use the StateService to load the project ---
-            # This will replace the global singleton state
+            # Load via StateService
             load_success = await self.backend.state_service.load_project(params_file)
 
             if not load_success:
                 return {"success": False, "error": f"StateService failed to load project from {params_file}"}
 
-            # Get the new state that was just loaded
             state = self.backend.state_service.state
-
-            # Set the project root for this service instance
             self.set_project_root(project_dir)
 
-            # Sync job statuses from the pipeline.star file
-            await self.backend.pipeline_runner.status_sync.sync_all_jobs(project_path)
+            # Sync job statuses
+            await self.backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
 
-            # Extract data from the new state for the UI
             project_name = state.project_name
             selected_jobs = [job_type.value for job_type in state.jobs.keys()]
 
@@ -369,11 +389,10 @@ class ProjectService:
                 "success": True,
                 "project_name": project_name,
                 "selected_jobs": selected_jobs,
-                "movies_glob": movies_glob,  # Return the manually recovered value
-                "mdocs_glob": mdocs_glob,  # Return the manually recovered value
+                "movies_glob": movies_glob,
+                "mdocs_glob": mdocs_glob,
             }
         except Exception as e:
             import traceback
-
             traceback.print_exc()
             return {"success": False, "error": str(e)}

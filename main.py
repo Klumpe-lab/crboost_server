@@ -11,6 +11,14 @@ from fastapi.staticfiles import StaticFiles
 from nicegui import ui
 
 from backend import CryoBoostBackend
+import logging
+
+# Suppress the NiceGUI timer error spam
+class SuppressPruneStorageError(logging.Filter):
+    def filter(self, record):
+        return "Request is not set" not in record.getMessage()
+
+logging.getLogger("nicegui").addFilter(SuppressPruneStorageError())
 
 def setup_app():
     """Configures and returns the FastAPI app."""
@@ -26,7 +34,7 @@ def setup_app():
     
     backend = CryoBoostBackend(Path.cwd())
     create_ui_router(backend) 
-    ui.run_with(app, title="CryoBoost Server")
+    ui.run_with(app, title="CryoBoost Server", storage_secret="somestuff")
     return app
 
 def get_local_ip():

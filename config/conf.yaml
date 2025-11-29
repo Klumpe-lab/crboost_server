@@ -14,8 +14,10 @@ submission:
     Helpssh: ""
     HelpConflict: ""
 local:
-    Environment: "source /opt/CryoBoost/.cbenv"  # This is for inside container
-
+    Environment: "source /opt/CryoBoost/.cbenv"
+    DefaultProjectBase: "/users/<user>/dev/crboost_server/projects"
+    DefaultMoviesGlob: "/users/<user>/dev/001_CopiaTestSet/frames/*.eer"
+    DefaultMdocsGlob: "/users/<user>/dev/001_CopiaTestSet/mdoc/*.mdoc"
 
 aliases:
   - Job: all
