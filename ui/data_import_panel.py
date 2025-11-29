@@ -1,7 +1,7 @@
 # ui/data_import_panel.py
 """
 Data import panel.
-Refactored with DEBUG LOGGING and VISUAL FEEDBACK to diagnose inactive button.
+Refactored for better logical grouping, configuration loading, and "Recent Projects" browser.
 """
 
 import asyncio
@@ -17,10 +17,6 @@ from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
 
 # === DEFAULTS ===
-DEFAULT_PROJECT_NAME = ""
-DEFAULT_PROJECT_BASE_PATH = "/users/artem.kushner/dev/crboost_server/projects"
-DEFAULT_MOVIES_DIR = ""
-DEFAULT_MDOCS_DIR = ""
 DEFAULT_MOVIES_EXT = "*.eer"
 DEFAULT_MDOCS_EXT = "*.mdoc"
 
@@ -30,8 +26,54 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
     Build the data import panel.
     """
     ui_mgr = get_ui_state_manager()
+    
+    # Use a mutable dictionary to store local widget references
+    local_refs = {
+        "recent_projects_container": None,
+        # Fallbacks for the file picker logic if config is empty
+        "default_movies_ext": "*.eer", 
+        "default_mdocs_ext": "*.mdoc"
+    }
 
-    # --- VALIDATION LOGIC ---
+    # Initialize defaults if not set
+    async def init_defaults():
+        # 1. Fetch Defaults from Backend
+        defaults = await backend.get_default_data_globs()
+        config_movies = defaults.get("movies", "")
+        config_mdocs = defaults.get("mdocs", "")
+
+        # 2. Update File Picker helpers (extract extension from full path if possible)
+        if config_movies and "*" in config_movies:
+            # simple logic: try to grab the extension part for the file picker default
+            local_refs["default_movies_ext"] = "*" + config_movies.split("*")[-1]
+        
+        if config_mdocs and "*" in config_mdocs:
+            local_refs["default_mdocs_ext"] = "*" + config_mdocs.split("*")[-1]
+
+        # 3. Apply Project Base Path (if not already set by state)
+        if not ui_mgr.data_import.project_base_path:
+            default_path = await backend.get_default_project_base()
+            ui_mgr.update_data_import(project_base_path=default_path)
+            if ui_mgr.panel_refs.project_path_input:
+                ui_mgr.panel_refs.project_path_input.value = default_path
+        
+        # 4. Apply Data Source Globs (if not already set by state)
+        if not ui_mgr.data_import.movies_glob and config_movies:
+            ui_mgr.update_data_import(movies_glob=config_movies)
+            if ui_mgr.panel_refs.movies_input:
+                ui_mgr.panel_refs.movies_input.value = config_movies
+            update_movies_validation()
+        
+        if not ui_mgr.data_import.mdocs_glob and config_mdocs:
+            ui_mgr.update_data_import(mdocs_glob=config_mdocs)
+            if ui_mgr.panel_refs.mdocs_input:
+                ui_mgr.panel_refs.mdocs_input.value = config_mdocs
+            # Trigger validation
+            update_mdocs_validation()
+
+        # Refresh the recent projects list on load
+        await refresh_recent_projects()
+
     def validate_glob_pattern(pattern: str) -> tuple[bool, int, str]:
         if not pattern or not pattern.strip():
             return False, 0, "No pattern specified"
@@ -116,8 +158,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
     def can_create_project() -> bool:
         missing = get_missing_requirements()
-        if missing:
-            print(f"[DEBUG] Cannot create project. Missing: {missing}")
         return len(missing) == 0
 
     def update_create_button_state():
@@ -166,25 +206,19 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
     # --- File Pickers ---
     async def pick_movies_path():
-        directory = DEFAULT_MOVIES_DIR if DEFAULT_MOVIES_DIR else "~"
+        directory = "~"
         picker = local_file_picker(directory=directory, mode="directory")
         result = await picker
-        print(f"[DEBUG] File picker result: {result}")
         if result and len(result) > 0:
             selected_dir = Path(result[0])
             pattern = str(selected_dir / DEFAULT_MOVIES_EXT)
-            print(f"[DEBUG] Setting movies_glob to: {pattern}")
             ui_mgr.update_data_import(movies_glob=pattern)
-            print(f"[DEBUG] State after update: {ui_mgr.data_import.movies_glob}")
             if ui_mgr.panel_refs.movies_input:
-                print(f"[DEBUG] Setting input.value")
                 ui_mgr.panel_refs.movies_input.value = pattern
-            else:
-                print(f"[DEBUG] WARNING: movies_input ref is None!")
             update_movies_validation()
 
     async def pick_mdocs_path():
-        directory = DEFAULT_MDOCS_DIR if DEFAULT_MDOCS_DIR else "~"
+        directory = "~"
         picker = local_file_picker(directory=directory, mode="directory")
         result = await picker
         if result and len(result) > 0:
@@ -204,6 +238,43 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             if ui_mgr.panel_refs.project_path_input:
                 ui_mgr.panel_refs.project_path_input.set_value(dir_path)
             update_locking_state()
+            # If base path changes, refresh the recent projects list
+            await refresh_recent_projects()
+
+    # --- Project Browser Logic ---
+    async def refresh_recent_projects():
+        container = local_refs["recent_projects_container"]
+        if not container:
+            return
+            
+        container.clear()
+        base_path = ui_mgr.data_import.project_base_path
+        if not base_path:
+            return
+
+        with container:
+            ui.spinner("dots").classes("self-center")
+        
+        # Run scan in background so UI doesn't freeze
+        projects = await backend.scan_for_projects(base_path)
+        
+        container.clear()
+        with container:
+            if not projects:
+                ui.label(f"No projects found in {Path(base_path).name}").classes("text-xs text-gray-400 italic p-2")
+            else:
+                for proj in projects:
+                    with ui.card().classes("w-full p-2 mb-2 border border-gray-200 cursor-pointer hover:bg-blue-50 transition-colors"):
+                        with ui.row().classes("w-full items-center justify-between no-wrap"):
+                            with ui.column().classes("gap-0"):
+                                ui.label(proj["name"]).classes("text-sm font-bold text-gray-700")
+                                ui.label(f"Modified: {proj['modified']}").classes("text-[10px] text-gray-400")
+                            
+                            ui.button(icon="arrow_forward", on_click=lambda p=proj["path"]: load_specific_project(p)).props("flat dense round size=sm").classes("text-blue-500")
+
+    async def load_specific_project(path_str: str):
+        """Wrapper to load a specific path from the list"""
+        await handle_load_project(Path(path_str))
 
     # --- Handlers ---
     async def handle_autodetect():
@@ -240,7 +311,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 btn.props(remove="loading")
 
     async def handle_create_project():
-        print("[DEBUG] handle_create_project START")
         update_movies_validation()
         update_mdocs_validation()
         if not can_create_project():
@@ -252,7 +322,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         if btn: btn.props("loading")
         
         try:
-            print("[DEBUG] Calling backend.create_project_and_scheme...")
             result = await backend.create_project_and_scheme(
                 project_name=di.project_name,
                 project_base_path=di.project_base_path,
@@ -260,46 +329,37 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 movies_glob=di.movies_glob,
                 mdocs_glob=di.mdocs_glob,
             )
-            print(f"[DEBUG] Backend returned: {result}")
             
             if result.get("success"):
                 project_path = Path(result["project_path"])
                 scheme_name = f"scheme_{di.project_name}"
-                print(f"[DEBUG] Setting project created: {project_path}")
                 ui_mgr.set_project_created(project_path, scheme_name)
                 ui.notify(f"Project '{di.project_name}' created successfully", type="positive")
                 
-                print(f"[DEBUG] Callbacks available: {list(callbacks.keys())}")
                 if "rebuild_pipeline_ui" in callbacks:
-                    print("[DEBUG] Calling rebuild_pipeline_ui callback...")
                     callbacks["rebuild_pipeline_ui"]()
-                    print("[DEBUG] Callback returned")
             else:
-                print(f"[DEBUG] Result not success: {result.get('error')}")
                 ui.notify(f"Failed: {result.get('error')}", type="negative")
         except Exception as e:
-            print(f"[DEBUG] EXCEPTION: {e}")
             import traceback
             traceback.print_exc()
             ui.notify(f"Error creating project: {e}", type="negative")
         finally:
-            print("[DEBUG] In finally block, removing loading state")
             if btn: btn.props(remove="loading")
             update_locking_state()
-            print("[DEBUG] handle_create_project END")
 
-    # In data_import_panel.py, replace handle_load_project with:
-
-    async def handle_load_project():
+    async def handle_load_project_click():
+        """User clicked the manual load button"""
         picker = local_file_picker(directory="~", mode="directory")
         result = await picker
-        if not result or len(result) == 0:
-            return
+        if result and len(result) > 0:
+            await handle_load_project(Path(result[0]))
 
-        project_dir = Path(result[0])
+    async def handle_load_project(project_dir: Path):
+        """Shared logic for loading a project"""
         params_file = project_dir / "project_params.json"
         if not params_file.exists():
-            ui.notify("No project_params.json found in selected directory", type="warning")
+            ui.notify("No project_params.json found in directory", type="warning")
             return
 
         btn = ui_mgr.panel_refs.load_button
@@ -335,18 +395,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 )
                 
                 ui.notify(f"Project '{project_name}' loaded", type="positive")
-                
-                # Navigate to workspace - do this INSTEAD of updating UI elements
-                # The workspace page will read from state/ui_mgr
                 ui.navigate.to("/workspace")
             else:
                 ui.notify(f"Failed to load: {load_result.get('error')}", type="negative")
-                if btn:
-                    btn.props(remove="loading")
         except Exception as e:
             import traceback
             traceback.print_exc()
             ui.notify(f"Error loading project: {e}", type="negative")
+        finally:
             if btn:
                 btn.props(remove="loading")
 
@@ -355,12 +411,21 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         if not container:
             return
         container.clear()
-        state = get_project_state()
-        has_values = state.microscope.pixel_size_angstrom > 0 or state.acquisition.dose_per_tilt > 0
-        if not has_values and not ui_mgr.is_project_created:
+        
+        # Check if parameters have actually been detected/set in the UI state
+        d_pix = ui_mgr.data_import.detected_pixel_size
+        d_dose = ui_mgr.data_import.detected_dose_per_tilt
+        
+        has_detection = d_pix is not None or d_dose is not None
+
+        if not has_detection:
             with container:
-                ui.label("No parameters detected yet.").classes("text-xs text-gray-400 italic")
+                ui.icon("radar", size="24px").classes("text-gray-300 self-center mb-1")
+                ui.label("Import MDOCs to detect parameters").classes("text-xs text-gray-400 italic text-center")
             return
+
+        # If we have detection, fetch values from ProjectState (which was updated during autodetect)
+        state = get_project_state()
         params = [
             ("Pixel Size", f"{state.microscope.pixel_size_angstrom:.3f} Å"),
             ("Voltage", f"{state.microscope.acceleration_voltage_kv:.0f} kV"),
@@ -370,91 +435,79 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         ]
         with container:
             for label, value in params:
-                with ui.row().classes("w-full justify-between py-1 border-b border-gray-50 last:border-0"):
+                with ui.row().classes("w-full justify-between py-1 border-b border-gray-100 last:border-0"):
                     ui.label(label).classes("text-xs text-gray-500")
                     ui.label(value).classes("text-xs font-medium text-gray-700 font-mono")
 
-    # --- Input Change Handlers (FIXED) ---
-    # NiceGUI input on_change receives the new value directly when using value binding,
-    # but with on_change callback it receives an event. We need to handle both cases.
-
+    # --- Input Change Handlers ---
     def on_project_name_change(e):
-        print(f"[DEBUG] on_project_name_change FIRED. e.value = '{getattr(e, 'value', e)}'")
         value = e.value if hasattr(e, 'value') else str(e) if e else ""
         ui_mgr.update_data_import(project_name=value)
-        print(f"[DEBUG] After update, project_name = '{ui_mgr.data_import.project_name}'")
         update_create_button_state()
 
     def on_project_path_change(e):
         value = e.value if hasattr(e, "value") else str(e) if e else ""
-        print(f"[DEBUG] Project path changed to: '{value}'")
         ui_mgr.update_data_import(project_base_path=value)
         update_create_button_state()
+        # Trigger async refresh of projects list
+        asyncio.create_task(refresh_recent_projects())
 
     def on_movies_change(e):
-        print(f"[DEBUG] on_movies_change FIRED. Event type: {type(e)}")
-        print(f"[DEBUG] Event object: {e}")
-        print(f"[DEBUG] hasattr 'value': {hasattr(e, 'value')}")
-        if hasattr(e, 'value'):
-            print(f"[DEBUG] e.value = '{e.value}'")
-        
         value = e.value if hasattr(e, 'value') else str(e) if e else ""
-        print(f"[DEBUG] Extracted value: '{value}'")
-        
         ui_mgr.update_data_import(movies_glob=value)
-        print(f"[DEBUG] After update, ui_mgr.data_import.movies_glob = '{ui_mgr.data_import.movies_glob}'")
-        
         update_movies_validation()
 
     def on_mdocs_change(e):
         value = e.value if hasattr(e, "value") else str(e) if e else ""
-        print(f"[DEBUG] Mdocs glob changed to: '{value}'")
         ui_mgr.update_data_import(mdocs_glob=value)
         update_mdocs_validation()
 
+    # Clear old refs
     ui_mgr.panel_refs.movies_hint_label = None
     ui_mgr.panel_refs.mdocs_hint_label = None
     ui_mgr.panel_refs.status_indicator = None
 
-    with ui.column().classes("w-full p-4 gap-4").style("font-family: 'IBM Plex Sans', sans-serif;"):
+    # --- MAIN LAYOUT ---
+    with ui.column().classes("w-full p-6 gap-6").style("font-family: 'IBM Plex Sans', sans-serif;"):
         
-        # Two-column layout for compactness
-        with ui.row().classes("w-full gap-4"):
+        # Split Layout: Left (Setup) vs Right (Resume)
+        with ui.row().classes("w-full gap-8"):
             
-            # LEFT COLUMN: Project Details + Data Import
-            with ui.column().classes("flex-1 gap-3"):
+            # --- LEFT COLUMN: NEW PROJECT SETUP ---
+            with ui.column().classes("flex-1 gap-4"):
+                ui.label("Start New Project").classes("text-sm font-bold text-slate-800 uppercase tracking-wider border-b border-slate-200 w-full pb-1")
                 
-                # Project Details - Compact
-                ui.label("Project Details").classes("text-xs font-bold text-gray-700 uppercase tracking-wide")
-                with ui.card().classes("w-full p-3 border border-gray-200 shadow-sm rounded gap-2"):
-                    project_name_input = (
-                        ui.input(label="Project Name", value=ui_mgr.data_import.project_name, on_change=on_project_name_change)
-                        .props("outlined dense")
-                        .classes("w-full")
-                    )
-                    ui_mgr.panel_refs.project_name_input = project_name_input
-
-                    with ui.row().classes("w-full items-center gap-1"):
-                        project_path_input = (
-                            ui.input(
-                                label="Base Location",
-                                value=ui_mgr.data_import.project_base_path or DEFAULT_PROJECT_BASE_PATH,
-                                on_change=on_project_path_change,
-                            )
-                            .props("outlined dense")
-                            .classes("flex-1")
+                # 1. Project Identity
+                with ui.card().classes("w-full p-4 border border-gray-200 shadow-none bg-white rounded-lg gap-3"):
+                    with ui.column().classes("w-full gap-1"):
+                        ui.label("Project Name").classes("text-xs font-semibold text-gray-600")
+                        project_name_input = (
+                            ui.input(value=ui_mgr.data_import.project_name, on_change=on_project_name_change)
+                            .props("outlined dense placeholder='e.g., HIV_Tomo_Batch1'")
+                            .classes("w-full")
                         )
-                        ui_mgr.panel_refs.project_path_input = project_path_input
-                        ui.button(icon="folder_open", on_click=pick_project_path).props("flat dense size=sm")
+                        ui_mgr.panel_refs.project_name_input = project_name_input
 
-                # Data Import - Compact
-                ui.label("Data Sources").classes("text-xs font-bold text-gray-700 uppercase tracking-wide mt-2")
-                with ui.card().classes("w-full p-3 border border-gray-200 shadow-sm rounded gap-3"):
-                    
+                    with ui.column().classes("w-full gap-1"):
+                        ui.label("Base Location").classes("text-xs font-semibold text-gray-600")
+                        with ui.row().classes("w-full items-center gap-2"):
+                            project_path_input = (
+                                ui.input(
+                                    value=ui_mgr.data_import.project_base_path,
+                                    on_change=on_project_path_change,
+                                )
+                                .props("outlined dense")
+                                .classes("flex-1")
+                            )
+                            ui_mgr.panel_refs.project_path_input = project_path_input
+                            ui.button(icon="folder", on_click=pick_project_path).props("flat dense round color=grey")
+
+                # 2. Data Sources
+                with ui.card().classes("w-full p-4 border border-gray-200 shadow-none bg-white rounded-lg gap-3"):
                     # Movies
                     with ui.column().classes("w-full gap-1"):
-                        ui.label("Raw Frames").classes("text-xs text-gray-600")
-                        with ui.row().classes("w-full items-center gap-1"):
+                        ui.label("Raw Frames").classes("text-xs font-semibold text-gray-600")
+                        with ui.row().classes("w-full items-center gap-2"):
                             movies_input = (
                                 ui.input(
                                     value=ui_mgr.data_import.movies_glob,
@@ -465,14 +518,15 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                                 .classes("flex-1")
                             )
                             ui_mgr.panel_refs.movies_input = movies_input
-                            ui.button(icon="folder_open", on_click=pick_movies_path).props("flat dense size=sm")
-                        movies_hint = ui.label("No pattern").classes("text-xs text-gray-400")
+                            ui.button(icon="folder", on_click=pick_movies_path).props("flat dense round color=grey")
+                        
+                        movies_hint = ui.label("No pattern").classes("text-[10px] text-gray-400 pl-1")
                         ui_mgr.panel_refs.movies_hint_label = movies_hint
 
-                    # Mdocs  
+                    # Mdocs
                     with ui.column().classes("w-full gap-1"):
-                        ui.label("SerialEM Mdocs").classes("text-xs text-gray-600")
-                        with ui.row().classes("w-full items-center gap-1"):
+                        ui.label("SerialEM Mdocs").classes("text-xs font-semibold text-gray-600")
+                        with ui.row().classes("w-full items-center gap-2"):
                             mdocs_input = (
                                 ui.input(
                                     value=ui_mgr.data_import.mdocs_glob,
@@ -483,59 +537,69 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                                 .classes("flex-1")
                             )
                             ui_mgr.panel_refs.mdocs_input = mdocs_input
-                            ui.button(icon="folder_open", on_click=pick_mdocs_path).props("flat dense size=sm")
-                        mdocs_hint = ui.label("No pattern").classes("text-xs text-gray-400")
+                            ui.button(icon="folder", on_click=pick_mdocs_path).props("flat dense round color=grey")
+                        
+                        mdocs_hint = ui.label("No pattern").classes("text-[10px] text-gray-400 pl-1")
                         ui_mgr.panel_refs.mdocs_hint_label = mdocs_hint
-
-                    # Autodetect row
-                    with ui.row().classes("w-full items-center justify-end pt-2 border-t border-gray-100"):
+                    
+                    # Autodetect Action
+                    with ui.row().classes("w-full justify-end pt-1"):
                         autodetect_btn = (
-                            ui.button("Autodetect", icon="auto_fix_high", on_click=handle_autodetect)
+                            ui.button("Autodetect Parameters", icon="auto_fix_high", on_click=handle_autodetect)
                             .props("dense flat no-caps size=sm")
-                            .classes("text-blue-600")
+                            .classes("text-blue-600 hover:bg-blue-50")
                         )
                         ui_mgr.panel_refs.autodetect_button = autodetect_btn
 
-            # RIGHT COLUMN: Parameters + Actions
-            with ui.column().classes("w-80 gap-3"):
-                
-                # Parameters Overview
-                ui.label("Detected Parameters").classes("text-xs font-bold text-gray-700 uppercase tracking-wide")
-                with ui.card().classes("w-full p-3 border border-gray-200 shadow-sm rounded bg-gray-50"):
+                # 3. Detected Parameters (Conditioned on autodetect)
+                with ui.card().classes("w-full p-4 border border-blue-100 bg-blue-50/30 shadow-none rounded-lg"):
+                    ui.label("Detected Configuration").classes("text-xs font-bold text-blue-800 uppercase tracking-wide mb-2")
                     params_container = ui.column().classes("w-full gap-1")
                     ui_mgr.panel_refs.params_display_container = params_container
                     refresh_params_display()
 
-                # Load existing
-                ui.label("Or Load Existing").classes("text-xs font-bold text-gray-700 uppercase tracking-wide mt-2")
-                load_btn = (
-                    ui.button("Load Project", icon="folder_open", on_click=handle_load_project)
-                    .props("outline no-caps dense")
-                    .classes("w-full")
-                )
-                ui_mgr.panel_refs.load_button = load_btn
 
-                # Create button + status
-                ui.element('div').classes("flex-1")  # Spacer
+            # --- RIGHT COLUMN: RESUME EXISTING ---
+            with ui.column().classes("w-80 gap-4"):
+                ui.label("Resume Existing").classes("text-sm font-bold text-slate-800 uppercase tracking-wider border-b border-slate-200 w-full pb-1")
                 
-                with ui.column().classes("w-full gap-1 mt-4"):
-                    status_indicator = ui.label("Enter details...").classes("text-xs text-gray-500 text-center")
-                    ui_mgr.panel_refs.status_indicator = status_indicator
+                # Removed h-full here to allow card to wrap content naturally
+                with ui.card().classes("w-full flex flex-col p-0 border border-gray-200 shadow-none bg-gray-50 rounded-lg overflow-hidden"):
+                    # Header inside card
+                    ui.label("Projects in Base Location").classes("text-xs font-semibold text-gray-500 p-3 bg-gray-100 border-b border-gray-200")
                     
-                    create_btn = (
-                        ui.button("Create Project", icon="arrow_forward", on_click=handle_create_project)
-                        .props("no-caps")
-                        .classes("w-full")
-                        .style("background: #93c5fd; color: white;")
-                    )
-                    ui_mgr.panel_refs.create_button = create_btn
-    # Initialize validation state from current values (important for page reload)
-    # Also sync the initial project_base_path if it has a default
-    if ui_mgr.data_import.project_base_path:
-        pass  # already set
-    elif DEFAULT_PROJECT_BASE_PATH:
-        ui_mgr.update_data_import(project_base_path=DEFAULT_PROJECT_BASE_PATH)
+                    # Scrollable List
+                    # Removed flex-1, kept h-96. This forces the scroll area to be 384px tall exactly.
+                    with ui.scroll_area().classes("w-full p-2 h-96 bg-white"):
+                        # Container for project list updates
+                        local_refs["recent_projects_container"] = ui.column().classes("w-full gap-1")
+                        
+                    # Footer Action
+                    with ui.row().classes("w-full p-3 border-t border-gray-200 bg-white"):
+                         load_btn = (
+                            ui.button("Browse Disk...", icon="folder_open", on_click=handle_load_project_click)
+                            .props("outline no-caps dense")
+                            .classes("w-full text-slate-600")
+                        )
+                         ui_mgr.panel_refs.load_button = load_btn
 
+        # --- BOTTOM ACTION BAR ---
+        with ui.row().classes("w-full mt-4 pt-4 border-t border-gray-200 justify-between items-center"):
+            
+            # Status text
+            status_indicator = ui.label("Enter details to begin...").classes("text-sm text-gray-500 font-medium")
+            ui_mgr.panel_refs.status_indicator = status_indicator
+            
+            # Main Action Button
+            create_btn = (
+                ui.button("Create Project", icon="add_circle", on_click=handle_create_project)
+                .props("no-caps size=lg")
+                .classes("px-8 shadow-md transition-all duration-200")
+                .style("background: #93c5fd; color: white;")
+            )
+            ui_mgr.panel_refs.create_button = create_btn
+
+    # Initial update & triggers
     update_movies_validation()
     update_mdocs_validation()
     update_create_button_state()
@@ -544,3 +608,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         update_locking_state()
 
     ui_mgr.subscribe(on_ui_state_change)
+    
+    # Initialize defaults (Project base path)
+    ui.timer(0.1, init_defaults, once=True)

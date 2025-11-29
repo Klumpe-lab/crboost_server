@@ -26,6 +26,9 @@ class SubmissionConfig(BaseModel):
 
 class LocalConfig(BaseModel):
     Environment: str
+    DefaultProjectBase: Optional[str] = None
+    DefaultMoviesGlob: Optional[str] = None
+    DefaultMdocsGlob: Optional[str] = None
 
 
 class Alias(BaseModel):
@@ -106,6 +109,18 @@ class ConfigService:
     def containers(self) -> Dict[str, str]:
         """Get container paths"""
         return self._config.containers or {}
+    
+    @property
+    def default_project_base(self) -> Optional[str]:
+        return self._config.local.DefaultProjectBase
+
+    @property
+    def default_data_globs(self) -> tuple[Optional[str], Optional[str]]:
+        """Returns configured (movies_glob, mdocs_glob) or None."""
+        return (
+            self._config.local.DefaultMoviesGlob,
+            self._config.local.DefaultMdocsGlob
+        )
 
     @property
     def tools(self) -> Dict[str, Dict[str, str]]:

@@ -84,8 +84,8 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
             cmd_parts_align.extend(["--patches", f"{params.patch_x}x{params.patch_y}"])
         if params.axis_iter > 0:
             batch_size = min(params.axis_batch, num_tomograms)
-            cmd_parts_align.extend(["--axis_iter", int(params.axis_iter)])
-            cmd_parts_align.extend(["--axis_batch", int(batch_size)])
+            cmd_parts_align.extend(["--axis_iter", str(params.axis_iter)])
+            cmd_parts_align.extend(["--axis_batch", str(batch_size)])
 
     elif params.alignment_method == AlignmentMethod.IMOD:
         cmd_parts_align = [

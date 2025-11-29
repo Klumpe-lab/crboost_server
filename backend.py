@@ -3,6 +3,8 @@ import asyncio
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List
 import pandas as pd
+import os
+from datetime import datetime
 
 # Refactored imports
 from services.project_service import ProjectService
@@ -12,6 +14,7 @@ from services.pipeline_runner import PipelineRunnerService
 from services.continuation_service import ContinuationService, PipelineManipulationService, SchemeManipulationService
 from services.project_state import JobType, get_state_service
 from services.slurm_service import SlurmService
+from services.config_service import get_config_service
 
 HARDCODED_USER = "artem.kushner"
 
@@ -29,6 +32,74 @@ class CryoBoostBackend:
         self.pipeline_manipulation     = PipelineManipulationService(self)
         self.scheme_manipulation       = SchemeManipulationService(self)
         self.continuation              = ContinuationService(self)
+
+    async def get_default_data_globs(self) -> Dict[str, str]:
+            """Get default glob patterns from config."""
+            config_service = get_config_service()
+            movies, mdocs = config_service.default_data_globs
+            # Return empty strings if not set, to avoid UI errors
+            return {
+                "movies": movies if movies else "", 
+                "mdocs": mdocs if mdocs else ""
+            }
+    async def get_default_project_base(self) -> str:
+        """Retrieves the default project base path from config."""
+        config_service = get_config_service()
+        configured_path = config_service.default_project_base
+        if configured_path:
+            return configured_path
+        
+        # Fallback to home if not configured, rather than hardcoded dev path
+        return str(Path.home())
+
+    async def scan_for_projects(self, base_path: str) -> List[Dict[str, Any]]:
+        """
+        Scans for subdirectories containing project_params.json.
+        """
+        projects = []
+        path = Path(base_path)
+        
+        print(f"[SCANNER] Scanning directory: {path}")
+
+        if not path.exists():
+            print(f"[SCANNER] Path does not exist: {path}")
+            return []
+        if not path.is_dir():
+            print(f"[SCANNER] Path is not a directory: {path}")
+            return []
+
+        try:
+            for item in path.iterdir():
+                if item.is_dir():
+                    # Check for our specific state file
+                    params_file = item / "project_params.json"
+                    
+                    if params_file.exists():
+                        try:
+                            stats = params_file.stat()
+                            mod_time = datetime.fromtimestamp(stats.st_mtime)
+                            projects.append({
+                                "name": item.name,
+                                "path": str(item),
+                                "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
+                                "modified_timestamp": stats.st_mtime
+                            })
+                        except Exception as e:
+                            print(f"[SCANNER] Error reading {item.name}: {e}")
+                    else:
+                        # Log why we skipped this folder (useful for debugging your older projects)
+                        # We only check for hidden folders to reduce spam
+                        if not item.name.startswith('.'):
+                            print(f"[SCANNER] Skipped '{item.name}' - missing project_params.json")
+
+        except Exception as e:
+            print(f"[BACKEND] Error scanning projects: {e}")
+            return []
+
+        # Sort by modification time (newest first)
+        projects.sort(key=lambda x: x["modified_timestamp"], reverse=True)
+        print(f"[SCANNER] Found {len(projects)} valid projects.")
+        return projects
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
         """Get parameters for a specific job, initializing if not present."""
@@ -74,7 +145,7 @@ class CryoBoostBackend:
             # The __setattr__ hook in AbstractJobParams will block changes if the job is running/done
             for key, value in params.items():
                 if hasattr(job_model, key):
-                     setattr(job_model, key, value)
+                      setattr(job_model, key, value)
             
             # 2. PERSIST TO DISK (The missing link)
             await self.state_service.save_project()
