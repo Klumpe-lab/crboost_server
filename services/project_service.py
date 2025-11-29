@@ -201,10 +201,12 @@ class ProjectService:
             import_prefix = f"{project_name}_"
 
             # Update state BEFORE file operations
-            state_service = self.backend.state_service
-            state = state_service.state
+            state_service      = self.backend.state_service
+            state              = state_service.state
             state.project_name = project_name
             state.project_path = project_dir
+            state.movies_glob  = movies_glob                
+            state.mdocs_glob   = mdocs_glob                  
 
             # 1. Create Structure & Import Data
             structure_result = await self.create_project_structure(project_dir, movies_glob, mdocs_glob, import_prefix)
