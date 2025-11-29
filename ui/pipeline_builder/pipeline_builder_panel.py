@@ -236,10 +236,30 @@ def build_pipeline_builder_panel(
         
         if ui_mgr.is_running:
             overview = await backend.get_pipeline_overview(str(project_path))
-            if overview.get("is_complete"):
+            
+            # Check if pipeline is truly complete:
+            # - At least one job must have run (completed > 0 or failed > 0)
+            # - No jobs currently running
+            # - Not all jobs still scheduled
+            total     = overview.get("total", 0)
+            completed = overview.get("completed", 0)
+            failed    = overview.get("failed", 0)
+            running   = overview.get("running", 0)
+            scheduled = overview.get("scheduled", 0)
+            
+            # Pipeline is complete when:
+            # 1. Nothing is running AND
+            # 2. Something has actually happened (not everything still scheduled)
+            has_activity = (completed > 0 or failed > 0)
+            is_truly_complete = running == 0 and has_activity and scheduled == 0
+            
+            if is_truly_complete:
                 ui_mgr.set_pipeline_running(False)
                 stop_all_timers()
-                ui.notify("Pipeline execution finished.", type="positive")
+                if failed > 0:
+                    ui.notify(f"Pipeline finished with {failed} failed job(s).", type="warning")
+                else:
+                    ui.notify("Pipeline execution finished.", type="positive")
                 rebuild_pipeline_ui()
     
     def stop_all_timers():
@@ -269,10 +289,24 @@ def build_pipeline_builder_panel(
             
             # Collect bind paths
             state = state_service.state
+
             additional_bind_paths = set()
-            if project_path:
-                additional_bind_paths.add(str(project_path.parent.resolve()))
-            
+            if state.movies_glob:
+                    try:
+                        additional_bind_paths.add(str(Path(state.movies_glob).parent.resolve()))
+                    except:
+                        pass
+            if state.mdocs_glob:
+                try:
+                    additional_bind_paths.add(str(Path(state.mdocs_glob).parent.resolve()))
+                except:
+                    pass
+            if state.acquisition.gain_reference_path:
+                try:
+                    additional_bind_paths.add(str(Path(state.acquisition.gain_reference_path).parent.resolve()))
+                except:
+                    pass
+                
             # Add data source paths if available
             di = ui_mgr.data_import
             if di.movies_glob:
@@ -290,11 +324,11 @@ def build_pipeline_builder_panel(
             print(f"[PIPELINE] Creating scheme '{scheme_name}' with jobs: {selected_job_strings}")
             
             scheme_result = await backend.pipeline_orchestrator.create_custom_scheme(
-                project_dir=project_path,
-                new_scheme_name=scheme_name,
-                base_template_path=Path.cwd() / "config" / "Schemes" / "warp_tomo_prep",
-                selected_jobs=selected_job_strings,
-                additional_bind_paths=list(additional_bind_paths),
+                project_dir           = project_path,
+                new_scheme_name       = scheme_name,
+                base_template_path    = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep",
+                selected_jobs         = selected_job_strings,
+                additional_bind_paths = list(additional_bind_paths),
             )
             
             if not scheme_result.get("success"):

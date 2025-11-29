@@ -43,6 +43,12 @@ class ReactiveStatusDot(ui.element):
             
         self.style(f"width: 8px; height: 8px; border-radius: 50%; display: inline-block; background-color: {color};")
 
+    def _handle_delete(self):
+        """Called when element is deleted"""
+        if self.timer:
+            self.timer.cancel()
+        super()._handle_delete()
+
 
 class ReactiveStatusBadge(ui.label):
     """

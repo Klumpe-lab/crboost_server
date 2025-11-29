@@ -739,6 +739,10 @@ class ProjectState(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     modified_at: datetime = Field(default_factory=datetime.now)
 
+
+    movies_glob: str = ""
+    mdocs_glob: str = ""
+
     microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
     acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
     computing: ComputingParams = Field(default_factory=lambda: ComputingParams.from_conf_yaml(Path("config/conf.yaml")))

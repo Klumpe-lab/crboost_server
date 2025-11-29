@@ -288,6 +288,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             update_locking_state()
             print("[DEBUG] handle_create_project END")
 
+    # In data_import_panel.py, replace handle_load_project with:
+
     async def handle_load_project():
         picker = local_file_picker(directory="~", mode="directory")
         result = await picker
@@ -303,6 +305,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         btn = ui_mgr.panel_refs.load_button
         if btn:
             btn.props("loading")
+        
         try:
             load_result = await backend.load_existing_project(str(project_dir))
             if load_result.get("success"):
@@ -311,51 +314,41 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 for j_str in load_result.get("selected_jobs", []):
                     try:
                         from services.project_state import JobType
-
                         selected_jobs.append(JobType(j_str))
                     except:
                         pass
 
-                ui_mgr.load_from_project(
-                    project_path=project_dir, scheme_name=f"scheme_{project_name}", jobs=selected_jobs
-                )
-
                 movies_glob = load_result.get("movies_glob", "")
                 mdocs_glob = load_result.get("mdocs_glob", "")
+                
+                # Update UI manager state
+                ui_mgr.load_from_project(
+                    project_path=project_dir, 
+                    scheme_name=f"scheme_{project_name}", 
+                    jobs=selected_jobs
+                )
                 ui_mgr.update_data_import(
                     project_name=project_name,
                     project_base_path=str(project_dir.parent),
                     movies_glob=movies_glob,
                     mdocs_glob=mdocs_glob,
                 )
-                if ui_mgr.panel_refs.project_name_input:
-                    ui_mgr.panel_refs.project_name_input.set_value(project_name)
-                if ui_mgr.panel_refs.project_path_input:
-                    ui_mgr.panel_refs.project_path_input.set_value(str(project_dir.parent))
-                if ui_mgr.panel_refs.movies_input:
-                    ui_mgr.panel_refs.movies_input.set_value(movies_glob)
-                if ui_mgr.panel_refs.mdocs_input:
-                    ui_mgr.panel_refs.mdocs_input.set_value(mdocs_glob)
-
-                update_movies_validation()
-                update_mdocs_validation()
-                refresh_params_display()
+                
                 ui.notify(f"Project '{project_name}' loaded", type="positive")
-                if "rebuild_pipeline_ui" in callbacks:
-                    callbacks["rebuild_pipeline_ui"]()
-                if "check_and_update_statuses" in callbacks:
-                    callbacks["check_and_update_statuses"]() 
+                
+                # Navigate to workspace - do this INSTEAD of updating UI elements
+                # The workspace page will read from state/ui_mgr
+                ui.navigate.to("/workspace")
             else:
                 ui.notify(f"Failed to load: {load_result.get('error')}", type="negative")
+                if btn:
+                    btn.props(remove="loading")
         except Exception as e:
             import traceback
-
             traceback.print_exc()
             ui.notify(f"Error loading project: {e}", type="negative")
-        finally:
             if btn:
                 btn.props(remove="loading")
-            update_locking_state()
 
     def refresh_params_display():
         container = ui_mgr.panel_refs.params_display_container
@@ -419,117 +412,123 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         ui_mgr.update_data_import(mdocs_glob=value)
         update_mdocs_validation()
 
-    # --- BUILD UI ---
     ui_mgr.panel_refs.movies_hint_label = None
     ui_mgr.panel_refs.mdocs_hint_label = None
     ui_mgr.panel_refs.status_indicator = None
 
-    with ui.column().classes("w-full h-full p-4 overflow-y-auto").style("font-family: 'IBM Plex Sans', sans-serif;"):
-        # Project Info
-        ui.label("1. Project Details").classes("text-sm font-bold text-gray-800 mb-2")
-        with ui.card().classes("w-full p-5 mb-6 border border-gray-200 shadow-sm rounded-lg"):
-            project_name_input = (
-                ui.input(label="Project Name", value=ui_mgr.data_import.project_name, on_change=on_project_name_change)
-                .props("outlined dense")
-                .classes("w-full mb-4")
-            )
-            ui_mgr.panel_refs.project_name_input = project_name_input
-
-            with ui.row().classes("w-full items-start gap-2"):
-                project_path_input = (
-                    ui.input(
-                        label="Base Location",
-                        value=ui_mgr.data_import.project_base_path or DEFAULT_PROJECT_BASE_PATH,
-                        on_change=on_project_path_change,
+    with ui.column().classes("w-full p-4 gap-4").style("font-family: 'IBM Plex Sans', sans-serif;"):
+        
+        # Two-column layout for compactness
+        with ui.row().classes("w-full gap-4"):
+            
+            # LEFT COLUMN: Project Details + Data Import
+            with ui.column().classes("flex-1 gap-3"):
+                
+                # Project Details - Compact
+                ui.label("Project Details").classes("text-xs font-bold text-gray-700 uppercase tracking-wide")
+                with ui.card().classes("w-full p-3 border border-gray-200 shadow-sm rounded gap-2"):
+                    project_name_input = (
+                        ui.input(label="Project Name", value=ui_mgr.data_import.project_name, on_change=on_project_name_change)
+                        .props("outlined dense")
+                        .classes("w-full")
                     )
-                    .props("outlined dense")
-                    .classes("flex-1")
-                )
-                ui_mgr.panel_refs.project_path_input = project_path_input
-                ui.button(icon="folder_open", on_click=pick_project_path).props("flat dense").classes(
-                    "mt-1 text-gray-600"
-                )
+                    ui_mgr.panel_refs.project_name_input = project_name_input
 
-            with ui.row().classes("w-full gap-3 mt-4"):
+                    with ui.row().classes("w-full items-center gap-1"):
+                        project_path_input = (
+                            ui.input(
+                                label="Base Location",
+                                value=ui_mgr.data_import.project_base_path or DEFAULT_PROJECT_BASE_PATH,
+                                on_change=on_project_path_change,
+                            )
+                            .props("outlined dense")
+                            .classes("flex-1")
+                        )
+                        ui_mgr.panel_refs.project_path_input = project_path_input
+                        ui.button(icon="folder_open", on_click=pick_project_path).props("flat dense size=sm")
+
+                # Data Import - Compact
+                ui.label("Data Sources").classes("text-xs font-bold text-gray-700 uppercase tracking-wide mt-2")
+                with ui.card().classes("w-full p-3 border border-gray-200 shadow-sm rounded gap-3"):
+                    
+                    # Movies
+                    with ui.column().classes("w-full gap-1"):
+                        ui.label("Raw Frames").classes("text-xs text-gray-600")
+                        with ui.row().classes("w-full items-center gap-1"):
+                            movies_input = (
+                                ui.input(
+                                    value=ui_mgr.data_import.movies_glob,
+                                    placeholder="*.eer",
+                                    on_change=on_movies_change,
+                                )
+                                .props("outlined dense")
+                                .classes("flex-1")
+                            )
+                            ui_mgr.panel_refs.movies_input = movies_input
+                            ui.button(icon="folder_open", on_click=pick_movies_path).props("flat dense size=sm")
+                        movies_hint = ui.label("No pattern").classes("text-xs text-gray-400")
+                        ui_mgr.panel_refs.movies_hint_label = movies_hint
+
+                    # Mdocs  
+                    with ui.column().classes("w-full gap-1"):
+                        ui.label("SerialEM Mdocs").classes("text-xs text-gray-600")
+                        with ui.row().classes("w-full items-center gap-1"):
+                            mdocs_input = (
+                                ui.input(
+                                    value=ui_mgr.data_import.mdocs_glob,
+                                    placeholder="*.mdoc",
+                                    on_change=on_mdocs_change,
+                                )
+                                .props("outlined dense")
+                                .classes("flex-1")
+                            )
+                            ui_mgr.panel_refs.mdocs_input = mdocs_input
+                            ui.button(icon="folder_open", on_click=pick_mdocs_path).props("flat dense size=sm")
+                        mdocs_hint = ui.label("No pattern").classes("text-xs text-gray-400")
+                        ui_mgr.panel_refs.mdocs_hint_label = mdocs_hint
+
+                    # Autodetect row
+                    with ui.row().classes("w-full items-center justify-end pt-2 border-t border-gray-100"):
+                        autodetect_btn = (
+                            ui.button("Autodetect", icon="auto_fix_high", on_click=handle_autodetect)
+                            .props("dense flat no-caps size=sm")
+                            .classes("text-blue-600")
+                        )
+                        ui_mgr.panel_refs.autodetect_button = autodetect_btn
+
+            # RIGHT COLUMN: Parameters + Actions
+            with ui.column().classes("w-80 gap-3"):
+                
+                # Parameters Overview
+                ui.label("Detected Parameters").classes("text-xs font-bold text-gray-700 uppercase tracking-wide")
+                with ui.card().classes("w-full p-3 border border-gray-200 shadow-sm rounded bg-gray-50"):
+                    params_container = ui.column().classes("w-full gap-1")
+                    ui_mgr.panel_refs.params_display_container = params_container
+                    refresh_params_display()
+
+                # Load existing
+                ui.label("Or Load Existing").classes("text-xs font-bold text-gray-700 uppercase tracking-wide mt-2")
                 load_btn = (
-                    ui.button("Load Existing Project", icon="folder_open", on_click=handle_load_project)
-                    .props("dense outline no-caps")
-                    .classes("flex-1 text-gray-700")
+                    ui.button("Load Project", icon="folder_open", on_click=handle_load_project)
+                    .props("outline no-caps dense")
+                    .classes("w-full")
                 )
                 ui_mgr.panel_refs.load_button = load_btn
 
-        # Data Sources
-        ui.label("2. Data Import").classes("text-sm font-bold text-gray-800 mb-2")
-        with ui.card().classes("w-full p-5 mb-6 border border-gray-200 shadow-sm rounded-lg"):
-            # Movies Input
-            with ui.column().classes("w-full mb-4 gap-1"):
-                ui.label("Raw Frames (EER/TIFF)").classes("text-xs font-semibold text-gray-600")
-                with ui.row().classes("w-full items-start gap-2"):
-                    movies_input = (
-                        ui.input(
-                            value=ui_mgr.data_import.movies_glob,
-                            placeholder="/path/to/frames/*.eer",
-                            on_change=on_movies_change,
-                        )
-                        .props("outlined dense")
-                        .classes("flex-1")
+                # Create button + status
+                ui.element('div').classes("flex-1")  # Spacer
+                
+                with ui.column().classes("w-full gap-1 mt-4"):
+                    status_indicator = ui.label("Enter details...").classes("text-xs text-gray-500 text-center")
+                    ui_mgr.panel_refs.status_indicator = status_indicator
+                    
+                    create_btn = (
+                        ui.button("Create Project", icon="arrow_forward", on_click=handle_create_project)
+                        .props("no-caps")
+                        .classes("w-full")
+                        .style("background: #93c5fd; color: white;")
                     )
-                    ui_mgr.panel_refs.movies_input = movies_input
-                    ui.button(icon="folder_open", on_click=pick_movies_path).props("flat dense").classes(
-                        "mt-1 text-gray-600"
-                    )
-                movies_hint = ui.label("No pattern specified").classes("text-xs text-gray-400 italic")
-                ui_mgr.panel_refs.movies_hint_label = movies_hint
-
-            # Mdocs Input
-            with ui.column().classes("w-full mb-4 gap-1"):
-                ui.label("SerialEM Mdocs").classes("text-xs font-semibold text-gray-600")
-                with ui.row().classes("w-full items-start gap-2"):
-                    mdocs_input = (
-                        ui.input(
-                            value=ui_mgr.data_import.mdocs_glob,
-                            placeholder="/path/to/mdocs/*.mdoc",
-                            on_change=on_mdocs_change,
-                        )
-                        .props("outlined dense")
-                        .classes("flex-1")
-                    )
-                    ui_mgr.panel_refs.mdocs_input = mdocs_input
-                    ui.button(icon="folder_open", on_click=pick_mdocs_path).props("flat dense").classes(
-                        "mt-1 text-gray-600"
-                    )
-                mdocs_hint = ui.label("No pattern specified").classes("text-xs text-gray-400 italic")
-                ui_mgr.panel_refs.mdocs_hint_label = mdocs_hint
-
-            # Autodetect Action
-            with ui.row().classes("w-full items-center justify-between mt-2 pt-4 border-t border-gray-100"):
-                ui.label("Scan mdocs to populate microscope params").classes("text-xs text-gray-500")
-                autodetect_btn = (
-                    ui.button("Autodetect Params", icon="auto_fix_high", on_click=handle_autodetect)
-                    .props("dense flat no-caps")
-                    .classes("text-blue-600 bg-blue-50")
-                )
-                ui_mgr.panel_refs.autodetect_button = autodetect_btn
-
-        # Detected Params
-        ui.label("3. Parameter Overview").classes("text-sm font-bold text-gray-800 mb-2")
-        with ui.card().classes("w-full p-5 mb-6 border border-gray-200 shadow-sm rounded-lg bg-gray-50"):
-            params_container = ui.column().classes("w-full")
-            ui_mgr.panel_refs.params_display_container = params_container
-            refresh_params_display()
-
-        with ui.column().classes("w-full items-center gap-1"):
-            status_indicator = ui.label("Waiting for input...").classes("text-xs font-bold text-gray-500 mb-1")
-            ui_mgr.panel_refs.status_indicator = status_indicator
-
-            create_btn = (
-                ui.button("Create Project & Configure Pipeline", icon="arrow_forward", on_click=handle_create_project)
-                .props("no-caps")
-                .classes("w-full h-10 text-base shadow-md transition-all")
-                .style("background: #93c5fd; color: white;")
-            )
-            ui_mgr.panel_refs.create_button = create_btn
-
+                    ui_mgr.panel_refs.create_button = create_btn
     # Initialize validation state from current values (important for page reload)
     # Also sync the initial project_base_path if it has a default
     if ui_mgr.data_import.project_base_path:
