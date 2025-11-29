@@ -3,6 +3,8 @@ import asyncio
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List
 import pandas as pd
+import os
+from datetime import datetime
 
 # Refactored imports
 from services.project_service import ProjectService
@@ -12,25 +14,92 @@ from services.pipeline_runner import PipelineRunnerService
 from services.continuation_service import ContinuationService, PipelineManipulationService, SchemeManipulationService
 from services.project_state import JobType, get_state_service
 from services.slurm_service import SlurmService
+from services.config_service import get_config_service
 
 HARDCODED_USER = "artem.kushner"
 
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
-        self.username              = HARDCODED_USER
-        self.server_dir            = server_dir
-        self.project_service       = ProjectService(self)
-        self.pipeline_orchestrator = PipelineOrchestratorService(self)
-        self.container_service     = get_container_service()
-        self.slurm_service         = SlurmService(HARDCODED_USER)
-        self.pipeline_runner       = PipelineRunnerService(self)
-        self.state_service         = get_state_service()
-        self.pipeline_manipulation = PipelineManipulationService(self)
-        self.scheme_manipulation   = SchemeManipulationService(self)
-        self.continuation          = ContinuationService(self)
+        self.username                  = HARDCODED_USER
+        self.server_dir                = server_dir
+        self.project_service           = ProjectService(self)
+        self.pipeline_orchestrator     = PipelineOrchestratorService(self)
+        self.container_service         = get_container_service()
+        self.slurm_service             = SlurmService(HARDCODED_USER)
+        self.pipeline_runner           = PipelineRunnerService(self)
+        self.state_service             = get_state_service()
+        self.pipeline_manipulation     = PipelineManipulationService(self)
+        self.scheme_manipulation       = SchemeManipulationService(self)
+        self.continuation              = ContinuationService(self)
 
-        # self.app_state = app_state  # <--- REMOVED THIS
+    async def get_default_data_globs(self) -> Dict[str, str]:
+            """Get default glob patterns from config."""
+            config_service = get_config_service()
+            movies, mdocs = config_service.default_data_globs
+            # Return empty strings if not set, to avoid UI errors
+            return {
+                "movies": movies if movies else "", 
+                "mdocs": mdocs if mdocs else ""
+            }
+    async def get_default_project_base(self) -> str:
+        """Retrieves the default project base path from config."""
+        config_service = get_config_service()
+        configured_path = config_service.default_project_base
+        if configured_path:
+            return configured_path
+        
+        # Fallback to home if not configured, rather than hardcoded dev path
+        return str(Path.home())
+
+    async def scan_for_projects(self, base_path: str) -> List[Dict[str, Any]]:
+        """
+        Scans for subdirectories containing project_params.json.
+        """
+        projects = []
+        path = Path(base_path)
+        
+        print(f"[SCANNER] Scanning directory: {path}")
+
+        if not path.exists():
+            print(f"[SCANNER] Path does not exist: {path}")
+            return []
+        if not path.is_dir():
+            print(f"[SCANNER] Path is not a directory: {path}")
+            return []
+
+        try:
+            for item in path.iterdir():
+                if item.is_dir():
+                    # Check for our specific state file
+                    params_file = item / "project_params.json"
+                    
+                    if params_file.exists():
+                        try:
+                            stats = params_file.stat()
+                            mod_time = datetime.fromtimestamp(stats.st_mtime)
+                            projects.append({
+                                "name": item.name,
+                                "path": str(item),
+                                "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
+                                "modified_timestamp": stats.st_mtime
+                            })
+                        except Exception as e:
+                            print(f"[SCANNER] Error reading {item.name}: {e}")
+                    else:
+                        # Log why we skipped this folder (useful for debugging your older projects)
+                        # We only check for hidden folders to reduce spam
+                        if not item.name.startswith('.'):
+                            print(f"[SCANNER] Skipped '{item.name}' - missing project_params.json")
+
+        except Exception as e:
+            print(f"[BACKEND] Error scanning projects: {e}")
+            return []
+
+        # Sort by modification time (newest first)
+        projects.sort(key=lambda x: x["modified_timestamp"], reverse=True)
+        print(f"[SCANNER] Found {len(projects)} valid projects.")
+        return projects
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
         """Get parameters for a specific job, initializing if not present."""
@@ -57,7 +126,37 @@ class CryoBoostBackend:
         except ValueError as e:
             return {"success": False, "error": str(e)}
 
-    # TODO
+    async def update_job_parameters(self, job_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Updates parameters for a specific job and PERSISTS to project_params.json.
+        This fixes the synchronization issue where UI changes weren't saved.
+        """
+        try:
+            job_type = JobType.from_string(job_name)
+            
+            # 1. Update the in-memory state
+            state = self.state_service.state
+            job_model = state.jobs.get(job_type)
+            
+            if not job_model:
+                return {"success": False, "error": f"Job {job_name} not initialized"}
+            
+            # Update fields dynamically
+            # The __setattr__ hook in AbstractJobParams will block changes if the job is running/done
+            for key, value in params.items():
+                if hasattr(job_model, key):
+                      setattr(job_model, key, value)
+            
+            # 2. PERSIST TO DISK (The missing link)
+            await self.state_service.save_project()
+            
+            return {"success": True, "params": job_model.model_dump()}
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+
     async def get_available_jobs(self) -> List[str]:
         template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
         if not template_path.is_dir():
@@ -83,13 +182,14 @@ class CryoBoostBackend:
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
         """Runs mdoc update and returns the entire updated state."""
         await self.state_service.update_from_mdoc(mdocs_glob)
+        # Ensure we save after autodetection
+        await self.state_service.save_project()
         return self.state_service.state.model_dump(mode="json", exclude={"project_path"})
 
     async def run_shell_command(
         self, command: str, cwd: Path = None, tool_name: str = None, additional_binds: List[str] = None
     ):
         """Runs a shell command, optionally using specified tool's container."""
-        # (This method is unchanged)
         try:
             if tool_name:
                 print(f"[DEBUG] Running command with tool: {tool_name}")
@@ -161,8 +261,6 @@ class CryoBoostBackend:
 
     async def load_existing_project(self, project_path: str) -> Dict[str, Any]:
         """Load an existing project for continuation"""
-        # This now just passes through to project_service, which
-        # should be using state_service.load_project
         return await self.project_service.load_project_state(project_path)
 
     async def debug_pipeline_status(self, project_path: str):

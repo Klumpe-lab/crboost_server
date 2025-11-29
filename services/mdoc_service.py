@@ -1,11 +1,8 @@
 # services/mdoc_service.py
-"""
-Service for parsing, writing, and extracting data from .mdoc files.
-"""
-
 import glob
 from pathlib import Path
 import sys
+import os
 from typing import Dict, Any
 from functools import lru_cache
 
@@ -14,14 +11,22 @@ class MdocService:
 
     def get_autodetect_params(self, mdocs_glob: str) -> Dict[str, Any]:
         """
-        Parse the first mdoc file found by the glob and extract key parameters
-        for state auto-detection. Enhanced to match old CryoBoost logic.
+        Parse the first VALID mdoc file found by the glob.
         """
         mdoc_files = glob.glob(mdocs_glob)
         if not mdoc_files:
             return {}
 
-        mdoc_path = Path(mdoc_files[0])
+        # --- FIX: Filter out directories to avoid [Errno 21] ---
+        mdoc_path = None
+        for p in mdoc_files:
+            if os.path.isfile(p) and p.endswith('.mdoc'):
+                mdoc_path = Path(p)
+                break
+        
+        if not mdoc_path:
+            return {}
+
         result = {}
         header_data = {}
         first_section = {}
@@ -121,7 +126,6 @@ class MdocService:
     def parse_all_mdoc_files(self, mdocs_glob: str) -> Dict[str, Any]:
         """
         Parse ALL mdoc files and return comprehensive statistics.
-        This matches the old mdocMeta class functionality.
         """
         mdoc_files = glob.glob(mdocs_glob)
         if not mdoc_files:
@@ -142,6 +146,8 @@ class MdocService:
         tilt_angles = []
 
         for mdoc_file in mdoc_files:
+            if not os.path.isfile(mdoc_file): continue
+            
             mdoc_path = Path(mdoc_file)
             try:
                 parsed = self.parse_mdoc_file(mdoc_path)
@@ -170,13 +176,11 @@ class MdocService:
                 print(f"[WARN] Failed to parse {mdoc_file}: {e}")
                 continue
 
-        result["tilt_series_count"] = len(mdoc_files)
+        result["tilt_series_count"] = len(result["mdoc_files"])
         
-        # Calculate statistics like old code
         if tilt_angles:
             result["tilt_range"] = (min(tilt_angles), max(tilt_angles))
         
-        # Check parameter consistency
         result["consistent_params"] = (
             len(pixel_sizes) <= 1 and 
             len(voltages) <= 1 and 
@@ -196,7 +200,6 @@ class MdocService:
     def parse_mdoc_file(self, mdoc_path: Path) -> Dict[str, Any]:
         """
         Fully parse an mdoc file into headers and data sections.
-        This logic is from the original project_service.py.
         """
         header_lines = []
         data_sections = []
@@ -228,7 +231,6 @@ class MdocService:
     def write_mdoc_file(self, mdoc_data: Dict[str, Any], output_path: Path):
         """
         Writes a parsed mdoc data structure back to a file.
-        This logic is from the original project_service.py.
         """
         with open(output_path, "w") as f:
             f.write(mdoc_data["header"] + "\n")

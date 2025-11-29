@@ -1,88 +1,76 @@
-# ui/main_ui.py (REFACTORED - NO HEADER)
-from nicegui import ui, Client
+# ui/main_ui.py
+"""
+Main UI router.
+Implements the 2-Phase workflow: 
+1. Landing Page (New/Load) 
+2. Workspace Page (Pipeline)
+"""
+from nicegui import ui, Client, app
+
 from backend import CryoBoostBackend
-from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
-from .data_import_panel import build_data_import_panel
+from ui.ui_state import get_ui_state_manager
+from ui.landing_page import build_landing_page
+from ui.workspace_page import build_workspace_page
 
 HARDCODED_USER = "artem.kushner"
 
 def create_ui_router(backend: CryoBoostBackend):
-    @ui.page("/")
-    async def projects_page(client: Client):
-        """Main projects page with hamburger menu"""
-        ui.add_head_html("""
-            <style>
-                @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
-                
-                body, .nicegui-content {
-                    font-family: 'IBM Plex Sans', sans-serif !important;
-                    font-size: 12px !important;
-                    font-weight: 400;
-                    margin: 0 !important;
-                    padding: 0 !important;
-                }
-                .q-field__native, .q-field__label, .q-select__option, .q-item__label, .q-field__hint {
-                    font-family: 'IBM Plex Sans', sans-serif !important;
-                    font-size: 12px !important;
-                }
-                .q-btn, .q-tab__label {
-                    font-family: 'IBM Plex Sans', sans-serif !important;
-                    font-size: 11px !important;
-                    font-weight: 500;
-                    text-transform: none !important;
-                }
-                .q-page {
-                    padding: 0 !important;
-                }
-                .nicegui-content {
-                    padding: 0 !important;
-                }
-            </style>
-        """)
+    """Create the UI router with distinct phases."""
 
-        with ui.button(icon="menu").props("flat dense round").classes("fixed top-2 left-2 z-50").style(
-            "background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"
-        ):
-            with ui.menu() as menu:
-                ui.menu_item("Projects & Parameters", on_click=lambda: ui.navigate.to("/"))
-                ui.menu_item("State Inspector", on_click=lambda: ui.navigate.to("/state-inspector"))
-                ui.menu_item("Cluster Info", on_click=lambda: ui.navigate.to("/cluster-info"))
-                ui.separator()
-                ui.label(f"User: {HARDCODED_USER}").classes("text-xs text-gray-500 px-4 py-2")
-
-        state = {
-            "selected_jobs": [],
-            "current_project_path": None,
-            "current_scheme_name": None,
-            "auto_detected_values": {},
-            "job_cards": {},
-            "params_snapshot": {},
-            "project_created": False,
-            "pipeline_running": False,
-        }
-
-        callbacks = {}
-
-        with ui.splitter(value=30).classes("w-full").style(
-            "height: 100vh; padding: 10px 20px;"
-        ) as splitter:
-            with splitter.before:
-                build_data_import_panel(backend, state, callbacks)
+    # --- SHARED STYLES ---
+    ui.add_head_html("""
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+            @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap');
             
-            with splitter.after:
-                build_pipeline_builder_panel(backend, state, callbacks)
+            body, .nicegui-content {
+                font-family: 'IBM Plex Sans', sans-serif !important;
+                font-size: 12px !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+            .q-btn { font-family: 'IBM Plex Sans', sans-serif !important; text-transform: none !important; }
+            
+            /* Status Animation */
+            .pulse-running {
+                animation: pulse-blue 1.5s ease-in-out infinite;
+            }
+            @keyframes pulse-blue {
+                0%, 100% { transform: scale(1); opacity: 1; }
+                50% { transform: scale(1.2); opacity: 0.7; }
+            }
+        </style>
+    """)
 
-        await client.connected()
+    # --- PAGE 1: LANDING (Setup) ---
+    @ui.page("/")
+    async def landing_page(client: Client):
+        # 1. Reset UI State
+        ui_mgr = get_ui_state_manager()
+        ui_mgr.reset()
+        
+        # 2. Reset Backend Project State (Fixes the "Ghost Project" issue)
+        from services.project_state import reset_project_state
+        reset_project_state()
+        
+        build_landing_page(backend)
 
-        # Hamburger menu
-        with ui.button(icon="menu").props("flat dense round").classes("fixed top-2 left-2 z-50").style(
-            "background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1);"
-        ):
-            with ui.menu():
-                ui.menu_item("Projects & Parameters", on_click=lambda: ui.navigate.to("/"))
-                ui.menu_item("State Inspector", on_click=lambda: ui.navigate.to("/state-inspector"))
-                ui.menu_item("Cluster Info", on_click=lambda: ui.navigate.to("/cluster-info"))
-                ui.separator()
-                ui.label(f"User: {HARDCODED_USER}").classes("text-xs text-gray-500 px-4 py-2")
+    # --- PAGE 2: WORKSPACE (Pipeline) ---
+    @ui.page("/workspace")
+    async def workspace_page(client: Client):
+        ui_mgr = get_ui_state_manager()
+        
+        # Safety check: if no project is loaded, go back to start
+        if not ui_mgr.is_project_created:
+             ui.navigate.to("/")
+             return
 
-        await client.connected()
+        # Render the full pipeline UI
+        build_workspace_page(backend)
+
+    # --- AUX PAGES ---
+    @ui.page("/cluster-info")
+    async def cluster_info_page(client: Client):
+        with ui.column().classes("p-8"):
+             ui.label("Cluster Info Stub")
+             ui.button("Back", on_click=lambda: ui.navigate.back())
