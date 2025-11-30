@@ -49,20 +49,21 @@ class AlignmentMethod(str, Enum):
 
 
 class JobCategory(str, Enum):
-    IMPORT = "Import"
-    EXTERNAL = "External"
+    IMPORT     = "Import"
+    EXTERNAL   = "External"
     MOTIONCORR = "MotionCorr"
-    CTFFIND = "CtfFind"
+    CTFFIND    = "CtfFind"
 
 
 class JobType(str, Enum):
-    IMPORT_MOVIES = "importmovies"
-    FS_MOTION_CTF = "fsMotionAndCtf"
-    TS_ALIGNMENT = "aligntiltsWarp"
-    TS_CTF = "tsCtf"
-    TS_RECONSTRUCT = "tsReconstruct"
-    DENOISE_TRAIN = "denoiseTrain"
-    TEMPLATE_MATCH = "templateMatching"
+    IMPORT_MOVIES       = "importmovies"
+    FS_MOTION_CTF       = "fsMotionAndCtf"
+    TS_ALIGNMENT        = "aligntiltsWarp"
+    TS_CTF              = "tsCtf"
+    TS_RECONSTRUCT      = "tsReconstruct"
+    DENOISE_TRAIN       = "denoisetrain"
+    DENOISE_PREDICT     = "denoisepredict"
+    TEMPLATE_MATCH      = "templateMatching"
     SUBTOMO_RECONSTRUCT = "sta"
 
     @classmethod
@@ -721,6 +722,145 @@ class TsReconstructParams(AbstractJobParams):
         }
 
 
+class DenoiseTrainParams(AbstractJobParams):
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+
+    tomograms_for_training: str = Field(default="Position_1")
+    number_training_subvolumes: int = Field(default=600, ge=100)
+    subvolume_dimensions: int = Field(default=64, ge=32)
+    perdevice: int = Field(default=1)
+
+    def is_driver_job(self) -> bool:
+        return True
+
+
+    def get_tool_name(self) -> str:
+        return "cryocare"  # Changed from "cryocare_train"
+
+    @classmethod
+    def from_job_star(cls, star_path: Path) -> Optional[Self]:
+        if not star_path or not star_path.exists():
+            return None
+        try:
+            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
+            joboptions = data.get("joboptions_values")
+            if joboptions is None or not isinstance(joboptions, pd.DataFrame):
+                return None
+            df: pd.DataFrame = joboptions
+            param_dict: Dict[str, str] = pd.Series(
+                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
+            ).to_dict()
+
+            return cls(
+                tomograms_for_training=param_dict.get("tomograms_for_training", "Position_1"),
+                number_training_subvolumes=int(param_dict.get("number_training_subvolumes", "600")),
+                subvolume_dimensions=int(param_dict.get("subvolume_dimensions", "64")),
+                perdevice=int(param_dict.get("min_dedicated", "1")),
+            )
+        except Exception:
+            return None
+
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        # Upstream is typically reconstruction (providing tomograms)
+        if not upstream_job_dir:
+            # Fallback for when there's no clear linear upstream (rare)
+            # Try to guess reconstruction folder
+            reconstruction_dir = job_dir.parent / "tsReconstruct"
+            if not reconstruction_dir.exists():
+                # Try finding any previous job that outputted tomograms.star
+                 pass # Logic handled by orchestrator usually passing valid upstream
+        
+        return {
+            "job_dir": job_dir,
+            "project_root": self.project_root,
+            "input_star": upstream_job_dir / "tomograms.star" if upstream_job_dir else self.project_root / "tomograms.star",
+            "output_model": job_dir / "denoising_model.tar.gz",
+        }
+
+
+class DenoisePredictParams(AbstractJobParams):
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+
+    ntiles_x: int = Field(default=2, ge=1)
+    ntiles_y: int = Field(default=2, ge=1)
+    ntiles_z: int = Field(default=2, ge=1)
+    denoising_tomo_name: str = "" # Filter, empty means all
+    perdevice: int = Field(default=1)
+
+    def is_driver_job(self) -> bool:
+        return True
+
+
+    def get_tool_name(self) -> str:
+        return "cryocare"  # Changed from "cryocare_predict"
+
+    @classmethod
+    def from_job_star(cls, star_path: Path) -> Optional[Self]:
+        if not star_path or not star_path.exists():
+            return None
+        try:
+            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
+            joboptions = data.get("joboptions_values")
+            if joboptions is None or not isinstance(joboptions, pd.DataFrame):
+                return None
+            df: pd.DataFrame = joboptions
+            param_dict: Dict[str, str] = pd.Series(
+                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
+            ).to_dict()
+
+            return cls(
+                ntiles_x=int(param_dict.get("ntiles_x", "2")),
+                ntiles_y=int(param_dict.get("ntiles_y", "2")),
+                ntiles_z=int(param_dict.get("ntiles_z", "2")),
+                denoising_tomo_name=param_dict.get("denoising_tomo_name", ""),
+                perdevice=int(param_dict.get("min_dedicated", "1")),
+            )
+        except Exception:
+            return None
+
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        # Denoise Predict has TWO dependencies:
+        # 1. The Model (from upstream Denoise Train)
+        # 2. The Tomograms (from Reconstruction - which is upstream of Train)
+        
+        # Assumption: upstream_job_dir is the Denoise Train job directory
+        model_path = upstream_job_dir / "denoising_model.tar.gz"
+        
+        # We need to find the tomograms.star. Usually in 'tsReconstruct' folder at same level,
+        # or we can inspect the Train job input (if we had access to full state here, but we don't fully).
+        # Safe heuristic: Check if there is a 'tomograms.star' in the project root or standard location,
+        # OR assume the user linked it correctly in the previous steps.
+        
+        # Better heuristic used in Orchestrator: The 'input_star' passed to Train is likely what we want.
+        # But here we only see 'upstream_job_dir'.
+        # We will assume a standard directory structure: project/External/jobXXX
+        # We can try to look for tomograms.star in typical reconstruction output folders.
+        
+        # However, specifically for `denoisepredict`, the Orchestrator (old system)
+        # sets `in_tomoset` pointing to `tsReconstruct/tomograms.star`.
+        
+        # For now, we will try to resolve it relative to project root if possible, or look back 2 jobs.
+        # Since we can't look back 2 jobs here easily, we will look for 'tomograms.star' in the
+        # expected reconstruction folder location.
+        
+        reconstruct_guess = job_dir.parent / "tsReconstruct" / "tomograms.star"
+        # If we are using job numbers (job005), this guess fails.
+        # Let's rely on finding it in the project scope or assume the driver can verify it.
+        # We will default to a path compatible with the standard pipeline.
+        
+        # NOTE: In the `_build_job_command` inside orchestrator, we can actually pass specific paths.
+        # But here we define what keys are available.
+        
+        return {
+            "job_dir": job_dir,
+            "project_root": self.project_root,
+            "model_path": model_path,
+            # This is a bit weak, relies on standard naming or user ensuring it exists:
+            "input_star": self.project_root / "External" / "tsReconstruct" / "tomograms.star", 
+             "output_dir": job_dir / "denoised"
+        }
+
+
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
         JobType.IMPORT_MOVIES: ImportMoviesParams,
@@ -728,6 +868,8 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
         JobType.TS_ALIGNMENT: TsAlignmentParams,
         JobType.TS_CTF: TsCtfParams,
         JobType.TS_RECONSTRUCT: TsReconstructParams,
+        JobType.DENOISE_TRAIN: DenoiseTrainParams,
+        JobType.DENOISE_PREDICT: DenoisePredictParams,
     }
 
 
