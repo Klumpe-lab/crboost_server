@@ -160,20 +160,22 @@ PIPELINE_ORDER: List[JobType] = [
     JobType.TS_ALIGNMENT,
     JobType.TS_CTF,
     JobType.TS_RECONSTRUCT,
-    JobType.DENOISE_TRAIN,
+    JobType.DENOISE_TRAIN,   
+    JobType.DENOISE_PREDICT, 
     JobType.TEMPLATE_MATCH,
     JobType.SUBTOMO_RECONSTRUCT,
 ]
 
 JOB_DISPLAY_NAMES: Dict[JobType, str] = {
-    JobType.IMPORT_MOVIES: "Import",
-    JobType.FS_MOTION_CTF: "Motion & CTF",
-    JobType.TS_ALIGNMENT: "Alignment",
-    JobType.TS_CTF: "TS CTF",
-    JobType.TS_RECONSTRUCT: "Reconstruct",
-    JobType.DENOISE_TRAIN: "Denoise",
-    JobType.TEMPLATE_MATCH: "Template Match",
-    JobType.SUBTOMO_RECONSTRUCT: "STA",
+    JobType.IMPORT_MOVIES       : "Import",
+    JobType.FS_MOTION_CTF       : "Motion & CTF",
+    JobType.TS_ALIGNMENT        : "Alignment",
+    JobType.TS_CTF              : "TS CTF",
+    JobType.TS_RECONSTRUCT      : "Reconstruct",
+    JobType.DENOISE_TRAIN       : "Denoise Train",   
+    JobType.DENOISE_PREDICT     : "Denoise Predict", 
+    JobType.TEMPLATE_MATCH      : "Template Match",
+    JobType.SUBTOMO_RECONSTRUCT : "STA",
 }
 
 

@@ -11,7 +11,6 @@ from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
 from services.pipeline_runner import PipelineRunnerService
-from services.continuation_service import ContinuationService, PipelineManipulationService, SchemeManipulationService
 from services.project_state import JobType, get_state_service
 from services.slurm_service import SlurmService
 from services.config_service import get_config_service
@@ -29,9 +28,6 @@ class CryoBoostBackend:
         self.slurm_service             = SlurmService(HARDCODED_USER)
         self.pipeline_runner           = PipelineRunnerService(self)
         self.state_service             = get_state_service()
-        self.pipeline_manipulation     = PipelineManipulationService(self)
-        self.scheme_manipulation       = SchemeManipulationService(self)
-        self.continuation              = ContinuationService(self)
 
     async def get_default_data_globs(self) -> Dict[str, str]:
             """Get default glob patterns from config."""
@@ -260,7 +256,6 @@ class CryoBoostBackend:
             return None
 
     async def load_existing_project(self, project_path: str) -> Dict[str, Any]:
-        """Load an existing project for continuation"""
         return await self.project_service.load_project_state(project_path)
 
     async def debug_pipeline_status(self, project_path: str):
