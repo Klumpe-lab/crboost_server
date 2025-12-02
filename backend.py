@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 
 # Refactored imports
+from services.continuation_service import ContinuationService
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
@@ -17,17 +18,17 @@ from services.config_service import get_config_service
 
 HARDCODED_USER = "artem.kushner"
 
-
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
-        self.username                  = HARDCODED_USER
-        self.server_dir                = server_dir
-        self.project_service           = ProjectService(self)
-        self.pipeline_orchestrator     = PipelineOrchestratorService(self)
-        self.container_service         = get_container_service()
-        self.slurm_service             = SlurmService(HARDCODED_USER)
-        self.pipeline_runner           = PipelineRunnerService(self)
-        self.state_service             = get_state_service()
+        self.username              = HARDCODED_USER
+        self.server_dir            = server_dir
+        self.project_service       = ProjectService(self)
+        self.pipeline_orchestrator = PipelineOrchestratorService(self)
+        self.container_service     = get_container_service()
+        self.slurm_service         = SlurmService(HARDCODED_USER)
+        self.pipeline_runner       = PipelineRunnerService(self)
+        self.state_service         = get_state_service()
+        self.continuation          = ContinuationService(self)
 
     async def get_default_data_globs(self) -> Dict[str, str]:
             """Get default glob patterns from config."""
@@ -45,7 +46,6 @@ class CryoBoostBackend:
         if configured_path:
             return configured_path
         
-        # Fallback to home if not configured, rather than hardcoded dev path
         return str(Path.home())
 
     async def scan_for_projects(self, base_path: str) -> List[Dict[str, Any]]:

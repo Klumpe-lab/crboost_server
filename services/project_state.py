@@ -880,6 +880,8 @@ class ProjectState(BaseModel):
     project_path: Optional[Path] = None
     created_at: datetime = Field(default_factory=datetime.now)
     modified_at: datetime = Field(default_factory=datetime.now)
+    job_path_mapping: Dict[str, str] = Field(default_factory=dict)  # job_type -> relion_path
+
 
 
     movies_glob: str = ""

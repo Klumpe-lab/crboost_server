@@ -70,8 +70,13 @@ class PipelineOrchestratorService:
         self.config_service = get_config_service()
         self.project_service = None
         self.state_service = get_state_service()
+        self.job_resolver = JobTypeResolver(self.star_handler)  # Add this
 
         self.job_builders: Dict[str, BaseCommandBuilder] = {JobType.IMPORT_MOVIES.value: ImportMoviesCommandBuilder()}
+
+    def _get_last_successful_jobs(self, project_dir: Path) -> Dict[str, str]:
+            """Use the resolver instead of hardcoded mapping."""
+            return self.job_resolver.get_all_completed_jobs(project_dir)
 
     async def create_custom_scheme(
         self,
@@ -252,10 +257,12 @@ class PipelineOrchestratorService:
 
             # Map driver jobs to their scripts using enums
             driver_scripts = {
-                JobType.FS_MOTION_CTF: "fs_motion_and_ctf.py",
-                JobType.TS_ALIGNMENT: "ts_alignment.py",
-                JobType.TS_CTF: "ts_ctf.py",
-                JobType.TS_RECONSTRUCT: "ts_reconstruct.py",
+                JobType.FS_MOTION_CTF  : "fs_motion_and_ctf.py",
+                JobType.TS_ALIGNMENT   : "ts_alignment.py",
+                JobType.TS_CTF         : "ts_ctf.py",
+                JobType.TS_RECONSTRUCT : "ts_reconstruct.py",
+                JobType.DENOISE_TRAIN  : "denoise_train.py",
+                JobType.DENOISE_PREDICT: "denoise_predict.py"
             }
 
             if job_type in driver_scripts:
@@ -373,3 +380,93 @@ class PipelineOrchestratorService:
         scheme_star_path = scheme_dir / "scheme.star"
         self.star_handler.write(scheme_star_data, scheme_star_path)
         print(f"[PIPELINE] Created scheme.star at: {scheme_star_path}")
+
+class JobTypeResolver:
+    """Resolves job types from job directories - no hardcoded mappings."""
+    
+    # Driver script name → JobType value
+    DRIVER_TO_JOBTYPE = {
+        "fs_motion_and_ctf.py": "fsMotionAndCtf",
+        "ts_alignment.py"     : "aligntiltsWarp",
+        "ts_ctf.py"           : "tsCtf",
+        "ts_reconstruct.py"   : "tsReconstruct",
+        "denoise_train.py"    : "denoisetrain",
+        "denoise_predict.py"  : "denoisepredict",
+    }
+    
+    def __init__(self, star_handler: StarfileService):
+        self.star_handler = star_handler
+    
+    def get_job_type_from_path(self, project_dir: Path, job_path: str) -> Optional[str]:
+        """
+        Determine job type by inspecting the job.star file.
+        Returns the job type string (e.g., "tsReconstruct") or None.
+        """
+        # Handle Import jobs (they use relion_import, not our drivers)
+        if "Import/job" in job_path:
+            return "importmovies"
+        
+        job_star_path = project_dir / job_path.rstrip("/") / "job.star"
+        if not job_star_path.exists():
+            return None
+        
+        try:
+            data = self.star_handler.read(job_star_path)
+            joboptions = data.get("joboptions_values")
+            
+            if joboptions is None or not isinstance(joboptions, pd.DataFrame):
+                return None
+            
+            fn_exe_rows = joboptions[joboptions["rlnJobOptionVariable"] == "fn_exe"]
+            if fn_exe_rows.empty:
+                return None
+            
+            fn_exe = fn_exe_rows["rlnJobOptionValue"].values[0]
+            
+            # Match against known driver scripts
+            for driver_name, job_type in self.DRIVER_TO_JOBTYPE.items():
+                if driver_name in fn_exe:
+                    return job_type
+            
+            # Fallback: check for relion commands
+            if "relion_import" in fn_exe:
+                return "importmovies"
+            
+            return None
+            
+        except Exception as e:
+            print(f"[WARN] Could not read job type from {job_star_path}: {e}")
+            return None
+    
+    def get_all_completed_jobs(self, project_dir: Path) -> Dict[str, str]:
+        """
+        Scan default_pipeline.star and return {job_type: job_path} for succeeded jobs.
+        """
+        pipeline_star = project_dir / "default_pipeline.star"
+        if not pipeline_star.exists():
+            return {}
+        
+        try:
+            data = self.star_handler.read(pipeline_star)
+            processes = data.get("pipeline_processes", pd.DataFrame())
+            
+            if processes.empty:
+                return {}
+            
+            result = {}
+            for _, row in processes.iterrows():
+                job_path = row["rlnPipeLineProcessName"]  # e.g., "External/job005/"
+                status = row["rlnPipeLineProcessStatusLabel"]
+                
+                if status not in ["Succeeded", "Running"]:
+                    continue
+                
+                job_type = self.get_job_type_from_path(project_dir, job_path)
+                if job_type:
+                    result[job_type] = job_path
+            
+            return result
+            
+        except Exception as e:
+            print(f"[WARN] Could not parse pipeline: {e}")
+            return {}

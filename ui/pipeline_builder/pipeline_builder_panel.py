@@ -12,6 +12,7 @@ from nicegui import ui
 from backend import CryoBoostBackend
 from services.project_state import JobStatus, JobType, get_state_service, get_project_state
 from ui.status_indicator import ReactiveStatusDot
+import pandas as pd
 from ui.ui_state import (
     get_ui_state_manager,
     UIStateManager,
@@ -24,7 +25,6 @@ from ui.pipeline_builder.job_tab_component import (
     render_status_dot,
     render_status_badge,
 )
-from ui.pipeline_builder.continuation_controls import build_continuation_controls
 
 
 def build_pipeline_builder_panel(
@@ -48,7 +48,7 @@ def build_pipeline_builder_panel(
         if not result:
             return
         
-        # Initialize in project state (backend)
+        # Initialize in project state
         state = state_service.state
         if job_type not in state.jobs:
             template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
@@ -57,23 +57,36 @@ def build_pipeline_builder_panel(
                 job_type,
                 job_star_path if job_star_path.exists() else None
             )
-            
-            # PERSISTENCE FIX: Save the new job to project_params.json immediately
-            if ui_mgr.is_project_created:
-                asyncio.create_task(state_service.save_project())
         
-        # Reset status for new jobs (unless loading existing)
-        if not ui_mgr.is_continuation_mode:
-            job_model = state.jobs.get(job_type)
-            if job_model:
-                job_model.execution_status = JobStatus.SCHEDULED
-                job_model.relion_job_name = None
-                job_model.relion_job_number = None
+        # NEW: If pipeline already exists and has completed jobs, use ContinuationService
+        if ui_mgr.is_project_created and state.project_path:
+            project_dir = state.project_path
+            scheme_name = f"scheme_{state.project_name}"
+            
+            # Check if scheme exists and has completed
+            scheme_star = project_dir / "Schemes" / scheme_name / "scheme.star"
+            if scheme_star.exists():
+                # Use continuation service to properly add the job
+                async def _add_job_async():
+                    result = await backend.continuation.add_job_to_existing_pipeline(
+                        project_dir, scheme_name, job_type
+                    )
+                    # Don't call ui.notify from background task - just log
+                    if result["success"]:
+                        print(f"[CONTINUATION] Successfully added {job_type.value} to pipeline at {result.get('new_job_path')}")
+                    else:
+                        print(f"[CONTINUATION] Failed to add job: {result.get('error')}")
+                
+                asyncio.create_task(_add_job_async())
+        
+        # Save state
+        if ui_mgr.is_project_created:
+            asyncio.create_task(state_service.save_project())
         
         ui_mgr.set_active_job(job_type)
         update_job_tag_button(job_type)
         rebuild_pipeline_ui()
-    
+        
     def remove_job_from_pipeline(job_type: JobType):
         """Remove a job from the pipeline."""
         if not ui_mgr.remove_job(job_type):
@@ -125,24 +138,6 @@ def build_pipeline_builder_panel(
         """Rebuild the entire pipeline UI."""
         update_status_label()
 
-        cont_container = ui_mgr.panel_refs.continuation_container
-        if cont_container:
-            should_show = ui_mgr.is_continuation_mode
-            cont_container.set_visibility(should_show)
-            if should_show:
-                cont_container.clear()
-                with cont_container:
-                    build_continuation_controls(
-                        backend,
-                        ui_mgr,
-                        {
-                            **callbacks,
-                            "rebuild_pipeline_ui": rebuild_pipeline_ui,
-                            "check_and_update_statuses": check_and_update_statuses,
-                        }
-                    )
-        
-        # Handle job tags visibility
         tags_container = ui_mgr.panel_refs.job_tags_container
         if tags_container:
             # FORCE WORKFLOW: Hide tags if project NOT created or if running
@@ -286,16 +281,15 @@ def build_pipeline_builder_panel(
             project_path = ui_mgr.project_path
             scheme_name = ui_mgr.scheme_name or f"scheme_{state_service.state.project_name}"
             selected_job_strings = [j.value for j in ui_mgr.selected_jobs]
-            
-            # Collect bind paths
             state = state_service.state
 
+            # Collect bind paths
             additional_bind_paths = set()
             if state.movies_glob:
-                    try:
-                        additional_bind_paths.add(str(Path(state.movies_glob).parent.resolve()))
-                    except:
-                        pass
+                try:
+                    additional_bind_paths.add(str(Path(state.movies_glob).parent.resolve()))
+                except:
+                    pass
             if state.mdocs_glob:
                 try:
                     additional_bind_paths.add(str(Path(state.mdocs_glob).parent.resolve()))
@@ -306,8 +300,7 @@ def build_pipeline_builder_panel(
                     additional_bind_paths.add(str(Path(state.acquisition.gain_reference_path).parent.resolve()))
                 except:
                     pass
-                
-            # Add data source paths if available
+            
             di = ui_mgr.data_import
             if di.movies_glob:
                 try:
@@ -320,24 +313,58 @@ def build_pipeline_builder_panel(
                 except:
                     pass
             
-            # STEP 1: Create/update the scheme with currently selected jobs
-            print(f"[PIPELINE] Creating scheme '{scheme_name}' with jobs: {selected_job_strings}")
+            # CHECK: Is this a continuation (scheme exists with completed jobs)?
+            scheme_star_path = project_path / "Schemes" / scheme_name / "scheme.star"
+            is_continuation = False
+
+            print(f"[DEBUG] Checking scheme at: {scheme_star_path}")
+            print(f"[DEBUG] Exists: {scheme_star_path.exists()}")
+
+            if scheme_star_path.exists():
+                from services.starfile_service import StarfileService
+                star_handler = StarfileService()
+                scheme_data = star_handler.read(scheme_star_path)
+                scheme_general = scheme_data.get("scheme_general")
+                
+                print(f"[DEBUG] scheme_general type: {type(scheme_general)}")
+                print(f"[DEBUG] scheme_general content: {scheme_general}")
+                
+                node_name = None
+                
+                # Handle both dict (single row) and DataFrame (multiple rows)
+                if isinstance(scheme_general, dict):
+                    node_name = scheme_general.get("rlnSchemeCurrentNodeName")
+                elif isinstance(scheme_general, pd.DataFrame) and not scheme_general.empty:
+                    node_name = scheme_general["rlnSchemeCurrentNodeName"].values[0]
+                
+                if node_name:
+                    is_continuation = node_name != "WAIT"
+                    print(f"[PIPELINE] Scheme exists, current_node={node_name}, is_continuation={is_continuation}")
+
+            print(f"[DEBUG] Final is_continuation={is_continuation}")
             
-            scheme_result = await backend.pipeline_orchestrator.create_custom_scheme(
-                project_dir           = project_path,
-                new_scheme_name       = scheme_name,
-                base_template_path    = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep",
-                selected_jobs         = selected_job_strings,
-                additional_bind_paths = list(additional_bind_paths),
-            )
+            if not is_continuation:
+                # Fresh start: create scheme from scratch
+                print(f"[PIPELINE] Creating scheme '{scheme_name}' with jobs: {selected_job_strings}")
+
+                
+                scheme_result = await backend.pipeline_orchestrator.create_custom_scheme(
+                    project_dir           = project_path,
+                    new_scheme_name       = scheme_name,
+                    base_template_path    = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep",
+                    selected_jobs         = selected_job_strings,
+                    additional_bind_paths = list(additional_bind_paths),
+                )
+                
+                if not scheme_result.get("success"):
+                    ui.notify(f"Failed to create scheme: {scheme_result.get('error')}", type="negative")
+                    return
+
+            else:
+                # Continuation: scheme was already updated by ContinuationService
+                print(f"[PIPELINE] Continuing existing scheme '{scheme_name}'")
             
-            if not scheme_result.get("success"):
-                ui.notify(f"Failed to create scheme: {scheme_result.get('error')}", type="negative")
-                return
-            
-            print(f"[PIPELINE] Scheme created at: {project_path}/Schemes/{scheme_name}")
-            
-            # STEP 2: Now start the pipeline
+            # STEP 2: Start the pipeline (same for both cases)
             result = await backend.start_pipeline(
                 project_path=str(project_path),
                 scheme_name=scheme_name,
@@ -354,7 +381,6 @@ def build_pipeline_builder_panel(
                     if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
                         job_model.execution_status = JobStatus.SCHEDULED
                 
-                # Start status polling
                 ui_mgr.status_timer = ui.timer(
                     3.0,
                     lambda: asyncio.create_task(check_and_update_statuses())
@@ -381,10 +407,6 @@ def build_pipeline_builder_panel(
         finally:
             if run_btn:
                 run_btn.props(remove="loading")
-    
-    # ===========================================
-    # Build the UI
-    # ===========================================
     
     with ui.column().classes("w-full h-full overflow-hidden").style(
         "gap: 0px; font-family: 'IBM Plex Sans', sans-serif;"

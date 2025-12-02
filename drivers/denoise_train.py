@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-import shlex
 import sys
 import os
 from pathlib import Path
-from typing import Dict
 import traceback
 
 project_root = Path(__file__).parent.parent
@@ -11,7 +9,6 @@ sys.path.insert(0, str(project_root))
 
 try:
     from drivers.driver_base import get_driver_context, run_command
-    from services.project_state import DenoiseTrainParams
     from services.container_service import get_container_service
 except ImportError as e:
     print("FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
