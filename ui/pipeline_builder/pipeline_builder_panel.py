@@ -4,6 +4,7 @@ Pipeline builder panel.
 Refactored to implement "Create Project First" workflow and ensure state synchronization.
 """
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Callable
 
@@ -42,50 +43,29 @@ def build_pipeline_builder_panel(
     # ===========================================
     
     def add_job_to_pipeline(job_type: JobType):
-        """Add a job to the pipeline and initialize its state."""
-        result = ui_mgr.add_job(job_type)
-        
-        if not result:
-            return
-        
-        # Initialize in project state
-        state = state_service.state
-        if job_type not in state.jobs:
-            template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
-            job_star_path = template_base / job_type.value / "job.star"
-            state.ensure_job_initialized(
-                job_type,
-                job_star_path if job_star_path.exists() else None
-            )
-        
-        # NEW: If pipeline already exists and has completed jobs, use ContinuationService
-        if ui_mgr.is_project_created and state.project_path:
-            project_dir = state.project_path
-            scheme_name = f"scheme_{state.project_name}"
-            
-            # Check if scheme exists and has completed
-            scheme_star = project_dir / "Schemes" / scheme_name / "scheme.star"
-            if scheme_star.exists():
-                # Use continuation service to properly add the job
-                async def _add_job_async():
-                    result = await backend.continuation.add_job_to_existing_pipeline(
-                        project_dir, scheme_name, job_type
-                    )
-                    # Don't call ui.notify from background task - just log
-                    if result["success"]:
-                        print(f"[CONTINUATION] Successfully added {job_type.value} to pipeline at {result.get('new_job_path')}")
-                    else:
-                        print(f"[CONTINUATION] Failed to add job: {result.get('error')}")
+            """Add a job to the UI list and ensure its params are initialized in State."""
+            result = ui_mgr.add_job(job_type) # Adds to UI list
+            if not result: return
+
+            # Initialize params in ProjectState (Load from Blueprint if not exists)
+            state = state_service.state
+            if job_type not in state.jobs:
+                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+                job_star_path = template_base / job_type.value / "job.star"
                 
-                asyncio.create_task(_add_job_async())
-        
-        # Save state
-        if ui_mgr.is_project_created:
-            asyncio.create_task(state_service.save_project())
-        
-        ui_mgr.set_active_job(job_type)
-        update_job_tag_button(job_type)
-        rebuild_pipeline_ui()
+                # Load defaults into memory
+                state.ensure_job_initialized(job_type, job_star_path if job_star_path.exists() else None)
+            
+            # Save state immediately
+            if ui_mgr.is_project_created:
+                asyncio.create_task(state_service.save_project())
+
+            # [REMOVED] Logic calling continuation_service. 
+            # We don't touch Relion files here. We just update our JSON state.
+
+            ui_mgr.set_active_job(job_type)
+            update_job_tag_button(job_type)
+            rebuild_pipeline_ui()
         
     def remove_job_from_pipeline(job_type: JobType):
         """Remove a job from the pipeline."""
@@ -249,13 +229,17 @@ def build_pipeline_builder_panel(
             is_truly_complete = running == 0 and has_activity and scheduled == 0
             
             if is_truly_complete:
-                ui_mgr.set_pipeline_running(False)
-                stop_all_timers()
-                if failed > 0:
-                    ui.notify(f"Pipeline finished with {failed} failed job(s).", type="warning")
-                else:
-                    ui.notify("Pipeline execution finished.", type="positive")
-                rebuild_pipeline_ui()
+                        ui_mgr.set_pipeline_running(False)
+                        stop_all_timers()
+                        try:
+                            if failed > 0:
+                                ui.notify(f"Pipeline finished with {failed} failed job(s).", type="warning")
+                            else:
+                                ui.notify("Pipeline execution finished.", type="positive")
+                        except RuntimeError:
+                            # Context lost, safe to ignore for background notification
+                            pass
+                        rebuild_pipeline_ui()
     
     def stop_all_timers():
         """Stop all polling timers."""
@@ -264,150 +248,51 @@ def build_pipeline_builder_panel(
     # In pipeline_builder_panel.py, replace handle_run_pipeline with:
 
     async def handle_run_pipeline():
-        """Handle the Run Pipeline button click."""
-        if not ui_mgr.is_project_created:
-            ui.notify("Create a project first", type="warning")
-            return
-        
-        if not ui_mgr.selected_jobs:
-            ui.notify("Add at least one job to the pipeline", type="warning")
-            return
-        
-        run_btn = ui_mgr.panel_refs.run_button
-        if run_btn:
-            run_btn.props("loading")
-        
-        try:
-            project_path = ui_mgr.project_path
-            scheme_name = ui_mgr.scheme_name or f"scheme_{state_service.state.project_name}"
+            """
+            The critical trigger.
+            1. Saves current parameter state to disk.
+            2. Calls backend.start_pipeline which triggers the Orchestrator's Just-In-Time scheme generation.
+            """
+            if not ui_mgr.is_project_created:
+                ui.notify("Create a project first", type="warning")
+                return
+
+            # 1. Save UI State to Disk (project_params.json)
+            await state_service.save_project()
+
+            # 2. Execute via Backend
+            # We pass the list of selected jobs. The Orchestrator will decide
+            # how to link them based on ProjectState history.
+            
             selected_job_strings = [j.value for j in ui_mgr.selected_jobs]
-            state = state_service.state
-
-            # Collect bind paths
-            additional_bind_paths = set()
-            if state.movies_glob:
-                try:
-                    additional_bind_paths.add(str(Path(state.movies_glob).parent.resolve()))
-                except:
-                    pass
-            if state.mdocs_glob:
-                try:
-                    additional_bind_paths.add(str(Path(state.mdocs_glob).parent.resolve()))
-                except:
-                    pass
-            if state.acquisition.gain_reference_path:
-                try:
-                    additional_bind_paths.add(str(Path(state.acquisition.gain_reference_path).parent.resolve()))
-                except:
-                    pass
             
-            di = ui_mgr.data_import
-            if di.movies_glob:
-                try:
-                    additional_bind_paths.add(str(Path(di.movies_glob).parent.resolve()))
-                except:
-                    pass
-            if di.mdocs_glob:
-                try:
-                    additional_bind_paths.add(str(Path(di.mdocs_glob).parent.resolve()))
-                except:
-                    pass
-            
-            # CHECK: Is this a continuation (scheme exists with completed jobs)?
-            scheme_star_path = project_path / "Schemes" / scheme_name / "scheme.star"
-            is_continuation = False
+            # Visual feedback
+            if ui_mgr.panel_refs.run_button:
+                ui_mgr.panel_refs.run_button.props("loading")
 
-            print(f"[DEBUG] Checking scheme at: {scheme_star_path}")
-            print(f"[DEBUG] Exists: {scheme_star_path.exists()}")
-
-            if scheme_star_path.exists():
-                from services.starfile_service import StarfileService
-                star_handler = StarfileService()
-                scheme_data = star_handler.read(scheme_star_path)
-                scheme_general = scheme_data.get("scheme_general")
-                
-                print(f"[DEBUG] scheme_general type: {type(scheme_general)}")
-                print(f"[DEBUG] scheme_general content: {scheme_general}")
-                
-                node_name = None
-                
-                # Handle both dict (single row) and DataFrame (multiple rows)
-                if isinstance(scheme_general, dict):
-                    node_name = scheme_general.get("rlnSchemeCurrentNodeName")
-                elif isinstance(scheme_general, pd.DataFrame) and not scheme_general.empty:
-                    node_name = scheme_general["rlnSchemeCurrentNodeName"].values[0]
-                
-                if node_name:
-                    is_continuation = node_name != "WAIT"
-                    print(f"[PIPELINE] Scheme exists, current_node={node_name}, is_continuation={is_continuation}")
-
-            print(f"[DEBUG] Final is_continuation={is_continuation}")
-            
-            if not is_continuation:
-                # Fresh start: create scheme from scratch
-                print(f"[PIPELINE] Creating scheme '{scheme_name}' with jobs: {selected_job_strings}")
-
-                
-                scheme_result = await backend.pipeline_orchestrator.create_custom_scheme(
-                    project_dir           = project_path,
-                    new_scheme_name       = scheme_name,
-                    base_template_path    = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep",
-                    selected_jobs         = selected_job_strings,
-                    additional_bind_paths = list(additional_bind_paths),
+            try:
+                result = await backend.start_pipeline(
+                    project_path=str(ui_mgr.project_path),
+                    scheme_name=f"run_{datetime.now().strftime('%H%M%S')}", # Unique run ID
+                    selected_jobs=selected_job_strings,
+                    required_paths=[] # Backend handles glob binds now
                 )
-                
-                if not scheme_result.get("success"):
-                    ui.notify(f"Failed to create scheme: {scheme_result.get('error')}", type="negative")
-                    return
 
-            else:
-                # Continuation: scheme was already updated by ContinuationService
-                print(f"[PIPELINE] Continuing existing scheme '{scheme_name}'")
-            
-            # STEP 2: Start the pipeline (same for both cases)
-            result = await backend.start_pipeline(
-                project_path=str(project_path),
-                scheme_name=scheme_name,
-                selected_jobs=selected_job_strings,
-                required_paths=[],
-            )
-            
-            if result.get("success"):
-                ui_mgr.set_pipeline_running(True)
-                
-                # Reset statuses for jobs that haven't succeeded
-                for job_type in ui_mgr.selected_jobs:
-                    job_model = state.jobs.get(job_type)
-                    if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
-                        job_model.execution_status = JobStatus.SCHEDULED
-                
-                ui_mgr.status_timer = ui.timer(
-                    3.0,
-                    lambda: asyncio.create_task(check_and_update_statuses())
-                )
-                
-                await check_and_update_statuses()
-                ui.notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
-                
-                if run_btn:
-                    run_btn.props("disable")
-                stop_btn = ui_mgr.panel_refs.stop_button
-                if stop_btn:
-                    stop_btn.props(remove="disable")
-                
-                rebuild_pipeline_ui()
-            else:
-                ui.notify(f"Failed to start: {result.get('error')}", type="negative")
+                if result.get("success"):
+                    ui_mgr.set_pipeline_running(True)
+                    ui.notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
+                    
+                    # Start polling for status updates
+                    ui_mgr.status_timer = ui.timer(3.0, lambda: asyncio.create_task(check_and_update_statuses()))
+                else:
+                    ui.notify(f"Failed to start: {result.get('error')}", type="negative")
+
+            except Exception as e:
+                ui.notify(f"Error: {e}", type="negative")
+            finally:
+                if ui_mgr.panel_refs.run_button:
+                    ui_mgr.panel_refs.run_button.props(remove="loading")
         
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            ui.notify(f"Error: {e}", type="negative")
-        
-        finally:
-            if run_btn:
-                run_btn.props(remove="loading")
-    
     with ui.column().classes("w-full h-full overflow-hidden").style(
         "gap: 0px; font-family: 'IBM Plex Sans', sans-serif;"
     ):

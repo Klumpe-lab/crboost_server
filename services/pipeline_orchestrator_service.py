@@ -2,33 +2,233 @@
 import shutil
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional
-import json
+from typing import Dict, List, Optional, Any
+from datetime import datetime
+import asyncio
+
 from services.config_service import get_config_service
-from services.project_state import AbstractJobParams, JobCategory, JobType, get_state_service, ImportMoviesParams
+from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ImportMoviesParams
 from .starfile_service import StarfileService
-from .project_service import ProjectService
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
 
 
-class BaseCommandBuilder:
-    def format_paths(self, paths: Dict[str, Path]) -> Dict[str, str]:
-        return {k: str(v) for k, v in paths.items()}
+class PipelineOrchestratorService:
+    def __init__(self, backend_instance: "CryoBoostBackend"):
+        self.backend = backend_instance
+        self.star_handler = StarfileService()
+        self.config_service = get_config_service()
+        self.job_resolver = JobTypeResolver(self.star_handler)
 
-    def add_optional_param(self, cmd_parts: List[str], flag: str, value: Any, condition: bool = True):
-        if condition and value is not None and str(value) != "None" and str(value) != "":
-            cmd_parts.extend([flag, str(value)])
+    async def deploy_and_run_scheme(self, project_dir: Path, selected_job_types: List[JobType]) -> Dict[str, Any]:
+        """
+        Main entry point for "Just-In-Time" scheme generation.
+        """
+        if not selected_job_types:
+            return {"success": False, "message": "No jobs selected."}
 
+        state = self.backend.state_service.state
 
-class ImportMoviesCommandBuilder(BaseCommandBuilder):
-    """Build import movies command from params"""
+        # --- FIX: FILTER ALREADY COMPLETED JOBS ---
+        # We only want to run jobs that are NOT Succeeded.
+        # If the user wants to re-run a succeeded job, they must explicitly reset/delete it first.
+        jobs_to_run = []
+        for job_type in selected_job_types:
+            job_model = state.jobs.get(job_type)
+            # If model missing, assume it needs running. If status is not SUCCEEDED, run it.
+            if not job_model or job_model.execution_status != JobStatus.SUCCEEDED:
+                jobs_to_run.append(job_type)
 
-    def build(self, params: ImportMoviesParams, paths: Dict[str, Path]) -> str:
-        """Build the relion_import command"""
-        cmd_parts = [
+        if not jobs_to_run:
+            print("[ORCHESTRATOR] All selected jobs are already completed. Nothing to run.")
+            return {"success": True, "message": "All selected jobs are already finished.", "pid": 0}
+
+        print(f"[ORCHESTRATOR] Full selection: {[j.value for j in selected_job_types]}")
+        print(f"[ORCHESTRATOR] Actual execution list: {[j.value for j in jobs_to_run]}")
+
+        # 1. Prepare Scheme Directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        scheme_name = f"run_{timestamp}"
+        scheme_dir = project_dir / "Schemes" / scheme_name
+        scheme_dir.mkdir(parents=True, exist_ok=True)
+
+        # 2. Predict Job Numbers
+        current_counter = self._get_current_relion_counter(project_dir)
+
+        # 3. Process Each Job
+        server_dir = Path(__file__).parent.parent.resolve()
+
+        previous_job_output_dir_in_batch: Optional[Path] = None
+
+        for i, job_type in enumerate(jobs_to_run):
+            # Calculate predicted directory
+            job_num = current_counter + 1 + i
+
+            category = JobCategory.IMPORT if job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
+            predicted_job_dir = project_dir / category.value / f"job{job_num:03d}"
+
+            # Ensure Model exists
+            job_model = state.jobs.get(job_type)
+            if not job_model:
+                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
+                state.ensure_job_initialized(job_type, template_base)
+                job_model = state.jobs.get(job_type)
+
+            # --- UPSTREAM RESOLUTION ---
+            upstream_path_for_resolution = None
+
+            if i == 0:
+                # First job in THIS batch.
+                # Its input must come from the Project History (a job that finished in a previous run).
+                reqs = job_model.get_input_requirements()
+                if reqs:
+                    # We look for the required job type in the state's path mapping.
+                    # This mapping was populated by SyncStatus when we loaded the project.
+                    required_type = list(reqs.values())[0]  # e.g. "tsReconstruct"
+
+                    if required_type in state.job_path_mapping:
+                        rel_path = state.job_path_mapping[required_type]  # e.g. "External/job005"
+                        upstream_path_for_resolution = project_dir / rel_path
+                        print(f"[ORCHESTRATOR] {job_type.value} depends on historical: {upstream_path_for_resolution}")
+                    else:
+                        print(
+                            f"[ORCHESTRATOR] WARNING: Upstream {required_type} not found in history for {job_type.value}"
+                        )
+            else:
+                # Subsequent job in THIS batch.
+                # Its input comes from the PREVIOUS job in this batch (which we just predicted).
+                upstream_path_for_resolution = previous_job_output_dir_in_batch
+                print(f"[ORCHESTRATOR] {job_type.value} depends on batch predecessor: {upstream_path_for_resolution}")
+
+            # --- RESOLVE PATHS ---
+            resolved_paths = job_model.resolve_paths(
+                job_dir=predicted_job_dir, upstream_job_dir=upstream_path_for_resolution
+            )
+
+            # Update the State (Persist these absolute paths for the Driver)
+            job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v}
+
+            # Prepare temporary job.star
+            scheme_job_dir = scheme_dir / job_type.value
+            scheme_job_dir.mkdir(parents=True, exist_ok=True)
+
+            self._write_job_star(
+                scheme_job_dir=scheme_job_dir,
+                job_type=job_type,
+                job_model=job_model,
+                server_dir=server_dir,
+                project_dir=project_dir,
+            )
+
+            # Update tracking for next iteration
+            previous_job_output_dir_in_batch = predicted_job_dir
+
+        # 4. Generate scheme.star
+        self._write_scheme_star(scheme_dir, scheme_name, [j.value for j in jobs_to_run])
+
+        # 5. Save Project State
+        await self.backend.state_service.save_project()
+
+        # 6. Run
+        bind_paths = [str(project_dir.parent.resolve()), str(server_dir.resolve())]
+        if state.movies_glob:
+            bind_paths.append(str(Path(state.movies_glob).parent.resolve()))
+        if state.mdocs_glob:
+            bind_paths.append(str(Path(state.mdocs_glob).parent.resolve()))
+
+        return await self.backend.pipeline_runner.run_generated_scheme(
+            project_dir=project_dir, scheme_name=scheme_name, bind_paths=list(set(bind_paths))
+        )
+
+    def _get_current_relion_counter(self, project_dir: Path) -> int:
+        pipeline_star = project_dir / "default_pipeline.star"
+        if not pipeline_star.exists():
+            return 0
+        try:
+            data = self.star_handler.read(pipeline_star)
+            general = data.get("pipeline_general")
+            if isinstance(general, pd.DataFrame) and not general.empty:
+                if "_rlnPipeLineJobCounter" in general.columns:
+                    return int(general["_rlnPipeLineJobCounter"].values[0])
+            return 0
+        except Exception as e:
+            print(f"[ORCHESTRATOR] Error reading job counter: {e}")
+            return 0
+
+    def _write_job_star(
+        self, scheme_job_dir: Path, job_type: JobType, job_model: AbstractJobParams, server_dir: Path, project_dir: Path
+    ):
+        template_source = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
+        dest_star = scheme_job_dir / "job.star"
+
+        if template_source.exists():
+            shutil.copy(template_source, dest_star)
+        else:
+            print(f"[ERROR] Template missing for {job_type.value}")
+            return
+
+        data = self.star_handler.read(dest_star)
+        if "joboptions_values" not in data:
+            return
+
+        df = data["joboptions_values"]
+
+        # --- Patch Scheme Name References ---
+        template_scheme_name = template_source.parent.parent.name
+        new_scheme_name = scheme_job_dir.parent.name
+
+        for key, block in data.items():
+            if isinstance(block, pd.DataFrame):
+                for col in block.select_dtypes(include=["object"]):
+                    if block[col].astype(str).str.contains(template_scheme_name).any():
+                        block[col] = (
+                            block[col].astype(str).str.replace(template_scheme_name, new_scheme_name, regex=False)
+                        )
+
+        # Inject fn_exe
+        fn_exe = self._build_fn_exe(job_type, job_model, project_dir, server_dir)
+        df.loc[df["rlnJobOptionVariable"] == "fn_exe", "rlnJobOptionValue"] = fn_exe
+
+        self.star_handler.write(data, dest_star)
+
+    def _build_fn_exe(
+        self, job_type: JobType, job_model: AbstractJobParams, project_dir: Path, server_dir: Path
+    ) -> str:
+        if job_type == JobType.IMPORT_MOVIES:
+            return self._build_import_command(job_model)
+
+        driver_map = {
+            JobType.FS_MOTION_CTF: "fs_motion_and_ctf.py",
+            JobType.TS_ALIGNMENT: "ts_alignment.py",
+            JobType.TS_CTF: "ts_ctf.py",
+            JobType.TS_RECONSTRUCT: "ts_reconstruct.py",
+            JobType.DENOISE_TRAIN: "denoise_train.py",
+            JobType.DENOISE_PREDICT: "denoise_predict.py",
+        }
+
+        script = driver_map.get(job_type)
+        if not script:
+            return "echo 'Unknown Driver'; exit 1"
+
+        python_exe = server_dir / "venv" / "bin" / "python3"
+        if not python_exe.exists():
+            python_exe = "python3"
+
+        script_path = server_dir / "drivers" / script
+
+        return (
+            f"export PYTHONPATH={server_dir}:${{PYTHONPATH}}; "
+            f"{python_exe} {script_path} "
+            f"--job_type {job_type.value} "
+            f"--project_path {project_dir}"
+        )
+
+    def _build_import_command(self, params: ImportMoviesParams) -> str:
+        mdoc_glob = str(params.paths.get("mdoc_glob", ""))
+
+        cmd = [
             "relion_import",
             "--do_movies",
             "--optics_group_name",
@@ -42,431 +242,165 @@ class ImportMoviesCommandBuilder(BaseCommandBuilder):
             "--Q0",
             str(params.amplitude_contrast),
             "--dose_per_tilt_image",
-            str(params.acquisition.dose_per_tilt),
+            str(params.dose_per_tilt),
             "--nominal_tilt_axis_angle",
             str(params.tilt_axis_angle),
         ]
 
         if params.acquisition.invert_defocus_hand:
-            cmd_parts.append("--invert_defocus_hand")
+            cmd.append("--invert_defocus_hand")
 
         if params.do_at_most > 0:
-            cmd_parts.extend(["--do_at_most", str(params.do_at_most)])
+            cmd.extend(["--do_at_most", str(params.do_at_most)])
 
-        if "mdoc_dir" in paths:
-            input_pattern = str(paths["mdoc_dir"]) + "/*.mdoc"
-            cmd_parts.extend(["--i", input_pattern])
+        if mdoc_glob:
+            cmd.extend(["--i", mdoc_glob])
 
-        if "job_dir" in paths:
-            cmd_parts.extend(["--o", str(paths["job_dir"]) + "/"])
+        return " ".join(cmd)
 
-        return " ".join(cmd_parts)
-
-
-class PipelineOrchestratorService:
-    def __init__(self, backend_instance: "CryoBoostBackend"):
-        self.backend = backend_instance
-        self.star_handler = StarfileService()
-        self.config_service = get_config_service()
-        self.project_service = None
-        self.state_service = get_state_service()
-        self.job_resolver = JobTypeResolver(self.star_handler)  # Add this
-
-        self.job_builders: Dict[str, BaseCommandBuilder] = {JobType.IMPORT_MOVIES.value: ImportMoviesCommandBuilder()}
-
-    def _get_last_successful_jobs(self, project_dir: Path) -> Dict[str, str]:
-            """Use the resolver instead of hardcoded mapping."""
-            return self.job_resolver.get_all_completed_jobs(project_dir)
-
-    async def create_custom_scheme(
-        self,
-        project_dir: Path,
-        new_scheme_name: str,
-        base_template_path: Path,
-        selected_jobs: List[str],
-        additional_bind_paths: List[str],
-    ):
-        """
-        Creates a custom Relion scheme with the selected jobs.
-        Updates state with job paths instead of writing sidecar files.
-        """
-        # --- FIX: Guard Clause for empty jobs ---
-        if not selected_jobs:
-            print("[PIPELINE] No jobs selected. Skipping scheme creation.")
-            return {"success": True, "message": "No jobs to schedule."}
-
-        try:
-            # Initialize project service with absolute project root
-            self.project_service = ProjectService(self.backend)
-            self.project_service.set_project_root(project_dir)
-
-            # Create scheme directory
-            new_scheme_dir = project_dir / "Schemes" / new_scheme_name
-            new_scheme_dir.mkdir(parents=True, exist_ok=True)
-            base_scheme_name = base_template_path.name
-
-            # Get the server root dir (where this file lives)
-            server_dir = Path(__file__).parent.parent.resolve()
-
-            # Combine all bind paths
-            all_binds = list(set(additional_bind_paths + [str(server_dir)]))
-
-            # Process each selected job
-            for job_index, job_name in enumerate(selected_jobs):
-                job_number = job_index + 1  # 1-indexed
-                job_number_str = f"job{job_number:03d}"
-
-                source_job_dir = base_template_path / job_name
-                dest_job_dir = new_scheme_dir / job_name
-                if dest_job_dir.exists():
-                    shutil.rmtree(dest_job_dir)
-                shutil.copytree(source_job_dir, dest_job_dir)
-
-                # Read job.star template
-                job_star_path = dest_job_dir / "job.star"
-                if not job_star_path.exists():
-                    print(f"[PIPELINE WARNING] No job.star found for {job_name}")
-                    exit(f"[PIPELINE WARNING] No job.star found for {job_name}. Something went horribly wrong")
-
-                job_data = self.star_handler.read(job_star_path)
-
-                params_df = job_data.get("joboptions_values")
-                if params_df is None:
-                    print(f"[PIPELINE WARNING] No joboptions_values in job.star for {job_name}")
-                    continue
-
-                # Get job model from the StateService
-                state = self.backend.state_service.state
-                try:
-                    job_type_enum = JobType(job_name)
-                    job_model = state.jobs.get(job_type_enum)
-                except ValueError:
-                    print(f"[PIPELINE WARNING] Unknown job type string: {job_name}")
-                    job_model = None
-
-                if not job_model:
-                    print(f"[PIPELINE WARNING] Job {job_name} not in state, skipping scheme creation for it.")
-                    continue
-
-                # --- NEW: Model-Based Path Resolution ---
-
-                # 1. Calculate Current Job Directory location (Do NOT create it yet)
-                if job_type_enum == JobType.IMPORT_MOVIES:
-                    category = JobCategory.IMPORT
-                else:
-                    category = JobCategory.EXTERNAL
-
-                current_job_dir = project_dir / category.value / f"job{job_number:03d}"
-
-                # 2. Calculate Upstream Job Directory (if applicable)
-                upstream_job_dir = None
-                if job_type_enum != JobType.IMPORT_MOVIES:
-                    try:
-                        # Simple linear dependency: find the job before this one
-                        if job_index > 0:
-                            prev_job_name = selected_jobs[job_index - 1]
-                            prev_job_type = JobType(prev_job_name)
-                            upstream_job_dir = self._get_job_dir_for_type(prev_job_type, selected_jobs, project_dir)
-                    except Exception as e:
-                        print(f"[PIPELINE WARNING] Could not determine upstream dir for {job_name}: {e}")
-
-                # 3. Ask the Model to Resolve its own Paths
-                paths = job_model.resolve_paths(current_job_dir, upstream_job_dir)
-
-                # --- SINGLE SOURCE OF TRUTH UPDATE ---
-                job_model.paths = {k: str(v) for k, v in paths.items()}
-                job_model.additional_binds = all_binds
-                job_model.relion_job_name = f"{job_model.JOB_CATEGORY.value}/job{job_number:03d}"
-                state.jobs[job_type_enum] = job_model
-
-                print(f"[PIPELINE] Updated internal state for {job_name} with paths.")
-
-                # Build command for job.star
-                final_command_for_fn_exe = self._build_job_command(job_name, job_model, paths, all_binds, server_dir)
-                print(f"[PIPELINE] fn_exe for {job_name}: {final_command_for_fn_exe}")
-
-                # Update the fn_exe parameter in job.star
-                params_df.loc[params_df["rlnJobOptionVariable"] == "fn_exe", "rlnJobOptionValue"] = (
-                    final_command_for_fn_exe
-                )
-
-                # Clear other_args
-                params_df.loc[params_df["rlnJobOptionVariable"] == "other_args", "rlnJobOptionValue"] = ""
-
-                # Remove template parameter placeholders
-                params_to_remove = [f"param{i}_{s}" for i in range(1, 11) for s in ["label", "value"]]
-                cleanup_mask = ~params_df["rlnJobOptionVariable"].isin(params_to_remove)
-                job_data["joboptions_values"] = params_df[cleanup_mask].reset_index(drop=True)
-
-                # Replace scheme name references
-                for block_name, block_data in job_data.items():
-                    if isinstance(block_data, pd.DataFrame):
-                        for col in block_data.select_dtypes(include=["object"]):
-                            if block_data[col].str.contains(base_scheme_name).any():
-                                block_data[col] = block_data[col].str.replace(
-                                    base_scheme_name, new_scheme_name, regex=False
-                                )
-
-                # Write updated job.star
-                self.star_handler.write(job_data, job_star_path)
-
-            self._create_scheme_star(new_scheme_dir, new_scheme_name, selected_jobs)
-
-            # --- PERSIST STATE ---
-            await self.backend.state_service.save_project()
-
-            print(f"[PIPELINE] Created complete scheme at: {new_scheme_dir}")
-            return {"success": True}
-
-        except Exception as e:
-            print(f"[PIPELINE ERROR] Failed to create custom scheme: {e}")
-            import traceback
-
-            traceback.print_exc()
-            return {"success": False, "error": str(e)}
-
-    def _build_job_command(
-        self,
-        job_name: str,
-        job_model: AbstractJobParams,
-        paths: Dict[str, Path],
-        all_binds: List[str],
-        server_dir: Path,
-    ) -> str:
-        """
-        Build the fn_exe command for a job using model metadata.
-        """
-        try:
-            job_type = JobType(job_name)
-        except ValueError:
-            job_type = None
-
-        # 1. Check if the job model says it's a driver-based job
-        if job_model.is_driver_job():
-            if not self.project_service or not self.project_service.project_root:
-                return "echo 'ERROR: Project root not set in project_service during fn_exe build'; exit 1;"
-            project_root_str = str(self.project_service.project_root.resolve())
-
-            host_python_exe = server_dir / "venv" / "bin" / "python3"
-            if not host_python_exe.exists():
-                print(f"[PIPELINE WARNING] VENV Python not found at {host_python_exe}, falling back to 'python3'")
-                host_python_exe = "python3"
-
-            # Environment setup for drivers
-            env_setup = f"export PYTHONPATH={server_dir}:${{PYTHONPATH}};"
-
-            # Map driver jobs to their scripts using enums
-            driver_scripts = {
-                JobType.FS_MOTION_CTF  : "fs_motion_and_ctf.py",
-                JobType.TS_ALIGNMENT   : "ts_alignment.py",
-                JobType.TS_CTF         : "ts_ctf.py",
-                JobType.TS_RECONSTRUCT : "ts_reconstruct.py",
-                JobType.DENOISE_TRAIN  : "denoise_train.py",
-                JobType.DENOISE_PREDICT: "denoise_predict.py"
-            }
-
-            if job_type in driver_scripts:
-                driver_script_path = server_dir / "drivers" / driver_scripts[job_type]
-                return (
-                    f"{env_setup} {host_python_exe} {driver_script_path} "
-                    f"--job_type {job_name} "
-                    f"--project_path {project_root_str}"
-                )
-            else:
-                return f"echo 'ERROR: Job type \"{job_name}\" is a driver job but has no driver script mapped in orchestrator'; exit 1;"
-
-        else:
-            # This handles non-driver jobs (like importmovies)
-            builder = self.job_builders.get(job_name)
-            if not builder:
-                return f"echo 'ERROR: No command builder found for simple job \"{job_name}\"'; exit 1;"
-
-            try:
-                raw_command = builder.build(job_model, paths)
-                tool_name = job_model.get_tool_name()
-                container_svc = self.backend.container_service
-                return container_svc.wrap_command_for_tool(
-                    command=raw_command, cwd=paths["job_dir"], tool_name=tool_name, additional_binds=all_binds
-                )
-            except Exception as e:
-                print(f"[PIPELINE ERROR] Failed to build command for {job_name}: {e}")
-                return f"echo 'ERROR: Failed to build command for {job_name}: {e}'; exit 1;"
-
-    def _get_job_dir_for_type(self, target_job_type: JobType, selected_jobs: List[str], project_dir: Path) -> Path:
-        """Helper to determine directory for upstream jobs"""
-        try:
-            idx = selected_jobs.index(target_job_type.value)
-            job_num = idx + 1
-
-            if target_job_type == JobType.IMPORT_MOVIES:
-                cat = JobCategory.IMPORT
-            else:
-                cat = JobCategory.EXTERNAL
-
-            return project_dir / cat.value / f"job{job_num:03d}"
-        except ValueError:
-            return None
-
-    def _create_scheme_star(self, scheme_dir: Path, scheme_name: str, selected_jobs: List[str]):
-        """
-        Create the scheme.star file that defines the pipeline flow.
-        """
-        # General scheme metadata
-        scheme_general_df = pd.DataFrame(
-            {"rlnSchemeName": [f"Schemes/{scheme_name}/"], "rlnSchemeCurrentNodeName": ["WAIT"]}
+    def _write_scheme_star(self, scheme_dir: Path, scheme_name: str, job_names: List[str]):
+        general_df = pd.DataFrame(
+            {"rlnSchemeName": [f"Schemes/{scheme_name}/"], "rlnSchemeCurrentNodeName": [job_names[0]]}
         )
 
-        # Float variables (pipeline control parameters)
-        scheme_floats_df = pd.DataFrame(
-            {
-                "rlnSchemeFloatVariableName": ["do_at_most", "maxtime_hr", "wait_sec"],
-                "rlnSchemeFloatVariableValue": [500.0, 48.0, 180.0],
-                "rlnSchemeFloatVariableResetValue": [500.0, 48.0, 180.0],
-            }
-        )
+        jobs_data = []
+        for name in job_names:
+            jobs_data.append(
+                {
+                    "rlnSchemeJobNameOriginal": name,
+                    "rlnSchemeJobName": name,
+                    "rlnSchemeJobMode": "new",
+                    "rlnSchemeJobHasStarted": 0,
+                }
+            )
+        jobs_df = pd.DataFrame(jobs_data)
 
-        # Operators (control flow nodes)
-        scheme_operators_df = pd.DataFrame(
-            {
-                "rlnSchemeOperatorName": ["EXIT", "EXIT_maxtime", "WAIT"],
-                "rlnSchemeOperatorType": ["exit", "exit_maxtime", "wait"],
-                "rlnSchemeOperatorOutput": ["undefined"] * 3,
-                "rlnSchemeOperatorInput1": ["undefined", "maxtime_hr", "wait_sec"],
-                "rlnSchemeOperatorInput2": ["undefined"] * 3,
-            }
-        )
-
-        # Jobs in the scheme
-        scheme_jobs_df = pd.DataFrame(
-            {
-                "rlnSchemeJobNameOriginal": selected_jobs,
-                "rlnSchemeJobName": selected_jobs,
-                "rlnSchemeJobMode": ["continue"] * len(selected_jobs),
-                "rlnSchemeJobHasStarted": [0] * len(selected_jobs),
-            }
-        )
-
-        # Edges (pipeline flow)
-        edges = [
-            {"rlnSchemeEdgeInputNodeName": "WAIT", "rlnSchemeEdgeOutputNodeName": "EXIT_maxtime"},
-            {"rlnSchemeEdgeInputNodeName": "EXIT_maxtime", "rlnSchemeEdgeOutputNodeName": selected_jobs[0]},
-        ]
-
-        # Connect jobs sequentially
-        for i in range(len(selected_jobs) - 1):
-            edges.append(
-                {"rlnSchemeEdgeInputNodeName": selected_jobs[i], "rlnSchemeEdgeOutputNodeName": selected_jobs[i + 1]}
+        edges_data = []
+        for i in range(len(job_names) - 1):
+            edges_data.append(
+                {
+                    "rlnSchemeEdgeInputNodeName": job_names[i],
+                    "rlnSchemeEdgeOutputNodeName": job_names[i + 1],
+                    "rlnSchemeEdgeIsFork": 0,
+                    "rlnSchemeEdgeOutputNodeNameIfTrue": "undefined",
+                    "rlnSchemeEdgeBooleanVariable": "undefined",
+                }
             )
 
-        # Connect last job to EXIT
-        edges.append({"rlnSchemeEdgeInputNodeName": selected_jobs[-1], "rlnSchemeEdgeOutputNodeName": "EXIT"})
+        if job_names:
+            edges_data.append(
+                {
+                    "rlnSchemeEdgeInputNodeName": job_names[-1],
+                    "rlnSchemeEdgeOutputNodeName": "EXIT",
+                    "rlnSchemeEdgeIsFork": 0,
+                    "rlnSchemeEdgeOutputNodeNameIfTrue": "undefined",
+                    "rlnSchemeEdgeBooleanVariable": "undefined",
+                }
+            )
 
-        scheme_edges_df = pd.DataFrame(edges)
+        edges_df = pd.DataFrame(edges_data)
 
-        # Add edge metadata
-        scheme_edges_df["rlnSchemeEdgeIsFork"] = 0
-        scheme_edges_df["rlnSchemeEdgeOutputNodeNameIfTrue"] = "undefined"
-        scheme_edges_df["rlnSchemeEdgeBooleanVariable"] = "undefined"
+        floats_df = pd.DataFrame(
+            {
+                "rlnSchemeFloatVariableName": ["do_at_most", "wait_sec"],
+                "rlnSchemeFloatVariableValue": [500.0, 10.0],
+                "rlnSchemeFloatVariableResetValue": [500.0, 10.0],
+            }
+        )
+        ops_df = pd.DataFrame(
+            {
+                "rlnSchemeOperatorName": ["EXIT", "WAIT"],
+                "rlnSchemeOperatorType": ["exit", "wait"],
+                "rlnSchemeOperatorOutput": ["undefined", "undefined"],
+                "rlnSchemeOperatorInput1": ["undefined", "wait_sec"],
+                "rlnSchemeOperatorInput2": ["undefined", "undefined"],
+            }
+        )
 
-        # Combine all blocks into scheme.star
-        scheme_star_data = {
-            "scheme_general": scheme_general_df,
-            "scheme_floats": scheme_floats_df,
-            "scheme_operators": scheme_operators_df,
-            "scheme_jobs": scheme_jobs_df,
-            "scheme_edges": scheme_edges_df,
+        data = {
+            "scheme_general": general_df,
+            "scheme_jobs": jobs_df,
+            "scheme_edges": edges_df,
+            "scheme_floats": floats_df,
+            "scheme_operators": ops_df,
         }
 
-        scheme_star_path = scheme_dir / "scheme.star"
-        self.star_handler.write(scheme_star_data, scheme_star_path)
-        print(f"[PIPELINE] Created scheme.star at: {scheme_star_path}")
+        self.star_handler.write(data, scheme_dir / "scheme.star")
+
+    async def delete_job(self, project_dir: Path, job_number: int, harsh: bool = False) -> Dict[str, Any]:
+        flag = "--harsh_clean" if harsh else "--gentle_clean"
+        job_alias = f"job{job_number:03d}"
+        cmd = f"relion_pipeliner {flag} {job_alias}"
+        return await self.backend.run_shell_command(cmd, cwd=project_dir, tool_name="relion")
+
 
 class JobTypeResolver:
-    """Resolves job types from job directories - no hardcoded mappings."""
-    
-    # Driver script name → JobType value
+    """Resolves job types from job directories."""
+
     DRIVER_TO_JOBTYPE = {
         "fs_motion_and_ctf.py": "fsMotionAndCtf",
-        "ts_alignment.py"     : "aligntiltsWarp",
-        "ts_ctf.py"           : "tsCtf",
-        "ts_reconstruct.py"   : "tsReconstruct",
-        "denoise_train.py"    : "denoisetrain",
-        "denoise_predict.py"  : "denoisepredict",
+        "ts_alignment.py": "aligntiltsWarp",
+        "ts_ctf.py": "tsCtf",
+        "ts_reconstruct.py": "tsReconstruct",
+        "denoise_train.py": "denoisetrain",
+        "denoise_predict.py": "denoisepredict",
     }
-    
+
     def __init__(self, star_handler: StarfileService):
         self.star_handler = star_handler
-    
+
     def get_job_type_from_path(self, project_dir: Path, job_path: str) -> Optional[str]:
-        """
-        Determine job type by inspecting the job.star file.
-        Returns the job type string (e.g., "tsReconstruct") or None.
-        """
-        # Handle Import jobs (they use relion_import, not our drivers)
         if "Import/job" in job_path:
             return "importmovies"
-        
+
         job_star_path = project_dir / job_path.rstrip("/") / "job.star"
         if not job_star_path.exists():
             return None
-        
+
         try:
             data = self.star_handler.read(job_star_path)
             joboptions = data.get("joboptions_values")
-            
+
             if joboptions is None or not isinstance(joboptions, pd.DataFrame):
                 return None
-            
+
             fn_exe_rows = joboptions[joboptions["rlnJobOptionVariable"] == "fn_exe"]
             if fn_exe_rows.empty:
                 return None
-            
+
             fn_exe = fn_exe_rows["rlnJobOptionValue"].values[0]
-            
-            # Match against known driver scripts
+
             for driver_name, job_type in self.DRIVER_TO_JOBTYPE.items():
                 if driver_name in fn_exe:
                     return job_type
-            
-            # Fallback: check for relion commands
+
             if "relion_import" in fn_exe:
                 return "importmovies"
-            
+
             return None
-            
+
         except Exception as e:
             print(f"[WARN] Could not read job type from {job_star_path}: {e}")
             return None
-    
+
     def get_all_completed_jobs(self, project_dir: Path) -> Dict[str, str]:
-        """
-        Scan default_pipeline.star and return {job_type: job_path} for succeeded jobs.
-        """
         pipeline_star = project_dir / "default_pipeline.star"
         if not pipeline_star.exists():
             return {}
-        
         try:
             data = self.star_handler.read(pipeline_star)
             processes = data.get("pipeline_processes", pd.DataFrame())
-            
             if processes.empty:
                 return {}
-            
             result = {}
             for _, row in processes.iterrows():
-                job_path = row["rlnPipeLineProcessName"]  # e.g., "External/job005/"
+                job_path = row["rlnPipeLineProcessName"]
                 status = row["rlnPipeLineProcessStatusLabel"]
-                
-                if status not in ["Succeeded", "Running"]:
-                    continue
-                
-                job_type = self.get_job_type_from_path(project_dir, job_path)
-                if job_type:
-                    result[job_type] = job_path
-            
+                if status in ["Succeeded", "Running"]:
+                    job_type = self.get_job_type_from_path(project_dir, job_path)
+                    if job_type:
+                        result[job_type] = job_path
             return result
-            
         except Exception as e:
             print(f"[WARN] Could not parse pipeline: {e}")
             return {}

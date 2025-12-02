@@ -169,9 +169,9 @@ class ContinuationService:
         if not scheme_star.exists():
             return None
         
-        data = self.star_handler.read(scheme_star)
+        data     = self.star_handler.read(scheme_star)
         edges_df = data.get("scheme_edges")
-        jobs_df = data.get("scheme_jobs")
+        jobs_df  = data.get("scheme_jobs")
         
         if edges_df is None or jobs_df is None:
             return None
@@ -212,9 +212,9 @@ class ContinuationService:
 
     def _prepare_job_star(self, project_dir: Path, scheme_dir: Path, job_type: JobType) -> Optional[Path]:
         """Copy template and set fn_exe to our driver."""
-        template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+        template_base  = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
         source_job_dir = template_base / job_type.value
-        dest_job_dir = scheme_dir / job_type.value
+        dest_job_dir   = scheme_dir / job_type.value
 
         if not source_job_dir.exists():
             print(f"[ERROR] Template not found: {source_job_dir}")
@@ -229,12 +229,12 @@ class ContinuationService:
         # Build fn_exe command
         server_dir = Path(__file__).parent.parent.resolve()
         driver_scripts = {
-            JobType.DENOISE_TRAIN: "denoise_train.py",
+            JobType.DENOISE_TRAIN  : "denoise_train.py",
             JobType.DENOISE_PREDICT: "denoise_predict.py",
-            JobType.FS_MOTION_CTF: "fs_motion_and_ctf.py",
-            JobType.TS_ALIGNMENT: "ts_alignment.py",
-            JobType.TS_CTF: "ts_ctf.py",
-            JobType.TS_RECONSTRUCT: "ts_reconstruct.py",
+            JobType.FS_MOTION_CTF  : "fs_motion_and_ctf.py",
+            JobType.TS_ALIGNMENT   : "ts_alignment.py",
+            JobType.TS_CTF         : "ts_ctf.py",
+            JobType.TS_RECONSTRUCT : "ts_reconstruct.py",
         }
 
         driver_name = driver_scripts.get(job_type)

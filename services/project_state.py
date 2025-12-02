@@ -41,7 +41,6 @@ class MicroscopeType(str, Enum):
     TALOS = "Talos"
     CUSTOM = "Custom"
 
-
 class AlignmentMethod(str, Enum):
     ARETOMO = "AreTomo"
     IMOD = "IMOD"
@@ -378,13 +377,13 @@ class ImportMoviesParams(AbstractJobParams):
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
         # Import has no upstream job in the pipeline sense
         return {
-            "job_dir": job_dir,
-            "project_root": self.project_root,
-            "frames_dir": self.frames_dir,
-            "mdoc_dir": self.mdoc_dir,
+            "job_dir"        : job_dir,
+            "project_root"   : self.project_root,
+            "frames_dir"     : self.frames_dir,
+            "mdoc_dir"       : self.mdoc_dir,
             "tilt_series_dir": job_dir / "tilt_series",
-            "output_star": job_dir / "tilt_series.star",
-            "tomostar_dir": self.master_tomostar_dir,  # Use master tomostar
+            "output_star"    : job_dir / "tilt_series.star",
+            "tomostar_dir"   : self.master_tomostar_dir,       # Use master tomostar
         }
 
 
