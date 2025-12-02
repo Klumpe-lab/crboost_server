@@ -184,158 +184,80 @@ class ProjectService:
         pass
 
     async def initialize_new_project(
-        self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
-    ):
-        """
-        The main orchestration logic for creating a new project.
-        Updated to handle empty job lists without crashing.
-        """
-        try:
-            project_dir = Path(project_base_path).expanduser() / project_name
-            base_template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
-            scheme_name = f"scheme_{project_name}"
-
-            if project_dir.exists():
-                return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
-
-            import_prefix = f"{project_name}_"
-
-            # Update state BEFORE file operations
-            state_service      = self.backend.state_service
-            state              = state_service.state
-            state.project_name = project_name
-            state.project_path = project_dir
-            state.movies_glob  = movies_glob                
-            state.mdocs_glob   = mdocs_glob                  
-
-            # 1. Create Structure & Import Data
-            structure_result = await self.create_project_structure(project_dir, movies_glob, mdocs_glob, import_prefix)
-
-            if not structure_result["success"]:
-                return structure_result
-
-            # 2. Init Params & Jobs
-            params_json_path = project_dir / "project_params.json"
+            self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
+        ):
             try:
+                project_dir = Path(project_base_path).expanduser() / project_name
+                
+                # 1. Standard Setup (Dirs, Data Import)
+                if project_dir.exists():
+                    return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
+
+                import_prefix = f"{project_name}_"
+                
+                # Update Global State Wrapper
+                state = self.backend.state_service.state
+                state.project_name = project_name
+                state.project_path = project_dir
+                state.movies_glob = movies_glob                 
+                state.mdocs_glob = mdocs_glob                   
+
+                # Create Dirs & Import Data
+                structure_result = await self.create_project_structure(project_dir, movies_glob, mdocs_glob, import_prefix)
+                if not structure_result["success"]:
+                    return structure_result
+
+                # 2. Load Defaults into Memory (Blueprints)
+                # We DO NOT create scheme folders here. We just load the defaults from config/Schemes 
+                # into our ProjectState so the user sees valid values in the UI.
+                
+                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+                
                 if selected_jobs:
-                    print(f"[PROJECT_SERVICE] Initializing jobs in state: {selected_jobs}")
+                    print(f"[PROJECT_SERVICE] Loading default parameters for: {selected_jobs}")
                     for job_str in selected_jobs:
                         try:
                             job_type = JobType(job_str)
-                            job_star_path = base_template_path / job_type.value / "job.star"
-                            await state_service.ensure_job_initialized(
+                            job_star_path = template_base / job_type.value / "job.star"
+                            
+                            # This loads the default values from disk into Python memory
+                            await self.backend.state_service.ensure_job_initialized(
                                 job_type, job_star_path if job_star_path.exists() else None
                             )
                         except ValueError:
-                            print(f"[WARN] Skipping unknown job '{job_str}' during state initialization.")
+                            print(f"[WARN] Skipping unknown job '{job_str}'")
 
-                # Save the populated ProjectState model
-                await state_service.save_project(params_json_path)
+                # 3. Save Project State (project_params.json)
+                params_json_path = project_dir / "project_params.json"
+                await self.backend.state_service.save_project(params_json_path)
 
-                print(f"[PROJECT_SERVICE] Saved parameters to {params_json_path}")
-
-                if not params_json_path.exists():
-                    raise FileNotFoundError(f"Parameter file was not created at {params_json_path}")
-
-            except Exception as e:
-                print(f"[ERROR] Failed to save project_params.json: {e}")
-                import traceback
-                traceback.print_exc()
-                return {"success": False, "error": f"Project created but failed to save parameters: {str(e)}"}
-
-            # 3. Create Scheme & Init Relion
-            
-            # --- GUARD CLAUSE: Handle Empty Job List ---
-            if not selected_jobs:
-                print("[PROJECT_SERVICE] No jobs selected. Creating empty Relion project, skipping scheme.")
+                # 4. Initialize Relion (Create default_pipeline.star)
+                # We initialize an EMPTY pipeline. The Orchestrator will populate it when we run jobs.
+                print(f"[PROJECT_SERVICE] Initializing Relion project...")
                 
-                pipeline_star_path = project_dir / "default_pipeline.star"
                 init_command = "unset DISPLAY && relion --tomo --do_projdir ."
-                binds = [str(project_dir.resolve())]
+                # Calculate binds for raw data
+                binds = [str(project_dir.resolve()), str(Path(movies_glob).parent.resolve()), str(Path(mdocs_glob).parent.resolve())]
                 
-                container_init_command = self.backend.container_service.wrap_command_for_tool(
+                container_cmd = self.backend.container_service.wrap_command_for_tool(
                     command=init_command, cwd=project_dir, tool_name="relion", additional_binds=binds
                 )
                 
                 proc = await asyncio.create_subprocess_shell(
-                    container_init_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
+                    container_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
                 )
-                
-                # ADD TIMEOUT HERE
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
-                    if proc.returncode != 0:
-                        print(f"[RELION INIT ERROR] {stderr.decode()}")
-                except asyncio.TimeoutError:
-                    print("[ERROR] Relion project initialization timed out.")
-                    proc.kill()
-                    await proc.wait()
-                
+                await proc.wait()
+
                 return {
                     "success": True,
-                    "message": "Project created (empty pipeline).",
+                    "message": f"Project '{project_name}' created.",
                     "project_path": str(project_dir),
-                    "params_file": str(params_json_path),
                 }
 
-            # If jobs exist, proceed with standard scheme creation
-            additional_bind_paths = {
-                str(Path(project_base_path).expanduser().resolve()),
-                str(Path(movies_glob).parent.resolve()),
-                str(Path(mdocs_glob).parent.resolve()),
-            }
-
-            if state.acquisition.gain_reference_path:
-                additional_bind_paths.add(str(Path(state.acquisition.gain_reference_path).parent.resolve()))
-
-            scheme_result = await self.backend.pipeline_orchestrator.create_custom_scheme(
-                project_dir,
-                scheme_name,
-                base_template_path,
-                selected_jobs,
-                additional_bind_paths=list(additional_bind_paths),
-            )
-
-            if not scheme_result["success"]:
-                return scheme_result
-
-            # Initialize Relion project
-            print(f"[PROJECT_SERVICE] Initializing Relion project in {project_dir}...")
-            pipeline_star_path = project_dir / "default_pipeline.star"
-
-            init_command = "unset DISPLAY && relion --tomo --do_projdir ."
-
-            container_init_command = self.backend.container_service.wrap_command_for_tool(
-                command=init_command, cwd=project_dir, tool_name="relion", additional_binds=list(additional_bind_paths)
-            )
-
-            process = await asyncio.create_subprocess_shell(
-                container_init_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
-            )
-
-            try:
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
-                if process.returncode != 0:
-                    print(f"[RELION INIT ERROR] {stderr.decode()}")
-            except asyncio.TimeoutError:
-                print("[ERROR] Relion project initialization timed out.")
-                process.kill()
-                await process.wait()
-
-            if not pipeline_star_path.exists():
-                return {"success": False, "error": f"Failed to create default_pipeline.star."}
-
-            return {
-                "success": True,
-                "message": f"Project '{project_name}' created and initialized successfully.",
-                "project_path": str(project_dir),
-                "params_file": str(params_json_path),
-            }
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return {"success": False, "error": f"Project creation failed: {str(e)}"}
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                return {"success": False, "error": str(e)}
 
     async def load_project_state(self, project_path: str) -> Dict[str, Any]:
         """

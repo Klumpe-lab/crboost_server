@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 
 # Refactored imports
-from services.continuation_service import ContinuationService
+from services.pipeline_continuation import ContinuationService
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
@@ -29,6 +29,38 @@ class CryoBoostBackend:
         self.pipeline_runner       = PipelineRunnerService(self)
         self.state_service         = get_state_service()
         self.continuation          = ContinuationService(self)
+
+    async def start_pipeline(
+            self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]
+        ):
+            """
+            Unified pipeline start method. 
+            Accepts a list of job strings (e.g. ['tsReconstruct', 'denoisetrain']).
+            """
+            job_types = []
+            for j in selected_jobs:
+                try:
+                    job_types.append(JobType(j))
+                except ValueError:
+                    print(f"[BACKEND] Invalid job type: {j}")
+                    
+            return await self.pipeline_orchestrator.deploy_and_run_scheme(
+                project_dir=Path(project_path),
+                selected_job_types=job_types,
+            )
+
+    async def delete_job(self, project_path: str, job_id: str, harsh: bool = False):
+        """
+        Deletes a job. job_id might be 'job006' or 'External/job006'.
+        """
+        # Extract number
+        try:
+            num_str = job_id.rstrip("/").split("job")[-1]
+            num = int(num_str)
+            return await self.pipeline_orchestrator.delete_job(Path(project_path), num, harsh)
+        except Exception as e:
+            return {"success": False, "error": f"Could not parse job number from {job_id}: {e}"}
+
 
     async def get_default_data_globs(self) -> Dict[str, str]:
             """Get default glob patterns from config."""
@@ -224,11 +256,6 @@ class CryoBoostBackend:
         except Exception as e:
             print(f"[ERROR] Exception in run_shell_command: {e}")
             return {"success": False, "output": "", "error": str(e)}
-
-    async def start_pipeline(
-        self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]
-    ):
-        return await self.pipeline_runner.start_pipeline(project_path, scheme_name, selected_jobs, required_paths)
 
     async def get_pipeline_overview(self, project_path: str):
         """Gets a high-level overview and detailed statuses of all jobs."""
