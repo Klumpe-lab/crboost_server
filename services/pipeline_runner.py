@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, List, AsyncGenerator
 from typing import TYPE_CHECKING
 
+from services.pipeline_orchestrator_service import JobTypeResolver
 from services.project_state import AbstractJobParams, JobStatus, JobType
 
 
@@ -18,6 +19,7 @@ class StatusSyncService:
 
     def __init__(self, backend):
         self.backend = backend
+        self.job_resolver = JobTypeResolver(backend.pipeline_orchestrator.star_handler)  # ADD THIS
 
     async def sync_all_jobs(self, project_path: str) -> Dict[str, bool]:
         """
@@ -41,12 +43,17 @@ class StatusSyncService:
         found_jobs = set()
         for _, row in processes.iterrows():
             job_path = row["rlnPipeLineProcessName"]
-            job_type_str = self._extract_job_type(project_path, job_path)
+            
+            # USE RESOLVER INSTEAD OF OLD METHOD
+            job_type_str = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
+            
+            if not job_type_str:
+                continue
 
             try:
-                job_type = JobType(job_type_str)  # Convert to Enum
+                job_type = JobType(job_type_str)
             except ValueError:
-                continue  # Skip unknown job types
+                continue
 
             if job_type in state.jobs:
                 job_model = state.jobs[job_type]
@@ -54,7 +61,6 @@ class StatusSyncService:
 
                 status_str = row["rlnPipeLineProcessStatusLabel"]
 
-                # Handle Relion's "Pending"
                 if status_str == "Pending":
                     new_status = JobStatus.SCHEDULED
                 else:
@@ -68,6 +74,9 @@ class StatusSyncService:
                 job_model.relion_job_name = job_path
                 job_model.relion_job_number = self._extract_job_number(job_path)
 
+                # >>> ADD THIS: Cache the mapping in state <
+                state.job_path_mapping[job_type.value] = job_path
+
                 if old_status != job_model.execution_status:
                     changes[job_type_str] = True
 
@@ -78,19 +87,25 @@ class StatusSyncService:
             if job_type not in found_jobs:
                 old_status = job_model.execution_status
 
-                # If job has a relion_job_name but isn't in pipeline, it was reset
                 if job_model.relion_job_name:
                     job_model.execution_status = JobStatus.SCHEDULED
                     job_model.relion_job_name = None
                     job_model.relion_job_number = None
+                    
+                    # >>> ADD THIS: Clear from mapping too <
+                    state.job_path_mapping.pop(job_type.value, None)
+                    
                     if old_status != JobStatus.SCHEDULED:
                         changes[job_type.value] = True
 
-                # If job has unexpected status but no pipeline entry, reset to scheduled
                 elif job_model.execution_status not in [JobStatus.SCHEDULED, JobStatus.UNKNOWN]:
                     job_model.execution_status = JobStatus.SCHEDULED
                     job_model.relion_job_name = None
                     job_model.relion_job_number = None
+                    
+                    # >>> ADD THIS: Clear from mapping too <
+                    state.job_path_mapping.pop(job_type.value, None)
+                    
                     changes[job_type.value] = True
 
         # --- AUTO-PERSIST STATUS CHANGES ---
@@ -103,6 +118,12 @@ class StatusSyncService:
 
         return changes
 
+    def _extract_job_number(self, job_path: str) -> int:
+        try:
+            return int(job_path.rstrip("/").split("job")[-1])
+        except:
+            return 0
+
     def _find_job_in_star(self, processes: pd.DataFrame, job_type: str, project_path: str):
         if processes.empty:
             return None
@@ -114,27 +135,9 @@ class StatusSyncService:
         return None
 
     def _extract_job_type(self, project_path: str, job_path: str) -> str:
-        """Extract job type from job path, handling both old and new job instances"""
-
-        # Handle "Import" job
-        if "Import/job" in job_path:
-            return "importmovies"
-
-        # Fallback: try to infer from directory structure and pipeline order
-        if "External/job" in job_path:
-            job_number = self._extract_job_number(job_path)
-            # A better mapping by job number:
-            job_map = {1: "importmovies", 2: "fsMotionAndCtf", 3: "aligntiltsWarp", 4: "tsCtf", 5: "tsReconstruct"}
-            if job_number in job_map:
-                return job_map[job_number]
-
-        return "unknown"
-
-    def _extract_job_number(self, job_path: str) -> int:
-        try:
-            return int(job_path.rstrip("/").split("job")[-1])
-        except:
-            return 0
+            """Use resolver instead of hardcoded mapping."""
+            result = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
+            return result if result else "unknown"
 
 
 class PipelineRunnerService:
