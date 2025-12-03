@@ -3,6 +3,8 @@ import sys
 import os
 from pathlib import Path
 import traceback
+import json
+import starfile  # Requires pip install starfile
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -15,6 +17,46 @@ except ImportError as e:
     print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
     print(f"Error: {e}", file=sys.stderr)
     sys.exit(1)
+
+
+def resolve_tomo_path(project_root: Path, star_path: Path, relative_path: str) -> Path:
+    """
+    Resolves a tomogram path found in a STAR file.
+    1. Checks relative to Project Root.
+    2. Checks relative to the STAR file's directory (common in chained jobs).
+    """
+    path_obj = Path(relative_path)
+    if path_obj.is_absolute():
+        return path_obj
+
+    # 1. Try relative to Project Root (Standard Relion behavior)
+    p1 = project_root / relative_path
+    if p1.exists():
+        return p1
+
+    # 2. Try relative to the STAR file location (Specific Job behavior)
+    p2 = star_path.parent / relative_path
+    if p2.exists():
+        return p2
+
+    # Return p1 as default for error reporting if neither exists
+    return p1
+
+
+def derive_half_map_path(base_path: Path, half: str) -> Path:
+    """
+    Derives the path to 'even' or 'odd' half maps based on Warp directory structure.
+    Warp Structure: .../reconstruction/tomoname.mrc
+    Halves:         .../reconstruction/even/tomoname.mrc
+    """
+    # Check if we are in a 'reconstruction' folder
+    if base_path.parent.name == "reconstruction":
+        # Standard Warp: parent/even/file.mrc
+        half_path = base_path.parent / half / base_path.name
+        return half_path
+    
+    # Fallback: simple insertion (might fail if structure differs)
+    return base_path.parent / half / base_path.name
 
 
 def main():
@@ -39,10 +81,7 @@ def main():
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
-    print(
-        f"Node: {Path('/etc/hostname').read_text().strip() if Path('/etc/hostname').exists() else 'unknown'}",
-        flush=True,
-    )
+    print(f"Node: {Path('/etc/hostname').read_text().strip() if Path('/etc/hostname').exists() else 'unknown'}", flush=True)
     print(f"CWD (Job Directory): {job_dir}", flush=True)
     print("[DRIVER] Denoise Train driver started.", flush=True)
 
@@ -54,70 +93,81 @@ def main():
         paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
         additional_binds = local_params_data["additional_binds"]
 
-        if not paths["input_star"].exists():
-            print(f"[WARN] Input STAR file not found at expected path: {paths['input_star']}. Checking for explicit path...", flush=True)
-            # Try finding it in project/External/tsReconstruct/tomograms.star as fallback
-            fallback_star = project_path / "External" / "tsReconstruct" / "tomograms.star"
-            if fallback_star.exists():
-                print(f"[INFO] Found tomograms.star at fallback: {fallback_star}", flush=True)
-                paths["input_star"] = fallback_star
-            else:
-                 raise FileNotFoundError(f"Input STAR file not found: {paths['input_star']}")
+        input_star = paths["input_star"]
 
-        # 2. Prepare Command 1: Extract Training Data
-        # Usage inferred from binAdapters: cryoCARE_extract_train_data.py --conf config.json
-        # However, we likely need to generate the config json or pass args directly.
-        # The old job.star passes args like `tomograms_for_training`, `number_training_subvolumes`.
-        # Relion's denoisetomo job constructs the json config internally.
-        
-        # Since we are using the cryoCARE scripts directly via the wrapper, let's see what arguments they take.
-        # Assuming they take standard cryoCARE arguments.
-        
-        # Construct extraction command
-        # Note: cryoCARE usually expects a configuration file. 
-        # Since we don't have Relion to write it for us, we must write it here in Python.
-        
-        config_json_path = job_dir / "train_config.json"
-        
-        # Determine tomograms
-        # We need to read the input star file to find the tomograms corresponding to 'tomograms_for_training'
-        # If "Position_1", we look for tomograms with that in the name.
-        
-        import starfile
-        tomo_df = starfile.read(paths["input_star"])
+        if not input_star.exists():
+            # Fallback logic handled in project_state, but double check here
+            print(f"[WARN] Input STAR {input_star} not found. Searching...", flush=True)
+            # Try finding it via global state mapping if available, or error out
+            raise FileNotFoundError(f"Input STAR file not found: {input_star}")
+
+        print(f"[DRIVER] Reading inputs from: {input_star}", flush=True)
+
+        # 2. Parse Input STAR
+        tomo_df = starfile.read(input_star)
         if isinstance(tomo_df, dict):
+            # Handle Relion 3.1+ split dataframes, usually in 'tomograms' or default key
             tomo_df = list(tomo_df.values())[0]
             
-        # Filter tomograms
-        target_tomos = []
+        # 3. Filter Tomograms
+        target_even = []
+        target_odd = []
+        
         filter_str = params.tomograms_for_training
-        
-        for tomo_path in tomo_df["rlnTomoReconstructedTomogram"]:
-            if filter_str in str(tomo_path):
-                # Ensure absolute path or relative to project root correctly
-                full_path = project_path / tomo_path if not Path(tomo_path).is_absolute() else Path(tomo_path)
-                target_tomos.append(str(full_path))
-        
-        if not target_tomos:
-            raise ValueError(f"No tomograms found matching filter '{filter_str}' in {paths['input_star']}")
+        print(f"[DRIVER] Filtering tomograms with string: '{filter_str}'", flush=True)
 
-        # Construct JSON for cryoCARE
-        # This structure depends on cryoCARE version, assuming 0.2/0.3 standard
+        # Column name check (Relion 3 vs 4 vs Warp)
+        col_name = "rlnTomoReconstructedTomogram"
+        if col_name not in tomo_df.columns:
+            # Fallback for Warp/Other namings
+            possible_cols = [c for c in tomo_df.columns if "Name" in c or "Tomogram" in c]
+            if possible_cols:
+                col_name = possible_cols[0]
+            else:
+                raise ValueError("Could not determine tomogram path column in STAR file")
+
+        found_count = 0
+        
+        for raw_path in tomo_df[col_name]:
+            if filter_str in str(raw_path):
+                # A. Resolve the base path (Full/Deconv map)
+                full_path_resolved = resolve_tomo_path(project_path, input_star, str(raw_path))
+                
+                # B. Derive Even/Odd paths
+                even_path = derive_half_map_path(full_path_resolved, "even")
+                odd_path = derive_half_map_path(full_path_resolved, "odd")
+
+                # C. Validate Existence
+                if not even_path.exists() or not odd_path.exists():
+                    print(f"[WARN] Half maps missing for {full_path_resolved.name}. Skipping.", flush=True)
+                    print(f"       Expected: {even_path}", flush=True)
+                    continue
+
+                target_even.append(str(even_path))
+                target_odd.append(str(odd_path))
+                found_count += 1
+        
+        print(f"[DRIVER] Found {found_count} valid tomograms for training.", flush=True)
+        
+        if found_count == 0:
+            raise ValueError(f"No valid even/odd tomogram pairs found matching '{filter_str}'")
+
+        # 4. Construct JSON for cryoCARE
+        config_json_path = job_dir / "train_config.json"
+        
+        # --- FIX: Reduced Learning Rate to prevent NaN ---
+        safe_learning_rate = 0.0001  # Reduced from 0.0004
+        
         train_config = {
-            "even": target_tomos, # Simplified, assuming single frame/odd-even splitting is handled or we just pass the tomos
-            "odd": target_tomos, # Usually we need even/odd halves. If we only have full tomos, this might fail unless cryoCARE handles it.
-                                 # NOTE: Relion's denoisetomo splits tomograms.
-                                 # If we are using standard Reconstruct, we might not have even/odd halves unless we configured Reconstruct to output them.
-                                 # Let's assume standard behavior: We might pass the same list if splitting happens internally or if we lack halves.
-                                 # However, Noise2Noise needs independent noise. 
-                                 # If we don't have halves, we cannot do standard N2N.
-                                 # Check if Reconstruct outputted halves.
+            "even": target_even,
+            "odd": target_odd,
             "patch_shape": [params.subvolume_dimensions] * 3,
             "num_slices": params.number_training_subvolumes,
             "split": 0.9,
             "tilt_axis": "Y", 
             "n_normalization_samples": 500,
             "path": str(job_dir / "train_data"),
+            "train_data": str(job_dir / "train_data"), # Required for training step
             "model_name": "denoising_model",
             "epochs": 100,
             "steps_per_epoch": 200,
@@ -125,19 +175,18 @@ def main():
             "unet_kern_size": 3,
             "unet_n_depth": 3,
             "unet_n_first": 16,
-            "learning_rate": 0.0004,
-            "gpu_id": 0 # Handled by SLURM
+            "learning_rate": safe_learning_rate, 
+            "gpu_id": 0
         }
         
-        # Write config
-        import json
         with open(config_json_path, 'w') as f:
             json.dump(train_config, f, indent=4)
 
         container_service = get_container_service()
 
-        # 3. Execute Extraction
-        # Adapting to the provided binAdapter style: `cryoCARE_extract_train_data.py --conf config.json`
+        # 5. Execute Extraction
+        # Only run if train_data folder is empty, to save time on restarts (Optional optimization)
+        # But for safety, we run it.
         print("[DRIVER] Extracting training data...", flush=True)
         extract_cmd = f"cryoCARE_extract_train_data.py --conf {config_json_path.name}"
         
@@ -149,28 +198,32 @@ def main():
         )
         run_command(wrapped_extract, cwd=job_dir)
 
-        # 4. Execute Training
+        # 6. Execute Training
         print("[DRIVER] Training model...", flush=True)
         train_cmd = f"cryoCARE_train.py --conf {config_json_path.name}"
         
         wrapped_train = container_service.wrap_command_for_tool(
             command=train_cmd,
             cwd=job_dir,
-            tool_name="cryocare_train",
+            tool_name="cryocare", 
             additional_binds=additional_binds
         )
         run_command(wrapped_train, cwd=job_dir)
         
-        # 5. Tar the model (as Relion expects a tar.gz usually, or consistent with old flow)
-        # The output seems to be a directory 'denoising_model'.
-        # We should verify if downstream expects a directory or tar.
-        # The old job.star says: `care_denoising_model Schemes/.../denoising_model.tar.gz`
+        # 7. Archive Model
         print("[DRIVER] Archiving model...", flush=True)
-        run_command(f"tar -czf denoising_model.tar.gz denoising_model", cwd=job_dir)
+        model_dir = job_dir / "denoising_model"
+        
+        # --- FIX: Fail if model was not created ---
+        if model_dir.exists():
+            run_command(f"tar -czf denoising_model.tar.gz denoising_model", cwd=job_dir)
+        else:
+            print("[FATAL] Model directory not found! Training likely failed.", file=sys.stderr, flush=True)
+            raise RuntimeError("Training failed to produce a model directory.")
 
         print("[DRIVER] Job finished successfully.", flush=True)
 
-        # 6. Create success sentinel
+        # 8. Create success sentinel
         success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
         sys.exit(0)

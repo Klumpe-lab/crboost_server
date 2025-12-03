@@ -41,6 +41,7 @@ class MicroscopeType(str, Enum):
     TALOS = "Talos"
     CUSTOM = "Custom"
 
+
 class AlignmentMethod(str, Enum):
     ARETOMO = "AreTomo"
     IMOD = "IMOD"
@@ -48,21 +49,21 @@ class AlignmentMethod(str, Enum):
 
 
 class JobCategory(str, Enum):
-    IMPORT     = "Import"
-    EXTERNAL   = "External"
+    IMPORT = "Import"
+    EXTERNAL = "External"
     MOTIONCORR = "MotionCorr"
-    CTFFIND    = "CtfFind"
+    CTFFIND = "CtfFind"
 
 
 class JobType(str, Enum):
-    IMPORT_MOVIES       = "importmovies"
-    FS_MOTION_CTF       = "fsMotionAndCtf"
-    TS_ALIGNMENT        = "aligntiltsWarp"
-    TS_CTF              = "tsCtf"
-    TS_RECONSTRUCT      = "tsReconstruct"
-    DENOISE_TRAIN       = "denoisetrain"
-    DENOISE_PREDICT     = "denoisepredict"
-    TEMPLATE_MATCH      = "templateMatching"
+    IMPORT_MOVIES = "importmovies"
+    FS_MOTION_CTF = "fsMotionAndCtf"
+    TS_ALIGNMENT = "aligntiltsWarp"
+    TS_CTF = "tsCtf"
+    TS_RECONSTRUCT = "tsReconstruct"
+    DENOISE_TRAIN = "denoisetrain"
+    DENOISE_PREDICT = "denoisepredict"
+    TEMPLATE_MATCH = "templateMatching"
     SUBTOMO_RECONSTRUCT = "sta"
 
     @classmethod
@@ -377,13 +378,13 @@ class ImportMoviesParams(AbstractJobParams):
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
         # Import has no upstream job in the pipeline sense
         return {
-            "job_dir"        : job_dir,
-            "project_root"   : self.project_root,
-            "frames_dir"     : self.frames_dir,
-            "mdoc_dir"       : self.mdoc_dir,
+            "job_dir": job_dir,
+            "project_root": self.project_root,
+            "frames_dir": self.frames_dir,
+            "mdoc_dir": self.mdoc_dir,
             "tilt_series_dir": job_dir / "tilt_series",
-            "output_star"    : job_dir / "tilt_series.star",
-            "tomostar_dir"   : self.master_tomostar_dir,       # Use master tomostar
+            "output_star": job_dir / "tilt_series.star",
+            "tomostar_dir": self.master_tomostar_dir,  # Use master tomostar
         }
 
 
@@ -732,7 +733,6 @@ class DenoiseTrainParams(AbstractJobParams):
     def is_driver_job(self) -> bool:
         return True
 
-
     def get_tool_name(self) -> str:
         return "cryocare"  # Changed from "cryocare_train"
 
@@ -759,22 +759,31 @@ class DenoiseTrainParams(AbstractJobParams):
         except Exception:
             return None
 
+    # --- FIX START ---
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        # Tells the Orchestrator to look up the last "tsReconstruct" job
+        return {"reconstruct": "tsReconstruct"}
+
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
         # Upstream is typically reconstruction (providing tomograms)
+        # If the Orchestrator provides upstream_job_dir, we use it.
+        # Otherwise, we fallback, but warn.
+
         if not upstream_job_dir:
-            # Fallback for when there's no clear linear upstream (rare)
-            # Try to guess reconstruction folder
-            reconstruction_dir = job_dir.parent / "tsReconstruct"
-            if not reconstruction_dir.exists():
-                # Try finding any previous job that outputted tomograms.star
-                 pass # Logic handled by orchestrator usually passing valid upstream
-        
+            print("[WARN] DenoiseTrain resolved with no upstream job! Defaulting to project root (likely to fail).")
+            fallback_star = self.project_root / "tomograms.star"
+        else:
+            fallback_star = upstream_job_dir / "tomograms.star"
+
         return {
             "job_dir": job_dir,
             "project_root": self.project_root,
-            "input_star": upstream_job_dir / "tomograms.star" if upstream_job_dir else self.project_root / "tomograms.star",
+            "input_star": fallback_star,
             "output_model": job_dir / "denoising_model.tar.gz",
         }
+
+    # --- FIX END ---
 
 
 class DenoisePredictParams(AbstractJobParams):
@@ -783,12 +792,11 @@ class DenoisePredictParams(AbstractJobParams):
     ntiles_x: int = Field(default=2, ge=1)
     ntiles_y: int = Field(default=2, ge=1)
     ntiles_z: int = Field(default=2, ge=1)
-    denoising_tomo_name: str = "" # Filter, empty means all
+    denoising_tomo_name: str = ""  # Filter, empty means all
     perdevice: int = Field(default=1)
 
     def is_driver_job(self) -> bool:
         return True
-
 
     def get_tool_name(self) -> str:
         return "cryocare"  # Changed from "cryocare_predict"
@@ -817,47 +825,56 @@ class DenoisePredictParams(AbstractJobParams):
         except Exception:
             return None
 
+    # --- FIX START ---
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        # Denoise Predict actually requires TWO inputs:
+        # 1. Model (from DenoiseTrain)
+        # 2. Tomograms (from tsReconstruct)
+        # The current simple orchestrator logic might only pick one.
+        # We prioritize 'denoisetrain' to get the model, and we assume reconstruction is available
+        # relative to that or we find it via other means.
+        return {"train": "denoisetrain"}
+
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-        # Denoise Predict has TWO dependencies:
-        # 1. The Model (from upstream Denoise Train)
-        # 2. The Tomograms (from Reconstruction - which is upstream of Train)
-        
-        # Assumption: upstream_job_dir is the Denoise Train job directory
-        model_path = upstream_job_dir / "denoising_model.tar.gz"
-        
-        # We need to find the tomograms.star. Usually in 'tsReconstruct' folder at same level,
-        # or we can inspect the Train job input (if we had access to full state here, but we don't fully).
-        # Safe heuristic: Check if there is a 'tomograms.star' in the project root or standard location,
-        # OR assume the user linked it correctly in the previous steps.
-        
-        # Better heuristic used in Orchestrator: The 'input_star' passed to Train is likely what we want.
-        # But here we only see 'upstream_job_dir'.
-        # We will assume a standard directory structure: project/External/jobXXX
-        # We can try to look for tomograms.star in typical reconstruction output folders.
-        
-        # However, specifically for `denoisepredict`, the Orchestrator (old system)
-        # sets `in_tomoset` pointing to `tsReconstruct/tomograms.star`.
-        
-        # For now, we will try to resolve it relative to project root if possible, or look back 2 jobs.
-        # Since we can't look back 2 jobs here easily, we will look for 'tomograms.star' in the
-        # expected reconstruction folder location.
-        
-        reconstruct_guess = job_dir.parent / "tsReconstruct" / "tomograms.star"
-        # If we are using job numbers (job005), this guess fails.
-        # Let's rely on finding it in the project scope or assume the driver can verify it.
-        # We will default to a path compatible with the standard pipeline.
-        
-        # NOTE: In the `_build_job_command` inside orchestrator, we can actually pass specific paths.
-        # But here we define what keys are available.
-        
+        # Assumption: upstream_job_dir is the Denoise Train job directory (from get_input_requirements)
+
+        if upstream_job_dir:
+            model_path = upstream_job_dir / "denoising_model.tar.gz"
+        else:
+            model_path = self.project_root / "denoising_model.tar.gz"  # Unlikely to work, but fallback.
+
+        # Finding tomograms.star is tricky without a multi-dependency orchestrator.
+        # We know DenoiseTrain (upstream) had an 'input_star' pointing to reconstruction.
+        # But we don't have access to the upstream job's params here, only its path.
+        # However, typically Reconstruction is 'tsReconstruct'.
+        # We can try to find the last successful tsReconstruct using the project_state singleton if needed,
+        # OR we rely on standard paths.
+
+        # Heuristic: Check for External/tsReconstruct/tomograms.star fallback,
+        # or rely on the user to have run Reconstruction immediately before Train.
+
+        # Ideally, we should traverse back, but for now let's assume standard folder structure or look for the file.
+        # In the new architecture, we might look into the global job_path_mapping if attached.
+
+        reconstruct_path = self.project_root / "tomograms.star"  # Default fallback
+
+        if self._project_state:
+            # Try to find tsReconstruct in the global state mapping
+            if JobType.TS_RECONSTRUCT in self._project_state.jobs:
+                recon_job = self._project_state.jobs[JobType.TS_RECONSTRUCT]
+                if recon_job.execution_status == JobStatus.SUCCEEDED and recon_job.relion_job_name:
+                    reconstruct_path = self.project_root / recon_job.relion_job_name / "tomograms.star"
+
         return {
             "job_dir": job_dir,
             "project_root": self.project_root,
             "model_path": model_path,
-            # This is a bit weak, relies on standard naming or user ensuring it exists:
-            "input_star": self.project_root / "External" / "tsReconstruct" / "tomograms.star", 
-             "output_dir": job_dir / "denoised"
+            "input_star": reconstruct_path,
+            "output_dir": job_dir / "denoised",
         }
+
+    # --- FIX END ---
 
 
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
@@ -880,8 +897,6 @@ class ProjectState(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     modified_at: datetime = Field(default_factory=datetime.now)
     job_path_mapping: Dict[str, str] = Field(default_factory=dict)  # job_type -> relion_path
-
-
 
     movies_glob: str = ""
     mdocs_glob: str = ""
@@ -1113,11 +1128,11 @@ class StateService:
                 "mdocs_glob": mdocs_glob,
                 "gain_reference": state.acquisition.gain_reference_path,
             },
-            "containers": containers,
-            "microscope": state.microscope.model_dump(),
+            "containers" : containers,
+            "microscope" : state.microscope.model_dump(),
             "acquisition": state.acquisition.model_dump(),
-            "computing": state.computing.model_dump(),
-            "jobs": {
+            "computing"  : state.computing.model_dump(),
+            "jobs"       : {
                 job_str: state.jobs[JobType(job_str)].model_dump()
                 for job_str in selected_jobs_str
                 if JobType(job_str) in state.jobs
@@ -1125,6 +1140,7 @@ class StateService:
         }
 
         return export
+
 
 _state_service_instance = None
 
