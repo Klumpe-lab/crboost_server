@@ -7,7 +7,6 @@ import os
 from datetime import datetime
 
 # Refactored imports
-from services.pipeline_continuation import ContinuationService
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
@@ -28,7 +27,6 @@ class CryoBoostBackend:
         self.slurm_service         = SlurmService(HARDCODED_USER)
         self.pipeline_runner       = PipelineRunnerService(self)
         self.state_service         = get_state_service()
-        self.continuation          = ContinuationService(self)
 
     async def start_pipeline(
             self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]
