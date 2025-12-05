@@ -370,6 +370,7 @@ def build_pipeline_builder_panel(
         if ui_mgr.panel_refs.run_button else None
     )
     callbacks["add_job_to_pipeline"] = add_job_to_pipeline
+    callbacks["remove_job_from_pipeline"] = remove_job_from_pipeline
 
     # Trigger initial rebuild to show "Create Project" or existing jobs
     rebuild_pipeline_ui()

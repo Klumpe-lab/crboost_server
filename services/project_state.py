@@ -100,20 +100,20 @@ class MicroscopeParams(BaseModel):
 class AcquisitionParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
-    dose_per_tilt: float = Field(default=3.0, ge=0.1, le=9.0)
-    detector_dimensions: Tuple[int, int] = (4096, 4096)
-    tilt_axis_degrees: float = Field(default=-95.0, ge=-180.0, le=180.0)
-    eer_fractions_per_frame: Optional[int] = Field(default=None, ge=1, le=100)
-    sample_thickness_nm: float = Field(default=300.0, ge=50.0, le=2000.0)
-    gain_reference_path: Optional[str] = None
-    invert_tilt_angles: bool = False
-    invert_defocus_hand: bool = False
-    acquisition_software: str = Field(default="SerialEM")
-    nominal_magnification: Optional[int] = None
-    spot_size: Optional[int] = None
-    camera_name: Optional[str] = None
-    binning: Optional[int] = Field(default=1, ge=1)
-    frame_dose: Optional[float] = None
+    dose_per_tilt          : float           = Field(default=3.0, ge=0.1, le=9.0)
+    detector_dimensions    : Tuple[int, int] = (4096, 4096)
+    tilt_axis_degrees      : float           = Field(default=-95.0, ge=-180.0, le=180.0)
+    eer_fractions_per_frame: Optional[int]   = Field(default=None, ge=1, le=100)
+    sample_thickness_nm    : float           = Field(default=300.0, ge=50.0, le=2000.0)
+    gain_reference_path    : Optional[str]   = None
+    invert_tilt_angles     : bool            = False
+    invert_defocus_hand    : bool            = False
+    acquisition_software   : str             = Field(default="SerialEM")
+    nominal_magnification  : Optional[int]   = None
+    spot_size              : Optional[int]   = None
+    camera_name            : Optional[str]   = None
+    binning                : Optional[int]   = Field(default=1, ge=1)
+    frame_dose             : Optional[float] = None
 
 
 class ComputingParams(BaseModel):
@@ -146,7 +146,7 @@ class ComputingParams(BaseModel):
             return cls()
 
 
-# --- REFACTORED JOB MODELS ---
+# --- JOB MODELS ---
 
 
 class AbstractJobParams(BaseModel):
@@ -296,8 +296,6 @@ class AbstractJobParams(BaseModel):
         # This fixes the UI desync issue.
         if self._project_state is not None:
             try:
-                # We call save() on the project state.
-                # This is safe because _project_state is the global singleton.
                 self._project_state.save()
             except Exception as e:
                 print(f"[WARN] Auto-save failed for {name}: {e}")
@@ -314,7 +312,6 @@ class AbstractJobParams(BaseModel):
     def is_running(self) -> bool:
         return self.execution_status == JobStatus.RUNNING
 
-    # --- Abstract methods ---
     @staticmethod
     def get_output_assets(job_dir: Path) -> Dict[str, Path]:
         raise NotImplementedError("Subclass must implement get_output_assets()")
@@ -376,15 +373,14 @@ class ImportMoviesParams(AbstractJobParams):
             return None
 
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-        # Import has no upstream job in the pipeline sense
         return {
-            "job_dir": job_dir,
-            "project_root": self.project_root,
-            "frames_dir": self.frames_dir,
-            "mdoc_dir": self.mdoc_dir,
+            "job_dir"        : job_dir,
+            "project_root"   : self.project_root,
+            "frames_dir"     : self.frames_dir,
+            "mdoc_dir"       : self.mdoc_dir,
             "tilt_series_dir": job_dir / "tilt_series",
-            "output_star": job_dir / "tilt_series.star",
-            "tomostar_dir": self.master_tomostar_dir,  # Use master tomostar
+            "output_star"    : job_dir / "tilt_series.star",
+            "tomostar_dir"   : self.master_tomostar_dir,
         }
 
 
@@ -452,19 +448,19 @@ class FsMotionCtfParams(AbstractJobParams):
             ).to_dict()
 
             return cls(
-                gain_operations=param_dict.get("param3_value"),
-                m_range_min_max=param_dict.get("param4_value", "500:10"),
-                m_bfac=int(param_dict.get("param5_value", "-500")),
-                m_grid=param_dict.get("param6_value", "1x1x3"),
-                c_range_min_max=param_dict.get("param7_value", "30:6.0"),
-                c_defocus_min_max=param_dict.get("param8_value", "1.1:8"),
-                c_grid=param_dict.get("param9_value", "2x2x1"),
-                perdevice=int(param_dict.get("param10_value", "1")),
-                c_window=512,
-                c_use_sum=param_dict.get("param11_value", "False").lower() == "true",
-                out_average_halves=True,
-                out_skip_first=int(param_dict.get("param13_value", "0")),
-                out_skip_last=int(param_dict.get("param14_value", "0")),
+                gain_operations    = param_dict.get("param3_value") ,
+                m_range_min_max    = param_dict.get("param4_value", "500:10") ,
+                m_bfac             = int(param_dict.get("param5_value", "-500")) ,
+                m_grid             = param_dict.get("param6_value", "1x1x3") ,
+                c_range_min_max    = param_dict.get("param7_value", "30:6.0") ,
+                c_defocus_min_max  = param_dict.get("param8_value", "1.1:8") ,
+                c_grid             = param_dict.get("param9_value", "2x2x1") ,
+                perdevice          = int(param_dict.get("param10_value", "1")) ,
+                c_window           = 512 ,
+                c_use_sum          = param_dict.get("param11_value", "False").lower() == "true",
+                out_average_halves = True ,
+                out_skip_first     = int(param_dict.get("param13_value", "0")) ,
+                out_skip_last      = int(param_dict.get("param14_value", "0")) ,
             )
         except Exception as e:
             print(f"[WARN] Could not parse job.star at {star_path}: {e}")
@@ -479,19 +475,18 @@ class FsMotionCtfParams(AbstractJobParams):
             raise ValueError("FsMotionCtf requires an upstream job directory (Import)")
 
         return {
-            "job_dir": job_dir,
-            "project_root": self.project_root,
-            "frames_dir": self.frames_dir,
-            "mdoc_dir": self.mdoc_dir,
+            "job_dir"                  : job_dir,
+            "project_root"             : self.project_root,
+            "frames_dir"               : self.frames_dir,
+            "mdoc_dir"                 : self.mdoc_dir,
             "warp_frameseries_settings": self.master_warp_frameseries_settings,
-            "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
-            "tomostar_dir": self.master_tomostar_dir,
-            # Logic from Orchestrator:
-            "input_star": upstream_job_dir / "tilt_series.star",
-            "output_star": job_dir / "fs_motion_and_ctf.star",
-            "warp_dir": job_dir / "warp_frameseries",
-            "input_processing": None,
-            "output_processing": job_dir / "warp_frameseries",
+            "warp_tiltseries_settings" : self.master_warp_tiltseries_settings,
+            "tomostar_dir"             : self.master_tomostar_dir,
+            "input_star"               : upstream_job_dir / "tilt_series.star",
+            "output_star"              : job_dir / "fs_motion_and_ctf.star",
+            "warp_dir"                 : job_dir / "warp_frameseries",
+            "input_processing"         : None,
+            "output_processing"        : job_dir / "warp_frameseries",
         }
 
 
@@ -499,18 +494,18 @@ class TsAlignmentParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
     alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
-    rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
-    tomo_dimensions: str = Field(default="4096x4096x2048")
-    do_at_most: int = Field(default=-1)
-    perdevice: int = Field(default=1, ge=0, le=8)
-    mdoc_pattern: str = Field(default="*.mdoc")
-    gain_operations: Optional[str] = None
-    patch_x: int = Field(default=2, ge=0)
-    patch_y: int = Field(default=2, ge=0)
-    axis_iter: int = Field(default=1, ge=0)
-    axis_batch: int = Field(default=5, ge=1)
-    imod_patch_size: int = Field(default=200)
-    imod_overlap: int = Field(default=50)
+    rescale_angpixs : float           = Field(default=12.0, ge=2.0, le=50.0)
+    tomo_dimensions : str             = Field(default="4096x4096x2048")
+    do_at_most      : int             = Field(default=-1)
+    perdevice       : int             = Field(default=1, ge=0, le=8)
+    mdoc_pattern    : str             = Field(default="*.mdoc")
+    gain_operations : Optional[str]   = None
+    patch_x         : int             = Field(default=2, ge=0)
+    patch_y         : int             = Field(default=2, ge=0)
+    axis_iter       : int             = Field(default=1, ge=0)
+    axis_batch      : int             = Field(default=5, ge=1)
+    imod_patch_size : int             = Field(default=200)
+    imod_overlap    : int             = Field(default=50)
 
     def is_driver_job(self) -> bool:
         return True
@@ -564,17 +559,17 @@ class TsAlignmentParams(AbstractJobParams):
             raise ValueError("TsAlignment requires an upstream job directory (FsMotion)")
 
         return {
-            "job_dir": job_dir,
-            "project_root": self.project_root,
-            "mdoc_dir": self.mdoc_dir,
+            "job_dir"                  : job_dir,
+            "project_root"             : self.project_root,
+            "mdoc_dir"                 : self.mdoc_dir,
             "warp_frameseries_settings": self.master_warp_frameseries_settings,
-            "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
-            "tomostar_dir": self.master_tomostar_dir,
-            "input_star": upstream_job_dir / "fs_motion_and_ctf.star",
-            "output_star": job_dir / "aligned_tilt_series.star",
-            "warp_dir": job_dir / "warp_tiltseries",
-            "input_processing": upstream_job_dir / "warp_frameseries",  # Read from FsMotion
-            "output_processing": job_dir / "warp_tiltseries",  # Write to current
+            "warp_tiltseries_settings" : self.master_warp_tiltseries_settings,
+            "tomostar_dir"             : self.master_tomostar_dir,
+            "input_star"               : upstream_job_dir / "fs_motion_and_ctf.star",
+            "output_star"              : job_dir / "aligned_tilt_series.star",
+            "warp_dir"                 : job_dir / "warp_tiltseries",
+            "input_processing"         : upstream_job_dir / "warp_frameseries",
+            "output_processing"        : job_dir / "warp_tiltseries",
         }
 
     @staticmethod
@@ -652,12 +647,11 @@ class TsCtfParams(AbstractJobParams):
             "project_root": self.project_root,
             "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
             "tomostar_dir": self.master_tomostar_dir,
-            # Logic from Orchestrator:
-            "input_star": upstream_job_dir / "aligned_tilt_series.star",
-            "output_star": job_dir / "ts_ctf_tilt_series.star",
-            "warp_dir": job_dir / "warp_tiltseries",
-            "input_processing": upstream_job_dir / "warp_tiltseries",  # Read from Alignment
-            "output_processing": job_dir / "warp_tiltseries",  # Write to current
+            "input_star"       : upstream_job_dir / "aligned_tilt_series.star",
+            "output_star"      : job_dir / "ts_ctf_tilt_series.star",
+            "warp_dir"         : job_dir / "warp_tiltseries",
+            "input_processing" : upstream_job_dir / "warp_tiltseries",        
+            "output_processing": job_dir / "warp_tiltseries",                  
         }
 
 
@@ -665,9 +659,9 @@ class TsReconstructParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
     rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
-    halfmap_frames: int = Field(default=1, ge=0, le=1)
-    deconv: int = Field(default=1, ge=0, le=1)
-    perdevice: int = Field(default=1, ge=0, le=8)
+    halfmap_frames : int   = Field(default=1, ge=0, le=1)
+    deconv         : int   = Field(default=1, ge=0, le=1)
+    perdevice      : int   = Field(default=1, ge=0, le=8)
 
     def is_driver_job(self) -> bool:
         return True
@@ -713,28 +707,27 @@ class TsReconstructParams(AbstractJobParams):
             "project_root": self.project_root,
             "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
             "tomostar_dir": self.master_tomostar_dir,
-            # Logic from Orchestrator:
-            "input_star": upstream_job_dir / "ts_ctf_tilt_series.star",
-            "output_star": job_dir / "tomograms.star",
-            "warp_dir": job_dir / "warp_tiltseries",
-            "input_processing": upstream_job_dir / "warp_tiltseries",  # Read from CTF
-            "output_processing": job_dir / "warp_tiltseries",  # Write to current
+            "input_star"       : upstream_job_dir / "ts_ctf_tilt_series.star",
+            "output_star"      : job_dir / "tomograms.star",
+            "warp_dir"         : job_dir / "warp_tiltseries",
+            "input_processing" : upstream_job_dir / "warp_tiltseries",          
+            "output_processing": job_dir / "warp_tiltseries",                    
         }
 
 
 class DenoiseTrainParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
-    tomograms_for_training: str = Field(default="Position_1")
+    tomograms_for_training    : str = Field(default="Position_1")
     number_training_subvolumes: int = Field(default=600, ge=100)
-    subvolume_dimensions: int = Field(default=64, ge=32)
-    perdevice: int = Field(default=1)
+    subvolume_dimensions      : int = Field(default=64, ge=32)
+    perdevice                 : int = Field(default=1)
 
     def is_driver_job(self) -> bool:
         return True
 
     def get_tool_name(self) -> str:
-        return "cryocare"  # Changed from "cryocare_train"
+        return "cryocare"  
 
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
@@ -759,16 +752,11 @@ class DenoiseTrainParams(AbstractJobParams):
         except Exception:
             return None
 
-    # --- FIX START ---
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
-        # Tells the Orchestrator to look up the last "tsReconstruct" job
         return {"reconstruct": "tsReconstruct"}
 
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-        # Upstream is typically reconstruction (providing tomograms)
-        # If the Orchestrator provides upstream_job_dir, we use it.
-        # Otherwise, we fallback, but warn.
 
         if not upstream_job_dir:
             print("[WARN] DenoiseTrain resolved with no upstream job! Defaulting to project root (likely to fail).")
@@ -777,13 +765,12 @@ class DenoiseTrainParams(AbstractJobParams):
             fallback_star = upstream_job_dir / "tomograms.star"
 
         return {
-            "job_dir": job_dir,
+            "job_dir"     : job_dir,
             "project_root": self.project_root,
-            "input_star": fallback_star,
+            "input_star"  : fallback_star,
             "output_model": job_dir / "denoising_model.tar.gz",
         }
 
-    # --- FIX END ---
 
 
 class DenoisePredictParams(AbstractJobParams):
@@ -792,14 +779,14 @@ class DenoisePredictParams(AbstractJobParams):
     ntiles_x: int = Field(default=2, ge=1)
     ntiles_y: int = Field(default=2, ge=1)
     ntiles_z: int = Field(default=2, ge=1)
-    denoising_tomo_name: str = ""  # Filter, empty means all
+    denoising_tomo_name: str = "" 
     perdevice: int = Field(default=1)
 
     def is_driver_job(self) -> bool:
         return True
 
     def get_tool_name(self) -> str:
-        return "cryocare"  # Changed from "cryocare_predict"
+        return "cryocare" 
 
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
@@ -825,56 +812,60 @@ class DenoisePredictParams(AbstractJobParams):
         except Exception:
             return None
 
-    # --- FIX START ---
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
-        # Denoise Predict actually requires TWO inputs:
-        # 1. Model (from DenoiseTrain)
-        # 2. Tomograms (from tsReconstruct)
-        # The current simple orchestrator logic might only pick one.
-        # We prioritize 'denoisetrain' to get the model, and we assume reconstruction is available
-        # relative to that or we find it via other means.
         return {"train": "denoisetrain"}
 
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-        # Assumption: upstream_job_dir is the Denoise Train job directory (from get_input_requirements)
+            """
+            Kitchen sink resolution:
+            1. Grabs the stored path dictionary from the historical TsReconstruct job.
+            2. Grabs the stored path dictionary from the DenoiseTrain job.
+            3. Packages them for the driver.
+            """
+            if not self._project_state:
+                raise RuntimeError("DenoisePredict detached from ProjectState")
 
-        if upstream_job_dir:
-            model_path = upstream_job_dir / "denoising_model.tar.gz"
-        else:
-            model_path = self.project_root / "denoising_model.tar.gz"  # Unlikely to work, but fallback.
+            # --- 1. GET DATA (From TsReconstruct) ---
+            # We assume the user has a successful reconstruction job in the project
+            ts_job = self._project_state.jobs.get(JobType.TS_RECONSTRUCT)
+            
+            if not ts_job or ts_job.execution_status != JobStatus.SUCCEEDED:
+                raise ValueError("DenoisePredict requires a successfully completed TsReconstruct job.")
+            
+            # Access the persisted paths from that job
+            ts_paths = ts_job.paths 
+            if "output_star" not in ts_paths or "warp_dir" not in ts_paths:
+                raise ValueError("TsReconstruct state is missing output paths. Did it run correctly?")
 
-        # Finding tomograms.star is tricky without a multi-dependency orchestrator.
-        # We know DenoiseTrain (upstream) had an 'input_star' pointing to reconstruction.
-        # But we don't have access to the upstream job's params here, only its path.
-        # However, typically Reconstruction is 'tsReconstruct'.
-        # We can try to find the last successful tsReconstruct using the project_state singleton if needed,
-        # OR we rely on standard paths.
+            # --- 2. GET MODEL (From DenoiseTrain) ---
+            # If we are in a pipeline, upstream_job_dir might be the train job.
+            # Otherwise, we look at the last successful train job in the state.
+            model_path = None
+            
+            if upstream_job_dir:
+                model_path = upstream_job_dir / "denoising_model.tar.gz"
+            else:
+                train_job = self._project_state.jobs.get(JobType.DENOISE_TRAIN)
+                if train_job and train_job.execution_status == JobStatus.SUCCEEDED:
+                    # Use the path explicitly saved by the train job
+                    model_path = Path(train_job.paths.get("output_model"))
+            
+            if not model_path or not model_path.exists():
+                raise FileNotFoundError("Denoising model not found.")
 
-        # Heuristic: Check for External/tsReconstruct/tomograms.star fallback,
-        # or rely on the user to have run Reconstruction immediately before Train.
+            # --- 3. PACKAGE FOR DRIVER ---
+            return {
+                "job_dir": job_dir,
+                "project_root": self.project_root,
+                
+                # Pass the precise absolute paths to the driver
+                "model_path": model_path,
+                "input_star": Path(ts_paths["output_star"]),
+                "reconstruct_base": Path(ts_paths["warp_dir"]), # The specific Warp dir containing even/odd
+                "output_dir": job_dir / "denoised",
+            }
 
-        # Ideally, we should traverse back, but for now let's assume standard folder structure or look for the file.
-        # In the new architecture, we might look into the global job_path_mapping if attached.
-
-        reconstruct_path = self.project_root / "tomograms.star"  # Default fallback
-
-        if self._project_state:
-            # Try to find tsReconstruct in the global state mapping
-            if JobType.TS_RECONSTRUCT in self._project_state.jobs:
-                recon_job = self._project_state.jobs[JobType.TS_RECONSTRUCT]
-                if recon_job.execution_status == JobStatus.SUCCEEDED and recon_job.relion_job_name:
-                    reconstruct_path = self.project_root / recon_job.relion_job_name / "tomograms.star"
-
-        return {
-            "job_dir": job_dir,
-            "project_root": self.project_root,
-            "model_path": model_path,
-            "input_star": reconstruct_path,
-            "output_dir": job_dir / "denoised",
-        }
-
-    # --- FIX END ---
 
 
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
@@ -998,8 +989,6 @@ def set_project_state(new_state: ProjectState):
     global _project_state
     _project_state = new_state
 
-
-# --- NEW: Function to reset global state (Fixes the ghost project issue) ---
 def reset_project_state():
     """Forces the creation of a fresh ProjectState instance."""
     global _project_state
@@ -1099,9 +1088,9 @@ class StateService:
     ) -> Dict[str, Any]:
         print("[STATE] Exporting comprehensive project config")
 
-        mdoc_service = get_mdoc_service()
+        mdoc_service   = get_mdoc_service()
         config_service = get_config_service()
-        state = self.state
+        state          = self.state
 
         mdoc_stats = mdoc_service.parse_all_mdoc_files(mdocs_glob)
 

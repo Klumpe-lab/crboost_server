@@ -20,6 +20,7 @@ class JobConfig:
         JobType.TS_CTF,
         JobType.TS_RECONSTRUCT,
         JobType.DENOISE_TRAIN,
+        JobType.DENOISE_PREDICT,
         JobType.TEMPLATE_MATCH,
         JobType.SUBTOMO_RECONSTRUCT,
     ]
@@ -46,6 +47,10 @@ class JobConfig:
             'description': 'Tomogram reconstruction',
         },
         JobType.DENOISE_TRAIN: {
+            'short_name': 'Denoise',
+            'description': 'Train and apply denoising',
+        },
+        JobType.DENOISE_PREDICT: {
             'short_name': 'Denoise',
             'description': 'Train and apply denoising',
         },

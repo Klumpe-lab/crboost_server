@@ -4,7 +4,6 @@ import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
-import asyncio
 
 from services.config_service import get_config_service
 from services.project_state import (
@@ -22,10 +21,11 @@ if TYPE_CHECKING:
 
 class PipelineOrchestratorService:
     def __init__(self, backend_instance: "CryoBoostBackend"):
-        self.backend = backend_instance
-        self.star_handler = StarfileService()
+
+        self.backend        = backend_instance
+        self.star_handler   = StarfileService()
         self.config_service = get_config_service()
-        self.job_resolver = JobTypeResolver(self.star_handler)
+        self.job_resolver   = JobTypeResolver(self.star_handler)
 
     async def deploy_and_run_scheme(
         self,
@@ -65,15 +65,15 @@ class PipelineOrchestratorService:
 
         # 2. Predict Job Numbers
         current_counter = self._get_current_relion_counter(project_dir)
-        
+
         # 3. Process Each Job
         server_dir = Path(__file__).parent.parent.resolve()
-        
+
         previous_job_output_dir_in_batch: Optional[Path] = None
 
         for i, job_type in enumerate(jobs_to_run):
-            # Calculate predicted directory
-            job_num = current_counter + 1 + i
+            # Calculate predicted directory - counter IS the next job number
+            job_num = current_counter + i  # NOT current_counter + 1 + i
             
             category = JobCategory.IMPORT if job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
             predicted_job_dir = project_dir / category.value / f"job{job_num:03d}"
@@ -123,11 +123,11 @@ class PipelineOrchestratorService:
             scheme_job_dir.mkdir(parents=True, exist_ok=True)
             
             self._write_job_star(
-                scheme_job_dir=scheme_job_dir,
-                job_type=job_type,
-                job_model=job_model,
-                server_dir=server_dir,
-                project_dir=project_dir
+                scheme_job_dir = scheme_job_dir,
+                job_type       = job_type,
+                job_model      = job_model,
+                server_dir     = server_dir,
+                project_dir    = project_dir
             )
             
             # Update tracking for next iteration
@@ -153,28 +153,46 @@ class PipelineOrchestratorService:
         )
 
     def _get_current_relion_counter(self, project_dir: Path) -> int:
+        """
+        Reads the current job counter from default_pipeline.star.
+        Raises if the file exists but can't be parsed - silent failures cause job path collisions.
+        """
         pipeline_star = project_dir / "default_pipeline.star"
+        
         if not pipeline_star.exists():
+            # This is fine - new project, no jobs yet
             return 0
-        try:
-            data = self.star_handler.read(pipeline_star)
-            general = data.get("pipeline_general")
-            if isinstance(general, pd.DataFrame) and not general.empty:
-                if "_rlnPipeLineJobCounter" in general.columns:
-                    return int(general["_rlnPipeLineJobCounter"].values[0])
-            return 0
-        except Exception as e:
-            print(f"[ORCHESTRATOR] Error reading job counter: {e}")
-            return 0
+        
+        # File exists, so we MUST be able to read it
+        data = self.star_handler.read(pipeline_star)
+        general = data.get("pipeline_general")
+        
+        if general is None:
+            raise ValueError(f"pipeline_general block missing from {pipeline_star}")
+        
+        # starfile returns dict for single-row blocks, DataFrame for multi-row
+        if isinstance(general, dict):
+            counter = general.get("rlnPipeLineJobCounter")
+        elif isinstance(general, pd.DataFrame) and not general.empty:
+            if "rlnPipeLineJobCounter" not in general.columns:
+                raise ValueError(f"rlnPipeLineJobCounter column missing from {pipeline_star}")
+            counter = general["rlnPipeLineJobCounter"].values[0]
+        else:
+            raise ValueError(f"Unexpected pipeline_general format in {pipeline_star}: {type(general)}")
+        
+        if counter is None:
+            raise ValueError(f"rlnPipeLineJobCounter not found in {pipeline_star}")
+        
+        return int(counter)
 
     def _write_job_star(
         self,
-        scheme_job_dir: Path,
-        job_type: JobType,
-        job_model: AbstractJobParams,
-        server_dir: Path,
-        project_dir: Path
-    ):
+    scheme_job_dir: Path,
+    job_type      : JobType,
+    job_model     : AbstractJobParams,
+    server_dir    : Path,
+    project_dir   : Path
+    )             : 
         template_source = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
         dest_star = scheme_job_dir / "job.star"
         
@@ -213,11 +231,11 @@ class PipelineOrchestratorService:
             return self._build_import_command(job_model)
 
         driver_map = {
-            JobType.FS_MOTION_CTF: "fs_motion_and_ctf.py",
-            JobType.TS_ALIGNMENT: "ts_alignment.py",
-            JobType.TS_CTF: "ts_ctf.py",
-            JobType.TS_RECONSTRUCT: "ts_reconstruct.py",
-            JobType.DENOISE_TRAIN: "denoise_train.py",
+            JobType.FS_MOTION_CTF  : "fs_motion_and_ctf.py",
+            JobType.TS_ALIGNMENT   : "ts_alignment.py",
+            JobType.TS_CTF         : "ts_ctf.py",
+            JobType.TS_RECONSTRUCT : "ts_reconstruct.py",
+            JobType.DENOISE_TRAIN  : "denoise_train.py",
             JobType.DENOISE_PREDICT: "denoise_predict.py",
         }
         
@@ -324,15 +342,84 @@ class PipelineOrchestratorService:
         
         self.star_handler.write(data, scheme_dir / "scheme.star")
 
-    async def delete_job(self, project_dir: Path, job_number: int, harsh: bool = False) -> Dict[str, Any]:
-        flag = "--harsh_clean" if harsh else "--gentle_clean"
-        job_alias = f"job{job_number:03d}" 
-        cmd = f"relion_pipeliner {flag} {job_alias}" 
-        return await self.backend.run_shell_command(cmd, cwd=project_dir, tool_name="relion")
+    async def delete_job(self, project_dir: Path, job_type: JobType, harsh: bool = False) -> Dict[str, Any]:
+        # 1. Find ALL job NUMBERS for this type (e.g. ['6', '7', '8', '9'])
+        # Changed variable name from 'aliases' to 'job_numbers' for clarity
+        job_numbers = self._get_all_job_numbers_for_type(project_dir, job_type)
+        
+        if not job_numbers:
+            return {"success": False, "error": f"No instances of {job_type.value} found to delete."}
 
+        print(f"[ORCHESTRATOR] Found {len(job_numbers)} instances of {job_type.value} to delete: {job_numbers}")
+
+        flag = "--harsh_clean" if harsh else "--gentle_clean"
+        success_count = 0
+        errors = []
+
+        # 2. Iterate and Nuke
+        # We process in reverse order (newest first)
+        for job_num_str in reversed(job_numbers):
+            # FIX: Pass the bare number "9", not "job009"
+            cmd = f"relion_pipeliner {flag} {job_num_str}"
+            result = await self.backend.run_shell_command(cmd, cwd=project_dir, tool_name="relion")
+            
+            if result["success"]:
+                print(f"[ORCHESTRATOR] Deleted job {job_num_str}")
+                success_count += 1
+            else:
+                print(f"[ORCHESTRATOR] Failed to delete job {job_num_str}: {result.get('error')}")
+                errors.append(f"Job {job_num_str}: {result.get('error')}")
+
+        if success_count == 0 and errors:
+            return {"success": False, "error": f"Failed to delete jobs: {'; '.join(errors)}"}
+
+        return {
+            "success": True, 
+            "message": f"Deleted {success_count} job instances.", 
+            "deleted_aliases": job_numbers
+        }
+
+    def _get_all_job_numbers_for_type(self, project_dir: Path, target_job_type: JobType) -> List[str]:
+        """
+        Scans default_pipeline.star to find ALL job numbers matching the type.
+        Returns list of strings: ["6", "7", "8"]
+        """
+        pipeline_star = project_dir / "default_pipeline.star"
+        if not pipeline_star.exists():
+            return []
+
+        try:
+            data = self.star_handler.read(pipeline_star)
+            processes = data.get("pipeline_processes", pd.DataFrame())
+            
+            if processes.empty:
+                return []
+
+            job_numbers = []
+            for _, row in processes.iterrows():
+                job_path = row["rlnPipeLineProcessName"] # e.g. "External/job006/"
+                
+                detected_type_str = self.job_resolver.get_job_type_from_path(project_dir, job_path)
+                
+                if detected_type_str == target_job_type.value:
+                    try:
+                        # Extract "job006" -> 6
+                        # Handle "External/job006/"
+                        folder_name = job_path.strip("/").split("/")[-1] # "job006"
+                        number_str = folder_name.replace("job", "")      # "006"
+                        clean_number = str(int(number_str))              # "6"
+                        job_numbers.append(clean_number)
+                    except ValueError:
+                        print(f"[ORCHESTRATOR] Could not parse number from {job_path}")
+            
+            return job_numbers
+
+        except Exception as e:
+            print(f"[ORCHESTRATOR] Error scanning pipeline for deletion: {e}")
+            return []
 
 class JobTypeResolver:
-    """Resolves job types from job directories."""
+
     DRIVER_TO_JOBTYPE = {
         "fs_motion_and_ctf.py": "fsMotionAndCtf",
         "ts_alignment.py"     : "aligntiltsWarp",
