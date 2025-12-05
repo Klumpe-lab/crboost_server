@@ -80,11 +80,57 @@ class DataImportService:
 
 class ProjectService:
     def __init__(self, backend_instance: "CryoBoostBackend"):
+
         self.backend = backend_instance
         self.data_importer = DataImportService()
         self.star_handler = StarfileService()
         self.project_root: Optional[Path] = None
         self.state_service = get_state_service()
+
+
+    async def delete_job(self, job_name: str) -> Dict[str, Any]:
+        """
+        Orchestrates the full deletion: Relion files + Internal State.
+        """
+        try:
+            job_type = JobType(job_name)
+            state = self.backend.state_service.state
+            project_dir = state.project_path
+
+            if not project_dir:
+                return {"success": False, "error": "Project not loaded"}
+
+            # 1. Physical Deletion (Relion)
+            if job_type.value in state.job_path_mapping:
+                # --- FIX: Pass harsh=True to allow deleting failed jobs ---
+                orch_result = await self.backend.pipeline_orchestrator.delete_job(
+                    project_dir, 
+                    job_type, 
+                    harsh=True 
+                )
+                
+                # Note: We proceed to logical deletion even if physical fails partly,
+                # to ensure the UI doesn't get stuck showing a zombie job.
+                if not orch_result["success"]:
+                    print(f"[PROJECT_SERVICE] Warning: Physical deletion had issues: {orch_result.get('error')}")
+
+            # 2. Logical Deletion (Memory)
+            if job_type in state.jobs:
+                del state.jobs[job_type]
+            
+            if job_type.value in state.job_path_mapping:
+                del state.job_path_mapping[job_type.value]
+
+            # 3. Persistence
+            await self.backend.state_service.save_project()
+            
+            # 4. Sync
+            await self.backend.pipeline_runner.status_sync.sync_all_jobs(str(project_dir))
+
+            return {"success": True, "message": f"Job {job_name} deleted successfully."}
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def set_project_root(self, project_dir: Path):
         """Set the project root for path resolution and update state."""

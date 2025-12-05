@@ -47,17 +47,11 @@ class CryoBoostBackend:
                 selected_job_types=job_types,
             )
 
-    async def delete_job(self, project_path: str, job_id: str, harsh: bool = False):
-        """
-        Deletes a job. job_id might be 'job006' or 'External/job006'.
-        """
-        # Extract number
-        try:
-            num_str = job_id.rstrip("/").split("job")[-1]
-            num = int(num_str)
-            return await self.pipeline_orchestrator.delete_job(Path(project_path), num, harsh)
-        except Exception as e:
-            return {"success": False, "error": f"Could not parse job number from {job_id}: {e}"}
+    async def delete_job(self, job_name: str) -> Dict[str, Any]:
+            """
+            Deletes a job by its logical name (e.g. 'fsMotionAndCtf').
+            """
+            return await self.project_service.delete_job(job_name)
 
 
     async def get_default_data_globs(self) -> Dict[str, str]:

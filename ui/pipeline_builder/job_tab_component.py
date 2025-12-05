@@ -155,9 +155,55 @@ def render_job_tab(
         active_tab = MonitorTab.LOGS
         job_ui_state.active_monitor_tab = MonitorTab.LOGS
     
+
+    async def handle_delete():
+            # Confirmation Dialog
+            with ui.dialog() as dialog, ui.card():
+                ui.label(f"Delete {get_job_display_name(job_type)}?").classes("text-lg font-bold")
+                ui.label("This will move the files to Trash and remove it from the pipeline.").classes("text-sm text-gray-600")
+                
+                with ui.row().classes("w-full justify-end mt-4"):
+                    ui.button("Cancel", on_click=dialog.close).props("flat")
+                    
+                async def confirm():
+                    dialog.close()
+                    # Add ID so we can reference it if needed, or just use try/except
+                    notification = ui.notify("Deleting job...", type="ongoing", timeout=0)
+                    
+                    result = await backend.delete_job(job_type.value)
+                    
+                    # FIX: Safe dismissal
+                    try:
+                        if notification:
+                            notification.dismiss()
+                    except Exception:
+                        pass # Notification likely already gone or context lost
+
+                    if result["success"]:
+                        ui.notify("Job deleted.", type="positive")
+                        
+                        # --- FIX: Safe callback invocation ---
+                        remove_cb = callbacks.get("remove_job_from_pipeline")
+                        if remove_cb:
+                            remove_cb(job_type)
+                        else:
+                            print("[UI WARNING] 'remove_job_from_pipeline' callback not found")
+                            
+                    else:
+                        ui.notify(f"Error: {result.get('error')}", type="negative")
+
+                ui.button("Delete", color="red", on_click=confirm)
+            
+            dialog.open()
+
+
+
+
     # ===========================================
     # Header Section
     # ===========================================
+
+
     
     with ui.column().classes("w-full border-b border-gray-200 bg-white pl-6 pr-6 pt-4 pb-4"):
         with ui.row().classes("w-full justify-between items-center"):
@@ -207,6 +253,8 @@ def render_job_tab(
                     icon="refresh",
                     on_click=lambda: _force_status_refresh(callbacks),
                 ).props("flat dense round").classes("text-gray-400 hover:text-gray-800")
+                if ui_mgr.is_project_created:
+                    ui.button(icon="delete", on_click=handle_delete).props("flat round dense color=red").tooltip("Delete this job")
     
     # ===========================================
     # Content Section

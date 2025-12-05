@@ -210,7 +210,7 @@ containers:
   # cryocare: /groups/klumpe/software/Setup/cryoboost_containers/cryocare.sif
   # pytom: /groups/klumpe/software/Setup/cryoboost_containers/pytom.sif
   # relion: /groups/klumpe/software/Setup/cryoboost_containers/relion5.0_tomo.sif
-  warp_aretomo: /users/artem.kushner/dev/containers/warp_aretomo1.0.0_cuda11.8_glibc2.31.sif
+  warp_aretomo: /groups/klumpe/software/Setup/cryoboost_containers/warp_2.0.0dev36_aretomo1.0.0_cuda11.8_glibc2.31.sif
   cryocare    : /users/artem.kushner/dev/containers/cryocare.sif
   pytom       : /users/artem.kushner/dev/containers/pytom.sif
   relion      : /users/artem.kushner/dev/containers/relion5.0_tomo.sif
