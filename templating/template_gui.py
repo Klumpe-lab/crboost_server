@@ -1,163 +1,241 @@
-from nicegui import ui, app
+#!/usr/bin/env python3
 import os
-import templating.backend   # Importing the logic file created above
+import sys
+from pathlib import Path
+from nicegui import app, ui
 
-# Configuration
+# --- 1. SETUP PATHS & IMPORTS ---
+# Resolve absolute paths to ensure we find files regardless of execution dir
+CURRENT_DIR = Path(__file__).parent.resolve()
+STATIC_DIR = "/users/artem.kushner/dev/crboost_server/static"
+
+# Add paths to find backend
+sys.path.append(str(CURRENT_DIR))
+sys.path.append(str(CURRENT_DIR.parent))
+
+try:
+    import backend
+except ImportError:
+    print("Warning: Backend module not found. Using mocks.")
+
+    class backend:
+        @staticmethod
+        def fetch_pdb(*args):
+            return False, "Backend missing"
+
+        @staticmethod
+        def simulate_map_from_pdb(*args):
+            return False, "Backend missing"
+
+        @staticmethod
+        def download_emdb(*args):
+            return False, "Backend missing"
+
+        @staticmethod
+        def process_volume_numpy(*args):
+            return False, "Backend missing"
+
+        @staticmethod
+        def create_ellipsoid(*args):
+            return False, "Backend missing"
+
+
+# --- 2. CONFIGURATION ---
 PORT = 8085
 OUTPUT_DEFAULT = "tmpOut/templates"
+TEMPLATE_DIR = Path("/users/artem.kushner/dev/crboost_server/projects/tmp0ut").resolve()
 
+# 2a. Serve Filesystem (Mount Root to /fs)
+# This allows http://localhost:8085/fs/users/... to access /users/...
+app.add_static_files("/fs", "/")
+
+# 2b. Serve Static HTML (Mount static folder)
+# Ensure static/molstar.html exists at this path!
+app.add_static_files("/static", str(STATIC_DIR))
+
+
+# --- 3. VIEWER COMPONENT ---
+class MolstarViewer:
+    def __init__(self, height="600px"):
+        self.container = ui.element("div").classes("w-full h-full bg-black relative")
+        self.height = height
+        self.debug_link = None
+
+    def view(self, file_path: Path):
+        self.container.clear()
+
+        # Logic: /users/artem/file.mrc -> /fs/users/artem/file.mrc
+        # lstrip('/') ensures we don't get //users...
+        url_path = f"/fs/{str(file_path).lstrip('/')}"
+
+        # Viewer URL
+        viewer_url = f"/static/molstar.html?url={url_path}"
+
+        print(f"[GUI] Loading Viewer URL: {viewer_url}")  # Debug print to console
+
+        with self.container:
+            # Add a debug link overlay (top right) to test if file is accessible
+            ui.link("DEBUG: Open in Tab", viewer_url, new_tab=True).classes(
+                "absolute top-0 right-0 z-50 text-xs text-white bg-red-500 px-1 opacity-50 hover:opacity-100"
+            )
+
+            # The Iframe
+            ui.element("iframe").props(f'src="{viewer_url}"').style(
+                f"width: 100%; height: {self.height}; border: none;"
+            )
+
+
+# --- 4. MAIN PAGE ---
+@ui.page("/")
 def main():
-    
-    with ui.column().classes('w-full max-w-4xl mx-auto p-4'):
-        ui.label('Create Matching Template').classes('text-2xl font-bold mb-4')
-        with ui.card().classes('w-full mb-4'):
-            ui.label('Configuration').classes('text-lg font-bold')
-            with ui.grid(columns=3).classes('w-full gap-4'):
-                template_apix = ui.number('Template Pixelsize (Å)', value=1.5, format='%.2f')
-                out_folder = ui.input('Output Folder', value=OUTPUT_DEFAULT)
-                def update_box_suggestions():
-                    pass 
+    # Main Container
+    with ui.column().classes("w-full max-w-7xl mx-auto p-4"):
+        ui.label("CryoBoost Template Factory").classes("text-2xl font-bold mb-4")
 
-        # --- Column 1: PDB Handling ---
-        with ui.row().classes('w-full gap-4'):
-            
-            with ui.card().classes('w-1/2'):
-                ui.label('1. PDB Input').classes('text-lg font-bold text-primary')
-                
-                pdb_path = ui.input('PDB File Path').classes('w-full')
-                
-                with ui.row().classes('w-full items-center'):
-                    pdb_code = ui.input('PDB Code (e.g. 4v6x)').classes('flex-grow')
-                    async def fetch_pdb_click():
-                        if not pdb_code.value: return
-                        ui.notify(f"Fetching {pdb_code.value}...")
-                        success, res = await  ui.run_javascript(f'return "{pdb_code.value}"') # dummy await
-                        success, res = templating.backend.fetch_pdb(pdb_code.value, out_folder.value)
-                        if success:
-                            pdb_path.value = os.path.abspath(res)
-                            ui.notify(f"Fetched: {res}", type='positive')
-                        else:
-                            ui.notify(f"Error: {res}", type='negative')
-                    
-                    ui.button('Fetch', on_click=fetch_pdb_click).classes('ml-2')
-                
-                with ui.row().classes('mt-2'):
-                    ui.button('Align to Axis', on_click=lambda: ui.notify("Alignment functionality mock")).props('outline')
-                    ui.button('View PDB', on_click=lambda: ui.notify("Use external viewer")).props('outline')
+        # =========================================================
+        # SECTION A: GENERATION TOOLS
+        # =========================================================
+        with ui.expansion("Generation Tools", value=True).classes("w-full mb-4 border rounded"):
+            with ui.column().classes("p-4 w-full"):
+                # Config Row
+                with ui.row().classes("w-full gap-4 mb-4"):
+                    template_apix = ui.number("Template Pixelsize (Å)", value=1.5, format="%.2f")
+                    out_folder = ui.input("Output Folder", value=OUTPUT_DEFAULT).classes("flex-grow")
 
-                ui.separator().classes('my-4')
-                
-                ui.label('Simulation Parameters').classes('font-bold')
-                sim_apix = ui.number('Sim Pixel Size', value=1.5, format='%.2f').bind_value(template_apix)
-                sim_box = ui.number('Sim Box Size (Vox)', value=128)
-                sim_res = ui.number('Resolution (Å)', value=20.0)
-                sim_bfactor = ui.number('B-Factor', value=0)
-                
-                async def run_sim_click():
-                    if not pdb_path.value: 
-                        ui.notify("No PDB selected", type='warning')
+                # Tools Columns
+                with ui.row().classes("w-full gap-4"):
+                    # PDB Column
+                    with ui.card().classes("w-1/2"):
+                        ui.label("1. From PDB").classes("text-lg font-bold text-primary")
+                        pdb_path = ui.input("PDB File Path").classes("w-full")
+
+                        with ui.row().classes("w-full items-center"):
+                            pdb_code = ui.input("PDB Code").classes("w-24")
+
+                            async def fetch_pdb():
+                                ui.notify(f"Fetching {pdb_code.value}...")
+                                s, r = backend.fetch_pdb(pdb_code.value, out_folder.value)
+                                if s:
+                                    pdb_path.value = os.path.abspath(r)
+                                    ui.notify("Fetched!", type="positive")
+                                else:
+                                    ui.notify(r, type="negative")
+
+                            ui.button("Get", on_click=fetch_pdb).props("flat dense")
+
+                        ui.separator().classes("my-2")
+                        sim_res = ui.number("Res (Å)", value=20.0)
+
+                        async def run_sim():
+                            if not pdb_path.value:
+                                return
+                            name = Path(pdb_path.value).stem
+                            out_name = f"{name}_sim_{sim_res.value}.mrc"
+                            out_p = os.path.join(out_folder.value, out_name)
+                            ui.notify("Simulating...")
+                            s, m = backend.simulate_map_from_pdb(
+                                pdb_path.value, out_p, template_apix.value, 96, sim_res.value, 0
+                            )
+                            if s:
+                                ui.notify("Done", type="positive")
+                                # Trigger refresh of browser (manual for now)
+                            else:
+                                ui.notify(m, type="negative")
+
+                        ui.button("Simulate", on_click=run_sim).classes("w-full bg-primary text-white")
+
+                    # Map Column
+                    with ui.card().classes("w-1/2"):
+                        ui.label("2. From Map").classes("text-lg font-bold text-secondary")
+                        map_path = ui.input("Map File Path").classes("w-full")
+
+                        with ui.row().classes("w-full items-center"):
+                            eid = ui.input("EMDB ID").classes("w-24")
+
+                            async def fetch_emdb():
+                                ui.notify(f"Fetching {eid.value}...")
+                                s, r = backend.download_emdb(eid.value, out_folder.value)
+                                if s:
+                                    map_path.value = os.path.abspath(r)
+                                    ui.notify("Fetched!", type="positive")
+                                else:
+                                    ui.notify(r, type="negative")
+
+                            ui.button("Get", on_click=fetch_emdb).props("flat dense")
+
+                        ui.separator().classes("my-2")
+                        tm_res = ui.number("Lowpass (Å)", value=30.0)
+
+                        async def gen_temp():
+                            if not map_path.value:
+                                return
+                            bn = Path(map_path.value).stem
+                            out_b = os.path.join(out_folder.value, f"{bn}_black.mrc")
+                            ui.notify("Processing...")
+                            s, _ = backend.process_volume_numpy(
+                                map_path.value, out_b, template_apix.value, 96, True, tm_res.value
+                            )
+                            if s:
+                                ui.notify("Done", type="positive")
+                            else:
+                                ui.notify("Error", type="negative")
+
+                        ui.button("Generate Template", on_click=gen_temp).classes("w-full bg-secondary text-white")
+
+        # =========================================================
+        # SECTION B: BROWSER & VIEWER
+        # =========================================================
+        ui.label("Template Browser").classes("text-xl font-bold mt-4 mb-2")
+
+        # We define the columns first to establish layout structure
+        with ui.row().classes("w-full h-[700px] border border-gray-300 rounded overflow-hidden"):
+            # 1. Define Layout Areas
+            left_drawer = ui.column().classes("w-1/4 h-full bg-gray-50 border-r p-0")
+            right_view = ui.column().classes("w-3/4 h-full p-0 bg-black relative")
+
+            # 2. Initialize Viewer in RIGHT Column
+            with right_view:
+                viewer = MolstarViewer(height="100%")
+                # Default placeholder text
+                with viewer.container:
+                    ui.label("Select a file to view").classes("text-gray-500 m-auto")
+
+            # 3. Initialize Browser in LEFT Column
+            with left_drawer:
+                ui.label(f"{TEMPLATE_DIR.name}/").classes("text-xs font-mono p-2 bg-gray-200 w-full")
+
+                # File List Container
+                file_list_area = ui.scroll_area().classes("w-full flex-grow")
+
+                def refresh_files():
+                    file_list_area.clear()
+                    if not TEMPLATE_DIR.exists():
+                        with file_list_area:
+                            ui.label("Dir missing").classes("text-red-500 p-2")
                         return
-                    
-                    name = os.path.basename(pdb_path.value).split('.')[0]
-                    sim_out_name = f"{name}_sim_res{sim_res.value}.mrc"
-                    sim_out_path = os.path.join(out_folder.value, sim_out_name)
-                    
-                    ui.notify("Simulating Map...")
-                    # Run backend
-                    success, msg = templating.backend.simulate_map_from_pdb(
-                        pdb_path.value, sim_out_path, 
-                        sim_apix.value, int(sim_box.value), 
-                        sim_res.value, sim_bfactor.value
+
+                    files = sorted(
+                        [f for f in TEMPLATE_DIR.glob("*") if f.suffix.lower() in [".mrc", ".map", ".rec", ".ccp4"]]
                     )
-                    
-                    if success:
-                        ui.notify("Simulation Complete", type='positive')
-                        # Auto-fill the Map input
-                        map_path.value = os.path.abspath(sim_out_path)
-                    else:
-                        ui.notify(f"Sim Error: {msg}", type='negative')
 
-                ui.button('Simulate Map from PDB', on_click=run_sim_click).classes('w-full mt-2 bg-primary')
+                    with file_list_area:
+                        if not files:
+                            ui.label("No files").classes("text-gray-400 italic p-2")
+                        for f in files:
+                            # CLICK HANDLER: Calls viewer.view(path) which updates the iframe in right col
+                            ui.button(f.name, on_click=lambda p=f: viewer.view(p)).props("flat align=left").classes(
+                                "w-full text-left normal-case text-sm px-3 py-1 hover:bg-gray-200 border-b border-gray-100"
+                            )
 
-            # --- Column 2: Volume/Map Handling ---
-            with ui.card().classes('w-1/2'):
-                ui.label('2. Map Processing').classes('text-lg font-bold text-secondary')
-                
-                map_path = ui.input('Map File Path').classes('w-full')
-                
-                with ui.row().classes('w-full items-center'):
-                    emdb_id = ui.input('EMDB ID (e.g. 1001)').classes('flex-grow')
-                    async def fetch_emdb_click():
-                        if not emdb_id.value: return
-                        ui.notify(f"Fetching EMDB-{emdb_id.value}...")
-                        success, res = backend.download_emdb(emdb_id.value, out_folder.value)
-                        if success:
-                            map_path.value = os.path.abspath(res)
-                            ui.notify("Download complete", type='positive')
-                        else:
-                            ui.notify(res, type='negative')
-                    ui.button('Fetch', on_click=fetch_emdb_click).classes('ml-2')
+                # Refresh Button
+                ui.button("Refresh List", on_click=refresh_files).props("outline size=sm icon=refresh").classes(
+                    "w-full m-1"
+                )
+                refresh_files()  # Load initially
 
-                ui.separator().classes('my-4')
-                ui.label('Generate Template (Process Volume)').classes('font-bold')
-                
-                # Template gen parameters (replicating generateTemplate.py logic)
-                with ui.grid(columns=2).classes('w-full gap-2'):
-                    tm_box = ui.number('Final Box Size', value=96)
-                    tm_res = ui.number('Lowpass Res (Å)', value=30.0)
-                
-                async def generate_template_click():
-                    if not map_path.value:
-                        ui.notify("No Input Map", type='warning'); return
-                    
-                    base_name = os.path.splitext(os.path.basename(map_path.value))[0]
-                    out_white = os.path.join(out_folder.value, f"{base_name}_white.mrc")
-                    out_black = os.path.join(out_folder.value, f"{base_name}_black.mrc")
-                    
-                    ui.notify("Processing Volume...")
-                    
-                    # 1. Generate White (Density positive)
-                    success, _ = backend.process_volume_numpy(
-                        map_path.value, out_white, 
-                        template_apix.value, int(tm_box.value), 
-                        invert=False, lowpass_res=tm_res.value
-                    )
-                    
-                    # 2. Generate Black (Density negative/inverted)
-                    success_b, _ = backend.process_volume_numpy(
-                        map_path.value, out_black, 
-                        template_apix.value, int(tm_box.value), 
-                        invert=True, lowpass_res=tm_res.value
-                    )
-                    
-                    if success and success_b:
-                        ui.notify(f"Generated {os.path.basename(out_black)}", type='positive')
-                    else:
-                        ui.notify("Error processing volume", type='negative')
 
-                ui.button('Process / Generate Template', on_click=generate_template_click).classes('w-full mt-2 bg-secondary')
-                
-                ui.separator().classes('my-2')
-                
-                # Basic Shape Logic
-                with ui.expansion('Basic Shapes (Ellipsoids)'):
-                    shape_dims = ui.input('Diameter x:y:z (Å)', value='100:100:100')
-                    async def shape_click():
-                        ui.notify("Generating Shape...")
-                        success, path = backend.create_ellipsoid(
-                            shape_dims.value, template_apix.value, out_folder.value
-                        )
-                        if success:
-                            map_path.value = os.path.abspath(path)
-                            ui.notify("Shape Generated", type='positive')
-                        else:
-                            ui.notify(path, type='negative')
-                    ui.button('Create Shape', on_click=shape_click).classes('w-full')
-
-    # Footer
-    with ui.footer().classes('bg-grey-200 text-black p-2'):
-        ui.label('CryoBoost Port | Uvicorn: 8085')
-
-# Run uvicorn
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(port=PORT, title="CryoBoost Template Gen", show=False)
+    print(f"Starting GUI on port {PORT}")
+    print(f"Serving Static: {STATIC_DIR}")
+    print(f"Mounting FS: /")
+    ui.run(title="CryoBoost Templates", port=PORT)

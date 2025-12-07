@@ -1,0 +1,61 @@
+body {
+    margin: 0;
+    padding: 0;
+    font-family: sans-serif;
+    background-color: #f0f0f0;
+}
+
+#controls {
+    padding: 15px;
+    background-color: #333;
+    color: white;
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.input-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+input {
+    padding: 6px;
+    border-radius: 4px;
+    border: none;
+    width: 80px;
+}
+
+button {
+    padding: 6px 12px;
+    cursor: pointer;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    font-weight: bold;
+}
+
+button:hover {
+    background-color: #0056b3;
+}
+
+#btn-clear {
+    background-color: #dc3545;
+}
+
+/* Safety Override: 
+   If Mol* tries to inject full-screen styles, this forces it back 
+   into the wrapper we defined in HTML.
+*/
+.msp-plugin {
+    position: absolute !important;
+    width: 100% !important;
+    height: 100% !important;
+    top: 0 !important;
+    left: 0 !important;
+    z-index: 1;
+}
