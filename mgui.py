@@ -123,40 +123,11 @@ MOLSTAR_HTML = """
                 return;
             }
             try {
-                const plugin = viewer.plugin;
-                await plugin.clear();
-                
-                const data = await plugin.builders.data.download(
-                    { url: url, isBinary: true, label: 'Volume' },
-                    { state: { isGhost: true } }
+                await viewer.plugin.clear();
+                await viewer.loadVolumeFromUrl(
+                    { url: url, format: 'ccp4', isBinary: true },
+                    [{ type: 'relative', value: 2.0, color: 0x3388ff, alpha: 0.8 }]
                 );
-                
-                const parsed = await plugin.dataFormats.get('ccp4').parse(plugin, data);
-                const volume = parsed.volume || parsed.volumes?.[0];
-                
-                if (!volume) {
-                    console.error('No volume found in file');
-                    return;
-                }
-                
-                const { StateTransforms, Volume, Color } = molstar;
-                
-                const volumeParams = molstar.createVolumeRepresentationParams(plugin, volume.cell.obj.data, {
-                    type: 'isosurface',
-                    typeParams: { 
-                        alpha: 0.8, 
-                        isoValue: Volume.adjustedIsoValue(volume.cell.obj.data, 2.0, 'relative') 
-                    },
-                    color: 'uniform',
-                    colorParams: { value: Color(0x3388ff) }
-                });
-
-                await plugin.build()
-                    .to(volume.cell)
-                    .apply(StateTransforms.Representation.VolumeRepresentation3D, volumeParams)
-                    .commit();
-                
-                plugin.managers.camera.reset();
                 console.log('Volume loaded:', url);
             } catch (e) {
                 console.error('Failed to load volume:', e);
@@ -180,9 +151,6 @@ MOLSTAR_HTML = """
 </body>
 </html>
 """
-
-
-
 
 @app.get("/molstar")
 def molstar_viewer():
