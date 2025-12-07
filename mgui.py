@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-Simple Molstar Viewer with NiceGUI
-Backend fetches remote files to avoid CORS issues on firewalled headnodes.
-"""
 
 import gzip
 import ssl
@@ -57,7 +53,6 @@ def fetch_emdb_file(emdb_id: str) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
-
 # --- API: Serve files to Molstar ---
 @app.get("/api/file")
 def serve_file(path: str):
@@ -66,7 +61,6 @@ def serve_file(path: str):
     if p.exists() and p.is_file():
         return FileResponse(p, media_type="application/octet-stream")
     return {"error": "not found"}
-
 
 # --- Molstar HTML ---
 MOLSTAR_HTML = """
@@ -291,7 +285,6 @@ def get_structure_format(path: str) -> tuple[str, bool]:
 
 def is_volume_file(path: Path) -> bool:
     return path.suffix.lower() in {".mrc", ".map", ".rec", ".ccp4"}
-
 
 if __name__ in {"__main__", "__mp_main__"}:
     print(f"Starting on http://localhost:{PORT}")

@@ -63,8 +63,11 @@ class JobType(str, Enum):
     TS_RECONSTRUCT = "tsReconstruct"
     DENOISE_TRAIN = "denoisetrain"
     DENOISE_PREDICT = "denoisepredict"
-    TEMPLATE_MATCH = "templateMatching"
+
+    TEMPLATE_MATCH_PYTOM = "tmMatchPytom"
+    TEMPLATE_EXTRACT_PYTOM = "tmExtractPytom"
     SUBTOMO_RECONSTRUCT = "sta"
+
 
     @classmethod
     def from_string(cls, value: str) -> Self:
@@ -867,27 +870,195 @@ class DenoisePredictParams(AbstractJobParams):
             }
 
 
+class TemplateMatchPytomParams(AbstractJobParams):
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+
+    # Inputs (Strings here, resolved to Paths in resolve_paths)
+    template_path: str = Field(default="")
+    mask_path: str = Field(default="")
+
+    # Algorithm Params
+    angular_search: str = Field(default="12.0")
+    symmetry: str = Field(default="C1")
+    
+    # Flags
+    defocus_weight: bool = True
+    dose_weight: bool = True
+    spectral_whitening: bool = True
+    random_phase_correction: bool = False
+    non_spherical_mask: bool = False
+    
+    # Advanced
+    bandpass_filter: str = Field(default="None") # Format "low:high"
+    gpu_split: str = Field(default="auto") # "auto" or "4:4:2"
+    perdevice: int = Field(default=1)
+
+    def is_driver_job(self) -> bool:
+        return True
+
+    def get_tool_name(self) -> str:
+        return "pytom"
+
+    @classmethod
+    def from_job_star(cls, star_path: Path) -> Optional[Self]:
+        if not star_path or not star_path.exists():
+            return None
+        try:
+            data = starfile.read(star_path, always_dict=True)
+            df = data.get("joboptions_values")
+            if df is None or not isinstance(df, pd.DataFrame): return None
+            
+            param_dict = pd.Series(
+                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
+            ).to_dict()
+
+            return cls(
+                template_path=param_dict.get("in_3dref", ""),
+                mask_path=param_dict.get("in_mask", ""),
+                angular_search=param_dict.get("angular_search", "12.0"),
+                symmetry=param_dict.get("symmetry", "C1"),
+                # Parse booleans
+                defocus_weight=param_dict.get("ctf_weight", "True") == "True",
+                dose_weight=param_dict.get("dose_weight", "True") == "True",
+                spectral_whitening=param_dict.get("spectral_whitening", "True") == "True",
+                non_spherical_mask=param_dict.get("non_spherical_mask", "False") == "True",
+                bandpass_filter=param_dict.get("bandpass_filter", "None"),
+                gpu_split=param_dict.get("split", "auto"),
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        # We prefer denoised tomograms, but reconstruct works too
+        return {"tomograms": "denoisepredict"}
+
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        """
+        Complex resolution:
+        1. Tomograms come from 'upstream_job_dir' (usually Denoise or Reconstruct).
+        2. Tilt Angles/Metadata come from a historical TS_CTF job in the project state.
+        """
+        if not self._project_state:
+            raise RuntimeError("TemplateMatchPytomParams detached from ProjectState")
+
+        # 1. Resolve Tomograms (Primary Upstream)
+        if upstream_job_dir:
+            input_tomograms = upstream_job_dir / "tomograms.star"
+        else:
+            # Fallback to TS Reconstruct if no upstream provided
+            rec_job = self._project_state.jobs.get(JobType.TS_RECONSTRUCT)
+            if rec_job and rec_job.execution_status == JobStatus.SUCCEEDED:
+                 input_tomograms = Path(rec_job.paths.get("output_star"))
+            else:
+                 raise ValueError("No input tomograms found for Template Matching")
+
+        # 2. Resolve Tilt Series (For Angles/Defocus/Dose)
+        # We assume TS_CTF has run. 
+        ctf_job = self._project_state.jobs.get(JobType.TS_CTF)
+        if not ctf_job or ctf_job.execution_status != JobStatus.SUCCEEDED:
+             raise ValueError("Template Matching requires a completed CtfFind job (tsCtf) to generate angle files.")
+        
+        input_tiltseries = Path(ctf_job.paths.get("output_star"))
+
+        return {
+            "job_dir": job_dir,
+            "project_root": self.project_root,
+            # Inputs
+            "input_tomograms": input_tomograms,
+            "input_tiltseries": input_tiltseries,
+            "template_path": Path(self.template_path) if self.template_path else None,
+            "mask_path": Path(self.mask_path) if self.mask_path else None,
+            # Outputs
+            "output_dir": job_dir / "tmResults"
+        }
+
+
+class CandidateExtractPytomParams(AbstractJobParams):
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+
+    # Particle Params
+    particle_diameter_ang: float = Field(default=150.0)
+    max_num_particles: int = Field(default=1000)
+    
+    # Thresholding
+    cutoff_method: str = Field(default="NumberOfFalsePositives") # "NumberOfFalsePositives" or "ManualCutOff"
+    cutoff_value: float = Field(default=1.0)
+    
+    # Score Map
+    apix_score_map: str = Field(default="auto") 
+    
+    # Filtering
+    score_filter_method: str = Field(default="None")
+    score_filter_value: str = Field(default="None")
+
+    def is_driver_job(self) -> bool:
+        return True
+
+    def get_tool_name(self) -> str:
+        return "pytom"
+
+    @classmethod
+    def from_job_star(cls, star_path: Path) -> Optional[Self]:
+        if not star_path or not star_path.exists():
+            return None
+        try:
+            data = starfile.read(star_path, always_dict=True)
+            df = data.get("joboptions_values")
+            if df is None or not isinstance(df, pd.DataFrame): return None
+            
+            param_dict = pd.Series(
+                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
+            ).to_dict()
+
+            return cls(
+                particle_diameter_ang=float(param_dict.get("particle_diameter", "150.0")),
+                max_num_particles=int(param_dict.get("max_num_particles", "1000")),
+                cutoff_method=param_dict.get("cutoff_method", "NumberOfFalsePositives"),
+                cutoff_value=float(param_dict.get("cutoff_value", "1.0")),
+                apix_score_map=param_dict.get("apix_score_map", "auto")
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        return {"tm_job": "tmMatchPytom"}
+
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        if not upstream_job_dir:
+             raise ValueError("Extraction requires an upstream Template Matching job")
+
+        return {
+            "job_dir": job_dir,
+            "project_root": self.project_root,
+            "input_tm_job": upstream_job_dir,
+            "input_tomograms": upstream_job_dir.parent / "tomograms.star", # Inferring original tomo list location
+            "output_star": job_dir / "candidates.star",
+            "optimisation_set": job_dir / "optimisation_set.star"
+        }
 
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
-        JobType.IMPORT_MOVIES: ImportMoviesParams,
-        JobType.FS_MOTION_CTF: FsMotionCtfParams,
-        JobType.TS_ALIGNMENT: TsAlignmentParams,
-        JobType.TS_CTF: TsCtfParams,
-        JobType.TS_RECONSTRUCT: TsReconstructParams,
-        JobType.DENOISE_TRAIN: DenoiseTrainParams,
-        JobType.DENOISE_PREDICT: DenoisePredictParams,
+        JobType.IMPORT_MOVIES         : ImportMoviesParams,
+        JobType.FS_MOTION_CTF         : FsMotionCtfParams,
+        JobType.TS_ALIGNMENT          : TsAlignmentParams,
+        JobType.TS_CTF                : TsCtfParams,
+        JobType.TS_RECONSTRUCT        : TsReconstructParams,
+        JobType.DENOISE_TRAIN         : DenoiseTrainParams,
+        JobType.DENOISE_PREDICT       : DenoisePredictParams,
+        JobType.TEMPLATE_MATCH_PYTOM  : TemplateMatchPytomParams,
+        JobType.TEMPLATE_EXTRACT_PYTOM: CandidateExtractPytomParams,
     }
-
 
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
-    project_name: str = "Untitled"
-    project_path: Optional[Path] = None
-    created_at: datetime = Field(default_factory=datetime.now)
-    modified_at: datetime = Field(default_factory=datetime.now)
-    job_path_mapping: Dict[str, str] = Field(default_factory=dict)  # job_type -> relion_path
+    project_name    : str            = "Untitled"
+    project_path    : Optional[Path] = None
+    created_at      : datetime       = Field(default_factory=datetime.now)
+    modified_at     : datetime       = Field(default_factory=datetime.now)
+    job_path_mapping: Dict[str, str] = Field(default_factory=dict)          # job_type -> relion_path
 
     movies_glob: str = ""
     mdocs_glob: str = ""
