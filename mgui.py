@@ -14,7 +14,7 @@ from nicegui import app, ui
 
 # --- CONFIG ---
 PORT = 8085
-LOCAL_FILES_DIR = Path("/users/artem.kushner/dev/crboost_server/projects/tmp0ut").resolve()
+LOCAL_FILES_DIR = Path("/users/artem.kushner/dev/crboost_server/templates").resolve()
 CACHE_DIR = Path("./fetched_files").resolve()
 CACHE_DIR.mkdir(exist_ok=True)
 
