@@ -5,7 +5,7 @@ Backend fetches remote files to avoid CORS issues on firewalled headnodes.
 """
 
 import gzip
-import shutil
+import ssl
 import urllib.request
 from pathlib import Path
 
@@ -14,22 +14,19 @@ from nicegui import app, ui
 
 # --- CONFIG ---
 PORT = 8085
-LOCAL_FILES_DIR = Path("/users/artem.kushner/dev/crboost_server/templates").resolve()
-CACHE_DIR = Path("./fetched_files").resolve()
-CACHE_DIR.mkdir(exist_ok=True)
+TEMPLATES_DIR = Path("/users/artem.kushner/dev/crboost_server/templates").resolve()
+TEMPLATES_DIR.mkdir(exist_ok=True)
 
-import ssl
-import urllib.request
-
-SSL_CONTEXT                = ssl.create_default_context()
+SSL_CONTEXT = ssl.create_default_context()
 SSL_CONTEXT.check_hostname = False
-SSL_CONTEXT.verify_mode    = ssl.CERT_NONE
+SSL_CONTEXT.verify_mode = ssl.CERT_NONE
 
 
+# --- Backend: File Fetching ---
 def fetch_pdb_file(pdb_id: str) -> tuple[bool, str]:
     """Fetch PDB/CIF from RCSB, return local path."""
     pdb_id = pdb_id.lower().strip()
-    out_path = CACHE_DIR / f"{pdb_id}.cif"
+    out_path = TEMPLATES_DIR / f"{pdb_id}.cif"
     if out_path.exists():
         return True, str(out_path)
     
@@ -45,7 +42,7 @@ def fetch_pdb_file(pdb_id: str) -> tuple[bool, str]:
 def fetch_emdb_file(emdb_id: str) -> tuple[bool, str]:
     """Fetch map from EMDB, decompress, return local path."""
     numeric_id = emdb_id.upper().replace("EMD-", "").replace("EMD", "").strip()
-    out_path = CACHE_DIR / f"emd_{numeric_id}.map"
+    out_path = TEMPLATES_DIR / f"emd_{numeric_id}.map"
     if out_path.exists():
         return True, str(out_path)
     
@@ -60,6 +57,7 @@ def fetch_emdb_file(emdb_id: str) -> tuple[bool, str]:
     except Exception as e:
         return False, str(e)
 
+
 # --- API: Serve files to Molstar ---
 @app.get("/api/file")
 def serve_file(path: str):
@@ -70,7 +68,7 @@ def serve_file(path: str):
     return {"error": "not found"}
 
 
-# --- API: Molstar HTML (served inline to avoid static file issues) ---
+# --- Molstar HTML ---
 MOLSTAR_HTML = """
 <!DOCTYPE html>
 <html>
@@ -104,10 +102,7 @@ MOLSTAR_HTML = """
         }
         
         async function loadStructure(url, format, isBinary) {
-            if (!viewer) {
-                console.error('Viewer not initialized');
-                return;
-            }
+            if (!viewer) return;
             try {
                 await viewer.plugin.clear();
                 await viewer.loadStructureFromUrl(url, format, isBinary);
@@ -118,10 +113,7 @@ MOLSTAR_HTML = """
         }
         
         async function loadVolume(url) {
-            if (!viewer) {
-                console.error('Viewer not initialized');
-                return;
-            }
+            if (!viewer) return;
             try {
                 await viewer.plugin.clear();
                 await viewer.loadVolumeFromUrl(
@@ -134,10 +126,8 @@ MOLSTAR_HTML = """
             }
         }
         
-        // Listen for messages from parent
         window.addEventListener('message', async (e) => {
             if (!e.data || !e.data.action) return;
-            
             if (e.data.action === 'load_structure') {
                 await loadStructure(e.data.url, e.data.format, e.data.isBinary);
             } else if (e.data.action === 'load_volume') {
@@ -145,7 +135,6 @@ MOLSTAR_HTML = """
             }
         });
         
-        // Init on load
         window.onload = initViewer;
     </script>
 </body>
@@ -160,74 +149,101 @@ def molstar_viewer():
 # --- UI ---
 @ui.page("/")
 def main_page():
-    ui.label("Molstar Viewer").classes("text-2xl font-bold mb-4")
+    # Header
+    with ui.header().classes("bg-white border-b border-gray-200 px-6 py-3"):
+        with ui.row().classes("w-full items-center justify-between"):
+            with ui.row().classes("items-center gap-3"):
+                ui.icon("science", size="sm").classes("text-blue-600")
+                ui.label("Template Viewer").classes("text-lg font-semibold text-gray-800")
+                ui.label(f"{TEMPLATES_DIR}").classes("text-xs text-gray-400 font-mono")
     
-    with ui.row().classes("w-full gap-4"):
-        # LEFT: Controls
-        with ui.column().classes("w-80 gap-4"):
-            # -- Remote PDB --
-            with ui.card().classes("w-full"):
-                ui.label("Load from PDB").classes("font-bold")
-                pdb_input = ui.input("PDB ID (e.g. 1abc)").classes("w-full")
-                
-                async def load_pdb():
-                    if not pdb_input.value:
-                        ui.notify("Enter a PDB ID", type="warning")
-                        return
-                    ui.notify(f"Fetching {pdb_input.value}...")
-                    ok, result = fetch_pdb_file(pdb_input.value)
-                    if ok:
-                        load_structure_in_viewer(result)
-                        ui.notify("Loaded!", type="positive")
-                    else:
-                        ui.notify(f"Error: {result}", type="negative")
-                
-                ui.button("Fetch & Load", on_click=load_pdb).classes("w-full")
+    # Main content
+    with ui.row().classes("w-full h-[calc(100vh-60px)] p-4 gap-4 bg-gray-50"):
+        
+        # LEFT PANEL: Controls
+        with ui.column().classes("w-72 gap-3 shrink-0"):
             
-            # -- Remote EMDB --
+            # Remote Sources Card
             with ui.card().classes("w-full"):
-                ui.label("Load from EMDB").classes("font-bold")
-                emdb_input = ui.input("EMDB ID (e.g. 1234)").classes("w-full")
+                with ui.row().classes("items-center gap-2 mb-3"):
+                    ui.icon("cloud_download", size="xs").classes("text-blue-500")
+                    ui.label("Remote Sources").classes("font-semibold text-sm text-gray-700")
                 
-                async def load_emdb():
-                    if not emdb_input.value:
-                        ui.notify("Enter an EMDB ID", type="warning")
-                        return
-                    ui.notify(f"Fetching EMD-{emdb_input.value}...")
-                    ok, result = fetch_emdb_file(emdb_input.value)
-                    if ok:
-                        load_volume_in_viewer(result)
-                        ui.notify("Loaded!", type="positive")
-                    else:
-                        ui.notify(f"Error: {result}", type="negative")
+                # PDB
+                with ui.column().classes("gap-2 mb-4"):
+                    ui.label("PDB").classes("text-xs font-medium text-gray-500 uppercase")
+                    with ui.row().classes("w-full gap-2"):
+                        pdb_input = ui.input(placeholder="e.g. 1abc").props("dense").classes("flex-grow")
+                        
+                        async def load_pdb():
+                            if not pdb_input.value:
+                                return
+                            ui.notify(f"Fetching {pdb_input.value}...", type="info")
+                            ok, result = fetch_pdb_file(pdb_input.value)
+                            if ok:
+                                load_structure_in_viewer(result)
+                                refresh_files()
+                                ui.notify("Loaded!", type="positive")
+                            else:
+                                ui.notify(f"Error: {result}", type="negative")
+                        
+                        ui.button(icon="download", on_click=load_pdb).props("flat dense")
                 
-                ui.button("Fetch & Load", on_click=load_emdb).classes("w-full")
+                ui.separator()
+                
+                # EMDB
+                with ui.column().classes("gap-2 mt-3"):
+                    ui.label("EMDB").classes("text-xs font-medium text-gray-500 uppercase")
+                    with ui.row().classes("w-full gap-2"):
+                        emdb_input = ui.input(placeholder="e.g. 1234").props("dense").classes("flex-grow")
+                        
+                        async def load_emdb():
+                            if not emdb_input.value:
+                                return
+                            ui.notify(f"Fetching EMD-{emdb_input.value}...", type="info")
+                            ok, result = fetch_emdb_file(emdb_input.value)
+                            if ok:
+                                load_volume_in_viewer(result)
+                                refresh_files()
+                                ui.notify("Loaded!", type="positive")
+                            else:
+                                ui.notify(f"Error: {result}", type="negative")
+                        
+                        ui.button(icon="download", on_click=load_emdb).props("flat dense")
             
-            # -- Local Files Browser --
-            with ui.card().classes("w-full"):
-                ui.label("Local Files").classes("font-bold")
-                ui.label(str(LOCAL_FILES_DIR)).classes("text-xs text-gray-500 break-all")
+            # Local Files Card
+            with ui.card().classes("w-full flex-grow"):
+                with ui.row().classes("items-center justify-between mb-2"):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.icon("folder", size="xs").classes("text-amber-500")
+                        ui.label("Local Files").classes("font-semibold text-sm text-gray-700")
+                    ui.button(icon="refresh", on_click=lambda: refresh_files()).props("flat dense round size=sm")
                 
-                file_list = ui.column().classes("w-full max-h-48 overflow-auto")
+                file_list = ui.scroll_area().classes("w-full flex-grow")
                 
-                def refresh_local_files():
+                def refresh_files():
                     file_list.clear()
-                    if not LOCAL_FILES_DIR.exists():
+                    if not TEMPLATES_DIR.exists():
                         with file_list:
-                            ui.label("Directory not found").classes("text-red-500")
+                            ui.label("Directory not found").classes("text-red-500 text-xs p-2")
                         return
                     
                     extensions = {".pdb", ".cif", ".mrc", ".map", ".rec", ".ccp4"}
-                    files = sorted([f for f in LOCAL_FILES_DIR.iterdir() if f.suffix.lower() in extensions])
+                    files = sorted([f for f in TEMPLATES_DIR.iterdir() if f.suffix.lower() in extensions])
                     
                     with file_list:
                         if not files:
-                            ui.label("No files found").classes("text-gray-400 italic")
+                            ui.label("No files").classes("text-gray-400 italic text-xs p-2")
+                            return
+                        
                         for f in files:
-                            ui.button(
-                                f.name,
-                                on_click=lambda p=f: load_local_file(p)
-                            ).props("flat dense align=left").classes("w-full text-left text-sm")
+                            is_vol = is_volume_file(f)
+                            icon = "view_in_ar" if is_vol else "account_tree"
+                            color = "text-blue-400" if is_vol else "text-green-400"
+                            
+                            with ui.row().classes("w-full items-center hover:bg-gray-100 rounded px-2 py-1 cursor-pointer gap-2").on("click", lambda p=f: load_local_file(p)):
+                                ui.icon(icon, size="xs").classes(color)
+                                ui.label(f.name).classes("text-xs text-gray-700 truncate")
                 
                 def load_local_file(path: Path):
                     if is_volume_file(path):
@@ -236,41 +252,33 @@ def main_page():
                         load_structure_in_viewer(str(path))
                     ui.notify(f"Loaded {path.name}", type="positive")
                 
-                ui.button("Refresh", on_click=refresh_local_files, icon="refresh").props("flat").classes("w-full")
-                refresh_local_files()
+                refresh_files()
         
-        # RIGHT: Molstar Viewer
-        with ui.column().classes("flex-grow"):
-            ui.element("iframe").props('src="/molstar" id="molstar-frame"').style(
-                "width: 800px; height: 500px; border: 1px solid #333; border-radius: 4px;"
-            )
+        # RIGHT PANEL: Viewer
+        with ui.card().classes("flex-grow h-full p-0 overflow-hidden"):
+            ui.element("iframe").props('src="/molstar" id="molstar-frame"').classes("w-full h-full").style("border: none;")
             
             def load_structure_in_viewer(file_path: str):
-                """Load a structure (pdb/cif) in the viewer."""
                 file_url = f"/api/file?path={file_path}"
                 fmt, is_binary = get_structure_format(file_path)
-                js = f'''
+                ui.run_javascript(f'''
                     document.getElementById('molstar-frame').contentWindow.postMessage(
                         {{ action: 'load_structure', url: '{file_url}', format: '{fmt}', isBinary: {str(is_binary).lower()} }},
                         '*'
                     );
-                '''
-                ui.run_javascript(js)
+                ''')
             
             def load_volume_in_viewer(file_path: str):
-                """Load a volume (mrc/map) in the viewer."""
                 file_url = f"/api/file?path={file_path}"
-                js = f'''
+                ui.run_javascript(f'''
                     document.getElementById('molstar-frame').contentWindow.postMessage(
                         {{ action: 'load_volume', url: '{file_url}' }},
                         '*'
                     );
-                '''
-                ui.run_javascript(js)
+                ''')
 
 
 def get_structure_format(path: str) -> tuple[str, bool]:
-    """Return (format, isBinary) for structure files."""
     ext = Path(path).suffix.lower()
     if ext == ".pdb":
         return "pdb", False
@@ -282,24 +290,10 @@ def get_structure_format(path: str) -> tuple[str, bool]:
 
 
 def is_volume_file(path: Path) -> bool:
-    """Check if file is a volume format."""
     return path.suffix.lower() in {".mrc", ".map", ".rec", ".ccp4"}
-
-def get_format(path: Path) -> str:
-    """Determine Molstar format from file extension."""
-    ext = path.suffix.lower()
-    return {
-        ".pdb": "pdb",
-        ".cif": "mmcif",
-        ".mrc": "ccp4",
-        ".map": "ccp4",
-        ".rec": "ccp4",
-        ".ccp4": "ccp4",
-    }.get(ext, "pdb")
 
 
 if __name__ in {"__main__", "__mp_main__"}:
     print(f"Starting on http://localhost:{PORT}")
-    print(f"Local files dir: {LOCAL_FILES_DIR}")
-    print(f"Cache dir: {CACHE_DIR}")
-    ui.run(title="Molstar Viewer", port=PORT)
+    print(f"Templates dir: {TEMPLATES_DIR}")
+    ui.run(title="Template Viewer", port=PORT, favicon="🔬")
