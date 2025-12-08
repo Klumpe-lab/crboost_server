@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 
 # Refactored imports
+from services.pdb_service import PDBService
 from services.project_service import ProjectService
 from services.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.container_service import get_container_service
@@ -14,6 +15,8 @@ from services.pipeline_runner import PipelineRunnerService
 from services.project_state import JobType, get_state_service
 from services.slurm_service import SlurmService
 from services.config_service import get_config_service
+from services.template_service import TemplateService
+
 
 HARDCODED_USER = "artem.kushner"
 
@@ -27,6 +30,8 @@ class CryoBoostBackend:
         self.slurm_service         = SlurmService(HARDCODED_USER)
         self.pipeline_runner       = PipelineRunnerService(self)
         self.state_service         = get_state_service()
+        self.template_service      = TemplateService(self)
+        self.pdb_service           = PDBService(self)
 
     async def start_pipeline(
             self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]

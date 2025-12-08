@@ -19,12 +19,29 @@ from services.project_state import (
     get_state_service,
 )
 from ui.status_indicator import ReactiveStatusBadge
+from ui.template_creation_dialog import TemplateCreationDialog
 from ui.ui_state import (
     get_ui_state_manager,
     UIStateManager,
     MonitorTab,
     get_job_display_name,
 )
+
+def open_template_generator(backend, project_path, job_model):
+    
+    def on_created(template_path, mask_path):
+        # Update the job parameters with the new paths
+        new_params = {"in_3dref": template_path}
+        if mask_path:
+            new_params["in_mask"] = mask_path
+        
+        # Save via backend
+        asyncio.create_task(backend.update_job_parameters("templatematching", new_params))
+        ui.notify("Updated Job Parameters with new Template/Mask")
+
+    dialog = TemplateCreationDialog(backend, str(project_path), on_success=on_created)
+    dialog.open()
+
 
 # ===========================================
 # REACTIVE COMPONENTS (The Fix)
@@ -270,6 +287,10 @@ def render_job_tab(
             _render_logs_tab(job_type, job_model, backend, ui_mgr)
         elif active_tab == MonitorTab.FILES:
             _render_files_tab(job_type, job_model, ui_mgr)
+    
+    if job_type == JobType.TEMPLATE_MATCH_PYTOM:
+        ui.button("Generate Template/Mask", icon="add_box", 
+                on_click=lambda: open_template_generator(backend, ui_mgr.project_path, job_model))
 
 
 # ===========================================
@@ -492,6 +513,7 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
 # ===========================================
 # Logs Tab
 # ===========================================
+
 
 def _render_logs_tab(job_type: JobType, job_model, backend, ui_mgr: UIStateManager):
     """Render the logs tab."""
