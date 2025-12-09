@@ -44,6 +44,24 @@ class TemplateService:
     async def calculate_auto_threshold_async(self, input_path: str) -> float:
         return await asyncio.to_thread(self._calculate_auto_threshold_sync, input_path)
 
+
+    async def delete_file_async(self, file_path: str) -> Dict[str, Any]:
+            """Deletes a specific file."""
+            return await asyncio.to_thread(self._delete_file_sync, file_path)
+
+    def _delete_file_sync(self, file_path: str) -> Dict[str, Any]:
+        try:
+            p = Path(file_path)
+            if p.exists() and p.is_file():
+                os.remove(p)
+                # Optional: try to clean up associated preview if it exists
+                preview = p.parent / (p.stem + "_preview" + p.suffix)
+                if preview.exists():
+                    os.remove(preview)
+                return {"success": True}
+            return {"success": False, "error": "File not found"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     # --- Synchronous Implementations ---
 
     def _list_files_sync(self, folder: str) -> List[str]:
