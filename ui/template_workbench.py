@@ -1,11 +1,12 @@
+# ui/template_workbench.py
 from nicegui import ui, app
 from fastapi.responses import FileResponse, HTMLResponse
 import os
 import asyncio
 from pathlib import Path
-from typing import Optional
 
-# --- MOLSTAR HTML & ROUTING ---
+from services.project_state import JobType, get_project_state, get_state_service
+
 MOLSTAR_HTML = """
 <!DOCTYPE html>
 <html>
@@ -13,7 +14,7 @@ MOLSTAR_HTML = """
     <meta charset="utf-8">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        html, body, #app { width: 100%; height: 100%; overflow: hidden; background: #000; }
+        html, body, #app { width: 100%; height: 100%; overflow: hidden; background: #1a1a1a; }
     </style>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/molstar@latest/build/viewer/molstar.css">
     <script src="https://cdn.jsdelivr.net/npm/molstar@latest/build/viewer/molstar.js"></script>
@@ -35,18 +36,15 @@ MOLSTAR_HTML = """
                 viewportShowSelectionMode: false,
                 viewportShowAnimation: false,
             });
-            console.log('Molstar viewer initialized');
         }
         
-        async function loadStructure(url, format, isBinary) {
+        async function loadStructure(url, format) {
             if (!viewer) return;
             try {
                 await viewer.plugin.clear();
-                await viewer.loadStructureFromUrl(url, format, isBinary);
+                await viewer.loadStructureFromUrl(url, format, false);
                 viewer.plugin.behaviors.layout.leftPanelState.next('collapsed');
-            } catch (e) {
-                console.error('Failed to load structure:', e);
-            }
+            } catch (e) { console.error('Load failed:', e); }
         }
         
         async function loadVolume(url) {
@@ -57,15 +55,13 @@ MOLSTAR_HTML = """
                     { url: url, format: 'ccp4', isBinary: true },
                     [{ type: 'relative', value: 2.0, color: 0x3388ff, alpha: 0.8 }]
                 );
-            } catch (e) {
-                console.error('Failed to load volume:', e);
-            }
+            } catch (e) { console.error('Load failed:', e); }
         }
         
         window.addEventListener('message', async (e) => {
             if (!e.data || !e.data.action) return;
             if (e.data.action === 'load_structure') {
-                await loadStructure(e.data.url, e.data.format, e.data.isBinary);
+                await loadStructure(e.data.url, e.data.format);
             } else if (e.data.action === 'load_volume') {
                 await loadVolume(e.data.url);
             }
@@ -77,10 +73,11 @@ MOLSTAR_HTML = """
 </html>
 """
 
-# Register routes if not already registered by main.py
+
 @app.get("/molstar")
 def molstar_viewer():
     return HTMLResponse(MOLSTAR_HTML)
+
 
 @app.get("/api/file")
 def serve_file(path: str):
@@ -91,381 +88,440 @@ def serve_file(path: str):
 
 
 class TemplateWorkbench:
-    def __init__(self, backend, project_path: str, container: ui.element):
-        """
-        Inline Template Workbench Component.
-        Integrates file management, remote fetching, generation, and visualization.
-        """
+    """Three-column template workbench: Controls | Viewer | Files"""
+
+    def __init__(self, backend, project_path: str):
         self.backend = backend
         self.project_path = project_path
         self.output_folder = os.path.join(project_path, "templates")
-        
-        # Ensure output folder exists
         os.makedirs(self.output_folder, exist_ok=True)
 
-        # --- State ---
         self.is_processing = False
-        self.container = container
-        
-        # Generator Defaults
+
+        # Settings
         self.pixel_size = 1.5
         self.box_size = 128
         self.basic_shape_def = "100:100:100"
-        
-        # Inputs
         self.pdb_input_val = ""
         self.emdb_input_val = ""
-        
-        # Mask Defaults
+
+        # Mask settings
         self.mask_threshold = 0.001
         self.mask_extend = 3
         self.mask_soft_edge = 6
         self.mask_lowpass = 20
-        
-        # Selection State
-        self.selected_file_path = None
-        self.last_generated_result = None
 
-        # UI References
+        # UI refs
         self.file_list_container = None
-        
-        # Render
-        self.render()
-        
-        # Initial file load
+        self.mask_btn = None
+        self.mask_ref_label = None
+
+        self._render()
         asyncio.create_task(self.refresh_files())
 
-    def safe_notify(self, message: str, type: str = "info"):
-        ui.notify(message, type=type, close_button=True)
+    # =========================================================
+    # STATE
+    # =========================================================
 
-    def render(self):
-        with self.container:
-            # Main container with a fixed height and border
-            # We use h-[750px] to give the viewer enough vertical space
-            with ui.row().classes("w-full h-[750px] border border-gray-200 rounded-lg overflow-hidden gap-0 bg-white shadow-sm flex-nowrap"):
-                
-                # =========================================================
-                # LEFT PANEL: Vertical Stack
-                # =========================================================
-                # flex-col, h-full, shrink-0 ensures this column stays fixed width and organizes children vertically
-                with ui.column().classes("w-[450px] h-full bg-white border-r border-gray-200 flex flex-col shrink-0 relative p-0 gap-0"):
-                    
-                    # Loading Overlay
-                    with ui.column().bind_visibility_from(self, 'is_processing').classes("absolute inset-0 z-50 bg-white/60 backdrop-blur-sm items-center justify-center"):
-                        ui.spinner(size="lg")
-                    
-                    # --- 1. Global Settings (Fixed Height, Shrink-0) ---
-                    with ui.column().classes("p-3 w-full gap-3 border-b border-gray-100 bg-gray-50 shrink-0"):
-                        ui.label("Global Settings").classes("text-[10px] font-bold text-gray-400 uppercase tracking-wider")
-                        
-                        # Row 1: Global Settings
-                        with ui.row().classes("w-full gap-2 items-center"):
-                            ui.number("Apix (Å)", value=self.pixel_size, step=0.1, format="%.2f").bind_value(self, "pixel_size").props("dense outlined").classes("flex-1 bg-white")
-                            ui.number("Box (px)", value=self.box_size, step=2).bind_value(self, "box_size").props("dense outlined").classes("flex-1 bg-white")
-                            
-                        # Row 2: Downloaders
-                        ui.label("Fetch Sources").classes("text-[10px] font-bold text-gray-400 uppercase tracking-wider mt-1")
-                        with ui.row().classes("w-full gap-1 items-center"):
-                            ui.input(placeholder="PDB ID (e.g. 3j7z)").bind_value(self, "pdb_input_val").props("dense outlined").classes("flex-grow bg-white text-sm")
-                            ui.button(icon="download", on_click=self.handle_fetch_pdb).props("flat dense color=primary").tooltip("Download PDB Structure")
-                        
-                        with ui.row().classes("w-full gap-1 items-center"):
-                            ui.input(placeholder="EMDB ID (e.g. 30210)").bind_value(self, "emdb_input_val").props("dense outlined").classes("flex-grow bg-white text-sm")
-                            ui.button(icon="download", on_click=self.handle_fetch_emdb).props("flat dense color=primary").tooltip("Download EMDB Map")
+    def _get_tm_params(self):
+        state = get_project_state()
+        return state.jobs.get(JobType.TEMPLATE_MATCH_PYTOM)
 
-                    # --- 2. Action Tabs (Fixed Height, Shrink-0) ---
-                    with ui.column().classes("w-full border-b border-gray-200 bg-white shrink-0"):
-                        
-                        # Feedback Area
-                        self.feedback_container = ui.column().classes("w-full px-3 pt-2")
+    def _get_current_template_path(self) -> str:
+        params = self._get_tm_params()
+        return params.template_path if params else ""
 
-                        with ui.tabs().classes("w-full text-left bg-white h-8 min-h-0 border-b border-gray-100") as tabs:
-                            self.t_shape = ui.tab("Shape").classes("h-8 text-xs min-h-0 px-4")
-                            self.t_pdb = ui.tab("PDB").classes("h-8 text-xs min-h-0 px-4")
-                            self.t_mask = ui.tab("Mask").classes("h-8 text-xs min-h-0 px-4")
+    def _get_current_mask_path(self) -> str:
+        params = self._get_tm_params()
+        return params.mask_path if params else ""
 
-                        # Tab Panels
-                        with ui.tab_panels(tabs, value=self.t_shape).classes("w-full p-3 bg-gray-50 h-auto") as self.tab_panels:
-                            
-                            # Tab: Synthetic Shape
-                            with ui.tab_panel(self.t_shape).classes("p-0 flex flex-col gap-2"):
-                                ui.label("Generate synthetic ellipsoid").classes("text-[10px] text-gray-500")
-                                ui.input("Dims (x:y:z Å)", placeholder="100:100:100").bind_value(self, "basic_shape_def").props("dense outlined").classes("w-full bg-white")
-                                ui.button("Generate Shape", icon="category", on_click=self.handle_basic_shape).props("color=primary unelevated dense w-full")
+    async def _set_template_path(self, path: str):
+        params = self._get_tm_params()
+        if params:
+            params.template_path = path
+            await get_state_service().save_project()
 
-                            # Tab: PDB Simulation
-                            with ui.tab_panel(self.t_pdb).classes("p-0 flex flex-col gap-2"):
-                                ui.label("Simulate density from structure").classes("text-[10px] text-gray-500")
-                                ui.input("PDB File/ID").bind_value(self, "pdb_input_val").props("dense outlined").classes("w-full bg-white").tooltip("Select a .cif/.pdb from the list")
-                                ui.button("Simulate Map", icon="biotech", on_click=self.handle_simulate_pdb).props("color=primary unelevated dense w-full")
+    async def _set_mask_path(self, path: str):
+        params = self._get_tm_params()
+        if params:
+            params.mask_path = path
+            await get_state_service().save_project()
 
-                            # Tab: Mask Creation
-                            with ui.tab_panel(self.t_mask).classes("p-0 flex flex-col gap-2"):
-                                # Context Label
-                                with ui.row().classes("w-full items-center gap-1 mb-1"):
-                                    if self.selected_file_path and "mrc" in self.selected_file_path:
-                                         ui.label(f"Ref: {os.path.basename(self.selected_file_path)[:20]}...").classes("text-[10px] font-mono text-blue-600 bg-blue-50 px-1 rounded")
-                                    else:
-                                         ui.label("Select a volume first").classes("text-[10px] text-orange-500 italic")
-                                
-                                with ui.row().classes("w-full gap-2"):
-                                    ui.number("Thr", value=0.001, format="%.4f").bind_value(self, "mask_threshold").props("dense outlined").classes("flex-1 bg-white").tooltip("Threshold")
-                                    ui.number("Soft", value=6).bind_value(self, "mask_soft_edge").props("dense outlined").classes("flex-1 bg-white").tooltip("Soft Edge (px)")
-                                
-                                with ui.row().classes("w-full gap-2"):
-                                    ui.number("Ext", value=3).bind_value(self, "mask_extend").props("dense outlined").classes("flex-1 bg-white").tooltip("Extend (px)")
-                                    ui.number("Low", value=20).bind_value(self, "mask_lowpass").props("dense outlined").classes("flex-1 bg-white").tooltip("Lowpass (Å)")
+    # =========================================================
+    # RENDER
+    # =========================================================
 
-                                ui.button("Create Mask", icon="architecture", on_click=self.handle_mask).props("color=secondary unelevated dense w-full")
+    def _render(self):
+        # Fixed height container for the whole workbench
+        with ui.column().classes("w-full"):
+            # Selection indicators at top
+            with ui.row().classes("w-full gap-4 p-3 bg-gray-50 border-b border-gray-200"):
+                with ui.row().classes("flex-1 items-center gap-2"):
+                    ui.icon("view_in_ar", size="xs").classes("text-blue-600")
+                    ui.label("Template:").classes("text-xs font-bold text-gray-600")
+                    self.template_label = ui.label("Not set").classes("text-xs font-mono text-gray-500 italic")
+                with ui.row().classes("flex-1 items-center gap-2"):
+                    ui.icon("architecture", size="xs").classes("text-purple-600")
+                    ui.label("Mask:").classes("text-xs font-bold text-gray-600")
+                    self.mask_label = ui.label("Not set").classes("text-xs font-mono text-gray-500 italic")
 
-                    # --- 3. File List Header (Shrink-0) ---
-                    # Just a simple header block
-                    with ui.row().classes("w-full items-center justify-between px-3 py-1 bg-white border-b border-gray-100 z-10 shrink-0 border-t border-gray-200"):
-                        ui.label("Templates & Maps").classes("text-[10px] font-bold text-gray-400 uppercase tracking-wider")
-                        ui.button(icon="refresh", on_click=self.refresh_files).props("flat round dense size=xs color=grey")
+            # Three columns with fixed height
+            with ui.row().classes("w-full items-stretch").style("height: 480px;"):
+                # =====================
+                # COLUMN 1: Controls (narrow)
+                # =====================
+                with ui.column().classes(
+                    "w-[500px] shrink-0 p-3 border-r border-gray-200 gap-2 bg-white overflow-y-auto"
+                ):
+                    # Global settings
+                    self._section("Settings", "tune")
+                    with ui.row().classes("w-full gap-2"):
+                        ui.number("Apix", value=self.pixel_size, step=0.1, format="%.2f").bind_value(
+                            self, "pixel_size"
+                        ).props("dense outlined").classes("flex-1")
+                        ui.number("Box", value=self.box_size, step=2).bind_value(self, "box_size").props(
+                            "dense outlined"
+                        ).classes("flex-1")
 
-                    # --- 4. File List Container (Flex Grow) ---
-                    # This captures all remaining vertical space in the 450px column
-                    self.file_list_container = ui.scroll_area().classes("w-full flex-grow p-0 bg-white")
+                    ui.separator().classes("my-1")
 
-                # =========================================================
-                # RIGHT PANEL: Viewer 
-                # =========================================================
-                with ui.column().classes("flex-grow h-full bg-black relative p-0 overflow-hidden"):
-                    ui.element("iframe").props('src="/molstar" id="molstar-frame"').classes("w-full h-full border-none")
-                    
-                    # Legend Overlay
-                    with ui.row().classes("absolute bottom-3 right-3 bg-black/70 px-3 py-2 rounded text-[10px] text-gray-200 backdrop-blur-md pointer-events-none select-none"):
-                        ui.label("L-Click: Rotate • R-Click: Pan • Scroll: Zoom")
+                    # Fetch
+                    self._section("Fetch", "cloud_download")
+                    with ui.row().classes("w-full gap-1"):
+                        ui.input(placeholder="PDB ID").bind_value(self, "pdb_input_val").props(
+                            "dense outlined"
+                        ).classes("flex-1")
+                        ui.button(icon="download", on_click=self._fetch_pdb).props("flat dense color=primary")
+                    with ui.row().classes("w-full gap-1"):
+                        ui.input(placeholder="EMDB ID").bind_value(self, "emdb_input_val").props(
+                            "dense outlined"
+                        ).classes("flex-1")
+                        ui.button(icon="download", on_click=self._fetch_emdb).props("flat dense color=primary")
 
-    # --- LOGIC ---
+                    ui.separator().classes("my-1")
+
+                    # Shape
+                    self._section("Shape", "category")
+                    with ui.row().classes("w-full gap-1"):
+                        ui.input(placeholder="x:y:z Å").bind_value(self, "basic_shape_def").props(
+                            "dense outlined"
+                        ).classes("flex-1")
+                        ui.button(icon="play_arrow", on_click=self._gen_shape).props("flat dense color=primary")
+
+                    ui.separator().classes("my-1")
+
+                    # Simulate
+                    self._section("Simulate PDB", "biotech")
+                    with ui.row().classes("w-full gap-1"):
+                        ui.input(placeholder="PDB file/ID").bind_value(self, "pdb_input_val").props(
+                            "dense outlined"
+                        ).classes("flex-1")
+                        ui.button(icon="play_arrow", on_click=self._simulate_pdb).props("flat dense color=primary")
+
+                    ui.separator().classes("my-1")
+
+                    # Mask - only works on selected template
+                    self._section("Create Mask", "architecture")
+                    self.mask_ref_label = ui.label("Set a template first").classes(
+                        "text-[10px] text-orange-500 italic mb-1"
+                    )
+                    with ui.row().classes("w-full gap-2"):
+                        ui.number("Thr", format="%.4f").bind_value(self, "mask_threshold").props(
+                            "dense outlined"
+                        ).classes("flex-1")
+                        ui.number("Ext").bind_value(self, "mask_extend").props("dense outlined").classes("flex-1")
+                    with ui.row().classes("w-full gap-2 mt-1"):
+                        ui.number("Soft").bind_value(self, "mask_soft_edge").props("dense outlined").classes("flex-1")
+                        ui.number("LP").bind_value(self, "mask_lowpass").props("dense outlined").classes("flex-1")
+                    self.mask_btn = (
+                        ui.button("Create Mask", icon="play_arrow", on_click=self._create_mask)
+                        .props("unelevated dense color=secondary disabled")
+                        .classes("w-full mt-2")
+                    )
+
+                # =====================
+                # COLUMN 2: Viewer (smaller width)
+                # =====================
+                with (
+                    ui.element("div")
+                    .classes("flex-1 min-w-[300px] max-w-[500px] bg-black relative")
+                    .style("height: 100%;")
+                ):
+                    ui.element("iframe").props('src="/molstar" id="molstar-frame"').style(
+                        "width: 100%; height: 100%; border: none;"
+                    )
+                    with ui.row().classes(
+                        "absolute bottom-2 left-2 bg-black/60 px-2 py-1 rounded text-[9px] text-gray-400"
+                    ):
+                        ui.label("LMB: Rotate | RMB: Pan | Scroll: Zoom")
+
+                # =====================
+                # COLUMN 3: Files (wider)
+                # =====================
+                with ui.column().classes("w-[400px] shrink-0 border-l border-gray-200 bg-white"):
+                    with ui.row().classes(
+                        "w-full items-center justify-between p-2 border-b border-gray-100 bg-gray-50"
+                    ):
+                        ui.label("Files").classes("text-xs font-bold text-gray-600 uppercase")
+                        ui.button(icon="refresh", on_click=self.refresh_files).props(
+                            "flat round dense size=xs color=grey"
+                        )
+
+                    self.file_list_container = ui.column().classes("w-full p-2 gap-1 overflow-y-auto flex-1")
+
+    def _section(self, title: str, icon: str):
+        with ui.row().classes("items-center gap-1"):
+            ui.icon(icon, size="xs").classes("text-gray-400")
+            ui.label(title).classes("text-[10px] font-bold text-gray-500 uppercase")
+
+    def _update_selection_labels(self):
+        t_path = self._get_current_template_path()
+        m_path = self._get_current_mask_path()
+
+        if t_path:
+            self.template_label.set_text(os.path.basename(t_path))
+            self.template_label.classes(replace="text-xs font-mono text-blue-700")
+        else:
+            self.template_label.set_text("Not set")
+            self.template_label.classes(replace="text-xs font-mono text-gray-500 italic")
+
+        if m_path:
+            self.mask_label.set_text(os.path.basename(m_path))
+            self.mask_label.classes(replace="text-xs font-mono text-purple-700")
+        else:
+            self.mask_label.set_text("Not set")
+            self.mask_label.classes(replace="text-xs font-mono text-gray-500 italic")
+
+        # Update mask creation UI based on template selection
+        self._update_mask_ui()
+
+    def _update_mask_ui(self):
+        """Enable/disable mask creation based on template selection."""
+        t_path = self._get_current_template_path()
+
+        if t_path and any(x in t_path.lower() for x in [".mrc", ".map", ".rec"]):
+            # Template is a volume - enable mask creation
+            if self.mask_ref_label:
+                self.mask_ref_label.set_text(os.path.basename(t_path))
+                self.mask_ref_label.classes(replace="text-[10px] text-blue-600 font-mono")
+            if self.mask_btn:
+                self.mask_btn.props(remove="disabled")
+            # Auto-calc threshold
+            asyncio.create_task(self._auto_threshold(t_path))
+        else:
+            # No template or not a volume
+            if self.mask_ref_label:
+                self.mask_ref_label.set_text("Set a volume template first")
+                self.mask_ref_label.classes(replace="text-[10px] text-orange-500 italic")
+            if self.mask_btn:
+                self.mask_btn.props(add="disabled")
+
+    # =========================================================
+    # FILE LIST
+    # =========================================================
 
     async def refresh_files(self):
-        self.file_list_container.clear()
-        
-        # Add a tiny loading skeleton
-        with self.file_list_container:
-            ui.skeleton().classes("w-full h-6 mb-1 opacity-50")
+        if not self.file_list_container:
+            return
 
-        # Fetch files
-        files = await self.backend.template_service.list_template_files_async(self.output_folder)
-        
+        self._update_selection_labels()
         self.file_list_container.clear()
+
+        files = await self.backend.template_service.list_template_files_async(self.output_folder)
+        current_template = self._get_current_template_path()
+        current_mask = self._get_current_mask_path()
+
         with self.file_list_container:
             if not files:
-                with ui.column().classes("w-full items-center justify-center py-8 text-gray-300 gap-2"):
-                    ui.icon("folder_off", size="sm")
-                    ui.label("No templates yet").classes("text-xs")
+                ui.label("No files yet").classes("text-xs text-gray-400 italic py-4 text-center w-full")
                 return
-            
-            # Render File List
+
             for f_path in files:
                 fname = os.path.basename(f_path)
-                is_vol = any(x in fname.lower() for x in [".mrc", ".map", ".rec"])
-                
-                # Visuals
-                icon = "view_in_ar" if is_vol else "account_tree"
-                text_color = "text-blue-600" if is_vol else "text-green-600"
-                bg_hover = "hover:bg-blue-50" if is_vol else "hover:bg-green-50"
-                
-                # Selection Highlight
-                is_selected = self.selected_file_path == f_path
-                bg_selected = "bg-blue-100" if is_selected and is_vol else ("bg-green-100" if is_selected else "")
-                
-                # Compact Row
-                row = ui.row().classes(f"w-full items-center gap-2 px-3 py-1.5 border-b border-gray-50 group transition-colors cursor-pointer {bg_hover} {bg_selected}")
-                with row:
-                    # Icon
-                    ui.icon(icon, size="xs").classes(f"{text_color} opacity-70")
-                    
-                    # Name
-                    lbl = ui.label(fname).classes("text-xs text-gray-700 font-mono truncate flex-grow leading-tight")
-                    lbl.style("max-width: 200px") 
-                    
-                    # Hover Actions
-                    with ui.row().classes("gap-1 items-center opacity-0 group-hover:opacity-100 transition-opacity"):
-                        # Delete
-                        btn_del = ui.button(icon="delete", on_click=lambda _, p=f_path: self.handle_delete(p))
-                        btn_del.props("flat dense round size=xs color=red").classes("ml-1")
+                # is_vol = any(x in fname.lower() for x in [".mrc", ".map", ".rec"]) # unused now for icons
+                is_template = f_path == current_template
+                is_mask = f_path == current_mask
 
-                # Row Click Handler
-                row.on("click", lambda _, p=f_path: self.select_file(p))
+                # Row styling
+                bg = "bg-blue-50" if is_template else ("bg-purple-50" if is_mask else "hover:bg-gray-50")
+                border = ""
+                if is_template:
+                    border = "border-l-4 border-l-blue-500"
+                elif is_mask:
+                    border = "border-l-4 border-l-purple-500"
+                else:
+                    border = "border-l-4 border-l-transparent"
 
-    def update_feedback(self, message: str, type: str="success"):
-        """Show a small dismissible alert above the tabs"""
-        self.feedback_container.clear()
-        if not message: return
-        
-        color = "bg-green-50 text-green-800 border-green-200" if type == "success" else "bg-red-50 text-red-800 border-red-200"
-        icon = "check_circle" if type == "success" else "error"
-        
-        with self.feedback_container:
-            with ui.row().classes(f"w-full items-center gap-2 px-2 py-1 rounded border {color} mb-2"):
-                ui.icon(icon, size="xs")
-                ui.label(message).classes("text-[10px] font-bold flex-grow truncate")
-                ui.button(icon="close", on_click=self.feedback_container.clear).props("flat round dense size=xs")
+                # Row Container
+                with ui.row().classes(f"w-full items-center justify-between gap-2 px-2 py-1.5 rounded {bg} {border}"):
+                    # Clickable name area - visualize on click
+                    with (
+                        ui.row()
+                        .classes("flex-1 items-center gap-2 min-w-0 cursor-pointer")
+                        .on("click", lambda p=f_path: self._visualize(p))
+                    ):
+                        # Icon removed as per request
+                        ui.label(fname).classes("text-[11px] font-mono text-gray-700 truncate flex-1").tooltip(f_path)
 
-    async def handle_delete(self, path: str):
-        await self.backend.template_service.delete_file_async(path)
-        ui.notify(f"Deleted {os.path.basename(path)}", type="info", position="bottom-right")
-        if self.selected_file_path == path:
-            self.selected_file_path = None
-        await self.refresh_files()
+                        # Badges
+                        if is_template:
+                            ui.label("T").classes(
+                                "text-[8px] font-bold text-white bg-blue-500 w-4 h-4 rounded flex items-center justify-center shrink-0"
+                            )
+                        if is_mask:
+                            ui.label("M").classes(
+                                "text-[8px] font-bold text-white bg-purple-500 w-4 h-4 rounded flex items-center justify-center shrink-0"
+                            )
 
-    def select_file(self, path: str):
-        self.selected_file_path = path
-        
-        # 1. Load into Viewer
+                    # Actions - always visible
+                    with ui.row().classes("gap-0 shrink-0"):
+                        # NOTE: Removed asyncio.create_task here to fix RuntimeError
+                        ui.button(icon="view_in_ar", on_click=lambda p=f_path: self._toggle_template(p)).props(
+                            f"flat round dense size=xs {'color=blue' if is_template else 'color=grey'}"
+                        ).tooltip("Set as Template")
+                        ui.button(icon="architecture", on_click=lambda p=f_path: self._toggle_mask(p)).props(
+                            f"flat round dense size=xs {'color=purple' if is_mask else 'color=grey'}"
+                        ).tooltip("Set as Mask")
+                        ui.button(icon="delete", on_click=lambda p=f_path: self._delete(p)).props(
+                            "flat round dense size=xs color=red"
+                        ).tooltip("Delete")
+
+    def _visualize(self, path: str):
+        """Visualize a file in molstar."""
         if any(x in path.lower() for x in [".mrc", ".map", ".rec", ".ccp4"]):
-            # Check for preview logic (Optional optimization)
             preview = path.replace(".mrc", "_preview.mrc")
             to_load = preview if os.path.exists(preview) else path
-            
-            self._viewer_load_volume(to_load)
-            
-            # Switch to Mask Tab & Calc Threshold
-            self.tab_panels.set_value(self.t_mask)
-            
-            # Auto-calc threshold if it's a map
-            asyncio.create_task(self._auto_threshold(path))
-            
+            url = f"/api/file?path={to_load}"
+            ui.run_javascript(
+                f"document.getElementById('molstar-frame').contentWindow.postMessage({{ action: 'load_volume', url: '{url}' }}, '*');"
+            )
         else:
-            # Structure
-            self._viewer_load_structure(path)
-            
-            # Set as input for PDB Simulation & Switch Tab
-            self.pdb_input_val = path
-            self.tab_panels.set_value(self.t_pdb)
-
-        # Refresh list to show highlight
-        self.refresh_files()
+            url = f"/api/file?path={path}"
+            fmt = "pdb" if path.lower().endswith(".pdb") else "mmcif"
+            ui.run_javascript(
+                f"document.getElementById('molstar-frame').contentWindow.postMessage({{ action: 'load_structure', url: '{url}', format: '{fmt}' }}, '*');"
+            )
 
     async def _auto_threshold(self, path):
+        if not path or not os.path.exists(path):
+            return
         thr = await self.backend.template_service.calculate_auto_threshold_async(path)
         self.mask_threshold = round(thr, 4)
 
-    # --- Javascript Bridges ---
-
-    def _viewer_load_volume(self, path):
-        url = f"/api/file?path={path}"
-        ui.run_javascript(f"document.getElementById('molstar-frame').contentWindow.postMessage({{ action: 'load_volume', url: '{url}' }}, '*');")
-
-    def _viewer_load_structure(self, path):
-        url = f"/api/file?path={path}"
-        fmt = "pdb" if path.lower().endswith(".pdb") else "mmcif"
-        ui.run_javascript(f"document.getElementById('molstar-frame').contentWindow.postMessage({{ action: 'load_structure', url: '{url}', format: '{fmt}' }}, '*');")
-
-    # --- Handlers ---
-
-    async def handle_fetch_pdb(self):
-        if not self.pdb_input_val: return
-        self.is_processing = True
-        ui.notify(f"Fetching {self.pdb_input_val}...", type="ongoing", timeout=2)
-        res = await self.backend.template_service.fetch_pdb_async(self.pdb_input_val, self.output_folder)
-        self.is_processing = False
-        if res["success"]: 
-            await self.refresh_files()
-            self.select_file(res["path"])
-            self.update_feedback(f"Fetched {os.path.basename(res['path'])}")
+    async def _toggle_template(self, path: str):
+        if self._get_current_template_path() == path:
+            await self._set_template_path("")
         else:
-            ui.notify(f"Error: {res['error']}", type="negative")
+            await self._set_template_path(path)
+            # Auto-visualize when setting template
+            self._visualize(path)
+        await self.refresh_files()
 
-    async def handle_fetch_emdb(self):
-        if not self.emdb_input_val: return
-        self.is_processing = True
-        ui.notify(f"Fetching EMD-{self.emdb_input_val}...", type="ongoing", timeout=2)
-        res = await self.backend.template_service.fetch_emdb_map_async(self.emdb_input_val, self.output_folder)
-        self.is_processing = False
-        if res["success"]: 
-            await self.refresh_files()
-            self.select_file(res["path"])
-            self.update_feedback(f"Fetched {os.path.basename(res['path'])}")
+    async def _toggle_mask(self, path: str):
+        if self._get_current_mask_path() == path:
+            await self._set_mask_path("")
         else:
-            ui.notify(f"Error: {res['error']}", type="negative")
+            await self._set_mask_path(path)
+        await self.refresh_files()
 
-    async def handle_basic_shape(self):
-        self.is_processing = True
-        ui.notify("Generating shape...", type="ongoing", timeout=1)
+    async def _delete(self, path: str):
+        if path == self._get_current_template_path():
+            await self._set_template_path("")
+        if path == self._get_current_mask_path():
+            await self._set_mask_path("")
+        await self.backend.template_service.delete_file_async(path)
+        await self.refresh_files()
+
+    # =========================================================
+    # ACTIONS
+    # =========================================================
+
+    async def _fetch_pdb(self):
+        if not self.pdb_input_val:
+            return
+        res = await self.backend.template_service.fetch_pdb_async(
+            self.pdb_input_val.strip().lower(), self.output_folder
+        )
+        if res["success"]:
+            await self.refresh_files()
+            self._visualize(res["path"])
+
+    async def _fetch_emdb(self):
+        if not self.emdb_input_val:
+            return
+        res = await self.backend.template_service.fetch_emdb_map_async(self.emdb_input_val.strip(), self.output_folder)
+        if res["success"]:
+            await self.refresh_files()
+            self._visualize(res["path"])
+
+    async def _gen_shape(self):
         res = await self.backend.template_service.generate_basic_shape_async(
             self.basic_shape_def, self.pixel_size, self.output_folder, int(self.box_size)
         )
-        self.is_processing = False
         if res["success"]:
             await self.refresh_files()
-            self.select_file(res["path_black"])
-            self.update_feedback("Shape generated successfully")
-        else:
-            ui.notify(f"Error: {res.get('error')}", type="negative")
+            self._visualize(res["path_black"])
 
-    async def handle_simulate_pdb(self):
-        self.is_processing = True
+    async def _simulate_pdb(self):
         try:
-            # 1. Resolve Path
             pdb_target = self.pdb_input_val
             if len(pdb_target) == 4 and not os.path.exists(pdb_target):
-                 # Auto-fetch if ID provided
-                res_fetch = await self.backend.template_service.fetch_pdb_async(pdb_target, self.output_folder)
-                if not res_fetch["success"]: raise Exception(res_fetch["error"])
-                pdb_target = res_fetch["path"]
-            
-            ui.notify("Simulating density...", type="ongoing", timeout=2)
-            
-            # 2. Simulate
+                res = await self.backend.template_service.fetch_pdb_async(pdb_target, self.output_folder)
+                if not res["success"]:
+                    return
+                pdb_target = res["path"]
+
             res_sim = await asyncio.to_thread(
                 self.backend.pdb_service.simulate_map_from_pdb,
-                pdb_target, self.pixel_size, int(self.box_size), self.output_folder
+                pdb_target,
+                self.pixel_size,
+                int(self.box_size),
+                self.output_folder,
             )
-            if not res_sim["success"]: raise Exception(res_sim["error"])
+            if not res_sim["success"]:
+                return
 
-            # 3. Process
             res_proc = await self.backend.template_service.process_volume_async(
                 res_sim["path"], self.output_folder, self.pixel_size, int(self.box_size)
             )
-            
             if res_proc["success"]:
                 await self.refresh_files()
-                self.select_file(res_proc["path_black"])
-                self.update_feedback("Simulation complete")
-            else:
-                raise Exception(res_proc.get("error"))
-
+                self._visualize(res_proc["path_black"])
         except Exception as e:
-            ui.notify(str(e), type="negative")
-            self.update_feedback(str(e), type="error")
-        finally:
-            self.is_processing = False
+            print(f"[WORKBENCH] Simulation error: {e}")
 
-    async def handle_mask(self):
-        if not self.selected_file_path: 
-            ui.notify("No volume selected", type="warning")
+    async def _create_mask(self):
+        """Create mask from the currently selected TEMPLATE (not arbitrary file)."""
+        template_path = self._get_current_template_path()
+
+        if not template_path:
             return
-            
-        self.is_processing = True
-        ui.notify("Creating mask...", type="ongoing", timeout=1)
-        
+
+        if not any(x in template_path.lower() for x in [".mrc", ".map", ".rec"]):
+            return
+
         try:
-            # Determine input file (prefer white/positive density if we selected a black one)
-            input_vol = self.selected_file_path
+            # Use white version if available (better for masking)
+            input_vol = template_path
             if "_black.mrc" in input_vol:
-                white_var = input_vol.replace("_black.mrc", "_white.mrc")
-                if os.path.exists(white_var): input_vol = white_var
-            
-            output_mask = input_vol.replace("_white.mrc", "_mask.mrc").replace(".mrc", "_mask.mrc")
-            if output_mask == input_vol: output_mask += "_mask.mrc"
+                white = input_vol.replace("_black.mrc", "_white.mrc")
+                if os.path.exists(white):
+                    input_vol = white
+
+            base = (
+                os.path.basename(input_vol)
+                .replace("_white.mrc", "")
+                .replace("_black.mrc", "")
+                .replace(".mrc", "")
+                .replace(".map", "")
+            )
+            output = os.path.join(self.output_folder, f"{base}_mask.mrc")
 
             res = await self.backend.template_service.create_mask_relion(
-                input_vol, output_mask, self.mask_threshold, self.mask_extend, self.mask_soft_edge, self.mask_lowpass
+                input_vol, output, self.mask_threshold, self.mask_extend, self.mask_soft_edge, self.mask_lowpass
             )
-            
             if res["success"]:
                 await self.refresh_files()
-                self.select_file(res["path"]) # Select the new mask
-                self.update_feedback("Mask created successfully")
-            else:
-                raise Exception(res.get('error'))
-
+                self._visualize(res["path"])
         except Exception as e:
-            ui.notify(str(e), type="negative")
-            self.update_feedback(str(e), type="error")
-        finally:
-            self.is_processing = False
+            print(f"[WORKBENCH] Mask creation error: {e}")
