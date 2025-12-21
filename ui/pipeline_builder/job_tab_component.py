@@ -281,24 +281,11 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
     """Render the configuration/parameters tab."""
     save_handler = create_save_handler()
 
-    # CHANGE 2: Removed 'max-w-6xl', 'h-full', 'overflow-y-auto', 'pr-2'.
-    # Now it simply fills the width of the parent (which handles scrolling).
     with ui.column().classes("w-full"):
+        
         # ==========================================================
-        # 1. SPECIAL: TEMPLATE WORKBENCH (Only for Template Matching)
+        # 1. I/O CONFIGURATION (First)
         # ==========================================================
-        if job_type == JobType.TEMPLATE_MATCH_PYTOM:
-            ui.label("Template Workbench").classes("text-sm font-bold text-gray-900 mb-2")
-            
-            with ui.card().classes("w-full p-0 mb-8 border-none shadow-none bg-transparent") as wb_container:
-                 TemplateWorkbench(backend, str(ui_mgr.project_path), wb_container)
-            
-            ui.separator().classes("mb-6")
-
-        # ==========================================================
-        # 2. I/O CONFIGURATION
-        # ==========================================================
-        # [ ... Rest of the function remains identical ... ]
         ui.label("I/O Configuration").classes("text-sm font-bold text-gray-900 mb-3")
 
         with ui.card().classes("w-full p-0 gap-0 border border-gray-200 shadow-none mb-6"):
@@ -319,7 +306,7 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
                 ui.label("Paths calculated upon pipeline creation.").classes("text-sm text-gray-400 italic p-4")
 
         # ==========================================================
-        # 3. JOB PARAMETERS
+        # 2. JOB PARAMETERS
         # ==========================================================
         ui.label("Job Parameters").classes("text-sm font-bold text-gray-900 mb-3")
 
@@ -375,11 +362,11 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
                             inp.on_value_change(save_handler)
 
         # ==========================================================
-        # 4. GLOBAL PARAMETERS (Read-Only)
+        # 3. GLOBAL PARAMETERS (Read-Only)
         # ==========================================================
         ui.label("Global Experimental Parameters (Read-Only)").classes("text-sm font-bold text-gray-900 mb-3")
 
-        with ui.grid(columns=3).classes("w-full gap-4"):
+        with ui.grid(columns=3).classes("w-full gap-4 mb-6"):
             ui.input("Pixel Size (Å)").bind_value(job_model.microscope, "pixel_size_angstrom").props(
                 "dense outlined readonly"
             ).tooltip("Global parameter")
@@ -404,6 +391,15 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
                 "dense outlined readonly"
             ).tooltip("Global parameter")
 
+        # ==========================================================
+        # 4. TEMPLATE WORKBENCH (Only for Template Matching, at bottom)
+        # ==========================================================
+        if job_type == JobType.TEMPLATE_MATCH_PYTOM:
+            ui.separator().classes("mb-6")
+            ui.label("Template Workbench").classes("text-sm font-bold text-gray-900 mb-3")
+            
+            with ui.card().classes("w-full p-0 border border-gray-200 shadow-none bg-white"):
+                TemplateWorkbench(backend, str(ui_mgr.project_path))
 # ===========================================
 # Logs Tab
 # ===========================================

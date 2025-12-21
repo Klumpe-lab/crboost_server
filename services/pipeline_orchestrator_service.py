@@ -421,12 +421,14 @@ class PipelineOrchestratorService:
 class JobTypeResolver:
 
     DRIVER_TO_JOBTYPE = {
-        "fs_motion_and_ctf.py": "fsMotionAndCtf",
-        "ts_alignment.py"     : "aligntiltsWarp",
-        "ts_ctf.py"           : "tsCtf",
-        "ts_reconstruct.py"   : "tsReconstruct",
-        "denoise_train.py"    : "denoisetrain",
-        "denoise_predict.py"  : "denoisepredict",
+        "fs_motion_and_ctf.py"       : "fsMotionAndCtf",
+        "ts_alignment.py"            : "aligntiltsWarp",
+        "ts_ctf.py"                  : "tsCtf",
+        "ts_reconstruct.py"          : "tsReconstruct",
+        "denoise_train.py"           : "denoisetrain",
+        "denoise_predict.py"         : "denoisepredict",
+        "template_match_pytom.py"    : "templatematching",
+        "extract_candidates_pytom.py": "tmextractcand",
     }
     
     def __init__(self, star_handler: StarfileService):

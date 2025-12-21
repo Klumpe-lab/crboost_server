@@ -64,8 +64,8 @@ class JobType(str, Enum):
     DENOISE_TRAIN = "denoisetrain"
     DENOISE_PREDICT = "denoisepredict"
 
-    TEMPLATE_MATCH_PYTOM = "tmMatchPytom"
-    TEMPLATE_EXTRACT_PYTOM = "tmExtractPytom"
+    TEMPLATE_MATCH_PYTOM = "templatematching"
+    TEMPLATE_EXTRACT_PYTOM = "tmextractcand"
     SUBTOMO_RECONSTRUCT = "sta"
 
 
@@ -882,16 +882,15 @@ class TemplateMatchPytomParams(AbstractJobParams):
     symmetry: str = Field(default="C1")
     
     # Flags
-    defocus_weight: bool = True
-    dose_weight: bool = True
-    spectral_whitening: bool = True
+    defocus_weight         : bool = True
+    dose_weight            : bool = True
+    spectral_whitening     : bool = True
     random_phase_correction: bool = False
-    non_spherical_mask: bool = False
+    non_spherical_mask     : bool = False
     
-    # Advanced
-    bandpass_filter: str = Field(default="None") # Format "low:high"
-    gpu_split: str = Field(default="auto") # "auto" or "4:4:2"
-    perdevice: int = Field(default=1)
+    bandpass_filter: str = Field(default="None")  # Format "low:high"
+    gpu_split      : str = Field(default="auto")  # "auto" or "4:4:2"
+    perdevice      : int = Field(default=1)
 
     def is_driver_job(self) -> bool:
         return True
