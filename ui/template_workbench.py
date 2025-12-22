@@ -119,6 +119,9 @@ class TemplateWorkbench:
         self.mask_lowpass = 20
         self.threshold_method = "flexible_bounds"
 
+        # Async Status
+        self.masking_active = False
+
         # UI refs
         self.file_list_container = None
         self.log_container = None
@@ -129,6 +132,7 @@ class TemplateWorkbench:
         self.template_label = None
         self.mask_label = None
         self.auto_box_checkbox = None
+        self.warning_container = None
 
         # Track for log deduplication
         self._last_logged_box = None
@@ -250,42 +254,180 @@ class TemplateWorkbench:
     # =========================================================
 
     def _render(self):
-        with ui.column().classes("w-full gap-0"):
-            # Header bar
+        with ui.column().classes("w-full gap-0 bg-white"):
+            # 1. Header status bar
             with ui.row().classes("w-full gap-6 px-4 py-2 bg-gray-50 border-b border-gray-200 items-center"):
                 with ui.row().classes("items-center gap-2"):
                     ui.icon("view_in_ar", size="xs").classes("text-blue-600")
-                    ui.label("Template:").classes("text-xs font-medium text-gray-600")
+                    ui.label("Active Template:").classes("text-xs font-medium text-gray-600")
                     self.template_label = ui.label("Not set").classes("text-xs font-mono text-gray-400")
                 with ui.row().classes("items-center gap-2"):
                     ui.icon("architecture", size="xs").classes("text-purple-600")
-                    ui.label("Mask:").classes("text-xs font-medium text-gray-600")
+                    ui.label("Active Mask:").classes("text-xs font-medium text-gray-600")
                     self.mask_label = ui.label("Not set").classes("text-xs font-mono text-gray-400")
 
-            # ROW 1: Three columns - Controls | Files | Logs
-            with ui.row().classes("w-full gap-0 border-b border-gray-200").style("min-height: 380px;"):
-                # Column 1: Controls
-                with ui.column().classes("flex-1 p-4 gap-4 overflow-y-auto border-r border-gray-100"):
-                    self._render_controls()
+            # 2. TOP SECTION: Controls and Logs
+            with ui.row().classes("w-full gap-0 border-b border-gray-200"):
+                # Column 1: Template Creation
+                with ui.column().classes("w-[40%] p-4 gap-3 border-r border-gray-100"):
+                    self._render_template_creation_panel()
 
-                # Column 2: Files
-                with ui.column().classes("flex-1 p-4 gap-2 overflow-y-auto border-r border-gray-100"):
-                    self._render_files_panel()
+                # Column 2: Mask Creation
+                with ui.column().classes("w-[25%] p-4 gap-3 border-r border-gray-100"):
+                    self._render_mask_creation_panel()
 
                 # Column 3: Logs
-                with ui.column().classes("flex-1 p-4 gap-2 overflow-y-auto"):
+                with ui.column().classes("flex-1 p-4 gap-2 bg-gray-50/30"):
                     self._render_logs_panel()
 
-            # ROW 2: Molstar viewer
-            with ui.column().classes("w-full p-4"):
-                with ui.element("div").classes("w-full bg-black rounded-lg relative").style("height: 320px;"):
-                    ui.element("iframe").props('src="/molstar" id="molstar-frame"').style(
-                        "width: 100%; height: 100%; border: none; border-radius: 8px;"
-                    )
-                    with ui.row().classes(
-                        "absolute bottom-2 left-2 bg-black/60 px-2 py-1 rounded text-[9px] text-gray-400"
+            # 3. BOTTOM SECTION: Files and Viewer
+            with ui.row().classes("w-full gap-0").style("min-height: 500px;"):
+                # Column 1: Available Files (1/4)
+                with ui.column().classes("w-1/4 p-4 border-r border-gray-200 bg-gray-50/10"):
+                    self._render_files_panel()
+
+                # Column 2: Molstar Viewer (3/4)
+                with ui.column().classes("flex-1 p-6 items-center justify-start overflow-y-auto"):
+                    # Use aspect-square for forcing square
+                    with ui.element("div").classes(
+                        "w-full max-w-[800px] aspect-square bg-black rounded-xl shadow-2xl relative overflow-hidden"
                     ):
-                        ui.label("LMB: Rotate | RMB: Pan | Scroll: Zoom")
+                        ui.element("iframe").props('src="/molstar" id="molstar-frame"').style(
+                            "width: 100%; height: 100%; border: none;"
+                        )
+                        with ui.row().classes(
+                            "absolute bottom-4 left-4 bg-black/70 backdrop-blur-md px-3 py-1.5 rounded-full text-[10px] text-gray-300 border border-white/10"
+                        ):
+                            ui.icon("mouse", size="xs").classes("mr-1")
+                            ui.label("LMB: Rotate | RMB: Pan | Scroll: Zoom")
+
+    def _render_template_creation_panel(self):
+        """Standardized template generation inputs."""
+        self._section_title("1. Template Generation", "settings")
+
+        # Project Reference Block
+        if self.project_raw_apix or self.project_tomo_apix:
+            with ui.row().classes("w-full items-center bg-blue-50/50 p-2 rounded-lg border border-blue-100 mb-2 gap-3"):
+                with ui.column().classes("gap-0"):
+                    ui.label("RAW").classes("text-[8px] text-blue-400 uppercase font-bold")
+                    ui.label(f"{self.project_raw_apix} Å" if self.project_raw_apix else "---").classes(
+                        "text-xs font-mono text-blue-700"
+                    )
+
+                if self.project_binning:
+                    with ui.column().classes("gap-0"):
+                        ui.label("BIN").classes("text-[8px] text-blue-400 uppercase font-bold")
+                        ui.label(f"{self.project_binning}x").classes("text-xs font-mono text-blue-700")
+
+                with ui.column().classes("gap-0 flex-1"):
+                    ui.label("TOMO").classes("text-[8px] text-blue-400 uppercase font-bold")
+                    ui.label(f"{self.project_tomo_apix} Å" if self.project_tomo_apix else "---").classes(
+                        "text-xs font-mono text-blue-800 font-bold"
+                    )
+
+                ui.button("Sync", icon="sync", on_click=self._use_tomo_apix).props(
+                    "flat dense size=sm color=primary"
+                ).classes("text-[10px]")
+
+        # Main Configuration Grid
+        with ui.row().classes("w-full gap-2 items-start"):
+            ui.number(
+                "Pixel Size (Å)", value=self.pixel_size, step=0.1, on_change=self._on_pixel_size_changed
+            ).bind_value(self, "pixel_size").props("dense outlined").classes("flex-1")
+
+            self.box_input = (
+                ui.number("Box (px)", value=self.box_size, step=32, on_change=self._on_box_size_changed)
+                .bind_value(self, "box_size")
+                .props("dense outlined")
+                .classes("flex-1")
+            )
+
+            if self.auto_box:
+                self.box_input.props(add="disable")
+
+            ui.number("LP (Å)", value=self.template_resolution, step=5).bind_value(self, "template_resolution").props(
+                "dense outlined"
+            ).classes("w-16")
+
+        with ui.row().classes("w-full justify-between items-center px-1"):
+            self.auto_box_checkbox = (
+                ui.checkbox("Auto-calculate Box", value=self.auto_box)
+                .props("dense")
+                .classes("text-[11px] text-gray-500")
+            )
+            self.auto_box_checkbox.on_value_change(self._on_auto_box_toggle)
+            self.size_estimate_label = ui.label("~8 MB").classes("text-[10px] font-mono text-green-600")
+
+        self.warning_container = ui.column().classes("w-full gap-1 my-1")
+        self._update_size_estimate()
+        self._update_warnings()
+
+        ui.separator().classes("my-1 opacity-50")
+
+        # Creation Sub-panels
+        with ui.column().classes("w-full gap-3"):
+            # Ellipsoid
+            with ui.column().classes("w-full gap-1"):
+                ui.label("Ellipsoid (x:y:z Å)").classes("text-[10px] font-bold text-gray-400 uppercase")
+                with ui.row().classes("w-full gap-2"):
+                    ui.input(placeholder="550:550:550").bind_value(self, "basic_shape_def").props(
+                        "dense outlined"
+                    ).classes("flex-1").on("update:model-value", self._on_shape_changed)
+                    ui.button("Gen", on_click=self._gen_shape).props("unelevated dense color=primary").classes("w-16")
+
+            # PDB / EMDB Fetch
+            with ui.row().classes("w-full gap-2"):
+                with ui.column().classes("flex-1 gap-1"):
+                    ui.label("PDB ID / Path").classes("text-[10px] font-bold text-gray-400 uppercase")
+                    with ui.row().classes("w-full gap-1"):
+                        ui.input().bind_value(self, "pdb_input_val").props("dense outlined").classes("flex-1")
+                        ui.button(icon="science", on_click=self._simulate_pdb).props(
+                            "flat dense color=primary"
+                        ).tooltip("Simulate map")
+
+                with ui.column().classes("w-24 gap-1"):
+                    ui.label("EMDB Fetch").classes("text-[10px] font-bold text-gray-400 uppercase")
+                    with ui.row().classes("w-full gap-1"):
+                        ui.input(placeholder="30210").bind_value(self, "emdb_input_val").props(
+                            "dense outlined"
+                        ).classes("flex-1")
+                        ui.button(icon="download", on_click=self._fetch_emdb).props("flat dense color=primary")
+
+    def _render_mask_creation_panel(self):
+        """Mask creation parameters."""
+        self._section_title("2. Mask Creation", "architecture")
+
+        self.mask_source_label = ui.label("Select a volume first").classes("text-[11px] text-orange-500 italic mb-1")
+
+        with ui.column().classes("w-full gap-2"):
+            self.threshold_method_select = (
+                ui.select(
+                    options=["flexible_bounds", "otsu", "isodata", "li", "yen"],
+                    value=self.threshold_method,
+                    label="Method",
+                )
+                .props("dense outlined")
+                .classes("w-full")
+                .on_value_change(self._on_threshold_method_changed)
+            )
+
+            ui.number("Threshold", format="%.4f").bind_value(self, "mask_threshold").props("dense outlined").classes(
+                "w-full"
+            )
+
+            with ui.row().classes("w-full gap-2"):
+                ui.number("Ext", suffix="px").bind_value(self, "mask_extend").props("dense outlined").classes("flex-1")
+                ui.number("Soft", suffix="px").bind_value(self, "mask_soft_edge").props("dense outlined").classes(
+                    "flex-1"
+                )
+                ui.number("LP", suffix="Å").bind_value(self, "mask_lowpass").props("dense outlined").classes("flex-1")
+
+            self.mask_btn = (
+                ui.button("Create Mask", icon="auto_fix_high", on_click=self._create_mask)
+                .bind_enabled_from(self, "masking_active", backward=lambda x: not x)
+                .props("unelevated dense color=secondary")
+                .classes("w-full mt-2")
+            )
 
     def _update_warnings(self):
         """Update warning display."""
@@ -301,198 +443,37 @@ class TemplateWorkbench:
         with self.warning_container:
             for w in warnings:
                 colors = {
-                    "error": ("error", "bg-red-50 border-red-200", "text-red-700"),
-                    "warning": ("warning", "bg-yellow-50 border-yellow-200", "text-yellow-700"),
-                    "info": ("info", "bg-blue-50 border-blue-200", "text-blue-700"),
+                    "error": ("error", "bg-red-50 border-red-100", "text-red-700"),
+                    "warning": ("warning", "bg-yellow-50 border-yellow-100", "text-yellow-700"),
+                    "info": ("info", "bg-blue-50 border-blue-100", "text-blue-700"),
                 }
                 icon, bg, txt = colors.get(w["level"], colors["info"])
-                with ui.row().classes(f"w-full items-start gap-1 p-1.5 rounded border {bg}"):
-                    ui.icon(icon, size="xs").classes(txt)
-                    ui.label(w["text"]).classes(f"text-[10px] {txt} flex-1")
-
-    def _render_controls(self):
-        """Render control panels without card shadows."""
-        # Project Reference
-        self._section_title("Project Reference")
-        if self.project_raw_apix:
-            with ui.row().classes("w-full items-center gap-6 mb-2"):
-                with ui.column().classes("gap-0"):
-                    ui.label("Raw").classes("text-[9px] text-gray-400 uppercase")
-                    ui.label(f"{self.project_raw_apix} Å").classes("text-sm font-mono")
-                if self.project_binning:
-                    with ui.column().classes("gap-0"):
-                        ui.label("Binning").classes("text-[9px] text-gray-400 uppercase")
-                        ui.label(f"{self.project_binning}×").classes("text-sm font-mono")
-                if self.project_tomo_apix:
-                    with ui.column().classes("gap-0"):
-                        ui.label("Tomogram").classes("text-[9px] text-gray-400 uppercase")
-                        ui.label(f"{self.project_tomo_apix} Å").classes("text-sm font-mono font-bold text-blue-700")
-                    ui.button("Use", on_click=self._use_tomo_apix).props("flat dense size=sm color=primary")
-        else:
-            ui.label("Not detected from project").classes("text-xs text-gray-400 italic")
-
-        ui.separator().classes("my-3")
-
-        # Template Creation
-        self._section_title("Template Creation")
-
-        # Settings row
-        with ui.row().classes("w-full gap-3 items-start mb-2"):
-            with ui.column().classes("gap-1"):
-                ui.number(
-                    "Pixel Size (Å)",
-                    value=self.pixel_size,
-                    step=0.1,
-                    format="%.2f",
-                    on_change=self._on_pixel_size_changed,
-                ).bind_value(self, "pixel_size").props("dense outlined").classes("w-28")
-
-            with ui.column().classes("gap-1"):
-                self.box_input = (
-                    ui.number("Box Size (px)", value=self.box_size, step=32, on_change=self._on_box_size_changed)
-                    .bind_value(self, "box_size")
-                    .props("dense outlined")
-                    .classes("w-28")
-                )
-                # Set initial disabled state
-                if self.auto_box:
-                    self.box_input.props(add="disable")
-
-            with ui.column().classes("gap-1"):
-                ui.number("LP Res (Å)", value=self.template_resolution, step=5, min=1).bind_value(
-                    self, "template_resolution"
-                ).props("dense outlined").classes("w-24").tooltip(
-                    "Low-pass filter resolution for smoothing the generated template"
-                )
-
-            with ui.column().classes("gap-0 pt-4"):
-                self.size_estimate_label = ui.label("~8 MB").classes("text-xs font-mono text-green-600")
-                ui.label("box³×4B").classes("text-[8px] text-gray-400").tooltip(
-                    "File size = box³ × 4 bytes (float32). Pixel size affects physical dimensions, not file size."
-                )
-
-        # Auto-box toggle - don't use bind_value, manage state manually
-        with ui.row().classes("w-full items-center gap-2 mb-2"):
-            self.auto_box_checkbox = (
-                ui.checkbox("Auto-calculate box from particle dimensions", value=self.auto_box)
-                .props("dense")
-                .classes("text-xs")
-            )
-            self.auto_box_checkbox.on_value_change(self._on_auto_box_toggle)
-
-        # Warnings container
-        self.warning_container = ui.column().classes("w-full gap-1 mb-2")
-
-        self._update_size_estimate()
-        self._update_warnings()
-
-        ui.separator().classes("my-2")
-
-        # Ellipsoid
-        ui.label("Ellipsoid (x:y:z Å)").classes("text-[10px] font-bold text-gray-500 uppercase mb-1")
-        with ui.row().classes("w-full gap-2 mb-3"):
-            ui.input(placeholder="550:550:550").bind_value(self, "basic_shape_def").props("dense outlined").classes(
-                "flex-1"
-            ).on("update:model-value", self._on_shape_changed).tooltip("Ellipsoid diameters in Ångstroms (x:y:z)")
-            ui.button("Create", on_click=self._gen_shape).props("unelevated dense color=primary")
-
-        # From PDB
-        ui.label("From PDB").classes("text-[10px] font-bold text-gray-500 uppercase mb-1")
-        with ui.row().classes("w-full gap-2 mb-3"):
-            ui.input(placeholder="PDB ID or file path").bind_value(self, "pdb_input_val").props(
-                "dense outlined"
-            ).classes("flex-1")
-            ui.button("Create", on_click=self._simulate_pdb).props("unelevated dense color=primary")
-
-        # Fetch
-        with ui.row().classes("w-full gap-4"):
-            with ui.column().classes("flex-1 gap-1"):
-                ui.label("Fetch EMDB").classes("text-[10px] font-bold text-gray-500 uppercase")
-                with ui.row().classes("w-full gap-1"):
-                    ui.input(placeholder="e.g. 30210").bind_value(self, "emdb_input_val").props(
-                        "dense outlined"
-                    ).classes("flex-1")
-                    ui.button(icon="download", on_click=self._fetch_emdb).props("flat dense color=primary")
-            with ui.column().classes("flex-1 gap-1"):
-                ui.label("Fetch PDB").classes("text-[10px] font-bold text-gray-500 uppercase")
-                with ui.row().classes("w-full gap-1"):
-                    ui.input(placeholder="e.g. 3j7z").bind_value(self, "pdb_input_val").props("dense outlined").classes(
-                        "flex-1"
-                    )
-                    ui.button(icon="download", on_click=self._fetch_pdb).props("flat dense color=primary")
-
-        ui.separator().classes("my-3")
-
-        # Mask Creation
-        self._section_title("Mask Creation")
-        self.mask_source_label = ui.label("Select a volume template first").classes(
-            "text-xs text-orange-500 italic mb-2"
-        )
-
-        with ui.row().classes("w-full gap-2 items-end mb-2"):
-            self.threshold_method_select = (
-                ui.select(
-                    options=["flexible_bounds", "otsu", "isodata", "li", "yen"],
-                    value=self.threshold_method,
-                    label="Method",
-                )
-                .props("dense outlined")
-                .classes("w-36")
-                .tooltip("Thresholding algorithm: flexible_bounds (mean+1.85σ), otsu/isodata/li/yen (automatic)")
-            )
-            # Use on_value_change to get the new value directly
-            self.threshold_method_select.on_value_change(self._on_threshold_method_changed)
-
-            ui.number("Threshold", format="%.4f").bind_value(self, "mask_threshold").props("dense outlined").classes(
-                "flex-1"
-            ).tooltip("Density threshold for initial binarization. Voxels above this become mask.")
-            ui.button(icon="calculate", on_click=self._recalc_threshold).props("flat dense").tooltip(
-                "Recalculate threshold using selected method"
-            )
-
-        with ui.row().classes("w-full gap-2 mb-2"):
-            ui.number("Extend (px)").bind_value(self, "mask_extend").props("dense outlined").classes("flex-1").tooltip(
-                "Expand mask by this many pixels after thresholding (default: 3)"
-            )
-            ui.number("Soft Edge (px)").bind_value(self, "mask_soft_edge").props("dense outlined").classes(
-                "flex-1"
-            ).tooltip("Width of cosine soft edge falloff in pixels (default: 6)")
-            ui.number("LP (Å)").bind_value(self, "mask_lowpass").props("dense outlined").classes("flex-1").tooltip(
-                "Low-pass filter applied before thresholding to smooth mask boundaries (default: 20Å)"
-            )
-
-        self.mask_btn = (
-            ui.button("Create Mask", icon="play_arrow", on_click=self._create_mask)
-            .props("unelevated dense color=secondary disabled")
-            .classes("w-full")
-        )
+                with ui.row().classes(f"w-full items-start gap-1 p-1 rounded border {bg}"):
+                    ui.icon(icon, size="14px").classes(txt)
+                    ui.label(w["text"]).classes(f"text-[9px] {txt} flex-1 leading-tight")
 
     def _on_pixel_size_changed(self):
         """Handle pixel size change."""
         self._update_size_estimate()
         self._update_warnings()
-        # Only recalculate if auto_box is enabled
         if self.auto_box:
             self._recalculate_auto_box()
 
     def _on_box_size_changed(self):
-        """Handle manual box change."""
+        """Handle box size change."""
         self._update_size_estimate()
         self._update_warnings()
 
     def _on_shape_changed(self):
-        """Handle shape definition change."""
+        """Handle shape change."""
         if self.auto_box:
             self._recalculate_auto_box()
 
     def _on_auto_box_toggle(self, e):
-        """Handle auto-box checkbox toggle."""
-        # e.value contains the new checkbox state
-        new_value = e.value
-        self.auto_box = new_value
-
+        """Toggle auto-box checkbox."""
+        self.auto_box = e.value
         if self.box_input:
-            if new_value:
+            if self.auto_box:
                 self.box_input.props(add="disable")
                 self._recalculate_auto_box()
                 self._log("Auto-box: enabled")
@@ -501,275 +482,176 @@ class TemplateWorkbench:
                 self._log(f"Auto-box: disabled (box={self.box_size}px, manual editing enabled)")
 
     def _on_threshold_method_changed(self, e):
-        """Handle threshold method selection change."""
-        new_method = e.value
-        self.threshold_method = new_method
-        self._log(f"Threshold method changed to: {new_method}")
-        # Recalculate with the new method
-        asyncio.create_task(self._recalc_threshold_for_method(new_method))
+        """Handle threshold method change."""
+        self.threshold_method = e.value
+        self._log(f"Threshold method: {self.threshold_method}")
+        asyncio.create_task(self._recalc_threshold_for_method(self.threshold_method))
 
     async def _recalc_threshold_for_method(self, method: str):
-        """Recalculate threshold using specified method."""
+        """Recalculate threshold."""
         t_path = self._get_current_template_path()
         if not t_path or not os.path.exists(t_path):
-            self._log(f"Cannot calculate threshold: no template selected")
             return
 
         thresholds = await self.backend.template_service.calculate_thresholds_async(t_path, self.mask_lowpass)
-
         if method in thresholds:
-            new_thresh = round(thresholds[method], 4)
-            self.mask_threshold = new_thresh
-            self._log(
-                f"Threshold ({method}): {new_thresh} [LP={self.mask_lowpass}Å, source={os.path.basename(t_path)}]"
-            )
-        else:
-            self._log(f"Threshold method '{method}' not found in results")
+            self.mask_threshold = round(thresholds[method], 4)
+            self._log(f"New threshold ({method}): {self.mask_threshold} [LP={self.mask_lowpass}Å]")
 
     async def _recalc_threshold(self):
-        """Recalculate threshold using current method."""
-        await self._recalc_threshold_for_method(self.threshold_method)
-
-    async def _auto_threshold(self, path: str):
-        """Auto-calculate threshold when template is selected."""
-        if not path or not os.path.exists(path):
-            return
+        """Recalc with current method."""
         await self._recalc_threshold_for_method(self.threshold_method)
 
     def _recalculate_auto_box(self):
-        """Recalculate box from shape dimensions."""
+        """Recalc box from shape."""
         if not self.auto_box:
             return
-
         try:
             dims = [float(x) for x in self.basic_shape_def.split(":")]
             max_dim = max(dims)
-
             if not self.pixel_size or self.pixel_size <= 0:
-                self._log(f"Cannot auto-calculate box: invalid pixel size ({self.pixel_size})")
                 return
-
             new_box = self._estimate_box_for_dimension(max_dim)
-
             if new_box != self._last_logged_box:
                 self._last_logged_box = new_box
                 self.box_size = new_box
-                self._log(
-                    f"Auto-box: {max_dim}Å / {self.pixel_size}Å/px × 1.2 → {new_box}px "
-                    f"[{self._estimate_file_size_mb()} MB]"
-                )
+                self._log(f"Auto-box: {max_dim}Å → {new_box}px")
                 self._update_size_estimate()
                 self._update_warnings()
-
-        except (ValueError, AttributeError, ZeroDivisionError) as e:
-            # Don't log parse errors for partial input
+        except:
             pass
 
     def _use_tomo_apix(self):
-        """Use tomogram pixel size."""
+        """Sync to project tomo pixel size."""
         if self.project_tomo_apix:
-            old_pix = self.pixel_size
             self.pixel_size = self.project_tomo_apix
-            self._log(f"Pixel size: {old_pix}Å → {self.project_tomo_apix}Å (tomogram reconstruction)")
+            self._log(f"Synced to tomogram: {self.project_tomo_apix}Å")
             if self.auto_box:
                 self._recalculate_auto_box()
             self._update_size_estimate()
             self._update_warnings()
 
     def _update_selection_labels(self):
-        """Update template/mask labels and mask panel state."""
+        """Refresh path labels in header."""
         t_path = self._get_current_template_path()
         m_path = self._get_current_mask_path()
 
-        if t_path:
-            self.template_label.set_text(os.path.basename(t_path))
-            self.template_label.classes(replace="text-xs font-mono text-blue-700")
-        else:
-            self.template_label.set_text("Not set")
-            self.template_label.classes(replace="text-xs font-mono text-gray-400")
+        if self.template_label:
+            self.template_label.set_text(os.path.basename(t_path) if t_path else "Not set")
+            self.template_label.classes(replace=f"text-xs font-mono {'text-blue-700' if t_path else 'text-gray-400'}")
 
-        if m_path:
-            self.mask_label.set_text(os.path.basename(m_path))
-            self.mask_label.classes(replace="text-xs font-mono text-purple-700")
-        else:
-            self.mask_label.set_text("Not set")
-            self.mask_label.classes(replace="text-xs font-mono text-gray-400")
+        if self.mask_label:
+            self.mask_label.set_text(os.path.basename(m_path) if m_path else "Not set")
+            self.mask_label.classes(replace=f"text-xs font-mono {'text-purple-700' if m_path else 'text-gray-400'}")
 
-        # Update mask panel state
         is_volume = t_path and any(x in t_path.lower() for x in [".mrc", ".map", ".rec"])
-        if is_volume:
-            self.mask_source_label.set_text(f"Source: {os.path.basename(t_path)}")
-            self.mask_source_label.classes(replace="text-xs text-blue-600 font-mono mb-2")
-            self.mask_btn.props(remove="disabled")
-            # Auto-calculate threshold for newly selected template
-            asyncio.create_task(self._auto_threshold(t_path))
-        else:
-            self.mask_source_label.set_text("Select a volume template first")
-            self.mask_source_label.classes(replace="text-xs text-orange-500 italic mb-2")
-            self.mask_btn.props(add="disabled")
+        if self.mask_source_label:
+            if is_volume:
+                self.mask_source_label.set_text(f"Source: {os.path.basename(t_path)}")
+                self.mask_source_label.classes(replace="text-[11px] text-blue-600 font-mono mb-1")
+                if self.mask_btn:
+                    self.mask_btn.props(remove="disabled")
+            else:
+                self.mask_source_label.set_text("Select a volume template first")
+                self.mask_source_label.classes(replace="text-[11px] text-orange-500 italic mb-1")
+                if self.mask_btn:
+                    self.mask_btn.props(add="disabled")
 
     def _get_warnings(self) -> list:
-        """Generate contextual warnings based on current settings."""
+        """Sanity check warnings."""
         warnings = []
-
-        # Pixel size vs tomogram
         if self.project_tomo_apix and self.pixel_size:
             if self.pixel_size < self.project_tomo_apix * 0.9:
-                warnings.append(
-                    {
-                        "level": "warning",
-                        "text": f"Pixel size ({self.pixel_size}Å) is finer than tomograms ({self.project_tomo_apix}Å) - "
-                        f"template will have unnecessary detail and larger file size",
-                    }
-                )
+                warnings.append({"level": "warning", "text": f"Finer than tomos ({self.project_tomo_apix}Å)."})
             elif (
                 self.project_raw_apix
                 and abs(self.pixel_size - self.project_raw_apix) < 0.1
-                and self.project_binning
                 and self.project_binning > 1.5
             ):
-                warnings.append(
-                    {
-                        "level": "error",
-                        "text": f"Using RAW pixel size ({self.project_raw_apix}Å) instead of tomogram ({self.project_tomo_apix}Å) - "
-                        f"templates will be ~{self.project_binning**3:.0f}× larger than needed!",
-                    }
-                )
-
-        # File size warnings
-        est_size = self._estimate_file_size_mb()
-        if est_size > 500:
-            warnings.append(
-                {
-                    "level": "error",
-                    "text": f"Estimated file size: {est_size} MB - extremely large! Consider coarser pixel size or smaller box.",
-                }
-            )
-        elif est_size > 100:
-            warnings.append({"level": "warning", "text": f"Estimated file size: {est_size} MB - quite large"})
-
-        # LP resolution vs Nyquist
-        if self.pixel_size and self.template_resolution:
-            nyquist = self.pixel_size * 2
-            if self.template_resolution < nyquist:
-                warnings.append(
-                    {
-                        "level": "info",
-                        "text": f"LP resolution ({self.template_resolution}Å) is beyond Nyquist limit ({nyquist}Å) - no additional detail possible",
-                    }
-                )
-
-        # Box size sanity
-        if self.box_size and self.box_size > 512:
-            warnings.append(
-                {"level": "warning", "text": f"Large box size ({self.box_size}px) - template matching will be slow"}
-            )
-
+                warnings.append({"level": "error", "text": "Using RAW pixels! Templates will be massive."})
         return warnings
 
     def _render_files_panel(self):
-        """Render files list."""
-        with ui.row().classes("w-full items-center justify-between mb-2"):
-            self._section_title("Templates & Masks")
-            ui.button(icon="refresh", on_click=self.refresh_files).props("flat round dense size=xs")
-
+        """Files list container."""
+        with ui.row().classes("w-full items-center justify-between mb-3"):
+            ui.label("Available Data").classes("text-xs font-bold text-gray-600 uppercase tracking-widest")
+            ui.button(icon="refresh", on_click=self.refresh_files).props("flat round dense size=sm")
         self.file_list_container = ui.column().classes("w-full gap-1")
 
     def _render_logs_panel(self):
-        """Render logs panel."""
-        self._section_title("Activity Log")
-        self.log_container = ui.column().classes("w-full gap-0 overflow-y-auto").style("max-height: 340px;")
+        """Activity log container."""
+        self._section_title("Activity Log", "terminal")
+        self.log_container = ui.column().classes("w-full gap-1 overflow-y-auto").style("height: 180px;")
 
-        # Initial log entries
-        if self.project_tomo_apix:
-            self._log(
-                f"Project: raw={self.project_raw_apix}Å, tomo={self.project_tomo_apix}Å ({self.project_binning}× binning)"
-            )
-        elif self.project_raw_apix:
-            self._log(f"Project: raw={self.project_raw_apix}Å (binning not detected)")
-
-    def _section_title(self, title: str):
-        ui.label(title).classes("text-xs font-bold text-gray-700 uppercase tracking-wide")
-
-    # =========================================================
-    # FILE LIST
-    # =========================================================
+    def _section_title(self, title: str, icon: str):
+        """Styled header."""
+        with ui.row().classes("items-center gap-2 mb-2"):
+            ui.icon(icon, size="16px").classes("text-gray-400")
+            ui.label(title).classes("text-xs font-bold text-gray-700 uppercase tracking-wide")
 
     async def refresh_files(self):
+        """List files from directory."""
         if not self.file_list_container:
             return
-
         self._update_selection_labels()
         self.file_list_container.clear()
-
         files = await self.backend.template_service.list_template_files_async(self.output_folder)
         current_template = self._get_current_template_path()
         current_mask = self._get_current_mask_path()
 
         with self.file_list_container:
             if not files:
-                ui.label("No files yet").classes("text-xs text-gray-400 italic py-4")
+                ui.label("No files found").classes("text-xs text-gray-400 italic py-4")
                 return
-
             for f_path in files:
                 fname = os.path.basename(f_path)
-                is_template = f_path == current_template
-                is_mask = f_path == current_mask
-
-                bg = "bg-blue-50" if is_template else ("bg-purple-50" if is_mask else "hover:bg-gray-50")
+                is_template, is_mask = f_path == current_template, f_path == current_mask
+                bg = "bg-blue-50/50" if is_template else ("bg-purple-50/50" if is_mask else "hover:bg-gray-50")
                 border = (
-                    "border-l-2 border-blue-500"
+                    "border-l-4 border-blue-500"
                     if is_template
-                    else ("border-l-2 border-purple-500" if is_mask else "border-l-2 border-transparent")
+                    else ("border-l-4 border-purple-500" if is_mask else "border-l-4 border-transparent")
                 )
-
-                with ui.row().classes(f"w-full items-center gap-1 px-2 py-1 rounded {bg} {border}"):
+                with ui.row().classes(
+                    f"w-full items-center gap-1 px-3 py-1.5 rounded-r-lg {bg} {border} transition-colors group"
+                ):
                     with (
                         ui.row()
-                        .classes("flex-1 items-center gap-1 min-w-0 cursor-pointer")
+                        .classes("flex-1 items-center gap-2 min-w-0 cursor-pointer")
                         .on("click", lambda p=f_path: self._visualize(p))
                     ):
-                        ui.label(fname).classes("text-[10px] font-mono text-gray-700 truncate").tooltip(f_path)
-                        if is_template:
-                            ui.label("T").classes("text-[7px] font-bold text-white bg-blue-500 px-1 rounded")
-                        if is_mask:
-                            ui.label("M").classes("text-[7px] font-bold text-white bg-purple-500 px-1 rounded")
-
-                    with ui.row().classes("gap-0 shrink-0"):
+                        ui.label(fname).classes("text-[11px] font-mono text-gray-700 truncate")
+                    with ui.row().classes("gap-0 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"):
                         ui.button(icon="view_in_ar", on_click=lambda p=f_path: self._toggle_template(p)).props(
-                            f"flat round dense size=xs {'color=blue' if is_template else 'color=grey'}"
+                            f"flat round dense size=sm color={'blue' if is_template else 'grey'}"
                         )
                         ui.button(icon="architecture", on_click=lambda p=f_path: self._toggle_mask(p)).props(
-                            f"flat round dense size=xs {'color=purple' if is_mask else 'color=grey'}"
+                            f"flat round dense size=sm color={'purple' if is_mask else 'grey'}"
                         )
                         ui.button(icon="delete", on_click=lambda p=f_path: self._delete(p)).props(
-                            "flat round dense size=xs color=red"
+                            "flat round dense size=sm color=red"
                         )
 
     def _visualize(self, path: str):
-        """Visualize in molstar."""
+        """Post message to Molstar iframe."""
+        self._log(f"Viewing: {os.path.basename(path)}")
         if any(x in path.lower() for x in [".mrc", ".map", ".rec", ".ccp4"]):
-            preview = path.replace(".mrc", "_preview.mrc")
-            to_load = preview if os.path.exists(preview) else path
-            url = f"/api/file?path={to_load}"
+            url = f"/api/file?path={path}"
             ui.run_javascript(
-                f"document.getElementById('molstar-frame').contentWindow.postMessage("
-                f"{{ action: 'load_volume', url: '{url}' }}, '*');"
+                f"document.getElementById('molstar-frame').contentWindow.postMessage({{ action: 'load_volume', url: '{url}' }}, '*');"
             )
-            self._log(f"Viewing: {os.path.basename(path)}")
         else:
             url = f"/api/file?path={path}"
             fmt = "pdb" if path.lower().endswith(".pdb") else "mmcif"
             ui.run_javascript(
-                f"document.getElementById('molstar-frame').contentWindow.postMessage("
-                f"{{ action: 'load_structure', url: '{url}', format: '{fmt}' }}, '*');"
+                f"document.getElementById('molstar-frame').contentWindow.postMessage({{ action: 'load_structure', url: '{url}', format: '{fmt}' }}, '*');"
             )
-            self._log(f"Viewing: {os.path.basename(path)}")
 
     async def _toggle_template(self, path: str):
+        """Set as active template."""
         if self._get_current_template_path() == path:
             await self._set_template_path("")
-            self._log(f"Template unset")
+            self._log("Template unset")
         else:
             await self._set_template_path(path)
             self._visualize(path)
@@ -777,169 +659,122 @@ class TemplateWorkbench:
         await self.refresh_files()
 
     async def _toggle_mask(self, path: str):
+        """Set as active mask."""
         if self._get_current_mask_path() == path:
             await self._set_mask_path("")
-            self._log(f"Mask unset")
+            self._log("Mask unset")
         else:
             await self._set_mask_path(path)
             self._log(f"Mask set: {os.path.basename(path)}")
         await self.refresh_files()
 
     async def _delete(self, path: str):
-        fname = os.path.basename(path)
+        """Delete from disk."""
         if path == self._get_current_template_path():
             await self._set_template_path("")
         if path == self._get_current_mask_path():
             await self._set_mask_path("")
         await self.backend.template_service.delete_file_async(path)
-        self._log(f"Deleted: {fname}")
+        self._log(f"Deleted: {os.path.basename(path)}")
         await self.refresh_files()
 
-    # =========================================================
-    # ACTIONS
-    # =========================================================
-
     async def _fetch_pdb(self):
+        """Fetch structure from RCSB."""
         if not self.pdb_input_val:
             return
-        pdb_id = self.pdb_input_val.strip().lower()
-        self._log(f"Fetching PDB: {pdb_id}")
-        res = await self.backend.template_service.fetch_pdb_async(pdb_id, self.output_folder)
+        self._log(f"Fetching PDB: {self.pdb_input_val}")
+        res = await self.backend.template_service.fetch_pdb_async(
+            self.pdb_input_val.strip().lower(), self.output_folder
+        )
         if res["success"]:
-            self._log(f"Downloaded: {os.path.basename(res['path'])}")
+            self._log(f"Fetched PDB: {os.path.basename(res['path'])}")
             await self.refresh_files()
-            self._visualize(res["path"])
         else:
-            self._log(f"Failed to fetch PDB: {res.get('error', 'unknown')}")
+            self._log(f"Fetch failed: {res.get('error')}")
 
     async def _fetch_emdb(self):
+        """Fetch map from EMDB."""
         if not self.emdb_input_val:
             return
-        emdb_id = self.emdb_input_val.strip()
-        self._log(f"Fetching EMDB: {emdb_id}")
-        res = await self.backend.template_service.fetch_emdb_map_async(emdb_id, self.output_folder)
+        self._log(f"Fetching EMDB: {self.emdb_input_val}")
+        res = await self.backend.template_service.fetch_emdb_map_async(self.emdb_input_val.strip(), self.output_folder)
         if res["success"]:
-            self._log(f"Downloaded: {os.path.basename(res['path'])}")
+            self._log(f"Fetched EMDB: {os.path.basename(res['path'])}")
             await self.refresh_files()
-            self._visualize(res["path"])
         else:
-            self._log(f"Failed to fetch EMDB: {res.get('error', 'unknown')}")
+            self._log(f"Fetch failed: {res.get('error')}")
 
     async def _gen_shape(self):
-        """Generate ellipsoid template."""
+        """Generate MRC from ellipsoid def."""
         if self.auto_box:
             self._recalculate_auto_box()
-
-        self._log(
-            f"Generating ellipsoid: dims={self.basic_shape_def}Å, "
-            f"pixel={self.pixel_size}Å, box={self.box_size}px, LP={self.template_resolution}Å"
-        )
-
+        self._log(f"Generating ellipsoid: {self.basic_shape_def}...")
         res = await self.backend.template_service.generate_basic_shape_async(
-            self.basic_shape_def,
-            self.pixel_size,
-            self.output_folder,
-            int(self.box_size),
-            lowpass_res=self.template_resolution,
+            self.basic_shape_def, self.pixel_size, self.output_folder, int(self.box_size), self.template_resolution
         )
         if res["success"]:
-            self._log(f"Created: {os.path.basename(res['path_black'])}")
-            if "box_size" in res:
-                self.box_size = res["box_size"]
-            self._update_size_estimate()
+            self._log(f"Generated shape: {os.path.basename(res['path_black'])}")
             await self.refresh_files()
-            self._visualize(res["path_black"])
         else:
-            self._log(f"Failed: {res.get('error', 'unknown')}")
+            self._log(f"Generation failed: {res.get('error')}")
 
     async def _simulate_pdb(self):
-        """Simulate EM density from PDB."""
-        try:
-            pdb_target = self.pdb_input_val.strip()
-            if not pdb_target:
-                return
-
-            # Fetch if just ID
-            if len(pdb_target) == 4 and not os.path.exists(pdb_target):
-                self._log(f"Fetching PDB: {pdb_target}")
-                res = await self.backend.template_service.fetch_pdb_async(pdb_target.lower(), self.output_folder)
-                if not res["success"]:
-                    self._log(f"Failed to fetch: {res.get('error')}")
-                    return
-                pdb_target = res["path"]
-
-            self._log(
-                f"Simulating from PDB: {os.path.basename(pdb_target)}, "
-                f"pixel={self.pixel_size}Å, box={self.box_size}px, LP={self.template_resolution}Å"
-            )
-
-            res_sim = await asyncio.to_thread(
-                self.backend.pdb_service.simulate_map_from_pdb,
-                pdb_target,
-                self.pixel_size,
-                int(self.box_size),
-                self.output_folder,
-            )
-            if not res_sim["success"]:
-                self._log(f"Simulation failed: {res_sim.get('error')}")
-                return
-
+        """Generate map from PDB atoms."""
+        pdb_target = self.pdb_input_val.strip()
+        if not pdb_target:
+            return
+        self._log(f"Simulating map from: {pdb_target}...")
+        res_sim = await asyncio.to_thread(
+            self.backend.pdb_service.simulate_map_from_pdb,
+            pdb_target,
+            self.pixel_size,
+            int(self.box_size),
+            self.output_folder,
+        )
+        if res_sim["success"]:
             res_proc = await self.backend.template_service.process_volume_async(
-                res_sim["path"],
-                self.output_folder,
-                self.pixel_size,
-                int(self.box_size),
-                resolution=self.template_resolution,
+                res_sim["path"], self.output_folder, self.pixel_size, int(self.box_size), self.template_resolution
             )
             if res_proc["success"]:
-                self._log(f"Created: {os.path.basename(res_proc['path_black'])}")
-                self._update_size_estimate()
+                self._log(f"Simulation created: {os.path.basename(res_proc['path_black'])}")
                 await self.refresh_files()
-                self._visualize(res_proc["path_black"])
-            else:
-                self._log(f"Processing failed: {res_proc.get('error')}")
-
-        except Exception as e:
-            self._log(f"Error: {e}")
+        else:
+            self._log(f"Simulation failed: {res_sim.get('error')}")
 
     async def _create_mask(self):
-        """Create mask from template."""
+        """Dispatches Relion mask creation."""
         template_path = self._get_current_template_path()
         if not template_path:
             return
 
-        try:
-            # Use white version if available
-            input_vol = template_path
-            if "_black.mrc" in input_vol:
-                white = input_vol.replace("_black.mrc", "_white.mrc")
-                if os.path.exists(white):
-                    input_vol = white
+        self.masking_active = True
+        n = ui.notify("Relion: Creating mask...", type="ongoing", timeout=0)
 
-            base = (
-                os.path.basename(input_vol)
-                .replace("_white.mrc", "")
-                .replace("_black.mrc", "")
-                .replace(".mrc", "")
-                .replace(".map", "")
+        try:
+            input_vol = (
+                template_path.replace("_black.mrc", "_white.mrc") if "_black.mrc" in template_path else template_path
             )
+            base = os.path.basename(input_vol).split(".")[0].replace("_white", "").replace("_black", "")
             output = os.path.join(self.output_folder, f"{base}_mask.mrc")
 
-            self._log(
-                f"Creating mask: source={os.path.basename(input_vol)}, "
-                f"thresh={self.mask_threshold}, extend={self.mask_extend}px, "
-                f"soft={self.mask_soft_edge}px, LP={self.mask_lowpass}Å"
-            )
-
+            self._log(f"Dispatched relion_mask_create for {os.path.basename(input_vol)}...")
             res = await self.backend.template_service.create_mask_relion(
                 input_vol, output, self.mask_threshold, self.mask_extend, self.mask_soft_edge, self.mask_lowpass
             )
-            if res["success"]:
-                self._log(f"Created: {os.path.basename(res['path'])}")
-                await self.refresh_files()
-                self._visualize(res["path"])
-            else:
-                self._log(f"Failed: {res.get('error')}")
 
+            if n:
+                n.dismiss()
+            if res["success"]:
+                ui.notify(f"Mask created: {os.path.basename(output)}", type="positive")
+                self._log(f"Mask created: {os.path.basename(output)}")
+                await self.refresh_files()
+            else:
+                ui.notify(f"Masking failed: {res.get('error')}", type="negative")
+                self._log(f"Masking failed: {res.get('error')}")
         except Exception as e:
-            self._log(f"Error: {e}")
+            if n:
+                n.dismiss()
+            ui.notify(f"UI Error: {e}", type="negative")
+            self._log(f"UI Error: {e}")
+        finally:
+            self.masking_active = False
