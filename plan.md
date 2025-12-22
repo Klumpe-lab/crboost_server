@@ -1,0 +1,3 @@
+- repair the templating creation mechnaism quickly
+- finalize the job, blaze to STA
+- polish

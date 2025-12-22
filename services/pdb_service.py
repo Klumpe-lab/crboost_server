@@ -150,3 +150,36 @@ class PDBService:
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
+
+    def align_to_principal_axis(self, coords: np.ndarray) -> np.ndarray:
+            """
+            Align coordinates to principal axes.
+            Matches CryoBoost's alignToPrincipalAxis().
+            """
+            center = np.mean(coords, axis=0)
+            centered = coords - center
+            
+            cov = np.cov(centered.T)
+            eigenvalues, eigenvectors = np.linalg.eigh(cov)
+            
+            # Sort by eigenvalue (largest first)
+            idx = eigenvalues.argsort()[::-1]
+            eigenvectors = eigenvectors[:, idx]
+            
+            aligned = np.dot(centered, eigenvectors)
+            return aligned
+
+    def get_max_diameter(self, coords: np.ndarray) -> float:
+        """Get maximum extent of coordinates."""
+        min_xyz = np.min(coords, axis=0)
+        max_xyz = np.max(coords, axis=0)
+        return float(np.max(max_xyz - min_xyz))
+
+    def get_optimal_box_size(self, coords: np.ndarray, pixel_size: float, min_box: int = 96) -> int:
+        """Calculate optimal box from PDB coordinates."""
+        diameter = self.get_max_diameter(coords)
+        dim_pix = diameter / pixel_size
+        padded = dim_pix * 1.2
+        offset = 32
+        box = int((padded + offset - 1) // offset) * offset
+        return max(box, min_box)
