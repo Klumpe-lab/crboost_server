@@ -111,6 +111,7 @@ class TemplateWorkbench:
         self.basic_shape_def = "550:550:550"
         self.pdb_input_val = ""
         self.emdb_input_val = ""
+        self.structure_path = ""  # Track currently selected PDB/EMDB source file
 
         # Mask settings
         self.mask_threshold = 0.001
@@ -131,8 +132,12 @@ class TemplateWorkbench:
         self.size_estimate_label = None
         self.template_label = None
         self.mask_label = None
+        self.structure_label = None
         self.auto_box_checkbox = None
         self.warning_container = None
+
+        self.simulate_btn = None
+        self.resample_btn = None
 
         # Track for log deduplication
         self._last_logged_box = None
@@ -183,11 +188,13 @@ class TemplateWorkbench:
             print(f"[TEMPLATE_WORKBENCH] Could not load project params: {e}")
 
     def _log(self, message: str):
-        """Log to UI panel."""
+        """Log to UI panel with auto-scroll."""
         print(f"[LOG] {message}")
         if self.log_container:
             with self.log_container:
                 ui.label(f"• {message}").classes("text-[10px] text-gray-600 font-mono leading-tight")
+            # Ensure the log scrolls to the bottom when new entries arrive
+            ui.run_javascript(f"const el = document.getElementById('c{self.log_container.id}'); if (el) el.scrollTop = el.scrollHeight;")
 
     # =========================================================
     # CALCULATIONS
@@ -265,41 +272,38 @@ class TemplateWorkbench:
                     ui.icon("architecture", size="xs").classes("text-purple-600")
                     ui.label("Active Mask:").classes("text-xs font-medium text-gray-600")
                     self.mask_label = ui.label("Not set").classes("text-xs font-mono text-gray-400")
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("biotech", size="xs").classes("text-emerald-600")
+                    ui.label("Structure Source:").classes("text-xs font-medium text-gray-600")
+                    self.structure_label = ui.label("Not set").classes("text-xs font-mono text-gray-400")
 
-            # 2. TOP SECTION: Controls and Logs
-            with ui.row().classes("w-full gap-0 border-b border-gray-200"):
-                # Column 1: Template Creation
-                with ui.column().classes("w-[40%] p-4 gap-3 border-r border-gray-100"):
+            # 2. TOP SECTION - overflow:hidden forces the height constraint
+            with ui.row().classes("w-full gap-0 border-b border-gray-200").style("height: 500px; overflow: hidden;"):
+                with ui.column().classes("w-[42%] p-4 gap-3 border-r border-gray-100 overflow-y-auto h-full"):
                     self._render_template_creation_panel()
 
-                # Column 2: Mask Creation
-                with ui.column().classes("w-[25%] p-4 gap-3 border-r border-gray-100"):
+                with ui.column().classes("w-[25%] p-4 gap-3 border-r border-gray-100 overflow-y-auto h-full"):
                     self._render_mask_creation_panel()
 
-                # Column 3: Logs
-                with ui.column().classes("flex-1 p-4 gap-2 bg-gray-50/30"):
+                with ui.column().classes("flex-1 p-4 gap-2 bg-gray-50/30 overflow-hidden h-full"):
                     self._render_logs_panel()
 
-            # 3. BOTTOM SECTION: Files and Viewer
-            with ui.row().classes("w-full gap-0").style("min-height: 500px;"):
-                # Column 1: Available Files (1/4)
-                with ui.column().classes("w-1/4 p-4 border-r border-gray-200 bg-gray-50/10"):
+            # 3. BOTTOM SECTION - overflow:hidden here too
+            with ui.row().classes("w-full gap-0").style("height: 450px; overflow: hidden;"):
+                with ui.column().classes("w-1/3 p-4 border-r border-gray-200 bg-gray-50/10 overflow-y-auto h-full"):
                     self._render_files_panel()
 
-                # Column 2: Molstar Viewer (3/4)
-                with ui.column().classes("flex-1 p-6 items-center justify-start overflow-y-auto"):
-                    # Use aspect-square for forcing square
-                    with ui.element("div").classes(
-                        "w-full max-w-[800px] aspect-square bg-black rounded-xl shadow-2xl relative overflow-hidden"
+                # Molstar needs h-full to actually get height from parent
+                with ui.column().classes("flex-1 bg-black relative overflow-hidden h-full"):
+                    ui.element("iframe").props('src="/molstar" id="molstar-frame"').classes(
+                        "absolute inset-0 w-full h-full border-none"
+                    )
+                    with ui.row().classes(
+                        "absolute bottom-4 left-4 bg-black/70 backdrop-blur-md px-3 py-1.5 "
+                        "rounded-full text-[10px] text-gray-300 border border-white/10 pointer-events-none z-10"
                     ):
-                        ui.element("iframe").props('src="/molstar" id="molstar-frame"').style(
-                            "width: 100%; height: 100%; border: none;"
-                        )
-                        with ui.row().classes(
-                            "absolute bottom-4 left-4 bg-black/70 backdrop-blur-md px-3 py-1.5 rounded-full text-[10px] text-gray-300 border border-white/10"
-                        ):
-                            ui.icon("mouse", size="xs").classes("mr-1")
-                            ui.label("LMB: Rotate | RMB: Pan | Scroll: Zoom")
+                        ui.icon("mouse", size="xs").classes("mr-1")
+                        ui.label("LMB: Rotate | RMB: Pan | Scroll: Zoom")
 
     def _render_template_creation_panel(self):
         """Standardized template generation inputs."""
@@ -362,36 +366,62 @@ class TemplateWorkbench:
         self._update_size_estimate()
         self._update_warnings()
 
-        ui.separator().classes("my-1 opacity-50")
+        ui.separator().classes("my-2 opacity-50")
 
         # Creation Sub-panels
-        with ui.column().classes("w-full gap-3"):
-            # Ellipsoid
-            with ui.column().classes("w-full gap-1"):
-                ui.label("Ellipsoid (x:y:z Å)").classes("text-[10px] font-bold text-gray-400 uppercase")
-                with ui.row().classes("w-full gap-2"):
-                    ui.input(placeholder="550:550:550").bind_value(self, "basic_shape_def").props(
+        with ui.column().classes("w-full gap-4"):
+            # A. Basic Shape Generation
+            with ui.column().classes("w-full gap-1 bg-gray-50/50 p-2 rounded-lg"):
+                ui.label("Ellipsoid Creation").classes("text-[10px] font-bold text-gray-500 uppercase")
+                with ui.row().classes("w-full gap-2 items-center"):
+                    ui.input(label="x:y:z (Å)", placeholder="550:550:550").bind_value(self, "basic_shape_def").props(
                         "dense outlined"
                     ).classes("flex-1").on("update:model-value", self._on_shape_changed)
-                    ui.button("Gen", on_click=self._gen_shape).props("unelevated dense color=primary").classes("w-16")
+                    ui.button("Generate", icon="add_box", on_click=self._gen_shape).props(
+                        "unelevated dense color=primary"
+                    ).classes("px-4")
 
-            # PDB / EMDB Fetch
-            with ui.row().classes("w-full gap-2"):
-                with ui.column().classes("flex-1 gap-1"):
-                    ui.label("PDB ID / Path").classes("text-[10px] font-bold text-gray-400 uppercase")
-                    with ui.row().classes("w-full gap-1"):
-                        ui.input().bind_value(self, "pdb_input_val").props("dense outlined").classes("flex-1")
-                        ui.button(icon="science", on_click=self._simulate_pdb).props(
-                            "flat dense color=primary"
-                        ).tooltip("Simulate map")
+            # B. PDB/EMDB Fetch & Simulation
+            with ui.column().classes("w-full gap-2 bg-blue-50/30 p-2 rounded-lg"):
+                ui.label("Structure / Map Processing").classes("text-[10px] font-bold text-blue-500 uppercase")
 
-                with ui.column().classes("w-24 gap-1"):
-                    ui.label("EMDB Fetch").classes("text-[10px] font-bold text-gray-400 uppercase")
-                    with ui.row().classes("w-full gap-1"):
-                        ui.input(placeholder="30210").bind_value(self, "emdb_input_val").props(
-                            "dense outlined"
-                        ).classes("flex-1")
-                        ui.button(icon="download", on_click=self._fetch_emdb).props("flat dense color=primary")
+                # Fetch Row
+                with ui.row().classes("w-full gap-2"):
+                    with ui.column().classes("flex-1 gap-1"):
+                        with ui.row().classes("w-full gap-1"):
+                            ui.input(label="PDB ID", placeholder="7xyz").bind_value(self, "pdb_input_val").props(
+                                "dense outlined"
+                            ).classes("flex-1")
+                            ui.button(icon="cloud_download", on_click=self._fetch_pdb).props(
+                                "flat dense color=primary"
+                            ).tooltip("Download PDB/CIF")
+
+                    with ui.column().classes("flex-1 gap-1"):
+                        with ui.row().classes("w-full gap-1"):
+                            ui.input(label="EMDB ID", placeholder="30210").bind_value(self, "emdb_input_val").props(
+                                "dense outlined"
+                            ).classes("flex-1")
+                            ui.button(icon="cloud_download", on_click=self._fetch_emdb).props(
+                                "flat dense color=primary"
+                            ).tooltip("Download EMDB Map")
+
+                ui.separator().classes("opacity-30")
+
+                # Dispatch Row
+                with ui.row().classes("w-full gap-2"):
+                    self.simulate_btn = (
+                        ui.button("Simulate from PDB", icon="science", on_click=self._simulate_pdb)
+                        .props("unelevated dense color=blue-7 outline")
+                        .classes("flex-1 text-[11px]")
+                        .props("disable")
+                    )
+
+                    self.resample_btn = (
+                        ui.button("Resample from EMDB", icon="layers", on_click=self._resample_emdb)
+                        .props("unelevated dense color=blue-7 outline")
+                        .classes("flex-1 text-[11px]")
+                        .props("disable")
+                    )
 
     def _render_mask_creation_panel(self):
         """Mask creation parameters."""
@@ -535,6 +565,7 @@ class TemplateWorkbench:
         """Refresh path labels in header."""
         t_path = self._get_current_template_path()
         m_path = self._get_current_mask_path()
+        s_path = self.structure_path
 
         if self.template_label:
             self.template_label.set_text(os.path.basename(t_path) if t_path else "Not set")
@@ -544,6 +575,13 @@ class TemplateWorkbench:
             self.mask_label.set_text(os.path.basename(m_path) if m_path else "Not set")
             self.mask_label.classes(replace=f"text-xs font-mono {'text-purple-700' if m_path else 'text-gray-400'}")
 
+        if self.structure_label:
+            self.structure_label.set_text(os.path.basename(s_path) if s_path else "Not set")
+            self.structure_label.classes(
+                replace=f"text-xs font-mono {'text-emerald-700' if s_path else 'text-gray-400'}"
+            )
+
+        # Update Mask Source Hint
         is_volume = t_path and any(x in t_path.lower() for x in [".mrc", ".map", ".rec"])
         if self.mask_source_label:
             if is_volume:
@@ -556,6 +594,21 @@ class TemplateWorkbench:
                 self.mask_source_label.classes(replace="text-[11px] text-orange-500 italic mb-1")
                 if self.mask_btn:
                     self.mask_btn.props(add="disabled")
+
+        # Update Dispatch Button States
+        if s_path:
+            is_coord = any(x in s_path.lower() for x in [".pdb", ".cif", ".ent"])
+            is_map = any(x in s_path.lower() for x in [".mrc", ".map", ".rec", ".ccp4"])
+
+            if self.simulate_btn:
+                self.simulate_btn.props("remove disable" if is_coord else "add disable")
+            if self.resample_btn:
+                self.resample_btn.props("remove disable" if is_map else "add disable")
+        else:
+            if self.simulate_btn:
+                self.simulate_btn.props("add disable")
+            if self.resample_btn:
+                self.resample_btn.props("add disable")
 
     def _get_warnings(self) -> list:
         """Sanity check warnings."""
@@ -573,15 +626,16 @@ class TemplateWorkbench:
 
     def _render_files_panel(self):
         """Files list container."""
-        with ui.row().classes("w-full items-center justify-between mb-3"):
+        with ui.row().classes("w-full items-center justify-between mb-3 border-b border-gray-200 pb-2"):
             ui.label("Available Data").classes("text-xs font-bold text-gray-600 uppercase tracking-widest")
             ui.button(icon="refresh", on_click=self.refresh_files).props("flat round dense size=sm")
         self.file_list_container = ui.column().classes("w-full gap-1")
 
     def _render_logs_panel(self):
-        """Activity log container."""
+        """Activity log container that scrolls within its parent."""
         self._section_title("Activity Log", "terminal")
-        self.log_container = ui.column().classes("w-full gap-1 overflow-y-auto").style("height: 180px;")
+        # This container scrolls - give it flex-1 to fill available space and overflow-y-auto
+        self.log_container = ui.column().classes("w-full gap-1 flex-1 overflow-y-auto")
 
     def _section_title(self, title: str, icon: str):
         """Styled header."""
@@ -590,47 +644,62 @@ class TemplateWorkbench:
             ui.label(title).classes("text-xs font-bold text-gray-700 uppercase tracking-wide")
 
     async def refresh_files(self):
-        """List files from directory."""
-        if not self.file_list_container:
-            return
-        self._update_selection_labels()
-        self.file_list_container.clear()
-        files = await self.backend.template_service.list_template_files_async(self.output_folder)
-        current_template = self._get_current_template_path()
-        current_mask = self._get_current_mask_path()
-
-        with self.file_list_container:
-            if not files:
-                ui.label("No files found").classes("text-xs text-gray-400 italic py-4")
+            """List files from directory with distinct action areas."""
+            if not self.file_list_container:
                 return
-            for f_path in files:
-                fname = os.path.basename(f_path)
-                is_template, is_mask = f_path == current_template, f_path == current_mask
-                bg = "bg-blue-50/50" if is_template else ("bg-purple-50/50" if is_mask else "hover:bg-gray-50")
-                border = (
-                    "border-l-4 border-blue-500"
-                    if is_template
-                    else ("border-l-4 border-purple-500" if is_mask else "border-l-4 border-transparent")
-                )
-                with ui.row().classes(
-                    f"w-full items-center gap-1 px-3 py-1.5 rounded-r-lg {bg} {border} transition-colors group"
-                ):
-                    with (
-                        ui.row()
-                        .classes("flex-1 items-center gap-2 min-w-0 cursor-pointer")
-                        .on("click", lambda p=f_path: self._visualize(p))
+            self._update_selection_labels()
+            self.file_list_container.clear()
+            files = await self.backend.template_service.list_template_files_async(self.output_folder)
+            
+            current_template = self._get_current_template_path()
+            current_mask = self._get_current_mask_path()
+            current_struct = self.structure_path
+
+            with self.file_list_container:
+                if not files:
+                    ui.label("No files found").classes("text-xs text-gray-400 italic py-4")
+                    return
+                for f_path in files:
+                    fname = os.path.basename(f_path)
+                    ext = Path(f_path).suffix.lower()
+                    
+                    is_template = f_path == current_template
+                    is_mask = f_path == current_mask
+                    is_struct = f_path == current_struct
+                    
+                    bg = "bg-blue-50/50" if is_template else ("bg-purple-50/50" if is_mask else ("bg-emerald-50/50" if is_struct else "hover:bg-gray-50"))
+                    border = "border-l-4 border-blue-500" if is_template else ("border-l-4 border-purple-500" if is_mask else ("border-l-4 border-emerald-500" if is_struct else "border-l-4 border-transparent"))
+                    
+                    with ui.row().classes(
+                        f"w-full items-center gap-1 px-3 py-1 rounded-r-lg {bg} {border} transition-colors group"
                     ):
-                        ui.label(fname).classes("text-[11px] font-mono text-gray-700 truncate")
-                    with ui.row().classes("gap-0 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity"):
-                        ui.button(icon="view_in_ar", on_click=lambda p=f_path: self._toggle_template(p)).props(
-                            f"flat round dense size=sm color={'blue' if is_template else 'grey'}"
-                        )
-                        ui.button(icon="architecture", on_click=lambda p=f_path: self._toggle_mask(p)).props(
-                            f"flat round dense size=sm color={'purple' if is_mask else 'grey'}"
-                        )
-                        ui.button(icon="delete", on_click=lambda p=f_path: self._delete(p)).props(
-                            "flat round dense size=sm color=red"
-                        )
+                        # AREA 1: Click for Visualization ONLY
+                        with ui.row().classes("flex-1 items-center gap-2 min-w-0 cursor-pointer").on("click", lambda p=f_path: self._visualize(p)):
+                            icon_type = "architecture" if "_mask" in fname else ("view_in_ar" if ext in [".mrc", ".map", ".rec", ".ccp4"] else "biotech")
+                            ui.icon(icon_type, size="14px").classes("text-gray-400")
+                            ui.label(fname).classes("text-[11px] font-mono text-gray-700 truncate")
+                        
+                        # AREA 2: Controls (Selectors) - Clicking these will NOT trigger visualization
+                        with ui.row().classes("gap-0 shrink-0"):
+                            # Structure Selector (Coords or Maps)
+                            if ext in [".pdb", ".cif", ".mrc", ".map", ".rec", ".ccp4", ".ent"]:
+                                ui.button(icon="biotech", on_click=lambda p=f_path: self._toggle_structure(p)).props(
+                                    f"flat round dense size=sm color={'emerald' if is_struct else 'grey'}"
+                                ).tooltip("Set as processing source")
+                                
+                            # Template/Mask Selectors (Volumes ONLY)
+                            if ext in [".mrc", ".map", ".rec", ".ccp4"]:
+                                ui.button(icon="view_in_ar", on_click=lambda p=f_path: self._toggle_template(p)).props(
+                                    f"flat round dense size=sm color={'blue' if is_template else 'grey'}"
+                                ).tooltip("Set as template")
+                                
+                                ui.button(icon="architecture", on_click=lambda p=f_path: self._toggle_mask(p)).props(
+                                    f"flat round dense size=sm color={'purple' if is_mask else 'grey'}"
+                                ).tooltip("Set as mask")
+                            
+                            ui.button(icon="delete", on_click=lambda p=f_path: self._delete(p)).props(
+                                "flat round dense size=sm color=red"
+                            ).tooltip("Delete file")
 
     def _visualize(self, path: str):
         """Post message to Molstar iframe."""
@@ -648,18 +717,27 @@ class TemplateWorkbench:
             )
 
     async def _toggle_template(self, path: str):
-        """Set as active template."""
-        if self._get_current_template_path() == path:
-            await self._set_template_path("")
-            self._log("Template unset")
-        else:
-            await self._set_template_path(path)
-            self._visualize(path)
-            self._log(f"Template set: {os.path.basename(path)}")
-        await self.refresh_files()
+            """Set as active template with type guardrails."""
+            ext = Path(path).suffix.lower()
+            if ext not in [".mrc", ".map", ".rec", ".ccp4"]:
+                ui.notify("Template must be a volume file (MRC/MAP)", type="warning")
+                return
+
+            if self._get_current_template_path() == path:
+                await self._set_template_path("")
+                self._log("Template unset")
+            else:
+                await self._set_template_path(path)
+                self._log(f"Template set: {os.path.basename(path)}")
+            await self.refresh_files()
 
     async def _toggle_mask(self, path: str):
-        """Set as active mask."""
+        """Set as active mask with type guardrails."""
+        ext = Path(path).suffix.lower()
+        if ext not in [".mrc", ".map", ".rec", ".ccp4"]:
+            ui.notify("Mask must be a volume file (MRC/MAP)", type="warning")
+            return
+
         if self._get_current_mask_path() == path:
             await self._set_mask_path("")
             self._log("Mask unset")
@@ -668,12 +746,37 @@ class TemplateWorkbench:
             self._log(f"Mask set: {os.path.basename(path)}")
         await self.refresh_files()
 
+    async def _toggle_structure(self, path: str):
+        """Set as active structure for simulation/resampling."""
+        if self.structure_path == path:
+            self.structure_path = ""
+            self._log("Structure source unset")
+        else:
+            self.structure_path = path
+            fname = os.path.basename(path)
+            ext = Path(path).suffix.lower()
+
+            # Autopopulate fields
+            if ext in [".pdb", ".cif", ".ent"]:
+                self.pdb_input_val = fname.split(".")[0]
+            elif ext in [".mrc", ".map"]:
+                if "emd_" in fname:
+                    self.emdb_input_val = fname.split("_")[1].split(".")[0]
+
+            self._log(f"Structure source: {fname}")
+            self._visualize(path)
+
+        await self.refresh_files()
+
     async def _delete(self, path: str):
         """Delete from disk."""
         if path == self._get_current_template_path():
             await self._set_template_path("")
         if path == self._get_current_mask_path():
             await self._set_mask_path("")
+        if path == self.structure_path:
+            self.structure_path = ""
+
         await self.backend.template_service.delete_file_async(path)
         self._log(f"Deleted: {os.path.basename(path)}")
         await self.refresh_files()
@@ -681,6 +784,7 @@ class TemplateWorkbench:
     async def _fetch_pdb(self):
         """Fetch structure from RCSB."""
         if not self.pdb_input_val:
+            ui.notify("Enter a PDB ID first", type="warning")
             return
         self._log(f"Fetching PDB: {self.pdb_input_val}")
         res = await self.backend.template_service.fetch_pdb_async(
@@ -695,6 +799,7 @@ class TemplateWorkbench:
     async def _fetch_emdb(self):
         """Fetch map from EMDB."""
         if not self.emdb_input_val:
+            ui.notify("Enter an EMDB ID first", type="warning")
             return
         self._log(f"Fetching EMDB: {self.emdb_input_val}")
         res = await self.backend.template_service.fetch_emdb_map_async(self.emdb_input_val.strip(), self.output_folder)
@@ -719,14 +824,14 @@ class TemplateWorkbench:
             self._log(f"Generation failed: {res.get('error')}")
 
     async def _simulate_pdb(self):
-        """Generate map from PDB atoms."""
-        pdb_target = self.pdb_input_val.strip()
-        if not pdb_target:
+        """Generate map from currently selected Structure path (if coord file)."""
+        if not self.structure_path:
             return
-        self._log(f"Simulating map from: {pdb_target}...")
+
+        self._log(f"Simulating map from structure: {os.path.basename(self.structure_path)}...")
         res_sim = await asyncio.to_thread(
             self.backend.pdb_service.simulate_map_from_pdb,
-            pdb_target,
+            self.structure_path,
             self.pixel_size,
             int(self.box_size),
             self.output_folder,
@@ -740,6 +845,21 @@ class TemplateWorkbench:
                 await self.refresh_files()
         else:
             self._log(f"Simulation failed: {res_sim.get('error')}")
+
+    async def _resample_emdb(self):
+        """Resample currently selected Structure path (if map file)."""
+        if not self.structure_path:
+            return
+
+        self._log(f"Resampling map: {os.path.basename(self.structure_path)}...")
+        res_proc = await self.backend.template_service.process_volume_async(
+            self.structure_path, self.output_folder, self.pixel_size, int(self.box_size), self.template_resolution
+        )
+        if res_proc["success"]:
+            self._log(f"Resampled map created: {os.path.basename(res_proc['path_black'])}")
+            await self.refresh_files()
+        else:
+            self._log(f"Resampling failed: {res_proc.get('error')}")
 
     async def _create_mask(self):
         """Dispatches Relion mask creation."""
