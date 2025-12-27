@@ -18,7 +18,7 @@ from services.container_service import get_container_service
 def generate_aux_files(job_dir: Path, tilt_series_star: Path, tomo_name: str) -> bool:
     """
     Generates .tlt (angles), defocus.txt, and dose.txt for PyTOM.
-    Reads metadata from the upstream tilt_series.star.
+    Reads metadata from the per-tilt-series star file (referenced from main star).
     """
     aux_dirs = {
         "tilt": job_dir / "tiltAngleFiles",
@@ -29,39 +29,90 @@ def generate_aux_files(job_dir: Path, tilt_series_star: Path, tomo_name: str) ->
         d.mkdir(exist_ok=True)
 
     try:
-        # We read the star file to find rows belonging to this tomogram
-        # Note: In a highly optimized version, we'd read this ONCE outside the loop, 
-        # but reading per tomo is safer for memory if the star file is massive.
-        ts_df = starfile.read(tilt_series_star)
-        if isinstance(ts_df, dict):
-            # Handle RELION split blocks, usually we want the data block
-            ts_df = list(ts_df.values())[0]
-            
-        # Filter for the specific tomogram
-        subset = ts_df[ts_df["rlnTomoName"] == tomo_name]
+        # 1. Read the MAIN star file to find the per-tilt-series star file path
+        main_data = starfile.read(tilt_series_star)
         
-        if subset.empty:
-            print(f"[WARN] No tilt series metadata found for {tomo_name}")
+        # Handle different starfile return formats
+        if isinstance(main_data, dict):
+            # Find the data block (could be 'global', '', or named)
+            main_df = None
+            for key in ['global', '', 'data_']:
+                if key in main_data:
+                    main_df = main_data[key]
+                    break
+            if main_df is None:
+                main_df = list(main_data.values())[0]
+        else:
+            main_df = main_data
+        
+        # Find the row for this tomogram
+        tomo_row = main_df[main_df["rlnTomoName"] == tomo_name]
+        if tomo_row.empty:
+            print(f"[WARN] Tomogram {tomo_name} not found in {tilt_series_star}")
+            return False
+        
+        # Get the per-tilt-series star file path (relative to main star's directory)
+        per_ts_star_rel = tomo_row["rlnTomoTiltSeriesStarFile"].values[0]
+        per_ts_star = tilt_series_star.parent / per_ts_star_rel
+        
+        if not per_ts_star.exists():
+            print(f"[WARN] Per-tilt-series star file not found: {per_ts_star}")
             return False
 
-        # 1. Tilt Angles (.tlt) - PyTOM needs just the numbers, new line separated
-        col_tilt = "rlnTomoYTilt" if "rlnTomoYTilt" in subset.columns else "rlnTomoNominalStageTiltAngle"
-        subset[col_tilt].to_csv(aux_dirs["tilt"] / f"{tomo_name}.tlt", index=False, header=False)
+        # 2. Read the PER-TILT-SERIES star file
+        per_tilt_data = starfile.read(per_ts_star)
+        
+        if isinstance(per_tilt_data, dict):
+            # The block name is usually the tomo name itself
+            per_tilt_df = None
+            for key, val in per_tilt_data.items():
+                if isinstance(val, pd.DataFrame) and not val.empty:
+                    per_tilt_df = val
+                    break
+            if per_tilt_df is None:
+                print(f"[WARN] No data block found in {per_ts_star}")
+                return False
+        else:
+            per_tilt_df = per_tilt_data
 
-        # 2. Defocus (.txt) - Legacy code divided by 10000.0 (Angstrom -> microns/10?)
-        # PyTOM usually expects microns. Check if your old code divided by 10000.
-        if "rlnDefocusU" in subset.columns:
-            defocus_vals = subset["rlnDefocusU"] / 10000.0
-            defocus_vals.to_csv(aux_dirs["defocus"] / f"{tomo_name}.txt", index=False, header=False)
+        # 3. Write aux files from per-tilt data
+        
+        # Tilt Angles - prefer rlnTomoYTilt (refined), fallback to rlnTomoNominalStageTiltAngle
+        if "rlnTomoYTilt" in per_tilt_df.columns:
+            tilt_col = "rlnTomoYTilt"
+        elif "rlnTomoNominalStageTiltAngle" in per_tilt_df.columns:
+            tilt_col = "rlnTomoNominalStageTiltAngle"
+        else:
+            print(f"[WARN] No tilt angle column found in {per_ts_star}")
+            return False
+        
+        per_tilt_df[tilt_col].to_csv(
+            aux_dirs["tilt"] / f"{tomo_name}.tlt", 
+            index=False, header=False
+        )
 
-        # 3. Dose (.txt)
-        if "rlnMicrographPreExposure" in subset.columns:
-            subset["rlnMicrographPreExposure"].to_csv(aux_dirs["dose"] / f"{tomo_name}.txt", index=False, header=False)
+        # Defocus (convert from Angstrom to microns / 10 for PyTOM)
+        if "rlnDefocusU" in per_tilt_df.columns:
+            defocus_vals = per_tilt_df["rlnDefocusU"] / 10000.0
+            defocus_vals.to_csv(
+                aux_dirs["defocus"] / f"{tomo_name}.txt", 
+                index=False, header=False
+            )
+
+        # Dose accumulation
+        if "rlnMicrographPreExposure" in per_tilt_df.columns:
+            per_tilt_df["rlnMicrographPreExposure"].to_csv(
+                aux_dirs["dose"] / f"{tomo_name}.txt", 
+                index=False, header=False
+            )
             
+        print(f"[DRIVER] Generated aux files for {tomo_name} ({len(per_tilt_df)} tilts)")
         return True
 
     except Exception as e:
+        import traceback
         print(f"[ERROR] Aux file generation failed for {tomo_name}: {e}")
+        traceback.print_exc()
         return False
 
 def get_gpu_split(requested_split: str) -> list:
@@ -157,6 +208,8 @@ def main():
 
         for _, row in tomo_df.iterrows():
             tomo_path = Path(row["rlnTomoReconstructedTomogram"])
+            if not tomo_path.is_absolute():
+                tomo_path = project_path / tomo_path
             tomo_name = row["rlnTomoName"]
 
             print(f"[DRIVER] Processing {tomo_name}...", flush=True)

@@ -174,6 +174,15 @@ class AbstractJobParams(BaseModel):
 
     # --- Global parameter access via properties ---
 
+    @classmethod
+    def get_jobstar_field_mapping(cls) -> Dict[str, str]:
+        """
+        Maps paths dict keys to job.star rlnJobOptionVariable names.
+        Override in subclasses that need custom mappings.
+        Default handles the common 'in_mic' case.
+        """
+        return {"input_star": "in_mic"}
+
     @property
     def microscope(self) -> MicroscopeParams:
         if self._project_state is None:
@@ -897,6 +906,14 @@ class TemplateMatchPytomParams(AbstractJobParams):
 
     def get_tool_name(self) -> str:
         return "pytom"
+
+    @classmethod
+    def get_jobstar_field_mapping(cls) -> Dict[str, str]:
+        return {
+            "input_tomograms": "in_mic",
+            "template_path": "in_3dref",
+            "mask_path": "in_mask",
+        }
 
     @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
