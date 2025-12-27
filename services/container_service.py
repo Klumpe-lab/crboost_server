@@ -175,8 +175,8 @@ class ContainerService:
                 if path.exists():
                     binds.add(str(path))
 
+
         hpc_paths = [
-            "/usr/bin",
             "/usr/lib64/slurm",
             "/run/munge",
             "/etc/passwd",
@@ -185,6 +185,11 @@ class ContainerService:
             "/programs",
             "/software",
         ]
+
+        # Only bind /usr/bin for tools that genuinely need SLURM inside container
+        if "relion" in tool_name.lower():
+            hpc_paths.append("/usr/bin")
+
         for p_str in hpc_paths:
             path = Path(p_str)
             if path.exists():
@@ -204,6 +209,7 @@ class ContainerService:
             "run",
             "--nv",
             "--cleanenv",
+            "--no-home",
             *bind_args,
             container_path,
             "bash",

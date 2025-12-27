@@ -122,12 +122,15 @@ class PipelineOrchestratorService:
             scheme_job_dir = scheme_dir / job_type.value
             scheme_job_dir.mkdir(parents=True, exist_ok=True)
             
+            needs_historical_input_patch = (i == 0 and upstream_path_for_resolution is not None)
+
             self._write_job_star(
-                scheme_job_dir = scheme_job_dir,
-                job_type       = job_type,
-                job_model      = job_model,
-                server_dir     = server_dir,
-                project_dir    = project_dir
+                scheme_job_dir         = scheme_job_dir,
+                job_type               = job_type,
+                job_model              = job_model,
+                server_dir             = server_dir,
+                project_dir            = project_dir,
+                patch_historical_input = needs_historical_input_patch,
             )
             
             # Update tracking for next iteration
@@ -187,12 +190,13 @@ class PipelineOrchestratorService:
 
     def _write_job_star(
         self,
-    scheme_job_dir: Path,
-    job_type      : JobType,
-    job_model     : AbstractJobParams,
-    server_dir    : Path,
-    project_dir   : Path
-    )             : 
+        scheme_job_dir: Path,
+        job_type: JobType,
+        job_model: AbstractJobParams,
+        server_dir: Path,
+        project_dir: Path,
+        patch_historical_input: bool = False,
+    ):
         template_source = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
         dest_star = scheme_job_dir / "job.star"
         
@@ -220,7 +224,16 @@ class PipelineOrchestratorService:
                             template_scheme_name, new_scheme_name, regex=False
                         )
 
-        # Inject fn_exe
+        field_mapping = job_model.get_jobstar_field_mapping()
+        for path_key, star_var in field_mapping.items():
+            value = job_model.paths.get(path_key)
+            if value:
+                mask = df["rlnJobOptionVariable"] == star_var
+                if mask.any():
+                    df.loc[mask, "rlnJobOptionValue"] = str(value)
+                    print(f"[ORCHESTRATOR] Patched {star_var} -> {value}")
+
+        # fn_exe injection (existing)
         fn_exe = self._build_fn_exe(job_type, job_model, project_dir, server_dir)
         df.loc[df["rlnJobOptionVariable"] == "fn_exe", "rlnJobOptionValue"] = fn_exe
         
@@ -231,12 +244,14 @@ class PipelineOrchestratorService:
             return self._build_import_command(job_model)
 
         driver_map = {
-            JobType.FS_MOTION_CTF  : "fs_motion_and_ctf.py",
-            JobType.TS_ALIGNMENT   : "ts_alignment.py",
-            JobType.TS_CTF         : "ts_ctf.py",
-            JobType.TS_RECONSTRUCT : "ts_reconstruct.py",
-            JobType.DENOISE_TRAIN  : "denoise_train.py",
-            JobType.DENOISE_PREDICT: "denoise_predict.py",
+            JobType.FS_MOTION_CTF         : "fs_motion_and_ctf.py",
+            JobType.TS_ALIGNMENT          : "ts_alignment.py",
+            JobType.TS_CTF                : "ts_ctf.py",
+            JobType.TS_RECONSTRUCT        : "ts_reconstruct.py",
+            JobType.DENOISE_TRAIN         : "denoise_train.py",
+            JobType.DENOISE_PREDICT       : "denoise_predict.py",
+            JobType.TEMPLATE_MATCH_PYTOM  : "template_match_pytom.py",
+            JobType.TEMPLATE_EXTRACT_PYTOM: "extract_candidates_pytom.py"
         }
         
         script = driver_map.get(job_type)

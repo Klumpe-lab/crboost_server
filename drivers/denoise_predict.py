@@ -95,14 +95,16 @@ def main():
                 additional_binds=additional_binds,
             )
             run_command(cmd, cwd=job_dir)
-
-            if out_path.exists():
+            actual_output = out_path / tomo_name if out_path.is_dir() else out_path
+            if actual_output.exists():
                 new_row = row.copy()
                 try:
-                    new_row[col_name] = str(out_path.relative_to(project_path))
+                    new_row[col_name] = str(actual_output.relative_to(project_path))
                 except ValueError:
-                    new_row[col_name] = str(out_path)
+                    new_row[col_name] = str(actual_output)
                 output_rows.append(new_row)
+            else:
+                print(f"[WARN] Expected output not found: {actual_output}")
 
         if output_rows:
             starfile.write(pd.DataFrame(output_rows), job_dir / "tomograms.star")
