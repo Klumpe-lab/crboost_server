@@ -101,20 +101,22 @@ def run_command(command: str, cwd: Path):
     """
     Helper to run a shell command, stream output, and check for errors.
     """
-    process = subprocess.Popen(command, shell=True, cwd=cwd, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    print("--- CONTAINER STDOUT ---", flush=True)
+    process = subprocess.Popen(
+        command, 
+        shell=True, 
+        cwd=cwd, 
+        text=True, 
+        stdout=subprocess.PIPE, 
+        stderr=subprocess.STDOUT,  # Merge stderr into stdout
+        bufsize=1
+    )
+    
+    print("--- CONTAINER OUTPUT ---", flush=True)
     if process.stdout:
         for line in iter(process.stdout.readline, ""):
             print(line, end="", flush=True)
 
-    print("--- CONTAINER STDERR ---", file=sys.stderr, flush=True)
-    stderr_output = ""
-    if process.stderr:
-        for line in iter(process.stderr.readline, ""):
-            print(line, end="", file=sys.stderr, flush=True)
-            stderr_output += line
-
     process.wait()
 
     if process.returncode != 0:
-        raise subprocess.CalledProcessError(process.returncode, command, None, stderr_output)
+        raise subprocess.CalledProcessError(process.returncode, command)

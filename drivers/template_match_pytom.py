@@ -123,6 +123,8 @@ def get_gpu_split(requested_split: str) -> list:
     return requested_split.split(":")
 
 def main():
+    import os  
+    os.environ['TQDM_DISABLE'] = '1'
     print("--- SLURM JOB START (Template Matching) ---", flush=True)
 
     try:
