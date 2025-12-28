@@ -783,8 +783,6 @@ class DenoiseTrainParams(AbstractJobParams):
             "output_model": job_dir / "denoising_model.tar.gz",
         }
 
-
-
 class DenoisePredictParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
@@ -993,20 +991,23 @@ class TemplateMatchPytomParams(AbstractJobParams):
 class CandidateExtractPytomParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
 
-    # Particle Params
-    particle_diameter_ang: float = Field(default=150.0)
-    max_num_particles: int = Field(default=1000)
+    # Particle Params (defaults from original job.star)
+    particle_diameter_ang: float = Field(default=200.0)  # param3
+    max_num_particles: int = Field(default=1500)         # param4
     
     # Thresholding
-    cutoff_method: str = Field(default="NumberOfFalsePositives") # "NumberOfFalsePositives" or "ManualCutOff"
-    cutoff_value: float = Field(default=1.0)
+    cutoff_method: str = Field(default="NumberOfFalsePositives")  # param1: "NumberOfFalsePositives" or "ManualCutOff"
+    cutoff_value: float = Field(default=1.0)                      # param2
     
     # Score Map
-    apix_score_map: str = Field(default="auto") 
+    apix_score_map: str = Field(default="auto")  # param5
     
     # Filtering
-    score_filter_method: str = Field(default="None")
-    score_filter_value: str = Field(default="None")
+    score_filter_method: str = Field(default="None")  # param6: "None" or "tophat"
+    score_filter_value: str = Field(default="None")   # param7: "connectivity:bins" e.g. "1:10"
+    
+    # Optional mask folder for excluding regions
+    mask_fold_path: str = Field(default="None")  # param8
 
     def is_driver_job(self) -> bool:
         return True
@@ -1015,44 +1016,89 @@ class CandidateExtractPytomParams(AbstractJobParams):
         return "pytom"
 
     @classmethod
+    def get_jobstar_field_mapping(cls) -> Dict[str, str]:
+        return {
+            "input_tm_job": "in_mic",
+        }
+
+    @classmethod
     def from_job_star(cls, star_path: Path) -> Optional[Self]:
         if not star_path or not star_path.exists():
             return None
         try:
             data = starfile.read(star_path, always_dict=True)
             df = data.get("joboptions_values")
-            if df is None or not isinstance(df, pd.DataFrame): return None
+            if df is None or not isinstance(df, pd.DataFrame):
+                return None
             
             param_dict = pd.Series(
                 df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
             ).to_dict()
 
             return cls(
-                particle_diameter_ang=float(param_dict.get("particle_diameter", "150.0")),
-                max_num_particles=int(param_dict.get("max_num_particles", "1000")),
-                cutoff_method=param_dict.get("cutoff_method", "NumberOfFalsePositives"),
-                cutoff_value=float(param_dict.get("cutoff_value", "1.0")),
-                apix_score_map=param_dict.get("apix_score_map", "auto")
+                cutoff_method=param_dict.get("param1_value", "NumberOfFalsePositives"),
+                cutoff_value=float(param_dict.get("param2_value", "1")),
+                particle_diameter_ang=float(param_dict.get("param3_value", "200")),
+                max_num_particles=int(param_dict.get("param4_value", "1500")),
+                apix_score_map=param_dict.get("param5_value", "auto"),
+                score_filter_method=param_dict.get("param6_value", "None"),
+                score_filter_value=param_dict.get("param7_value", "None"),
+                mask_fold_path=param_dict.get("param8_value", "None"),
             )
         except Exception:
             return None
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
-        return {"tm_job": "tmMatchPytom"}
+        return {"tm_job": "templatematching"}
 
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        """
+        Resolves paths for candidate extraction.
+        upstream_job_dir: The template matching job directory (e.g., External/job007/)
+        """
         if not upstream_job_dir:
-             raise ValueError("Extraction requires an upstream Template Matching job")
+            raise ValueError("Extraction requires an upstream Template Matching job directory")
+
+        # Find tomograms.star - check multiple sources
+        input_tomograms = None
+        
+        # 1. Check if TM job has tomograms.star
+        tm_tomograms = upstream_job_dir / "tomograms.star"
+        if tm_tomograms.exists():
+            input_tomograms = tm_tomograms
+        
+        # 2. Look in project state for reconstruct/denoise output
+        if not input_tomograms and self._project_state:
+            for source_job in [JobType.DENOISE_PREDICT, JobType.TS_RECONSTRUCT]:
+                source_model = self._project_state.jobs.get(source_job)
+                if source_model and source_model.execution_status == JobStatus.SUCCEEDED:
+                    source_star = source_model.paths.get("output_star")
+                    if source_star and Path(source_star).exists():
+                        input_tomograms = Path(source_star)
+                        break
+        
+        # 3. Fallback
+        if not input_tomograms:
+            print(f"[WARN] Could not resolve input_tomograms, will attempt runtime resolution")
+            input_tomograms = upstream_job_dir / "tomograms.star"
+
+        # Resolve mask folder if provided
+        mask_fold = None
+        if self.mask_fold_path and self.mask_fold_path != "None":
+            mask_fold = Path(self.mask_fold_path)
 
         return {
-            "job_dir": job_dir,
-            "project_root": self.project_root,
-            "input_tm_job": upstream_job_dir,
-            "input_tomograms": upstream_job_dir.parent / "tomograms.star", # Inferring original tomo list location
-            "output_star": job_dir / "candidates.star",
-            "optimisation_set": job_dir / "optimisation_set.star"
+            "job_dir"         : job_dir,
+            "project_root"    : self.project_root,
+            "input_tm_job"    : upstream_job_dir,
+            "input_tomograms" : input_tomograms,
+            "mask_fold"       : mask_fold,
+            "output_star"     : job_dir / "candidates.star",
+            "output_tomograms": job_dir / "tomograms.star",
+            "optimisation_set": job_dir / "optimisation_set.star",
         }
+
 
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
