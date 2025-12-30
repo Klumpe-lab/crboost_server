@@ -251,7 +251,8 @@ class PipelineOrchestratorService:
             JobType.DENOISE_TRAIN         : "denoise_train.py",
             JobType.DENOISE_PREDICT       : "denoise_predict.py",
             JobType.TEMPLATE_MATCH_PYTOM  : "template_match_pytom.py",
-            JobType.TEMPLATE_EXTRACT_PYTOM: "extract_candidates_pytom.py"
+            JobType.TEMPLATE_EXTRACT_PYTOM: "extract_candidates_pytom.py",
+            JobType.SUBTOMO_EXTRACTION    : "subtomo_extraction.py",  
         }
         
         script = driver_map.get(job_type)
@@ -444,6 +445,7 @@ class JobTypeResolver:
         "denoise_predict.py"         : "denoisepredict",
         "template_match_pytom.py"    : "templatematching",
         "extract_candidates_pytom.py": "tmextractcand",
+        "subtomo_extraction.py"      : "subtomoExtraction", 
     }
     
     def __init__(self, star_handler: StarfileService):

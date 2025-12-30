@@ -66,7 +66,7 @@ class JobType(str, Enum):
 
     TEMPLATE_MATCH_PYTOM = "templatematching"
     TEMPLATE_EXTRACT_PYTOM = "tmextractcand"
-    SUBTOMO_RECONSTRUCT = "sta"
+    SUBTOMO_EXTRACTION     = "subtomoExtraction"  
 
 
     @classmethod
@@ -1100,6 +1100,91 @@ class CandidateExtractPytomParams(AbstractJobParams):
         }
 
 
+class SubtomoExtractionParams(AbstractJobParams):
+    """
+    Subtomogram extraction using RELION's relion_tomo_subtomo.
+    Creates pseudo-subtomograms from tilt series for downstream averaging/classification.
+    """
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+
+    # Extraction parameters
+    binning: float = Field(default=1.0, description="Binning factor relative to unbinned data")
+    box_size: int = Field(default=512, description="Box size in binned pixels")
+    crop_size: int = Field(default=256, description="Cropped box size (-1 = no cropping)")
+    
+    # Output format
+    do_float16: bool = Field(default=True, description="Write output in float16 to save space")
+    do_stack2d: bool = Field(default=True, description="Write as 2D stacks (preferred for RELION 4.1+)")
+    
+    # Filtering
+    max_dose: float = Field(default=-1.0, description="Max dose to include (-1 = all)")
+    min_frames: int = Field(default=1, description="Min frames per tilt to include")
+
+    def is_driver_job(self) -> bool:
+        return True
+
+    def get_tool_name(self) -> str:
+        return "relion"
+
+    @classmethod
+    def get_jobstar_field_mapping(cls) -> Dict[str, str]:
+        return {
+            "input_optimisation": "in_optimisation",
+        }
+
+    @classmethod
+    def from_job_star(cls, star_path: Path) -> Optional[Self]:
+        if not star_path or not star_path.exists():
+            return None
+        try:
+            data = starfile.read(star_path, always_dict=True)
+            df = data.get("joboptions_values")
+            if df is None or not isinstance(df, pd.DataFrame):
+                return None
+
+            param_dict = pd.Series(
+                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
+            ).to_dict()
+
+            return cls(
+                binning=float(param_dict.get("binning", "1")),
+                box_size=int(param_dict.get("box_size", "512")),
+                crop_size=int(param_dict.get("crop_size", "256")),
+                do_float16=param_dict.get("do_float16", "Yes") == "Yes",
+                do_stack2d=param_dict.get("do_stack2d", "Yes") == "Yes",
+                max_dose=float(param_dict.get("max_dose", "-1")),
+                min_frames=int(param_dict.get("min_frames", "1")),
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        # Depends on candidate extraction output
+        return {"optimisation_set": "tmextractcand"}
+
+    def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
+        """
+        Resolve input/output paths for subtomo extraction.
+        Input: optimisation_set.star from candidate extraction
+        Output: particles.star + new optimisation_set.star
+        """
+        if not upstream_job_dir:
+            raise ValueError("SubtomoExtraction requires upstream candidate extraction job (tmextractcand)")
+
+        input_opt = upstream_job_dir / "optimisation_set.star"
+        
+        return {
+            "job_dir": job_dir,
+            "project_root": self.project_root,
+            # Input
+            "input_optimisation": input_opt,
+            # Outputs (RELION generates these)
+            "output_particles": job_dir / "particles.star",
+            "output_optimisation": job_dir / "optimisation_set.star",
+        }
+
+
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
         JobType.IMPORT_MOVIES         : ImportMoviesParams,
@@ -1111,6 +1196,8 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
         JobType.DENOISE_PREDICT       : DenoisePredictParams,
         JobType.TEMPLATE_MATCH_PYTOM  : TemplateMatchPytomParams,
         JobType.TEMPLATE_EXTRACT_PYTOM: CandidateExtractPytomParams,
+    JobType.SUBTOMO_EXTRACTION    : SubtomoExtractionParams,  
+
     }
 
 class ProjectState(BaseModel):

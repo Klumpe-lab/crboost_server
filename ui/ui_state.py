@@ -10,8 +10,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING
 from pydantic import BaseModel, Field, ConfigDict
-from datetime import datetime
-
 from services.project_state import JobType, JobStatus
 
 if TYPE_CHECKING:
@@ -108,28 +106,28 @@ class JobWidgetRefs:
 @dataclass
 class PanelWidgetRefs:
     """Panel-level widget references."""
-    job_tabs_container: Optional[Any] = None
-    run_button: Optional[Any] = None
-    stop_button: Optional[Any] = None
-    status_label: Optional[Any] = None
-    continuation_container: Optional[Any] = None
-    job_tags_container: Optional[Any] = None
-    job_tag_buttons: Dict[str, Any] = field(default_factory=dict)
+    job_tabs_container    : Optional[Any]  = None
+    run_button            : Optional[Any]  = None
+    stop_button           : Optional[Any]  = None
+    status_label          : Optional[Any]  = None
+    continuation_container: Optional[Any]  = None
+    job_tags_container    : Optional[Any]  = None
+    job_tag_buttons       : Dict[str, Any] = field(default_factory=dict)
     
     # Data import panel refs
-    movies_input: Optional[Any] = None
-    mdocs_input: Optional[Any] = None
-    project_name_input: Optional[Any] = None
-    project_path_input: Optional[Any] = None
-    create_button: Optional[Any] = None
-    load_button: Optional[Any] = None
-    autodetect_button: Optional[Any] = None
+    movies_input            : Optional[Any] = None
+    mdocs_input             : Optional[Any] = None
+    project_name_input      : Optional[Any] = None
+    project_path_input      : Optional[Any] = None
+    create_button           : Optional[Any] = None
+    load_button             : Optional[Any] = None
+    autodetect_button       : Optional[Any] = None
     params_display_container: Optional[Any] = None
     
     # Validation hint labels
     movies_hint_label: Optional[Any] = None
-    mdocs_hint_label: Optional[Any] = None
-    status_indicator: Optional[Any] = None
+    mdocs_hint_label : Optional[Any] = None
+    status_indicator : Optional[Any] = None
     
     def cleanup(self):
         """Clear all refs"""
@@ -140,17 +138,17 @@ class PanelWidgetRefs:
         self.continuation_container = None
         self.job_tags_container = None
         self.job_tag_buttons.clear()
-        self.movies_input = None
-        self.mdocs_input = None
-        self.project_name_input = None
-        self.project_path_input = None
-        self.create_button = None
-        self.load_button = None
-        self.autodetect_button = None
+        self.movies_input             = None
+        self.mdocs_input              = None
+        self.project_name_input       = None
+        self.project_path_input       = None
+        self.create_button            = None
+        self.load_button              = None
+        self.autodetect_button        = None
         self.params_display_container = None
-        self.movies_hint_label = None
-        self.mdocs_hint_label = None
-        self.status_indicator = None
+        self.movies_hint_label        = None
+        self.mdocs_hint_label         = None
+        self.status_indicator         = None
 
 
 # Pipeline ordering - centralized
@@ -164,7 +162,7 @@ PIPELINE_ORDER: List[JobType] = [
     JobType.DENOISE_PREDICT, 
     JobType.TEMPLATE_MATCH_PYTOM,
     JobType.TEMPLATE_EXTRACT_PYTOM,
-    JobType.SUBTOMO_RECONSTRUCT,
+    JobType.SUBTOMO_EXTRACTION
 ]
 
 JOB_DISPLAY_NAMES: Dict[JobType, str] = {
@@ -177,7 +175,7 @@ JOB_DISPLAY_NAMES: Dict[JobType, str] = {
     JobType.DENOISE_PREDICT       : "Denoise Predict",
     JobType.TEMPLATE_MATCH_PYTOM  : "Template Match",
     JobType.TEMPLATE_EXTRACT_PYTOM: "Template Extract",
-    JobType.SUBTOMO_RECONSTRUCT   : "STA",
+    JobType.SUBTOMO_EXTRACTION    : "Subtomo Extraction"
 }
 
 
