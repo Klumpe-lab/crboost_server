@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # import asyncio # <-- No longer needed here
+import asyncio
 import socket
 import argparse
 from pathlib import Path
@@ -19,6 +20,12 @@ class SuppressPruneStorageError(logging.Filter):
         return "Request is not set" not in record.getMessage()
 
 logging.getLogger("nicegui").addFilter(SuppressPruneStorageError())
+
+# Set logging level to see asyncio warnings
+logging.basicConfig(level=logging.DEBUG)
+# This will log a warning if a task blocks the loop for more than 100ms
+asyncio.get_event_loop().set_debug(True)
+
 
 def setup_app():
     """Configures and returns the FastAPI app."""
