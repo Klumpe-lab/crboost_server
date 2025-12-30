@@ -117,26 +117,29 @@ def create_save_handler() -> Callable:
 
 
 def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks: Dict[str, Callable]) -> None:
-    """
-    Render a complete job tab with header and content.
-    """
+    print(f"[DEBUG] render_job_tab called for {job_type}")
     state = get_project_state()
     job_model = state.jobs.get(job_type)
+    print(f"[DEBUG] job_model: {job_model}")
 
     if not job_model:
         ui.label(f"Error: Job model for {job_type.value} not found.").classes("text-xs text-red-600")
         return
 
+    print("[DEBUG] render_job_tab: getting ui state")
     job_ui_state = ui_mgr.get_job_ui_state(job_type)
     widget_refs = ui_mgr.get_job_widget_refs(job_type)
+    print("[DEBUG] render_job_tab: got ui state")
 
     # Determine active tab - default to logs if frozen and user hasn't manually switched
     is_frozen = is_job_frozen(job_type)
     active_tab = job_ui_state.active_monitor_tab
+    print(f"[DEBUG] render_job_tab: is_frozen={is_frozen}, active_tab={active_tab}")
 
     if is_frozen and active_tab == MonitorTab.CONFIG and not job_ui_state.user_switched_tab:
         active_tab = MonitorTab.LOGS
         job_ui_state.active_monitor_tab = MonitorTab.LOGS
+
 
     async def handle_delete():
         # [ ... Delete logic remains the same ... ]
@@ -163,45 +166,58 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
             ui.button("Delete", color="red", on_click=confirm)
         dialog.open()
 
-    # ===========================================
-    # Header Section
-    # ===========================================
+    print("[DEBUG] render_job_tab: Header Section START")
 
     with ui.column().classes("w-full border-b border-gray-200 bg-white pl-6 pr-6 pt-4 pb-4"):
-        # [ ... Header content remains the same ... ]
+        print("[DEBUG] render_job_tab: inside header column")
         with ui.row().classes("w-full justify-between items-center"):
+            print("[DEBUG] render_job_tab: inside header row")
             with ui.column().classes("gap-0"):
+                print("[DEBUG] render_job_tab: project name row")
                 with ui.row().classes("items-center gap-2"):
                     ui.label(state.project_name).classes("text-lg font-bold text-gray-800")
+                    print("[DEBUG] render_job_tab: about to create ReactiveStatusBadge")
                     ReactiveStatusBadge(job_type)
+                    print("[DEBUG] render_job_tab: ReactiveStatusBadge created")
                 created = state.created_at.strftime("%Y-%m-%d %H:%M") if isinstance(state.created_at, datetime) else str(state.created_at)
                 modified = state.modified_at.strftime("%Y-%m-%d %H:%M") if isinstance(state.modified_at, datetime) else str(state.modified_at)
                 ui.label(f"Created: {created} · Modified: {modified}").classes("text-xs text-gray-400")
+                print("[DEBUG] render_job_tab: timestamps done")
 
+            print("[DEBUG] render_job_tab: controls row START")
             with ui.row().classes("items-center gap-4"):
+                print("[DEBUG] render_job_tab: creating switcher container")
                 switcher_container = ui.row().classes("bg-gray-100 p-1 rounded-lg gap-0 border border-gray-200")
                 widget_refs.switcher_container = switcher_container
+                print("[DEBUG] render_job_tab: calling _render_tab_switcher")
                 _render_tab_switcher(switcher_container, job_type, active_tab, backend, ui_mgr, callbacks)
+                print("[DEBUG] render_job_tab: _render_tab_switcher done")
                 ui.button(icon="refresh", on_click=lambda: _force_status_refresh(callbacks)).props("flat dense round").classes("text-gray-400 hover:text-gray-800")
                 if ui_mgr.is_project_created:
                     ui.button(icon="delete", on_click=handle_delete).props("flat round dense color=red").tooltip("Delete this job")
+            print("[DEBUG] render_job_tab: controls row END")
+    print("[DEBUG] render_job_tab: Header Section END")
 
     # ===========================================
     # Content Section
     # ===========================================
+    print("[DEBUG] render_job_tab: Content Section START")
 
-    # CHANGE 1: Moved overflow-y-auto here, removed overflow-hidden. 
-    # This makes the main container the scrollable area.
     content_container = ui.column().classes("w-full flex-grow overflow-y-auto p-6")
     widget_refs.content_container = content_container
 
     with content_container:
+        print(f"[DEBUG] render_job_tab: rendering tab content, active_tab={active_tab}")
         if active_tab == MonitorTab.CONFIG:
+            print("[DEBUG] render_job_tab: calling _render_config_tab")
             _render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend)
+            print("[DEBUG] render_job_tab: _render_config_tab returned")
         elif active_tab == MonitorTab.LOGS:
             _render_logs_tab(job_type, job_model, backend, ui_mgr)
         elif active_tab == MonitorTab.FILES:
             _render_files_tab(job_type, job_model, ui_mgr)
+
+    print("[DEBUG] render_job_tab: COMPLETE")
 
 
 # ===========================================
@@ -279,6 +295,7 @@ def _handle_tab_switch(
 
 def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UIStateManager, backend):
     """Render the configuration/parameters tab."""
+    print(f"[DEBUG] _render_config_tab START for {job_type}")
     save_handler = create_save_handler()
 
     with ui.column().classes("w-full"):
@@ -286,10 +303,12 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
         # ==========================================================
         # 1. I/O CONFIGURATION (First)
         # ==========================================================
+        print("[DEBUG] _render_config_tab: I/O Configuration START")
         ui.label("I/O Configuration").classes("text-sm font-bold text-gray-900 mb-3")
 
         with ui.card().classes("w-full p-0 gap-0 border border-gray-200 shadow-none mb-6"):
             paths_data = job_model.paths
+            print(f"[DEBUG] _render_config_tab: paths_data = {paths_data}")
 
             if paths_data:
                 for i, (key, value) in enumerate(paths_data.items()):
@@ -304,10 +323,12 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
                         ui.label(str(value)).classes("text-xs font-mono text-gray-700 break-all flex-1")
             else:
                 ui.label("Paths calculated upon pipeline creation.").classes("text-sm text-gray-400 italic p-4")
+        print("[DEBUG] _render_config_tab: I/O Configuration END")
 
         # ==========================================================
         # 2. JOB PARAMETERS
         # ==========================================================
+        print("[DEBUG] _render_config_tab: Job Parameters START")
         ui.label("Job Parameters").classes("text-sm font-bold text-gray-900 mb-3")
 
         base_fields = {
@@ -319,12 +340,14 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
             "JOB_CATEGORY",
         }
         job_specific_fields = set(job_model.model_fields.keys()) - base_fields
+        print(f"[DEBUG] _render_config_tab: job_specific_fields = {job_specific_fields}")
 
         if not job_specific_fields:
             ui.label("This job has no configurable parameters.").classes("text-xs text-gray-500 italic mb-4")
 
         with ui.grid(columns=3).classes("w-full gap-4 mb-6"):
             for param_name in sorted(list(job_specific_fields)):
+                print(f"[DEBUG] _render_config_tab: rendering param '{param_name}'")
                 label = snake_to_title(param_name)
                 value = getattr(job_model, param_name)
 
@@ -360,46 +383,60 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
                             inp.classes("bg-gray-50 text-gray-500").props("readonly")
                         else:
                             inp.on_value_change(save_handler)
+        print("[DEBUG] _render_config_tab: Job Parameters END")
 
         # ==========================================================
         # 3. GLOBAL PARAMETERS (Read-Only)
         # ==========================================================
+        print("[DEBUG] _render_config_tab: Global Parameters START")
         ui.label("Global Experimental Parameters (Read-Only)").classes("text-sm font-bold text-gray-900 mb-3")
 
         with ui.grid(columns=3).classes("w-full gap-4 mb-6"):
+            print("[DEBUG] _render_config_tab: about to access job_model.microscope")
             ui.input("Pixel Size (Å)").bind_value(job_model.microscope, "pixel_size_angstrom").props(
                 "dense outlined readonly"
             ).tooltip("Global parameter")
+            print("[DEBUG] _render_config_tab: pixel size done")
 
             ui.input("Voltage (kV)").bind_value(job_model.microscope, "acceleration_voltage_kv").props(
                 "dense outlined readonly"
             ).tooltip("Global parameter")
+            print("[DEBUG] _render_config_tab: voltage done")
 
             ui.input("Cs (mm)").bind_value(job_model.microscope, "spherical_aberration_mm").props(
                 "dense outlined readonly"
             ).tooltip("Global parameter")
+            print("[DEBUG] _render_config_tab: Cs done")
 
             ui.input("Amplitude Contrast").bind_value(job_model.microscope, "amplitude_contrast").props(
                 "dense outlined readonly"
             ).tooltip("Global parameter")
+            print("[DEBUG] _render_config_tab: amplitude contrast done")
 
             ui.input("Dose per Tilt").bind_value(job_model.acquisition, "dose_per_tilt").props(
                 "dense outlined readonly"
             ).tooltip("Global parameter")
+            print("[DEBUG] _render_config_tab: dose per tilt done")
 
             ui.input("Tilt Axis (°)").bind_value(job_model.acquisition, "tilt_axis_degrees").props(
                 "dense outlined readonly"
             ).tooltip("Global parameter")
+            print("[DEBUG] _render_config_tab: tilt axis done")
+        print("[DEBUG] _render_config_tab: Global Parameters END")
 
         # ==========================================================
         # 4. TEMPLATE WORKBENCH (Only for Template Matching, at bottom)
         # ==========================================================
         if job_type == JobType.TEMPLATE_MATCH_PYTOM:
+            print("[DEBUG] About to render TemplateWorkbench...")
             ui.separator().classes("mb-6")
             ui.label("Template Workbench").classes("text-sm font-bold text-gray-900 mb-3")
             
             with ui.card().classes("w-full p-0 border border-gray-200 shadow-none bg-white"):
                 TemplateWorkbench(backend, str(ui_mgr.project_path))
+            print("[DEBUG] TemplateWorkbench rendered")
+    
+    print(f"[DEBUG] _render_config_tab END for {job_type}")
 # ===========================================
 # Logs Tab
 # ===========================================
@@ -479,11 +516,26 @@ async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
 
     logs = await backend.get_job_logs(str(project_path), job_model.relion_job_name)
 
+    # Truncate massive logs
+    MAX_LOG_LINES = 500
+    
+    stdout = logs.get("stdout", "No output") or "No output yet"
+    stderr = logs.get("stderr", "No errors") or "No errors yet"
+    
+    # Keep last N lines only
+    stdout_lines = stdout.split('\n')
+    stderr_lines = stderr.split('\n')
+    
+    if len(stdout_lines) > MAX_LOG_LINES:
+        stdout = f"[... truncated {len(stdout_lines) - MAX_LOG_LINES} lines ...]\n" + '\n'.join(stdout_lines[-MAX_LOG_LINES:])
+    if len(stderr_lines) > MAX_LOG_LINES:
+        stderr = f"[... truncated {len(stderr_lines) - MAX_LOG_LINES} lines ...]\n" + '\n'.join(stderr_lines[-MAX_LOG_LINES:])
+
     monitor["stdout"].clear()
-    monitor["stdout"].push(logs.get("stdout", "No output") or "No output yet")
+    monitor["stdout"].push(stdout)
 
     monitor["stderr"].clear()
-    monitor["stderr"].push(logs.get("stderr", "No errors") or "No errors yet")
+    monitor["stderr"].push(stderr)
 
 
 # ===========================================
