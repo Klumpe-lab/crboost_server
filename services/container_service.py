@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple
 
 from services.config_service import get_config_service
 
+
 class Colors:
     @classmethod
     def _parse_container_command(cls, command: str) -> Tuple[str, List[str], str, str]:
@@ -18,9 +19,9 @@ class Colors:
         bind_paths = re.findall(bind_pattern, command)
 
         container_match = re.search(r"([^\s]+\.sif)", command)
-        container_path  = container_match.group(1) if container_match else "unknown"
-        inner_match     = re.search(r"bash -c '(.+)'$", command)
-        inner_command   = inner_match.group(1) if inner_match else "unknown"
+        container_path = container_match.group(1) if container_match else "unknown"
+        inner_match = re.search(r"bash -c '(.+)'$", command)
+        inner_command = inner_match.group(1) if inner_match else "unknown"
 
         return env_cleanup, bind_paths, container_path, inner_command
 
@@ -51,8 +52,8 @@ class Colors:
             try:
                 tokens = shlex.split(part)
             except ValueError:
-                tokens = part.split() 
-            
+                tokens = part.split()
+
             if not tokens:
                 continue
 
@@ -65,8 +66,8 @@ class Colors:
                 should_break = False
                 if line_length + token_len > max_width and token_idx > 0:
                     should_break = True
-                elif token.startswith("--") and token_idx > 0 and not tokens[token_idx-1].startswith("--"):
-                     should_break = True
+                elif token.startswith("--") and token_idx > 0 and not tokens[token_idx - 1].startswith("--"):
+                    should_break = True
 
                 if should_break:
                     lines.append(current_line.rstrip() + " \\")
@@ -97,7 +98,7 @@ class Colors:
                 if len(parts) > 4:
                     return f"{parts[0]}/{parts[1]}/.../{parts[-2]}/{parts[-1]}"
             except Exception:
-                pass 
+                pass
             return p
 
         lines = [
@@ -115,7 +116,7 @@ class Colors:
                 lines.append("    unset \\")
                 # Group vars for readability, e.g., 5 per line
                 for i in range(0, len(env_vars), 5):
-                    line_vars = env_vars[i:i+5]
+                    line_vars = env_vars[i : i + 5]
                     line = "        " + " ".join(line_vars)
                     if i + 5 < len(env_vars):
                         line += " \\"
@@ -124,25 +125,26 @@ class Colors:
         lines.append("")
         lines.append("  Command:")
         lines.append("    apptainer run --nv --cleanenv \\")
-        
+
         if bind_paths:
-             for bind in bind_paths:
+            for bind in bind_paths:
                 # The path already contains ":ro" if it's read-only
                 lines.append(f"        -B {bind} \\")
 
         lines.append(f"        {shorten_path(parsed_container)} \\")
         lines.append(f"        bash -c '")
-        
+
         if inner_command and inner_command != "unknown":
             # Indent inner command
             formatted_lines = cls._format_inner_command(inner_command, indent=12)
             for line in formatted_lines:
                 lines.append(f"{line}")
-        
+
         lines.append(f"        '")
         lines.append("-" * 70)
 
         return "\n".join(lines)
+
 
 class ContainerService:
     def __init__(self):
@@ -175,16 +177,7 @@ class ContainerService:
                 if path.exists():
                     binds.add(str(path))
 
-
-        hpc_paths = [
-            "/usr/lib64/slurm",
-            "/run/munge",
-            "/etc/passwd",
-            "/etc/group",
-            "/groups",
-            "/programs",
-            "/software",
-        ]
+        hpc_paths = ["/usr/lib64/slurm", "/run/munge", "/etc/passwd", "/etc/group", "/groups", "/programs", "/software"]
 
         # Only bind /usr/bin for tools that genuinely need SLURM inside container
         if "relion" in tool_name.lower():
@@ -233,6 +226,21 @@ class ContainerService:
             "CONDA_PREFIX",
             "CONDA_DEFAULT_ENV",
             "CONDA_PROMPT_MODIFIER",
+            # We need to unset these for MPI to work and container not to be confused about it being _an actual_ slurm job (as opposed to being a process inside the slurm job)
+            "SLURM_JOBID",
+            "SLURM_JOB_ID",
+            "SLURM_NODELIST",
+            "SLURM_STEP_NODELIST",
+            "SLURM_NTASKS",
+            "SLURM_PROCID",
+            "SLURM_LOCALID",
+            "SLURM_TASK_PID",
+            "PMI_FD",
+            "PMI_SIZE",
+            "PMI_RANK",
+            "PMIX_RANK",
+            "OMPI_COMM_WORLD_SIZE",
+            "OMPI_COMM_WORLD_RANK",
         ]
         if "relion" in tool_name.lower():
             clean_env_vars.extend(["DISPLAY", "XAUTHORITY"])
@@ -241,8 +249,8 @@ class ContainerService:
         final_command = f"{clean_env_cmd}; {apptainer_cmd}"
 
         print(Colors.format_command_log(tool_name, final_command, cwd, container_path))
-
         return final_command
+
 
 _container_service = None
 

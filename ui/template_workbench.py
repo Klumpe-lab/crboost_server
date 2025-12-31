@@ -91,10 +91,12 @@ class TemplateWorkbench:
     """Template workbench with clean layout."""
 
     def __init__(self, backend, project_path: str):
+        print("[DEBUG] TemplateWorkbench.__init__ START")
         self.backend = backend
         self.project_path = project_path
         self.output_folder = os.path.join(project_path, "templates")
         os.makedirs(self.output_folder, exist_ok=True)
+        print("[DEBUG] TemplateWorkbench.__init__ output_folder created")
 
         # Project-derived values
         self.project_raw_apix = None
@@ -111,7 +113,7 @@ class TemplateWorkbench:
         self.basic_shape_def = "550:550:550"
         self.pdb_input_val = ""
         self.emdb_input_val = ""
-        self.structure_path = ""  # Track currently selected PDB/EMDB source file
+        self.structure_path = ""
 
         # Mask settings
         self.mask_threshold = 0.001
@@ -141,10 +143,19 @@ class TemplateWorkbench:
 
         # Track for log deduplication
         self._last_logged_box = None
+        print("[DEBUG] TemplateWorkbench.__init__ attributes set")
 
+        print("[DEBUG] TemplateWorkbench.__init__ calling _load_project_parameters")
         self._load_project_parameters()
+        print("[DEBUG] TemplateWorkbench.__init__ _load_project_parameters done")
+        
+        print("[DEBUG] TemplateWorkbench.__init__ calling _render")
         self._render()
+        print("[DEBUG] TemplateWorkbench.__init__ _render done")
+        
+        print("[DEBUG] TemplateWorkbench.__init__ creating refresh_files task")
         asyncio.create_task(self.refresh_files())
+        print("[DEBUG] TemplateWorkbench.__init__ COMPLETE")
 
     # =========================================================
     # PROJECT PARAMETER LOADING
@@ -152,8 +163,10 @@ class TemplateWorkbench:
 
     def _load_project_parameters(self):
         """Load pixel size and binning from project state."""
+        print("[DEBUG] _load_project_parameters START")
         try:
             state = get_project_state()
+            print(f"[DEBUG] _load_project_parameters got state: {state.project_name}")
 
             # Get raw pixel size from microscope params
             if hasattr(state, "microscope") and state.microscope:
@@ -261,7 +274,9 @@ class TemplateWorkbench:
     # =========================================================
 
     def _render(self):
+        print("[DEBUG] TemplateWorkbench._render() START")
         with ui.column().classes("w-full gap-0 bg-white"):
+            print("[DEBUG] _render: header status bar START")
             # 1. Header status bar
             with ui.row().classes("w-full gap-6 px-4 py-2 bg-gray-50 border-b border-gray-200 items-center"):
                 with ui.row().classes("items-center gap-2"):
@@ -276,23 +291,36 @@ class TemplateWorkbench:
                     ui.icon("biotech", size="xs").classes("text-emerald-600")
                     ui.label("Structure Source:").classes("text-xs font-medium text-gray-600")
                     self.structure_label = ui.label("Not set").classes("text-xs font-mono text-gray-400")
+            print("[DEBUG] _render: header status bar END")
 
+            print("[DEBUG] _render: TOP SECTION START")
             # 2. TOP SECTION - overflow:hidden forces the height constraint
             with ui.row().classes("w-full gap-0 border-b border-gray-200").style("height: 500px; overflow: hidden;"):
+                print("[DEBUG] _render: template creation panel START")
                 with ui.column().classes("w-[42%] p-4 gap-3 border-r border-gray-100 overflow-y-auto h-full"):
                     self._render_template_creation_panel()
+                print("[DEBUG] _render: template creation panel END")
 
+                print("[DEBUG] _render: mask creation panel START")
                 with ui.column().classes("w-[25%] p-4 gap-3 border-r border-gray-100 overflow-y-auto h-full"):
                     self._render_mask_creation_panel()
+                print("[DEBUG] _render: mask creation panel END")
 
+                print("[DEBUG] _render: logs panel START")
                 with ui.column().classes("flex-1 p-4 gap-2 bg-gray-50/30 overflow-hidden h-full"):
                     self._render_logs_panel()
+                print("[DEBUG] _render: logs panel END")
+            print("[DEBUG] _render: TOP SECTION END")
 
+            print("[DEBUG] _render: BOTTOM SECTION START")
             # 3. BOTTOM SECTION - overflow:hidden here too
             with ui.row().classes("w-full gap-0").style("height: 450px; overflow: hidden;"):
+                print("[DEBUG] _render: files panel START")
                 with ui.column().classes("w-1/3 p-4 border-r border-gray-200 bg-gray-50/10 overflow-y-auto h-full"):
                     self._render_files_panel()
+                print("[DEBUG] _render: files panel END")
 
+                print("[DEBUG] _render: molstar iframe START")
                 # Molstar needs h-full to actually get height from parent
                 with ui.column().classes("flex-1 bg-black relative overflow-hidden h-full"):
                     ui.element("iframe").props('src="/molstar" id="molstar-frame"').classes(
@@ -304,6 +332,10 @@ class TemplateWorkbench:
                     ):
                         ui.icon("mouse", size="xs").classes("mr-1")
                         ui.label("LMB: Rotate | RMB: Pan | Scroll: Zoom")
+                print("[DEBUG] _render: molstar iframe END")
+            print("[DEBUG] _render: BOTTOM SECTION END")
+
+        print("[DEBUG] TemplateWorkbench._render() COMPLETE")
 
     def _render_template_creation_panel(self):
         """Standardized template generation inputs."""
