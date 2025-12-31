@@ -14,7 +14,6 @@ from nicegui import ui
 from backend import CryoBoostBackend
 import logging
 
-# Suppress the NiceGUI timer error spam
 class SuppressPruneStorageError(logging.Filter):
     def filter(self, record):
         return "Request is not set" not in record.getMessage()
