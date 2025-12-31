@@ -117,9 +117,6 @@ def create_save_handler() -> Callable:
 
 
 def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks: Dict[str, Callable]) -> None:
-    """
-    Render a complete job tab with header and content.
-    """
     state = get_project_state()
     job_model = state.jobs.get(job_type)
 
@@ -137,6 +134,7 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
     if is_frozen and active_tab == MonitorTab.CONFIG and not job_ui_state.user_switched_tab:
         active_tab = MonitorTab.LOGS
         job_ui_state.active_monitor_tab = MonitorTab.LOGS
+
 
     async def handle_delete():
         # [ ... Delete logic remains the same ... ]
@@ -163,12 +161,8 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
             ui.button("Delete", color="red", on_click=confirm)
         dialog.open()
 
-    # ===========================================
-    # Header Section
-    # ===========================================
 
     with ui.column().classes("w-full border-b border-gray-200 bg-white pl-6 pr-6 pt-4 pb-4"):
-        # [ ... Header content remains the same ... ]
         with ui.row().classes("w-full justify-between items-center"):
             with ui.column().classes("gap-0"):
                 with ui.row().classes("items-center gap-2"):
@@ -190,8 +184,6 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
     # Content Section
     # ===========================================
 
-    # CHANGE 1: Moved overflow-y-auto here, removed overflow-hidden. 
-    # This makes the main container the scrollable area.
     content_container = ui.column().classes("w-full flex-grow overflow-y-auto p-6")
     widget_refs.content_container = content_container
 
@@ -202,7 +194,6 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
             _render_logs_tab(job_type, job_model, backend, ui_mgr)
         elif active_tab == MonitorTab.FILES:
             _render_files_tab(job_type, job_model, ui_mgr)
-
 
 # ===========================================
 # Tab Switcher
@@ -395,11 +386,14 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
         # 4. TEMPLATE WORKBENCH (Only for Template Matching, at bottom)
         # ==========================================================
         if job_type == JobType.TEMPLATE_MATCH_PYTOM:
+            print("[DEBUG] About to render TemplateWorkbench...")
             ui.separator().classes("mb-6")
             ui.label("Template Workbench").classes("text-sm font-bold text-gray-900 mb-3")
             
             with ui.card().classes("w-full p-0 border border-gray-200 shadow-none bg-white"):
                 TemplateWorkbench(backend, str(ui_mgr.project_path))
+            print("[DEBUG] TemplateWorkbench rendered")
+    
 # ===========================================
 # Logs Tab
 # ===========================================
@@ -479,11 +473,26 @@ async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
 
     logs = await backend.get_job_logs(str(project_path), job_model.relion_job_name)
 
+    # Truncate massive logs
+    MAX_LOG_LINES = 500
+    
+    stdout = logs.get("stdout", "No output") or "No output yet"
+    stderr = logs.get("stderr", "No errors") or "No errors yet"
+    
+    # Keep last N lines only
+    stdout_lines = stdout.split('\n')
+    stderr_lines = stderr.split('\n')
+    
+    if len(stdout_lines) > MAX_LOG_LINES:
+        stdout = f"[... truncated {len(stdout_lines) - MAX_LOG_LINES} lines ...]\n" + '\n'.join(stdout_lines[-MAX_LOG_LINES:])
+    if len(stderr_lines) > MAX_LOG_LINES:
+        stderr = f"[... truncated {len(stderr_lines) - MAX_LOG_LINES} lines ...]\n" + '\n'.join(stderr_lines[-MAX_LOG_LINES:])
+
     monitor["stdout"].clear()
-    monitor["stdout"].push(logs.get("stdout", "No output") or "No output yet")
+    monitor["stdout"].push(stdout)
 
     monitor["stderr"].clear()
-    monitor["stderr"].push(logs.get("stderr", "No errors") or "No errors yet")
+    monitor["stderr"].push(stderr)
 
 
 # ===========================================
