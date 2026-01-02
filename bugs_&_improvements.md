@@ -1,0 +1,2 @@
+- can start the running pipeline twice
+- acquisition params should be autoinferred when user specifes mdocs (not have to click)

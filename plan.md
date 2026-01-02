@@ -1,3 +1,6 @@
-- repair the templating creation mechnaism quickly
-- finalize the job, blaze to STA
-- polish
+x denoise fix --> 
+  refactors (ui, model typing) --> 
+qsub integration --> 
+png display --> 
+make sure things make sense --> 
+"analytics"/global parameter display
