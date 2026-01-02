@@ -68,7 +68,7 @@ Your Laptop          SSH Tunnel               Head Node
 
 ## Purpose and Overview
 
-CryoBoost Server is a cryo-EM job orchestrator that provides a web-based interface for constructing and executing processing pipelines on SLURM clusters. It leverages containerized tools from the cryo-EM ecosystem and unifies processing under RELION's pipeline system while eliminating the need for SSH connections through a browser-based UI accessible via port forwarding [1](#0-0) .
+CryoBoost Server is a cryo-EM job orchestrator that provides a web-based interface for constructing and executing pipelines on SLURM clusters. It leverages containerized tools from the cryo-EM ecosystem and unifies processing under RELION's pipeline system through a browser-based UI accessible via port forwarding [1](#0-0) .
 
 ## Dispatch Mechanism
 

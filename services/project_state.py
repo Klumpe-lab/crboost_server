@@ -827,54 +827,68 @@ class DenoisePredictParams(AbstractJobParams):
         return {"train": "denoisetrain"}
 
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-            """
-            Kitchen sink resolution:
-            1. Grabs the stored path dictionary from the historical TsReconstruct job.
-            2. Grabs the stored path dictionary from the DenoiseTrain job.
-            3. Packages them for the driver.
-            """
-            if not self._project_state:
-                raise RuntimeError("DenoisePredict detached from ProjectState")
+        """
+        Resolution for DenoisePredict:
+        1. Model comes from DenoiseTrain (upstream_job_dir in a full pipeline, or historical).
+        2. Tomogram data comes from TsReconstruct (looked up from state's path mapping OR predicted).
+        """
+        if not self._project_state:
+            raise RuntimeError("DenoisePredict detached from ProjectState")
 
-            # --- 1. GET DATA (From TsReconstruct) ---
-            # We assume the user has a successful reconstruction job in the project
-            ts_job = self._project_state.jobs.get(JobType.TS_RECONSTRUCT)
-            
-            if not ts_job or ts_job.execution_status != JobStatus.SUCCEEDED:
-                raise ValueError("DenoisePredict requires a successfully completed TsReconstruct job.")
-            
-            # Access the persisted paths from that job
-            ts_paths = ts_job.paths 
-            if "output_star" not in ts_paths or "warp_dir" not in ts_paths:
-                raise ValueError("TsReconstruct state is missing output paths. Did it run correctly?")
+        # --- 1. GET MODEL PATH (From DenoiseTrain) ---
+        # If we're in a batch pipeline, upstream_job_dir is the predicted DenoiseTrain dir.
+        # Otherwise, look for a historical successful train job.
+        model_path = None
+        
+        if upstream_job_dir:
+            # Batch mode: upstream is the predicted DenoiseTrain job dir
+            model_path = upstream_job_dir / "denoising_model.tar.gz"
+        else:
+            # Continuation mode: look for historical train job
+            train_job = self._project_state.jobs.get(JobType.DENOISE_TRAIN)
+            if train_job and train_job.paths.get("output_model"):
+                model_path = Path(train_job.paths["output_model"])
+        
+        if not model_path:
+            raise ValueError("DenoisePredict requires a DenoiseTrain job (either in batch or completed historically).")
 
-            # --- 2. GET MODEL (From DenoiseTrain) ---
-            # If we are in a pipeline, upstream_job_dir might be the train job.
-            # Otherwise, we look at the last successful train job in the state.
-            model_path = None
-            
-            if upstream_job_dir:
-                model_path = upstream_job_dir / "denoising_model.tar.gz"
-            else:
-                train_job = self._project_state.jobs.get(JobType.DENOISE_TRAIN)
-                if train_job and train_job.execution_status == JobStatus.SUCCEEDED:
-                    # Use the path explicitly saved by the train job
-                    model_path = Path(train_job.paths.get("output_model"))
-            
-            if not model_path or not model_path.exists():
-                raise FileNotFoundError("Denoising model not found.")
+        # --- 2. GET TOMOGRAM DATA (From TsReconstruct) ---
+        # Strategy: 
+        #   a) If TsReconstruct has already run, use its stored paths.
+        #   b) If not, predict where it WILL write based on the job_path_mapping or batch order.
+        
+        ts_job = self._project_state.jobs.get(JobType.TS_RECONSTRUCT)
+        input_star = None
+        reconstruct_base = None
+        
+        if ts_job and ts_job.execution_status == JobStatus.SUCCEEDED and ts_job.paths:
+            # TsReconstruct already completed - use its actual outputs
+            input_star = Path(ts_job.paths.get("output_star")) if ts_job.paths.get("output_star") else None
+            reconstruct_base = Path(ts_job.paths.get("warp_dir")) if ts_job.paths.get("warp_dir") else None
+        
+        if not input_star or not reconstruct_base:
+            # TsReconstruct hasn't run yet - predict paths based on its resolved_paths
+            # The orchestrator should have already called resolve_paths on TsReconstruct,
+            # so its `paths` dict should be populated with predicted values.
+            if ts_job and ts_job.paths:
+                input_star = Path(ts_job.paths.get("output_star")) if ts_job.paths.get("output_star") else None
+                reconstruct_base = Path(ts_job.paths.get("warp_dir")) if ts_job.paths.get("warp_dir") else None
+        
+        if not input_star or not reconstruct_base:
+            raise ValueError(
+                "DenoisePredict could not resolve TsReconstruct paths. "
+                "Ensure TsReconstruct is in the pipeline (before DenoisePredict) or has completed previously."
+            )
 
-            # --- 3. PACKAGE FOR DRIVER ---
-            return {
-                "job_dir": job_dir,
-                "project_root": self.project_root,
-                
-                # Pass the precise absolute paths to the driver
-                "model_path": model_path,
-                "input_star": Path(ts_paths["output_star"]),
-                "reconstruct_base": Path(ts_paths["warp_dir"]), # The specific Warp dir containing even/odd
-                "output_dir": job_dir / "denoised",
-            }
+        # --- 3. PACKAGE FOR DRIVER ---
+        return {
+            "job_dir"         : job_dir,
+            "project_root"    : self.project_root,
+            "model_path"      : model_path,
+            "input_star"      : input_star,
+            "reconstruct_base": reconstruct_base,
+            "output_dir"      : job_dir / "denoised",
+        }
 
 
 class TemplateMatchPytomParams(AbstractJobParams):
