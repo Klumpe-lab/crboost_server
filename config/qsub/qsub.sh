@@ -1,16 +1,18 @@
 #!/bin/bash
-#SBATCH --job-name=CryoBoost-Warp
-#SBATCH --partition=g
-#SBATCH --nodes=2
-#SBATCH --ntasks-per-node=1    
-#SBATCH --constraint="g2|g3|g4"
-#SBATCH --cpus-per-task=4
-#SBATCH --gres=gpu:4             
-#SBATCH --mem=64G
-#SBATCH --time=3:30:00
+#SBATCH --job-name=CryoBoost
+#SBATCH --partition=XXXextra1XXX
+#SBATCH --constraint="XXXextra2XXX"
+#SBATCH --nodes=XXXextra3XXX
+#SBATCH --ntasks-per-node=XXXextra4XXX
+#SBATCH --cpus-per-task=XXXextra5XXX
+#SBATCH --gres=XXXextra6XXX
+#SBATCH --mem=XXXextra7XXX
+#SBATCH --time=XXXextra8XXX
 #SBATCH --output=XXXoutfileXXX
 #SBATCH --error=XXXerrfileXXX
 
+
+# ------------ SLURM HEADER  -----------
 export MODULEPATH=/software/system/modules/core
 . /opt/ohpc/admin/lmod/lmod/init/bash
 
@@ -21,10 +23,14 @@ module load gcccore/13.2.0
 module load arrow/16.1.0-gfbf-2023b
 which python3
 python3 --version
+# ------------ ------------  -----------
 
+
+# ------------ ENV PATHS  --------------
 export CRBOOST_SERVER_DIR="/users/<user>/dev/crboost_server/"
 export VENV_PYTHON="/users/<user>/dev/crboost_server/venv/bin/python3"
 export PYTHONPATH="${VENV_PYTHON}:${PYTHONPATH}"
+# ------------ ---------  --------------
 
 echo "--- SLURM JOB BEGAN ---"
 echo "Node: $(hostname)"

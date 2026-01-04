@@ -47,7 +47,7 @@ nr_threads          24
 do_queue         No 
 queuename    openmpi 
 qsub     sbatch 
-qsubscript          qsub/qsub_cbe_warp.sh
+qsubscript          qsub/qsub.sh
 min_dedicated          1 
 qsub_extra1          1 
 qsub_extra2          1 

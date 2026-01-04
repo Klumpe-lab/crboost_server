@@ -1,0 +1,13 @@
+nicegui==3.0.3
+fastapi==0.118.0
+uvicorn==0.37.0
+
+numpy
+pandas
+scipy
+biopython==1.86
+scikit-image==0.26.0
+
+starfile==0.5.13
+mrcfile==1.5.4
+tifffile==2025.12.20

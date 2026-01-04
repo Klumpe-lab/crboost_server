@@ -39,7 +39,7 @@ nr_threads          3
 do_queue        Yes 
 queuename    auto 
 qsub     sbatch 
-    qsubscript          qsub/qsub_cbe_warp.sh
+    qsubscript          qsub/qsub.sh
 min_dedicated          1 
 other_args         "" 
 qsub_extra1        auto  # qos name
