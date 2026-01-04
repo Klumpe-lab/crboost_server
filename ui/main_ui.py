@@ -12,7 +12,6 @@ from ui.ui_state import get_ui_state_manager
 from ui.landing_page import build_landing_page
 from ui.workspace_page import build_workspace_page
 
-HARDCODED_USER = "artem.kushner"
 
 def create_ui_router(backend: CryoBoostBackend):
     """Create the UI router with distinct phases."""

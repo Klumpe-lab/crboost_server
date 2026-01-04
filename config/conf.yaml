@@ -1,23 +1,22 @@
 # CryoBoost Server Configuration
 
 local:
-  Environment: "source /opt/CryoBoost/.cbenv"
   DefaultProjectBase: "/users/artem.kushner/dev/crboost_server/projects"
-  DefaultMoviesGlob: "/users/artem.kushner/dev/001_CopiaTestSet/frames/*.eer"
-  DefaultMdocsGlob: "/users/artem.kushner/dev/001_CopiaTestSet/mdoc/*.mdoc"
+  DefaultMoviesGlob : "/users/artem.kushner/dev/001_CopiaTestSet/frames/*.eer"
+  DefaultMdocsGlob  : "/users/artem.kushner/dev/001_CopiaTestSet/mdoc/*.mdoc"
 
 slurm_defaults:
-  partition: "g"
-  constraint: "g2|g3|g4"
-  nodes: 1
+  partition      : "g"
+  constraint     : "g2|g3|g4"
+  nodes          : 1
   ntasks_per_node: 1
-  cpus_per_task: 4
-  gres: "gpu:4"
-  mem: "64G"
-  time: "3:30:00"
+  cpus_per_task  : 4
+  gres           : "gpu:4"
+  mem            : "64G"
+  time           : "3:30:00"
 
 containers:
   warp_aretomo: /groups/klumpe/software/Setup/cryoboost_containers/warp_2.0.0dev36_aretomo1.0.0_cuda11.8_glibc2.31.sif
-  cryocare: /users/artem.kushner/dev/containers/cryocare.sif
-  pytom: /groups/klumpe/software/Setup/cryoboost_containers/pytom_match_pick.sif
-  relion: /users/artem.kushner/dev/containers/relion5.0_tomo.sif
+  cryocare    : /users/artem.kushner/dev/containers/cryocare.sif
+  pytom       : /groups/klumpe/software/Setup/cryoboost_containers/pytom_match_pick.sif
+  relion      : /users/artem.kushner/dev/containers/relion5.0_tomo.sif

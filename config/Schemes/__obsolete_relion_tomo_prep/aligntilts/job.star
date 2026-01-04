@@ -35,7 +35,7 @@ do_queue        Yes
 other_args         "" 
 queuename    auto 
 qsub        sbatch 
-    qsubscript          qsub/qsub_cbe_warp.sh
+    qsubscript          qsub/qsub.sh
 nr_mpi          6 
 qsub_extra1       auto 
 qsub_extra2       auto 

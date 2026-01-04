@@ -1,0 +1,82 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/cuda:12.1.1-devel-ubuntu22.04
+
+%environment
+    # 1. Isolation: Block host/home directory contamination
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+    # 2. Paths: Ensure container's python and cuda are prioritized
+    export PATH="/opt/miniforge3/envs/pytom/bin:/opt/miniforge3/bin:$PATH"
+    export CUDA_HOME="/usr/local/cuda"
+    export LD_LIBRARY_PATH="/opt/miniforge3/envs/pytom/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+    # 3. Clean logs
+    export TF_CPP_MIN_LOG_LEVEL=3
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    export PYTHONNOUSERSITE=1
+    unset PYTHONPATH
+    unset PYTHONHOME
+
+    # 1. System dependencies (Ubuntu 22.04 base)
+    apt-get update && apt-get install -y \
+        wget \
+        git \
+        build-essential \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        && rm -rf /var/lib/apt/lists/*
+
+    # 2. Install Miniforge
+    cd /opt
+    wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O miniforge.sh
+    bash miniforge.sh -b -p /opt/miniforge3
+    rm miniforge.sh
+    
+    export PATH="/opt/miniforge3/bin:$PATH"
+    
+    # 3. Create Env with CUDA 12.1 support
+    # We use explicit channels to ensure we get the NVIDIA-optimized builds
+    conda create -n pytom -y \
+        -c pytorch \
+        -c nvidia \
+        -c conda-forge \
+        python=3.11 \
+        "numpy<2" \
+        pytorch \
+        torchvision \
+        pytorch-cuda=12.1 \
+        cupy \
+        pip
+
+    # 4. Install pytom-match-pick
+    /opt/miniforge3/envs/pytom/bin/pip install --no-cache-dir pytom-match-pick
+
+    # 5. Build-time verification
+    echo "--- BUILD VERIFICATION ---"
+    /opt/miniforge3/envs/pytom/bin/python --version
+    /opt/miniforge3/envs/pytom/bin/python -c "import numpy; print('NumPy Path:', numpy.__file__)"
+    /opt/miniforge3/envs/pytom/bin/python -c "import torch; print('Torch CUDA Version:', torch.version.cuda)"
+
+    conda clean --all -y
+
+%runscript
+    #!/bin/bash
+    # Hard-kill host paths at runtime
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+    
+    source /opt/miniforge3/etc/profile.d/conda.sh
+    conda activate pytom
+    
+    if [ $# -eq 0 ]; then
+        /bin/bash
+    else
+        exec "$@"
+    fi
+
+%help
+    PyTom Match-Pick Container (CUDA 12.1 / Python 3.11)
+    Use with: apptainer exec --nv --no-home <image>.sif pytom_match_template.py

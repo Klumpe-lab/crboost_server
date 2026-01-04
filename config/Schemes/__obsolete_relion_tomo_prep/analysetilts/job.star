@@ -51,6 +51,6 @@ qsub_extra1          3
 qsub_extra2          3 
 qsub_extra3    g
 qsub_extra4      2
-    qsubscript          qsub/qsub_cbe_warp.sh
+    qsubscript          qsub/qsub.sh
  queuename    openmpi 
  

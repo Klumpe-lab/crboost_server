@@ -65,7 +65,7 @@ From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu20.04
     conda install -n base mamba -c conda-forge || { echo "FAILED: Installing mamba"; exit 1; }
     
     echo "=== CREATING WARP CONDA ENVIRONMENT ==="
-    mamba create -n warp warp -c warpem -c pytorch -c conda-forge -c nvidia || { echo "FAILED: Creating Warp environment"; exit 1; }
+    mamba create -n warp warp=2.0.0dev36 -c warpem -c pytorch -c conda-forge -c nvidia || { echo "FAILED: Creating Warp environment"; exit 1; }
     echo "Warp environment created successfully"
     
     # Test Warp installation
