@@ -115,10 +115,13 @@ class PipelineOrchestratorService:
                 job_dir=predicted_job_dir, 
                 upstream_job_dir=upstream_path_for_resolution
             )
+    
             
             # Update the State (Persist these absolute paths for the Driver)
             job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v}
+    
             
+            await self.backend.state_service.save_project()
             # Prepare temporary job.star
             scheme_job_dir = scheme_dir / job_type.value
             scheme_job_dir.mkdir(parents=True, exist_ok=True)
@@ -292,7 +295,7 @@ class PipelineOrchestratorService:
             edges_data.append({
                 "rlnSchemeEdgeInputNodeName": job_names[i],
                 "rlnSchemeEdgeOutputNodeName": job_names[i+1],
-                "rlnSchemeEdgeIsFork": 0,
+                "rlnSchemeEdgeIsFork": 0,  # IMPORTANT: No forks!
                 "rlnSchemeEdgeOutputNodeNameIfTrue": "undefined",
                 "rlnSchemeEdgeBooleanVariable": "undefined"
             })

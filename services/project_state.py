@@ -308,8 +308,19 @@ class AbstractJobParams(BaseModel):
         if self.RELION_JOB_TYPE == "relion.external":
             options.append(("fn_exe", fn_exe))
         
-        # Add job-specific options (in_mic, etc.)
+        # Add job-specific options (in_mic, in_tomoset, etc.)
         options.extend(self._get_job_specific_options())
+        
+        # CRITICAL: Add actual path values for validation
+        # This helps relion_schemer understand dependencies
+        for key, path_value in self.paths.items():
+            if key in ["input_star", "model_path", "input_tomoset"]:
+                # Convert to relative path for RELION
+                try:
+                    rel_path = Path(path_value).relative_to(self.project_root)
+                    options.append((key, f"./{rel_path}"))
+                except ValueError:
+                    options.append((key, str(path_value)))
         
         if self.RELION_JOB_TYPE == "relion.external":
             options.append(("other_args", ""))
@@ -899,11 +910,24 @@ class DenoisePredictParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = True
 
-    ntiles_x: int = Field(default=2, ge=1)
-    ntiles_y: int = Field(default=2, ge=1)
-    ntiles_z: int = Field(default=2, ge=1)
+
+    ntiles_x: int = Field(default=4, ge=1)
+    ntiles_y: int = Field(default=4, ge=1)
+    ntiles_z: int = Field(default=4, ge=1)
     denoising_tomo_name: str = "" 
     perdevice: int = Field(default=1)
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Set cryoCARE-specific SLURM defaults
+        if "slurm_overrides" not in data:
+            self.slurm_overrides = {
+                "gres": "gpu:1",  # cryoCARE prediction is single-GPU only!
+                "mem": "64G",
+                "cpus_per_task": 4,
+                "time": "4:00:00",
+                "preset": SlurmPreset.CUSTOM.value
+            }
 
     def is_driver_job(self) -> bool:
         return True
@@ -916,13 +940,13 @@ class DenoisePredictParams(AbstractJobParams):
         model_path = self.paths.get("model_path", "")
         return [
             ("in_tomoset", str(input_star)),
-            # If RELION needs to see the model dependency:
             ("in_model", str(model_path)),
         ]
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"train": "denoisetrain"}
+
 
     # In DenoisePredictParams
 
@@ -944,28 +968,54 @@ class DenoisePredictParams(AbstractJobParams):
             if train_job and train_job.paths.get("output_model"):
                 model_path = Path(train_job.paths["output_model"])
             else:
-                raise ValueError("DenoisePredict requires DenoiseTrain (no model path found)")
+                # Try to find any denoising_model.tar.gz in the project
+                potential_models = list(self.project_root.glob("**/denoising_model.tar.gz"))
+                if potential_models:
+                    model_path = potential_models[0]
+                else:
+                    raise ValueError("DenoisePredict requires DenoiseTrain (no model path found)")
 
-        # --- 2. TOMOGRAMS (from TsReconstruct - NOT the linear predecessor!) ---
+        # --- 2. TOMOGRAMS (from TsReconstruct) ---
         ts_job = self._project_state.jobs.get(JobType.TS_RECONSTRUCT)
         
-        if not ts_job:
-            raise ValueError("DenoisePredict requires TsReconstruct job in pipeline")
+        # Multiple ways to find input_star
+        input_star = None
+        reconstruct_base = None
         
-        # DON'T check execution_status! Just check if paths are populated.
-        # They will be populated either:
-        #   a) From historical run (loaded from project_params.json)
-        #   b) From earlier iteration in current batch (orchestrator populates paths in order)
-        
-        if ts_job.paths.get("output_star"):
+        # Option 1: From ts_job paths
+        if ts_job and ts_job.paths.get("output_star"):
             input_star = Path(ts_job.paths["output_star"])
-            reconstruct_base = Path(ts_job.paths.get("warp_dir") or ts_job.paths.get("output_processing", ""))
-        else:
+            reconstruct_base = Path(ts_job.paths.get("warp_dir") or 
+                                ts_job.paths.get("output_processing", ""))
+        
+        # Option 2: Search for tomograms.star
+        if not input_star or not input_star.exists():
+            potential_stars = list(self.project_root.glob("**/tomograms.star"))
+            if potential_stars:
+                # Prefer External/job006/ over others
+                external_stars = [s for s in potential_stars if "External/job" in str(s)]
+                input_star = external_stars[0] if external_stars else potential_stars[0]
+                
+                # Infer reconstruct_base from tomograms.star location
+                reconstruct_base = input_star.parent / "warp_tiltseries"
+        
+        if not input_star or not input_star.exists():
             raise ValueError(
-                "TsReconstruct paths not resolved. Ensure TsReconstruct is in the pipeline "
-                "before DenoisePredict, or has completed in a previous run."
+                f"Cannot find tomograms.star. Searched in: {list(self.project_root.glob('**/tomograms.star'))}"
             )
-
+        
+        if not reconstruct_base or not reconstruct_base.exists():
+            # Try to infer from common locations
+            possible_bases = [
+                input_star.parent / "warp_tiltseries",
+                self.project_root / "External" / f"job{input_star.parent.name.replace('job', '')}" / "warp_tiltseries",
+                self.project_root / "External" / input_star.parent.name / "warp_tiltseries",
+            ]
+            for base in possible_bases:
+                if base.exists():
+                    reconstruct_base = base
+                    break
+        
         return {
             "job_dir": job_dir,
             "project_root": self.project_root,
