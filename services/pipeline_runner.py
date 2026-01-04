@@ -121,14 +121,17 @@ class StatusSyncService:
         
         project_dir = Path(project_path)
         deletion_service = get_deletion_service()
-        
-        # Method 1: Check Relion's graph for missing nodes
         graph_orphans = deletion_service.get_orphaned_jobs(project_dir)
         orphaned_paths = {job_path for job_path, _ in graph_orphans}
-        orphan_details = {job_path: missing for job_path, missing in graph_orphans}
         
-        # Method 2: Check if input files actually exist on disk
         for job_type, job_model in state.jobs.items():
+            # CRITICAL: If a job is Scheduled, we DON'T check for files on disk.
+            # It's not an orphan; it just hasn't run yet!
+            if job_model.execution_status == JobStatus.SCHEDULED:
+                job_model.is_orphaned = False
+                job_model.missing_inputs = []
+                continue
+
             job_path = job_model.relion_job_name
             
             # Check stored input paths for existence

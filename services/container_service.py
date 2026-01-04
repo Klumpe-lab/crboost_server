@@ -195,7 +195,22 @@ class ContainerService:
         for path in sorted(binds):
             bind_args.extend(["-B", path])
 
-        inner_command_quoted = shlex.quote(command)
+        # RELION environment variables MUST be inside the container
+        relion_env_setup = (
+            "export RELION_QSUB_EXTRA_COUNT=8; "
+            "export RELION_QSUB_EXTRA1='Partition'; "
+            "export RELION_QSUB_EXTRA2='Constraint'; "
+            "export RELION_QSUB_EXTRA3='Nodes'; "
+            "export RELION_QSUB_EXTRA4='Tasks'; "
+            "export RELION_QSUB_EXTRA5='CPUs'; "
+            "export RELION_QSUB_EXTRA6='GRES'; "
+            "export RELION_QSUB_EXTRA7='Memory'; "
+            "export RELION_QSUB_EXTRA8='Walltime'; "
+        )
+        
+        # Combine environment setup with the actual command INSIDE the container
+        inner_command_with_env = f"{relion_env_setup}{command}"
+        inner_command_quoted = shlex.quote(inner_command_with_env)
 
         apptainer_cmd_parts = [
             "apptainer",
@@ -242,10 +257,13 @@ class ContainerService:
             "OMPI_COMM_WORLD_SIZE",
             "OMPI_COMM_WORLD_RANK",
         ]
+        
         if "relion" in tool_name.lower():
             clean_env_vars.extend(["DISPLAY", "XAUTHORITY"])
 
         clean_env_cmd = "unset " + " ".join(clean_env_vars)
+        
+        # Final command: clean environment on host, then run container with everything inside
         final_command = f"{clean_env_cmd}; {apptainer_cmd}"
 
         print(Colors.format_command_log(tool_name, final_command, cwd, container_path))

@@ -1,4 +1,5 @@
 # services/pipeline_orchestrator_service.py
+import os
 import shutil
 import pandas as pd
 from pathlib import Path
@@ -141,6 +142,7 @@ class PipelineOrchestratorService:
 
         # 5. Save Project State
         await self.backend.state_service.save_project()
+        os.sync()
 
         # 6. Run
         bind_paths = [str(project_dir.parent.resolve()), str(server_dir.resolve())]
@@ -188,6 +190,7 @@ class PipelineOrchestratorService:
         
         return int(counter)
 
+
     def _write_job_star(
         self,
         scheme_job_dir: Path,
@@ -195,71 +198,19 @@ class PipelineOrchestratorService:
         job_model: AbstractJobParams,
         server_dir: Path,
         project_dir: Path,
-        patch_historical_input: bool = False,
+        **kwargs,  # Ignore legacy params
     ):
-        template_source = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
-        dest_star = scheme_job_dir / "job.star"
+        """Generate job.star from the Pydantic model. No more templates!"""
         
-        if template_source.exists():
-            shutil.copy(template_source, dest_star)
-        else:
-            print(f"[ERROR] Template missing for {job_type.value}")
-            return
-
-        data = self.star_handler.read(dest_star)
-        if "joboptions_values" not in data:
-            return
-
-        df = data["joboptions_values"]
-
-        # --- Patch Scheme Name References ---
-        template_scheme_name = template_source.parent.parent.name
-        new_scheme_name = scheme_job_dir.parent.name
-        
-        for key, block in data.items():
-            if isinstance(block, pd.DataFrame):
-                for col in block.select_dtypes(include=['object']):
-                    if block[col].astype(str).str.contains(template_scheme_name).any():
-                        block[col] = block[col].astype(str).str.replace(
-                            template_scheme_name, new_scheme_name, regex=False
-                        )
-
-        # --- Patch job-specific paths ---
-        field_mapping = job_model.get_jobstar_field_mapping()
-        for path_key, star_var in field_mapping.items():
-            value = job_model.paths.get(path_key)
-            if value:
-                mask = df["rlnJobOptionVariable"] == star_var
-                if mask.any():
-                    df.loc[mask, "rlnJobOptionValue"] = str(value)
-                    print(f"[ORCHESTRATOR] Patched {star_var} -> {value}")
-
-        # --- Patch fn_exe (existing) ---
+        # Build fn_exe (only used for External jobs)
         fn_exe = self._build_fn_exe(job_type, job_model, project_dir, server_dir)
-        df.loc[df["rlnJobOptionVariable"] == "fn_exe", "rlnJobOptionValue"] = fn_exe
-
-        # --- Patch SLURM parameters ---
-        slurm_config = job_model.get_effective_slurm_config()
-        qsub_mapping = slurm_config.to_qsub_extra_dict()
         
-        for star_var, value in qsub_mapping.items():
-            mask = df["rlnJobOptionVariable"] == star_var
-            if mask.any():
-                df.loc[mask, "rlnJobOptionValue"] = value
-                print(f"[ORCHESTRATOR] Patched {star_var} -> {value}")
-            else:
-                # Add the row if it doesn't exist
-                new_row = pd.DataFrame({
-                    "rlnJobOptionVariable": [star_var],
-                    "rlnJobOptionValue": [value]
-                })
-                df = pd.concat([df, new_row], ignore_index=True)
-                print(f"[ORCHESTRATOR] Added {star_var} -> {value}")
-        
-        # Update the dataframe in data dict
-        data["joboptions_values"] = df
-        
-        self.star_handler.write(data, dest_star)
+        # Generate the job.star entirely from the model
+        job_model.generate_job_star(
+            job_dir=scheme_job_dir,
+            fn_exe=fn_exe,
+            star_handler=self.star_handler,
+        )
 
     def _build_fn_exe(self, job_type: JobType, job_model: AbstractJobParams, project_dir: Path, server_dir: Path) -> str:
         if job_type == JobType.IMPORT_MOVIES:
