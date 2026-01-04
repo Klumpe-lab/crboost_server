@@ -206,8 +206,7 @@ class TemplateWorkbench:
         if self.log_container:
             with self.log_container:
                 ui.label(f"• {message}").classes("text-[10px] text-gray-600 font-mono leading-tight")
-            # Ensure the log scrolls to the bottom when new entries arrive
-            ui.run_javascript(f"const el = document.getElementById('c{self.log_container.id}'); if (el) el.scrollTop = el.scrollHeight;")
+                ui.run_javascript(f"const el = document.getElementById('c{self.log_container.id}'); if (el) el.scrollTop = el.scrollHeight;")
 
     # =========================================================
     # CALCULATIONS

@@ -224,6 +224,7 @@ class PipelineOrchestratorService:
                             template_scheme_name, new_scheme_name, regex=False
                         )
 
+        # --- Patch job-specific paths ---
         field_mapping = job_model.get_jobstar_field_mapping()
         for path_key, star_var in field_mapping.items():
             value = job_model.paths.get(path_key)
@@ -233,9 +234,30 @@ class PipelineOrchestratorService:
                     df.loc[mask, "rlnJobOptionValue"] = str(value)
                     print(f"[ORCHESTRATOR] Patched {star_var} -> {value}")
 
-        # fn_exe injection (existing)
+        # --- Patch fn_exe (existing) ---
         fn_exe = self._build_fn_exe(job_type, job_model, project_dir, server_dir)
         df.loc[df["rlnJobOptionVariable"] == "fn_exe", "rlnJobOptionValue"] = fn_exe
+
+        # --- Patch SLURM parameters ---
+        slurm_config = job_model.get_effective_slurm_config()
+        qsub_mapping = slurm_config.to_qsub_extra_dict()
+        
+        for star_var, value in qsub_mapping.items():
+            mask = df["rlnJobOptionVariable"] == star_var
+            if mask.any():
+                df.loc[mask, "rlnJobOptionValue"] = value
+                print(f"[ORCHESTRATOR] Patched {star_var} -> {value}")
+            else:
+                # Add the row if it doesn't exist
+                new_row = pd.DataFrame({
+                    "rlnJobOptionVariable": [star_var],
+                    "rlnJobOptionValue": [value]
+                })
+                df = pd.concat([df, new_row], ignore_index=True)
+                print(f"[ORCHESTRATOR] Added {star_var} -> {value}")
+        
+        # Update the dataframe in data dict
+        data["joboptions_values"] = df
         
         self.star_handler.write(data, dest_star)
 

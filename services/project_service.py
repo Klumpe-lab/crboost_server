@@ -8,6 +8,7 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
+from services.pipeline_deletion_service import get_deletion_service, DeletionResult
 from services.project_state import JobType, get_state_service, jobtype_paramclass
 from services.starfile_service import StarfileService
 from services.mdoc_service import get_mdoc_service
@@ -90,7 +91,7 @@ class ProjectService:
 
     async def delete_job(self, job_name: str) -> Dict[str, Any]:
         """
-        Orchestrates the full deletion: Relion files + Internal State.
+        Delete a job from the pipeline using proper Relion-compatible deletion.
         """
         try:
             job_type = JobType(job_name)
@@ -100,36 +101,71 @@ class ProjectService:
             if not project_dir:
                 return {"success": False, "error": "Project not loaded"}
 
-            # 1. Physical Deletion (Relion)
-            if job_type.value in state.job_path_mapping:
-                # --- FIX: Pass harsh=True to allow deleting failed jobs ---
-                orch_result = await self.backend.pipeline_orchestrator.delete_job(
-                    project_dir, 
-                    job_type, 
-                    harsh=True 
-                )
-                
-                # Note: We proceed to logical deletion even if physical fails partly,
-                # to ensure the UI doesn't get stuck showing a zombie job.
-                if not orch_result["success"]:
-                    print(f"[PROJECT_SERVICE] Warning: Physical deletion had issues: {orch_result.get('error')}")
+            deletion_service = get_deletion_service()
+            job_resolver = self.backend.pipeline_orchestrator.job_resolver
 
-            # 2. Logical Deletion (Memory)
+            # 1. Find all job paths matching this type
+            job_paths = deletion_service.find_jobs_by_type(project_dir, job_type, job_resolver)
+            
+            if not job_paths:
+                # Job might exist in our state but not in Relion's pipeline yet
+                # Just remove from our state
+                if job_type in state.jobs:
+                    del state.jobs[job_type]
+                if job_type.value in state.job_path_mapping:
+                    del state.job_path_mapping[job_type.value]
+                await self.backend.state_service.save_project()
+                return {"success": True, "message": f"Job {job_name} removed from project state."}
+
+            # 2. Delete each instance (usually just one)
+            all_orphans = []
+            deleted_count = 0
+            errors = []
+            
+            for job_path in job_paths:
+                result = await deletion_service.delete_job(project_dir, job_path, recursive=False)
+                
+                if result.success:
+                    deleted_count += 1
+                    all_orphans.extend(result.orphaned_jobs)
+                else:
+                    errors.append(f"{job_path}: {result.error}")
+
+            # 3. Update our internal state
             if job_type in state.jobs:
                 del state.jobs[job_type]
-            
             if job_type.value in state.job_path_mapping:
                 del state.job_path_mapping[job_type.value]
 
-            # 3. Persistence
+            # 4. Persist state
             await self.backend.state_service.save_project()
             
-            # 4. Sync
+            # 5. Sync statuses (this will detect orphaned jobs)
             await self.backend.pipeline_runner.status_sync.sync_all_jobs(str(project_dir))
 
-            return {"success": True, "message": f"Job {job_name} deleted successfully."}
+            # 6. Build response
+            if errors:
+                return {
+                    "success": False,
+                    "error": f"Partial failure: {'; '.join(errors)}",
+                    "deleted_count": deleted_count,
+                    "orphaned_jobs": all_orphans,
+                }
+            
+            orphan_warning = ""
+            if all_orphans:
+                orphan_warning = f" Warning: {len(all_orphans)} downstream job(s) now have broken inputs: {all_orphans}"
+            
+            return {
+                "success": True,
+                "message": f"Deleted {deleted_count} job instance(s).{orphan_warning}",
+                "deleted_count": deleted_count,
+                "orphaned_jobs": all_orphans,
+            }
 
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return {"success": False, "error": str(e)}
 
     def set_project_root(self, project_dir: Path):

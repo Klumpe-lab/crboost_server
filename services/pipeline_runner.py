@@ -1,9 +1,10 @@
+# services/pipeline_runner.py
+
 import asyncio
-import json
 import sys
 import pandas as pd
 from pathlib import Path
-from typing import Dict, Any, List, AsyncGenerator
+from typing import Dict, Any, List
 from typing import TYPE_CHECKING
 
 from services.pipeline_orchestrator_service import JobTypeResolver
@@ -19,12 +20,12 @@ class StatusSyncService:
 
     def __init__(self, backend):
         self.backend = backend
-        self.job_resolver = JobTypeResolver(backend.pipeline_orchestrator.star_handler)  # ADD THIS
+        self.job_resolver = JobTypeResolver(backend.pipeline_orchestrator.star_handler)
 
     async def sync_all_jobs(self, project_path: str) -> Dict[str, bool]:
         """
         Read pipeline.star and update job models. Returns dict of what changed.
-        Handles reset jobs by looking for new job instances.
+        Also detects and marks orphaned jobs.
         """
         pipeline_star = Path(project_path) / "default_pipeline.star"
         if not pipeline_star.exists():
@@ -35,18 +36,15 @@ class StatusSyncService:
         processes = data.get("pipeline_processes", pd.DataFrame())
 
         changes = {}
-
-        # Get state from state_service
         state = self.backend.state_service.state
 
         # First pass: update jobs that are found in pipeline.star
         found_jobs = set()
         for _, row in processes.iterrows():
             job_path = row["rlnPipeLineProcessName"]
-            
-            # USE RESOLVER INSTEAD OF OLD METHOD
+
             job_type_str = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
-            
+
             if not job_type_str:
                 continue
 
@@ -69,12 +67,10 @@ class StatusSyncService:
                     except ValueError:
                         new_status = JobStatus.UNKNOWN
 
-                # Update job model
                 job_model.execution_status = new_status
                 job_model.relion_job_name = job_path
                 job_model.relion_job_number = self._extract_job_number(job_path)
 
-                # >>> ADD THIS: Cache the mapping in state <
                 state.job_path_mapping[job_type.value] = job_path
 
                 if old_status != job_model.execution_status:
@@ -91,10 +87,8 @@ class StatusSyncService:
                     job_model.execution_status = JobStatus.SCHEDULED
                     job_model.relion_job_name = None
                     job_model.relion_job_number = None
-                    
-                    # >>> ADD THIS: Clear from mapping too <
                     state.job_path_mapping.pop(job_type.value, None)
-                    
+
                     if old_status != JobStatus.SCHEDULED:
                         changes[job_type.value] = True
 
@@ -102,13 +96,13 @@ class StatusSyncService:
                     job_model.execution_status = JobStatus.SCHEDULED
                     job_model.relion_job_name = None
                     job_model.relion_job_number = None
-                    
-                    # >>> ADD THIS: Clear from mapping too <
                     state.job_path_mapping.pop(job_type.value, None)
-                    
                     changes[job_type.value] = True
 
-        # --- AUTO-PERSIST STATUS CHANGES ---
+        # Third pass: detect orphaned jobs
+        await self._detect_and_mark_orphans(project_path, state)
+
+        # Persist changes
         if changes:
             try:
                 print(f"[SYNC] Persisting {len(changes)} status changes to disk.")
@@ -117,6 +111,60 @@ class StatusSyncService:
                 print(f"[SYNC ERROR] Failed to persist status changes: {e}")
 
         return changes
+
+    async def _detect_and_mark_orphans(self, project_path: str, state):
+        """
+        Detect jobs with broken input references and mark them as orphaned.
+        Checks both Relion graph AND actual file existence.
+        """
+        from services.pipeline_deletion_service import get_deletion_service
+        
+        project_dir = Path(project_path)
+        deletion_service = get_deletion_service()
+        
+        # Method 1: Check Relion's graph for missing nodes
+        graph_orphans = deletion_service.get_orphaned_jobs(project_dir)
+        orphaned_paths = {job_path for job_path, _ in graph_orphans}
+        orphan_details = {job_path: missing for job_path, missing in graph_orphans}
+        
+        # Method 2: Check if input files actually exist on disk
+        for job_type, job_model in state.jobs.items():
+            job_path = job_model.relion_job_name
+            
+            # Check stored input paths for existence
+            missing_files = []
+            paths = job_model.paths
+            
+            # Check common input path keys
+            input_keys = ["input_star", "input_processing", "model_path", "input_tomograms", 
+                        "input_tiltseries", "input_optimisation", "input_tm_job"]
+            
+            for key in input_keys:
+                if key in paths and paths[key]:
+                    input_path = Path(paths[key])
+                    # Only check if it's an absolute path and looks like a real file/dir
+                    if input_path.is_absolute() and not input_path.exists():
+                        missing_files.append(str(input_path))
+            
+            # Combine both detection methods
+            is_graph_orphan = job_path and job_path in orphaned_paths
+            is_file_orphan = len(missing_files) > 0
+            
+            if is_graph_orphan or is_file_orphan:
+                if not job_model.is_orphaned:
+                    reason = "missing graph nodes" if is_graph_orphan else "missing input files"
+                    print(f"[SYNC] Marking {job_type.value} as orphaned ({reason})")
+                
+                job_model.is_orphaned = True
+                
+                # Combine missing items from both methods
+                all_missing = list(set(orphan_details.get(job_path, []) + missing_files))
+                job_model.missing_inputs = all_missing
+            else:
+                if job_model.is_orphaned:
+                    print(f"[SYNC] Clearing orphan status for {job_type.value}")
+                job_model.is_orphaned = False
+                job_model.missing_inputs = []
 
     def _extract_job_number(self, job_path: str) -> int:
         try:
@@ -135,13 +183,12 @@ class StatusSyncService:
         return None
 
     def _extract_job_type(self, project_path: str, job_path: str) -> str:
-            """Use resolver instead of hardcoded mapping."""
-            result = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
-            return result if result else "unknown"
+        """Use resolver instead of hardcoded mapping."""
+        result = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
+        return result if result else "unknown"
 
 
 class PipelineRunnerService:
-
     def __init__(self, backend_instance: "CryoBoostBackend"):
         self.backend = backend_instance
         self.active_schemer_process: asyncio.subprocess.Process | None = None
@@ -340,23 +387,17 @@ class PipelineRunnerService:
             pipeline_star = project_dir / "default_pipeline.star"
             if not pipeline_star.exists():
                 print(f"[RUNNER] default_pipeline.star not found, initializing Relion project...")
-                
+
                 init_command = "unset DISPLAY && relion --tomo --do_projdir ."
                 container_service = self.backend.container_service
                 init_full_command = container_service.wrap_command_for_tool(
-                    command=init_command,
-                    cwd=project_dir,
-                    tool_name="relion",
-                    additional_binds=additional_bind_paths
+                    command=init_command, cwd=project_dir, tool_name="relion", additional_binds=additional_bind_paths
                 )
-                
+
                 init_process = await asyncio.create_subprocess_shell(
-                    init_full_command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    cwd=project_dir
+                    init_full_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
                 )
-                
+
                 try:
                     stdout, stderr = await asyncio.wait_for(init_process.communicate(), timeout=30.0)
                     if init_process.returncode != 0:
@@ -368,31 +409,26 @@ class PipelineRunnerService:
                     init_process.kill()
                     await init_process.wait()
                     return {"success": False, "error": "Relion project initialization timed out"}
-            
+
             # Now run the schemer
             run_command = f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --verb 2"
             container_service = self.backend.container_service
             full_run_command = container_service.wrap_command_for_tool(
-                command=run_command,
-                cwd=project_dir,
-                tool_name="relion_schemer",
-                additional_binds=additional_bind_paths
+                command=run_command, cwd=project_dir, tool_name="relion_schemer", additional_binds=additional_bind_paths
             )
-            
+
             process = await asyncio.create_subprocess_shell(
-                full_run_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=project_dir
+                full_run_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
             )
-            
+
             self.active_schemer_process = process
             asyncio.create_task(self._monitor_schemer(process, project_dir))
-            
+
             return {"success": True, "message": f"Workflow started (PID: {process.pid})", "pid": process.pid}
-        
+
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
@@ -416,41 +452,37 @@ class PipelineRunnerService:
         self.active_schemer_process = None
 
     async def run_generated_scheme(self, project_dir: Path, scheme_name: str, bind_paths: List[str]):
-            """
-            Runs a scheme that has already been generated by the Orchestrator.
-            """
-            # 1. Initialize Relion if needed
-            pipeline_star = project_dir / "default_pipeline.star"
-            if not pipeline_star.exists():
-                init_cmd = "unset DISPLAY && relion --tomo --do_projdir ."
-                await self.backend.run_shell_command(init_cmd, cwd=project_dir, tool_name="relion", additional_binds=bind_paths)
+        """
+        Runs a scheme that has already been generated by the Orchestrator.
+        """
+        # 1. Initialize Relion if needed
+        pipeline_star = project_dir / "default_pipeline.star"
+        if not pipeline_star.exists():
+            init_cmd = "unset DISPLAY && relion --tomo --do_projdir ."
+            await self.backend.run_shell_command(
+                init_cmd, cwd=project_dir, tool_name="relion", additional_binds=bind_paths
+            )
 
-            # 2. Run Schemer
-            # --pipeline_control defines where exit markers go. 
-            # We point it to the scheme dir to keep root clean, OR project root if you prefer.
-            # DeepWiki Q6 suggests using the scheme dir or root. 
-            # Let's use Scheme dir to isolate logs for this specific run.
-            scheme_control_dir = f"Schemes/{scheme_name}/"
-            
-            cmd = f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --pipeline_control {scheme_control_dir} --verb 2"
-            
-            full_command = self.backend.container_service.wrap_command_for_tool(
-                command=cmd,
-                cwd=project_dir,
-                tool_name="relion_schemer",
-                additional_binds=bind_paths
-            )
-            
-            print(f"[RUNNER] Executing: {cmd}")
-            
-            process = await asyncio.create_subprocess_shell(
-                full_command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=project_dir
-            )
-            
-            self.active_schemer_process = process
-            asyncio.create_task(self._monitor_schemer(process, project_dir))
-            
-            return {"success": True, "message": f"Pipeline execution started (PID: {process.pid})", "pid": process.pid}
+        # 2. Run Schemer
+        # --pipeline_control defines where exit markers go.
+        # We point it to the scheme dir to keep root clean, OR project root if you prefer.
+        # DeepWiki Q6 suggests using the scheme dir or root.
+        # Let's use Scheme dir to isolate logs for this specific run.
+        scheme_control_dir = f"Schemes/{scheme_name}/"
+
+        cmd = f"unset DISPLAY && relion_schemer --scheme {scheme_name} --run --pipeline_control {scheme_control_dir} --verb 2"
+
+        full_command = self.backend.container_service.wrap_command_for_tool(
+            command=cmd, cwd=project_dir, tool_name="relion_schemer", additional_binds=bind_paths
+        )
+
+        print(f"[RUNNER] Executing: {cmd}")
+
+        process = await asyncio.create_subprocess_shell(
+            full_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
+        )
+
+        self.active_schemer_process = process
+        asyncio.create_task(self._monitor_schemer(process, project_dir))
+
+        return {"success": True, "message": f"Pipeline execution started (PID: {process.pid})", "pid": process.pid}
