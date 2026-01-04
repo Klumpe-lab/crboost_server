@@ -1,90 +1,95 @@
-# ui/status_indicator.py
+# In ui/status_indicator.py
+
+from pathlib import Path
 from nicegui import ui
 from services.project_state import JobStatus, JobType, get_project_state
 
 
-class ReactiveStatusDot(ui.element):
-    """
-    A status dot that automatically polls the backend state for its job_type.
-    """
-    def __init__(self, job_type: JobType):
-        super().__init__('div')
-        self.job_type = job_type
-        self._current_status = None
-        self.style("width: 8px; height: 8px; border-radius: 50%; display: inline-block; transition: background-color 0.3s;")
-        
-        self.update_appearance()
-        self.timer = ui.timer(1.0, self.update_appearance)
+class ReactiveStatusDot:
+    """Status dot that shows running/succeeded/failed/orphaned state."""
 
-    def update_appearance(self):
+    def __init__(self, job_type: JobType):
+        self.job_type = job_type
+        self._render()
+
+    def _render(self):
         state = get_project_state()
-        job = state.jobs.get(self.job_type)
-        status = job.execution_status if job else JobStatus.SCHEDULED
-        
-        # Skip update if status hasn't changed
-        if status == self._current_status:
-            return
-        self._current_status = status
-        
-        color_map = {
-            JobStatus.RUNNING: "#3b82f6",
-            JobStatus.SUCCEEDED: "#10b981",
-            JobStatus.FAILED: "#ef4444",
-            JobStatus.SCHEDULED: "#fbbf24",
-            JobStatus.UNKNOWN: "#d1d5db"
-        }
-        color = color_map.get(status, "#d1d5db")
-        
-        # Handle pulse animation
-        if status == JobStatus.RUNNING:
-            self.classes(add="pulse-running")
+        job_model = state.jobs.get(self.job_type)
+
+        if not job_model:
+            status = JobStatus.SCHEDULED
+            is_orphaned = False
         else:
-            self.classes(remove="pulse-running")
-            
-        self.style(f"width: 8px; height: 8px; border-radius: 50%; display: inline-block; background-color: {color};")
+            status = job_model.execution_status
+            is_orphaned = job_model.is_orphaned
 
-    def _handle_delete(self):
-        """Called when element is deleted"""
-        if self.timer:
-            self.timer.cancel()
-        super()._handle_delete()
+        # Orphaned jobs get a special indicator
+        if is_orphaned:
+            color = "#f97316"  # Orange
+            css_class = "pulse-orphaned"
+            tooltip = "Orphaned: missing input dependencies"
+        else:
+            color_map = {JobStatus.RUNNING: "#3b82f6", JobStatus.SUCCEEDED: "#10b981", JobStatus.FAILED: "#ef4444"}
+            color = color_map.get(status, "#fbbf24")
+
+            class_map = {
+                JobStatus.RUNNING: "pulse-running",
+                JobStatus.SUCCEEDED: "pulse-success",
+                JobStatus.FAILED: "pulse-failed",
+            }
+            css_class = class_map.get(status, "pulse-scheduled")
+            tooltip = status.value
+
+        dot = (
+            ui.element("div")
+            .classes(f"status-dot {css_class}")
+            .style(f"width: 8px; height: 8px; border-radius: 50%; display: inline-block; background-color: {color};")
+        )
+        dot.tooltip(tooltip)
 
 
-class ReactiveStatusBadge(ui.label):
-    """
-    A status text badge that auto-updates.
-    """
+class ReactiveStatusBadge:
+    """Status badge that shows job status with orphan indicator."""
+    
     def __init__(self, job_type: JobType):
-        super().__init__()
         self.job_type = job_type
-        self._current_status = None
-        self.timer = ui.timer(1.0, self.update_appearance)
-        self.update_appearance()
-
-    def update_appearance(self):
+        self._render()
+    
+    def _render(self):
         state = get_project_state()
-        job = state.jobs.get(self.job_type)
-        status = job.execution_status if job else JobStatus.SCHEDULED
+        job_model = state.jobs.get(self.job_type)
         
-        # Skip update if status hasn't changed
-        if status == self._current_status:
-            return
-        self._current_status = status
+        if not job_model:
+            status = JobStatus.SCHEDULED
+            is_orphaned = False
+            missing_inputs = []
+        else:
+            status = job_model.execution_status
+            is_orphaned = job_model.is_orphaned
+            missing_inputs = getattr(job_model, 'missing_inputs', [])
         
-        self.set_text(status.value)
-        
-        style_map = {
-            JobStatus.SCHEDULED: ("bg-yellow-100", "text-yellow-800"),
-            JobStatus.RUNNING:   ("bg-blue-100", "text-blue-800"),
-            JobStatus.SUCCEEDED: ("bg-green-100", "text-green-800"),
-            JobStatus.FAILED:    ("bg-red-100", "text-red-800"),
-            JobStatus.UNKNOWN:   ("bg-gray-100", "text-gray-800"),
-        }
-        
-        # Remove old status classes, add new ones
-        for bg, txt in style_map.values():
-            self.classes(remove=bg)
-            self.classes(remove=txt)
-        
-        bg, txt = style_map.get(status, style_map[JobStatus.UNKNOWN])
-        self.classes(add=f"text-xs font-bold px-2 py-0.5 rounded-full {bg} {txt}")
+        with ui.row().classes("items-center gap-1"):
+            # Main status badge
+            colors = {
+                JobStatus.SCHEDULED: ("bg-yellow-100", "text-yellow-800"),
+                JobStatus.RUNNING: ("bg-blue-100", "text-blue-800"),
+                JobStatus.SUCCEEDED: ("bg-green-100", "text-green-800"),
+                JobStatus.FAILED: ("bg-red-100", "text-red-800"),
+                JobStatus.UNKNOWN: ("bg-gray-100", "text-gray-800"),
+            }
+            bg, txt = colors.get(status, ("bg-gray-100", "text-gray-800"))
+            
+            ui.label(status.value).classes(f"text-xs font-bold px-2 py-0.5 rounded-full {bg} {txt}")
+            
+            # Orphan warning icon with detailed tooltip
+            if is_orphaned:
+                tooltip_text = "Orphaned: Missing inputs"
+                if missing_inputs:
+                    # Show first 3 missing items
+                    items = missing_inputs[:3]
+                    tooltip_text = "Missing:\n" + "\n".join(f"• {Path(p).name}" for p in items)
+                    if len(missing_inputs) > 3:
+                        tooltip_text += f"\n... and {len(missing_inputs) - 3} more"
+                
+                icon = ui.icon("link_off", size="16px").classes("text-orange-500 cursor-help")
+                icon.tooltip(tooltip_text)

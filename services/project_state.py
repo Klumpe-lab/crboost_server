@@ -16,10 +16,93 @@ import pandas as pd
 import starfile
 from services.mdoc_service import get_mdoc_service
 from services.config_service import get_config_service
+from services.config_service import get_config_service, SlurmDefaultsConfig
+
+from typing import ClassVar, Dict, Any, Optional, Type, List
 
 if TYPE_CHECKING:
     from services.project_state import ProjectState
 
+class SlurmPreset(str, Enum):
+    CUSTOM = "Custom"
+    SMALL  = "1gpu:16GB"
+    MEDIUM = "2gpu:32GB"
+    LARGE  = "4gpu:64gb"
+
+# Descriptive mapping for UI pills and snapping values
+SLURM_PRESET_MAP = {
+    SlurmPreset.SMALL: {
+        "label": "1 GPU · 16GB · 30m",
+        "values": {
+            "gres": "gpu:1",
+            "mem": "16G",
+            "cpus_per_task": 2,
+            "time": "0:30:00",
+            "nodes": 1
+        }
+    },
+    SlurmPreset.MEDIUM: {
+        "label": "2 GPUs · 32GB · 2h",
+        "values": {
+            "gres": "gpu:2",
+            "mem": "32G",
+            "cpus_per_task": 4,
+            "time": "2:00:00",
+            "nodes":2
+        }
+    },
+    SlurmPreset.LARGE: {
+        "label": "4 GPUs · 64GB · 4h",
+        "values": {
+            "gres": "gpu:4",
+            "mem": "64G",
+            "cpus_per_task": 8,
+            "time": "4:00:00",
+            "nodes":4
+        }
+    }
+}
+
+class SlurmConfig(BaseModel):
+    """SLURM submission parameters for a job"""
+    model_config = ConfigDict(validate_assignment=True)
+
+    preset: SlurmPreset = Field(default=SlurmPreset.CUSTOM)
+    partition: str = "g"
+    constraint: str = "g2|g3|g4"
+    nodes: int = Field(default=1, ge=1)
+    ntasks_per_node: int = Field(default=1, ge=1)
+    cpus_per_task: int = Field(default=4, ge=1)
+    gres: str = "gpu:4"
+    mem: str = "64G"
+    time: str = "3:30:00"
+
+    QSUB_EXTRA_MAPPING: ClassVar[Dict[str, str]] = {
+        "partition": "qsub_extra1",
+        "constraint": "qsub_extra2",
+        "nodes": "qsub_extra3",
+        "ntasks_per_node": "qsub_extra4",
+        "cpus_per_task": "qsub_extra5",
+        "gres": "qsub_extra6",
+        "mem": "qsub_extra7",
+        "time": "qsub_extra8",
+    }
+
+    @classmethod
+    def from_config_defaults(cls) -> "SlurmConfig":
+        try:
+            config_service = get_config_service()
+            defaults = config_service.slurm_defaults
+            return cls(**defaults.model_dump())
+        except Exception:
+            return cls()
+
+    def to_qsub_extra_dict(self) -> Dict[str, str]:
+        return {
+            self.QSUB_EXTRA_MAPPING[field]: str(getattr(self, field))
+            for field in self.QSUB_EXTRA_MAPPING
+            if field in self.QSUB_EXTRA_MAPPING
+        }
 
 class JobStatus(str, Enum):
     SUCCEEDED = "Succeeded"
@@ -29,9 +112,6 @@ class JobStatus(str, Enum):
     UNKNOWN = "Unknown"
 
 
-class Partition(str, Enum):
-    CPU = "c"
-    GPU = "g"
 
 
 class MicroscopeType(str, Enum):
@@ -85,11 +165,11 @@ class JobType(str, Enum):
 class MicroscopeParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
-    microscope_type: MicroscopeType = MicroscopeType.CUSTOM
-    pixel_size_angstrom: float = Field(default=1.35, ge=0.5, le=10.0)
-    acceleration_voltage_kv: float = Field(default=300.0)
-    spherical_aberration_mm: float = Field(default=2.7, ge=0.0, le=10.0)
-    amplitude_contrast: float = Field(default=0.1, ge=0.0, le=1.0)
+    microscope_type        : MicroscopeType = MicroscopeType.CUSTOM
+    pixel_size_angstrom    : float          = Field(default=1.35, ge=0.5, le=10.0)
+    acceleration_voltage_kv: float          = Field(default=300.0)
+    spherical_aberration_mm: float          = Field(default=2.7, ge=0.0, le=10.0)
+    amplitude_contrast     : float          = Field(default=0.1, ge=0.0, le=1.0)
 
     @field_validator("acceleration_voltage_kv")
     @classmethod
@@ -119,34 +199,6 @@ class AcquisitionParams(BaseModel):
     frame_dose             : Optional[float] = None
 
 
-class ComputingParams(BaseModel):
-    model_config = ConfigDict(validate_assignment=True)
-
-    partition: Partition = Partition.GPU
-    gpu_count: int = Field(default=1, ge=0, le=8)
-    memory_gb: int = Field(default=32, ge=4, le=512)
-    threads: int = Field(default=8, ge=1, le=128)
-
-    @classmethod
-    def from_conf_yaml(cls, config_path: Path) -> Self:
-        try:
-            from services.config_service import get_config_service
-
-            config_service = get_config_service()
-            gpu_partition = config_service.find_gpu_partition()
-            if gpu_partition:
-                partition_key, partition = gpu_partition
-                memory_gb = int(partition.RAM.replace("G", "").replace("g", ""))
-                return cls(
-                    partition=Partition(partition_key),
-                    gpu_count=partition.NrGPU,
-                    memory_gb=memory_gb,
-                    threads=partition.NrCPU,
-                )
-            return cls()
-        except Exception as e:
-            print(f"[ERROR] Failed to parse computing config: {e}", file=sys.stderr)
-            return cls()
 
 
 # --- JOB MODELS ---
@@ -165,14 +217,73 @@ class AbstractJobParams(BaseModel):
     relion_job_name: Optional[str] = None
     relion_job_number: Optional[int] = None
 
+    is_orphaned: bool = Field(default=False)
+    missing_inputs: List[str] = Field(default_factory=list)
+
     # We store the resolved paths and binds here to persist them in project_params.json
     paths: Dict[str, str] = Field(default_factory=dict)
     additional_binds: List[str] = Field(default_factory=list)
+    
+    slurm_overrides: Dict[str, Any] = Field(default_factory=dict)
+
 
     # This is now a private attribute, not a Pydantic model field.
     _project_state: Optional["ProjectState"] = None
 
-    # --- Global parameter access via properties ---
+    def get_effective_slurm_config(self) -> SlurmConfig:
+        """
+        Returns the effective SLURM config for this job.
+        Merges project defaults with any per-job overrides.
+        """
+        if self._project_state is not None:
+            defaults = self._project_state.slurm_defaults
+        else:
+            defaults = SlurmConfig.from_config_defaults()
+        
+        if not self.slurm_overrides:
+            return defaults
+        
+        merged_data = defaults.model_dump()
+        merged_data.update(self.slurm_overrides)
+        return SlurmConfig(**merged_data)
+    
+    def apply_slurm_preset(self, preset: SlurmPreset) -> None:
+        """Flatten preset values into the overrides dictionary."""
+        if preset == SlurmPreset.CUSTOM:
+            self.slurm_overrides["preset"] = SlurmPreset.CUSTOM.value
+            return
+
+        preset_data = SLURM_PRESET_MAP.get(preset)
+        if not preset_data:
+            return
+
+        # 1. Clear specific resource overrides to ensure a clean snap
+        for key in ["gres", "mem", "cpus_per_task", "time"]:
+            self.slurm_overrides.pop(key, None)
+
+        # 2. Inject ONLY the resource values, not the metadata
+        self.slurm_overrides.update(preset_data["values"])
+        
+        # 3. Store the preset enum value
+        self.slurm_overrides["preset"] = preset.value
+        
+        # Manually trigger save since we modified a dict in-place
+        if self._project_state:
+            self._project_state.save()
+
+    def set_slurm_override(self, field: str, value: Any) -> None:
+        """Update a single field and ensure we flip to Custom."""
+        self.slurm_overrides[field] = value
+        # If we change a resource, we are no longer strictly on a preset
+        if field != "preset":
+            self.slurm_overrides["preset"] = SlurmPreset.CUSTOM.value
+        
+        if self._project_state:
+            self._project_state.save()
+    
+    def clear_slurm_overrides(self) -> None:
+        """Clear all per-job SLURM overrides, reverting to project defaults"""
+        self.slurm_overrides = {}
 
     @classmethod
     def get_jobstar_field_mapping(cls) -> Dict[str, str]:
@@ -282,6 +393,9 @@ class AbstractJobParams(BaseModel):
             "_project_state",
             "paths",
             "additional_binds",
+            "is_orphaned",      
+            "missing_inputs",  
+            "slurm_overrides",
         ]:
             super().__setattr__(name, value)
             return
@@ -1228,7 +1342,9 @@ class ProjectState(BaseModel):
 
     microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
     acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
-    computing: ComputingParams = Field(default_factory=lambda: ComputingParams.from_conf_yaml(Path("config/conf.yaml")))
+
+
+    slurm_defaults: SlurmConfig = Field(default_factory=SlurmConfig.from_config_defaults)
 
     jobs: Dict[JobType, AbstractJobParams] = Field(default_factory=dict)
 
@@ -1271,7 +1387,11 @@ class ProjectState(BaseModel):
         data["project_path"] = str(self.project_path) if self.project_path else None
         data["created_at"] = self.created_at.isoformat()
         data["modified_at"] = self.modified_at.isoformat()
-        data["jobs"] = {job_type.value: job_params.model_dump() for job_type, job_params in self.jobs.items()}
+        data["slurm_defaults"] = self.slurm_defaults.model_dump()
+        data["jobs"] = {
+            job_type.value: job_params.model_dump()
+            for job_type, job_params in self.jobs.items()
+        }
 
         with open(save_path, "w") as f:
             json.dump(data, f, indent=2, default=str)
@@ -1285,14 +1405,19 @@ class ProjectState(BaseModel):
         with open(path, "r") as f:
             data = json.load(f)
 
+        slurm_data = data.get("slurm_defaults", {})
+        slurm_defaults = SlurmConfig(**slurm_data) if slurm_data else SlurmConfig.from_config_defaults()
+
         project_state = cls(
             project_name=data.get("project_name", "Untitled"),
             project_path=Path(data["project_path"]) if data.get("project_path") else None,
             created_at=datetime.fromisoformat(data.get("created_at", datetime.now().isoformat())),
             modified_at=datetime.fromisoformat(data.get("modified_at", datetime.now().isoformat())),
+            movies_glob=data.get("movies_glob", ""),
+            mdocs_glob=data.get("mdocs_glob", ""),
             microscope=MicroscopeParams(**data.get("microscope", {})),
             acquisition=AcquisitionParams(**data.get("acquisition", {})),
-            computing=ComputingParams(**data.get("computing", {})),
+            slurm_defaults=slurm_defaults,
         )
 
         param_class_map = jobtype_paramclass()
@@ -1310,6 +1435,7 @@ class ProjectState(BaseModel):
 
         print(f"[STATE] Project state loaded from {path}")
         return project_state
+
 
 
 def get_project_state():
@@ -1454,7 +1580,6 @@ class StateService:
             "containers" : containers,
             "microscope" : state.microscope.model_dump(),
             "acquisition": state.acquisition.model_dump(),
-            "computing"  : state.computing.model_dump(),
             "jobs"       : {
                 job_str: state.jobs[JobType(job_str)].model_dump()
                 for job_str in selected_jobs_str

@@ -21,6 +21,83 @@ from ui.ui_state import get_ui_state_manager, UIStateManager, MonitorTab, get_jo
 # REACTIVE COMPONENTS
 # ===========================================
 
+def _render_slurm_config_section(job_model, is_frozen: bool, save_handler: Callable):
+    """
+    Main container for SLURM section. 
+    The expansion panel itself is NOT refreshable so it stays open.
+    """
+    with ui.expansion("SLURM Resources", icon="memory").classes(
+        "w-full border border-gray-200 rounded-lg mb-6 shadow-sm overflow-hidden"
+    ).props("dense header-class='bg-gray-50 text-gray-700 font-bold'"):
+        # We wrap the INNER content in the refreshable function
+        _render_slurm_content(job_model, is_frozen, save_handler)
+
+
+@ui.refreshable
+def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
+    """The actual interactive content that updates when presets are clicked."""
+    from services.project_state import SlurmPreset, SLURM_PRESET_MAP
+    
+    effective_config = job_model.get_effective_slurm_config()
+    overrides = job_model.slurm_overrides or {}
+    # Use .get because the key might be missing or an enum/string
+    raw_preset = overrides.get("preset", SlurmPreset.CUSTOM)
+    current_preset = raw_preset.value if hasattr(raw_preset, 'value') else str(raw_preset)
+    
+    # --- PRESET PILLS ---
+    with ui.row().classes("w-full items-center gap-2 p-3 bg-white border-b border-gray-100"):
+        ui.label("Presets:").classes("text-[10px] font-black text-gray-400 uppercase mr-2")
+        
+        for preset in [SlurmPreset.SMALL, SlurmPreset.MEDIUM, SlurmPreset.LARGE]:
+            preset_info = SLURM_PRESET_MAP[preset]
+            is_active = current_preset == preset.value
+            
+            def apply_preset(p=preset):
+                job_model.apply_slurm_preset(p)
+                # No reload! Just refresh this internal section
+                _render_slurm_content.refresh()
+                ui.notify(f" {p.value}", icon="done")
+
+            ui.button(preset_info["label"], on_click=apply_preset) \
+                .props(f"unelevated no-caps dense") \
+                .classes(f"rounded-full px-3 text-xs {'bg-blue-600 text-white' if is_active else 'bg-gray-100 text-gray-600'}")
+        
+        ui.space()
+        
+        if overrides:
+            ui.button(icon="restart_alt", on_click=lambda: (job_model.clear_slurm_overrides(), _render_slurm_content.refresh())) \
+                .props("flat dense").classes("text-red-400").tooltip("Clear Overrides")
+
+    # --- PARAMETER GRID ---
+    with ui.grid(columns=4).classes("w-full gap-x-6 gap-y-4 p-4 bg-white"):
+        fields = [
+            ("partition", "Partition"), ("constraint", "Constraint"),
+            ("nodes", "Nodes"), ("ntasks_per_node", "Tasks/Node"),
+            ("cpus_per_task", "CPUs/Task"), ("gres", "GRES (GPU)"),
+            ("mem", "Memory"), ("time", "Time Limit"),
+        ]
+        
+        for field_name, label in fields:
+            val = getattr(effective_config, field_name)
+            
+            with ui.column().classes("gap-0"):
+                ui.label(label).classes("text-[10px] font-bold text-gray-400 uppercase ml-1")
+                
+                # FIX: Use 'e.sender.value' for GenericEventArguments (blur)
+                def make_blur_handler(fname):
+                    return lambda e: (
+                        job_model.set_slurm_override(fname, e.sender.value),
+                        _render_slurm_content.refresh()
+                    )
+                
+                inp = ui.input(value=str(val)).props("outlined dense shadow-0")
+                inp.classes("w-full text-xs font-mono")
+                
+                if is_frozen:
+                    inp.props("readonly bg-color=grey-1")
+                else:
+                    inp.on("blur", make_blur_handler(field_name))
+
 
 @ui.refreshable
 def render_status_badge(job_type: JobType):
@@ -135,32 +212,99 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
         active_tab = MonitorTab.LOGS
         job_ui_state.active_monitor_tab = MonitorTab.LOGS
 
-
     async def handle_delete():
-        # [ ... Delete logic remains the same ... ]
-        with ui.dialog() as dialog, ui.card():
-            ui.label(f"Delete {get_job_display_name(job_type)}?").classes("text-lg font-bold")
-            ui.label("This will move the files to Trash and remove it from the pipeline.").classes(
-                "text-sm text-gray-600"
-            )
-            with ui.row().classes("w-full justify-end mt-4"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
-            async def confirm():
-                dialog.close()
-                notification = ui.notify("Deleting job...", type="ongoing", timeout=0)
-                result = await backend.delete_job(job_type.value)
-                try:
-                    if notification: notification.dismiss()
-                except Exception: pass
-                if result["success"]:
-                    ui.notify("Job deleted.", type="positive")
-                    remove_cb = callbacks.get("remove_job_from_pipeline")
-                    if remove_cb: remove_cb(job_type)
-                else:
-                    ui.notify(f"Error: {result.get('error')}", type="negative")
-            ui.button("Delete", color="red", on_click=confirm)
-        dialog.open()
+        """Handle job deletion with orphan preview."""
+        from services.pipeline_deletion_service import get_deletion_service
 
+        deletion_service = get_deletion_service()
+        project_path = ui_mgr.project_path
+
+        # Get preview of what will be orphaned
+        preview = None
+        if project_path and job_model.relion_job_name:
+            preview = deletion_service.preview_deletion(
+                project_path, job_model.relion_job_name, job_resolver=backend.pipeline_orchestrator.job_resolver
+            )
+
+        with ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
+            ui.label(f"Delete {get_job_display_name(job_type)}?").classes("text-lg font-bold")
+            ui.label("This will move the job files to Trash/ and remove it from the pipeline.").classes(
+                "text-sm text-gray-600 mb-2"
+            )
+
+            # Show orphan warning if applicable
+            if preview and preview.get("success") and preview.get("downstream_count", 0) > 0:
+                downstream = preview.get("downstream_jobs", [])
+
+                with ui.card().classes("w-full bg-orange-50 border border-orange-200 p-3 mb-2"):
+                    with ui.row().classes("items-center gap-2 mb-2"):
+                        ui.icon("warning", size="20px").classes("text-orange-600")
+                        ui.label(f"{len(downstream)} job(s) will become orphaned:").classes(
+                            "text-sm font-bold text-orange-800"
+                        )
+
+                    with ui.column().classes("gap-1 ml-6"):
+                        for detail in downstream:
+                            job_path = detail.get("path", "Unknown")
+                            job_type_name = detail.get("type", "Unknown")
+                            job_status = detail.get("status", "Unknown")
+
+                            # Format: "External/job007/ (denoisetrain) - Succeeded"
+                            with ui.row().classes("items-center gap-2"):
+                                ui.label(job_path).classes("text-xs font-mono text-gray-700")
+                                if job_type_name:
+                                    ui.label(f"({job_type_name})").classes("text-xs text-gray-500")
+                                ui.label(f"- {job_status}").classes("text-xs text-gray-500")
+
+                    ui.label("These jobs will have broken input references and may fail if re-run.").classes(
+                        "text-xs text-orange-700 mt-2"
+                    )
+            else:
+                ui.label("No downstream jobs will be affected.").classes(
+                    "text-sm text-green-600 bg-green-50 p-2 rounded"
+                )
+
+            with ui.row().classes("w-full justify-end mt-4 gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                async def confirm():
+                    dialog.close()
+                    ui.notify("Deleting job...", type="info", timeout=1500)
+
+                    try:
+                        result = await backend.delete_job(job_type.value)
+
+                        if result.get("success"):
+                            orphans = result.get("orphaned_jobs", [])
+
+                            if orphans:
+                                ui.notify(
+                                    f"Job deleted. {len(orphans)} downstream job(s) orphaned.",
+                                    type="warning",
+                                    timeout=5000,
+                                )
+                            else:
+                                ui.notify("Job deleted successfully.", type="positive")
+
+                            remove_cb = callbacks.get("remove_job_from_pipeline")
+                            if remove_cb:
+                                remove_cb(job_type)
+                        else:
+                            ui.notify(f"Delete failed: {result.get('error')}", type="negative", timeout=8000)
+
+                    except Exception as e:
+                        ui.notify(f"Error: {e}", type="negative")
+                        import traceback
+
+                        traceback.print_exc()
+
+                delete_btn = ui.button("Delete", color="red", on_click=confirm)
+
+                # Make delete button more prominent if there are downstream impacts
+                if preview and preview.get("downstream_count", 0) > 0:
+                    delete_btn.props('icon="delete_forever"')
+
+        dialog.open()
 
     with ui.column().classes("w-full border-b border-gray-200 bg-white pl-6 pr-6 pt-4 pb-4"):
         with ui.row().classes("w-full justify-between items-center"):
@@ -168,17 +312,29 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
                 with ui.row().classes("items-center gap-2"):
                     ui.label(state.project_name).classes("text-lg font-bold text-gray-800")
                     ReactiveStatusBadge(job_type)
-                created = state.created_at.strftime("%Y-%m-%d %H:%M") if isinstance(state.created_at, datetime) else str(state.created_at)
-                modified = state.modified_at.strftime("%Y-%m-%d %H:%M") if isinstance(state.modified_at, datetime) else str(state.modified_at)
+                created = (
+                    state.created_at.strftime("%Y-%m-%d %H:%M")
+                    if isinstance(state.created_at, datetime)
+                    else str(state.created_at)
+                )
+                modified = (
+                    state.modified_at.strftime("%Y-%m-%d %H:%M")
+                    if isinstance(state.modified_at, datetime)
+                    else str(state.modified_at)
+                )
                 ui.label(f"Created: {created} · Modified: {modified}").classes("text-xs text-gray-400")
 
             with ui.row().classes("items-center gap-4"):
                 switcher_container = ui.row().classes("bg-gray-100 p-1 rounded-lg gap-0 border border-gray-200")
                 widget_refs.switcher_container = switcher_container
                 _render_tab_switcher(switcher_container, job_type, active_tab, backend, ui_mgr, callbacks)
-                ui.button(icon="refresh", on_click=lambda: _force_status_refresh(callbacks)).props("flat dense round").classes("text-gray-400 hover:text-gray-800")
+                ui.button(icon="refresh", on_click=lambda: _force_status_refresh(callbacks)).props(
+                    "flat dense round"
+                ).classes("text-gray-400 hover:text-gray-800")
                 if ui_mgr.is_project_created:
-                    ui.button(icon="delete", on_click=handle_delete).props("flat round dense color=red").tooltip("Delete this job")
+                    ui.button(icon="delete", on_click=handle_delete).props("flat round dense color=red").tooltip(
+                        "Delete this job"
+                    )
 
     # ===========================================
     # Content Section
@@ -194,6 +350,7 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
             _render_logs_tab(job_type, job_model, backend, ui_mgr)
         elif active_tab == MonitorTab.FILES:
             _render_files_tab(job_type, job_model, ui_mgr)
+
 
 # ===========================================
 # Tab Switcher
@@ -268,12 +425,12 @@ def _handle_tab_switch(
 # Config Tab
 # ===========================================
 
+
 def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UIStateManager, backend):
     """Render the configuration/parameters tab."""
     save_handler = create_save_handler()
 
     with ui.column().classes("w-full"):
-        
         # ==========================================================
         # 1. I/O CONFIGURATION (First)
         # ==========================================================
@@ -307,6 +464,9 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
             "relion_job_number",
             "paths",
             "additional_binds",
+            "slurm_overrides",  # Add this to excluded fields
+            "is_orphaned",
+            "missing_inputs",
             "JOB_CATEGORY",
         }
         job_specific_fields = set(job_model.model_fields.keys()) - base_fields
@@ -353,7 +513,12 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
                             inp.on_value_change(save_handler)
 
         # ==========================================================
-        # 3. GLOBAL PARAMETERS (Read-Only)
+        # 3. SLURM RESOURCES (NEW - Collapsible)
+        # ==========================================================
+        _render_slurm_config_section(job_model, is_frozen, save_handler)
+
+        # ==========================================================
+        # 4. GLOBAL PARAMETERS (Read-Only)
         # ==========================================================
         ui.label("Global Experimental Parameters (Read-Only)").classes("text-sm font-bold text-gray-900 mb-3")
 
@@ -383,17 +548,18 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
             ).tooltip("Global parameter")
 
         # ==========================================================
-        # 4. TEMPLATE WORKBENCH (Only for Template Matching, at bottom)
+        # 5. TEMPLATE WORKBENCH (Only for Template Matching, at bottom)
         # ==========================================================
         if job_type == JobType.TEMPLATE_MATCH_PYTOM:
             print("[DEBUG] About to render TemplateWorkbench...")
             ui.separator().classes("mb-6")
             ui.label("Template Workbench").classes("text-sm font-bold text-gray-900 mb-3")
-            
+
             with ui.card().classes("w-full p-0 border border-gray-200 shadow-none bg-white"):
                 TemplateWorkbench(backend, str(ui_mgr.project_path))
             print("[DEBUG] TemplateWorkbench rendered")
-    
+
+
 # ===========================================
 # Logs Tab
 # ===========================================
@@ -475,18 +641,22 @@ async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
 
     # Truncate massive logs
     MAX_LOG_LINES = 500
-    
+
     stdout = logs.get("stdout", "No output") or "No output yet"
     stderr = logs.get("stderr", "No errors") or "No errors yet"
-    
+
     # Keep last N lines only
-    stdout_lines = stdout.split('\n')
-    stderr_lines = stderr.split('\n')
-    
+    stdout_lines = stdout.split("\n")
+    stderr_lines = stderr.split("\n")
+
     if len(stdout_lines) > MAX_LOG_LINES:
-        stdout = f"[... truncated {len(stdout_lines) - MAX_LOG_LINES} lines ...]\n" + '\n'.join(stdout_lines[-MAX_LOG_LINES:])
+        stdout = f"[... truncated {len(stdout_lines) - MAX_LOG_LINES} lines ...]\n" + "\n".join(
+            stdout_lines[-MAX_LOG_LINES:]
+        )
     if len(stderr_lines) > MAX_LOG_LINES:
-        stderr = f"[... truncated {len(stderr_lines) - MAX_LOG_LINES} lines ...]\n" + '\n'.join(stderr_lines[-MAX_LOG_LINES:])
+        stderr = f"[... truncated {len(stderr_lines) - MAX_LOG_LINES} lines ...]\n" + "\n".join(
+            stderr_lines[-MAX_LOG_LINES:]
+        )
 
     monitor["stdout"].clear()
     monitor["stdout"].push(stdout)

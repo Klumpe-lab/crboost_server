@@ -1,7 +1,6 @@
 # services/config_service.py
 """
 Pure configuration loader - reads conf.yaml and provides typed access.
-No business logic, just data loading.
 """
 
 import os
@@ -9,77 +8,38 @@ import yaml
 from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from typing import Dict, Optional
 
-# TODO: This should be an env var.
 CRBOOST_ROOT = "/users/artem.kushner/dev/crboost_server/"
 DEFAULT_CONFIG_PATH = os.path.join(CRBOOST_ROOT, "config", "conf.yaml")
 
-class SubmissionConfig(BaseModel):
-    HeadNode: str
-    SshCommand: str
-    Environment: str
-    ClusterStatus: str
-    Helpssh: str
-    HelpConflict: str
+
+class SlurmDefaultsConfig(BaseModel):
+    """SLURM submission defaults from conf.yaml"""
+
+    partition: str = "g"
+    constraint: str = "g2|g3|g4"
+    nodes: int = 1
+    ntasks_per_node: int = 1
+    cpus_per_task: int = 4
+    gres: str = "gpu:4"
+    mem: str = "64G"
+    time: str = "3:30:00"
 
 
 class LocalConfig(BaseModel):
-    Environment: str
+    Environment: str = ""
     DefaultProjectBase: Optional[str] = None
     DefaultMoviesGlob: Optional[str] = None
     DefaultMdocsGlob: Optional[str] = None
 
 
-class Alias(BaseModel):
-    Job: str
-    Parameter: str
-    Alias: str
-
-
-class ComputingPartition(BaseModel):
-    """Simple partition definition - no Parameter wrappers"""
-
-    NrGPU: int
-    NrCPU: int
-    RAM: str
-    VRAM: str
-
-
-class NodeSharingConfig(BaseModel):
-    CPU_PerGPU: int = Field(alias="CPU-PerGPU")
-    ApplyTo: List[str]
-
-
-class ComputingConfig(BaseModel):
-    QueSize: Dict[str, int]
-    NODE_Sharing: NodeSharingConfig = Field(alias="NODE-Sharing")
-    JOBTypesCompute: Dict[str, List[str]]
-    JOBTypesApplication: Dict[str, List[str]]
-    JOBMaxNodes: Dict[str, List[int]]
-    JOBsPerDevice: Dict[str, Dict[str, int]]
-
-    # Simplified partitions
-    c     : Optional[ComputingPartition] = None
-    m     : Optional[ComputingPartition] = None
-    g     : Optional[ComputingPartition] = None
-    g_p100: Optional[ComputingPartition] = Field(None, alias="g-p100")
-    g_v100: Optional[ComputingPartition] = Field(None, alias="g-v100")
-    g_a100: Optional[ComputingPartition] = Field(None, alias="g-a100")
-
-
 class Config(BaseModel):
     """Root configuration model"""
 
-    submission : List[SubmissionConfig]
-    local      : LocalConfig
-    aliases    : List[Alias]
-    meta_data  : Dict[str, List[Dict[str, str]]]
-    microscopes: Dict[str, List[Dict[str, str]]]
-    star_file  : Optional[Dict[str, str]] = None
-    containers : Optional[Dict[str, str]] = None
-    computing  : ComputingConfig
-    filepath   : Dict[str, str]
+    local         : LocalConfig         = Field(default_factory=LocalConfig)
+    slurm_defaults: SlurmDefaultsConfig = Field(default_factory=SlurmDefaultsConfig)
+    containers    : Dict[str, str]      = Field(default_factory=dict)
 
     class Config:
         extra = "ignore"
@@ -95,10 +55,6 @@ class ConfigService:
         with open(config_path, "r") as f:
             data = yaml.safe_load(f)
 
-        # Ensure required keys exist
-        if "star_file" not in data:
-            data["star_file"] = {}
-
         self._config = Config(**data)
 
     @property
@@ -107,32 +63,31 @@ class ConfigService:
 
     @property
     def containers(self) -> Dict[str, str]:
-        """Get container paths"""
-        return self._config.containers or {}
-    
+        return self._config.containers
+
+    @property
+    def slurm_defaults(self) -> SlurmDefaultsConfig:
+        return self._config.slurm_defaults
+
     @property
     def default_project_base(self) -> Optional[str]:
         return self._config.local.DefaultProjectBase
 
     @property
     def default_data_globs(self) -> tuple[Optional[str], Optional[str]]:
-        """Returns configured (movies_glob, mdocs_glob) or None."""
-        return (
-            self._config.local.DefaultMoviesGlob,
-            self._config.local.DefaultMdocsGlob
-        )
+        return (self._config.local.DefaultMoviesGlob, self._config.local.DefaultMdocsGlob)
 
     @property
     def tools(self) -> Dict[str, Dict[str, str]]:
+        """Tool to container mapping"""
         return {
-            # Relion tools
-            "relion"        : {"container": "relion", "type": "container"},
-            "relion_import" : {"container": "relion", "type": "container"},
+            "relion": {"container": "relion", "type": "container"},
+            "relion_import": {"container": "relion", "type": "container"},
             "relion_schemer": {"container": "relion", "type": "container"},
-            "warptools"     : {"container": "warp_aretomo", "type": "container"},
-            "aretomo"       : {"container": "warp_aretomo", "type": "container"},
-            "cryocare"      : {"container": "cryocare", "type": "container"},
-            "pytom"         : {"container": "pytom", "type": "container"},
+            "warptools": {"container": "warp_aretomo", "type": "container"},
+            "aretomo": {"container": "warp_aretomo", "type": "container"},
+            "cryocare": {"container": "cryocare", "type": "container"},
+            "pytom": {"container": "pytom", "type": "container"},
         }
 
     def get_container_for_tool(self, tool_name: str) -> Optional[str]:
@@ -142,20 +97,12 @@ class ConfigService:
         container_key = tool_config.get("container")
         return self.containers.get(container_key)
 
-    def find_gpu_partition(self) -> Optional[tuple[str, ComputingPartition]]:
-        for partition_key in ["g", "g_v100", "g_a100", "g_p100"]:
-            partition = getattr(self._config.computing, partition_key, None)
-            if partition:
-                return (partition_key.replace("_", "-"), partition)
-        return None
-
 
 _config_service_instance = None
 
 
 @lru_cache()
 def get_config_service() -> ConfigService:
-    """Get or create the config service singleton"""
     global _config_service_instance
     if _config_service_instance is None:
         _config_service_instance = ConfigService(Path(DEFAULT_CONFIG_PATH))

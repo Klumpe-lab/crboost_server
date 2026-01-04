@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=CryoBoost-Warp
-#SBATCH --partition=XXXextra1XXX
-#SBATCH --constraint="XXXextra2XXX"
-#SBATCH --nodes=XXXextra3XXX
-#SBATCH --ntasks-per-node=XXXextra4XXX
-#SBATCH --cpus-per-task=XXXextra5XXX
-#SBATCH --gres=XXXextra6XXX
-#SBATCH --mem=XXXextra7XXX
-#SBATCH --time=XXXextra8XXX
+#SBATCH --partition=g
+#SBATCH --nodes=2
+#SBATCH --ntasks-per-node=1    
+#SBATCH --constraint="g2|g3|g4"
+#SBATCH --cpus-per-task=4
+#SBATCH --gres=gpu:4             
+#SBATCH --mem=64G
+#SBATCH --time=3:30:00
 #SBATCH --output=XXXoutfileXXX
 #SBATCH --error=XXXerrfileXXX
 
