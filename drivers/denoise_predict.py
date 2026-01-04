@@ -5,12 +5,40 @@ from pathlib import Path
 import starfile
 import pandas as pd
 import json
+import numpy as np
+import mrcfile
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from drivers.driver_base import get_driver_context, run_command
 from services.container_service import get_container_service
+
+
+def calculate_memory_aware_tiles(tomogram_path: Path, base_tiles=(4, 4, 4), max_tiles=(8, 8, 8)) -> tuple:
+    """
+    Calculate optimal tiling based on tomogram dimensions.
+    Returns (n_tiles_z, n_tiles_y, n_tiles_x)
+    """
+    try:
+        with mrcfile.open(tomogram_path, "r") as mrc:
+            dims = mrc.data.shape  # (z, y, x) for tomograms
+
+        print(f"[DRIVER] Tomogram dimensions: {dims}")
+
+        # Simple heuristic: if any dimension > 1000, increase tiling
+        tiles = list(base_tiles)
+        for i, dim in enumerate(dims):
+            if dim > 1000:
+                tiles[i] = min(tiles[i] * 2, max_tiles[i])
+            elif dim > 2000:
+                tiles[i] = min(tiles[i] * 3, max_tiles[i])
+
+        return tuple(tiles)
+
+    except Exception as e:
+        print(f"[WARN] Could not read tomogram for tiling calculation: {e}")
+        return base_tiles
 
 
 def main():
@@ -32,7 +60,7 @@ def main():
         paths = {k: Path(v) for k, v in context["paths"].items()}
         additional_binds = context["additional_binds"]
 
-        model_tar_path = paths["model_path"]  # The .tar.gz file
+        model_tar_path = paths["model_path"]
         input_star = paths["input_star"]
         reconstruct_base = paths["reconstruct_base"]
         output_dir = paths["output_dir"]
@@ -69,14 +97,22 @@ def main():
 
             out_path = output_dir / tomo_name
 
-            # 4. Write Config
-            # CRITICAL CHANGE: 'path' must point to the .tar.gz file, NOT a directory.
-            # We use absolute paths because we know the container binds /users/artem.kushner
+            # 4. Calculate memory-aware tiling
+            base_tiles = (params.ntiles_z, params.ntiles_y, params.ntiles_x)
+            n_tiles_z, n_tiles_y, n_tiles_x = calculate_memory_aware_tiles(
+                even_path,
+                base_tiles=base_tiles,
+                max_tiles=(8, 8, 8),  # Don't exceed 512 tiles total
+            )
+
+            print(f"[DRIVER] Using tiles: z={n_tiles_z}, y={n_tiles_y}, x={n_tiles_x}")
+
+            # 5. Write Config with memory optimization
             cfg = {
                 "path": str(model_tar_path),
                 "even": str(even_path),
                 "odd": str(odd_path),
-                "n_tiles": [params.ntiles_z, params.ntiles_y, params.ntiles_x],
+                "n_tiles": [n_tiles_z, n_tiles_y, n_tiles_x],
                 "output": str(out_path),
                 "gpu_id": 0,
                 "overwrite": True,
@@ -88,14 +124,22 @@ def main():
 
             print(f"[DRIVER] Processing {tomo_name}...", flush=True)
 
-            cmd = container_service.wrap_command_for_tool(
-                f"cryoCARE_predict.py --conf {cfg_name}",
-                cwd=job_dir,
-                tool_name="cryocare",
-                additional_binds=additional_binds,
+            # 6. Run with TensorFlow memory optimization
+            # Set environment variables for memory growth
+            cmd = (
+                f"TF_FORCE_GPU_ALLOW_GROWTH=true "
+                f"TF_GPU_ALLOCATOR=cuda_malloc_async "
+                f"cryoCARE_predict.py --conf {cfg_name}"
             )
-            run_command(cmd, cwd=job_dir)
-            actual_output = out_path / tomo_name if out_path.is_dir() else out_path
+
+            wrapped_cmd = container_service.wrap_command_for_tool(
+                cmd, cwd=job_dir, tool_name="cryocare", additional_binds=additional_binds
+            )
+
+            run_command(wrapped_cmd, cwd=job_dir)
+
+            # Check output
+            actual_output = out_path if out_path.is_dir() else out_path
             if actual_output.exists():
                 new_row = row.copy()
                 try:
