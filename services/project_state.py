@@ -77,6 +77,7 @@ class SlurmConfig(BaseModel):
     mem: str = "64G"
     time: str = "3:30:00"
 
+    # Standard Relion Tomography aliases for XXXextra1XXX through XXXextra8XXX
     QSUB_EXTRA_MAPPING: ClassVar[Dict[str, str]] = {
         "partition": "qsub_extra1",
         "constraint": "qsub_extra2",
@@ -87,6 +88,11 @@ class SlurmConfig(BaseModel):
         "mem": "qsub_extra7",
         "time": "qsub_extra8",
     }
+    def to_qsub_extra_dict(self) -> Dict[str, str]:
+        return {
+            self.QSUB_EXTRA_MAPPING[field]: str(getattr(self, field))
+            for field in self.QSUB_EXTRA_MAPPING
+        }
 
     @classmethod
     def from_config_defaults(cls) -> "SlurmConfig":
@@ -96,13 +102,6 @@ class SlurmConfig(BaseModel):
             return cls(**defaults.model_dump())
         except Exception:
             return cls()
-
-    def to_qsub_extra_dict(self) -> Dict[str, str]:
-        return {
-            self.QSUB_EXTRA_MAPPING[field]: str(getattr(self, field))
-            for field in self.QSUB_EXTRA_MAPPING
-            if field in self.QSUB_EXTRA_MAPPING
-        }
 
 class JobStatus(str, Enum):
     SUCCEEDED = "Succeeded"
@@ -211,6 +210,9 @@ class AbstractJobParams(BaseModel):
     """
 
     JOB_CATEGORY: ClassVar[JobCategory]
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"  # Override for native jobs
+    IS_TOMO_JOB: ClassVar[bool] = True
+    IS_CONTINUE: ClassVar[bool] = False
 
     # Job execution metadata only
     execution_status: JobStatus = Field(default=JobStatus.SCHEDULED)
@@ -285,14 +287,83 @@ class AbstractJobParams(BaseModel):
         """Clear all per-job SLURM overrides, reverting to project defaults"""
         self.slurm_overrides = {}
 
-    @classmethod
-    def get_jobstar_field_mapping(cls) -> Dict[str, str]:
+    def generate_job_star(
+        self, 
+        job_dir: Path, 
+        fn_exe: str,
+        star_handler, 
+    ) -> None:
+        """Generate job.star entirely from this model's state."""
+        
+        # 1. Job metadata block
+        job_data = {
+            "rlnJobTypeLabel": self.RELION_JOB_TYPE,
+            "rlnJobIsContinue": 1 if self.IS_CONTINUE else 0,
+            "rlnJobIsTomo": 1 if self.IS_TOMO_JOB else 0,
+        }
+        
+        # 2. Build options list
+        options: List[Tuple[str, str]] = []
+        
+        if self.RELION_JOB_TYPE == "relion.external":
+            options.append(("fn_exe", fn_exe))
+        
+        # Add job-specific options (in_mic, etc.)
+        options.extend(self._get_job_specific_options())
+        
+        if self.RELION_JOB_TYPE == "relion.external":
+            options.append(("other_args", ""))
+        
+        # Add Queue/Slurm options
+        options.extend(self._get_queue_options())
+        
+        # 3. Create DataFrame and Write
+        joboptions_df = pd.DataFrame(options, columns=["rlnJobOptionVariable", "rlnJobOptionValue"])
+        
+        data = {
+            "job": job_data,
+            "joboptions_values": joboptions_df,
+        }
+        
+        job_dir.mkdir(parents=True, exist_ok=True)
+        star_path = job_dir / "job.star"
+        star_handler.write(data, star_path)
+        
+        # 4. Mandatory RELION version header
+        content = star_path.read_text()
+        with open(star_path, 'w') as f:
+            f.write("# version 50001\n\n")
+            f.write(content)
+        
+        print(f"[JOBSTAR] Generated {star_path}")
+
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         """
-        Maps paths dict keys to job.star rlnJobOptionVariable names.
-        Override in subclasses that need custom mappings.
-        Default handles the common 'in_mic' case.
+        Override in subclasses to provide job-specific joboptions.
+        Default: single input as in_mic.
         """
-        return {"input_star": "in_mic"}
+        input_star = self.paths.get("input_star", "")
+        return [("in_mic", str(input_star))]
+
+    def _get_queue_options(self) -> List[Tuple[str, str]]:
+        """Generate SLURM/queue options using paramN_value slots."""
+        slurm = self.get_effective_slurm_config()
+        
+        # Basic Queue setup
+        options = [
+            ("do_queue", "Yes"),
+            ("queuename", slurm.partition),
+            ("qsub", "sbatch"),
+            ("qsubscript", "qsub/qsub_cbe_warp.sh"),
+            ("min_dedicated", "1"),
+        ]
+        
+        # Add ONLY the qsub_extra values - NO labels needed!
+        slurm_dict = slurm.to_qsub_extra_dict()
+        for var_name, value in slurm_dict.items():
+            options.append((var_name, value))
+        
+        return options
 
     @property
     def microscope(self) -> MicroscopeParams:
@@ -465,38 +536,72 @@ class AbstractJobParams(BaseModel):
 
 class ImportMoviesParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
+    RELION_JOB_TYPE: ClassVar[str] = "relion.importtomo"  # Native RELION job!
+    IS_CONTINUE: ClassVar[bool] = True  # From your template
 
-    # JOB-SPECIFIC PARAMETERS ONLY
+    # Job-specific parameters
     optics_group_name: str = "opticsGroup1"
     do_at_most: int = Field(default=-1)
 
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+            """Import uses relative paths - RELION runs from project root."""
+            # Detect frame extension from the actual files
+            frames_dir = self.frames_dir
+            if frames_dir.exists():
+                eer_files = list(frames_dir.glob("*.eer"))
+                mrc_files = list(frames_dir.glob("*.mrc"))
+                tiff_files = list(frames_dir.glob("*.tiff")) + list(frames_dir.glob("*.tif"))
+                
+                if eer_files:
+                    frame_ext = "*.eer"
+                elif mrc_files:
+                    frame_ext = "*.mrc"
+                elif tiff_files:
+                    frame_ext = "*.tiff"
+                else:
+                    frame_ext = "*.eer"  # Default fallback
+            else:
+                frame_ext = "*.eer"
+            
+            frames_pattern = f"./frames/{frame_ext}"
+            mdoc_pattern = "./mdoc/*.mdoc"
+            
+            return [
+                ("movie_files", frames_pattern),
+                ("images_are_motion_corrected", "No"),
+                ("mdoc_files", mdoc_pattern),
+                ("optics_group_name", self.optics_group_name),
+                ("prefix", ""),
+                ("angpix", str(self.pixel_size)),
+                ("kV", str(int(self.voltage))),
+                ("Cs", str(self.spherical_aberration)),
+                ("Q0", str(self.amplitude_contrast)),
+                ("dose_rate", str(self.dose_per_tilt)),
+                ("dose_is_per_movie_frame", "No"),
+                ("tilt_axis_angle", str(self.tilt_axis_angle)),
+                ("mtf_file", ""),
+                ("flip_tiltseries_hand", "Yes" if self.acquisition.invert_defocus_hand else "No"),
+            ]
+
+    def _get_queue_options(self) -> List[Tuple[str, str]]:
+        """Import jobs defaults to local run, but includes correct keys for consistency."""
+        slurm_config = self.get_effective_slurm_config()
+        
+        options = [
+            ("do_queue", "No"),
+            ("queuename", slurm_config.partition),
+            ("qsub", "sbatch"),
+            ("qsubscript", "qsub/qsub_cbe_warp.sh"),
+            ("min_dedicated", "1"),
+            ("other_args", ""),
+        ]
+        
+        # Add Slurm placeholders even if do_queue is No
+        options.extend(list(slurm_config.to_qsub_extra_dict().items()))
+        return options
+
     def get_tool_name(self) -> str:
         return "relion_import"
-
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        if not star_path or not star_path.exists():
-            return None
-        try:
-            data: Dict[str, Union[pd.DataFrame, Dict[str, Any]]] = starfile.read(star_path, always_dict=True)
-            job_data = data.get("job")
-            if job_data is None:
-                return None
-
-            if isinstance(job_data, pd.DataFrame):
-                if len(job_data) == 0:
-                    return None
-                job_params: Dict[str, Any] = job_data.to_dict("records")[0]
-            else:
-                job_params: Dict[str, Any] = job_data
-
-            return cls(
-                optics_group_name=job_params.get("optics_group_name", "opticsGroup1"),
-                do_at_most=int(job_params.get("do_at_most", -1)),
-            )
-        except Exception as e:
-            print(f"[WARN] Could not parse job.star at {star_path}: {e}")
-            return None
 
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
         return {
@@ -512,6 +617,8 @@ class ImportMoviesParams(AbstractJobParams):
 
 class FsMotionCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+    
 
     m_range_min_max: str = "500:10"
     m_bfac: int = Field(default=-500)
@@ -527,6 +634,14 @@ class FsMotionCtfParams(AbstractJobParams):
     perdevice: int = Field(default=1, ge=0, le=8)
     do_at_most: int = Field(default=-1)
     gain_operations: Optional[str] = None
+
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+        input_star = self.paths.get("input_star", "")
+        return [
+            ("in_mic", str(input_star)),
+            # Could add other in_* fields if needed for RELION GUI display
+        ]
+
 
     def is_driver_job(self) -> bool:
         return True
@@ -558,39 +673,6 @@ class FsMotionCtfParams(AbstractJobParams):
     def defocus_max_microns(self) -> float:
         return float(self.c_defocus_min_max.split(":")[1])
 
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        if not star_path or not star_path.exists():
-            return None
-        try:
-            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
-            joboptions = data.get("joboptions_values")
-            if joboptions is None or not isinstance(joboptions, pd.DataFrame):
-                return None
-
-            df: pd.DataFrame = joboptions
-            param_dict: Dict[str, str] = pd.Series(
-                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
-            ).to_dict()
-
-            return cls(
-                gain_operations    = param_dict.get("param3_value") ,
-                m_range_min_max    = param_dict.get("param4_value", "500:10") ,
-                m_bfac             = int(param_dict.get("param5_value", "-500")) ,
-                m_grid             = param_dict.get("param6_value", "1x1x3") ,
-                c_range_min_max    = param_dict.get("param7_value", "30:6.0") ,
-                c_defocus_min_max  = param_dict.get("param8_value", "1.1:8") ,
-                c_grid             = param_dict.get("param9_value", "2x2x1") ,
-                perdevice          = int(param_dict.get("param10_value", "1")) ,
-                c_window           = 512 ,
-                c_use_sum          = param_dict.get("param11_value", "False").lower() == "true",
-                out_average_halves = True ,
-                out_skip_first     = int(param_dict.get("param13_value", "0")) ,
-                out_skip_last      = int(param_dict.get("param14_value", "0")) ,
-            )
-        except Exception as e:
-            print(f"[WARN] Could not parse job.star at {star_path}: {e}")
-            return None
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
@@ -617,7 +699,9 @@ class FsMotionCtfParams(AbstractJobParams):
 
 
 class TsAlignmentParams(AbstractJobParams):
+
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
     alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
     rescale_angpixs : float           = Field(default=12.0, ge=2.0, le=50.0)
@@ -639,46 +723,10 @@ class TsAlignmentParams(AbstractJobParams):
     def get_tool_name(self) -> str:
         return "warptools"
 
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        if not star_path or not star_path.exists():
-            return None
-        try:
-            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
-            job_data = data.get("job")
-            if job_data is None:
-                return None
-            if isinstance(job_data, pd.DataFrame):
-                if len(job_data) == 0:
-                    return None
-                job_params: Dict[str, Any] = job_data.to_dict("records")[0]
-            else:
-                job_params: Dict[str, Any] = job_data
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+            input_star = self.paths.get("input_star", "")
+            return [("in_mic", str(input_star))]
 
-            method = AlignmentMethod(job_params.get("alignment_method", "AreTomo"))
-            patch_str = job_params.get("aretomo_patches", "2x2")
-            patch_x, patch_y = map(int, patch_str.split("x")) if "x" in patch_str else (2, 2)
-            axis_str = job_params.get("refineTiltAxis_iter_and_batch", "3:5")
-
-            axis_iter, axis_batch = map(int, axis_str.split(":")) if ":" in axis_str else (3, 5)
-
-            return cls(
-                alignment_method=method,
-                rescale_angpixs=float(job_params.get("rescale_angpixs", 12.0)),
-                tomo_dimensions=job_params.get("tomo_dimensions", "4096x4096x2048"),
-                gain_operations=job_params.get("gain_operations"),
-                perdevice=int(job_params.get("perdevice", 1)),
-                mdoc_pattern=job_params.get("mdoc_pattern", "*.mdoc"),
-                patch_x=patch_x,
-                patch_y=patch_y,
-                axis_iter=axis_iter,
-                axis_batch=axis_batch,
-                imod_patch_size=int(job_params.get("imod_patch_size", 200)),
-                imod_overlap=int(job_params.get("imod_overlap", 50)),
-            )
-        except Exception as e:
-            print(f"[WARN] Could not parse job.star at {star_path}: {e}")
-            return None
 
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
         if not upstream_job_dir:
@@ -705,12 +753,19 @@ class TsAlignmentParams(AbstractJobParams):
 
 class TsCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+    
 
     window: int = Field(default=512, ge=128, le=2048)
     range_min_max: str = Field(default="30:6.0")
     defocus_min_max: str = Field(default="0.5:8")
     defocus_hand: str = Field(default="set_flip")
     perdevice: int = Field(default=1, ge=0, le=8)
+
+
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+        input_star = self.paths.get("input_star", "")
+        return [("in_mic", str(input_star))]
 
     def is_driver_job(self) -> bool:
         return True
@@ -733,32 +788,6 @@ class TsCtfParams(AbstractJobParams):
     @property
     def defocus_max(self) -> float:
         return float(self.defocus_min_max.split(":")[1])
-
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        if not star_path or not star_path.exists():
-            return None
-        try:
-            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
-            joboptions = data.get("joboptions_values")
-            if joboptions is None or not isinstance(joboptions, pd.DataFrame):
-                return None
-
-            df: pd.DataFrame = joboptions
-            param_dict: Dict[str, str] = pd.Series(
-                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
-            ).to_dict()
-
-            return cls(
-                window=int(param_dict.get("param1_value", "512")),
-                range_min_max=param_dict.get("param2_value", "30:4"),
-                defocus_min_max=param_dict.get("param3_value", "0.5:8"),
-                defocus_hand=param_dict.get("param4_value", "set_flip"),
-                perdevice=int(param_dict.get("param5_value", "1")),
-            )
-        except Exception as e:
-            print(f"[WARN] Could not parse job.star at {star_path}: {e}")
-            return None
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
@@ -783,11 +812,17 @@ class TsCtfParams(AbstractJobParams):
 
 class TsReconstructParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+    
 
     rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
     halfmap_frames : int   = Field(default=1, ge=0, le=1)
     deconv         : int   = Field(default=1, ge=0, le=1)
     perdevice      : int   = Field(default=1, ge=0, le=8)
+
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+        input_star = self.paths.get("input_star", "")
+        return [("in_mic", str(input_star))]
 
     def is_driver_job(self) -> bool:
         return True
@@ -795,30 +830,6 @@ class TsReconstructParams(AbstractJobParams):
     def get_tool_name(self) -> str:
         return "warptools"
 
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        if not star_path or not star_path.exists():
-            return None
-        try:
-            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
-            joboptions = data.get("joboptions_values")
-            if joboptions is None or not isinstance(joboptions, pd.DataFrame):
-                return None
-
-            df: pd.DataFrame = joboptions
-            param_dict: Dict[str, str] = pd.Series(
-                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
-            ).to_dict()
-
-            return cls(
-                rescale_angpixs=float(param_dict.get("param1_value", "12.0")),
-                halfmap_frames=int(param_dict.get("param2_value", "1")),
-                deconv=int(param_dict.get("param3_value", "1")),
-                perdevice=int(param_dict.get("param4_value", "1")),
-            )
-        except Exception as e:
-            print(f"[WARN] Could not parse job.star at {star_path}: {e}")
-            return None
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
@@ -843,11 +854,19 @@ class TsReconstructParams(AbstractJobParams):
 
 class DenoiseTrainParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+    IS_TOMO_JOB: ClassVar[bool] = True
+    
 
     tomograms_for_training    : str = Field(default="Position_1")
     number_training_subvolumes: int = Field(default=600, ge=100)
     subvolume_dimensions      : int = Field(default=64, ge=32)
     perdevice                 : int = Field(default=1)
+
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+        # This job uses in_tomoset, not in_mic
+        input_star = self.paths.get("input_star", "")
+        return [("in_tomoset", str(input_star))]
 
     def is_driver_job(self) -> bool:
         return True
@@ -855,28 +874,6 @@ class DenoiseTrainParams(AbstractJobParams):
     def get_tool_name(self) -> str:
         return "cryocare"  
 
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        if not star_path or not star_path.exists():
-            return None
-        try:
-            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
-            joboptions = data.get("joboptions_values")
-            if joboptions is None or not isinstance(joboptions, pd.DataFrame):
-                return None
-            df: pd.DataFrame = joboptions
-            param_dict: Dict[str, str] = pd.Series(
-                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
-            ).to_dict()
-
-            return cls(
-                tomograms_for_training=param_dict.get("tomograms_for_training", "Position_1"),
-                number_training_subvolumes=int(param_dict.get("number_training_subvolumes", "600")),
-                subvolume_dimensions=int(param_dict.get("subvolume_dimensions", "64")),
-                perdevice=int(param_dict.get("min_dedicated", "1")),
-            )
-        except Exception:
-            return None
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
@@ -899,6 +896,8 @@ class DenoiseTrainParams(AbstractJobParams):
 
 class DenoisePredictParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+    IS_TOMO_JOB: ClassVar[bool] = True
 
     ntiles_x: int = Field(default=2, ge=1)
     ntiles_y: int = Field(default=2, ge=1)
@@ -912,101 +911,76 @@ class DenoisePredictParams(AbstractJobParams):
     def get_tool_name(self) -> str:
         return "cryocare" 
 
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        if not star_path or not star_path.exists():
-            return None
-        try:
-            data: Dict[str, Union[pd.DataFrame, dict]] = starfile.read(star_path, always_dict=True)
-            joboptions = data.get("joboptions_values")
-            if joboptions is None or not isinstance(joboptions, pd.DataFrame):
-                return None
-            df: pd.DataFrame = joboptions
-            param_dict: Dict[str, str] = pd.Series(
-                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
-            ).to_dict()
-
-            return cls(
-                ntiles_x=int(param_dict.get("ntiles_x", "2")),
-                ntiles_y=int(param_dict.get("ntiles_y", "2")),
-                ntiles_z=int(param_dict.get("ntiles_z", "2")),
-                denoising_tomo_name=param_dict.get("denoising_tomo_name", ""),
-                perdevice=int(param_dict.get("min_dedicated", "1")),
-            )
-        except Exception:
-            return None
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+        input_star = self.paths.get("input_star", "")
+        model_path = self.paths.get("model_path", "")
+        return [
+            ("in_tomoset", str(input_star)),
+            # If RELION needs to see the model dependency:
+            ("in_model", str(model_path)),
+        ]
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"train": "denoisetrain"}
 
+    # In DenoisePredictParams
+
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
         """
-        Resolution for DenoisePredict:
-        1. Model comes from DenoiseTrain (upstream_job_dir in a full pipeline, or historical).
-        2. Tomogram data comes from TsReconstruct (looked up from state's path mapping OR predicted).
+        DenoisePredict needs:
+        1. Model from DenoiseTrain (upstream_job_dir - linear predecessor)
+        2. Tomograms from TsReconstruct (looked up from state)
         """
         if not self._project_state:
-            raise RuntimeError("DenoisePredict detached from ProjectState")
+            raise RuntimeError("DenoisePredictParams not attached to ProjectState")
 
-        # --- 1. GET MODEL PATH (From DenoiseTrain) ---
-        # If we're in a batch pipeline, upstream_job_dir is the predicted DenoiseTrain dir.
-        # Otherwise, look for a historical successful train job.
-        model_path = None
-        
+        # --- 1. MODEL PATH (from DenoiseTrain) ---
         if upstream_job_dir:
-            # Batch mode: upstream is the predicted DenoiseTrain job dir
             model_path = upstream_job_dir / "denoising_model.tar.gz"
         else:
-            # Continuation mode: look for historical train job
+            # Fallback: look for historical train job
             train_job = self._project_state.jobs.get(JobType.DENOISE_TRAIN)
             if train_job and train_job.paths.get("output_model"):
                 model_path = Path(train_job.paths["output_model"])
-        
-        if not model_path:
-            raise ValueError("DenoisePredict requires a DenoiseTrain job (either in batch or completed historically).")
+            else:
+                raise ValueError("DenoisePredict requires DenoiseTrain (no model path found)")
 
-        # --- 2. GET TOMOGRAM DATA (From TsReconstruct) ---
-        # Strategy: 
-        #   a) If TsReconstruct has already run, use its stored paths.
-        #   b) If not, predict where it WILL write based on the job_path_mapping or batch order.
-        
+        # --- 2. TOMOGRAMS (from TsReconstruct - NOT the linear predecessor!) ---
         ts_job = self._project_state.jobs.get(JobType.TS_RECONSTRUCT)
-        input_star = None
-        reconstruct_base = None
         
-        if ts_job and ts_job.execution_status == JobStatus.SUCCEEDED and ts_job.paths:
-            # TsReconstruct already completed - use its actual outputs
-            input_star = Path(ts_job.paths.get("output_star")) if ts_job.paths.get("output_star") else None
-            reconstruct_base = Path(ts_job.paths.get("warp_dir")) if ts_job.paths.get("warp_dir") else None
+        if not ts_job:
+            raise ValueError("DenoisePredict requires TsReconstruct job in pipeline")
         
-        if not input_star or not reconstruct_base:
-            # TsReconstruct hasn't run yet - predict paths based on its resolved_paths
-            # The orchestrator should have already called resolve_paths on TsReconstruct,
-            # so its `paths` dict should be populated with predicted values.
-            if ts_job and ts_job.paths:
-                input_star = Path(ts_job.paths.get("output_star")) if ts_job.paths.get("output_star") else None
-                reconstruct_base = Path(ts_job.paths.get("warp_dir")) if ts_job.paths.get("warp_dir") else None
+        # DON'T check execution_status! Just check if paths are populated.
+        # They will be populated either:
+        #   a) From historical run (loaded from project_params.json)
+        #   b) From earlier iteration in current batch (orchestrator populates paths in order)
         
-        if not input_star or not reconstruct_base:
+        if ts_job.paths.get("output_star"):
+            input_star = Path(ts_job.paths["output_star"])
+            reconstruct_base = Path(ts_job.paths.get("warp_dir") or ts_job.paths.get("output_processing", ""))
+        else:
             raise ValueError(
-                "DenoisePredict could not resolve TsReconstruct paths. "
-                "Ensure TsReconstruct is in the pipeline (before DenoisePredict) or has completed previously."
+                "TsReconstruct paths not resolved. Ensure TsReconstruct is in the pipeline "
+                "before DenoisePredict, or has completed in a previous run."
             )
 
-        # --- 3. PACKAGE FOR DRIVER ---
         return {
-            "job_dir"         : job_dir,
-            "project_root"    : self.project_root,
-            "model_path"      : model_path,
-            "input_star"      : input_star,
+            "job_dir": job_dir,
+            "project_root": self.project_root,
+            "model_path": model_path,
+            "input_star": input_star,
             "reconstruct_base": reconstruct_base,
-            "output_dir"      : job_dir / "denoised",
+            "output_dir": job_dir / "denoised",
         }
 
 
 class TemplateMatchPytomParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+    IS_TOMO_JOB: ClassVar[bool] = False  # From your template
+    
 
     # Inputs (Strings here, resolved to Paths in resolve_paths)
     template_path: str = Field(default="")
@@ -1027,48 +1001,23 @@ class TemplateMatchPytomParams(AbstractJobParams):
     gpu_split      : str = Field(default="auto")  # "auto" or "4:4:2"
     perdevice      : int = Field(default=1)
 
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+        return [
+            ("in_mic", str(self.paths.get("input_tomograms", ""))),
+            ("in_3dref", str(self.paths.get("template_path", ""))),
+            ("in_mask", str(self.paths.get("mask_path", ""))),
+            ("in_coords", ""),
+            ("in_mov", ""),
+            ("in_part", ""),
+        ]
+
     def is_driver_job(self) -> bool:
         return True
 
     def get_tool_name(self) -> str:
         return "pytom"
 
-    @classmethod
-    def get_jobstar_field_mapping(cls) -> Dict[str, str]:
-        return {
-            "input_tomograms": "in_mic",
-            "template_path": "in_3dref",
-            "mask_path": "in_mask",
-        }
 
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        if not star_path or not star_path.exists():
-            return None
-        try:
-            data = starfile.read(star_path, always_dict=True)
-            df = data.get("joboptions_values")
-            if df is None or not isinstance(df, pd.DataFrame): return None
-            
-            param_dict = pd.Series(
-                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
-            ).to_dict()
-
-            return cls(
-                template_path=param_dict.get("in_3dref", ""),
-                mask_path=param_dict.get("in_mask", ""),
-                angular_search=param_dict.get("angular_search", "12.0"),
-                symmetry=param_dict.get("symmetry", "C1"),
-                # Parse booleans
-                defocus_weight=param_dict.get("ctf_weight", "True") == "True",
-                dose_weight=param_dict.get("dose_weight", "True") == "True",
-                spectral_whitening=param_dict.get("spectral_whitening", "True") == "True",
-                non_spherical_mask=param_dict.get("non_spherical_mask", "False") == "True",
-                bandpass_filter=param_dict.get("bandpass_filter", "None"),
-                gpu_split=param_dict.get("split", "auto"),
-            )
-        except Exception:
-            return None
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
@@ -1077,47 +1026,57 @@ class TemplateMatchPytomParams(AbstractJobParams):
 
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
         """
-        Complex resolution:
-        1. Tomograms come from 'upstream_job_dir' (usually Denoise or Reconstruct).
-        2. Tilt Angles/Metadata come from a historical TS_CTF job in the project state.
+        TemplateMatch needs:
+        1. Tomograms (from upstream - either DenoisePredict or TsReconstruct)
+        2. Tilt series metadata (from TsCtf - for angles/defocus)
+        3. Template and mask (user-provided paths)
         """
         if not self._project_state:
-            raise RuntimeError("TemplateMatchPytomParams detached from ProjectState")
+            raise RuntimeError("TemplateMatchPytomParams not attached to ProjectState")
 
-        # 1. Resolve Tomograms (Primary Upstream)
+        # --- 1. TOMOGRAMS (from upstream or fallback) ---
         if upstream_job_dir:
+            # Could be DenoisePredict or TsReconstruct depending on pipeline
             input_tomograms = upstream_job_dir / "tomograms.star"
+            if not input_tomograms.exists():
+                # DenoisePredict might output differently
+                input_tomograms = upstream_job_dir / "denoised" / "tomograms.star"
         else:
-            # Fallback to TS Reconstruct if no upstream provided
+            # Fallback: look for reconstruct output
             rec_job = self._project_state.jobs.get(JobType.TS_RECONSTRUCT)
-            if rec_job and rec_job.execution_status == JobStatus.SUCCEEDED:
-                 input_tomograms = Path(rec_job.paths.get("output_star"))
+            if rec_job and rec_job.paths.get("output_star"):
+                input_tomograms = Path(rec_job.paths["output_star"])
             else:
-                 raise ValueError("No input tomograms found for Template Matching")
+                raise ValueError("No tomogram source found for TemplateMatching")
 
-        # 2. Resolve Tilt Series (For Angles/Defocus/Dose)
-        # We assume TS_CTF has run. 
+        # --- 2. TILT SERIES (from TsCtf - for angle/defocus files) ---
         ctf_job = self._project_state.jobs.get(JobType.TS_CTF)
-        if not ctf_job or ctf_job.execution_status != JobStatus.SUCCEEDED:
-             raise ValueError("Template Matching requires a completed CtfFind job (tsCtf) to generate angle files.")
         
-        input_tiltseries = Path(ctf_job.paths.get("output_star"))
+        # DON'T check execution_status - just check if paths exist
+        if ctf_job and ctf_job.paths.get("output_star"):
+            input_tiltseries = Path(ctf_job.paths["output_star"])
+        else:
+            raise ValueError(
+                "TemplateMatching requires TsCtf job with resolved paths "
+                "(for tilt angle and defocus information)"
+            )
 
         return {
             "job_dir": job_dir,
             "project_root": self.project_root,
-            # Inputs
             "input_tomograms": input_tomograms,
             "input_tiltseries": input_tiltseries,
             "template_path": Path(self.template_path) if self.template_path else None,
             "mask_path": Path(self.mask_path) if self.mask_path else None,
-            # Outputs
-            "output_dir": job_dir / "tmResults"
+            "output_dir": job_dir / "tmResults",
         }
 
 
 class CandidateExtractPytomParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+    
+
 
     # Particle Params (defaults from original job.star)
     particle_diameter_ang: float = Field(default=200.0)  # param3
@@ -1137,44 +1096,17 @@ class CandidateExtractPytomParams(AbstractJobParams):
     # Optional mask folder for excluding regions
     mask_fold_path: str = Field(default="None")  # param8
 
+
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+        input_tm_job = self.paths.get("input_tm_job", "")
+        return [("in_mic", str(input_tm_job))]
+
     def is_driver_job(self) -> bool:
         return True
 
     def get_tool_name(self) -> str:
         return "pytom"
 
-    @classmethod
-    def get_jobstar_field_mapping(cls) -> Dict[str, str]:
-        return {
-            "input_tm_job": "in_mic",
-        }
-
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        if not star_path or not star_path.exists():
-            return None
-        try:
-            data = starfile.read(star_path, always_dict=True)
-            df = data.get("joboptions_values")
-            if df is None or not isinstance(df, pd.DataFrame):
-                return None
-            
-            param_dict = pd.Series(
-                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
-            ).to_dict()
-
-            return cls(
-                cutoff_method=param_dict.get("param1_value", "NumberOfFalsePositives"),
-                cutoff_value=float(param_dict.get("param2_value", "1")),
-                particle_diameter_ang=float(param_dict.get("param3_value", "200")),
-                max_num_particles=int(param_dict.get("param4_value", "1500")),
-                apix_score_map=param_dict.get("param5_value", "auto"),
-                score_filter_method=param_dict.get("param6_value", "None"),
-                score_filter_value=param_dict.get("param7_value", "None"),
-                mask_fold_path=param_dict.get("param8_value", "None"),
-            )
-        except Exception:
-            return None
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
@@ -1233,7 +1165,9 @@ class SubtomoExtractionParams(AbstractJobParams):
     Subtomogram extraction using RELION's relion_tomo_subtomo.
     Creates pseudo-subtomograms from tilt series for downstream averaging/classification.
     """
+
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
     # Extraction parameters
     binning: float = Field(default=1.0, description="Binning factor relative to unbinned data")
@@ -1248,43 +1182,17 @@ class SubtomoExtractionParams(AbstractJobParams):
     max_dose: float = Field(default=-1.0, description="Max dose to include (-1 = all)")
     min_frames: int = Field(default=1, description="Min frames per tilt to include")
 
+
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+        input_opt = self.paths.get("input_optimisation", "")
+        return [("in_optimisation", str(input_opt))]
+
     def is_driver_job(self) -> bool:
         return True
 
     def get_tool_name(self) -> str:
         return "relion"
 
-    @classmethod
-    def get_jobstar_field_mapping(cls) -> Dict[str, str]:
-        return {
-            "input_optimisation": "in_optimisation",
-        }
-
-    @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
-        if not star_path or not star_path.exists():
-            return None
-        try:
-            data = starfile.read(star_path, always_dict=True)
-            df = data.get("joboptions_values")
-            if df is None or not isinstance(df, pd.DataFrame):
-                return None
-
-            param_dict = pd.Series(
-                df["rlnJobOptionValue"].values, index=df["rlnJobOptionVariable"].values
-            ).to_dict()
-
-            return cls(
-                binning=float(param_dict.get("binning", "1")),
-                box_size=int(param_dict.get("box_size", "512")),
-                crop_size=int(param_dict.get("crop_size", "256")),
-                do_float16=param_dict.get("do_float16", "Yes") == "Yes",
-                do_stack2d=param_dict.get("do_stack2d", "Yes") == "Yes",
-                max_dose=float(param_dict.get("max_dose", "-1")),
-                min_frames=int(param_dict.get("min_frames", "1")),
-            )
-        except Exception:
-            return None
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
@@ -1358,20 +1266,12 @@ class ProjectState(BaseModel):
         if not param_class:
             raise ValueError(f"Unknown job type: {job_type}")
 
-        job_params = None
-        if template_path and template_path.exists():
-            job_params = param_class.from_job_star(template_path)
-
-        if job_params is None:
-            job_params = param_class()
-            print(f"[STATE] Initialized {job_type.value} with defaults")
-        else:
-            print(f"[STATE] Initialized {job_type.value} from job.star template")
-
-        if job_params:
-            job_params._project_state = self
-            self.jobs[job_type] = job_params
-            self.update_modified()
+        # Just instantiate with defaults - no more template loading
+        job_params = param_class()
+        job_params._project_state = self
+        self.jobs[job_type] = job_params
+        self.update_modified()
+        print(f"[STATE] Initialized {job_type.value} with defaults")
 
     def update_modified(self):
         self.modified_at = datetime.now()
