@@ -83,6 +83,6 @@ From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu20.04
       apptainer exec container.sif cryoCARE_train.py # Run specific command
 
 %labels
-    Author YourName
+    Author Artem Kushner & Sven Klumpe
     Version 1.0.0
     Description CryoCARE container for cryo-EM denoising

@@ -38,6 +38,6 @@ qsub_extra2       auto
 qsub_extra3       auto
 qsub_extra4       auto 
 qsub_extra5        
-    qsubscript          qsub/qsub_cbe_warp.sh
+    qsubscript          qsub/qsub.sh
  queuename        auto
  

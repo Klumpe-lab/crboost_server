@@ -20,5 +20,5 @@ other_args ""
 do_queue Yes
 queuename openmpi
 qsub sbatch
-qsubscript qsub/qsub_cbe_warp.sh
+qsubscript qsub/qsub.sh
 min_dedicated 1

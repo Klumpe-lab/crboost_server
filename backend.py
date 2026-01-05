@@ -17,7 +17,7 @@ from services.config_service import get_config_service
 from services.template_service import TemplateService
 
 
-HARDCODED_USER = "artem.kushner"
+HARDCODED_USER = "cryoboost-user" # this is currently just a stand-in. multi-user multi-session is WIP.
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):

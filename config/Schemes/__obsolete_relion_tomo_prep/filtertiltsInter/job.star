@@ -47,7 +47,7 @@ nr_threads          12
 do_queue         No 
 queuename    auto 
 qsub     sbatch 
-    qsubscript          qsub/qsub_cbe_warp.sh
+    qsubscript          qsub/qsub.sh
 min_dedicated          1 
 qsub_extra1       auto 
 qsub_extra2       auto 
