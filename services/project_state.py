@@ -67,26 +67,26 @@ class SlurmConfig(BaseModel):
     """SLURM submission parameters for a job"""
     model_config = ConfigDict(validate_assignment=True)
 
-    preset: SlurmPreset = Field(default=SlurmPreset.CUSTOM)
-    partition: str = "g"
-    constraint: str = "g2|g3|g4"
-    nodes: int = Field(default=1, ge=1)
-    ntasks_per_node: int = Field(default=1, ge=1)
-    cpus_per_task: int = Field(default=4, ge=1)
-    gres: str = "gpu:4"
-    mem: str = "64G"
-    time: str = "3:30:00"
+    preset         : SlurmPreset = Field(default=SlurmPreset.CUSTOM)
+    partition      : str         = "g"
+    constraint     : str         = "g2|g3|g4"
+    nodes          : int         = Field(default=1, ge=1)
+    ntasks_per_node: int         = Field(default=1, ge=1)
+    cpus_per_task  : int         = Field(default=4, ge=1)
+    gres           : str         = "gpu:4"
+    mem            : str         = "64G"
+    time           : str         = "3:30:00"
 
     # Standard Relion Tomography aliases for XXXextra1XXX through XXXextra8XXX
     QSUB_EXTRA_MAPPING: ClassVar[Dict[str, str]] = {
-        "partition": "qsub_extra1",
-        "constraint": "qsub_extra2",
-        "nodes": "qsub_extra3",
+        "partition"      : "qsub_extra1",
+        "constraint"     : "qsub_extra2",
+        "nodes"          : "qsub_extra3",
         "ntasks_per_node": "qsub_extra4",
-        "cpus_per_task": "qsub_extra5",
-        "gres": "qsub_extra6",
-        "mem": "qsub_extra7",
-        "time": "qsub_extra8",
+        "cpus_per_task"  : "qsub_extra5",
+        "gres"           : "qsub_extra6",
+        "mem"            : "qsub_extra7",
+        "time"           : "qsub_extra8",
     }
     def to_qsub_extra_dict(self) -> Dict[str, str]:
         return {
@@ -365,7 +365,7 @@ class AbstractJobParams(BaseModel):
             ("do_queue", "Yes"),
             ("queuename", slurm.partition),
             ("qsub", "sbatch"),
-            ("qsubscript", "qsub/qsub_cbe_warp.sh"),
+            ("qsubscript", "qsub/qsub.sh"),
             ("min_dedicated", "1"),
         ]
         
@@ -602,7 +602,7 @@ class ImportMoviesParams(AbstractJobParams):
             ("do_queue", "No"),
             ("queuename", slurm_config.partition),
             ("qsub", "sbatch"),
-            ("qsubscript", "qsub/qsub_cbe_warp.sh"),
+            ("qsubscript", "qsub/qsub.sh"),
             ("min_dedicated", "1"),
             ("other_args", ""),
         ]
@@ -968,53 +968,28 @@ class DenoisePredictParams(AbstractJobParams):
             if train_job and train_job.paths.get("output_model"):
                 model_path = Path(train_job.paths["output_model"])
             else:
-                # Try to find any denoising_model.tar.gz in the project
-                potential_models = list(self.project_root.glob("**/denoising_model.tar.gz"))
-                if potential_models:
-                    model_path = potential_models[0]
-                else:
-                    raise ValueError("DenoisePredict requires DenoiseTrain (no model path found)")
+                raise ValueError("DenoisePredict requires DenoiseTrain (no model path found)")
 
         # --- 2. TOMOGRAMS (from TsReconstruct) ---
+        # Look up TsReconstruct's resolved paths from state (set by orchestrator earlier in the loop)
         ts_job = self._project_state.jobs.get(JobType.TS_RECONSTRUCT)
         
-        # Multiple ways to find input_star
         input_star = None
         reconstruct_base = None
         
-        # Option 1: From ts_job paths
+        # Primary: Get from ts_job's resolved paths (no existence check - files don't exist yet!)
         if ts_job and ts_job.paths.get("output_star"):
             input_star = Path(ts_job.paths["output_star"])
             reconstruct_base = Path(ts_job.paths.get("warp_dir") or 
                                 ts_job.paths.get("output_processing", ""))
         
-        # Option 2: Search for tomograms.star
-        if not input_star or not input_star.exists():
-            potential_stars = list(self.project_root.glob("**/tomograms.star"))
-            if potential_stars:
-                # Prefer External/job006/ over others
-                external_stars = [s for s in potential_stars if "External/job" in str(s)]
-                input_star = external_stars[0] if external_stars else potential_stars[0]
-                
-                # Infer reconstruct_base from tomograms.star location
-                reconstruct_base = input_star.parent / "warp_tiltseries"
-        
-        if not input_star or not input_star.exists():
+        # If TsReconstruct job exists but paths weren't resolved yet, that's a sequencing bug
+        if not input_star:
             raise ValueError(
-                f"Cannot find tomograms.star. Searched in: {list(self.project_root.glob('**/tomograms.star'))}"
+                f"Cannot resolve tomograms path for DenoisePredict. "
+                f"TsReconstruct job exists: {ts_job is not None}, "
+                f"TsReconstruct.paths: {ts_job.paths if ts_job else 'N/A'}"
             )
-        
-        if not reconstruct_base or not reconstruct_base.exists():
-            # Try to infer from common locations
-            possible_bases = [
-                input_star.parent / "warp_tiltseries",
-                self.project_root / "External" / f"job{input_star.parent.name.replace('job', '')}" / "warp_tiltseries",
-                self.project_root / "External" / input_star.parent.name / "warp_tiltseries",
-            ]
-            for base in possible_bases:
-                if base.exists():
-                    reconstruct_base = base
-                    break
         
         return {
             "job_dir": job_dir,

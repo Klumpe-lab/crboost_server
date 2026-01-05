@@ -28,7 +28,6 @@ class SlurmDefaultsConfig(BaseModel):
 
 
 class LocalConfig(BaseModel):
-    Environment: str = ""
     DefaultProjectBase: Optional[str] = None
     DefaultMoviesGlob: Optional[str] = None
     DefaultMdocsGlob: Optional[str] = None

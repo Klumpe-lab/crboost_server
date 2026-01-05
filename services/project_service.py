@@ -257,7 +257,7 @@ class ProjectService:
 
         if qsub_template_path.is_dir():
             shutil.copytree(qsub_template_path, project_qsub_path, dirs_exist_ok=True)
-            main_qsub_script = project_qsub_path / "qsub_cbe_warp.sh"
+            main_qsub_script = project_qsub_path / "qsub.sh"
             if main_qsub_script.exists():
                 await self._prepopulate_qsub_script(main_qsub_script)
 

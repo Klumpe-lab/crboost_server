@@ -32,7 +32,7 @@ flip_tiltseries_hand         No
 do_queue         No 
 queuename    openmpi 
 qsub     sbatch 
-    qsubscript          qsub/qsub_cbe_warp.sh
+    qsubscript          qsub/qsub.sh
 min_dedicated          1 
 other_args         "" 
 qsub_extra1          3 
