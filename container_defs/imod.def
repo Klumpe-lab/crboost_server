@@ -1,0 +1,132 @@
+Bootstrap: docker
+From: ubuntu:20.04
+
+%environment
+    export IMOD_DIR=/opt/IMOD
+    export PATH="${IMOD_DIR}/bin:$PATH"
+    export IMOD_PLUGIN_DIR="${IMOD_DIR}/lib/imod-plugins"
+    export IMOD_QTLIBDIR="${IMOD_DIR}/qtlib"
+    export CONDA_ENV_PATH="/opt/conda/envs/imod_env"
+    export PATH="${CONDA_ENV_PATH}/bin:/opt/conda/bin:$PATH"
+    export LD_LIBRARY_PATH="${IMOD_DIR}/lib:${IMOD_DIR}/qtlib:${CONDA_ENV_PATH}/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+
+%post
+    echo "=== STARTING POST-INSTALL SECTION ==="
+    export DEBIAN_FRONTEND=noninteractive
+    
+    # Install system dependencies
+    apt-get update && apt-get install -y --no-install-recommends \
+        wget curl ca-certificates build-essential \
+        csh tcsh libncurses5 libglu1-mesa libqt5gui5 libqt5network5 \
+        libqt5widgets5 libqt5opengl5 libxft2 libxrender1 libxext6 \
+        libgtk2.0-0 openjdk-11-jre git vim sharutils \
+        libtiff5 libpng-dev libjpeg-dev mesa-utils x11-apps \
+        libxmu6 libxi6 libxt6 libxpm4 libgl1-mesa-glx \
+        libsm6 libice6 libx11-6 libxcb1 libxcb-xinerama0 \
+        libxcomposite1 libxcursor1 libxdamage1 libxfixes3 \
+        libxinerama1 libxrandr2 libxxf86vm1 \
+        libfontconfig1 libfreetype6 libglib2.0-0 \
+        && rm -rf /var/lib/apt/lists/*
+    
+    #----- DOWNLOAD AND EXTRACT IMOD -----#
+    echo "=== DOWNLOADING AND EXTRACTING IMOD ==="
+    
+    mkdir -p /build_tmp
+    cd /build_tmp
+    
+    wget --no-check-certificate https://bio3d.colorado.edu/imod/AMD64-RHEL5/imod_5.1.3_RHEL7-64_CUDA10.1.sh
+    chmod +x imod_5.1.3_RHEL7-64_CUDA10.1.sh
+    ./imod_5.1.3_RHEL7-64_CUDA10.1.sh -extract
+    cd IMODtempDir
+    tar -xzf imod_5.1.3_RHEL7-64_CUDA10.1.tar.gz
+    mv imod_5.1.3 /opt/IMOD
+    
+    cd /
+    rm -rf /build_tmp
+    
+    #----- Install Miniconda -----#
+    echo "=== INSTALLING MINICONDA ==="
+    mkdir -p /build_tmp
+    cd /build_tmp
+    
+    wget --no-check-certificate https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O miniconda.sh
+    bash miniconda.sh -b -p /opt/conda
+    rm miniconda.sh
+    
+    export PATH="/opt/conda/bin:$PATH"
+    
+    # Initialize conda
+    /opt/conda/bin/conda init bash 2>/dev/null
+    /opt/conda/bin/conda config --set auto_activate_base false
+    
+    # ACCEPT THE FUCKING TERMS OF SERVICE
+    /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+    /opt/conda/bin/conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+    
+    # Install mamba
+    /opt/conda/bin/conda install -n base mamba -c conda-forge -y
+    
+    # Create Python environment
+    /opt/conda/bin/mamba create -n imod_env -y \
+        -c conda-forge \
+        python=3.10 \
+        numpy \
+        scipy \
+        matplotlib \
+        pandas \
+        scikit-image \
+        mrcfile \
+        tifffile \
+        tqdm \
+        pyyaml \
+        ipython \
+        jupyter \
+        pip
+    
+    # Cleanup
+    rm -rf /build_tmp
+    /opt/conda/bin/conda clean -afy
+    apt-get clean
+    
+    echo "=== POST-INSTALL SECTION COMPLETED SUCCESSFULLY ==="
+
+%runscript
+    #!/bin/bash
+    export IMOD_DIR=/opt/IMOD
+    export CONDA_ENV_PATH="/opt/conda/envs/imod_env"
+    export PATH="${IMOD_DIR}/bin:${CONDA_ENV_PATH}/bin:/opt/conda/bin:$PATH"
+    export LD_LIBRARY_PATH="${IMOD_DIR}/lib:${IMOD_DIR}/qtlib:${CONDA_ENV_PATH}/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+    
+    if [ $# -eq 0 ]; then
+        exec /bin/bash
+    else
+        exec "$@"
+    fi
+
+%test
+    echo "=== TESTING IMOD ==="
+    if [ -d "/opt/IMOD" ]; then
+        echo "✓ IMOD found"
+        if [ -f "/opt/IMOD/bin/imodinfo" ]; then
+            echo "✓ imodinfo binary exists"
+        fi
+    else
+        echo "✗ IMOD not found"
+        exit 1
+    fi
+    
+    echo "=== TESTING PYTHON ==="
+    if [ -f "/opt/conda/envs/imod_env/bin/python" ]; then
+        /opt/conda/envs/imod_env/bin/python --version
+        echo "✓ Python ready"
+    else
+        echo "✗ Python not found"
+        exit 1
+    fi
+
+%labels
+    Author YourName
+    Version 5.1.3_py3.10
+    Description "IMOD 5.1.3 with Python 3.10"
