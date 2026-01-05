@@ -138,17 +138,27 @@ def main():
 
             run_command(wrapped_cmd, cwd=job_dir)
 
-            # Check output
-            actual_output = out_path if out_path.is_dir() else out_path
-            if actual_output.exists():
-                new_row = row.copy()
-                try:
-                    new_row[col_name] = str(actual_output.relative_to(project_path))
-                except ValueError:
-                    new_row[col_name] = str(actual_output)
-                output_rows.append(new_row)
+            # Check output - cryoCARE creates a directory with the MRC inside
+            if out_path.is_dir():
+                # Find the actual MRC file inside the created directory
+                mrc_files = list(out_path.glob("*.mrc"))
+                if mrc_files:
+                    actual_output = mrc_files[0]
+                else:
+                    print(f"[WARN] No MRC file found in output directory: {out_path}")
+                    continue
+            elif out_path.exists():
+                actual_output = out_path
             else:
-                print(f"[WARN] Expected output not found: {actual_output}")
+                print(f"[WARN] Expected output not found: {out_path}")
+                continue
+
+            new_row = row.copy()
+            try:
+                new_row[col_name] = str(actual_output.relative_to(project_path))
+            except ValueError:
+                new_row[col_name] = str(actual_output)
+            output_rows.append(new_row)
 
         if output_rows:
             starfile.write(pd.DataFrame(output_rows), job_dir / "tomograms.star")

@@ -78,5 +78,7 @@ From: nvcr.io/nvidia/cuda:12.1.1-devel-ubuntu22.04
     fi
 
 %help
+
+    Author Artem Kushner & Sven Klumpe
     PyTom Match-Pick Container (CUDA 12.1 / Python 3.11)
     Use with: apptainer exec --nv --no-home <image>.sif pytom_match_template.py

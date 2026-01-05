@@ -142,5 +142,5 @@ From: nvcr.io/nvidia/cuda:11.8.0-devel-ubuntu20.04
     This container includes both Warp and AreTomo v1.0.0.
 
 %labels
-    Author YourName
+    Author Artem Kushner & Sven Klumpe
     Version 1.0.0
