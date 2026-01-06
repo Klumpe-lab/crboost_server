@@ -5,8 +5,8 @@
 # Used by various services to locate resources
 crboost_root: "/path/to/crboost_server"
 
-# Path to Python virtual environment
-venv_path: "/path/to/crboost_server/venv"
+# Path to Python virtual environment/conda executable
+crboost_python: "/path/to/crboost_server/venv"
 
 local:
   # Default directory where new projects will be created

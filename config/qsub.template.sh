@@ -24,7 +24,7 @@
 
 # CryoBoost paths (filled by setup.py)
 export CRBOOST_SERVER_DIR="XXXcrboost_rootXXX" # <-- drivers must be on the python path
-export CRBOOST_PYTHON="XXXpython_executableXXX"
+export CRBOOST_PYTHON="XXXcrboost_pythonXXX"
 export PYTHONPATH="${CRBOOST_SERVER_DIR}:${PYTHONPATH}"
 
 echo "--- SLURM JOB BEGAN ---"
