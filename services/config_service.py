@@ -10,21 +10,23 @@ from functools import lru_cache
 from pydantic import BaseModel, Field
 from typing import Dict, Optional
 
-CRBOOST_ROOT = "/users/artem.kushner/dev/crboost_server/"
-DEFAULT_CONFIG_PATH = os.path.join(CRBOOST_ROOT, "config", "conf.yaml")
+# Derive default config path from this file's location
+_THIS_DIR = Path(__file__).parent
+_REPO_ROOT = _THIS_DIR.parent
+DEFAULT_CONFIG_PATH = _REPO_ROOT / "config" / "conf.yaml"
 
 
 class SlurmDefaultsConfig(BaseModel):
     """SLURM submission defaults from conf.yaml"""
 
     partition: str = "g"
-    constraint: str = "g2|g3|g4"
+    constraint: str = ""
     nodes: int = 1
     ntasks_per_node: int = 1
     cpus_per_task: int = 4
-    gres: str = "gpu:4"
-    mem: str = "64G"
-    time: str = "3:30:00"
+    gres: str = "gpu:1"
+    mem: str = "32G"
+    time: str = "2:00:00"
 
 
 class LocalConfig(BaseModel):
@@ -36,9 +38,11 @@ class LocalConfig(BaseModel):
 class Config(BaseModel):
     """Root configuration model"""
 
-    local         : LocalConfig         = Field(default_factory=LocalConfig)
+    crboost_root: str = Field(default_factory=lambda: str(_REPO_ROOT))
+    venv_path: Optional[str] = None
+    local: LocalConfig = Field(default_factory=LocalConfig)
     slurm_defaults: SlurmDefaultsConfig = Field(default_factory=SlurmDefaultsConfig)
-    containers    : Dict[str, str]      = Field(default_factory=dict)
+    containers: Dict[str, str] = Field(default_factory=dict)
 
     class Config:
         extra = "ignore"
@@ -47,9 +51,15 @@ class Config(BaseModel):
 class ConfigService:
     """Loads and provides access to static configuration"""
 
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path = None):
+        if config_path is None:
+            config_path = DEFAULT_CONFIG_PATH
+            
         if not config_path.exists():
-            raise FileNotFoundError(f"Configuration file not found at: {config_path}")
+            raise FileNotFoundError(
+                f"Configuration file not found at: {config_path}\n"
+                f"Run 'python setup.py' to create one from the template."
+            )
 
         with open(config_path, "r") as f:
             data = yaml.safe_load(f)
@@ -59,6 +69,22 @@ class ConfigService:
     @property
     def config(self) -> Config:
         return self._config
+
+    @property
+    def crboost_root(self) -> Path:
+        return Path(self._config.crboost_root)
+
+    @property
+    def venv_path(self) -> Optional[Path]:
+        if self._config.venv_path:
+            return Path(self._config.venv_path)
+        return None
+
+    @property
+    def venv_python(self) -> Optional[Path]:
+        if self.venv_path:
+            return self.venv_path / "bin" / "python3"
+        return None
 
     @property
     def containers(self) -> Dict[str, str]:
@@ -100,9 +126,14 @@ class ConfigService:
 _config_service_instance = None
 
 
-@lru_cache()
 def get_config_service() -> ConfigService:
     global _config_service_instance
     if _config_service_instance is None:
-        _config_service_instance = ConfigService(Path(DEFAULT_CONFIG_PATH))
+        _config_service_instance = ConfigService()
     return _config_service_instance
+
+
+def reset_config_service():
+    """Reset the singleton - useful for testing or after config changes"""
+    global _config_service_instance
+    _config_service_instance = None

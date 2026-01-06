@@ -114,7 +114,6 @@ class Colors:
             env_vars = env_cleanup.replace("unset", "").strip().split()
             if env_vars:
                 lines.append("    unset \\")
-                # Group vars for readability, e.g., 5 per line
                 for i in range(0, len(env_vars), 5):
                     line_vars = env_vars[i : i + 5]
                     line = "        " + " ".join(line_vars)
@@ -186,7 +185,7 @@ class ContainerService:
         for p_str in hpc_paths:
             path = Path(p_str)
             if path.exists():
-                if "passwd" in p_str or "group" in p_str:
+                if p_str in ["/etc/passwd", "/etc/group"]:
                     binds.add(f"{p_str}:{p_str}:ro")
                 else:
                     binds.add(p_str)
