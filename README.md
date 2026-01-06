@@ -249,7 +249,7 @@ INFO:     Uvicorn running on http://0.0.0.0:8081 (Press CTRL+C to quit)
 
 ```
 
-## 7. Access via SSH Tunnel
+## 8. Access via SSH Tunnel
 
 On your local machine (it must still be on the cluster's institutional network whether physically or via a VPN), open a porward forwarding tunnel:
 ```
