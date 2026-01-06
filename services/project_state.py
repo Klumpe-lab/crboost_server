@@ -365,7 +365,7 @@ class AbstractJobParams(BaseModel):
             ("do_queue", "Yes"),
             ("queuename", slurm.partition),
             ("qsub", "sbatch"),
-            ("qsubscript", "qsub/qsub.sh"),
+            ("qsubscript", "qsub.sh"),
             ("min_dedicated", "1"),
         ]
         
@@ -602,7 +602,7 @@ class ImportMoviesParams(AbstractJobParams):
             ("do_queue", "No"),
             ("queuename", slurm_config.partition),
             ("qsub", "sbatch"),
-            ("qsubscript", "qsub/qsub.sh"),
+            ("qsubscript", "qsub.sh"),
             ("min_dedicated", "1"),
             ("other_args", ""),
         ]

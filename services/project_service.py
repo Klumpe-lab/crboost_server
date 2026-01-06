@@ -252,18 +252,15 @@ class ProjectService:
             return {"success": False, "error": f"Failed during directory setup: {str(e)}"}
 
     async def _setup_qsub_templates(self, project_dir: Path):
-        qsub_template_path = Path.cwd() / "config" / "qsub"
-        project_qsub_path = project_dir / "qsub"
-
-        if qsub_template_path.is_dir():
-            shutil.copytree(qsub_template_path, project_qsub_path, dirs_exist_ok=True)
-            main_qsub_script = project_qsub_path / "qsub.sh"
-            if main_qsub_script.exists():
-                await self._prepopulate_qsub_script(main_qsub_script)
-
-    async def _prepopulate_qsub_script(self, qsub_script_path: Path):
-        # TODO: Implement qsub script population if needed
-        pass
+        """Copy qsub.sh to project root for relion_schemer to find."""
+        source_qsub = Path.cwd() / "config" / "qsub.sh"
+        dest_qsub = project_dir / "qsub.sh"
+        
+        if source_qsub.exists():
+            shutil.copy(source_qsub, dest_qsub)
+            print(f"[PROJECT] Copied qsub.sh to {dest_qsub}")
+        else:
+            print(f"[PROJECT WARN] qsub.sh not found at {source_qsub}")
 
     async def initialize_new_project(
             self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str

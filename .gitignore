@@ -25,3 +25,7 @@ tmpOut/**
 
 
 promptbuilder.py
+
+config/qsub.sh
+config/conf.yaml
+

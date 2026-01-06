@@ -2,76 +2,57 @@
 """
 CryoBoost Server Setup Script
 
-This script helps configure a fresh CryoBoost installation by:
-1. Creating conf.yaml from template
-2. Validating container paths and testing them
-3. Checking SLURM connectivity and partition availability  
-4. Setting up the qsub template
-5. Validating Python environment
-
+Creates conf.yaml and qsub.sh from templates, validates the environment.
 Run with: python setup.py
 """
 
-import os
-import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Optional
 
-# Derive paths from script location
 SCRIPT_DIR = Path(__file__).parent
 CONFIG_DIR = SCRIPT_DIR / "config"
 CONF_TEMPLATE = CONFIG_DIR / "conf.yaml.template"
 CONF_FILE = CONFIG_DIR / "conf.yaml"
-QSUB_TEMPLATE = CONFIG_DIR / "qsub" / "qsub.template.sh"
-QSUB_FILE = CONFIG_DIR / "qsub" / "qsub.sh"
+QSUB_TEMPLATE = CONFIG_DIR  / "qsub.template.sh"
+QSUB_FILE = CONFIG_DIR  / "qsub.sh"
 
 
-class Colors:
-    """ANSI color codes for terminal output"""
-    GREEN = "\033[92m"
-    YELLOW = "\033[93m"
-    RED = "\033[91m"
-    BLUE = "\033[94m"
+class C:
+    """ANSI colors"""
+    G = "\033[92m"   # green
+    Y = "\033[93m"   # yellow
+    R = "\033[91m"   # red
+    B = "\033[94m"   # blue
     BOLD = "\033[1m"
-    END = "\033[0m"
+    E = "\033[0m"    # end
 
 
-def print_header(text: str):
-    print(f"\n{Colors.BOLD}{Colors.BLUE}{'='*60}{Colors.END}")
-    print(f"{Colors.BOLD}{Colors.BLUE}{text}{Colors.END}")
-    print(f"{Colors.BOLD}{Colors.BLUE}{'='*60}{Colors.END}\n")
+def ok(text: str):
+    print(f"  {C.G}[OK]{C.E} {text}")
 
+def warn(text: str):
+    print(f"  {C.Y}[WARN]{C.E} {text}")
 
-def print_ok(text: str):
-    print(f"  {Colors.GREEN}[OK]{Colors.END} {text}")
+def fail(text: str):
+    print(f"  {C.R}[FAIL]{C.E} {text}")
 
+def info(text: str):
+    print(f"  {C.B}[INFO]{C.E} {text}")
 
-def print_warn(text: str):
-    print(f"  {Colors.YELLOW}[WARN]{Colors.END} {text}")
-
-
-def print_fail(text: str):
-    print(f"  {Colors.RED}[FAIL]{Colors.END} {text}")
-
-
-def print_info(text: str):
-    print(f"  {Colors.BLUE}[INFO]{Colors.END} {text}")
+def header(text: str):
+    print(f"\n{C.BOLD}{text}{C.E}")
 
 
 def prompt(question: str, default: str = "") -> str:
-    """Prompt user for input with optional default"""
     if default:
         user_input = input(f"  {question} [{default}]: ").strip()
         return user_input if user_input else default
-    else:
-        return input(f"  {question}: ").strip()
+    return input(f"  {question}: ").strip()
 
 
 def prompt_yn(question: str, default: bool = True) -> bool:
-    """Yes/no prompt"""
     suffix = "[Y/n]" if default else "[y/N]"
     response = input(f"  {question} {suffix}: ").strip().lower()
     if not response:
@@ -79,12 +60,9 @@ def prompt_yn(question: str, default: bool = True) -> bool:
     return response in ("y", "yes")
 
 
-def run_command(cmd: str, timeout: int = 30) -> tuple[bool, str, str]:
-    """Run a shell command and return (success, stdout, stderr)"""
+def run_cmd(cmd: str, timeout: int = 30) -> tuple[bool, str, str]:
     try:
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=timeout
-        )
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         return result.returncode == 0, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
         return False, "", "Command timed out"
@@ -93,359 +71,383 @@ def run_command(cmd: str, timeout: int = 30) -> tuple[bool, str, str]:
 
 
 def load_yaml(path: Path) -> dict:
-    """Load YAML file"""
     import yaml
     with open(path) as f:
         return yaml.safe_load(f) or {}
 
 
 def save_yaml(path: Path, data: dict):
-    """Save YAML file preserving some formatting"""
     import yaml
     with open(path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
 
-# ==============================================================================
-# SETUP STEPS
-# ==============================================================================
-
 def step_config_file() -> dict:
-    """Step 1: Create or load conf.yaml"""
-    print_header("Step 1: Configuration File")
+    """Create or load conf.yaml from template"""
+    header(f"1. Configuration file: {CONF_FILE}")
     
     if CONF_FILE.exists():
-        print_ok(f"conf.yaml exists at {CONF_FILE}")
-        if prompt_yn("Load existing config and continue?", default=True):
-            config = load_yaml(CONF_FILE)
-            return config
+        ok("conf.yaml exists")
+        if prompt_yn("Load existing and continue?", default=True):
+            return load_yaml(CONF_FILE)
+        if prompt_yn("Overwrite with fresh template?", default=False):
+            shutil.copy(CONF_TEMPLATE, CONF_FILE)
+            info("Created fresh conf.yaml from template")
         else:
-            if prompt_yn("Overwrite with fresh template?", default=False):
-                shutil.copy(CONF_TEMPLATE, CONF_FILE)
-                print_info(f"Copied template to {CONF_FILE}")
-            else:
-                print_info("Keeping existing config")
-                return load_yaml(CONF_FILE)
+            return load_yaml(CONF_FILE)
     else:
         if not CONF_TEMPLATE.exists():
-            print_fail(f"Template not found at {CONF_TEMPLATE}")
-            print_info("Please ensure conf.yaml.template exists in config/")
+            fail(f"Template not found: {CONF_TEMPLATE}")
             sys.exit(1)
-        
         shutil.copy(CONF_TEMPLATE, CONF_FILE)
-        print_ok(f"Created {CONF_FILE} from template")
+        ok("Created conf.yaml from template")
     
     config = load_yaml(CONF_FILE)
     
-    # Prompt for essential values
-    print_info("Let's configure the essential paths:\n")
+    info("Configure essential paths (edit conf.yaml later to change):\n")
     
-    config["crboost_root"] = prompt(
-        "CryoBoost server root directory", 
-        default=str(SCRIPT_DIR)
-    )
+    config["crboost_root"] = prompt("crboost_root", default=str(SCRIPT_DIR))
     
     default_venv = str(Path(config["crboost_root"]) / "venv")
-    config["venv_path"] = prompt(
-        "Virtual environment path",
-        default=default_venv
-    )
+    config["venv_path"] = prompt("venv_path", default=default_venv)
     
     if "local" not in config:
         config["local"] = {}
-    
     config["local"]["DefaultProjectBase"] = prompt(
-        "Default project base directory",
+        "local.DefaultProjectBase (where projects are created)",
         default=config.get("local", {}).get("DefaultProjectBase", "")
     )
     
     save_yaml(CONF_FILE, config)
-    print_ok("Configuration saved")
-    
+    ok("Saved conf.yaml")
     return config
 
-
-def step_validate_venv(config: dict) -> bool:
-    """Step 2: Validate Python virtual environment"""
-    print_header("Step 2: Python Environment")
+def step_validate_python(config: dict) -> bool:
+    """Check Python executable specified in conf.yaml -> python_executable"""
+    header("2. Python (conf.yaml -> python_executable)")
     
-    venv_path = Path(config.get("venv_path", ""))
+    py_path = config.get("python_executable", "")
     
-    if not venv_path or not venv_path.exists():
-        print_warn(f"Virtual environment not found at: {venv_path}")
-        print_info("Create one with: python3 -m venv /path/to/venv")
-        print_info("Then install requirements: pip install -r requirements.txt")
+    if not py_path:
+        fail("python_executable not set in conf.yaml")
         return False
     
-    venv_python = venv_path / "bin" / "python3"
-    if not venv_python.exists():
-        print_fail(f"Python not found in venv: {venv_python}")
+    if py_path.startswith("/path/to"):
+        fail(f"python_executable is placeholder: {py_path}")
         return False
     
-    print_ok(f"Found venv Python at {venv_python}")
+    py = Path(py_path)
     
-    # Check Python version
-    success, stdout, _ = run_command(f"{venv_python} --version")
+    if not py.exists():
+        fail(f"Not found: {py}")
+        info("Set python_executable to your venv/conda python path")
+        return False
+    
+    ok(f"python_executable: {py}")
+    
+    success, stdout, _ = run_cmd(f"{py} --version")
     if success:
-        print_ok(f"Python version: {stdout.strip()}")
+        ok(f"Version: {stdout.strip()}")
+    else:
+        fail("Could not run python --version")
+        return False
     
     # Check critical imports
-    critical_modules = ["pydantic", "yaml", "nicegui", "asyncio"]
+    critical = ["pydantic", "yaml", "nicegui"]
     missing = []
-    
-    for module in critical_modules:
-        success, _, _ = run_command(f"{venv_python} -c 'import {module}'")
-        if success:
-            print_ok(f"Module '{module}' available")
-        else:
-            print_fail(f"Module '{module}' not found")
-            missing.append(module)
+    for mod in critical:
+        success, _, _ = run_cmd(f"{py} -c 'import {mod}'")
+        if not success:
+            missing.append(mod)
     
     if missing:
-        print_warn(f"Missing modules. Run: {venv_python} -m pip install {' '.join(missing)}")
+        fail(f"Missing: {', '.join(missing)}")
+        info(f"Run: {py} -m pip install -r requirements.txt")
         return False
     
+    ok(f"Modules OK: {', '.join(critical)}")
     return True
+
+# def step_validate_venv(config: dict) -> bool:
+#     """Check Python venv specified in conf.yaml -> venv_path"""
+#     header("2. Python environment (conf.yaml -> venv_path)")
+    
+#     venv_path_str = config.get("venv_path", "")
+    
+#     if not venv_path_str:
+#         fail("venv_path not set in conf.yaml")
+#         info("Set 'venv_path: /path/to/your/venv' in conf.yaml")
+#         return False
+    
+#     if venv_path_str.startswith("/path/to"):
+#         fail(f"venv_path is still placeholder: {venv_path_str}")
+#         info("Edit conf.yaml and set venv_path to your actual venv location")
+#         return False
+    
+#     venv_path = Path(venv_path_str)
+    
+#     if not venv_path.is_absolute():
+#         fail(f"venv_path should be absolute, got: {venv_path}")
+#         return False
+    
+#     if not venv_path.exists():
+#         fail(f"venv directory not found: {venv_path}")
+#         info("Create with: python3 -m venv {venv_path}")
+#         return False
+    
+#     venv_python = venv_path / "bin" / "python3"
+#     if not venv_python.exists():
+#         fail(f"python3 not found at: {venv_python}")
+#         return False
+    
+#     ok(f"venv_path: {venv_path}")
+    
+#     success, stdout, _ = run_cmd(f"{venv_python} --version")
+#     if success:
+#         ok(f"Python: {stdout.strip()}")
+    
+#     # Check critical imports
+#     critical = ["pydantic", "yaml", "nicegui"]
+#     missing = []
+#     for mod in critical:
+#         success, _, _ = run_cmd(f"{venv_python} -c 'import {mod}'")
+#         if not success:
+#             missing.append(mod)
+    
+#     if missing:
+#         fail(f"Missing modules: {', '.join(missing)}")
+#         info(f"Run: {venv_python} -m pip install -r requirements.txt")
+#         return False
+    
+#     ok(f"Required modules present: {', '.join(critical)}")
+#     return True
 
 
 def step_validate_containers(config: dict) -> dict:
-    """Step 3: Validate container paths and test them"""
-    print_header("Step 3: Container Validation")
+    """Check containers specified in conf.yaml -> containers"""
+    header("3. Containers (conf.yaml -> containers)")
     
     containers = config.get("containers", {})
     
     if not containers:
-        print_warn("No containers configured in conf.yaml")
-        print_info("Add container paths under the 'containers' section")
+        warn("No containers configured")
+        info("Add container paths under 'containers:' in conf.yaml")
         return {}
     
-    # Test commands for each container type
+    # Test commands that work reliably in each container
     test_commands = {
         "relion": "relion --version 2>&1 | head -1",
         "warp_aretomo": "WarpTools --version 2>&1 | head -1",
-        "cryocare": "python -c 'import cryocare; print(\"cryocare OK\")'",
-        "pytom": "pytom_match_pick.py --help 2>&1 | head -1",
+        "cryocare": "python -c 'import cryocare' && echo 'cryocare import OK'",
+        "pytom": "python -c 'from pytom_tm.entry_points import match_template; print(\"pytom OK\")'",
         "imod": "imodinfo 2>&1 | head -1",
     }
     
     results = {}
     
     for name, path in containers.items():
-        print(f"\n  Checking {name}...")
-        
         if not path or path.startswith("/path/to"):
-            print_warn(f"  {name}: placeholder path, needs configuration")
+            warn(f"{name}: placeholder path, needs configuration")
             results[name] = {"exists": False, "works": False}
             continue
         
         container_path = Path(path)
         
         if not container_path.exists():
-            print_fail(f"  {name}: file not found at {path}")
+            fail(f"{name}: not found at {path}")
             results[name] = {"exists": False, "works": False}
             continue
         
-        print_ok(f"  {name}: file exists ({container_path.stat().st_size / 1e9:.1f} GB)")
+        size_gb = container_path.stat().st_size / 1e9
         results[name] = {"exists": True, "works": False}
         
-        # Try to run test command
-        test_cmd = test_commands.get(name, "echo 'container accessible'")
-        full_cmd = f"apptainer exec {path} bash -c \"{test_cmd}\""
+        test_cmd = test_commands.get(name, "echo 'accessible'")
+        # Use proper quoting to avoid bash interpretation issues
+        full_cmd = f'apptainer exec {path} bash -c "{test_cmd}"'
         
-        success, stdout, stderr = run_command(full_cmd, timeout=60)
+        success, stdout, stderr = run_cmd(full_cmd, timeout=60)
+        output = (stdout.strip() or stderr.strip())[:50]
         
-        if success:
-            output = stdout.strip() or stderr.strip()
-            print_ok(f"  {name}: test passed - {output[:60]}")
+        # Check for actual failures in output even if exit code is 0
+        if success and "not found" not in output.lower() and "error" not in output.lower():
+            ok(f"{name}: {size_gb:.1f}GB - {output}")
             results[name]["works"] = True
         else:
-            print_warn(f"  {name}: test command failed")
-            if stderr:
-                print_info(f"    Error: {stderr[:100]}")
+            warn(f"{name}: {size_gb:.1f}GB - test failed: {output}")
     
     return results
 
 
 def step_validate_slurm(config: dict) -> list:
-    """Step 4: Check SLURM connectivity and partitions"""
-    print_header("Step 4: SLURM Cluster")
+    """Check SLURM availability and partitions"""
+    header("4. SLURM cluster (conf.yaml -> slurm_defaults.partition)")
     
-    # Check if sinfo is available
-    success, stdout, stderr = run_command("sinfo --version")
+    success, stdout, _ = run_cmd("sinfo --version")
     if not success:
-        print_fail("sinfo command not found - is SLURM installed/loaded?")
-        print_info("You may need to load a SLURM module or run from a login node")
+        fail("sinfo not available - are you on a login node with SLURM?")
         return []
     
-    print_ok(f"SLURM available: {stdout.strip()}")
+    ok(f"SLURM: {stdout.strip()}")
     
-    # Get partition info
-    success, stdout, stderr = run_command("sinfo -h -o '%P %a %D %c %m %G'")
+    success, stdout, _ = run_cmd("sinfo -h -o '%P %a %D %G'")
     if not success:
-        print_fail("Could not query SLURM partitions")
+        fail("Could not query partitions")
         return []
-    
-    print_info("Available partitions:")
     
     partitions = []
+    info("Partitions:")
     for line in stdout.strip().split("\n"):
         if line.strip():
             parts = line.split()
             if parts:
-                partition_name = parts[0].rstrip("*")  # Remove default marker
-                partitions.append(partition_name)
-                print(f"    {line}")
+                pname = parts[0].rstrip("*")
+                partitions.append(pname)
+                print(f"       {line}")
     
-    # Compare with configured partition
-    configured_partition = config.get("slurm_defaults", {}).get("partition", "")
+    # Dedupe partition names (same partition can appear multiple times with different node configs)
+    unique_partitions = list(dict.fromkeys(partitions))
     
-    if configured_partition:
-        if configured_partition in partitions:
-            print_ok(f"Configured partition '{configured_partition}' exists")
+    configured = config.get("slurm_defaults", {}).get("partition", "")
+    if configured:
+        if configured in unique_partitions:
+            ok(f"Configured partition '{configured}' exists")
         else:
-            print_warn(f"Configured partition '{configured_partition}' not found in cluster")
-            print_info(f"Available: {', '.join(partitions)}")
+            warn(f"Configured partition '{configured}' not found")
+            info(f"Available: {', '.join(unique_partitions)}")
     else:
-        print_info(f"No partition configured. Available: {', '.join(partitions)}")
-        if partitions and prompt_yn(f"Use '{partitions[0]}' as default?"):
-            if "slurm_defaults" not in config:
-                config["slurm_defaults"] = {}
-            config["slurm_defaults"]["partition"] = partitions[0]
-            save_yaml(CONF_FILE, config)
-            print_ok(f"Set default partition to '{partitions[0]}'")
+        info(f"No partition configured. Set slurm_defaults.partition in conf.yaml")
+        info(f"Available: {', '.join(unique_partitions)}")
     
-    return partitions
+    return unique_partitions
 
 
 def step_setup_qsub(config: dict):
-    """Step 5: Set up qsub template"""
-    print_header("Step 5: SLURM Job Script (qsub.sh)")
+    """Generate qsub.sh from template"""
+    header(f"5. SLURM job script: {QSUB_FILE}")
     
     if QSUB_FILE.exists():
-        print_ok(f"qsub.sh exists at {QSUB_FILE}")
+        ok("qsub.sh exists")
         if not prompt_yn("Regenerate from template?", default=False):
-            print_info("Keeping existing qsub.sh")
+            info("Keeping existing qsub.sh")
             return
     
     if not QSUB_TEMPLATE.exists():
-        print_fail(f"Template not found at {QSUB_TEMPLATE}")
+        fail(f"Template not found: {QSUB_TEMPLATE}")
         return
     
-    # Read template
-    template_content = QSUB_TEMPLATE.read_text()
+    content = QSUB_TEMPLATE.read_text()
     
-    # Substitute values
     crboost_root = config.get("crboost_root", str(SCRIPT_DIR))
     venv_path = config.get("venv_path", "")
-    venv_python = str(Path(venv_path) / "bin" / "python3") if venv_path else ""
+    venv_python = str(Path(venv_path) / "bin" / "python3") if venv_path and not venv_path.startswith("/path/to") else "VENV_NOT_SET"
     
-    content = template_content.replace("XXXcraboroot_rootXXX", crboost_root)
+    content = content.replace("XXXcrboost_rootXXX", crboost_root)
     content = content.replace("XXXvenv_pythonXXX", venv_python)
     
-    # Write output
     QSUB_FILE.parent.mkdir(parents=True, exist_ok=True)
     QSUB_FILE.write_text(content)
     
-    print_ok(f"Generated {QSUB_FILE}")
-    print_warn("Remember to add cluster-specific module loads to qsub.sh!")
+    ok(f"Generated qsub.sh")
+    warn("Edit qsub.sh to add your cluster's module loads!")
 
 
 def step_validate_directories(config: dict):
-    """Step 6: Check directory permissions"""
-    print_header("Step 6: Directory Validation")
+    """Check project directories"""
+    header("6. Directories")
     
-    # Check project base
     project_base = config.get("local", {}).get("DefaultProjectBase", "")
     
-    if project_base:
-        project_path = Path(project_base)
-        if project_path.exists():
-            print_ok(f"Project base exists: {project_base}")
-            # Test writability
-            test_file = project_path / ".crboost_write_test"
+    if not project_base:
+        warn("local.DefaultProjectBase not set in conf.yaml")
+    elif project_base.startswith("/path/to"):
+        warn(f"DefaultProjectBase is placeholder: {project_base}")
+    else:
+        ppath = Path(project_base)
+        if ppath.exists():
+            test_file = ppath / ".crboost_write_test"
             try:
                 test_file.touch()
                 test_file.unlink()
-                print_ok("Project base is writable")
+                ok(f"DefaultProjectBase: {project_base} (writable)")
             except PermissionError:
-                print_fail("Project base is not writable")
+                fail(f"DefaultProjectBase: {project_base} (not writable)")
         else:
-            print_warn(f"Project base does not exist: {project_base}")
+            warn(f"DefaultProjectBase does not exist: {project_base}")
             if prompt_yn("Create it?"):
                 try:
-                    project_path.mkdir(parents=True)
-                    print_ok(f"Created {project_base}")
+                    ppath.mkdir(parents=True)
+                    ok(f"Created {project_base}")
                 except Exception as e:
-                    print_fail(f"Could not create directory: {e}")
-    else:
-        print_warn("No DefaultProjectBase configured")
+                    fail(f"Could not create: {e}")
     
-    # Check Schemes directory
-    schemes_dir = SCRIPT_DIR / "config" / "Schemes" / "warp_tomo_prep"
-    if schemes_dir.exists():
-        print_ok(f"Schemes directory exists: {schemes_dir}")
+    schemes = SCRIPT_DIR / "config" / "Schemes" / "warp_tomo_prep"
+    if schemes.exists():
+        ok(f"Schemes dir: {schemes}")
     else:
-        print_warn(f"Schemes directory not found: {schemes_dir}")
+        warn(f"Schemes dir missing: {schemes}")
 
 
 def print_summary(config: dict, container_results: dict, partitions: list):
-    """Print final summary"""
-    print_header("Setup Summary")
+    header("Summary")
     
-    all_ok = True
+    issues = []
     
-    # Config
-    print(f"  Configuration: {CONF_FILE}")
-    print(f"  CryoBoost Root: {config.get('crboost_root', 'NOT SET')}")
-    print(f"  Venv Path: {config.get('venv_path', 'NOT SET')}")
-    print(f"  Project Base: {config.get('local', {}).get('DefaultProjectBase', 'NOT SET')}")
-    print()
+    crboost_root = config.get("crboost_root", "")
+    venv_path = config.get("venv_path", "")
+    project_base = config.get("local", {}).get("DefaultProjectBase", "")
     
-    # Containers
-    print("  Containers:")
-    for name, result in container_results.items():
-        status = "OK" if result.get("works") else ("EXISTS" if result.get("exists") else "MISSING")
-        color = Colors.GREEN if result.get("works") else (Colors.YELLOW if result.get("exists") else Colors.RED)
-        print(f"    {color}{name}: {status}{Colors.END}")
-        if not result.get("works"):
-            all_ok = False
-    print()
+    def check_val(name, val):
+        if not val or val.startswith("/path/to"):
+            issues.append(name)
+            return f"{C.R}NOT SET{C.E}"
+        return val
     
-    # SLURM
+    print(f"  crboost_root: {check_val('crboost_root', crboost_root)}")
+    print(f"  venv_path: {check_val('venv_path', venv_path)}")
+    print(f"  DefaultProjectBase: {check_val('DefaultProjectBase', project_base)}")
+    
+    print(f"\n  Containers:")
+    for name, r in container_results.items():
+        if r.get("works"):
+            print(f"    {C.G}{name}: OK{C.E}")
+        elif r.get("exists"):
+            print(f"    {C.Y}{name}: exists but test failed{C.E}")
+            issues.append(f"container:{name}")
+        else:
+            print(f"    {C.R}{name}: missing{C.E}")
+            issues.append(f"container:{name}")
+    
     if partitions:
-        print(f"  SLURM Partitions: {', '.join(partitions[:5])}{'...' if len(partitions) > 5 else ''}")
+        print(f"\n  SLURM partitions: {', '.join(dict.fromkeys(partitions))}")
     else:
-        print(f"  {Colors.YELLOW}SLURM: Not available or not configured{Colors.END}")
+        print(f"\n  {C.Y}SLURM: not available{C.E}")
     
     print()
-    if all_ok:
-        print(f"  {Colors.GREEN}{Colors.BOLD}Setup looks good! You can start the server with:{Colors.END}")
-        print(f"    cd {SCRIPT_DIR}")
-        venv_python = Path(config.get('venv_path', '')) / 'bin' / 'python3'
-        print(f"    {venv_python} main.py")
+    if not issues:
+        print(f"  {C.G}{C.BOLD}Ready to go!{C.E}")
+        venv_py = Path(venv_path) / "bin" / "python3" if venv_path else "python3"
+        print(f"  Start server: {venv_py} main.py")
     else:
-        print(f"  {Colors.YELLOW}Some issues need attention - see warnings above.{Colors.END}")
+        print(f"  {C.Y}Issues to fix:{C.E} {', '.join(issues)}")
+        print(f"  Edit conf.yaml and re-run setup.py")
 
 
 def main():
-    print(f"\n{Colors.BOLD}CryoBoost Server Setup{Colors.END}")
-    print(f"Repository: {SCRIPT_DIR}\n")
+    print(f"{C.BOLD}CryoBoost Setup{C.E} - {SCRIPT_DIR}\n")
     
-    # Check for yaml module early
     try:
         import yaml
     except ImportError:
-        print_fail("PyYAML not installed. Run: pip install pyyaml")
+        fail("PyYAML not installed. Run: pip install pyyaml")
         sys.exit(1)
     
-    # Run setup steps
     config = step_config_file()
-    step_validate_venv(config)
+    step_validate_python(config)
+    # step_validate_venv(config)
     container_results = step_validate_containers(config)
     partitions = step_validate_slurm(config)
     step_setup_qsub(config)
     step_validate_directories(config)
-    
     print_summary(config, container_results, partitions)
 
 
