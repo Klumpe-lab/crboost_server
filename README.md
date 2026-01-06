@@ -21,6 +21,10 @@ git clone https://github.com/Klumpe-lab/crboost_server.git
 cd crboost_server
 ```
 
+
+
+
+
 ## 2. Create Python Environment
 
 Create a dedicated Python environment for CryoBoost Server:
@@ -39,7 +43,58 @@ pip install -r requirements.txt
 
 It is not unlikely that your cluster's Python comes pre-bundled with a bunch of its own packages. Here, if version conflicts arise -- default to your cluster's modules. We will eventually serve conda configs that should circumvent this.
 
-## 3. Configure Paths
+
+## 3. Run Preflight Check
+
+CryoBoost includes a setup validation script that helps configure your installation and checks that everything is in place:
+```bash
+python preflight.py
+```
+
+The script will:
+- Create `config/conf.yaml` from the template (interactive prompts for paths)
+- Create `config/qsub.sh` from the template
+- Validate your Python environment and required modules
+- Check that container .sif files exist and are functional
+- Verify SLURM connectivity and partition names
+- Check directory permissions
+
+Run it after cloning to set up your config files, then re-run after making changes to verify everything is correct:
+```
+$ python preflight.py
+CryoBoost Setup - /groups/group/software/crboost_server
+
+1. Configuration: config/conf.yaml
+  [OK] conf.yaml exists
+
+2. Python (conf.yaml -> crboost_python)
+  [OK] /path/to/venv/bin/python3
+  [OK] Version: Python 3.11.5
+  [OK] Modules: pydantic, yaml, nicegui
+
+3. Containers (conf.yaml -> containers)
+  [OK] relion: 10.3GB - RELION version: 5.0.1
+  [OK] warp_aretomo: 9.5GB - WarpTools
+  ...
+
+Summary
+  crboost_root: /groups/group/software/crboost_server
+  crboost_python: /path/to/venv/bin/python3
+  DefaultProjectBase: /groups/group/crboost_data
+
+  Containers:
+    relion: OK
+    warp_aretomo: OK
+    ...
+
+  Ready to go!
+  Start server: /path/to/venv/bin/python3 main.py
+```
+
+If anything is missing or misconfigured, the script will list what needs to be fixed.
+
+
+## 4. Configure Paths
 
 Edit `config/conf.yaml` to match your cluster's paths and resources:
 
@@ -103,7 +158,7 @@ These containers are for Relion and other external tools that are used in the pi
 
 
 
-## 4. Build Containers (Optional)
+## 5. Build Containers (Optional)
 
 The definition files are in `container_defs`. Your cluster must provide `apptainer` (formerly Singularity). The names with which you build `.sif` files and their locations do not matter insofar as you specify correct locations in `conf.yaml` post-build.
 
@@ -118,15 +173,12 @@ apptainer build fakeroot --nv cryocare.sif container_defs/cryocare.def
 apptainer build --fakeroot --nv warp_aretomo.sif container_defs/warp_aretomo1.0.0_cuda11.8_glibc2.31.def
 ```
 
-## 5. Update SLURM Template
+## 6. Update SLURM Template
 
 TLDR: if you have a Relion/Warp slurm script that already works for you -- adapt that as a basis. Set `ENV PATHS`, delete `SLURM HEADER` section. If your modules don't load -- contact us.
 
 
 `qsub.sh` is the template slurm script that is shared between all jobs CryoBoost queues on your cluster. You need to define it once per cluster environment -- job parameters will configurable in the UI (via relion template vars ex. `XXXextra1XXX`).
-
-`SLURM_HEADER`: **YOU LIKELY DON'T NEED THIS** this part basically (1) patches module-loading ability of a slurm job that was dispatched from _within_ a relion container _on a compute node_ and (2) loads some specific modules s.t. modern python works. **You likely would not need to do these gymnastics** or else you might need to do slightly different. This is admittedly quite convoluted at the moment. Do NOT hesitate to contact us if you need help figuring out your environment. Eventually this will be shipped as a module-loadable master process and all of this stuff will go away.
-
 
 `ENV PATHS`: particular environment paths to your CryoboostServer installation and the python environment in which it runs (on the _headnode_). **YOU MUST SET THESE**.
 
@@ -162,12 +214,12 @@ python3 --version
 
 # ------------ ENV PATHS  --------------
 export CRBOOST_SERVER_DIR="/users/cryoboost_user/dev/crboost_server/"
-export VENV_PYTHON="/users/cryoboost_user/dev/crboost_server/venv/bin/python3"
-export PYTHONPATH="${VENV_PYTHON}:${PYTHONPATH}"
+export CRBOOST_PYTHON="/users/cryoboost_user/dev/crboost_server/venv/bin/python3"
+export PYTHONPATH="${CRBOOST_SERVER_DIR}:${PYTHONPATH}"
 # ------------ ---------  --------------
 ```
 
-## 6. Start the Server
+## 7. Start the Server
 
 Launch CryoBoost Server:
 
