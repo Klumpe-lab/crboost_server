@@ -1,5 +1,8 @@
 # CryoBoost Server Configuration
 
+crboost_root     : "/users/artem.kushner/dev/crboost_server"
+crboost_python: "/users/artem.kushner/dev/crboost_server/venv/bin/python3"
+
 local:
   DefaultProjectBase: "/groups/klumpe/crboost_data"
   DefaultMoviesGlob : "/groups/klumpe/001_Data/001_CopiaTestSet/001_Data/001_CopiaTestSet/frames/*.eer"
@@ -16,14 +19,8 @@ slurm_defaults:
   time           : "2:00:00"
 
 containers:
-  # warp_aretomo: /groups/klumpe/software/Setup/cryoboost_containers/warp_2.0.0dev36_aretomo1.0.0_cuda11.8_glibc2.31.sif
-  # cryocare    : /users/artem.kushner/dev/containers/cryocare.sif
-  # pytom       : /groups/klumpe/software/Setup/cryoboost_containers/pytom_match_pick.sif
-  # relion      : /users/artem.kushner/dev/containers/relion5.0_tomo.sif
-  # imod        : /users/artem.kushner/dev/containers/relion5.0_tomo.sif
   warp_aretomo: /groups/klumpe/software/Setup/cryoboost_containers/warp_2.0.0dev36_aretomo1.0.0_cuda11.8_glibc2.31.sif
   cryocare    : /groups/klumpe/software/Setup/cryoboost_containers/cryocare.sif
   pytom       : /groups/klumpe/software/Setup/cryoboost_containers/pytom_match_pick.sif
   relion      : /groups/klumpe/software/Setup/cryoboost_containers/relion5.0_tomo.sif
   imod        : /groups/klumpe/software/Setup/cryoboost_containers/imod.sif
-
