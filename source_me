@@ -1,0 +1,3 @@
+#!/bin/sh
+module load build-env/f2022 python/3.11.5-gcccore-13.2.0 gcccore/13.2.0 arrow/16.1.0-gfbf-2023b && source venv/bin/activate
+
