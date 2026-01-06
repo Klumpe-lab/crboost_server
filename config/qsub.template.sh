@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=CryoBoost
-#SBATCH --partition=XXXpartitionXXX
-#SBATCH --nodes=XXXnodesXXX
-#SBATCH --ntasks-per-node=XXXntasksXXX
-#SBATCH --constraint=XXXconstraintXXX
-#SBATCH --cpus-per-task=XXXcpusXXX
-#SBATCH --gres=XXXgresXXX
-#SBATCH --mem=XXXmemXXX
-#SBATCH --time=XXXtimeXXX
+#SBATCH --partition=XXXextra1XXX
+#SBATCH --constraint="XXXextra2XXX"
+#SBATCH --nodes=XXXextra3XXX
+#SBATCH --ntasks-per-node=XXXextra4XXX
+#SBATCH --cpus-per-task=XXXextra5XXX
+#SBATCH --gres=XXXextra6XXX
+#SBATCH --mem=XXXextra7XXX
+#SBATCH --time=XXXextra8XXX
 #SBATCH --output=XXXoutfileXXX
 #SBATCH --error=XXXerrfileXXX
 
@@ -21,9 +21,8 @@
 #
 # ==============================================================================
 
-
-# CryoBoost paths (filled by setup.py)
-export CRBOOST_SERVER_DIR="XXXcrboost_rootXXX" # <-- drivers must be on the python path
+# CryoBoost paths (filled by preflight.py)
+export CRBOOST_SERVER_DIR="XXXcrboost_rootXXX"
 export CRBOOST_PYTHON="XXXcrboost_pythonXXX"
 export PYTHONPATH="${CRBOOST_SERVER_DIR}:${PYTHONPATH}"
 
