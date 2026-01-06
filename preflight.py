@@ -370,41 +370,37 @@ def step_validate_slurm(config: dict) -> list:
 def step_setup_qsub(config: dict) -> list:
     """Generate qsub.sh from template. Returns list of placeholders still present."""
     header(f"5. SLURM job script: {QSUB_FILE}")
-
+    
     placeholders_remaining = []
-
+    
     if QSUB_FILE.exists():
         ok("qsub.sh exists")
-        if not prompt_yn("Regenerate from template?", default=False):
-            info("Keeping existing qsub.sh")
-            return placeholders_remaining
-
+        return placeholders_remaining
+    
     if not QSUB_TEMPLATE.exists():
         fail(f"Template not found: {QSUB_TEMPLATE}")
         return ["qsub.sh (missing template)"]
-
+    
     content = QSUB_TEMPLATE.read_text()
-
+    
     # Substitute known values
     crboost_root = config.get("crboost_root", "")
     python_exec = config.get("crboost_python", "")
-
+    
     if crboost_root and not crboost_root.startswith("/path/to"):
         content = content.replace("XXXcrboost_rootXXX", crboost_root)
     else:
         placeholders_remaining.append("CRBOOST_SERVER_DIR in qsub.sh")
-
+    
     if python_exec and not python_exec.startswith("/path/to"):
         content = content.replace("XXXcrboost_pythonXXX", python_exec)
     else:
         placeholders_remaining.append("CRBOOST_PYTHON in qsub.sh")
-
+    
     QSUB_FILE.write_text(content)
     ok(f"Created {QSUB_FILE}")
-
-    warn("Remember to add your cluster's module loads to qsub.sh!")
-    placeholders_remaining.append("module loads in qsub.sh")
-
+    info("Edit qsub.sh to add your cluster's module loads")
+    
     return placeholders_remaining
 
 
