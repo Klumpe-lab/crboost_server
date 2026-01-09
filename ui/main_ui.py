@@ -11,6 +11,7 @@ from backend import CryoBoostBackend
 from ui.ui_state import get_ui_state_manager
 from ui.landing_page import build_landing_page
 from ui.workspace_page import build_workspace_page
+from services.user_prefs_service import get_prefs_service
 
 
 def create_ui_router(backend: CryoBoostBackend):
@@ -51,6 +52,18 @@ def create_ui_router(backend: CryoBoostBackend):
         # 2. Reset Backend Project State (Fixes the "Ghost Project" issue)
         from services.project_state import reset_project_state
         reset_project_state()
+        
+        # 3. Hydrate user preferences from storage BEFORE building UI
+        prefs_service = get_prefs_service()
+        prefs = prefs_service.load_from_app_storage(app.storage.user)
+        
+        # Pre-populate UI state with saved preferences
+        if prefs.project_base_path:
+            ui_mgr.update_data_import(project_base_path=prefs.project_base_path)
+        if prefs.movies_glob:
+            ui_mgr.update_data_import(movies_glob=prefs.movies_glob)
+        if prefs.mdocs_glob:
+            ui_mgr.update_data_import(mdocs_glob=prefs.mdocs_glob)
         
         build_landing_page(backend)
 
