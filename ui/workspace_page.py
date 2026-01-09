@@ -118,5 +118,5 @@ def build_workspace_page(backend: CryoBoostBackend):
         "force_sync": force_full_sync  # Pass to pipeline builder if needed
     }
     
-    with ui.column().classes("w-full h-[calc(100vh-3rem)] p-0"):
+    with ui.column().classes("w-full p-0").style("height: calc(100vh - 56px); overflow: hidden;"):
         build_pipeline_builder_panel(backend, callbacks)

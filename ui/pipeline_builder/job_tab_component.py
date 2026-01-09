@@ -21,14 +21,17 @@ from ui.ui_state import get_ui_state_manager, UIStateManager, MonitorTab, get_jo
 # REACTIVE COMPONENTS
 # ===========================================
 
+
 def _render_slurm_config_section(job_model, is_frozen: bool, save_handler: Callable):
     """
-    Main container for SLURM section. 
+    Main container for SLURM section.
     The expansion panel itself is NOT refreshable so it stays open.
     """
-    with ui.expansion("SLURM Resources", icon="memory").classes(
-        "w-full border border-gray-200 rounded-lg mb-6 shadow-sm overflow-hidden"
-    ).props("dense header-class='bg-gray-50 text-gray-700 font-bold'"):
+    with (
+        ui.expansion("SLURM Resources", icon="memory")
+        .classes("w-full border border-gray-200 rounded-lg mb-6 shadow-sm overflow-hidden")
+        .props("dense header-class='bg-gray-50 text-gray-700 font-bold'")
+    ):
         # We wrap the INNER content in the refreshable function
         _render_slurm_content(job_model, is_frozen, save_handler)
 
@@ -37,61 +40,67 @@ def _render_slurm_config_section(job_model, is_frozen: bool, save_handler: Calla
 def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
     """The actual interactive content that updates when presets are clicked."""
     from services.project_state import SlurmPreset, SLURM_PRESET_MAP
-    
+
     effective_config = job_model.get_effective_slurm_config()
     overrides = job_model.slurm_overrides or {}
     # Use .get because the key might be missing or an enum/string
     raw_preset = overrides.get("preset", SlurmPreset.CUSTOM)
-    current_preset = raw_preset.value if hasattr(raw_preset, 'value') else str(raw_preset)
-    
+    current_preset = raw_preset.value if hasattr(raw_preset, "value") else str(raw_preset)
+
     # --- PRESET PILLS ---
     with ui.row().classes("w-full items-center gap-2 p-3 bg-white border-b border-gray-100"):
         ui.label("Presets:").classes("text-[10px] font-black text-gray-400 uppercase mr-2")
-        
+
         for preset in [SlurmPreset.SMALL, SlurmPreset.MEDIUM, SlurmPreset.LARGE]:
             preset_info = SLURM_PRESET_MAP[preset]
             is_active = current_preset == preset.value
-            
+
             def apply_preset(p=preset):
                 job_model.apply_slurm_preset(p)
                 _render_slurm_content.refresh()
                 # ui.notify(f" {p.value}", icon="done")
 
-            ui.button(preset_info["label"], on_click=apply_preset) \
-                .props(f"unelevated no-caps dense") \
-                .classes(f"rounded-full px-3 text-xs {'bg-blue-600 text-white' if is_active else 'bg-gray-100 text-gray-600'}")
-        
+            ui.button(preset_info["label"], on_click=apply_preset).props(f"unelevated no-caps dense").classes(
+                f"rounded-full px-3 text-xs {'bg-blue-600 text-white' if is_active else 'bg-gray-100 text-gray-600'}"
+            )
+
         ui.space()
-        
+
         if overrides:
-            ui.button(icon="restart_alt", on_click=lambda: (job_model.clear_slurm_overrides(), _render_slurm_content.refresh())) \
-                .props("flat dense").classes("text-red-400").tooltip("Clear Overrides")
+            ui.button(
+                icon="restart_alt",
+                on_click=lambda: (job_model.clear_slurm_overrides(), _render_slurm_content.refresh()),
+            ).props("flat dense").classes("text-red-400").tooltip("Clear Overrides")
 
     # --- PARAMETER GRID ---
     with ui.grid(columns=4).classes("w-full gap-x-6 gap-y-4 p-4 bg-white"):
         fields = [
-            ("partition", "Partition"), ("constraint", "Constraint"),
-            ("nodes", "Nodes"), ("ntasks_per_node", "Tasks/Node"),
-            ("cpus_per_task", "CPUs/Task"), ("gres", "GRES (GPU)"),
-            ("mem", "Memory"), ("time", "Time Limit"),
+            ("partition", "Partition"),
+            ("constraint", "Constraint"),
+            ("nodes", "Nodes"),
+            ("ntasks_per_node", "Tasks/Node"),
+            ("cpus_per_task", "CPUs/Task"),
+            ("gres", "GRES (GPU)"),
+            ("mem", "Memory"),
+            ("time", "Time Limit"),
         ]
-        
+
         for field_name, label in fields:
             val = getattr(effective_config, field_name)
-            
+
             with ui.column().classes("gap-0"):
                 ui.label(label).classes("text-[10px] font-bold text-gray-400 uppercase ml-1")
-                
+
                 # FIX: Use 'e.sender.value' for GenericEventArguments (blur)
                 def make_blur_handler(fname):
                     return lambda e: (
                         job_model.set_slurm_override(fname, e.sender.value),
-                        _render_slurm_content.refresh()
+                        _render_slurm_content.refresh(),
                     )
-                
+
                 inp = ui.input(value=str(val)).props("outlined dense shadow-0")
                 inp.classes("w-full text-xs font-mono")
-                
+
                 if is_frozen:
                     inp.props("readonly bg-color=grey-1")
                 else:
@@ -339,15 +348,21 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
     # Content Section
     # ===========================================
 
-    content_container = ui.column().classes("w-full flex-grow overflow-y-auto p-6")
+    # NEW - Reduced padding and better height handling
+    content_container = ui.column().classes("w-full overflow-hidden").style(
+        "flex: 1 1 0%; min-height: 0;"  # Critical: allows flex child to shrink below content size
+    )
     widget_refs.content_container = content_container
 
     with content_container:
         if active_tab == MonitorTab.CONFIG:
-            _render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend)
+            # Config needs scrolling
+            with ui.scroll_area().classes("w-full h-full p-4"):
+                _render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend)
         elif active_tab == MonitorTab.LOGS:
             _render_logs_tab(job_type, job_model, backend, ui_mgr)
         elif active_tab == MonitorTab.FILES:
+            # Files tab handles its own layout
             _render_files_tab(job_type, job_model, ui_mgr)
 
 
@@ -669,108 +684,357 @@ async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
 # ===========================================
 
 
-# ui/pipeline_builder/job_tab_component.py
-
-# ui/pipeline_builder/job_tab_component.py
-
 def _render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
-    """Render the files browser tab with reactive directory listing."""
-    
+    """Render Mac Finder-style file browser with preview panel."""
+
     if not ui_mgr.project_path:
         with ui.column().classes("w-full p-4"):
             ui.label("Error: Project path not loaded").classes("text-red-600")
         return
-    
+
     if not job_model.relion_job_name:
         with ui.column().classes("w-full h-full items-center justify-center text-gray-400 gap-2"):
             ui.icon("schedule", size="48px")
             ui.label("Job not started. Files will appear here once the job runs.")
         return
-    
+
     project_path = ui_mgr.project_path
     job_dir = (project_path / job_model.relion_job_name.strip("/")).resolve()
 
-    # Define the refreshable content area
+    # Local state
+    state = {"current_path": job_dir, "selected_file": None}
+
+    # ============================================
+    # SMART SORTING - FIXED FOR TILT ANGLES
+    # ============================================
+
+    def extract_numeric_tuple(filename: str) -> tuple:
+        """
+        Extract ALL numeric values, but return them in a way that prioritizes
+        the LAST number (typically the tilt angle in brackets).
+
+        Examples:
+            'file_001[10.00]_EER.png' -> (10.0, 1)  # Sort by tilt angle first
+            'file_028[-32.00]_EER.png' -> (-32.0, 28)
+        """
+        import re
+
+        pattern = r"-?\d+\.?\d*"
+        matches = re.findall(pattern, filename)
+
+        numbers = []
+        for match in matches:
+            try:
+                if "." in match:
+                    numbers.append(float(match))
+                else:
+                    numbers.append(int(match))
+            except ValueError:
+                continue
+
+        if not numbers:
+            return ()
+
+        # If we have multiple numbers, assume LAST one is the sort key (tilt angle)
+        # Put it first in tuple for primary sort
+        if len(numbers) >= 2:
+            return (numbers[-1], *numbers[:-1])  # (last, first, second, ...)
+        else:
+            return tuple(numbers)
+
+    def smart_sort_items(items: list) -> list:
+        """Sort with smart numeric extraction."""
+        dirs = [item for item in items if item.is_dir()]
+        files = [item for item in items if not item.is_dir()]
+
+        dirs.sort(key=lambda p: p.name.lower())
+
+        # Separate files with/without numbers
+        files_with_numbers = []
+        files_without_numbers = []
+
+        for f in files:
+            nums = extract_numeric_tuple(f.name)
+            if nums:
+                files_with_numbers.append((f, nums))
+            else:
+                files_without_numbers.append(f)
+
+        files_with_numbers.sort(key=lambda x: x[1])
+        sorted_numbered_files = [f for f, _ in files_with_numbers]
+
+        files_without_numbers.sort(key=lambda p: p.name.lower())
+
+        return dirs + sorted_numbered_files + files_without_numbers
+
+    # ============================================
+    # FILE LIST RENDERER
+    # ============================================
     @ui.refreshable
-    def render_contents(target_path: Path):
+    def render_file_list():
         file_list_container.clear()
-        path_label.set_text(str(target_path))
-        
-        if not target_path.exists():
+
+        current = state["current_path"]
+
+        if not current.exists():
             with file_list_container:
-                ui.label("Path does not exist").classes("p-4 text-gray-400 italic")
+                ui.label("Directory does not exist").classes("p-4 text-gray-400 italic")
             return
 
         try:
-            items = sorted(target_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            items = list(current.iterdir())
+            items = smart_sort_items(items)
         except Exception as e:
             with file_list_container:
-                ui.label(f"Error accessing directory: {e}").classes("p-4 text-red-500")
+                ui.label(f"Error: {e}").classes("p-4 text-red-500")
             return
 
         with file_list_container:
             if not items:
-                ui.label("Directory is empty").classes("p-4 text-gray-400 italic")
+                ui.label("Empty directory").classes("p-4 text-gray-400 italic")
                 return
 
-            # Navigation: Go Up (limited to job_dir root)
-            if target_path != job_dir and job_dir in target_path.parents:
-                with ui.row().classes("w-full items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 border-b border-gray-100") \
-                    .on("click", lambda: render_contents.refresh(target_path.parent)):
+            # Parent directory
+            if current != job_dir and job_dir in current.parents:
+                with (
+                    ui.row()
+                    .classes("w-full items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 border-b border-gray-100")
+                    .on("click", lambda: navigate_up())
+                ):
                     ui.icon("folder_open", size="16px").classes("text-gray-400")
                     ui.label("..").classes("text-xs font-bold")
 
+            # Items
             for item in items:
                 is_dir = item.is_dir()
-                icon = "folder" if is_dir else "insert_drive_file"
+                is_selected = state["selected_file"] == item
+
+                icon = "folder" if is_dir else _get_file_icon(item.suffix)
                 color = "text-blue-400" if is_dir else "text-gray-400"
-                
-                with ui.row().classes("w-full items-center gap-2 cursor-pointer hover:bg-gray-100 p-2 border-b border-gray-100") as row:
+                bg_class = "bg-blue-100" if is_selected else "hover:bg-gray-50"
+
+                with ui.row().classes(
+                    f"w-full items-center gap-2 cursor-pointer {bg_class} p-2 border-b border-gray-100"
+                ) as row:
                     ui.icon(icon, size="16px").classes(color)
                     ui.label(item.name).classes("text-xs text-gray-700 flex-1 truncate")
-                    
+
                     if not is_dir:
                         try:
                             size = item.stat().st_size
-                            ui.label(f"{size // 1024} KB").classes("text-[10px] text-gray-400")
-                        except: pass
-                    
+                            ui.label(_format_file_size(size)).classes("text-[10px] text-gray-400")
+                        except:
+                            pass
+
                     if is_dir:
-                        row.on("click", lambda i=item: render_contents.refresh(i))
+                        row.on("click", lambda i=item: navigate_to(i))
                     else:
-                        row.on("click", lambda i=item: view_file_dialog(i))
+                        row.on("click", lambda i=item: select_file(i))
 
-    # --- Layout Construction ---
-    # We use flex-col and flex-grow to occupy the tab space properly
-    with ui.column().classes("w-full border border-gray-200 rounded-lg bg-white overflow-hidden") \
-        .style("min-height: 350px; flex: 1 1 0%;"):
-        
-        # Header: Fixed Height
-        with ui.column().classes("w-full bg-gray-50 border-b border-gray-200 gap-0"):
-            ui.label(f"Browsing Job Directory").classes("text-[10px] font-black text-gray-400 uppercase px-3 pt-2")
+    # ============================================
+    # PREVIEW RENDERER
+    # ============================================
+    @ui.refreshable
+    def render_preview():
+        preview_container.clear()
+
+        selected = state["selected_file"]
+
+        if not selected:
+            with preview_container:
+                with ui.column().classes("w-full h-full items-center justify-center gap-3"):
+                    ui.icon("preview", size="48px").classes("text-gray-300")
+                    ui.label("Select a file to preview").classes("text-sm text-gray-400")
+            return
+
+        with preview_container:
+            # Header
+            with ui.row().classes(
+                "w-full items-center justify-between p-3 bg-gray-50 border-b border-gray-200 shrink-0"
+            ):
+                with ui.column().classes("gap-0 flex-1 min-w-0"):
+                    ui.label(selected.name).classes("text-xs font-bold text-gray-700 truncate")
+                    try:
+                        size = selected.stat().st_size
+                        ui.label(_format_file_size(size)).classes("text-[10px] text-gray-400")
+                    except:
+                        pass
+
+            # Content
+            suffix = selected.suffix.lower()
+
+            if suffix in {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff"}:
+                _render_image_preview(selected)
+            elif suffix in {
+                ".txt",
+                ".log",
+                ".star",
+                ".json",
+                ".yaml",
+                ".sh",
+                ".py",
+                ".out",
+                ".err",
+                ".md",
+                ".tlt",
+                ".aln",
+                "",
+            } or suffix.startswith("."):
+                _render_text_preview(selected)
+            else:
+                _render_unsupported_preview(selected)
+
+    # ============================================
+    # PREVIEW RENDERERS
+    # ============================================
+
+    def _render_image_preview(file_path: Path):
+        """Render image with zoom."""
+        import base64
+
+        try:
+            with open(file_path, "rb") as f:
+                image_data = f.read()
+
+            b64_data = base64.b64encode(image_data).decode()
+            mime_type = "image/png" if file_path.suffix.lower() == ".png" else "image/jpeg"
+            data_uri = f"data:{mime_type};base64,{b64_data}"
+
+        except Exception as e:
+            with ui.column().classes("w-full h-full items-center justify-center p-4"):
+                ui.icon("error", size="48px").classes("text-red-400")
+                ui.label(f"Failed to load image: {e}").classes("text-sm text-red-600")
+            return
+
+        zoom_state = {"level": 1.0}
+
+        def zoom_in():
+            zoom_state["level"] = min(zoom_state["level"] * 1.2, 5.0)
+            img.style(f"transform: scale({zoom_state['level']}); transition: transform 0.2s;")
+
+        def zoom_out():
+            zoom_state["level"] = max(zoom_state["level"] / 1.2, 0.3)
+            img.style(f"transform: scale({zoom_state['level']}); transition: transform 0.2s;")
+
+        def reset_zoom():
+            zoom_state["level"] = 1.0
+            img.style("transform: scale(1); transition: transform 0.2s;")
+
+        # Zoom controls
+        with ui.row().classes("w-full justify-center gap-1 p-2 bg-white border-b border-gray-200"):
+            ui.button(icon="zoom_in", on_click=zoom_in).props("flat dense round size=sm").tooltip("Zoom In")
+            ui.button(icon="zoom_out", on_click=zoom_out).props("flat dense round size=sm").tooltip("Zoom Out")
+            ui.button(icon="center_focus_strong", on_click=reset_zoom).props("flat dense round size=sm").tooltip("Reset")
+
+        # Image - just show it in a div with overflow
+        with ui.element("div").classes("w-full bg-gray-900").style(
+            "height: calc(80vh - 100px); overflow: auto; display: flex; align-items: center; justify-content: center;"
+        ):
+            img = ui.image(data_uri).style(
+                "max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center; cursor: zoom-in;"
+            )
+
+    def _render_text_preview(file_path: Path):
+        """Render text file."""
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read(50000)
+
+            with ui.scroll_area().classes("w-full").style("flex: 1 1 0%; min-height: 0;"):
+                ui.code(content).classes("w-full text-xs p-3")
+        except Exception as e:
+            ui.label(f"Cannot read: {e}").classes("text-red-500 p-4")
+
+    def _render_unsupported_preview(file_path: Path):
+        """Unsupported file type."""
+        with ui.column().classes("w-full h-full items-center justify-center gap-2 p-4"):
+            ui.icon("description", size="48px").classes("text-gray-300")
+            ui.label("No preview available").classes("text-sm text-gray-400")
+            ui.label(f"Type: {file_path.suffix or 'unknown'}").classes("text-xs text-gray-500")
+
+    # ============================================
+    # NAVIGATION
+    # ============================================
+
+    def navigate_to(path: Path):
+        state["current_path"] = path
+        state["selected_file"] = None
+        path_label.set_text(str(path.relative_to(job_dir) if job_dir in path.parents else path.name))
+        render_file_list.refresh()
+        render_preview.refresh()
+
+    def navigate_up():
+        parent = state["current_path"].parent
+        if parent != state["current_path"]:
+            navigate_to(parent)
+
+    def select_file(file_path: Path):
+        state["selected_file"] = file_path
+        render_file_list.refresh()
+        render_preview.refresh()
+
+    # ============================================
+    # HELPERS
+    # ============================================
+
+    def _get_file_icon(suffix: str) -> str:
+        icon_map = {
+            ".png": "image",
+            ".jpg": "image",
+            ".jpeg": "image",
+            ".mrc": "view_in_ar",
+            ".star": "table_chart",
+            ".json": "data_object",
+            ".txt": "description",
+            ".log": "article",
+            ".sh": "terminal",
+            ".py": "code",
+        }
+        return icon_map.get(suffix.lower(), "insert_drive_file")
+
+    def _format_file_size(size_bytes: int) -> str:
+        for unit in ["B", "KB", "MB", "GB"]:
+            if size_bytes < 1024.0:
+                return f"{size_bytes:.1f} {unit}"
+            size_bytes /= 1024.0
+        return f"{size_bytes:.1f} TB"
+
+
+    with ui.row().classes("w-full border border-gray-200 rounded-lg bg-white").style(
+        "height: 80vh; gap: 0;" 
+    ):
+        # File list (35%)
+        with ui.column().classes("border-r border-gray-200").style("width: 35%; height: 100%; overflow-y: auto;"):
+            # Header
+            with ui.row().classes("w-full items-center justify-between p-3 bg-gray-50 border-b border-gray-200"):
+                ui.label("Job Files").classes("text-[10px] font-black text-gray-400 uppercase")
+                path_label = ui.label(job_dir.name).classes("text-xs text-gray-600 font-mono truncate")
+                ui.button(icon="refresh", on_click=lambda: (render_file_list.refresh(), render_preview.refresh())).props(
+                    "flat dense round size=sm"
+                ).classes("text-gray-400 hover:text-blue-500")
             
-            with ui.row().classes("w-full items-center justify-between px-3 py-1 pb-2"):
-                path_label = ui.label(str(job_dir)).classes("text-xs text-gray-600 font-mono truncate flex-1")
-                ui.button(icon="refresh", on_click=lambda: render_contents.refresh(job_dir)) \
-                    .props("flat dense round size=sm").classes("text-gray-400 hover:text-blue-500")
+            file_list_container = ui.column().classes("w-full gap-0")
 
-        # Scroll Area: This is the part that was collapsing
-        file_list_container = ui.column().classes("w-full flex-grow overflow-y-auto p-0 gap-0").style("background: white;")
-        
+        # Preview pane (65%)
+        with ui.column().classes("bg-white").style("width: 65%; height: 100%;"):
+            preview_container = ui.column().classes("w-full h-full")
+
         # Initial render
-        render_contents(job_dir)
+        render_file_list()
+        render_preview()
+
 
 def view_file_dialog(file_path: Path):
     """Simple file content viewer."""
     try:
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read(50000)
-        
+
         with ui.dialog() as dialog, ui.card().classes("w-[70vw] max-w-4xl"):
             with ui.row().classes("w-full items-center justify-between mb-2"):
                 ui.label(file_path.name).classes("text-sm font-bold")
                 ui.button(icon="close", on_click=dialog.close).props("flat round dense")
-            
+
             ui.code(content).classes("w-full max-h-[60vh] overflow-auto text-xs")
         dialog.open()
     except Exception as e:
