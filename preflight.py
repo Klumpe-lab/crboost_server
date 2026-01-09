@@ -3,7 +3,7 @@
 CryoBoost Server Setup Script
 
 Creates conf.yaml and qsub.sh from templates, validates the environment.
-Run with: python setup.py
+Run with: python preflight.py
 """
 
 import shutil

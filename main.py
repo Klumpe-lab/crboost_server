@@ -4,6 +4,7 @@ import asyncio
 import socket
 import argparse
 from pathlib import Path
+import warnings
 
 from ui.main_ui import create_ui_router
 import uvicorn
@@ -14,10 +15,14 @@ from nicegui import ui
 from backend import CryoBoostBackend
 import logging
 
+import sys
+sys.dont_write_bytecode = True
+
 class SuppressPruneStorageError(logging.Filter):
     def filter(self, record):
         return "Request is not set" not in record.getMessage()
 
+warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
 logging.getLogger("nicegui").addFilter(SuppressPruneStorageError())
 
 # Set logging level to see asyncio warnings
