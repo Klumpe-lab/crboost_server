@@ -532,49 +532,62 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             btn.props("loading")
 
         try:
+            # 1. Load via backend (updates ProjectState)
             load_result = await backend.load_existing_project(str(project_dir))
+            
             if load_result.get("success"):
-                project_name = load_result.get("project_name", project_dir.name)
-                selected_jobs = []
-                for j_str in load_result.get("selected_jobs", []):
-                    try:
-                        from services.project_state import JobType
-
-                        selected_jobs.append(JobType(j_str))
-                    except:
-                        pass
-
-                movies_glob = load_result.get("movies_glob", "")
-                mdocs_glob = load_result.get("mdocs_glob", "")
-
+                # 2. Wait for status sync to complete
+                await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_dir))
+                
+                # 3. Get the ACTUAL state from backend (single source of truth)
+                state = backend.state_service.state
+                
+                # 4. Sync UI state with backend state
                 ui_mgr.load_from_project(
-                    project_path=project_dir, scheme_name=f"scheme_{project_name}", jobs=selected_jobs
+                    project_path=state.project_path,  # Use backend's path, not our argument
+                    scheme_name=f"scheme_{state.project_name}",
+                    jobs=list(state.jobs.keys())  # Use actual jobs from state
                 )
+                
+                # 5. Update data import form with loaded values
                 ui_mgr.update_data_import(
-                    project_name=project_name,
-                    project_base_path=str(project_dir.parent),
-                    movies_glob=movies_glob,
-                    mdocs_glob=mdocs_glob,
+                    project_name=state.project_name,
+                    project_base_path=str(state.project_path.parent) if state.project_path else "",
+                    movies_glob=state.movies_glob,
+                    mdocs_glob=state.mdocs_glob,
                 )
 
+                # 6. Save preferences
                 prefs_service.update_fields(
-                    project_base_path=str(project_dir.parent), movies_glob=movies_glob, mdocs_glob=mdocs_glob
+                    project_base_path=str(state.project_path.parent) if state.project_path else "",
+                    movies_glob=state.movies_glob,
+                    mdocs_glob=state.mdocs_glob,
                 )
-                prefs_service.prefs.add_recent_root(str(project_dir.parent), label=project_name)
+                prefs_service.prefs.add_recent_root(
+                    str(state.project_path.parent) if state.project_path else "", 
+                    label=state.project_name
+                )
                 prefs_service.save_to_app_storage(app.storage.user)
 
-                ui.notify(f"Project '{project_name}' loaded", type="positive")
+                ui.notify(f"Project '{state.project_name}' loaded", type="positive")
+                
+                # 7. Small delay to ensure state propagates
+                await asyncio.sleep(0.1)
+                
                 ui.navigate.to("/workspace")
             else:
                 ui.notify(f"Failed to load: {load_result.get('error')}", type="negative")
         except Exception as e:
             import traceback
-
             traceback.print_exc()
             ui.notify(f"Error loading project: {e}", type="negative")
         finally:
             if btn:
                 btn.props(remove="loading")
+
+
+
+
 
     def refresh_params_display():
         container = ui_mgr.panel_refs.params_display_container

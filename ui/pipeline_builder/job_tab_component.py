@@ -669,122 +669,112 @@ async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
 # ===========================================
 
 
+# ui/pipeline_builder/job_tab_component.py
+
+# ui/pipeline_builder/job_tab_component.py
+
 def _render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
-    """Render the files browser tab."""
-    project_path = ui_mgr.project_path
-
-    if not project_path or not job_model.relion_job_name:
-        ui.label("Job not started.").classes("text-gray-400 p-4")
+    """Render the files browser tab with reactive directory listing."""
+    
+    if not ui_mgr.project_path:
+        with ui.column().classes("w-full p-4"):
+            ui.label("Error: Project path not loaded").classes("text-red-600")
         return
+    
+    if not job_model.relion_job_name:
+        with ui.column().classes("w-full h-full items-center justify-center text-gray-400 gap-2"):
+            ui.icon("schedule", size="48px")
+            ui.label("Job not started. Files will appear here once the job runs.")
+        return
+    
+    project_path = ui_mgr.project_path
+    job_dir = (project_path / job_model.relion_job_name.strip("/")).resolve()
 
-    job_dir = project_path / job_model.relion_job_name.rstrip("/")
-
-    with ui.column().classes("w-full h-full flex flex-col border border-gray-200 rounded-lg overflow-hidden"):
-        ui.label(f"Browsing: {job_dir.name}").classes(
-            "text-xs font-bold bg-gray-50 w-full px-3 py-2 border-b border-gray-200 text-gray-600"
-        )
-
-        current_path_label = ui.label(str(job_dir)).classes(
-            "text-xs text-gray-600 font-mono px-3 py-1 bg-gray-50 border-b border-gray-200"
-        )
-
-        file_list_container = ui.column().classes("w-full flex-grow overflow-y-auto p-0")
-
-    def view_file(file_path: Path):
-        """Open a file viewer dialog."""
-        try:
-            text_extensions = [
-                ".script",
-                ".txt",
-                ".xml",
-                ".settings",
-                ".log",
-                ".star",
-                ".json",
-                ".yaml",
-                ".sh",
-                ".py",
-                ".out",
-                ".err",
-                ".md",
-                ".tlt",
-                ".aln",
-                "",
-            ]
-
-            if file_path.suffix.lower() in text_extensions:
-                with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read(50000)
-            else:
-                content = "Cannot preview binary file."
-
-            with ui.dialog() as dialog, ui.card().classes("w-[60rem] max-w-full"):
-                ui.label(file_path.name).classes("text-sm font-medium mb-2")
-                ui.code(content).classes("w-full max-h-96 overflow-auto text-xs")
-                ui.button("Close", on_click=dialog.close).props("flat")
-            dialog.open()
-        except Exception as e:
-            ui.notify(f"Error reading file: {e}", type="negative")
-
-    def browse_directory(path: Path):
-        """Browse a directory and display its contents."""
+    # Define the refreshable content area
+    @ui.refreshable
+    def render_contents(target_path: Path):
         file_list_container.clear()
-        current_path_label.set_text(str(path))
+        path_label.set_text(str(target_path))
+        
+        if not target_path.exists():
+            with file_list_container:
+                ui.label("Path does not exist").classes("p-4 text-gray-400 italic")
+            return
 
         try:
-            if not path.exists():
-                with file_list_container:
-                    ui.label("Directory not yet created").classes("text-xs text-gray-500 italic p-4")
+            items = sorted(target_path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        except Exception as e:
+            with file_list_container:
+                ui.label(f"Error accessing directory: {e}").classes("p-4 text-red-500")
+            return
+
+        with file_list_container:
+            if not items:
+                ui.label("Directory is empty").classes("p-4 text-gray-400 italic")
                 return
 
-            with file_list_container:
-                # Parent directory link
-                if path != job_dir and path.parent.exists() and job_dir in path.parents:
-                    with (
-                        ui.row()
-                        .classes(
-                            "w-full items-center gap-2 cursor-pointer hover:bg-gray-100 p-2 border-b border-gray-100"
-                        )
-                        .on("click", lambda p=path.parent: browse_directory(p))
-                    ):
-                        ui.icon("folder_open").classes("text-sm text-gray-400")
-                        ui.label("..").classes("text-xs font-medium")
+            # Navigation: Go Up (limited to job_dir root)
+            if target_path != job_dir and job_dir in target_path.parents:
+                with ui.row().classes("w-full items-center gap-2 cursor-pointer hover:bg-gray-50 p-2 border-b border-gray-100") \
+                    .on("click", lambda: render_contents.refresh(target_path.parent)):
+                    ui.icon("folder_open", size="16px").classes("text-gray-400")
+                    ui.label("..").classes("text-xs font-bold")
 
-                # Directory contents
-                items = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name))
-
-                for item in items:
-                    if item.is_dir():
-                        with (
-                            ui.row()
-                            .classes(
-                                "w-full items-center gap-2 cursor-pointer "
-                                "hover:bg-gray-100 p-2 border-b border-gray-100"
-                            )
-                            .on("click", lambda i=item: browse_directory(i))
-                        ):
-                            ui.icon("folder").classes("text-sm text-blue-400")
-                            ui.label(item.name).classes("text-xs font-medium text-gray-700")
+            for item in items:
+                is_dir = item.is_dir()
+                icon = "folder" if is_dir else "insert_drive_file"
+                color = "text-blue-400" if is_dir else "text-gray-400"
+                
+                with ui.row().classes("w-full items-center gap-2 cursor-pointer hover:bg-gray-100 p-2 border-b border-gray-100") as row:
+                    ui.icon(icon, size="16px").classes(color)
+                    ui.label(item.name).classes("text-xs text-gray-700 flex-1 truncate")
+                    
+                    if not is_dir:
+                        try:
+                            size = item.stat().st_size
+                            ui.label(f"{size // 1024} KB").classes("text-[10px] text-gray-400")
+                        except: pass
+                    
+                    if is_dir:
+                        row.on("click", lambda i=item: render_contents.refresh(i))
                     else:
-                        with (
-                            ui.row()
-                            .classes(
-                                "w-full items-center gap-2 cursor-pointer "
-                                "hover:bg-gray-100 p-2 border-b border-gray-100"
-                            )
-                            .on("click", lambda i=item: view_file(i))
-                        ):
-                            ui.icon("insert_drive_file").classes("text-sm text-gray-400")
-                            ui.label(item.name).classes("text-xs text-gray-700 flex-1")
-                            size_kb = item.stat().st_size // 1024
-                            ui.label(f"{size_kb} KB").classes("text-xs text-gray-400")
+                        row.on("click", lambda i=item: view_file_dialog(i))
 
-        except Exception as e:
-            with file_list_container:
-                ui.label(f"Error: {e}").classes("text-xs text-red-600 p-4")
+    # --- Layout Construction ---
+    # We use flex-col and flex-grow to occupy the tab space properly
+    with ui.column().classes("w-full border border-gray-200 rounded-lg bg-white overflow-hidden") \
+        .style("min-height: 350px; flex: 1 1 0%;"):
+        
+        # Header: Fixed Height
+        with ui.column().classes("w-full bg-gray-50 border-b border-gray-200 gap-0"):
+            ui.label(f"Browsing Job Directory").classes("text-[10px] font-black text-gray-400 uppercase px-3 pt-2")
+            
+            with ui.row().classes("w-full items-center justify-between px-3 py-1 pb-2"):
+                path_label = ui.label(str(job_dir)).classes("text-xs text-gray-600 font-mono truncate flex-1")
+                ui.button(icon="refresh", on_click=lambda: render_contents.refresh(job_dir)) \
+                    .props("flat dense round size=sm").classes("text-gray-400 hover:text-blue-500")
 
-    # Initial browse
-    browse_directory(job_dir)
+        # Scroll Area: This is the part that was collapsing
+        file_list_container = ui.column().classes("w-full flex-grow overflow-y-auto p-0 gap-0").style("background: white;")
+        
+        # Initial render
+        render_contents(job_dir)
+
+def view_file_dialog(file_path: Path):
+    """Simple file content viewer."""
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read(50000)
+        
+        with ui.dialog() as dialog, ui.card().classes("w-[70vw] max-w-4xl"):
+            with ui.row().classes("w-full items-center justify-between mb-2"):
+                ui.label(file_path.name).classes("text-sm font-bold")
+                ui.button(icon="close", on_click=dialog.close).props("flat round dense")
+            
+            ui.code(content).classes("w-full max-h-[60vh] overflow-auto text-xs")
+        dialog.open()
+    except Exception as e:
+        ui.notify(f"Cannot read file: {e}", type="negative")
 
 
 def _force_status_refresh(callbacks: Dict[str, Callable]):
