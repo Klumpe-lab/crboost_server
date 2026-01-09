@@ -184,7 +184,7 @@ def build_pipeline_builder_panel(
                         # render_status_dot(job_type)
                         ReactiveStatusDot(job_type)
         # Tab content
-        with ui.column().classes("w-full flex-grow overflow-hidden"):
+        with ui.column().classes("w-full overflow-hidden").style("flex: 1 1 0%; min-height: 0;"):
             active = ui_mgr.active_job
             if active:
                 render_job_tab(
