@@ -25,7 +25,6 @@ class StatusSyncService:
     async def sync_all_jobs(self, project_path: str) -> Dict[str, bool]:
         """
         Read pipeline.star and update job models. Returns dict of what changed.
-        Also detects and marks orphaned jobs.
         """
         pipeline_star = Path(project_path) / "default_pipeline.star"
         if not pipeline_star.exists():
@@ -35,14 +34,12 @@ class StatusSyncService:
         data = star_handler.read(pipeline_star)
         processes = data.get("pipeline_processes", pd.DataFrame())
 
-        changes = {}
+        changes: Dict[str, bool] = {}
         state = self.backend.state_service.state
 
-        # First pass: update jobs that are found in pipeline.star
         found_jobs = set()
         for _, row in processes.iterrows():
             job_path = row["rlnPipeLineProcessName"]
-
             job_type_str = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
 
             if not job_type_str:
@@ -78,7 +75,6 @@ class StatusSyncService:
 
                 found_jobs.add(job_type)
 
-        # Second pass: handle jobs not found in pipeline.star (reset jobs)
         for job_type, job_model in state.jobs.items():
             if job_type not in found_jobs:
                 old_status = job_model.execution_status
@@ -99,10 +95,6 @@ class StatusSyncService:
                     state.job_path_mapping.pop(job_type.value, None)
                     changes[job_type.value] = True
 
-        # Third pass: detect orphaned jobs
-        await self._detect_and_mark_orphans(project_path, state)
-
-        # Persist changes
         if changes:
             try:
                 print(f"[SYNC] Persisting {len(changes)} status changes to disk.")
@@ -110,64 +102,7 @@ class StatusSyncService:
             except Exception as e:
                 print(f"[SYNC ERROR] Failed to persist status changes: {e}")
 
-        return changes
-
-    async def _detect_and_mark_orphans(self, project_path: str, state):
-        """
-        Detect jobs with broken input references and mark them as orphaned.
-        Checks both Relion graph AND actual file existence.
-        """
-        from services.pipeline_deletion_service import get_deletion_service
-        
-        project_dir = Path(project_path)
-        deletion_service = get_deletion_service()
-        graph_orphans = deletion_service.get_orphaned_jobs(project_dir)
-        orphaned_paths = {job_path for job_path, _ in graph_orphans}
-        
-        for job_type, job_model in state.jobs.items():
-            # CRITICAL: If a job is Scheduled, we DON'T check for files on disk.
-            # It's not an orphan; it just hasn't run yet!
-            if job_model.execution_status == JobStatus.SCHEDULED:
-                job_model.is_orphaned = False
-                job_model.missing_inputs = []
-                continue
-
-            job_path = job_model.relion_job_name
-            
-            # Check stored input paths for existence
-            missing_files = []
-            paths = job_model.paths
-            
-            # Check common input path keys
-            input_keys = ["input_star", "input_processing", "model_path", "input_tomograms", 
-                        "input_tiltseries", "input_optimisation", "input_tm_job"]
-            
-            for key in input_keys:
-                if key in paths and paths[key]:
-                    input_path = Path(paths[key])
-                    # Only check if it's an absolute path and looks like a real file/dir
-                    if input_path.is_absolute() and not input_path.exists():
-                        missing_files.append(str(input_path))
-            
-            # Combine both detection methods
-            is_graph_orphan = job_path and job_path in orphaned_paths
-            is_file_orphan = len(missing_files) > 0
-            
-            if is_graph_orphan or is_file_orphan:
-                if not job_model.is_orphaned:
-                    reason = "missing graph nodes" if is_graph_orphan else "missing input files"
-                    print(f"[SYNC] Marking {job_type.value} as orphaned ({reason})")
-                
-                job_model.is_orphaned = True
-                
-                # Combine missing items from both methods
-                all_missing = list(set(orphan_details.get(job_path, []) + missing_files))
-                job_model.missing_inputs = all_missing
-            else:
-                if job_model.is_orphaned:
-                    print(f"[SYNC] Clearing orphan status for {job_type.value}")
-                job_model.is_orphaned = False
-                job_model.missing_inputs = []
+        return changes 
 
     def _extract_job_number(self, job_path: str) -> int:
         try:

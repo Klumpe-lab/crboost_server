@@ -870,7 +870,7 @@ class TemplateWorkbench:
             return
 
         self.masking_active = True
-        n = ui.notify("Relion: Creating mask...", type="ongoing", timeout=0)
+        n = ui.notification("Relion: Creating mask...", type="ongoing", spinner=True, timeout=None)
 
         try:
             input_vol = (
@@ -884,8 +884,6 @@ class TemplateWorkbench:
                 input_vol, output, self.mask_threshold, self.mask_extend, self.mask_soft_edge, self.mask_lowpass
             )
 
-            if n:
-                n.dismiss()
             if res["success"]:
                 ui.notify(f"Mask created: {os.path.basename(output)}", type="positive")
                 self._log(f"Mask created: {os.path.basename(output)}")
@@ -894,9 +892,8 @@ class TemplateWorkbench:
                 ui.notify(f"Masking failed: {res.get('error')}", type="negative")
                 self._log(f"Masking failed: {res.get('error')}")
         except Exception as e:
-            if n:
-                n.dismiss()
             ui.notify(f"UI Error: {e}", type="negative")
             self._log(f"UI Error: {e}")
         finally:
+            n.dismiss()
             self.masking_active = False

@@ -714,19 +714,20 @@ class TsAlignmentParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
-    rescale_angpixs : float           = Field(default=12.0, ge=2.0, le=50.0)
-    tomo_dimensions : str             = Field(default="4096x4096x2048")
-    do_at_most      : int             = Field(default=-1)
-    perdevice       : int             = Field(default=1, ge=0, le=8)
-    mdoc_pattern    : str             = Field(default="*.mdoc")
-    gain_operations : Optional[str]   = None
-    patch_x         : int             = Field(default=2, ge=0)
-    patch_y         : int             = Field(default=2, ge=0)
-    axis_iter       : int             = Field(default=1, ge=0)
-    axis_batch      : int             = Field(default=5, ge=1)
-    imod_patch_size : int             = Field(default=200)
-    imod_overlap    : int             = Field(default=50)
+    alignment_method   : AlignmentMethod = AlignmentMethod.ARETOMO
+    rescale_angpixs     : float          = Field(default=12.0, ge=2.0, le=50.0)
+    tomo_dimensions     : str            = Field(default="4096x4096x2048")
+    sample_thickness_nm: float           = Field(default=200.0, ge=50.0, le=1000.0)  # <-- ADD THIS
+    do_at_most          : int            = Field(default=-1)
+    perdevice           : int            = Field(default=1, ge=0, le=8)
+    mdoc_pattern        : str            = Field(default="*.mdoc")
+    gain_operations     : Optional[str]  = None
+    patch_x             : int            = Field(default=2, ge=0)
+    patch_y             : int            = Field(default=2, ge=0)
+    axis_iter           : int            = Field(default=1, ge=0)
+    axis_batch          : int            = Field(default=5, ge=1)
+    imod_patch_size     : int            = Field(default=200)
+    imod_overlap        : int            = Field(default=50)
 
     def is_driver_job(self) -> bool:
         return True

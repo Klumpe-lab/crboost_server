@@ -54,9 +54,8 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
             
             def apply_preset(p=preset):
                 job_model.apply_slurm_preset(p)
-                # No reload! Just refresh this internal section
                 _render_slurm_content.refresh()
-                ui.notify(f" {p.value}", icon="done")
+                # ui.notify(f" {p.value}", icon="done")
 
             ui.button(preset_info["label"], on_click=apply_preset) \
                 .props(f"unelevated no-caps dense") \
@@ -487,7 +486,7 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
                         checkbox.disable()
 
                 elif isinstance(value, (int, float)) or value is None:
-                    inp = ui.input(label).bind_value(job_model, param_name)
+                    inp = ui.number(label, value=value, format="%.4g").bind_value(job_model, param_name)
                     inp.props("outlined dense").classes("w-full")
                     if is_frozen:
                         inp.classes("bg-gray-50 text-gray-500").props("readonly")
