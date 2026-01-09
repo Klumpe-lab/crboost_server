@@ -23,13 +23,28 @@ def create_ui_router(backend: CryoBoostBackend):
             @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
             @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap');
             
-            body, .nicegui-content {
+            /* CRITICAL: Force full viewport height */
+            html, body {
+                height: 100vh !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                overflow: hidden !important;
+            }
+            
+            .nicegui-content {
+                height: 100vh !important;
+                display: flex !important;
+                flex-direction: column !important;
                 font-family: 'IBM Plex Sans', sans-serif !important;
                 font-size: 12px !important;
                 margin: 0 !important;
                 padding: 0 !important;
             }
-            .q-btn { font-family: 'IBM Plex Sans', sans-serif !important; text-transform: none !important; }
+            
+            .q-btn { 
+                font-family: 'IBM Plex Sans', sans-serif !important; 
+                text-transform: none !important; 
+            }
             
             /* Status Animation */
             .pulse-running {
