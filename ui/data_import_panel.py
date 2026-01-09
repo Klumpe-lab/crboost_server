@@ -218,19 +218,19 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         container = local_refs["recent_projects_container"]
         if not container:
             return
-
+        
         # Avoid duplicate scans
         if local_refs["last_scanned_path"] == base_path:
             return
         local_refs["last_scanned_path"] = base_path
-
+        
         container.clear()
-
+        
         if not base_path or not base_path.strip():
             with container:
                 ui.label("Enter a base location").classes("text-xs text-gray-400 italic p-2")
             return
-
+        
         path_obj = Path(base_path)
         if not path_obj.exists():
             with container:
@@ -243,26 +243,27 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
         with container:
             ui.spinner("dots").classes("self-center")
-
+        
         projects = await backend.scan_for_projects(base_path)
-
+        
         container.clear()
         with container:
             if not projects:
                 ui.label(f"No projects in {path_obj.name}").classes("text-xs text-gray-400 italic p-2")
             else:
                 for proj in projects:
-                    with ui.card().classes(
-                        "w-full p-2 mb-2 border border-gray-200 cursor-pointer hover:bg-blue-50 transition-colors"
-                    ):
+                    # Create a proper closure for the click handler
+                    def make_load_handler(path_str: str):
+                        async def handler():
+                            await handle_load_project(Path(path_str))
+                        return handler
+                    
+                    with ui.card().classes("w-full p-2 mb-2 border border-gray-200 cursor-pointer hover:bg-blue-50 transition-colors"):
                         with ui.row().classes("w-full items-center justify-between no-wrap"):
                             with ui.column().classes("gap-0"):
                                 ui.label(proj["name"]).classes("text-sm font-bold text-gray-700")
                                 ui.label(f"Modified: {proj['modified']}").classes("text-[10px] text-gray-400")
-                            ui.button(
-                                icon="arrow_forward",
-                                on_click=lambda p=proj["path"]: asyncio.create_task(handle_load_project(Path(p))),
-                            ).props("flat dense round size=sm").classes("text-blue-500")
+                            ui.button(icon="arrow_forward", on_click=make_load_handler(proj["path"])).props("flat dense round size=sm").classes("text-blue-500")
 
     # =========================================================================
     # HISTORY UI
@@ -804,7 +805,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             )
             ui_mgr.panel_refs.create_button = create_btn
 
-    # Initialization
     update_movies_validation()
     update_mdocs_validation()
     update_create_button_state()
