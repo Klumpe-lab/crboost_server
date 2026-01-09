@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# import asyncio # <-- No longer needed here
 import asyncio
 import socket
 import argparse
@@ -25,9 +24,7 @@ class SuppressPruneStorageError(logging.Filter):
 warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
 logging.getLogger("nicegui").addFilter(SuppressPruneStorageError())
 
-# Set logging level to see asyncio warnings
 logging.basicConfig(level=logging.DEBUG)
-# This will log a warning if a task blocks the loop for more than 100ms
 asyncio.get_event_loop().set_debug(True)
 
 
@@ -35,7 +32,6 @@ def setup_app():
     """Configures and returns the FastAPI app."""
     app = FastAPI()
     app.mount("/static", StaticFiles(directory="static"), name="static")
-
     ui.add_head_html('''
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -61,27 +57,26 @@ def get_local_ip():
 
 if __name__ in {"__main__", "__mp_main__"}:
     
-    # --- CHANGED: Call setup_app directly, no asyncio.run ---
-    app = setup_app()
-
     parser = argparse.ArgumentParser(description='CryoBoost Server')
     parser.add_argument('--port', type=int, default=8081, help='Port to run server on')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind to')
     args = parser.parse_args()
 
+    app = setup_app()
+
     local_ip = get_local_ip()
     hostname = socket.gethostname()
     
+    print("\n" + "="*60)
     print("CryoBoost Server Starting")
     print(f"Access URLs:")
-    print(f"  Local:    http://localhost:{args.port}")
+    print(f"  Local:   http://localhost:{args.port}")
     print(f"  Network: http://{local_ip}:{args.port}")
-    print("\nTo access from another machine, use an SSH tunnel:")
-    print(f"ssh -L 8081:{hostname}:{args.port} [YOUR_USERNAME]@{hostname}")
-    print("-" * 30)
+    print("\nTo access from your local machine, run this in a local terminal:")
+    # Using $USER and matching local/remote ports to avoid conflicts
+    print(f"ssh -f -N -L {args.port}:localhost:{args.port} $USER@{hostname}")
+    print("="*60 + "\n")
 
-    # This call will start Uvicorn, which creates its own event loop
-    # that NiceGUI (via ui.run_with) will now correctly use.
     uvicorn.run(
         app, 
         host=args.host, 
