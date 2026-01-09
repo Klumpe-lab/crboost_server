@@ -58,7 +58,7 @@ class ConfigService:
         if not config_path.exists():
             raise FileNotFoundError(
                 f"Configuration file not found at: {config_path}\n"
-                f"Run 'python setup.py' to create one from the template."
+                f"Run 'python preflight.py' to create one from the template."
             )
 
         with open(config_path, "r") as f:

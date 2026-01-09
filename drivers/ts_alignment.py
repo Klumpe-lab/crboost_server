@@ -109,7 +109,7 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
             f"--input_processing {input_processing}" if input_processing else "",
             f"--output_processing {output_processing}",
             "--angpix", str(params.rescale_angpixs),
-            "--alignz", str(int(params.thickness_nm * 10)),
+            "--alignz", str(int(params.sample_thickness_nm * 10)),
             "--perdevice", str(params.perdevice),
         ]
         if params.patch_x > 0 and params.patch_y > 0:
