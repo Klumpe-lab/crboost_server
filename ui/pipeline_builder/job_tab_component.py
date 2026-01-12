@@ -1003,9 +1003,7 @@ def _render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
     with ui.row().classes("w-full border border-gray-200 rounded-lg bg-white").style(
         "height: 80vh; gap: 0;" 
     ):
-        # File list (35%)
         with ui.column().classes("border-r border-gray-200").style("width: 35%; height: 100%; overflow-y: auto;"):
-            # Header
             with ui.row().classes("w-full items-center justify-between p-3 bg-gray-50 border-b border-gray-200"):
                 ui.label("Job Files").classes("text-[10px] font-black text-gray-400 uppercase")
                 path_label = ui.label(job_dir.name).classes("text-xs text-gray-600 font-mono truncate")
@@ -1015,11 +1013,9 @@ def _render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
             
             file_list_container = ui.column().classes("w-full gap-0")
 
-        # Preview pane (65%)
         with ui.column().classes("bg-white").style("width: 65%; height: 100%;"):
             preview_container = ui.column().classes("w-full h-full")
 
-        # Initial render
         render_file_list()
         render_preview()
 
