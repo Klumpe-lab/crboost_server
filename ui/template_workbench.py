@@ -109,6 +109,8 @@ class TemplateWorkbench:
         asyncio.create_task(self.refresh_files())
         asyncio.create_task(self._test_iframe_loaded())
 
+        self.session_item_containers = {}  # Map item_id -> container element
+
     # =========================================================
     # BRIDGE COMMUNICATION
     # =========================================================
@@ -116,6 +118,191 @@ class TemplateWorkbench:
     # =========================================================
     # PROJECT PARAMETERS
     # =========================================================
+    def _update_session_tray(self):
+        if not self.session_list_container:
+            return
+        
+        # Get current item IDs
+        current_item_ids = {item.get("id") for item in self.loaded_items}
+        
+        # Remove items that no longer exist
+        for item_id in list(self.session_item_containers.keys()):
+            if item_id not in current_item_ids:
+                refs = self.session_item_containers[item_id]
+                container = refs['container']  # FIX: get the actual container element
+                self.session_list_container.remove(container)
+                del self.session_item_containers[item_id]
+        
+        # Add or update items
+        for item in self.loaded_items:
+            item_id = item.get("id", "unknown")
+            
+            if item_id in self.session_item_containers:
+                # Update existing item
+                self._update_session_item(item_id, item)
+            else:
+                # Create new item
+                self._create_session_item(item)
+        
+    def _create_session_item(self, item):
+        """Create a new session item with all controls"""
+        item_id = item.get("id", "unknown")
+        item_type = item.get("type", "unknown")
+        visible = item.get("visible", True)
+        color = item.get("color", 0xCCCCCC)
+        
+        color_hex = f"#{color:06x}" if isinstance(color, int) else "#CCCCCC"
+        
+        with self.session_list_container:
+            container = ui.column().classes("w-full gap-1 p-2 border border-gray-200 rounded bg-white shadow-sm")
+            
+            with container:
+                # Header row
+                with ui.row().classes("w-full items-center gap-2"):
+                    color_btn = ui.button(icon="palette").props("flat round dense size=xs").classes("shrink-0")
+                    color_btn.style(f"color: {color_hex}")
+                    
+                    with ui.menu().props("auto-close") as color_menu:
+                        with ui.grid(columns=6).classes("gap-1 p-2"):
+                            for palette_color in COLOR_PALETTE:
+                                palette_hex = f"#{palette_color:06x}"
+                                ui.button().props("flat dense").style(
+                                    f"background-color: {palette_hex}; width: 24px; height: 24px; min-width: 24px;"
+                                ).on("click", lambda c=palette_color, iid=item_id: self._change_item_color(iid, c))
+                    
+                    color_btn.on("click", color_menu.open)
+                    
+                    name_label = ui.label(item_id).classes("text-[10px] font-bold text-gray-700 truncate flex-1")
+                    
+                    # FIX: Handler that looks up current visibility instead of capturing it
+                    def toggle_vis_handler(iid):
+                    # Look up current state dynamically
+                        current_item = next((item for item in self.loaded_items if item.get("id") == iid), None)
+                        if current_item:
+                            current_visible = current_item.get("visible", True)
+                            self._toggle_visibility(iid, not current_visible)
+                    
+                    vis_btn = ui.button(
+                        icon="visibility" if visible else "visibility_off",
+                        on_click=lambda iid=item_id: toggle_vis_handler(iid),
+                    ).props("flat round dense size=xs")
+                    
+                    del_btn = ui.button(
+                        icon="delete", 
+                        on_click=lambda iid=item_id: self._delete_viewer_item(iid)
+                    ).props("flat round dense size=xs color=red")
+                    
+                    # Stop propagation after DOM is ready
+                    def setup_stop_propagation():
+                        ui.run_javascript(f"""
+                            const visBtn = document.getElementById('c{vis_btn.id}');
+                            const delBtn = document.getElementById('c{del_btn.id}');
+                            
+                            if (visBtn) {{
+                                visBtn.addEventListener('click', (e) => {{
+                                    e.stopPropagation();
+                                }}, false);
+                            }}
+                            
+                            if (delBtn) {{
+                                delBtn.addEventListener('click', (e) => {{
+                                    e.stopPropagation();
+                                }}, false);
+                            }}
+                        """)
+                    
+                    ui.timer(0.1, setup_stop_propagation, once=True)
+                
+                # ISO controls for volumes
+                iso_row = None
+                iso_slider = None
+                iso_label = None
+                
+                if item_type == "map":
+                    iso_value = item.get("isoValue", 1.5)
+                    is_inverted = item.get("isInverted", False)
+                    stats = item.get("stats", {})
+                    
+                    abs_iso_value = abs(iso_value)
+                    
+                    # Calculate absolute value
+                    mean = stats.get("mean", 0)
+                    sigma = stats.get("sigma", 1)
+                    absolute_value = mean + (iso_value * sigma)
+                    
+                    with ui.row().classes("w-full items-center gap-2 mt-1 pt-1 border-t border-gray-100") as iso_row:
+                        ui.label("ISO:").classes("text-[9px] text-gray-500 shrink-0")
+                        
+                        iso_slider = ui.slider(
+                            min=0.5, max=5.0, step=0.1, value=abs_iso_value
+                        ).props("dense").classes("flex-1")
+                        
+                        iso_slider.on(
+                            "change",
+                            lambda e, iid=item_id, inv=is_inverted: self._change_iso_value(iid, e.args, inv)
+                        )
+                        
+                        # Display both sigma and absolute value
+                        display_sigma = f"-{abs_iso_value:.1f}σ" if is_inverted else f"{abs_iso_value:.1f}σ"
+                        display_abs = f"({absolute_value:.3f})"
+                        
+                        iso_label = ui.label(f"{display_sigma} {display_abs}").classes(
+                            "text-[9px] font-mono text-gray-600 shrink-0 w-24"
+                        )
+            
+            # Store references
+            self.session_item_containers[item_id] = {
+                'container': container,
+                'name_label': name_label,
+                'vis_btn': vis_btn,
+                'color_btn': color_btn,
+                'iso_row': iso_row,
+                'iso_slider': iso_slider,
+                'iso_label': iso_label,
+            }
+
+
+    def _update_session_item(self, item_id, item):
+            """Update an existing session item without recreating it"""
+            refs = self.session_item_containers.get(item_id)
+            if not refs:
+                return
+            
+            item_type = item.get("type", "unknown")
+            visible = item.get("visible", True)
+            color = item.get("color", 0xCCCCCC)
+            
+            # Update visibility button icon
+            refs['vis_btn'].props(f"icon={'visibility' if visible else 'visibility_off'}")
+            
+            # Update color
+            color_hex = f"#{color:06x}" if isinstance(color, int) else "#CCCCCC"
+            refs['color_btn'].style(f"color: {color_hex}")
+            
+            # Update ISO display if it's a map
+            if item_type == "map" and refs['iso_label']:
+                iso_value = item.get("isoValue", 1.5)
+                is_inverted = item.get("isInverted", False)
+                stats = item.get("stats", {})
+                
+                abs_iso_value = abs(iso_value)
+                
+                # Update slider value (without triggering change event)
+                if refs['iso_slider']:
+                    refs['iso_slider'].value = abs_iso_value
+                
+                # Calculate and display absolute value
+                mean = stats.get("mean", 0)
+                sigma = stats.get("sigma", 1)
+                absolute_value = mean + (iso_value * sigma)
+                
+                display_sigma = f"-{abs_iso_value:.1f}σ" if is_inverted else f"{abs_iso_value:.1f}σ"
+                display_abs = f"({absolute_value:.3f})"
+                
+                refs['iso_label'].set_text(f"{display_sigma} {display_abs}")
+
+
+
 
     def _load_project_parameters(self):
         """Load pixel size and binning from project state."""
@@ -615,74 +802,6 @@ class TemplateWorkbench:
                     "flat round dense size=sm color=red"
                 )
 
-    def _update_session_tray(self):
-        if not self.session_list_container:
-            return
-        self.session_list_container.clear()
-        
-        with self.session_list_container:
-            for item in self.loaded_items:
-                item_id = item.get("id", "unknown")
-                item_type = item.get("type", "unknown")
-                visible = item.get("visible", True)
-                color = item.get("color", 0xCCCCCC)
-                
-                # Convert color number to hex string
-                color_hex = f"#{color:06x}" if isinstance(color, int) else "#CCCCCC"
-                
-                with ui.column().classes("w-full gap-1 p-2 border border-gray-200 rounded bg-white shadow-sm"):
-                    # Header row with color, name, visibility, delete
-                    with ui.row().classes("w-full items-center gap-2"):
-                        # Color picker button
-                        color_btn = ui.button(icon="palette").props("flat round dense size=xs").classes("shrink-0")
-                        color_btn.style(f"color: {color_hex}")
-                        
-                        # Create color menu
-                        with ui.menu().props("auto-close") as color_menu:
-                            with ui.grid(columns=6).classes("gap-1 p-2"):
-                                for palette_color in COLOR_PALETTE:
-                                    palette_hex = f"#{palette_color:06x}"
-                                    ui.button().props("flat dense").style(
-                                        f"background-color: {palette_hex}; width: 24px; height: 24px; min-width: 24px;"
-                                    ).on("click", lambda c=palette_color, iid=item_id: self._change_item_color(iid, c))
-                        
-                        color_btn.on("click", color_menu.open)
-                        
-                        # Item name
-                        ui.label(item_id).classes("text-[10px] font-bold text-gray-700 truncate flex-1")
-                        
-                        # Visibility toggle
-                        ui.button(
-                            icon="visibility" if visible else "visibility_off",
-                            on_click=lambda iid=item_id, v=visible: self._toggle_visibility(iid, not v),
-                        ).props("flat round dense size=xs")
-                        
-                        # Delete button
-                        ui.button(
-                            icon="delete", 
-                            on_click=lambda iid=item_id: self._delete_viewer_item(iid)
-                        ).props("flat round dense size=xs color=red")
-                    
-                    # ISO slider for volume items
-                    if item_type == "map":
-                        iso_value = item.get("isoValue", 1.5)
-                        stats = item.get("stats", {})
-                        
-                        with ui.row().classes("w-full items-center gap-2 mt-1 pt-1 border-t border-gray-100"):
-                            ui.label("ISO:").classes("text-[9px] text-gray-500")
-                            
-                            iso_slider = ui.slider(
-                                min=0.5, max=5.0, step=0.1, value=iso_value
-                            ).props("dense label-always").classes("flex-1")
-                            
-                            iso_slider.on(
-                                "update:model-value",
-                                lambda e, iid=item_id: self._change_iso_value(iid, e.args)
-                            )
-                            
-                            ui.label(f"{iso_value:.1f}σ").classes("text-[9px] font-mono text-gray-600 w-12")
-
-
     def _change_item_color(self, item_id: str, color: int):
         """Change color of an item in the viewer"""
         print(f"[UI] Changing color of {item_id} to {color}")
@@ -695,16 +814,22 @@ class TemplateWorkbench:
         self._post_to_viewer("setVisibility", itemId=item_id, visible=visible)
 
 
-    def _change_iso_value(self, item_id: str, iso_value: float):
-        """Change ISO value of a volume"""
-        print(f"[UI] Setting ISO value of {item_id} to {iso_value}")
-        self._post_to_viewer("setIsoValue", itemId=item_id, isoValue=iso_value)
+    def _change_iso_value(self, item_id: str, slider_value: float, is_inverted: bool = False):
+        """Change ISO value of a volume, applying sign if inverted"""
+        # Apply negative sign for inverted volumes
+        actual_iso_value = -abs(slider_value) if is_inverted else slider_value
+        print(f"[UI] Setting ISO value of {item_id} to {actual_iso_value} (slider: {slider_value}, inverted: {is_inverted})")
+        self._post_to_viewer("setIsoValue", itemId=item_id, isoValue=actual_iso_value)
 
 
     def _delete_viewer_item(self, item_id: str):
         """Delete an item from the viewer"""
         print(f"[UI] Deleting {item_id}")
-        self._post_to_viewer("deleteItem", itemId=item_id)
+        self._post_to_viewer("deleteItem", itemId=item_id)   
+
+
+
+
 
     # =========================================================
     # STATE HELPERS
