@@ -38,7 +38,6 @@ MOLSTAR_EMBED_HTML = """
 def molstar_workbench_viewer():
     return HTMLResponse(MOLSTAR_EMBED_HTML)
 
-
 @app.get("/api/file")
 def serve_file(path: str):
     p = Path(path)
@@ -57,49 +56,49 @@ class TemplateWorkbench:
         os.makedirs(self.output_folder, exist_ok=True)
 
         # Project-derived values
-        self.project_raw_apix = None
-        self.project_binning = None
+        self.project_raw_apix  = None
+        self.project_binning   = None
         self.project_tomo_apix = None
 
         # Template settings
-        self.pixel_size = 10.0
-        self.box_size = 128
-        self.auto_box = True
+        self.pixel_size          = 10.0
+        self.box_size            = 128
+        self.auto_box            = True
         self.template_resolution = 20.0
 
         # Inputs
         self.basic_shape_def = "550:550:550"
-        self.pdb_input_val = ""
-        self.emdb_input_val = ""
-        self.structure_path = ""
+        self.pdb_input_val   = ""
+        self.emdb_input_val  = ""
+        self.structure_path  = ""
 
         # Mask settings
-        self.mask_threshold = 0.001
-        self.mask_extend = 3
-        self.mask_soft_edge = 6
-        self.mask_lowpass = 20
+        self.mask_threshold   = 0.001
+        self.mask_extend      = 3
+        self.mask_soft_edge   = 6
+        self.mask_lowpass     = 20
         self.threshold_method = "flexible_bounds"
 
         # Async Status
         self.masking_active = False
-        self.viewer_ready = False
-        self.loaded_items = []
+        self.viewer_ready   = False
+        self.loaded_items   = []
 
         # UI refs
-        self.file_list_container = None
+        self.file_list_container    = None
         self.session_list_container = None
-        self.log_container = None
-        self.mask_btn = None
-        self.mask_source_label = None
-        self.box_input = None
-        self.size_estimate_label = None
-        self.template_label = None
-        self.mask_label = None
-        self.structure_label = None
-        self.auto_box_checkbox = None
-        self.warning_container = None
-        self.simulate_btn = None
-        self.resample_btn = None
+        self.log_container          = None
+        self.mask_btn               = None
+        self.mask_source_label      = None
+        self.box_input              = None
+        self.size_estimate_label    = None
+        self.template_label         = None
+        self.mask_label             = None
+        self.structure_label        = None
+        self.auto_box_checkbox      = None
+        self.warning_container      = None
+        self.simulate_btn           = None
+        self.resample_btn           = None
 
         self._last_logged_box = None
 
@@ -109,15 +108,8 @@ class TemplateWorkbench:
         asyncio.create_task(self.refresh_files())
         asyncio.create_task(self._test_iframe_loaded())
 
-        self.session_item_containers = {}  # Map item_id -> container element
+        self.session_item_containers = {} 
 
-    # =========================================================
-    # BRIDGE COMMUNICATION
-    # =========================================================
-    
-    # =========================================================
-    # PROJECT PARAMETERS
-    # =========================================================
     def _update_session_tray(self):
         if not self.session_list_container:
             return
@@ -157,7 +149,6 @@ class TemplateWorkbench:
             container = ui.column().classes("w-full gap-1 p-2 border border-gray-200 rounded bg-white shadow-sm")
             
             with container:
-                # Header row
                 with ui.row().classes("w-full items-center gap-2"):
                     color_btn = ui.button(icon="palette").props("flat round dense size=xs").classes("shrink-0")
                     color_btn.style(f"color: {color_hex}")
@@ -174,9 +165,7 @@ class TemplateWorkbench:
                     
                     name_label = ui.label(item_id).classes("text-[10px] font-bold text-gray-700 truncate flex-1")
                     
-                    # FIX: Handler that looks up current visibility instead of capturing it
                     def toggle_vis_handler(iid):
-                    # Look up current state dynamically
                         current_item = next((item for item in self.loaded_items if item.get("id") == iid), None)
                         if current_item:
                             current_visible = current_item.get("visible", True)
