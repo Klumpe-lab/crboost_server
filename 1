@@ -1,0 +1,85 @@
+Bootstrap: docker
+From: debian:11-slim
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    
+    # Install minimal dependencies
+    apt-get update && apt-get install -y \
+        build-essential \
+        autoconf \
+        automake \
+        libtool \
+        pkg-config \
+        wget \
+        git \
+        ca-certificates \
+        zlib1g-dev \
+        libexpat1-dev \
+        libtiff-dev \
+        subversion \
+        libfftw3-dev
+    
+    # 1. Install Intel MKL
+    cd /opt
+    wget -q https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+    apt-key add GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+    rm GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB
+    
+    echo "deb https://apt.repos.intel.com/oneapi all main" > /etc/apt/sources.list.d/oneAPI.list
+    apt-get update
+    apt-get install -y intel-oneapi-mkl-devel
+    
+    export MKLROOT=/opt/intel/oneapi/mkl/latest
+    
+    # 2. Build wxWidgets 3.2 (minimal)
+    cd /opt
+    wget -q https://github.com/wxWidgets/wxWidgets/releases/download/v3.2.2.1/wxWidgets-3.2.2.1.tar.bz2
+    tar -xf wxWidgets-3.2.2.1.tar.bz2
+    cd wxWidgets-3.2.2.1
+    ./configure --disable-gui --prefix=/usr/local
+    make -j$(nproc) && make install
+    ldconfig
+
+    # 3. Get Eigen 3.4
+    cd /opt
+    wget -q https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz
+    tar -xf eigen-3.4.0.tar.gz
+    cp -r eigen-3.4.0/Eigen /usr/local/include/
+    
+    # 4. Build cisTEM's simulate program only
+    cd /opt
+    git clone https://github.com/timothygrant80/cistem.git
+    cd cistem
+    
+    # Generate configure script
+    autoreconf -i
+    
+    # Configure (simulate requires --enable-experimental)
+    ./configure \
+        --enable-experimental \
+        --disable-build-calculate-template-pvalue \
+        CPPFLAGS="-I/usr/local/include -I${MKLROOT}/include" \
+        CXXFLAGS="-I/usr/local/include -I${MKLROOT}/include" \
+        LDFLAGS="-L${MKLROOT}/lib/intel64" \
+        MKLROOT="${MKLROOT}"
+    
+    # Build simulate
+    make simulate
+    
+    # Install it
+    if [ -f "simulate" ]; then
+        cp simulate /usr/local/bin/
+    fi
+
+%environment
+    export PATH=/usr/local/bin:$PATH
+    export MKLROOT=/opt/intel/oneapi/mkl/latest
+    export LD_LIBRARY_PATH=$MKLROOT/lib/intel64:$LD_LIBRARY_PATH:/usr/local/lib
+
+%runscript
+    exec simulate "$@"
+
+%help
+    cisTEM 'simulate' command container.
+    Usage: apptainer run cistem.sif [options]
