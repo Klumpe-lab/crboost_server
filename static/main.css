@@ -34,17 +34,17 @@ body {
 
 /* Clean card styling with subtle borders */
 .panel-card {
-    border: 1px solid #e0e0e0 !important;
+    border       : 1px solid #e0e0e0 !important;
     border-radius: 4px;
-    background: white;
+    background   : white;
 }
 
 /* Primary button styling */
 .primary-button {
-    background-color: #4a90e2 !important; 
-    color: white !important;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    background-color: #4a90e2 !important;
+    color           : white !important;
+    text-transform  : uppercase;
+    letter-spacing  : 0.05em;
 }
 
 .primary-button:hover {
