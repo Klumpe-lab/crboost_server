@@ -60,10 +60,9 @@ if __name__ in {"__main__", "__mp_main__"}:
     parser = argparse.ArgumentParser(description='CryoBoost Server')
     parser.add_argument('--port', type=int, default=8081, help='Port to run server on')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind to')
-    args = parser.parse_args()
 
-    app = setup_app()
-
+    args     = parser.parse_args()
+    app      = setup_app()
     local_ip = get_local_ip()
     hostname = socket.gethostname()
     

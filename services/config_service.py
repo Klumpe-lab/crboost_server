@@ -8,7 +8,7 @@ import yaml
 from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field
-from typing import Dict, Optional
+from typing import Dict, Optional, Literal
 
 # Derive default config path from this file's location
 _THIS_DIR = Path(__file__).parent
@@ -35,6 +35,13 @@ class LocalConfig(BaseModel):
     DefaultMdocsGlob: Optional[str] = None
 
 
+class ToolConfig(BaseModel):
+    """Configuration for a specific external tool"""
+    exec_mode: Literal["container", "binary"] = "container"
+    container_path: Optional[str] = None
+    bin_path: Optional[str] = None
+
+
 class Config(BaseModel):
     """Root configuration model"""
 
@@ -42,7 +49,12 @@ class Config(BaseModel):
     venv_path: Optional[str] = None
     local: LocalConfig = Field(default_factory=LocalConfig)
     slurm_defaults: SlurmDefaultsConfig = Field(default_factory=SlurmDefaultsConfig)
-    containers: Dict[str, str] = Field(default_factory=dict)
+    
+    # Replaces the old simple dict[str, str] containers map
+    tools: Dict[str, ToolConfig] = Field(default_factory=dict)
+    
+    # Legacy support if user hasn't migrated conf.yaml yet
+    containers: Optional[Dict[str, str]] = None
 
     class Config:
         extra = "ignore"
@@ -87,10 +99,6 @@ class ConfigService:
         return None
 
     @property
-    def containers(self) -> Dict[str, str]:
-        return self._config.containers
-
-    @property
     def slurm_defaults(self) -> SlurmDefaultsConfig:
         return self._config.slurm_defaults
 
@@ -102,25 +110,53 @@ class ConfigService:
     def default_data_globs(self) -> tuple[Optional[str], Optional[str]]:
         return (self._config.local.DefaultMoviesGlob, self._config.local.DefaultMdocsGlob)
 
-    @property
-    def tools(self) -> Dict[str, Dict[str, str]]:
-        """Tool to container mapping"""
-        return {
-            "relion": {"container": "relion", "type": "container"},
-            "relion_import": {"container": "relion", "type": "container"},
-            "relion_schemer": {"container": "relion", "type": "container"},
-            "warptools": {"container": "warp_aretomo", "type": "container"},
-            "aretomo": {"container": "warp_aretomo", "type": "container"},
-            "cryocare": {"container": "cryocare", "type": "container"},
-            "pytom": {"container": "pytom", "type": "container"},
-        }
+    # --- Tool / Container Management ---
 
-    def get_container_for_tool(self, tool_name: str) -> Optional[str]:
-        tool_config = self.tools.get(tool_name)
-        if not tool_config:
-            return None
-        container_key = tool_config.get("container")
-        return self.containers.get(container_key)
+    def get_tool_config(self, tool_name: str) -> ToolConfig:
+        """
+        Retrieves config for a specific tool. 
+        Falls back to legacy 'containers' dict if 'tools' entry is missing.
+        """
+        # 1. Try new 'tools' section
+        if tool_name in self._config.tools:
+            return self._config.tools[tool_name]
+        
+        # 2. Map known aliases for backward compatibility lookup
+        # (This maps the key used in code to the key used in conf.yaml)
+        # In the new system, we expect the key in conf.yaml to match the tool_name requested.
+        # But for legacy, we need to handle the mapping.
+        legacy_mapping = {
+            "warptools": "warp_aretomo",
+            "aretomo": "warp_aretomo",
+            "relion_import": "relion",
+            "relion_schemer": "relion",
+        }
+        lookup_name = legacy_mapping.get(tool_name, tool_name)
+
+        if lookup_name in self._config.tools:
+            return self._config.tools[lookup_name]
+
+        # 3. Fallback to legacy 'containers' section if available
+        if self._config.containers and lookup_name in self._config.containers:
+            return ToolConfig(
+                exec_mode="container",
+                container_path=self._config.containers[lookup_name]
+            )
+            
+        # 4. Return default (assume binary in path if nothing configured?)
+        # Or return None to let caller handle it. Returning default safe-fail.
+        return ToolConfig(exec_mode="binary", bin_path=tool_name)
+
+    def get_tool_path(self, tool_name: str) -> Optional[str]:
+        """
+        Returns the filesystem path for the tool.
+        If container: returns path to .sif
+        If binary: returns path to binary
+        """
+        config = self.get_tool_config(tool_name)
+        if config.exec_mode == "container":
+            return config.container_path
+        return config.bin_path
 
 
 _config_service_instance = None
