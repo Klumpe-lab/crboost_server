@@ -103,9 +103,9 @@ class Colors:
 
         lines = [
             f"--- [ CONTAINER EXECUTION ] ---",
-            f"  Tool:      {tool_name}",
-            f"  CWD:       {cwd}",
-            f"  Image:     {shorten_path(display_container)}",
+            f"  Tool:       {tool_name}",
+            f"  CWD:        {cwd}",
+            f"  Image:      {shorten_path(display_container)}",
         ]
 
         if env_cleanup:
@@ -148,20 +148,35 @@ class Colors:
 class ContainerService:
     def __init__(self):
         self.config = get_config_service()
-        self.gui_containers = {"relion"}
-        self.cli_containers = {"warp_aretomo", "cryocare", "pytom"}
 
-    def get_container_path(self, tool_name: str) -> Optional[str]:
-        return self.config.get_container_for_tool(tool_name)
+    def get_tool_path(self, tool_name: str) -> Optional[str]:
+        """
+        Returns the filesystem path for the tool's executable or container.
+        Delegates to ConfigService to handle legacy/new logic.
+        """
+        return self.config.get_tool_path(tool_name)
 
     def wrap_command_for_tool(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
-        return self._wrap_single_command(command, cwd, tool_name, additional_binds)
+        """
+        Wraps a command based on the tool's execution mode (container vs binary).
+        """
+        tool_config = self.config.get_tool_config(tool_name)
+        
+        if tool_config.exec_mode == "binary":
+            # If binary mode, we just return the command. 
+            # Note: We assume the command string already uses the binary name 
+            # (which might need to be absolute if not in PATH). 
+            # If the driver constructed the command using 'tool_name', this might work if tool_name == bin_path.
+            print(f"[CONTAINER] Running {tool_name} as binary (Native execution)")
+            return command
+            
+        # Default to container logic
+        return self._wrap_container_command(command, cwd, tool_name, tool_config.container_path, additional_binds)
 
-    def _wrap_single_command(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
-        """Wrap a single command in container"""
-        container_path = self.get_container_path(tool_name)
+    def _wrap_container_command(self, command: str, cwd: Path, tool_name: str, container_path: str, additional_binds: List[str] = None) -> str:
+        """Internal method to wrap command in Apptainer/Singularity"""
         if not container_path:
-            print(f"[CONTAINER WARN] No container found for tool '{tool_name}', running natively")
+            print(f"[CONTAINER WARN] No container path configured for tool '{tool_name}', running natively")
             return command
 
         binds = set()
@@ -178,7 +193,6 @@ class ContainerService:
 
         hpc_paths = ["/usr/lib64/slurm", "/run/munge", "/etc/passwd", "/etc/group", "/groups", "/programs", "/software"]
 
-        # Only bind /usr/bin for tools that genuinely need SLURM inside container
         if "relion" in tool_name.lower():
             hpc_paths.append("/usr/bin")
 
@@ -194,66 +208,47 @@ class ContainerService:
         for path in sorted(binds):
             bind_args.extend(["-B", path])
 
-        # RELION environment variables MUST be inside the container
-        relion_env_setup = (
-            "export RELION_QSUB_EXTRA_COUNT=8; "
-            "export RELION_QSUB_EXTRA1='Partition'; "
-            "export RELION_QSUB_EXTRA2='Constraint'; "
-            "export RELION_QSUB_EXTRA3='Nodes'; "
-            "export RELION_QSUB_EXTRA4='Tasks'; "
-            "export RELION_QSUB_EXTRA5='CPUs'; "
-            "export RELION_QSUB_EXTRA6='GRES'; "
-            "export RELION_QSUB_EXTRA7='Memory'; "
-            "export RELION_QSUB_EXTRA8='Walltime'; "
-        )
-        
-        # Combine environment setup with the actual command INSIDE the container
-        inner_command_with_env = f"{relion_env_setup}{command}"
-        inner_command_quoted = shlex.quote(inner_command_with_env)
+        # === Only add RELION vars for RELION ===
+        if "relion" in tool_name.lower():
+            relion_env_setup = (
+                "export RELION_QSUB_EXTRA_COUNT=8; "
+                "export RELION_QSUB_EXTRA1='Partition'; "
+                "export RELION_QSUB_EXTRA2='Constraint'; "
+                "export RELION_QSUB_EXTRA3='Nodes'; "
+                "export RELION_QSUB_EXTRA4='Tasks'; "
+                "export RELION_QSUB_EXTRA5='CPUs'; "
+                "export RELION_QSUB_EXTRA6='GRES'; "
+                "export RELION_QSUB_EXTRA7='Memory'; "
+                "export RELION_QSUB_EXTRA8='Walltime'; "
+            )
+            inner_command_with_env = f"{relion_env_setup}{command}"
+            inner_command_quoted = shlex.quote(inner_command_with_env)
+        else:
+            # For non-RELION (including PyMOL), just quote the command
+            inner_command_quoted = shlex.quote(command)
 
         apptainer_cmd_parts = [
-            "apptainer",
-            "run",
-            "--nv",
-            "--cleanenv",
+            "apptainer", "exec",
+            "--nv", "--cleanenv",
             "--no-home",
             *bind_args,
             container_path,
-            "bash",
-            "-c",
-            inner_command_quoted,
+            "bash", "-c", inner_command_quoted,
         ]
 
         apptainer_cmd = " ".join(apptainer_cmd_parts)
 
         clean_env_vars = [
-            "SINGULARITY_BIND",
-            "APPTAINER_BIND",
-            "SINGULARITY_BINDPATH",
-            "APPTAINER_BINDPATH",
-            "SINGULARITY_NAME",
-            "APPTAINER_NAME",
-            "SINGULARITY_CONTAINER",
-            "APPTAINER_CONTAINER",
-            "LD_PRELOAD",
-            "XDG_RUNTIME_DIR",
-            "CONDA_PREFIX",
-            "CONDA_DEFAULT_ENV",
-            "CONDA_PROMPT_MODIFIER",
-            # We need to unset these for MPI to work and container not to be confused about it being _an actual_ slurm job (as opposed to being a process inside the slurm job)
-            "SLURM_JOBID",
-            "SLURM_JOB_ID",
-            "SLURM_NODELIST",
-            "SLURM_STEP_NODELIST",
-            "SLURM_NTASKS",
-            "SLURM_PROCID",
-            "SLURM_LOCALID",
-            "SLURM_TASK_PID",
-            "PMI_FD",
-            "PMI_SIZE",
-            "PMI_RANK",
-            "PMIX_RANK",
-            "OMPI_COMM_WORLD_SIZE",
+            "SINGULARITY_BIND", "APPTAINER_BIND",
+            "SINGULARITY_BINDPATH", "APPTAINER_BINDPATH",
+            "SINGULARITY_NAME", "APPTAINER_NAME",
+            "SINGULARITY_CONTAINER", "APPTAINER_CONTAINER",
+            "LD_PRELOAD", "XDG_RUNTIME_DIR",
+            "CONDA_PREFIX", "CONDA_DEFAULT_ENV", "CONDA_PROMPT_MODIFIER",
+            "SLURM_JOBID", "SLURM_JOB_ID", "SLURM_NODELIST",
+            "SLURM_STEP_NODELIST", "SLURM_NTASKS", "SLURM_PROCID",
+            "SLURM_LOCALID", "SLURM_TASK_PID", "PMI_FD", "PMI_SIZE",
+            "PMI_RANK", "PMIX_RANK", "OMPI_COMM_WORLD_SIZE",
             "OMPI_COMM_WORLD_RANK",
         ]
         
@@ -261,8 +256,6 @@ class ContainerService:
             clean_env_vars.extend(["DISPLAY", "XAUTHORITY"])
 
         clean_env_cmd = "unset " + " ".join(clean_env_vars)
-        
-        # Final command: clean environment on host, then run container with everything inside
         final_command = f"{clean_env_cmd}; {apptainer_cmd}"
 
         print(Colors.format_command_log(tool_name, final_command, cwd, container_path))
