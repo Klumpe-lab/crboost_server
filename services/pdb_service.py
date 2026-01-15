@@ -1,11 +1,11 @@
-# services/pdb_service.py
 import os
-import numpy as np
-import gemmi
+import json
 import asyncio
 import subprocess
 from pathlib import Path
+import textwrap
 from typing import Dict, Any, Optional
+from Bio.PDB import MMCIFParser, MMCIFIO
 
 from services.container_service import get_container_service
 
@@ -14,120 +14,202 @@ class PDBService:
     def __init__(self, backend):
         self.backend = backend
         self.container_service = get_container_service()
-        
-        # Use configured path or auto-find
-        self.cistem_binary = "/groups/klumpe/software/cisTEM/bin/simulate"
-        # if configured_path and os.path.exists(configured_path):
-        #     self.cistem_binary = os.path.abspath(configured_path)
-        # else:
-        #     self.cistem_binary = self._find_cistem_binary()
-
-    def _find_cistem_binary(self) -> Optional[str]:
-        """Locate the CISTEM simulate binary."""
-        # Check common locations
-        possible_paths = [
-            "cisTEM/bin/simulate",
-            "./cisTEM/bin/simulate",
-            "../cisTEM/bin/simulate",
-            "bin/simulate",
-            "./bin/simulate",
-        ]
-
-        # Also check PATH
-        try:
-            result = subprocess.run(["which", "simulate"], capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except:
-            pass
-
-        # Check relative paths
-        for path in possible_paths:
-            if os.path.exists(path) and os.access(path, os.X_OK):
-                return os.path.abspath(path)
-
-        return None
 
     # =========================================================================
-    # STRUCTURE METADATA & ALIGNMENT (unchanged)
+    # BOX SIZE CALCULATION - Restore original logic
+    # =========================================================================
+
+    def _calculate_optimal_box(
+        self, max_dim_angstrom: float, pixel_size: float, min_box: int = 128, alignment: int = 32
+    ) -> int:
+        """
+        Calculate optimal box size matching original libpdb.py logic.
+        Aligns to 'alignment' boundary (default 32).
+        """
+        size_in_pixels = max_dim_angstrom / pixel_size
+        num_blocks = int((size_in_pixels + alignment - 1) // alignment)
+        box_size = num_blocks * alignment
+
+        if box_size < min_box:
+            box_size = min_box
+
+        return int(box_size)
+
+    # =========================================================================
+    # PYMOL WRAPPER - Fixed for container file access
+    # =========================================================================
+
+    async def _run_pymol_script(
+        self, script_content: str, output_dir: Path, additional_binds: list = None
+    ) -> Dict[str, Any]:
+        output_dir = Path(output_dir).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        script_file = output_dir / "pymol_script.py"
+        script_file.write_text(script_content)
+
+        cmd = f"python3 {script_file.name}"
+        binds = [str(output_dir)] + (additional_binds or [])
+        binds = list(set(str(Path(b).resolve()) for b in binds if Path(b).exists()))
+
+        result = await self.backend.run_shell_command(cmd, cwd=output_dir, tool_name="pymol", additional_binds=binds)
+
+        # Only delete on SUCCESS
+        if result.get("success") and script_file.exists():
+            script_file.unlink()
+        else:
+            print(f"[PDBService] Script kept for debugging: {script_file}")
+
+        return result
+
+    # =========================================================================
+    # CIF POST-PROCESSING - Critical for CISTEM compatibility
+    # =========================================================================
+
+    def _reparse_cif(self, cif_path: Path) -> bool:
+        """
+        Re-parse and re-save CIF using BioPython.
+        PyMOL's CIF output may have formatting issues.
+        """
+        try:
+            from Bio.PDB import MMCIFParser, MMCIFIO
+
+            parser = MMCIFParser(QUIET=True)
+            structure = parser.get_structure("structure_id", str(cif_path))
+            io = MMCIFIO()
+            io.set_structure(structure)
+            io.save(str(cif_path))
+            return True
+        except Exception as e:
+            print(f"[PDBService] CIF re-parsing failed: {e}")
+            return False
+
+    # =========================================================================
+    # STRUCTURE METADATA
     # =========================================================================
 
     async def get_structure_metadata(self, pdb_path: str) -> Dict[str, Any]:
-        """Extracts metadata using standard loops."""
-        return await asyncio.to_thread(self._get_meta_sync, pdb_path)
+        """Extract metadata using PyMOL."""
+        pdb_path = str(Path(pdb_path).resolve())
 
-    def _get_meta_sync(self, path: str) -> Dict[str, Any]:
-        try:
-            st = gemmi.read_structure(path)
-            res_count = sum(len(model) for model in st)
+        script = textwrap.dedent(f"""
+import pymol2
+import json
+import sys
 
-            coords = []
-            for model in st:
-                for chain in model:
-                    for residue in chain:
-                        for atom in residue:
-                            coords.append(atom.pos.tolist())
+try:
+    pymol = pymol2.PyMOL()
+    pymol.start()
+    
+    pymol.cmd.load("{pdb_path}", "structure")
+    
+    min_xyz, max_xyz = pymol.cmd.get_extent("structure")
+    dims = [max_xyz[i] - min_xyz[i] for i in range(3)]
+    max_dim = max(dims)
+    res_count = pymol.cmd.count_atoms("structure and name CA")
+    
+    result = {{
+        "success": True,
+        "residues": int(res_count),
+        "bbox": [round(float(x), 2) for x in dims],
+        "max_dim": round(float(max_dim), 2),
+        "symmetry": "C1"
+    }}
+    
+    print("PYMOL_RESULT:" + json.dumps(result))
+    pymol.stop()
+    
+except Exception as e:
+    print("PYMOL_ERROR:" + str(e), file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
+""").strip()
 
-            coords = np.array(coords)
-            if len(coords) == 0:
-                return {"error": "No atoms found"}
+        output_dir = Path(pdb_path).parent
+        result = await self._run_pymol_script(script, output_dir, [str(output_dir)])
 
-            mins = np.min(coords, axis=0)
-            maxs = np.max(coords, axis=0)
-            dims = maxs - mins
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error", "Unknown error")}
 
-            sym = "C1"
-            if hasattr(st, "info") and st.info and "spacegroup_name" in st.info:
-                sym = st.info["spacegroup_name"]
-            elif hasattr(st, "spacegroup_name"):
-                sym = st.spacegroup_name
+        stdout = result.get("output", "")
+        for line in stdout.split("\n"):
+            if line.startswith("PYMOL_RESULT:"):
+                return json.loads(line.replace("PYMOL_RESULT:", ""))
 
-            return {
-                "success": True,
-                "residues": res_count,
-                "bbox": [round(float(x), 2) for x in dims],
-                "max_dim": round(float(np.max(dims)), 2),
-                "symmetry": sym,
-            }
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    async def align_to_principal_axes(self, input_path: str, output_path: str) -> Dict[str, Any]:
-        """Aligns structure using SVD."""
-        return await asyncio.to_thread(self._align_svd_sync, input_path, output_path)
-
-    def _align_svd_sync(self, input_path: str, output_path: str) -> Dict[str, Any]:
-        try:
-            st = gemmi.read_structure(input_path)
-            all_atoms = []
-            for model in st:
-                for chain in model:
-                    for residue in chain:
-                        for atom in residue:
-                            all_atoms.append(atom)
-
-            coords = np.array([a.pos.tolist() for a in all_atoms])
-            center = np.mean(coords, axis=0)
-            centered_coords = coords - center
-
-            _, _, vh = np.linalg.svd(centered_coords)
-            aligned_coords = centered_coords @ vh.T
-
-            for i, atom in enumerate(all_atoms):
-                atom.pos = gemmi.Position(*aligned_coords[i])
-
-            # FIX: Use correct method for gemmi 0.7.4
-            if output_path.endswith(".cif"):
-                doc = st.make_mmcif_document()
-                doc.write_file(output_path)
-            else:
-                st.write_pdb(output_path)
-            return {"success": True, "path": output_path}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        return {"success": False, "error": "No result found in PyMOL output"}
 
     # =========================================================================
-    # CISTEM SIMULATE - MAIN SIMULATION
+    # ALIGNMENT
+    # =========================================================================
+
+    async def align_to_principal_axes(self, input_path: str, output_path: str) -> Dict[str, Any]:
+        """Align structure using PyMOL."""
+        input_path = str(Path(input_path).resolve())
+        output_path = str(Path(output_path).resolve())
+
+        script = textwrap.dedent(f"""
+import pymol2
+import numpy as np
+import json
+import sys
+
+try:
+    pymol = pymol2.PyMOL()
+    pymol.start()
+    
+    pymol.cmd.load("{input_path}", "structure")
+    
+    coords = pymol.cmd.get_coords("structure")
+    center = np.mean(coords, axis=0)
+    centered_coords = coords - center
+    
+    covariance_matrix = np.cov(centered_coords.T)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance_matrix)
+    
+    idx = eigenvalues.argsort()[::-1]
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+    
+    aligned_coords = np.dot(centered_coords, eigenvectors)
+    pymol.cmd.load_coords(aligned_coords.tolist(), "structure")
+    
+    fmt = "cif" if "{output_path}".endswith(".cif") else "pdb"
+    pymol.cmd.save("{output_path}", "structure", format=fmt)
+    
+    pymol.stop()
+    
+    print("PYMOL_RESULT:" + json.dumps({{"success": True, "path": "{output_path}"}}))
+    
+except Exception as e:
+    print("PYMOL_ERROR:" + str(e), file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
+    sys.exit(1)
+""").strip()
+
+        output_dir = Path(output_path).parent
+        input_dir = Path(input_path).parent
+
+        result = await self._run_pymol_script(script, output_dir, [str(input_dir), str(output_dir)])
+
+        if not result.get("success"):
+            return {"success": False, "error": result.get("error", "Unknown error")}
+
+        # CRITICAL: Re-parse CIF on host
+        if output_path.endswith(".cif") and Path(output_path).exists():
+            if not self._reparse_cif(Path(output_path)):
+                return {"success": False, "error": "CIF post-processing failed"}
+
+        stdout = result.get("output", "")
+        for line in stdout.split("\n"):
+            if line.startswith("PYMOL_RESULT:"):
+                return json.loads(line.replace("PYMOL_RESULT:", ""))
+
+        return {"success": True, "path": output_path}
+
+    # =========================================================================
+    # CISTEM SIMULATION - Fixed to match original exactly
     # =========================================================================
 
     async def simulate_map_from_pdb(
@@ -141,52 +223,46 @@ class PDBService:
         sim_box: Optional[int] = None,
         mod_scale_bf: float = 1.0,
         mod_bf: float = 0.0,
-        oversample: int = 4,
+        oversample: int = 2,
         num_frames: int = 7,
-        num_threads: int = 4,
+        num_threads: int = 25,
     ) -> Dict[str, Any]:
-        """
-        Simulates density map from PDB using CISTEM's simulate binary.
-
-        Args:
-            pdb_path: Input PDB/CIF file
-            output_folder: Where to save results
-            target_apix: Final template pixel size (Å/pixel)
-            target_box: Final template box size (pixels)
-            resolution: Target resolution for lowpass (Å)
-            sim_apix: Simulation pixel size (default: min(4.0, target_apix))
-            sim_box: Simulation box size (default: auto-calculated)
-            mod_scale_bf: Linear scaling of per-atom B-factor (default: 1.0)
-            mod_bf: Per-atom B-factor offset (default: 0.0)
-            oversample: Oversampling factor (default: 4)
-            num_frames: Number of frames for movie (default: 7)
-            num_threads: Number of threads (default: 4)
-        """
+        """Simulate density map from PDB using CISTEM."""
         try:
-            # Check if CISTEM is available
-            if not self.cistem_binary:
-                return {
-                    "success": False,
-                    "error": "CISTEM simulate binary not found. Please install or configure path.",
-                }
+            # CHECK: Ensure cistem is configured (binary or container)
+            cistem_config = self.container_service.config.get_tool_config("cistem")
+            if not cistem_config:
+                return {"success": False, "error": "Tool 'cistem' not configured in conf.yaml"}
 
+            pdb_path = str(Path(pdb_path).resolve())
+            output_folder = str(Path(output_folder).resolve())
             os.makedirs(output_folder, exist_ok=True)
+
             base_name = Path(pdb_path).stem
 
-            # Auto-calculate simulation parameters
+            # Auto-calculate sim parameters
             if sim_apix is None:
                 sim_apix = min(4.0, target_apix)
 
             if sim_box is None:
                 meta = await self.get_structure_metadata(pdb_path)
-                if meta.get("success"):
-                    max_dim = meta["max_dim"]
-                    sim_box = self._calculate_optimal_box(max_dim, sim_apix)
-                else:
-                    sim_box = max(256, target_box * 2)
+                if not meta.get("success"):
+                    return {"success": False, "error": "Could not determine structure dimensions"}
+                max_dim = meta["max_dim"]
+                sim_box = self._calculate_optimal_box(max_dim, sim_apix)
 
-            # Run CISTEM simulation
-            sim_result = await self._run_cistem_simulate(
+            print(f"\n{'=' * 70}")
+            print(f"[PDBService] Starting PDB → Template Simulation")
+            print(f"{'=' * 70}")
+            print(f"  Input PDB:     {pdb_path}")
+            print(f"  Output folder: {output_folder}")
+            print(f"  Simulation:    {sim_apix}Å/px, box {sim_box}")
+            print(f"  Target:        {target_apix}Å/px, box {target_box}")
+            print(f"  Resolution:    {resolution}Å")
+            print(f"{'=' * 70}\n")
+
+            # Run CISTEM with PyMOL preprocessing
+            sim_result = await self._run_cistem_with_pymol(
                 pdb_path=pdb_path,
                 output_folder=output_folder,
                 base_name=base_name,
@@ -202,11 +278,9 @@ class PDBService:
             if not sim_result["success"]:
                 return sim_result
 
-            sim_map_path = sim_result["sim_path"]
-
-            # Process with Relion to create final template pair
+            # Process with Relion
             final_result = await self._process_simulated_map(
-                sim_map_path=sim_map_path,
+                sim_map_path=sim_result["sim_path"],
                 output_folder=output_folder,
                 base_name=base_name,
                 sim_apix=sim_apix,
@@ -215,19 +289,30 @@ class PDBService:
                 resolution=resolution,
             )
 
-            # Cleanup intermediate simulation file
-            if os.path.exists(sim_map_path):
+            # Cleanup intermediate
+            if os.path.exists(sim_result["sim_path"]):
                 try:
-                    os.remove(sim_map_path)
-                except:
-                    pass
+                    os.remove(sim_result["sim_path"])
+                except Exception as e:
+                    print(f"[PDBService] Warning: Could not delete {sim_result['sim_path']}: {e}")
+
+            if final_result.get("success"):
+                print(f"\n{'=' * 70}")
+                print(f"[PDBService] ✓ Template Generation Complete")
+                print(f"  White: {Path(final_result['path_white']).name}")
+                print(f"  Black: {Path(final_result['path_black']).name}")
+                print(f"{'=' * 70}\n")
 
             return final_result
 
         except Exception as e:
-            return {"success": False, "error": f"Simulation error: {str(e)}"}
+            import traceback
 
-    async def _run_cistem_simulate(
+            error_detail = f"Simulation error: {str(e)}\n{traceback.format_exc()}"
+            print(f"[PDBService] ✗ {error_detail}")
+            return {"success": False, "error": error_detail}
+
+    async def _run_cistem_with_pymol(
         self,
         pdb_path: str,
         output_folder: str,
@@ -241,115 +326,216 @@ class PDBService:
         num_threads: int,
     ) -> Dict[str, Any]:
         """
-        Run CISTEM simulate binary directly via stdin.
+        Prepare structure with PyMOL then run CISTEM.
+        Uses absolute paths throughout - cisTEM supports this natively.
+        Refactored to support both Container and Binary modes via ContainerService.
         """
+
+        import textwrap
+
+        output_folder = Path(output_folder).resolve()
+        output_folder.mkdir(parents=True, exist_ok=True)
+
+        # Output files (all absolute paths)
+        struct_file = output_folder / f"{base_name}_for_sim.cif"
+        sim_output_path = output_folder / f"{base_name}_sim_raw.mrc"
+
+        # Calculate offset for PyMOL transformation
+        offset = (sim_box / 2.0) * sim_apix
+
+        print(f"[PDBService] Step 1/3: PyMOL Structure Preparation")
+        print(f"  Input:     {Path(pdb_path).name}")
+        print(f"  Output:    {struct_file.name}")
+        print(f"  Transform: Center COM → Translate [{offset:.1f}, {offset:.1f}, {offset:.1f}]")
+
+        # === PYMOL PREPARATION ===
+        pymol_script = textwrap.dedent(f"""
+        import pymol2
+        import sys
+        import os
+
         try:
-            # Prepare structure file - simulate prefers CIF
-            struct_file = os.path.join(output_folder, f"{base_name}_for_sim.cif")
-
-            # Load structure and translate to positive quadrant
-            st = gemmi.read_structure(pdb_path)
-
-            # CISTEM requirement: translate to positive quadrant
-            offset = (sim_box / 2) * sim_apix
-            for model in st:
-                for chain in model:
-                    for residue in chain:
-                        for atom in residue:
-                            pos = atom.pos
-                            atom.pos = gemmi.Position(pos.x + offset, pos.y + offset, pos.z + offset)
-
-            # FIX: Use correct method for gemmi 0.7.4
-            doc = st.make_mmcif_document()
-            doc.write_file(struct_file)
+            pymol = pymol2.PyMOL()
+            pymol.start()
             
-            struct_basename = os.path.basename(struct_file)
+            pymol.cmd.load("{pdb_path}", "structure")
+            
+            # Center by center-of-mass
+            com = pymol.cmd.get_position("structure")
+            pymol.cmd.translate([-com[0], -com[1], -com[2]], "structure")
+            
+            # Translate to positive quadrant
+            pymol.cmd.translate([{offset}, {offset}, {offset}], "structure")
+            
+            # Save as CIF
+            pymol.cmd.save("{struct_file}", "structure", format="cif")
+            
+            # Verify file was created
+            if not os.path.exists("{struct_file}"):
+                raise Exception("PyMOL did not create output file")
+            
+            file_size = os.path.getsize("{struct_file}")
+            if file_size == 0:
+                raise Exception("PyMOL created empty file")
+            
+            pymol.stop()
+            
+            print("PYMOL_SUCCESS")
+            
+        except Exception as e:
+            print("PYMOL_ERROR:" + str(e), file=sys.stderr)
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            sys.exit(1)
+    """).strip()
 
+        binds_needed = list(set([str(Path(pdb_path).parent), str(output_folder)]))
 
-            # Output path
-            sim_output_name = f"{base_name}_sim_raw.mrc"
-            sim_output_path = os.path.join(output_folder, sim_output_name)
+        pymol_result = await self._run_pymol_script(pymol_script, output_folder, binds_needed)
 
-            # Create stdin input for simulate
-            # Matches old CryoBoost parameter order
-            stdin_input = "\n".join(
-                [
-                    sim_output_name,  # Output file name
-                    "Yes",  # Use scattering potential
-                    str(sim_box),  # Box size
-                    str(num_threads),  # Number of threads
-                    struct_basename,  # Input structure (relative path)
-                    "No",  # Add particles?
-                    str(sim_apix),  # Output pixel size
-                    str(mod_scale_bf),  # Per-atom scale B-factor
-                    str(mod_bf),  # Per-atom B-factor offset
-                    str(oversample),  # Oversample factor
-                    str(num_frames),  # Number of frames
-                    "No",  # Expert mode?
-                    "",  # Empty line to finish
-                ]
+        if not pymol_result.get("success"):
+            return {"success": False, "error": f"PyMOL failed: {pymol_result.get('error')}"}
+
+        # CRITICAL: Verify file exists on HOST
+        if not struct_file.exists():
+            return {"success": False, "error": f"PyMOL did not create {struct_file.name}"}
+
+        # CRITICAL: Re-parse CIF using BioPython (matches original libpdb.py lines 69-74)
+        print(f"[PDBService] Re-parsing CIF with BioPython...")
+        if not self._reparse_cif(struct_file):
+            return {"success": False, "error": "CIF post-processing failed"}
+
+        print(f"[PDBService] ✓ Structure prepared: {struct_file.name} ({struct_file.stat().st_size:,} bytes)")
+
+        # === RUN CISTEM ===
+
+        # 1. Resolve Tool Path and Mode
+        tool_config = self.container_service.config.get_tool_config("cistem")
+        if tool_config.exec_mode == "container":
+            inner_cmd = "simulate"  # Binary inside container
+        else:
+            inner_cmd = tool_config.bin_path  # Absolute path to binary on host
+
+        print(f"\n[PDBService] Step 2/3: cisTEM Density Simulation")
+        print(f"  Mode:      {tool_config.exec_mode}")
+        print(f"  Command:   {inner_cmd}")
+        print(f"  Input:     {struct_file}")
+        print(f"  Output:    {sim_output_path}")
+        print(f"  Box:       {sim_box}")
+        print(f"  Apix:      {sim_apix}")
+        print(f"  Threads:   {num_threads}")
+
+        # Prepare stdin parameters (using absolute paths!)
+        # cisTEM reads these line-by-line
+        stdin_input = "\n".join(
+            [
+                str(sim_output_path),  # outFile - ABSOLUTE PATH
+                "Yes",  # scPotential
+                str(int(sim_box)),  # boxSize
+                str(num_threads),  # threads
+                str(struct_file),  # inputPDBPath - ABSOLUTE PATH
+                "No",  # addPart
+                str(sim_apix),  # outputPix
+                str(mod_scale_bf),  # perAtomScaleBfact
+                str(mod_bf),  # perAtomBfact
+                str(int(oversample)),  # oversample
+                str(num_frames),  # numOfFrames
+                "No",  # expert
+                "",  # EOF
+            ]
+        )
+
+        print(f"[PDBService]   cisTEM stdin parameters:")
+        for i, line in enumerate(stdin_input.split("\n"), 1):
+            if line:
+                print(f"[PDBService]      {i:2d}. {line}")
+
+        try:
+            # 2. Wrap command (handles containerization or native pass-through)
+            # We must bind the output folder so container can read/write files
+            full_command = self.container_service.wrap_command_for_tool(
+                command=inner_cmd, cwd=output_folder, tool_name="cistem", additional_binds=[str(output_folder)]
             )
 
-            # Run simulate with stdin
-            result = await asyncio.to_thread(self._run_simulate_sync, self.cistem_binary, output_folder, stdin_input)
+            # 3. Environment setup (cisTEM needs OMP_NUM_THREADS)
+            env = os.environ.copy()
+            env["OMP_NUM_THREADS"] = str(num_threads)
 
-            if not result["success"]:
-                # Cleanup on failure
-                for f in [struct_file]:
-                    if os.path.exists(f):
-                        try:
-                            os.remove(f)
-                        except:
-                            pass
-                return result
-
-            # Verify output was created
-            if not os.path.exists(sim_output_path):
-                return {"success": False, "error": f"CISTEM completed but output not found: {sim_output_name}"}
-
-            # Cleanup structure file
-            if os.path.exists(struct_file):
-                try:
-                    os.remove(struct_file)
-                except:
-                    pass
-
-            return {"success": True, "sim_path": sim_output_path}
-
-        except Exception as e:
-            return {"success": False, "error": f"CISTEM execution error: {str(e)}"}
-
-    def _run_simulate_sync(self, binary_path: str, cwd: str, stdin_input: str) -> Dict[str, Any]:
-        """
-        Synchronous execution of simulate binary.
-        Run in thread pool to avoid blocking.
-        """
-        try:
+            # 4. Execute (shell=True is needed because wrap_command returns complex string)
             process = subprocess.Popen(
-                [binary_path],
+                full_command,
+                shell=True,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                cwd=cwd,
+                cwd=output_folder,
                 text=True,
-                env=os.environ.copy(),
+                env=env,
             )
 
-            stdout, stderr = process.communicate(input=stdin_input, timeout=300)  # 5 min timeout
+            stdout, stderr = process.communicate(input=stdin_input, timeout=600)
+
+            print(f"[PDBService] ✓ cisTEM completed (exit code: {process.returncode})")
+
+            if stdout:
+                lines = [l for l in stdout.strip().split("\n") if l.strip()]
+                if len(lines) > 30:
+                    print(f"[PDBService]   Output (last 15 lines):")
+                    for line in lines[-15:]:
+                        print(f"[PDBService]      {line}")
+                else:
+                    print(f"[PDBService]   Output:")
+                    for line in lines:
+                        print(f"[PDBService]      {line}")
+
+            if stderr and stderr.strip():
+                print(f"[PDBService] ⚠ cisTEM stderr:")
+                for line in stderr.strip().split("\n")[:10]:
+                    print(f"[PDBService]      {line}")
 
             if process.returncode != 0:
-                return {
-                    "success": False,
-                    "error": f"CISTEM failed with code {process.returncode}. STDERR: {stderr[:1000]}",
-                }
+                error = f"cisTEM failed with exit code {process.returncode}"
+                if stderr:
+                    error += f"\nStderr: {stderr[:500]}"
+                return {"success": False, "error": error}
 
-            return {"success": True, "stdout": stdout, "stderr": stderr}
+            # Verify output exists
+            if not sim_output_path.exists():
+                error = f"cisTEM did not create output file: {sim_output_path}\nDirectory contents:\n"
+                for f in output_folder.iterdir():
+                    error += f"  {f.name}\n"
+                return {"success": False, "error": error}
+
+            # Verify MRC is valid
+            try:
+                import mrcfile
+
+                with mrcfile.open(sim_output_path, "r", permissive=True) as mrc:
+                    shape = mrc.data.shape
+                    voxel_size = float(mrc.voxel_size.x)
+                    print(f"[PDBService] ✓ Simulation complete: {sim_output_path.name}")
+                    print(f"[PDBService]      Shape: {shape}")
+                    print(f"[PDBService]      Voxel size: {voxel_size:.3f} Å")
+            except Exception as e:
+                return {"success": False, "error": f"Invalid MRC file created: {e}"}
+
+            # Cleanup structure file (optional - keep for debugging if needed)
+            try:
+                struct_file.unlink()
+                print(f"[PDBService] ✓ Cleaned up: {struct_file.name}")
+            except Exception as e:
+                print(f"[PDBService] ⚠ Could not delete {struct_file.name}: {e}")
+
+            return {"success": True, "sim_path": str(sim_output_path)}
 
         except subprocess.TimeoutExpired:
             process.kill()
-            return {"success": False, "error": "CISTEM simulation timeout (>5 min)"}
+            return {"success": False, "error": "cisTEM timeout (>600s)"}
         except Exception as e:
-            return {"success": False, "error": f"Subprocess error: {str(e)}"}
+            import traceback
+
+            error = f"cisTEM execution error: {str(e)}\n{traceback.format_exc()}"
+            return {"success": False, "error": error}
 
     async def _process_simulated_map(
         self,
@@ -361,20 +547,19 @@ class PDBService:
         target_box: int,
         resolution: float,
     ) -> Dict[str, Any]:
-        """
-        Process CISTEM output with Relion.
-        Creates white (positive) and black (negative) contrast templates.
-        """
+        """Process CISTEM output with Relion."""
         try:
-            # Generate output filenames
-            name_core = f"{base_name}_apix{target_apix:.2f}_box{target_box}"
-            if resolution:
-                name_core += f"_lp{int(resolution)}"
+            print(f"\n[PDBService] Step 3/3: Template Finalization (Relion)")
+
+            name_core = f"{base_name}_apix{target_apix:.2f}"
+            if resolution and resolution > 0:
+                name_core += f"_ares{int(resolution)}"
+            name_core += f"_box{target_box}"
 
             path_white = os.path.join(output_folder, f"{name_core}_white.mrc")
             path_black = os.path.join(output_folder, f"{name_core}_black.mrc")
 
-            # Step 1: Create white template (positive contrast)
+            # WHITE template
             cmd_white = (
                 f"relion_image_handler "
                 f"--i {sim_map_path} "
@@ -383,10 +568,8 @@ class PDBService:
                 f"--rescale_angpix {target_apix:.4f} "
                 f"--new_box {target_box} "
             )
-
             if resolution and resolution > 0:
                 cmd_white += f"--lowpass {resolution} --filter_edge_width 6 "
-
             cmd_white += f"--force_header_angpix {target_apix:.4f}"
 
             result_white = await self.backend.run_shell_command(
@@ -394,9 +577,9 @@ class PDBService:
             )
 
             if not result_white.get("success"):
-                return {"success": False, "error": f"Relion processing (white) failed: {result_white.get('error')}"}
+                return {"success": False, "error": f"Relion (white) failed: {result_white.get('error')}"}
 
-            # Step 2: Create black template (inverted contrast)
+            # BLACK template
             cmd_black = f"relion_image_handler --i {path_white} --o {path_black} --multiply_constant -1"
 
             result_black = await self.backend.run_shell_command(
@@ -404,25 +587,11 @@ class PDBService:
             )
 
             if not result_black.get("success"):
-                return {"success": False, "error": f"Relion processing (black) failed: {result_black.get('error')}"}
+                return {"success": False, "error": f"Relion (black) failed: {result_black.get('error')}"}
 
-            return {
-                "success": True,
-                "path": path_black,  # Default to black for template matching
-                "path_white": path_white,
-                "path_black": path_black,
-            }
+            return {"success": True, "path": path_black, "path_white": path_white, "path_black": path_black}
 
         except Exception as e:
-            return {"success": False, "error": f"Template processing error: {str(e)}"}
+            import traceback
 
-    def _calculate_optimal_box(
-        self, max_dim_angstrom: float, pixel_size: float, min_box: int = 96, alignment: int = 32
-    ) -> int:
-        """
-        Calculate optimal box size for simulation.
-        Adds 30% padding and aligns to 32-pixel boundary.
-        """
-        box_needed = (max_dim_angstrom / pixel_size) * 1.3
-        box_size = int(((box_needed + alignment - 1) // alignment) * alignment)
-        return max(box_size, min_box)
+            return {"success": False, "error": f"Processing error: {str(e)}\n{traceback.format_exc()}"}

@@ -9,6 +9,7 @@ Run with: python preflight.py
 import shutil
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
@@ -174,40 +175,57 @@ def step_config_file() -> tuple[dict, list]:
         "constraint (optional)", default=config.get("slurm_defaults", {}).get("constraint", "")
     )
 
-    # Containers - just prompt for the base directory
+    # --- TOOLS CONFIGURATION ---
     print()
-    header("  Container paths")
-    info("Containers must be pre-built .sif files")
+    header("  Tools Configuration")
+    info("Tools can be run via Container (Apptainer/Singularity) or Native Binary.")
 
-    if "containers" not in config:
-        config["containers"] = {}
-
-    container_dir = prompt("Container directory (where your .sif files are)", default="/path/to/containers")
-
-    # Set container paths based on directory, or leave as placeholders
-    container_names = {
-        "warp_aretomo": "warp*.sif",
-        "cryocare": "cryocare*.sif",
-        "pytom": "pytom*.sif",
-        "relion": "relion*.sif",
-        "imod": "imod*.sif",
+    if "tools" not in config:
+        config["tools"] = {}
+    
+    # Define known tools and their defaults
+    tools_def = {
+        "warp_aretomo": {"default_mode": "container"},
+        "cryocare":     {"default_mode": "container"},
+        "pytom":        {"default_mode": "container"},
+        "relion":       {"default_mode": "container"},
+        "imod":         {"default_mode": "container"},
+        "cistem":       {"default_mode": "binary"},
+        "pymol":        {"default_mode": "container"},
     }
 
-    if container_dir and container_dir != "/path/to/containers":
-        container_path = Path(container_dir)
-        for name, pattern in container_names.items():
-            matches = list(container_path.glob(pattern))
-            if matches:
-                config["containers"][name] = str(matches[0])
-                ok(f"Found {name}: {matches[0].name}")
-            else:
-                config["containers"][name] = f"{container_dir}/{name}.sif"
-                unset_fields.append(f"containers.{name}")
-                warn(f"{name}: not found, using placeholder")
-    else:
-        for name in container_names:
-            config["containers"][name] = f"/path/to/{name}.sif"
-            unset_fields.append(f"containers.{name}")
+    # Ask for container base dir once to be helpful
+    container_base_dir = prompt("Default container directory (optional)", default="/groups/klumpe/software/containers")
+
+    for tool_name, defaults in tools_def.items():
+        print(f"\n  -- {tool_name} --")
+        
+        # 1. Ask Mode
+        mode_input = prompt(f"  Execution mode for {tool_name} (container/binary)", default=defaults["default_mode"])
+        mode = "binary" if "bin" in mode_input.lower() else "container"
+        
+        tool_config = {"exec_mode": mode}
+
+        if mode == "container":
+            # Auto-guess path
+            guess_path = f"{container_base_dir}/{tool_name}.sif"
+            path = prompt(f"  Container path (.sif)", default=guess_path)
+            tool_config["container_path"] = path
+            tool_config["bin_path"] = ""
+            
+            if not path or path == guess_path and not Path(path).exists():
+                unset_fields.append(f"tools.{tool_name}")
+                
+        else:
+            # Binary mode
+            path = prompt(f"  Binary path (or command name)", default=tool_name)
+            tool_config["bin_path"] = path
+            tool_config["container_path"] = ""
+            
+            if not path:
+                unset_fields.append(f"tools.{tool_name}")
+
+        config["tools"][tool_name] = tool_config
 
     # Save config
     save_yaml(CONF_FILE, config)
@@ -279,53 +297,103 @@ def step_validate_python(config: dict) -> bool:
     return True
 
 
-def step_validate_containers(config: dict) -> dict:
-    """Check containers specified in conf.yaml -> containers"""
-    header("3. Containers (conf.yaml -> containers)")
+def step_validate_tools(config: dict) -> dict:
+    """Check tools specified in conf.yaml -> tools"""
+    header("3. Tools Validation (conf.yaml -> tools)")
 
-    containers = config.get("containers", {})
+    tools = config.get("tools", {})
+    
+    # Backwards compatibility check
+    if not tools and "containers" in config:
+        warn("Using legacy 'containers' config. Please update to 'tools' structure.")
+        tools = {k: {"exec_mode": "container", "container_path": v} for k, v in config["containers"].items()}
 
-    if not containers:
-        warn("No containers configured")
+    if not tools:
+        warn("No tools configured")
         return {}
 
     test_commands = {
-        "relion"      : "relion --version 2>&1 | head -1",
+        "relion":       "relion --version 2>&1 | head -1",
         "warp_aretomo": "WarpTools --version 2>&1 | head -1",
-        "cryocare"    : "python -c 'import cryocare' && echo 'cryocare OK'",
-        "pytom"       : "echo 'pytom ok'",
-        "imod"        : "imodinfo 2>&1 | head -1",
+        "cryocare":     "python -c 'import cryocare' && echo 'cryocare OK'",
+        "pytom":        "echo 'pytom ok'",
+        "imod":         "imodinfo 2>&1 | head -1",
+        "cistem":       "echo 'cistem binary check' # cistem has no --version usually",
+        "pymol":        "pymol -cq -d 'print(1)' >/dev/null && echo 'pymol OK'",
     }
 
     results = {}
 
-    for name, path in containers.items():
-        if not path or path.startswith("/path/to"):
-            warn(f"{name}: needs configuration")
-            results[name] = {"exists": False, "works": False}
-            continue
+    for name, tool_cfg in tools.items():
+        mode = tool_cfg.get("exec_mode", "container")
+        
+        if mode == "container":
+            path = tool_cfg.get("container_path", "")
+            if not path or path.startswith("/path/to"):
+                warn(f"{name} [Container]: needs configuration")
+                results[name] = {"exists": False, "works": False}
+                continue
+            
+            container_path = Path(path)
+            if not container_path.exists():
+                fail(f"{name} [Container]: file not found at {path}")
+                results[name] = {"exists": False, "works": False}
+                continue
+            
+            # Simple size check
+            size_gb = container_path.stat().st_size / 1e9
+            
+            # Run Test
+            test_cmd = test_commands.get(name, "echo 'accessible'")
+            full_cmd = f'apptainer exec {path} bash -c "{test_cmd}"'
+            
+            success, stdout, stderr = run_cmd(full_cmd, timeout=30)
+            output = (stdout.strip() or stderr.strip())[:50]
+            
+            if success:
+                ok(f"{name} [Container]: {size_gb:.1f}GB - {output}")
+                results[name] = {"works": True, "exists": True}
+            else:
+                warn(f"{name} [Container]: {size_gb:.1f}GB - Test failed")
+                results[name] = {"works": False, "exists": True}
 
-        container_path = Path(path)
+        elif mode == "binary":
+            path = tool_cfg.get("bin_path", "")
+            if not path:
+                warn(f"{name} [Binary]: path not set")
+                results[name] = {"exists": False, "works": False}
+                continue
+            
+            # Check if it exists or is in PATH
+            if Path(path).exists():
+                exists = True
+                path_to_test = path
+            else:
+                # check `which`
+                s, o, _ = run_cmd(f"which {path}")
+                exists = s
+                path_to_test = path # assume in path
+            
+            if not exists:
+                fail(f"{name} [Binary]: Not found ({path})")
+                results[name] = {"exists": False, "works": False}
+                continue
 
-        if not container_path.exists():
-            fail(f"{name}: not found at {path}")
-            results[name] = {"exists": False, "works": False}
-            continue
+            # Run Test (Native)
+            # Special handling for cistem which reads stdin usually
+            if name == "cistem":
+                full_cmd = f"ls {path}" # minimal check
+            else:
+                test_cmd = test_commands.get(name, "echo 'accessible'")
+                full_cmd = f"{path_to_test} --version" if "version" in test_cmd else test_cmd
 
-        size_gb = container_path.stat().st_size / 1e9
-        results[name] = {"exists": True, "works": False}
-
-        test_cmd = test_commands.get(name, "echo 'accessible'")
-        full_cmd = f'apptainer exec {path} bash -c "{test_cmd}"'
-
-        success, stdout, stderr = run_cmd(full_cmd, timeout=60)
-        output = (stdout.strip() or stderr.strip())[:50]
-
-        if success and "not found" not in output.lower() and "error" not in output.lower():
-            ok(f"{name}: {size_gb:.1f}GB - {output}")
-            results[name]["works"] = True
-        else:
-            warn(f"{name}: {size_gb:.1f}GB - test failed")
+            success, stdout, stderr = run_cmd(full_cmd, timeout=10)
+            if success:
+                ok(f"{name} [Binary]: OK")
+                results[name] = {"works": True, "exists": True}
+            else:
+                warn(f"{name} [Binary]: Test failed")
+                results[name] = {"works": False, "exists": True}
 
     return results
 
@@ -449,7 +517,7 @@ def step_validate_directories(config: dict) -> list:
     return issues
 
 
-def print_summary(config: dict, container_results: dict, unset_fields: list, qsub_todos: list, dir_issues: list):
+def print_summary(config: dict, tool_results: dict, unset_fields: list, qsub_todos: list, dir_issues: list):
     header("Summary")
 
     all_issues = list(unset_fields) + list(qsub_todos) + list(dir_issues)
@@ -467,16 +535,16 @@ def print_summary(config: dict, container_results: dict, unset_fields: list, qsu
     print(f"  crboost_python: {fmt_val(python_exec)}")
     print(f"  DefaultProjectBase: {fmt_val(project_base)}")
 
-    print(f"\n  Containers:")
-    for name, r in container_results.items():
+    print(f"\n  Tools:")
+    for name, r in tool_results.items():
         if r.get("works"):
             print(f"    {C.G}{name}: OK{C.E}")
         elif r.get("exists"):
             print(f"    {C.Y}{name}: exists but test failed{C.E}")
         else:
-            print(f"    {C.R}{name}: missing{C.E}")
-            if f"containers.{name}" not in all_issues:
-                all_issues.append(f"containers.{name}")
+            print(f"    {C.R}{name}: missing/misconfigured{C.E}")
+            if f"tools.{name}" not in all_issues:
+                all_issues.append(f"tools.{name}")
 
     print()
     if not all_issues:
@@ -503,11 +571,11 @@ def main():
 
     config, unset_fields = step_config_file()
     step_validate_python(config)
-    container_results = step_validate_containers(config)
+    tool_results = step_validate_tools(config) # Updated name
     step_validate_slurm(config)
     qsub_todos = step_setup_qsub(config)
     dir_issues = step_validate_directories(config)
-    print_summary(config, container_results, unset_fields, qsub_todos, dir_issues)
+    print_summary(config, tool_results, unset_fields, qsub_todos, dir_issues)
 
 
 if __name__ == "__main__":

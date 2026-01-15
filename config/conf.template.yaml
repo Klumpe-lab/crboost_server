@@ -27,10 +27,36 @@ slurm_defaults:
   mem: "32G"
   time: "2:00:00"
 
-# Container paths - all containers must be pre-built .sif files
-containers:
-  warp_aretomo: "/path/to/warp_aretomo.sif"
-  cryocare: "/path/to/cryocare.sif"
-  pytom: "/path/to/pytom_match_pick.sif"
-  relion: "/path/to/relion5.sif"
-  imod: "/path/to/imod.sif"
+# Tool execution configuration
+# exec_mode: 'container' or 'binary'
+# container_path: path to .sif file (required if exec_mode is container)
+# bin_path: path to executable or wrapper (required if exec_mode is binary)
+tools:
+  warp_aretomo:
+    exec_mode: "container"
+    container_path: "/path/to/warp_aretomo.sif"
+    bin_path: ""
+  cryocare:
+    exec_mode: "container"
+    container_path: "/path/to/cryocare.sif"
+    bin_path: ""
+  pytom:
+    exec_mode: "container"
+    container_path: "/path/to/pytom_match_pick.sif"
+    bin_path: ""
+  relion:
+    exec_mode: "container"
+    container_path: "/path/to/relion5.sif"
+    bin_path: ""
+  imod:
+    exec_mode: "container"
+    container_path: "/path/to/imod.sif"
+    bin_path: ""
+  cistem:
+    exec_mode: "binary"
+    container_path: ""
+    bin_path: "/groups/klumpe/software/cisTEM/bin/simulate"
+  pymol:
+    exec_mode: "container"
+    container_path: "/path/to/pymol.sif"
+    bin_path: "pymol"
