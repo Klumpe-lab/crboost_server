@@ -1,0 +1,54 @@
+Bootstrap: docker
+From: python:3.9-slim
+
+%labels
+    Author YourName
+    Version 1.0
+    Description "Simple PyMOL container for cryoboost"
+
+%environment
+    export LC_ALL=C
+    export PYTHONUNBUFFERED=1
+    unset XDG_RUNTIME_DIR
+
+%post
+    # Install system dependencies
+    apt-get update && apt-get install -y \
+        wget \
+        curl \
+        build-essential \
+        cmake \
+        libx11-dev \
+        libxext-dev \
+        libxi-dev \
+        libgl1-mesa-dev \
+        libglu1-mesa-dev \
+        freeglut3-dev \
+        libxmu-dev \
+        libxpm-dev \
+        libxt-dev \
+        libxml2-dev \
+        libxslt1-dev \
+        zlib1g-dev \
+        libpng-dev \
+        libfreetype6-dev \
+        libjpeg-dev \
+        libtiff-dev \
+        libnetcdf-dev \
+        libgsl-dev \
+        libfftw3-dev \
+        && rm -rf /var/lib/apt/lists/*
+    
+    # Install Python packages
+    pip install --upgrade pip
+    pip install numpy scipy matplotlib pandas scikit-learn
+    pip install mrcfile pillow scikit-image starfile
+    pip install pymol-open-source
+    pip install cryodrgn biopython
+    
+    # Create directories
+    mkdir -p /scratch /data /work /home
+    
+%test
+    python -c "import pymol; print('PyMOL import successful')"
+    python -c "import numpy; print('NumPy:', numpy.__version__)"

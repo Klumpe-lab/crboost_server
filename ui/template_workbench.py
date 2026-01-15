@@ -389,22 +389,26 @@ class TemplateWorkbench:
                             "flat dense color=primary"
                         )
 
-                ui.separator().classes("opacity-30")
-                ui.button("Align Principal Axis (SVD)", icon="straighten", on_click=self._align_pdb).props(
-                    "unelevated dense color=emerald outline"
-                ).classes("w-full text-[11px]")
 
+                # Inside _render_template_creation_panel
                 with ui.row().classes("w-full gap-2"):
-                    self.simulate_btn = (
-                        ui.button("Simulate (Gemmi)", icon="science", on_click=self._simulate_pdb)
-                        .props("unelevated dense color=blue-7 outline")
-                        .classes("flex-1 text-[11px]")
-                    )
-                    self.resample_btn = (
-                        ui.button("Resample (Relion)", icon="layers", on_click=self._resample_emdb)
-                        .props("unelevated dense color=blue-7 outline")
-                        .classes("flex-1 text-[11px]")
-                    )
+                    # --- Simulate Button Container ---
+                    with ui.element("div").classes("flex-1"):
+                        self.simulate_btn = (
+                            ui.button("Simulate (Pymol/Cistem)", icon="science", on_click=self._simulate_pdb)
+                            .props("unelevated dense color=blue-7 outline")
+                            .classes("w-full text-[11px]")
+                        )
+                        self.simulate_tooltip = ui.tooltip("").classes("text-xs")
+
+                    # --- Resample Button Container ---
+                    with ui.element("div").classes("flex-1"):
+                        self.resample_btn = (
+                            ui.button("Resample (Relion)", icon="layers", on_click=self._resample_emdb)
+                            .props("unelevated dense color=grey-4 outline")
+                            .classes("w-full text-[11px]")
+                        )
+                        self.resample_tooltip = ui.tooltip("Work in Progress").classes("text-xs")
 
     def _render_mask_creation_panel(self):
         self._section_title("2. Mask Creation", "architecture")
@@ -765,6 +769,8 @@ class TemplateWorkbench:
     def _update_selection_labels(self):
         p = self._get_tm_params()
         t, m = (p.template_path, p.mask_path) if p else ("", "")
+        
+        # Update standard labels
         if self.template_label:
             self.template_label.set_text(os.path.basename(t) or "Not set")
         if self.mask_label:
@@ -772,11 +778,22 @@ class TemplateWorkbench:
         if self.structure_label:
             self.structure_label.set_text(os.path.basename(self.structure_path) or "Not set")
 
-        # FIX: Use set_enabled instead of props('remove disable')
+        # --- Simulate Button Logic ---
         is_structure = self.structure_path.lower().endswith((".pdb", ".cif"))
         if self.simulate_btn:
             self.simulate_btn.set_enabled(is_structure)
+            
+            # Update tooltip based on state
+            if is_structure:
+                msg = f"The same {self.pixel_size}Å / {int(self.box_size)}px / {self.template_resolution}Å params will be used."
+                self.simulate_tooltip.set_text(msg)
+            else:
+                self.simulate_tooltip.set_text("Select a PDB/CIF structure in the tray first")
 
+        # --- Resample Button Logic ---
         is_map = self.structure_path.lower().endswith((".mrc", ".map"))
         if self.resample_btn:
-            self.resample_btn.set_enabled(is_map)
+            # Keep it disabled as per your "Work in Progress" requirement, 
+            # or enable it if you are ready to use the Relion resample logic:
+            # self.resample_btn.set_enabled(is_map) 
+            pass
