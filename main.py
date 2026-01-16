@@ -71,8 +71,8 @@ if __name__ in {"__main__", "__mp_main__"}:
     print(f"Access URLs:")
     print(f"  Local:   http://localhost:{args.port}")
     print(f"  Network: http://{local_ip}:{args.port}")
-    print("\nTo access from your local machine, run this in a local terminal:")
-    # Using $USER and matching local/remote ports to avoid conflicts
+    print("\nTo access in the browser from your local machine, establish port-forwarding from remote to your local terminal.")
+    print("\nRun this in a local terminal:")
     print(f"ssh -f -N -L {args.port}:localhost:{args.port} $USER@{hostname}")
     print("="*60 + "\n")
 
