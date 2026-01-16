@@ -11,8 +11,8 @@ from typing import Dict, Any, Callable, Optional
 from nicegui import ui, app
 
 from backend import CryoBoostBackend
+from services.configs.user_prefs_service import get_prefs_service
 from services.project_state import get_project_state
-from services.user_prefs_service import get_prefs_service
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
 

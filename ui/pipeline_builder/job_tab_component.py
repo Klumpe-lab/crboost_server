@@ -11,7 +11,9 @@ from typing import Dict, Any, Callable
 
 from nicegui import ui
 
+from services.computing.slurm_service import SLURM_PRESET_MAP, SlurmPreset
 from services.project_state import AlignmentMethod, JobStatus, JobType, get_project_state, get_state_service
+from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.status_indicator import ReactiveStatusBadge
 from ui.template_workbench import TemplateWorkbench
 from ui.ui_state import get_ui_state_manager, UIStateManager, MonitorTab, get_job_display_name
@@ -39,7 +41,6 @@ def _render_slurm_config_section(job_model, is_frozen: bool, save_handler: Calla
 @ui.refreshable
 def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
     """The actual interactive content that updates when presets are clicked."""
-    from services.project_state import SlurmPreset, SLURM_PRESET_MAP
 
     effective_config = job_model.get_effective_slurm_config()
     overrides = job_model.slurm_overrides or {}
@@ -222,7 +223,6 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
 
     async def handle_delete():
         """Handle job deletion with orphan preview."""
-        from services.pipeline_deletion_service import get_deletion_service
 
         deletion_service = get_deletion_service()
         project_path = ui_mgr.project_path

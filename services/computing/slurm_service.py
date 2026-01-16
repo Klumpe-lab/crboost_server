@@ -1,9 +1,94 @@
 # services/slurm_service.py
 import asyncio
+from enum import Enum
 import re
-from typing import Dict, List, Any, Optional
+from typing import ClassVar, Dict, List, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+from services.configs.config_service import get_config_service
+
+class SlurmPreset(str, Enum):
+    CUSTOM = "Custom"
+    SMALL  = "1gpu:16GB"
+    MEDIUM = "2gpu:32GB"
+    LARGE  = "4gpu:64gb"
+
+# Descriptive mapping for UI pills and snapping values
+SLURM_PRESET_MAP = {
+    SlurmPreset.SMALL: {
+        "label": "1 GPU · 16GB · 30m",
+        "values": {
+            "gres"         : "gpu:1",
+            "mem"          : "16G",
+            "cpus_per_task": 2,
+            "time"         : "0:30:00",
+            "nodes"        : 1
+        }
+    },
+    SlurmPreset.MEDIUM: {
+        "label": "2 GPUs · 32GB · 2h",
+        "values": {
+            "gres"         : "gpu:2",
+            "mem"          : "32G",
+            "cpus_per_task": 4,
+            "time"         : "2:00:00",
+            "nodes"        : 2
+        }
+    },
+    SlurmPreset.LARGE: {
+        "label": "4 GPUs · 64GB · 4h",
+        "values": {
+            "gres"         : "gpu:4",
+            "mem"          : "64G",
+            "cpus_per_task": 8,
+            "time"         : "4:00:00",
+            "nodes"        : 4
+        }
+    }
+}
+
+class SlurmConfig(BaseModel):
+    """SLURM submission parameters for a job"""
+    model_config = ConfigDict(validate_assignment=True)
+
+    preset         : SlurmPreset = Field(default=SlurmPreset.CUSTOM)
+    partition      : str         = "g"
+    constraint     : str         = "g2|g3|g4"
+    nodes          : int         = Field(default=1, ge=1)
+    ntasks_per_node: int         = Field(default=1, ge=1)
+    cpus_per_task  : int         = Field(default=4, ge=1)
+    gres           : str         = "gpu:4"
+    mem            : str         = "64G"
+    time           : str         = "3:30:00"
+
+    # Standard Relion Tomography aliases for XXXextra1XXX through XXXextra8XXX
+    QSUB_EXTRA_MAPPING: ClassVar[Dict[str, str]] = {
+        "partition"      : "qsub_extra1",
+        "constraint"     : "qsub_extra2",
+        "nodes"          : "qsub_extra3",
+        "ntasks_per_node": "qsub_extra4",
+        "cpus_per_task"  : "qsub_extra5",
+        "gres"           : "qsub_extra6",
+        "mem"            : "qsub_extra7",
+        "time"           : "qsub_extra8",
+    }
+    def to_qsub_extra_dict(self) -> Dict[str, str]:
+        return {
+            self.QSUB_EXTRA_MAPPING[field]: str(getattr(self, field))
+            for field in self.QSUB_EXTRA_MAPPING
+        }
+
+    @classmethod
+    def from_config_defaults(cls) -> "SlurmConfig":
+        try:
+            config_service = get_config_service()
+            defaults = config_service.slurm_defaults
+            return cls(**defaults.model_dump())
+        except Exception:
+            return cls()
+
 
 
 @dataclass

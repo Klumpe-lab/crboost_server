@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
-from services.config_service import get_config_service
+from services.configs.config_service import get_config_service
+from services.configs.starfile_service import StarfileService
 from services.project_state import (
     AbstractJobParams, 
     JobCategory, 
@@ -14,7 +15,6 @@ from services.project_state import (
     JobStatus,
     ImportMoviesParams,
 )
-from .starfile_service import StarfileService
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -68,7 +68,7 @@ class PipelineOrchestratorService:
         current_counter = self._get_current_relion_counter(project_dir)
 
         # 3. Process Each Job
-        server_dir = Path(__file__).parent.parent.resolve()
+        server_dir = Path(__file__).parent.parent.parent.resolve()
 
         previous_job_output_dir_in_batch: Optional[Path] = None
 
