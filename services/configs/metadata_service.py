@@ -12,8 +12,8 @@ from typing import Dict, Optional
 import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
+from services.configs.starfile_service import StarfileService
 from services.project_state import AlignmentMethod
-from services.starfile_service import StarfileService
 
 class WarpXmlParser:
     """Parses WarpTools XML files to extract CTF and processing metadata"""

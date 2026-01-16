@@ -6,15 +6,15 @@ import pandas as pd
 import os
 from datetime import datetime
 
-from services.pdb_service import PDBService
-from services.project_service import ProjectService
-from services.pipeline_orchestrator_service import PipelineOrchestratorService
-from services.container_service import get_container_service
-from services.pipeline_runner import PipelineRunnerService
+from services.templating.template_service import TemplateService
+from services.templating.pdb_service import PDBService
+from services.scheduling_and_orchestration.project_service import ProjectService
+from services.scheduling_and_orchestration.pipeline_orchestrator_service import PipelineOrchestratorService
+from services.computing.container_service import get_container_service
+from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.project_state import JobType, get_state_service
-from services.slurm_service import SlurmService
-from services.config_service import get_config_service
-from services.template_service import TemplateService
+from services.computing.slurm_service import SlurmService
+from services.configs.config_service import get_config_service
 
 
 HARDCODED_USER = "cryoboost-user" # this is currently just a stand-in. multi-user multi-session is WIP.
@@ -23,6 +23,7 @@ class CryoBoostBackend:
     def __init__(self, server_dir: Path):
         self.username              = HARDCODED_USER
         self.server_dir            = server_dir
+        self.config_service        = get_config_service()
         self.project_service       = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service     = get_container_service()
@@ -182,7 +183,8 @@ class CryoBoostBackend:
             return {"success": False, "error": str(e)}
 
     async def get_available_jobs(self) -> List[str]:
-        template_path = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+        # --- FIX: Use config root instead of cwd ---
+        template_path = self.config_service.crboost_root / "config" / "Schemes" / "warp_tomo_prep"
         if not template_path.is_dir():
             return []
         jobs = sorted([p.name for p in template_path.iterdir() if p.is_dir()])

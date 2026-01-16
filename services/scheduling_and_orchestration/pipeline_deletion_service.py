@@ -6,23 +6,20 @@ Relion has no CLI for deletion - only GUI. We implement equivalent logic.
 
 import shutil
 from pathlib import Path
-from datetime import datetime
-from typing import Any, Dict, List, Set, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 import pandas as pd
-
-from services.starfile_service import StarfileService
-from services.project_state import JobType, JobStatus, get_state_service
+from services.configs.starfile_service import StarfileService
+from services.project_state import JobType
 
 
 @dataclass
 class DeletionResult:
-    """Result of a deletion operation."""
-    success: bool
-    deleted_jobs: List[str] = field(default_factory=list)
+    success      : bool
+    deleted_jobs : List[str] = field(default_factory=list)
     orphaned_jobs: List[str] = field(default_factory=list)
-    error: Optional[str] = None
-    message: str = ""
+    error        : Optional[str] = None
+    message      : str = ""
 
 
 @dataclass
