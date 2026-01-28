@@ -331,21 +331,36 @@ class TemplateWorkbench:
 
     def _render_template_creation_panel(self):
         self._section_title("1. Template Generation", "settings")
+
         with ui.row().classes("w-full gap-2 items-start"):
             ui.number(
-                "Pixel Size (Å)", value=self.pixel_size, step=0.1, on_change=self._on_pixel_size_changed
+                "Pixel Size (Å)",
+                value=self.pixel_size,
+                step=0.1,
+                on_change=self._on_pixel_size_changed,
             ).bind_value(self, "pixel_size").props("dense outlined").classes("flex-1")
+
             self.box_input = (
-                ui.number("Box (px)", value=self.box_size, step=32, on_change=self._on_box_size_changed)
+                ui.number(
+                    "Box (px)",
+                    value=self.box_size,
+                    step=32,
+                    on_change=self._on_box_size_changed,
+                )
                 .bind_value(self, "box_size")
                 .props("dense outlined")
                 .classes("flex-1")
             )
-            if self.auto_box:
-                self.box_input.props(add="disable")
-            ui.number("LP (Å)", value=self.template_resolution, step=5).bind_value(self, "template_resolution").props(
-                "dense outlined"
-            ).classes("w-16")
+
+            # IMPORTANT: initial state
+            if self.auto_box and self.box_input:
+                self.box_input.disable()
+            elif self.box_input:
+                self.box_input.enable()
+
+            ui.number("LP (Å)", value=self.template_resolution, step=5).bind_value(
+                self, "template_resolution"
+            ).props("dense outlined").classes("w-16")
 
         with ui.row().classes("w-full justify-between items-center px-1"):
             self.auto_box_checkbox = (
@@ -354,7 +369,8 @@ class TemplateWorkbench:
                 .classes("text-[11px] text-gray-500")
             )
             self.auto_box_checkbox.on_value_change(self._on_auto_box_toggle)
-            self.size_estimate_label = ui.label("~8 MB").classes("text-[10px] font-mono text-green-600")
+
+            self.size_estimate_label = ui.label("—").classes("text-[10px] font-mono text-gray-400")
 
         self.warning_container = ui.column().classes("w-full gap-1 my-1")
         self._update_size_estimate()
@@ -364,9 +380,9 @@ class TemplateWorkbench:
             with ui.column().classes("w-full gap-1 bg-gray-50/50 p-2 rounded-lg"):
                 ui.label("Ellipsoid Creation").classes("text-[10px] font-bold text-gray-500 uppercase")
                 with ui.row().classes("w-full gap-2 items-center"):
-                    ui.input(label="x:y:z (Å)", placeholder="550:550:550").bind_value(self, "basic_shape_def").props(
-                        "dense outlined"
-                    ).classes("flex-1").on("update:model-value", self._on_shape_changed)
+                    ui.input(label="x:y:z (Å)", placeholder="550:550:550").bind_value(
+                        self, "basic_shape_def"
+                    ).props("dense outlined").classes("flex-1").on("update:model-value", self._on_shape_changed)
                     ui.button("Generate", icon="add_box", on_click=self._gen_shape).props(
                         "unelevated dense color=primary"
                     ).classes("px-4")
@@ -389,10 +405,7 @@ class TemplateWorkbench:
                             "flat dense color=primary"
                         )
 
-
-                # Inside _render_template_creation_panel
                 with ui.row().classes("w-full gap-2"):
-                    # --- Simulate Button Container ---
                     with ui.element("div").classes("flex-1"):
                         self.simulate_btn = (
                             ui.button("Simulate (Pymol/Cistem)", icon="science", on_click=self._simulate_pdb)
@@ -401,7 +414,6 @@ class TemplateWorkbench:
                         )
                         self.simulate_tooltip = ui.tooltip("").classes("text-xs")
 
-                    # --- Resample Button Container ---
                     with ui.element("div").classes("flex-1"):
                         self.resample_btn = (
                             ui.button("Resample (Relion)", icon="layers", on_click=self._resample_emdb)
@@ -409,6 +421,7 @@ class TemplateWorkbench:
                             .classes("w-full text-[11px]")
                         )
                         self.resample_tooltip = ui.tooltip("Work in Progress").classes("text-xs")
+
 
     def _render_mask_creation_panel(self):
         self._section_title("2. Mask Creation", "architecture")
@@ -436,6 +449,14 @@ class TemplateWorkbench:
     def _render_logs_panel(self):
         self._section_title("Activity Log", "terminal")
         self.log_container = ui.column().classes("w-full gap-1 flex-1 overflow-y-auto")
+        self.busy_overlay = ui.element('div').classes(
+            "absolute inset-0 bg-white/70 backdrop-blur-sm flex items-center justify-center z-50"
+        ).style("display:none;")
+        with self.busy_overlay:
+            with ui.card().classes("p-6 items-center"):
+                ui.spinner(size="lg")
+            ui.label("Running simulation…").classes("text-sm text-gray-700 mt-2")
+
 
     def _section_title(self, title: str, icon: str):
         with ui.row().classes("items-center gap-2 mb-2"):
@@ -685,21 +706,68 @@ class TemplateWorkbench:
                 f"const el = document.getElementById('c{self.log_container.id}'); if (el) el.scrollTop = el.scrollHeight;"
             )
 
-    def _on_pixel_size_changed(self):
+    def _on_pixel_size_changed(self, e=None):
+        # tolerate transient None during editing
+        val = getattr(e, "value", None) if e is not None else self.pixel_size
+        if val is None:
+            self._update_size_estimate()
+            return
+
+        try:
+            self.pixel_size = float(val)
+        except (TypeError, ValueError):
+            return
+
         self._update_size_estimate()
         self._recalculate_auto_box()
 
-    def _on_box_size_changed(self):
+
+    def _on_box_size_changed(self, e=None):
+        # Prefer the event value if provided (NiceGUI sends e.value)
+        val = None
+        if e is not None:
+            val = getattr(e, "value", None)
+
+        # If no event (or no value), fall back to current attribute
+        if val is None:
+            val = self.box_size
+
+        # Still None? User is mid-edit; just show placeholder and return.
+        if val is None:
+            if self.size_estimate_label:
+                self.size_estimate_label.set_text("—")
+                self.size_estimate_label.classes(replace="text-[10px] font-mono text-gray-400")
+            return
+
+        # Coerce to int safely
+        try:
+            self.box_size = int(val)
+        except (TypeError, ValueError):
+            # Ignore invalid intermediate text states
+            return
+
         self._update_size_estimate()
+
 
     def _on_shape_changed(self):
         self._recalculate_auto_box()
 
     def _on_auto_box_toggle(self, e):
-        self.auto_box = e.value
-        self.box_input.props(f"{'add' if e.value else 'remove'} disable")
-        if e.value:
+        self.auto_box = bool(e.value)
+
+        if not self.box_input:
+            return
+
+        if self.auto_box:
+            # lock manual editing and compute a fresh auto box
+            self.box_input.disable()
             self._recalculate_auto_box()
+        else:
+            # allow manual editing
+            self.box_input.enable()
+
+        self._update_size_estimate()
+
 
     def _recalculate_auto_box(self):
         if not self.auto_box:
@@ -714,12 +782,26 @@ class TemplateWorkbench:
             pass
 
     def _update_size_estimate(self):
-        if self.size_estimate_label:
-            est = round((int(self.box_size) ** 3 * 4) / (1024 * 1024), 1)
-            self.size_estimate_label.set_text(f"~{est} MB")
-            self.size_estimate_label.classes(
-                replace=f"text-[10px] font-mono {'text-red-600' if est > 100 else 'text-green-600'}"
-            )
+        if not self.size_estimate_label:
+            return
+
+        try:
+            if self.box_size is None:
+                raise ValueError("box_size is None")
+            box = int(self.box_size)
+            if box <= 0:
+                raise ValueError("box_size <= 0")
+        except (TypeError, ValueError):
+            self.size_estimate_label.set_text("—")
+            self.size_estimate_label.classes(replace="text-[10px] font-mono text-gray-400")
+            return
+
+        est = round((box ** 3 * 4) / (1024 * 1024), 1)
+        self.size_estimate_label.set_text(f"~{est} MB")
+        self.size_estimate_label.classes(
+            replace=f"text-[10px] font-mono {'text-red-600' if est > 100 else 'text-green-600'}"
+        )
+
 
     def _post_to_viewer(self, action: str, **kwargs):
         payload = {"action": action, **kwargs}
