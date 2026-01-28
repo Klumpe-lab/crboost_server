@@ -232,28 +232,44 @@ class TemplateWorkbench:
             self._log(f"Alignment Error: {res.get('error')}")
 
     async def _simulate_pdb(self):
-        """Run the CISTEM + Relion simulation pipeline."""
         if not self.structure_path:
+            ui.notify("Select a structure first", type="warning")
             return
 
-        self._log(f"Simulating density from {os.path.basename(self.structure_path)}...")
-        
-        # Optional: add B-factor controls to your UI
-        res = await self.backend.pdb_service.simulate_map_from_pdb(
-            pdb_path=self.structure_path,
-            output_folder=self.output_folder,
-            target_apix=self.pixel_size,
-            target_box=int(self.box_size),
-            resolution=self.template_resolution,
-            # Let it auto-calculate sim_apix and sim_box
-            # Or expose these in your UI if users need control
-        )
+        # Disable the buttons so users don't double-submit
+        if self.simulate_btn:
+            self.simulate_btn.set_enabled(False)
+        if self.resample_btn:
+            self.resample_btn.set_enabled(False)
 
-        if res["success"]:
-            self._log(f"Simulation finished: {os.path.basename(res['path_black'])}")
-            await self.refresh_files()
-        else:
-            self._log(f"Simulation failed: {res.get('error')}")
+        n = ui.notification("Simulating density… this can take a while", type="ongoing", spinner=True, timeout=None)
+
+        try:
+            self._log(f"Simulating density from {os.path.basename(self.structure_path)}...")
+
+            res = await self.backend.pdb_service.simulate_map_from_pdb(
+                pdb_path=self.structure_path,
+                output_folder=self.output_folder,
+                target_apix=self.pixel_size,
+                target_box=int(self.box_size),
+                resolution=self.template_resolution,
+            )
+
+            if res.get("success"):
+                self._log(f"Simulation finished: {os.path.basename(res['path_black'])}")
+                ui.notify("Simulation finished", type="positive")
+                await self.refresh_files()
+            else:
+                self._log(f"Simulation failed: {res.get('error')}")
+                ui.notify("Simulation failed (see log)", type="negative", timeout=8000)
+
+        finally:
+            n.dismiss()
+            # Re-enable according to current selection logic
+            self._update_selection_labels()
+            if self.resample_btn:
+                self.resample_btn.set_enabled(True)  # or keep your WIP behavior
+
 
     async def _resample_emdb(self):
         """Resample existing map via Relion."""
@@ -441,6 +457,14 @@ class TemplateWorkbench:
     def _render_logs_panel(self):
         self._section_title("Activity Log", "terminal")
         self.log_container = ui.column().classes("w-full gap-1 flex-1 overflow-y-auto")
+        self.busy_overlay = ui.element('div').classes(
+            "absolute inset-0 bg-white/70 backdrop-blur-sm flex items-center justify-center z-50"
+        ).style("display:none;")
+        with self.busy_overlay:
+            with ui.card().classes("p-6 items-center"):
+                ui.spinner(size="lg")
+                ui.label("Running simulation…").classes("text-sm text-gray-700 mt-2")
+
 
     def _section_title(self, title: str, icon: str):
         with ui.row().classes("items-center gap-2 mb-2"):
