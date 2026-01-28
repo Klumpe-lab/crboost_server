@@ -5,6 +5,7 @@ import json
 import asyncio
 from pathlib import Path
 import mrcfile
+from nicegui import context
 
 from services.project_state import JobType, get_project_state, get_state_service
 
@@ -133,10 +134,14 @@ class TemplateWorkbench:
         self.session_item_containers = {}
 
         self._load_project_parameters()
-        self._render()
 
-        asyncio.create_task(self.refresh_files())
-        asyncio.create_task(self._test_iframe_loaded())
+        self.client = None
+        self._render()
+        self.client = context.client 
+
+        ui.timer(0, self.refresh_files, once=True)
+        ui.timer(0, self._test_iframe_loaded, once=True)   # or delete this; see below
+
 
     def _load_project_parameters(self):
         """Load pixel size and binning from project state."""
@@ -681,9 +686,12 @@ class TemplateWorkbench:
         if self.log_container:
             with self.log_container:
                 ui.label(f"• {msg}").classes("text-[10px] text-gray-600 font-mono leading-tight")
-            ui.run_javascript(
-                f"const el = document.getElementById('c{self.log_container.id}'); if (el) el.scrollTop = el.scrollHeight;"
+        if self.client and self.log_container:
+            self.client.run_javascript(
+                f"const el=document.getElementById('c{self.log_container.id}');"
+                f"if (el) el.scrollTop = el.scrollHeight;"
             )
+
 
     def _on_pixel_size_changed(self):
         self._update_size_estimate()
@@ -722,10 +730,15 @@ class TemplateWorkbench:
             )
 
     def _post_to_viewer(self, action: str, **kwargs):
+        if not self.client:
+            return
         payload = {"action": action, **kwargs}
-        ui.run_javascript(
-            f"const f = document.getElementById('molstar-frame'); if (f && f.contentWindow) f.contentWindow.postMessage({json.dumps(payload)}, '*');"
+        self.client.run_javascript(
+            "const f = document.getElementById('molstar-frame');"
+            "if (f && f.contentWindow) f.contentWindow.postMessage(%s, '*');"
+            % json.dumps(payload)
         )
+
 
     def _handle_viewer_event(self, e):
         event_type = e.args.get("type")
