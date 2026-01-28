@@ -356,7 +356,6 @@ class AbstractJobParams(BaseModel):
     def get_tool_name(self) -> str:
         raise NotImplementedError("Subclass must implement get_tool_name()")
 
-
 class ImportMoviesParams(AbstractJobParams):
 
     JOB_CATEGORY   : ClassVar[JobCategory] = JobCategory.IMPORT
@@ -437,7 +436,6 @@ class ImportMoviesParams(AbstractJobParams):
             "output_star"    : job_dir / "tilt_series.star",
             "tomostar_dir"   : self.master_tomostar_dir,
         }
-
 
 class FsMotionCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -521,7 +519,6 @@ class FsMotionCtfParams(AbstractJobParams):
             "output_processing"        : job_dir / "warp_frameseries",
         }
 
-
 class TsAlignmentParams(AbstractJobParams):
 
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -574,7 +571,6 @@ class TsAlignmentParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"motion": "fsMotionAndCtf"}
-
 
 class TsCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -634,7 +630,6 @@ class TsCtfParams(AbstractJobParams):
             "output_processing": job_dir / "warp_tiltseries",                  
         }
 
-
 class TsReconstructParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
@@ -675,7 +670,6 @@ class TsReconstructParams(AbstractJobParams):
             "input_processing" : upstream_job_dir / "warp_tiltseries",          
             "output_processing": job_dir / "warp_tiltseries",                    
         }
-
 
 class DenoiseTrainParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -720,16 +714,16 @@ class DenoiseTrainParams(AbstractJobParams):
         }
 
 class DenoisePredictParams(AbstractJobParams):
-    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
-    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
-    IS_TOMO_JOB: ClassVar[bool] = True
 
+    JOB_CATEGORY   : ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str]         = "relion.external"
+    IS_TOMO_JOB    : ClassVar[bool]        = True
 
-    ntiles_x: int = Field(default=4, ge=1)
-    ntiles_y: int = Field(default=4, ge=1)
-    ntiles_z: int = Field(default=4, ge=1)
-    denoising_tomo_name: str = "" 
-    perdevice: int = Field(default=1)
+    ntiles_x           : int = Field(default=4, ge=1)
+    ntiles_y           : int = Field(default=4, ge=1)
+    ntiles_z           : int = Field(default=4, ge=1)
+    denoising_tomo_name: str = ""
+    perdevice          : int = Field(default=1)
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -761,9 +755,7 @@ class DenoisePredictParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"train": "denoisetrain"}
 
-
     # In DenoisePredictParams
-
     def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
         """
         DenoisePredict needs:

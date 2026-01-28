@@ -126,11 +126,11 @@ class WarpXmlParser:
         
         # Create DataFrame
         df = pd.DataFrame({
-            'Z': z_values,
+            'Z'            : z_values,
             'defocus_value': defocus_values,
             'defocus_delta': delta_values,
             'defocus_angle': angle_values,
-            'cryoBoostKey': movie_paths
+            'cryoBoostKey' : movie_paths
         })
         
         return df
