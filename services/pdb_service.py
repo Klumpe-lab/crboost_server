@@ -331,7 +331,10 @@ except Exception as e:
         Refactored to support both Container and Binary modes via ContainerService.
         """
 
+        import os
+        import asyncio
         import textwrap
+        from pathlib import Path
 
         output_folder = Path(output_folder).resolve()
         output_folder.mkdir(parents=True, exist_ok=True)
@@ -349,45 +352,47 @@ except Exception as e:
         print(f"  Transform: Center COM → Translate [{offset:.1f}, {offset:.1f}, {offset:.1f}]")
 
         # === PYMOL PREPARATION ===
-        pymol_script = textwrap.dedent(f"""
-        import pymol2
-        import sys
-        import os
+        pymol_script = textwrap.dedent(
+            f"""
+            import pymol2
+            import sys
+            import os
 
-        try:
-            pymol = pymol2.PyMOL()
-            pymol.start()
-            
-            pymol.cmd.load("{pdb_path}", "structure")
-            
-            # Center by center-of-mass
-            com = pymol.cmd.get_position("structure")
-            pymol.cmd.translate([-com[0], -com[1], -com[2]], "structure")
-            
-            # Translate to positive quadrant
-            pymol.cmd.translate([{offset}, {offset}, {offset}], "structure")
-            
-            # Save as CIF
-            pymol.cmd.save("{struct_file}", "structure", format="cif")
-            
-            # Verify file was created
-            if not os.path.exists("{struct_file}"):
-                raise Exception("PyMOL did not create output file")
-            
-            file_size = os.path.getsize("{struct_file}")
-            if file_size == 0:
-                raise Exception("PyMOL created empty file")
-            
-            pymol.stop()
-            
-            print("PYMOL_SUCCESS")
-            
-        except Exception as e:
-            print("PYMOL_ERROR:" + str(e), file=sys.stderr)
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-            sys.exit(1)
-    """).strip()
+            try:
+                pymol = pymol2.PyMOL()
+                pymol.start()
+
+                pymol.cmd.load("{pdb_path}", "structure")
+
+                # Center by center-of-mass
+                com = pymol.cmd.get_position("structure")
+                pymol.cmd.translate([-com[0], -com[1], -com[2]], "structure")
+
+                # Translate to positive quadrant
+                pymol.cmd.translate([{offset}, {offset}, {offset}], "structure")
+
+                # Save as CIF
+                pymol.cmd.save("{struct_file}", "structure", format="cif")
+
+                # Verify file was created
+                if not os.path.exists("{struct_file}"):
+                    raise Exception("PyMOL did not create output file")
+
+                file_size = os.path.getsize("{struct_file}")
+                if file_size == 0:
+                    raise Exception("PyMOL created empty file")
+
+                pymol.stop()
+
+                print("PYMOL_SUCCESS")
+
+            except Exception as e:
+                print("PYMOL_ERROR:" + str(e), file=sys.stderr)
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                sys.exit(1)
+            """
+        ).strip()
 
         binds_needed = list(set([str(Path(pdb_path).parent), str(output_folder)]))
 
@@ -408,7 +413,6 @@ except Exception as e:
         print(f"[PDBService] ✓ Structure prepared: {struct_file.name} ({struct_file.stat().st_size:,} bytes)")
 
         # === RUN CISTEM ===
-
         # 1. Resolve Tool Path and Mode
         tool_config = self.container_service.config.get_tool_config("cistem")
         if tool_config.exec_mode == "container":
@@ -429,19 +433,19 @@ except Exception as e:
         # cisTEM reads these line-by-line
         stdin_input = "\n".join(
             [
-                str(sim_output_path),  # outFile - ABSOLUTE PATH
-                "Yes",  # scPotential
-                str(int(sim_box)),  # boxSize
-                str(num_threads),  # threads
-                str(struct_file),  # inputPDBPath - ABSOLUTE PATH
-                "No",  # addPart
-                str(sim_apix),  # outputPix
-                str(mod_scale_bf),  # perAtomScaleBfact
-                str(mod_bf),  # perAtomBfact
-                str(int(oversample)),  # oversample
-                str(num_frames),  # numOfFrames
-                "No",  # expert
-                "",  # EOF
+                str(sim_output_path),      # outFile - ABSOLUTE PATH
+                "Yes",                     # scPotential
+                str(int(sim_box)),         # boxSize
+                str(num_threads),          # threads
+                str(struct_file),          # inputPDBPath - ABSOLUTE PATH
+                "No",                      # addPart
+                str(sim_apix),             # outputPix
+                str(mod_scale_bf),         # perAtomScaleBfact
+                str(mod_bf),               # perAtomBfact
+                str(int(oversample)),      # oversample
+                str(num_frames),           # numOfFrames
+                "No",                      # expert
+                "",                        # EOF
             ]
         )
 
@@ -454,26 +458,38 @@ except Exception as e:
             # 2. Wrap command (handles containerization or native pass-through)
             # We must bind the output folder so container can read/write files
             full_command = self.container_service.wrap_command_for_tool(
-                command=inner_cmd, cwd=output_folder, tool_name="cistem", additional_binds=[str(output_folder)]
+                command=inner_cmd,
+                cwd=output_folder,
+                tool_name="cistem",
+                additional_binds=[str(output_folder)],
             )
 
             # 3. Environment setup (cisTEM needs OMP_NUM_THREADS)
             env = os.environ.copy()
             env["OMP_NUM_THREADS"] = str(num_threads)
 
-            # 4. Execute (shell=True is needed because wrap_command returns complex string)
-            process = subprocess.Popen(
+            # 4. Execute WITHOUT blocking the event loop
+            process = await asyncio.create_subprocess_shell(
                 full_command,
-                shell=True,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=output_folder,
-                text=True,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(output_folder),
                 env=env,
             )
 
-            stdout, stderr = process.communicate(input=stdin_input, timeout=600)
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    process.communicate(input=stdin_input.encode("utf-8")),
+                    timeout=600,
+                )
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
+                return {"success": False, "error": "cisTEM timeout (>600s)"}
+
+            stdout = (stdout_b or b"").decode("utf-8", errors="replace")
+            stderr = (stderr_b or b"").decode("utf-8", errors="replace")
 
             print(f"[PDBService] ✓ cisTEM completed (exit code: {process.returncode})")
 
@@ -528,14 +544,12 @@ except Exception as e:
 
             return {"success": True, "sim_path": str(sim_output_path)}
 
-        except subprocess.TimeoutExpired:
-            process.kill()
-            return {"success": False, "error": "cisTEM timeout (>600s)"}
         except Exception as e:
             import traceback
 
             error = f"cisTEM execution error: {str(e)}\n{traceback.format_exc()}"
             return {"success": False, "error": error}
+
 
     async def _process_simulated_map(
         self,
