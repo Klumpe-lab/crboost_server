@@ -5,6 +5,7 @@ import json
 import asyncio
 from pathlib import Path
 import mrcfile
+from nicegui import context
 
 from services.project_state import JobType, get_project_state, get_state_service
 
@@ -133,10 +134,14 @@ class TemplateWorkbench:
         self.session_item_containers = {}
 
         self._load_project_parameters()
-        self._render()
 
-        asyncio.create_task(self.refresh_files())
-        asyncio.create_task(self._test_iframe_loaded())
+        self.client = None
+        self._render()
+        self.client = context.client 
+
+        ui.timer(0, self.refresh_files, once=True)
+        ui.timer(0, self._test_iframe_loaded, once=True)   # or delete this; see below
+
 
     def _load_project_parameters(self):
         """Load pixel size and binning from project state."""
@@ -227,28 +232,44 @@ class TemplateWorkbench:
             self._log(f"Alignment Error: {res.get('error')}")
 
     async def _simulate_pdb(self):
-        """Run the CISTEM + Relion simulation pipeline."""
         if not self.structure_path:
+            ui.notify("Select a structure first", type="warning")
             return
 
-        self._log(f"Simulating density from {os.path.basename(self.structure_path)}...")
-        
-        # Optional: add B-factor controls to your UI
-        res = await self.backend.pdb_service.simulate_map_from_pdb(
-            pdb_path=self.structure_path,
-            output_folder=self.output_folder,
-            target_apix=self.pixel_size,
-            target_box=int(self.box_size),
-            resolution=self.template_resolution,
-            # Let it auto-calculate sim_apix and sim_box
-            # Or expose these in your UI if users need control
-        )
+        # Disable the buttons so users don't double-submit
+        if self.simulate_btn:
+            self.simulate_btn.set_enabled(False)
+        if self.resample_btn:
+            self.resample_btn.set_enabled(False)
 
-        if res["success"]:
-            self._log(f"Simulation finished: {os.path.basename(res['path_black'])}")
-            await self.refresh_files()
-        else:
-            self._log(f"Simulation failed: {res.get('error')}")
+        n = ui.notification("Simulating density… this can take a while", type="ongoing", spinner=True, timeout=None)
+
+        try:
+            self._log(f"Simulating density from {os.path.basename(self.structure_path)}...")
+
+            res = await self.backend.pdb_service.simulate_map_from_pdb(
+                pdb_path=self.structure_path,
+                output_folder=self.output_folder,
+                target_apix=self.pixel_size,
+                target_box=int(self.box_size),
+                resolution=self.template_resolution,
+            )
+
+            if res.get("success"):
+                self._log(f"Simulation finished: {os.path.basename(res['path_black'])}")
+                ui.notify("Simulation finished", type="positive")
+                await self.refresh_files()
+            else:
+                self._log(f"Simulation failed: {res.get('error')}")
+                ui.notify("Simulation failed (see log)", type="negative", timeout=8000)
+
+        finally:
+            n.dismiss()
+            # Re-enable according to current selection logic
+            self._update_selection_labels()
+            if self.resample_btn:
+                self.resample_btn.set_enabled(True)  # or keep your WIP behavior
+
 
     async def _resample_emdb(self):
         """Resample existing map via Relion."""
@@ -336,13 +357,17 @@ class TemplateWorkbench:
                 "Pixel Size (Å)", value=self.pixel_size, step=0.1, on_change=self._on_pixel_size_changed
             ).bind_value(self, "pixel_size").props("dense outlined").classes("flex-1")
             self.box_input = (
-                ui.number("Box (px)", value=self.box_size, step=32, on_change=self._on_box_size_changed)
+                ui.number("Box (px)", value=self.box_size, step=32, min=32)
                 .bind_value(self, "box_size")
                 .props("dense outlined")
                 .classes("flex-1")
             )
+            self.box_input.on_value_change(self._on_box_size_changed)
+
             if self.auto_box:
-                self.box_input.props(add="disable")
+                self.box_input.disable()
+            else:
+                self.box_input.enable()
             ui.number("LP (Å)", value=self.template_resolution, step=5).bind_value(self, "template_resolution").props(
                 "dense outlined"
             ).classes("w-16")
@@ -436,6 +461,14 @@ class TemplateWorkbench:
     def _render_logs_panel(self):
         self._section_title("Activity Log", "terminal")
         self.log_container = ui.column().classes("w-full gap-1 flex-1 overflow-y-auto")
+        self.busy_overlay = ui.element('div').classes(
+            "absolute inset-0 bg-white/70 backdrop-blur-sm flex items-center justify-center z-50"
+        ).style("display:none;")
+        with self.busy_overlay:
+            with ui.card().classes("p-6 items-center"):
+                ui.spinner(size="lg")
+                ui.label("Running simulation…").classes("text-sm text-gray-700 mt-2")
+
 
     def _section_title(self, title: str, icon: str):
         with ui.row().classes("items-center gap-2 mb-2"):
@@ -681,25 +714,53 @@ class TemplateWorkbench:
         if self.log_container:
             with self.log_container:
                 ui.label(f"• {msg}").classes("text-[10px] text-gray-600 font-mono leading-tight")
-            ui.run_javascript(
-                f"const el = document.getElementById('c{self.log_container.id}'); if (el) el.scrollTop = el.scrollHeight;"
+        if self.client and self.log_container:
+            self.client.run_javascript(
+                f"const el=document.getElementById('c{self.log_container.id}');"
+                f"if (el) el.scrollTop = el.scrollHeight;"
             )
+
 
     def _on_pixel_size_changed(self):
         self._update_size_estimate()
         self._recalculate_auto_box()
 
-    def _on_box_size_changed(self):
+    def _on_box_size_changed(self, e=None):
+        # NiceGUI number can emit None (cleared input / invalid intermediate state)
+        val = None
+        if e is not None:
+            val = getattr(e, "value", None)
+
+        if val is None:
+            # Keep UI responsive; don't compute with None
+            if self.size_estimate_label:
+                self.size_estimate_label.set_text("—")
+                self.size_estimate_label.classes(replace="text-[10px] font-mono text-gray-400")
+            return
+
+        try:
+            self.box_size = int(val)
+        except (TypeError, ValueError):
+            return
+
         self._update_size_estimate()
+
 
     def _on_shape_changed(self):
         self._recalculate_auto_box()
 
     def _on_auto_box_toggle(self, e):
         self.auto_box = e.value
-        self.box_input.props(f"{'add' if e.value else 'remove'} disable")
-        if e.value:
+
+        if not self.box_input:
+            return
+
+        if self.auto_box:
+            self.box_input.disable()
             self._recalculate_auto_box()
+        else:
+            self.box_input.enable()
+
 
     def _recalculate_auto_box(self):
         if not self.auto_box:
@@ -714,18 +775,37 @@ class TemplateWorkbench:
             pass
 
     def _update_size_estimate(self):
-        if self.size_estimate_label:
-            est = round((int(self.box_size) ** 3 * 4) / (1024 * 1024), 1)
-            self.size_estimate_label.set_text(f"~{est} MB")
-            self.size_estimate_label.classes(
-                replace=f"text-[10px] font-mono {'text-red-600' if est > 100 else 'text-green-600'}"
-            )
+        if not self.size_estimate_label:
+            return
+
+        try:
+            if self.box_size is None:
+                raise ValueError("box_size is None")
+            box = int(self.box_size)
+            if box <= 0:
+                raise ValueError("box_size <= 0")
+        except (TypeError, ValueError):
+            self.size_estimate_label.set_text("—")
+            self.size_estimate_label.classes(replace="text-[10px] font-mono text-gray-400")
+            return
+
+        est = round((box ** 3 * 4) / (1024 * 1024), 1)
+        self.size_estimate_label.set_text(f"~{est} MB")
+        self.size_estimate_label.classes(
+            replace=f"text-[10px] font-mono {'text-red-600' if est > 100 else 'text-green-600'}"
+        )
+
 
     def _post_to_viewer(self, action: str, **kwargs):
+        if not self.client:
+            return
         payload = {"action": action, **kwargs}
-        ui.run_javascript(
-            f"const f = document.getElementById('molstar-frame'); if (f && f.contentWindow) f.contentWindow.postMessage({json.dumps(payload)}, '*');"
+        self.client.run_javascript(
+            "const f = document.getElementById('molstar-frame');"
+            "if (f && f.contentWindow) f.contentWindow.postMessage(%s, '*');"
+            % json.dumps(payload)
         )
+
 
     def _handle_viewer_event(self, e):
         event_type = e.args.get("type")

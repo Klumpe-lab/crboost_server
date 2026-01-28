@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Dict, Any, List
 from typing import TYPE_CHECKING
 
-from services.pipeline_orchestrator_service import JobTypeResolver
 from services.project_state import AbstractJobParams, JobStatus, JobType
+from services.scheduling_and_orchestration.pipeline_orchestrator_service import JobTypeResolver
 
 
 if TYPE_CHECKING:
@@ -122,6 +122,7 @@ class StatusSyncService:
 
     def _extract_job_type(self, project_path: str, job_path: str) -> str:
         """Use resolver instead of hardcoded mapping."""
+        # Fix: Ensure project_path is a Path object for the resolver
         result = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
         return result if result else "unknown"
 
@@ -170,30 +171,27 @@ class PipelineRunnerService:
 
             # 1. Get the single source of truth
             state = self.backend.state_service.state
+            server_root = self.backend.config_service.crboost_root
 
             for _, process in processes.iterrows():
                 job_path = process["rlnPipeLineProcessName"]
                 status_str = process["rlnPipeLineProcessStatusLabel"]
-
                 job_type_str = self.status_sync._extract_job_type(project_path, job_path)
 
                 if job_type_str and job_type_str != "unknown":
                     try:
-                        # Convert string to Enum
                         job_type = JobType(job_type_str)
-
-                        # 2. Get the existing job model from the state
                         job_model = state.jobs.get(job_type)
 
                         if not job_model:
                             print(f"[RUNNER] Job {job_type} not in state, initializing from template.")
-                            template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+                            # FIX: Use server_root instead of Path.cwd()
+                            template_base = server_root / "config" / "Schemes" / "warp_tomo_prep"
                             job_star_path = template_base / job_type.value / "job.star"
 
                             await self.backend.state_service.ensure_job_initialized(
                                 job_type, job_star_path if job_star_path.exists() else None
                             )
-
                             job_model = state.jobs.get(job_type)
 
                             if not job_model:

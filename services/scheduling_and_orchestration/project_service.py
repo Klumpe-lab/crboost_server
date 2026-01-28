@@ -8,10 +8,10 @@ import asyncio
 import json
 from typing import TYPE_CHECKING
 
-from services.pipeline_deletion_service import get_deletion_service, DeletionResult
+from services.configs.mdoc_service import get_mdoc_service
+from services.configs.starfile_service import StarfileService
 from services.project_state import JobType, get_state_service, jobtype_paramclass
-from services.starfile_service import StarfileService
-from services.mdoc_service import get_mdoc_service
+from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend

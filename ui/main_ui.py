@@ -8,10 +8,10 @@ Implements the 2-Phase workflow:
 from nicegui import ui, Client, app
 
 from backend import CryoBoostBackend
+from services.configs.user_prefs_service import get_prefs_service
 from ui.ui_state import get_ui_state_manager
 from ui.landing_page import build_landing_page
 from ui.workspace_page import build_workspace_page
-from services.user_prefs_service import get_prefs_service
 
 
 def create_ui_router(backend: CryoBoostBackend):

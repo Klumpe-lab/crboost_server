@@ -10,7 +10,8 @@ from skimage import filters
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-from services.container_service import get_container_service
+from services.computing.container_service import get_container_service
+
 
 
 class TemplateService:

@@ -21,8 +21,9 @@ class JobConfig:
         JobType.TS_RECONSTRUCT,
         JobType.DENOISE_TRAIN,
         JobType.DENOISE_PREDICT,
-        JobType.TEMPLATE_MATCH,
-        JobType.SUBTOMO_RECONSTRUCT,
+        JobType.TEMPLATE_MATCH_PYTOM,
+        JobType.TEMPLATE_EXTRACT_PYTOM,
+        JobType.SUBTOMO_EXTRACTION,
     ]
     
     JOB_METADATA = {

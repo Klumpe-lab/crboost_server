@@ -12,8 +12,8 @@ from typing import Dict, Optional
 import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
+from services.configs.starfile_service import StarfileService
 from services.project_state import AlignmentMethod
-from services.starfile_service import StarfileService
 
 class WarpXmlParser:
     """Parses WarpTools XML files to extract CTF and processing metadata"""
@@ -126,11 +126,11 @@ class WarpXmlParser:
         
         # Create DataFrame
         df = pd.DataFrame({
-            'Z': z_values,
+            'Z'            : z_values,
             'defocus_value': defocus_values,
             'defocus_delta': delta_values,
             'defocus_angle': angle_values,
-            'cryoBoostKey': movie_paths
+            'cryoBoostKey' : movie_paths
         })
         
         return df

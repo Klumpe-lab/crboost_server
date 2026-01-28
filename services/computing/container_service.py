@@ -5,7 +5,8 @@ import re
 import shlex
 from typing import List, Optional, Tuple
 
-from services.config_service import get_config_service
+from services.configs.config_service import get_config_service
+
 
 
 class Colors:

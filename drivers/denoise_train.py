@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import traceback
 import json
+from services.computing.container_service import get_container_service
 import starfile
 import math
 
@@ -22,7 +23,6 @@ sys.path.insert(0, str(project_root))
 
 try:
     from drivers.driver_base import get_driver_context, run_command
-    from services.container_service import get_container_service
 except ImportError as e:
     print("FATAL: Could not import services.", file=sys.stderr)
     sys.exit(1)
