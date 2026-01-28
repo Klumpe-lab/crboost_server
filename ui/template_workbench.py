@@ -357,13 +357,17 @@ class TemplateWorkbench:
                 "Pixel Size (Å)", value=self.pixel_size, step=0.1, on_change=self._on_pixel_size_changed
             ).bind_value(self, "pixel_size").props("dense outlined").classes("flex-1")
             self.box_input = (
-                ui.number("Box (px)", value=self.box_size, step=32, on_change=self._on_box_size_changed)
+                ui.number("Box (px)", value=self.box_size, step=32, min=32)
                 .bind_value(self, "box_size")
                 .props("dense outlined")
                 .classes("flex-1")
             )
+            self.box_input.on_value_change(self._on_box_size_changed)
+
             if self.auto_box:
-                self.box_input.props(add="disable")
+                self.box_input.disable()
+            else:
+                self.box_input.enable()
             ui.number("LP (Å)", value=self.template_resolution, step=5).bind_value(self, "template_resolution").props(
                 "dense outlined"
             ).classes("w-16")
@@ -721,17 +725,42 @@ class TemplateWorkbench:
         self._update_size_estimate()
         self._recalculate_auto_box()
 
-    def _on_box_size_changed(self):
+    def _on_box_size_changed(self, e=None):
+        # NiceGUI number can emit None (cleared input / invalid intermediate state)
+        val = None
+        if e is not None:
+            val = getattr(e, "value", None)
+
+        if val is None:
+            # Keep UI responsive; don't compute with None
+            if self.size_estimate_label:
+                self.size_estimate_label.set_text("—")
+                self.size_estimate_label.classes(replace="text-[10px] font-mono text-gray-400")
+            return
+
+        try:
+            self.box_size = int(val)
+        except (TypeError, ValueError):
+            return
+
         self._update_size_estimate()
+
 
     def _on_shape_changed(self):
         self._recalculate_auto_box()
 
     def _on_auto_box_toggle(self, e):
         self.auto_box = e.value
-        self.box_input.props(f"{'add' if e.value else 'remove'} disable")
-        if e.value:
+
+        if not self.box_input:
+            return
+
+        if self.auto_box:
+            self.box_input.disable()
             self._recalculate_auto_box()
+        else:
+            self.box_input.enable()
+
 
     def _recalculate_auto_box(self):
         if not self.auto_box:
@@ -746,12 +775,26 @@ class TemplateWorkbench:
             pass
 
     def _update_size_estimate(self):
-        if self.size_estimate_label:
-            est = round((int(self.box_size) ** 3 * 4) / (1024 * 1024), 1)
-            self.size_estimate_label.set_text(f"~{est} MB")
-            self.size_estimate_label.classes(
-                replace=f"text-[10px] font-mono {'text-red-600' if est > 100 else 'text-green-600'}"
-            )
+        if not self.size_estimate_label:
+            return
+
+        try:
+            if self.box_size is None:
+                raise ValueError("box_size is None")
+            box = int(self.box_size)
+            if box <= 0:
+                raise ValueError("box_size <= 0")
+        except (TypeError, ValueError):
+            self.size_estimate_label.set_text("—")
+            self.size_estimate_label.classes(replace="text-[10px] font-mono text-gray-400")
+            return
+
+        est = round((box ** 3 * 4) / (1024 * 1024), 1)
+        self.size_estimate_label.set_text(f"~{est} MB")
+        self.size_estimate_label.classes(
+            replace=f"text-[10px] font-mono {'text-red-600' if est > 100 else 'text-green-600'}"
+        )
+
 
     def _post_to_viewer(self, action: str, **kwargs):
         if not self.client:
