@@ -8,24 +8,37 @@ from typing import Dict, Any, Optional, Type, List
 from pydantic import BaseModel, Field
 
 from services.models_base import (
-    JobStatus, MicroscopeType, AlignmentMethod, JobCategory, 
-    JobType, MicroscopeParams, AcquisitionParams
+    JobStatus,
+    MicroscopeType,
+    AlignmentMethod,
+    JobCategory,
+    JobType,
+    MicroscopeParams,
+    AcquisitionParams,
 )
 from services.computing.slurm_service import SlurmConfig
 from services.job_models import (
-    AbstractJobParams, CandidateExtractPytomParams, DenoisePredictParams, 
-    DenoiseTrainParams, FsMotionCtfParams, ImportMoviesParams, 
-    SubtomoExtractionParams, TemplateMatchPytomParams, TsAlignmentParams, 
-    TsCtfParams, TsReconstructParams
+    AbstractJobParams,
+    CandidateExtractPytomParams,
+    DenoisePredictParams,
+    DenoiseTrainParams,
+    FsMotionCtfParams,
+    ImportMoviesParams,
+    SubtomoExtractionParams,
+    TemplateMatchPytomParams,
+    TsAlignmentParams,
+    TsCtfParams,
+    TsReconstructParams,
 )
+
 
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
-    project_name    : str            = "Untitled"
-    project_path    : Optional[Path] = None
-    created_at      : datetime        = Field(default_factory=datetime.now)
-    modified_at     : datetime        = Field(default_factory=datetime.now)
+    project_name: str = "Untitled"
+    project_path: Optional[Path] = None
+    created_at: datetime = Field(default_factory=datetime.now)
+    modified_at: datetime = Field(default_factory=datetime.now)
     job_path_mapping: Dict[str, str] = Field(default_factory=dict)
 
     movies_glob: str = ""
@@ -36,12 +49,14 @@ class ProjectState(BaseModel):
     slurm_defaults: SlurmConfig = Field(default_factory=SlurmConfig.from_config_defaults)
 
     jobs: Dict[JobType, AbstractJobParams] = Field(default_factory=dict)
+    pipeline_active: bool = Field(default=False)
 
     def ensure_job_initialized(self, job_type: JobType, template_path: Optional[Path] = None):
         if job_type in self.jobs:
             return
 
         from services.project_state import jobtype_paramclass
+
         param_class_map = jobtype_paramclass()
         param_class = param_class_map.get(job_type)
 
@@ -64,7 +79,7 @@ class ProjectState(BaseModel):
 
         data = self.model_dump(exclude={"project_path"})
         data["project_path"] = str(self.project_path) if self.project_path else None
-        
+
         with open(save_path, "w") as f:
             json.dump(data, f, indent=2, default=str)
 
@@ -88,6 +103,7 @@ class ProjectState(BaseModel):
         )
 
         from services.project_state import jobtype_paramclass
+
         param_class_map = jobtype_paramclass()
         for job_type_str, job_data in data.get("jobs", {}).items():
             try:
@@ -102,23 +118,26 @@ class ProjectState(BaseModel):
 
         return project_state
 
+
 def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
-        JobType.IMPORT_MOVIES         : ImportMoviesParams,
-        JobType.FS_MOTION_CTF         : FsMotionCtfParams,
-        JobType.TS_ALIGNMENT          : TsAlignmentParams,
-        JobType.TS_CTF                : TsCtfParams,
-        JobType.TS_RECONSTRUCT        : TsReconstructParams,
-        JobType.DENOISE_TRAIN         : DenoiseTrainParams,
-        JobType.DENOISE_PREDICT       : DenoisePredictParams,
-        JobType.TEMPLATE_MATCH_PYTOM  : TemplateMatchPytomParams,
+        JobType.IMPORT_MOVIES: ImportMoviesParams,
+        JobType.FS_MOTION_CTF: FsMotionCtfParams,
+        JobType.TS_ALIGNMENT: TsAlignmentParams,
+        JobType.TS_CTF: TsCtfParams,
+        JobType.TS_RECONSTRUCT: TsReconstructParams,
+        JobType.DENOISE_TRAIN: DenoiseTrainParams,
+        JobType.DENOISE_PREDICT: DenoisePredictParams,
+        JobType.TEMPLATE_MATCH_PYTOM: TemplateMatchPytomParams,
         JobType.TEMPLATE_EXTRACT_PYTOM: CandidateExtractPytomParams,
-        JobType.SUBTOMO_EXTRACTION     : SubtomoExtractionParams,
+        JobType.SUBTOMO_EXTRACTION: SubtomoExtractionParams,
     }
+
 
 # --- Global Singleton Management ---
 
 _project_state = None
+
 
 def get_project_state() -> ProjectState:
     global _project_state
@@ -126,16 +145,31 @@ def get_project_state() -> ProjectState:
         _project_state = ProjectState()
     return _project_state
 
+
 def set_project_state(new_state: ProjectState):
     global _project_state
     _project_state = new_state
 
-def reset_project_state():
-    """Forces the creation of a fresh ProjectState instance."""
+
+def reset_project_state() -> ProjectState:
+    """
+    Forces the creation of a fresh ProjectState instance.
+
+    GUARD: Refuses to reset if a pipeline is actively running.
+    This prevents stale browser tabs from nuking state mid-execution.
+    """
     global _project_state
+
+    # Safety check: don't nuke state while pipeline is running
+    if _project_state is not None and _project_state.pipeline_active:
+        print("[STATE] Reset BLOCKED - pipeline is actively running!")
+        print("[STATE] Close the running pipeline first, or restart the server if stuck.")
+        return _project_state
+
     print("[STATE] Resetting Global Project State to defaults.")
     _project_state = ProjectState()
     return _project_state
+
 
 class StateService:
     @property
@@ -144,15 +178,21 @@ class StateService:
 
     async def update_from_mdoc(self, mdocs_glob: str):
         from services.configs.mdoc_service import get_mdoc_service
+
         mdoc_service = get_mdoc_service()
         mdoc_data = mdoc_service.get_autodetect_params(mdocs_glob)
-        if not mdoc_data: return
+        if not mdoc_data:
+            return
 
         s = self.state
-        if "pixel_spacing" in mdoc_data: s.microscope.pixel_size_angstrom = mdoc_data["pixel_spacing"]
-        if "voltage" in mdoc_data: s.microscope.acceleration_voltage_kv = mdoc_data["voltage"]
-        if "dose_per_tilt" in mdoc_data: s.acquisition.dose_per_tilt = mdoc_data["dose_per_tilt"]
-        if "tilt_axis_angle" in mdoc_data: s.acquisition.tilt_axis_degrees = mdoc_data["tilt_axis_angle"]
+        if "pixel_spacing" in mdoc_data:
+            s.microscope.pixel_size_angstrom = mdoc_data["pixel_spacing"]
+        if "voltage" in mdoc_data:
+            s.microscope.acceleration_voltage_kv = mdoc_data["voltage"]
+        if "dose_per_tilt" in mdoc_data:
+            s.acquisition.dose_per_tilt = mdoc_data["dose_per_tilt"]
+        if "tilt_axis_angle" in mdoc_data:
+            s.acquisition.tilt_axis_degrees = mdoc_data["tilt_axis_angle"]
         s.update_modified()
 
     async def ensure_job_initialized(self, job_type: JobType, template_path: Optional[Path] = None):
@@ -175,7 +215,9 @@ class StateService:
             return
         self.state.save(target_path)
 
+
 _state_service_instance = None
+
 
 def get_state_service():
     global _state_service_instance
