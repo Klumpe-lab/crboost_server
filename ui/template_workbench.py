@@ -511,19 +511,21 @@ class TemplateWorkbench:
                 ui.label(fname).classes("text-[11px] font-mono text-gray-700 truncate")
 
             with ui.row().classes("gap-0 shrink-0"):
-                ui.button(icon="biotech", on_click=lambda: self._toggle_structure(path)).props(
+
+                ui.button(icon="biotech", on_click=lambda p=path: self._toggle_structure(p)).props(
                     f"flat round dense size=sm color={'emerald' if is_s else 'grey'}"
                 )
                 if path.lower().endswith((".mrc", ".map")):
-                    ui.button(icon="view_in_ar", on_click=lambda: self._toggle_template(path)).props(
+
+                    ui.button(icon="view_in_ar", on_click=lambda p=path: self._toggle_template(p)).props(
                         f"flat round dense size=sm color={'blue' if is_t else 'grey'}"
                     )
-                    ui.button(icon="architecture", on_click=lambda: self._toggle_mask(path)).props(
+
+                    ui.button(icon="architecture", on_click=lambda p=path: self._toggle_mask(p)).props(
                         f"flat round dense size=sm color={'purple' if is_m else 'grey'}"
                     )
-                ui.button(icon="delete", on_click=lambda: self._delete(path)).props(
-                    "flat round dense size=sm color=red"
-                )
+
+                ui.button(icon="delete", on_click=lambda p=path: self._delete(p))
 
     def _update_session_tray(self):
         if not self.session_list_container:

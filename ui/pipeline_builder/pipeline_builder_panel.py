@@ -6,20 +6,18 @@ Refactored to implement "Create Project First" workflow and ensure state synchro
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Callable
+from typing import Dict, Callable
 
 from nicegui import ui
 
 from backend import CryoBoostBackend
-from services.project_state import JobStatus, JobType, get_state_service, get_project_state
+from services.project_state import JobType, get_state_service
 from ui.status_indicator import ReactiveStatusDot
 import pandas as pd
 from ui.ui_state import (
     get_ui_state_manager,
-    UIStateManager,
     get_job_display_name,
     get_ordered_jobs,
-    MonitorTab,
 )
 from ui.pipeline_builder.job_tab_component import (
     render_job_tab,
@@ -246,6 +244,14 @@ def build_pipeline_builder_panel(
         ui_mgr.cleanup_all_timers()
     
     # In pipeline_builder_panel.py, replace handle_run_pipeline with:
+    async def safe_status_check():
+        """Wrapper that catches errors from status checks."""
+        try:
+            await check_and_update_statuses()
+        except Exception as e:
+            # Log but don't crash - the pipeline is still running
+            print(f"[UI] Status check failed (pipeline still running): {e}")
+
 
     async def handle_run_pipeline():
             """
@@ -283,7 +289,7 @@ def build_pipeline_builder_panel(
                     ui.notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
                     
                     # Start polling for status updates
-                    ui_mgr.status_timer = ui.timer(3.0, lambda: asyncio.create_task(check_and_update_statuses()))
+                    ui_mgr.status_timer = ui.timer(3.0, lambda: asyncio.create_task(safe_status_check()))
                 else:
                     ui.notify(f"Failed to start: {result.get('error')}", type="negative")
 

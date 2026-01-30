@@ -12,8 +12,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from drivers.driver_base import get_driver_context, run_command
-from services.container_service import get_container_service
-
+from services.computing.container_service import get_container_service
 
 def calculate_memory_aware_tiles(tomogram_path: Path, base_tiles=(4, 4, 4), max_tiles=(8, 8, 8)) -> tuple:
     """
@@ -39,7 +38,6 @@ def calculate_memory_aware_tiles(tomogram_path: Path, base_tiles=(4, 4, 4), max_
     except Exception as e:
         print(f"[WARN] Could not read tomogram for tiling calculation: {e}")
         return base_tiles
-
 
 def main():
     print("--- SLURM JOB START ---", flush=True)
@@ -173,7 +171,6 @@ def main():
         traceback.print_exc(file=sys.stderr)
         failure_file.touch()
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
