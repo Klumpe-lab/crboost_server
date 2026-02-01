@@ -20,7 +20,7 @@ class StatusSyncService:
     """Syncs job model statuses from pipeline.star - single source of truth"""
 
     def __init__(self, backend):
-        self.backend = backend
+        self.backend      = backend
         self.job_resolver = JobTypeResolver(backend.pipeline_orchestrator.star_handler)
 
     async def sync_all_jobs(self, project_path: str) -> Dict[str, bool]:

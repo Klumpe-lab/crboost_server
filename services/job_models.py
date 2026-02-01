@@ -40,6 +40,14 @@ class AbstractJobParams(BaseModel):
     additional_binds: List[str] = Field(default_factory=list)
 
     slurm_overrides: Dict[str, Any] = Field(default_factory=dict)
+    
+    # NEW: User overrides for input slot sources
+    # Maps input_slot_key -> source specification
+    # Format: "jobtype:instance_path" e.g. "tsReconstruct:External/job005"
+    #         or "manual:/absolute/path/to/file.star"
+    source_overrides: Dict[str, str] = Field(default_factory=dict)
+
+
 
     # This is now a private attribute, not a Pydantic model field.
     _project_state: Optional["ProjectState"] = None
@@ -282,6 +290,7 @@ class AbstractJobParams(BaseModel):
             "is_orphaned",
             "missing_inputs",
             "slurm_overrides",
+            "source_overrides",  # ADD THIS
         ]:
             super().__setattr__(name, value)
             return

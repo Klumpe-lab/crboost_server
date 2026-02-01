@@ -108,6 +108,10 @@ class PipelineOrchestratorService:
             job_model.is_orphaned = False
             job_model.missing_inputs = []
 
+            # CRITICAL: Invalidate resolver cache so the next job sees this job's
+            # real paths instead of stale "pending_" placeholders
+            resolver.invalidate_cache()
+
             # Build report
             report_lines.append(f"[{job_type.value}] predicted_dir={predicted_job_dir}")
             for k, v in sorted(job_model.paths.items()):

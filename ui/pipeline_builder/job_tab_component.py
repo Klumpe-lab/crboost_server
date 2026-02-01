@@ -446,31 +446,26 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
 
     with ui.column().classes("w-full"):
         # ==========================================================
-        # 1. I/O CONFIGURATION (First)
+        # 1. I/O CONFIGURATION (Interactive)
         # ==========================================================
         ui.label("I/O Configuration").classes("text-sm font-bold text-gray-900 mb-3")
-
-        with ui.card().classes("w-full p-0 gap-0 border border-gray-200 shadow-none mb-6"):
-            paths_data = job_model.paths
-
-            if paths_data:
-                for i, (key, value) in enumerate(paths_data.items()):
-                    bg_class = "bg-gray-50" if i % 2 == 0 else "bg-white"
-                    with ui.row().classes(
-                        f"w-full p-3 {bg_class} border-b border-gray-100 "
-                        "last:border-0 justify-between items-start gap-4"
-                    ):
-                        ui.label(snake_to_title(key)).classes(
-                            "text-xs font-semibold text-gray-500 uppercase w-32 pt-0.5"
-                        )
-                        ui.label(str(value)).classes("text-xs font-mono text-gray-700 break-all flex-1")
-            else:
-                ui.label("Paths calculated upon pipeline creation.").classes("text-sm text-gray-400 italic p-4")
+        
+        if is_frozen:
+            # Show read-only version for completed/running jobs
+            with ui.card().classes("w-full p-3 border border-gray-200 shadow-none bg-gray-50"):
+                ui.label("Job is running or completed. I/O configuration is locked.").classes(
+                    "text-xs text-gray-500 italic mb-2"
+                )
+                _render_readonly_paths(job_model)
+        else:
+            # Interactive I/O config for scheduled jobs
+            from ui.pipeline_builder.io_config_component import render_io_config
+            render_io_config(job_type, on_change=save_handler)
 
         # ==========================================================
         # 2. JOB PARAMETERS
         # ==========================================================
-        ui.label("Job Parameters").classes("text-sm font-bold text-gray-900 mb-3")
+        ui.label("Job Parameters").classes("text-sm font-bold text-gray-900 mb-3 mt-6")
 
         base_fields = {
             "execution_status",
@@ -478,7 +473,8 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
             "relion_job_number",
             "paths",
             "additional_binds",
-            "slurm_overrides",  # Add this to excluded fields
+            "slurm_overrides",
+            "source_overrides",
             "is_orphaned",
             "missing_inputs",
             "JOB_CATEGORY",
@@ -527,7 +523,7 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
                             inp.on_value_change(save_handler)
 
         # ==========================================================
-        # 3. SLURM RESOURCES (NEW - Collapsible)
+        # 3. SLURM RESOURCES (Collapsible)
         # ==========================================================
         _render_slurm_config_section(job_model, is_frozen, save_handler)
 
@@ -537,7 +533,7 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
         ui.label("Global Experimental Parameters (Read-Only)").classes("text-sm font-bold text-gray-900 mb-3")
 
         with ui.grid(columns=3).classes("w-full gap-4 mb-6"):
-            ui.input("Pixel Size (Å)").bind_value(job_model.microscope, "pixel_size_angstrom").props(
+            ui.input("Pixel Size (A)").bind_value(job_model.microscope, "pixel_size_angstrom").props(
                 "dense outlined readonly"
             ).tooltip("Global parameter")
 
@@ -557,12 +553,12 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
                 "dense outlined readonly"
             ).tooltip("Global parameter")
 
-            ui.input("Tilt Axis (°)").bind_value(job_model.acquisition, "tilt_axis_degrees").props(
+            ui.input("Tilt Axis (deg)").bind_value(job_model.acquisition, "tilt_axis_degrees").props(
                 "dense outlined readonly"
             ).tooltip("Global parameter")
 
         # ==========================================================
-        # 5. TEMPLATE WORKBENCH (Only for Template Matching, at bottom)
+        # 5. TEMPLATE WORKBENCH (Only for Template Matching)
         # ==========================================================
         if job_type == JobType.TEMPLATE_MATCH_PYTOM:
             print("[DEBUG] About to render TemplateWorkbench...")
@@ -572,6 +568,26 @@ def _render_config_tab(job_type: JobType, job_model, is_frozen: bool, ui_mgr: UI
             with ui.card().classes("w-full p-0 border border-gray-200 shadow-none bg-white"):
                 TemplateWorkbench(backend, str(ui_mgr.project_path))
             print("[DEBUG] TemplateWorkbench rendered")
+
+
+def _render_readonly_paths(job_model):
+    """Render paths in read-only mode for frozen jobs."""
+    paths_data = job_model.paths
+    
+    if not paths_data:
+        ui.label("No paths resolved yet.").classes("text-xs text-gray-400 italic")
+        return
+    
+    for i, (key, value) in enumerate(paths_data.items()):
+        bg_class = "bg-white" if i % 2 == 0 else "bg-gray-50"
+        with ui.row().classes(
+            f"w-full p-2 {bg_class} border-b border-gray-100 "
+            "last:border-0 justify-between items-start gap-4"
+        ):
+            ui.label(snake_to_title(key)).classes(
+                "text-xs font-semibold text-gray-500 uppercase w-32 pt-0.5"
+            )
+            ui.label(str(value)).classes("text-xs font-mono text-gray-700 break-all flex-1")
 
 
 # ===========================================
