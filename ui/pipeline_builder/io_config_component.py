@@ -23,10 +23,10 @@ def snake_to_title(s: str) -> str:
 
 STATUS_STYLE = {
     JobStatus.SUCCEEDED: {"color": "#10b981", "bg": "#ecfdf5", "label": "done", "icon": "check_circle"},
-    JobStatus.RUNNING: {"color": "#3b82f6", "bg": "#eff6ff", "label": "running", "icon": "sync"},
+    JobStatus.RUNNING  : {"color": "#3b82f6", "bg": "#eff6ff", "label": "running", "icon": "sync"},
     JobStatus.SCHEDULED: {"color": "#f59e0b", "bg": "#fffbeb", "label": "scheduled", "icon": "schedule"},
-    JobStatus.FAILED: {"color": "#ef4444", "bg": "#fef2f2", "label": "failed", "icon": "error"},
-    JobStatus.UNKNOWN: {"color": "#6b7280", "bg": "#f9fafb", "label": "?", "icon": "help"},
+    JobStatus.FAILED   : {"color": "#ef4444", "bg": "#fef2f2", "label": "failed", "icon": "error"},
+    JobStatus.UNKNOWN  : {"color": "#6b7280", "bg": "#f9fafb", "label": "?", "icon": "help"},
 }
 
 
