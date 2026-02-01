@@ -26,6 +26,26 @@ from ui.pipeline_builder.job_tab_component import (
     render_status_badge,
 )
 
+import asyncio
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Callable, List, Set
+
+from nicegui import ui
+
+from backend import CryoBoostBackend
+from services.project_state import JobType, get_state_service
+from ui.status_indicator import ReactiveStatusDot, render_status_dot, render_status_badge  # CHANGED
+import pandas as pd
+from ui.ui_state import (
+    PIPELINE_ORDER,
+    get_ui_state_manager,
+    get_job_display_name,
+    get_ordered_jobs,
+)
+from ui.pipeline_builder.job_tab_component import render_job_tab  # CHANGED - removed render_status_dot, render_status_badge
+
+
 JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
     JobType.IMPORT_MOVIES: [],
     JobType.FS_MOTION_CTF: [JobType.IMPORT_MOVIES],

@@ -53,7 +53,20 @@ def create_ui_router(backend: CryoBoostBackend):
                 0%, 100% { transform: scale(1); opacity: 1; }
                 50% { transform: scale(1.2); opacity: 0.7; }
             }
-        </style>
+
+        .status-dot { transform-origin: center; }
+
+        @keyframes cb-pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50%      { transform: scale(1.25); opacity: 0.65; }
+        }
+
+        .pulse-running  { animation: cb-pulse 1.2s ease-in-out infinite; }
+        .pulse-success  { animation: cb-pulse 2.0s ease-in-out infinite; }
+        .pulse-failed   { animation: cb-pulse 1.4s ease-in-out infinite; }
+        .pulse-orphaned { animation: cb-pulse 1.6s ease-in-out infinite; }
+        .pulse-scheduled { /* intentionally static */ }
+    </style>
     """)
 
     # --- PAGE 1: LANDING (Setup) ---
