@@ -590,9 +590,6 @@ def _render_readonly_paths(job_model):
             ui.label(str(value)).classes("text-xs font-mono text-gray-700 break-all flex-1")
 
 
-# ===========================================
-# Logs Tab
-# ===========================================
 
 
 def _render_logs_tab(job_type: JobType, job_model, backend, ui_mgr: UIStateManager):
