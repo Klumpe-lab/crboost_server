@@ -102,7 +102,8 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
 
     with content_container:
         if active_tab == MonitorTab.CONFIG:
-            with ui.scroll_area().classes("w-full h-full p-4"):
+            with ui.scroll_area().classes("w-full h-full p-2"):
+
                 render_config_tab(job_type, job_model, frozen, ui_mgr, backend, save_handler)
         elif active_tab == MonitorTab.LOGS:
             render_logs_tab(job_type, job_model, backend, ui_mgr)
@@ -152,7 +153,7 @@ def _handle_tab_switch(job_type, tab, backend, ui_mgr, callbacks):
         content_container.clear()
         with content_container:
             if tab == MonitorTab.CONFIG:
-                with ui.scroll_area().classes("w-full h-full p-4"):
+                with ui.scroll_area().classes("w-full h-full p-2"):
                     render_config_tab(job_type, job_model, frozen, ui_mgr, backend, save_handler)
             elif tab == MonitorTab.LOGS:
                 render_logs_tab(job_type, job_model, backend, ui_mgr)
