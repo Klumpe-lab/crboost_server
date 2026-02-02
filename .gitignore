@@ -16,13 +16,15 @@ q_*.md
 **/notes
 notes
 
+PLAN_*.md
+**/PLAN_*.md
+**/notes
 
 **/*.cif
 **/*.mrc
 
 
 tmpOut/** 
-
 
 promptbuilder.py
 

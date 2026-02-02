@@ -5,6 +5,7 @@ import json
 import asyncio
 from pathlib import Path
 import mrcfile
+from nicegui import context
 
 from services.project_state import JobType, get_project_state, get_state_service
 
@@ -133,10 +134,14 @@ class TemplateWorkbench:
         self.session_item_containers = {}
 
         self._load_project_parameters()
-        self._render()
 
-        asyncio.create_task(self.refresh_files())
-        asyncio.create_task(self._test_iframe_loaded())
+        self.client = None
+        self._render()
+        self.client = context.client 
+
+        ui.timer(0, self.refresh_files, once=True)
+        ui.timer(0, self._test_iframe_loaded, once=True)   # or delete this; see below
+
 
     def _load_project_parameters(self):
         """Load pixel size and binning from project state."""
@@ -227,28 +232,44 @@ class TemplateWorkbench:
             self._log(f"Alignment Error: {res.get('error')}")
 
     async def _simulate_pdb(self):
-        """Run the CISTEM + Relion simulation pipeline."""
         if not self.structure_path:
+            ui.notify("Select a structure first", type="warning")
             return
 
-        self._log(f"Simulating density from {os.path.basename(self.structure_path)}...")
-        
-        # Optional: add B-factor controls to your UI
-        res = await self.backend.pdb_service.simulate_map_from_pdb(
-            pdb_path=self.structure_path,
-            output_folder=self.output_folder,
-            target_apix=self.pixel_size,
-            target_box=int(self.box_size),
-            resolution=self.template_resolution,
-            # Let it auto-calculate sim_apix and sim_box
-            # Or expose these in your UI if users need control
-        )
+        # Disable the buttons so users don't double-submit
+        if self.simulate_btn:
+            self.simulate_btn.set_enabled(False)
+        if self.resample_btn:
+            self.resample_btn.set_enabled(False)
 
-        if res["success"]:
-            self._log(f"Simulation finished: {os.path.basename(res['path_black'])}")
-            await self.refresh_files()
-        else:
-            self._log(f"Simulation failed: {res.get('error')}")
+        n = ui.notification("Simulating density… this can take a while", type="ongoing", spinner=True, timeout=None)
+
+        try:
+            self._log(f"Simulating density from {os.path.basename(self.structure_path)}...")
+
+            res = await self.backend.pdb_service.simulate_map_from_pdb(
+                pdb_path=self.structure_path,
+                output_folder=self.output_folder,
+                target_apix=self.pixel_size,
+                target_box=int(self.box_size),
+                resolution=self.template_resolution,
+            )
+
+            if res.get("success"):
+                self._log(f"Simulation finished: {os.path.basename(res['path_black'])}")
+                ui.notify("Simulation finished", type="positive")
+                await self.refresh_files()
+            else:
+                self._log(f"Simulation failed: {res.get('error')}")
+                ui.notify("Simulation failed (see log)", type="negative", timeout=8000)
+
+        finally:
+            n.dismiss()
+            # Re-enable according to current selection logic
+            self._update_selection_labels()
+            if self.resample_btn:
+                self.resample_btn.set_enabled(True)  # or keep your WIP behavior
+
 
     async def _resample_emdb(self):
         """Resample existing map via Relion."""
@@ -341,26 +362,20 @@ class TemplateWorkbench:
             ).bind_value(self, "pixel_size").props("dense outlined").classes("flex-1")
 
             self.box_input = (
-                ui.number(
-                    "Box (px)",
-                    value=self.box_size,
-                    step=32,
-                    on_change=self._on_box_size_changed,
-                )
+                ui.number("Box (px)", value=self.box_size, step=32, min=32)
                 .bind_value(self, "box_size")
                 .props("dense outlined")
                 .classes("flex-1")
             )
+            self.box_input.on_value_change(self._on_box_size_changed)
 
-            # IMPORTANT: initial state
-            if self.auto_box and self.box_input:
+            if self.auto_box:
                 self.box_input.disable()
-            elif self.box_input:
+            else:
                 self.box_input.enable()
-
-            ui.number("LP (Å)", value=self.template_resolution, step=5).bind_value(
-                self, "template_resolution"
-            ).props("dense outlined").classes("w-16")
+            ui.number("LP (Å)", value=self.template_resolution, step=5).bind_value(self, "template_resolution").props(
+                "dense outlined"
+            ).classes("w-16")
 
         with ui.row().classes("w-full justify-between items-center px-1"):
             self.auto_box_checkbox = (
@@ -455,7 +470,7 @@ class TemplateWorkbench:
         with self.busy_overlay:
             with ui.card().classes("p-6 items-center"):
                 ui.spinner(size="lg")
-            ui.label("Running simulation…").classes("text-sm text-gray-700 mt-2")
+                ui.label("Running simulation…").classes("text-sm text-gray-700 mt-2")
 
 
     def _section_title(self, title: str, icon: str):
@@ -499,19 +514,21 @@ class TemplateWorkbench:
                 ui.label(fname).classes("text-[11px] font-mono text-gray-700 truncate")
 
             with ui.row().classes("gap-0 shrink-0"):
-                ui.button(icon="biotech", on_click=lambda: self._toggle_structure(path)).props(
+
+                ui.button(icon="biotech", on_click=lambda p=path: self._toggle_structure(p)).props(
                     f"flat round dense size=sm color={'emerald' if is_s else 'grey'}"
                 )
                 if path.lower().endswith((".mrc", ".map")):
-                    ui.button(icon="view_in_ar", on_click=lambda: self._toggle_template(path)).props(
+
+                    ui.button(icon="view_in_ar", on_click=lambda p=path: self._toggle_template(p)).props(
                         f"flat round dense size=sm color={'blue' if is_t else 'grey'}"
                     )
-                    ui.button(icon="architecture", on_click=lambda: self._toggle_mask(path)).props(
+
+                    ui.button(icon="architecture", on_click=lambda p=path: self._toggle_mask(p)).props(
                         f"flat round dense size=sm color={'purple' if is_m else 'grey'}"
                     )
-                ui.button(icon="delete", on_click=lambda: self._delete(path)).props(
-                    "flat round dense size=sm color=red"
-                )
+
+                ui.button(icon="delete", on_click=lambda p=path: self._delete(p))
 
     def _update_session_tray(self):
         if not self.session_list_container:
@@ -702,9 +719,12 @@ class TemplateWorkbench:
         if self.log_container:
             with self.log_container:
                 ui.label(f"• {msg}").classes("text-[10px] text-gray-600 font-mono leading-tight")
-            ui.run_javascript(
-                f"const el = document.getElementById('c{self.log_container.id}'); if (el) el.scrollTop = el.scrollHeight;"
+        if self.client and self.log_container:
+            self.client.run_javascript(
+                f"const el=document.getElementById('c{self.log_container.id}');"
+                f"if (el) el.scrollTop = el.scrollHeight;"
             )
+
 
     def _on_pixel_size_changed(self, e=None):
         # tolerate transient None during editing
@@ -721,29 +741,22 @@ class TemplateWorkbench:
         self._update_size_estimate()
         self._recalculate_auto_box()
 
-
     def _on_box_size_changed(self, e=None):
-        # Prefer the event value if provided (NiceGUI sends e.value)
+        # NiceGUI number can emit None (cleared input / invalid intermediate state)
         val = None
         if e is not None:
             val = getattr(e, "value", None)
 
-        # If no event (or no value), fall back to current attribute
         if val is None:
-            val = self.box_size
-
-        # Still None? User is mid-edit; just show placeholder and return.
-        if val is None:
+            # Keep UI responsive; don't compute with None
             if self.size_estimate_label:
                 self.size_estimate_label.set_text("—")
                 self.size_estimate_label.classes(replace="text-[10px] font-mono text-gray-400")
             return
 
-        # Coerce to int safely
         try:
             self.box_size = int(val)
         except (TypeError, ValueError):
-            # Ignore invalid intermediate text states
             return
 
         self._update_size_estimate()
@@ -753,20 +766,16 @@ class TemplateWorkbench:
         self._recalculate_auto_box()
 
     def _on_auto_box_toggle(self, e):
-        self.auto_box = bool(e.value)
+        self.auto_box = e.value
 
         if not self.box_input:
             return
 
         if self.auto_box:
-            # lock manual editing and compute a fresh auto box
             self.box_input.disable()
             self._recalculate_auto_box()
         else:
-            # allow manual editing
             self.box_input.enable()
-
-        self._update_size_estimate()
 
 
     def _recalculate_auto_box(self):
@@ -804,10 +813,15 @@ class TemplateWorkbench:
 
 
     def _post_to_viewer(self, action: str, **kwargs):
+        if not self.client:
+            return
         payload = {"action": action, **kwargs}
-        ui.run_javascript(
-            f"const f = document.getElementById('molstar-frame'); if (f && f.contentWindow) f.contentWindow.postMessage({json.dumps(payload)}, '*');"
+        self.client.run_javascript(
+            "const f = document.getElementById('molstar-frame');"
+            "if (f && f.contentWindow) f.contentWindow.postMessage(%s, '*');"
+            % json.dumps(payload)
         )
+
 
     def _handle_viewer_event(self, e):
         event_type = e.args.get("type")

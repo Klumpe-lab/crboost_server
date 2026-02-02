@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
-from services.config_service import get_config_service
+from services.configs.config_service import get_config_service
+from services.configs.starfile_service import StarfileService
+from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
 from services.project_state import (
     AbstractJobParams, 
     JobCategory, 
@@ -14,15 +16,14 @@ from services.project_state import (
     JobStatus,
     ImportMoviesParams,
 )
-from .starfile_service import StarfileService
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
 
+
 class PipelineOrchestratorService:
     def __init__(self, backend_instance: "CryoBoostBackend"):
-
         self.backend        = backend_instance
         self.star_handler   = StarfileService()
         self.config_service = get_config_service()
@@ -33,133 +34,127 @@ class PipelineOrchestratorService:
         project_dir: Path,
         selected_job_types: List[JobType],
     ) -> Dict[str, Any]:
-        """
-        Main entry point for "Just-In-Time" scheme generation.
-        """
         if not selected_job_types:
             return {"success": False, "message": "No jobs selected."}
 
         state = self.backend.state_service.state
 
-        # --- FIX: FILTER ALREADY COMPLETED JOBS ---
-        # We only want to run jobs that are NOT Succeeded.
-        # If the user wants to re-run a succeeded job, they must explicitly reset/delete it first.
-        jobs_to_run = []
+        # Only run jobs not SUCCEEDED
+        jobs_to_run: List[JobType] = []
         for job_type in selected_job_types:
             job_model = state.jobs.get(job_type)
-            # If model missing, assume it needs running. If status is not SUCCEEDED, run it.
             if not job_model or job_model.execution_status != JobStatus.SUCCEEDED:
                 jobs_to_run.append(job_type)
-        
+
         if not jobs_to_run:
-            print("[ORCHESTRATOR] All selected jobs are already completed. Nothing to run.")
             return {"success": True, "message": "All selected jobs are already finished.", "pid": 0}
 
-        print(f"[ORCHESTRATOR] Full selection: {[j.value for j in selected_job_types]}")
-        print(f"[ORCHESTRATOR] Actual execution list: {[j.value for j in jobs_to_run]}")
-
-        # 1. Prepare Scheme Directory
+        # Scheme directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         scheme_name = f"run_{timestamp}"
         scheme_dir = project_dir / "Schemes" / scheme_name
         scheme_dir.mkdir(parents=True, exist_ok=True)
 
-        # 2. Predict Job Numbers
+        # Predict job numbers
         current_counter = self._get_current_relion_counter(project_dir)
 
-        # 3. Process Each Job
-        server_dir = Path(__file__).parent.parent.resolve()
+        server_dir = Path(__file__).parent.parent.parent.resolve()
 
-        previous_job_output_dir_in_batch: Optional[Path] = None
+        # Schema-based resolver
+    
+        resolver = PathResolutionService(state, active_job_types=set(selected_job_types))
+
+        report_lines = [
+            f"Scheme: {scheme_name}",
+            f"Jobs_to_run: {[j.value for j in jobs_to_run]}",
+            "",
+        ]
 
         for i, job_type in enumerate(jobs_to_run):
-            # Calculate predicted directory - counter IS the next job number
-            job_num = current_counter + i  # NOT current_counter + 1 + i
-            
+            job_num = current_counter + i
             category = JobCategory.IMPORT if job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
             predicted_job_dir = project_dir / category.value / f"job{job_num:03d}"
-            
-            # Ensure Model exists
+
+            # Ensure model exists
             job_model = state.jobs.get(job_type)
             if not job_model:
                 template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
                 state.ensure_job_initialized(job_type, template_base)
                 job_model = state.jobs.get(job_type)
 
-            # --- UPSTREAM RESOLUTION ---
-            upstream_path_for_resolution = None
+            # -----------------------------------------------------------------
+            # SCHEMA-BASED PATH RESOLUTION (replaces legacy resolve_paths)
+            # -----------------------------------------------------------------
+            try:
+                # 1. Resolve I/O paths from schemas
+                io_paths = resolver.resolve_all_paths(job_type, job_model, predicted_job_dir)
+                
+                # 2. Add context paths (settings files, project dirs, etc.)
+                context_paths = get_context_paths(job_type, job_model, predicted_job_dir)
+                
+                # 3. Merge (context paths are lower priority - I/O wins on conflict)
+                resolved_paths = {**context_paths, **io_paths}
+                
+            except PathResolutionError as e:
+                # Mark job as orphaned but continue with other jobs
+                job_model.is_orphaned = True
+                job_model.missing_inputs = [str(e)]
+                report_lines.append(f"[{job_type.value}] RESOLUTION FAILED: {e}")
+                report_lines.append("")
+                print(f"[RESOLUTION ERROR] {job_type.value}: {e}")
+                continue
 
-            if i == 0:
-                # First job in THIS batch. 
-                # Its input must come from the Project History (a job that finished in a previous run).
-                reqs = job_model.get_input_requirements()
-                if reqs:
-                    # We look for the required job type in the state's path mapping.
-                    # This mapping was populated by SyncStatus when we loaded the project.
-                    required_type = list(reqs.values())[0] # e.g. "tsReconstruct"
-                    
-                    if required_type in state.job_path_mapping:
-                        rel_path = state.job_path_mapping[required_type] # e.g. "External/job005"
-                        upstream_path_for_resolution = project_dir / rel_path
-                        print(f"[ORCHESTRATOR] {job_type.value} depends on historical: {upstream_path_for_resolution}")
-                    else:
-                        print(f"[ORCHESTRATOR] WARNING: Upstream {required_type} not found in history for {job_type.value}")
-            else:
-                # Subsequent job in THIS batch.
-                # Its input comes from the PREVIOUS job in this batch (which we just predicted).
-                upstream_path_for_resolution = previous_job_output_dir_in_batch
-                print(f"[ORCHESTRATOR] {job_type.value} depends on batch predecessor: {upstream_path_for_resolution}")
+            # Store resolved paths on the model
+            job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v is not None}
+            job_model.is_orphaned = False
+            job_model.missing_inputs = []
 
-            # --- RESOLVE PATHS ---
-            resolved_paths = job_model.resolve_paths(
-                job_dir=predicted_job_dir, 
-                upstream_job_dir=upstream_path_for_resolution
-            )
-    
-            
-            # Update the State (Persist these absolute paths for the Driver)
-            job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v}
-    
-            
+            # CRITICAL: Invalidate resolver cache so the next job sees this job's
+            # real paths instead of stale "pending_" placeholders
+            resolver.invalidate_cache()
+
+            # Build report
+            report_lines.append(f"[{job_type.value}] predicted_dir={predicted_job_dir}")
+            for k, v in sorted(job_model.paths.items()):
+                report_lines.append(f"  {k}: {v}")
+            report_lines.append("")
+
             await self.backend.state_service.save_project()
-            # Prepare temporary job.star
+
+            # Write job.star into scheme
             scheme_job_dir = scheme_dir / job_type.value
             scheme_job_dir.mkdir(parents=True, exist_ok=True)
-            
-            needs_historical_input_patch = (i == 0 and upstream_path_for_resolution is not None)
 
             self._write_job_star(
-                scheme_job_dir         = scheme_job_dir,
-                job_type               = job_type,
-                job_model              = job_model,
-                server_dir             = server_dir,
-                project_dir            = project_dir,
-                patch_historical_input = needs_historical_input_patch,
+                scheme_job_dir=scheme_job_dir,
+                job_type=job_type,
+                job_model=job_model,
+                server_dir=server_dir,
+                project_dir=project_dir,
             )
-            
-            # Update tracking for next iteration
-            previous_job_output_dir_in_batch = predicted_job_dir
 
-        # 4. Generate scheme.star
+        # Write resolution report
+        report_path = scheme_dir / "resolution_report.txt"
+        report_path.write_text("\n".join(report_lines))
+        print(f"[RESOLUTION] wrote {report_path}")
+
+        # scheme.star
         self._write_scheme_star(scheme_dir, scheme_name, [j.value for j in jobs_to_run])
 
-        # 5. Save Project State
         await self.backend.state_service.save_project()
         os.sync()
 
-        # 6. Run
         bind_paths = [str(project_dir.parent.resolve()), str(server_dir.resolve())]
         if state.movies_glob:
-             bind_paths.append(str(Path(state.movies_glob).parent.resolve()))
+            bind_paths.append(str(Path(state.movies_glob).parent.resolve()))
         if state.mdocs_glob:
-             bind_paths.append(str(Path(state.mdocs_glob).parent.resolve()))
+            bind_paths.append(str(Path(state.mdocs_glob).parent.resolve()))
 
         return await self.backend.pipeline_runner.run_generated_scheme(
             project_dir=project_dir,
             scheme_name=scheme_name,
-            bind_paths=list(set(bind_paths))
+            bind_paths=list(set(bind_paths)),
         )
-
     def _get_current_relion_counter(self, project_dir: Path) -> int:
         """
         Reads the current job counter from default_pipeline.star.
@@ -372,6 +367,7 @@ class PipelineOrchestratorService:
         }
 
     def _get_all_job_numbers_for_type(self, project_dir: Path, target_job_type: JobType) -> List[str]:
+
         """
         Scans default_pipeline.star to find ALL job numbers matching the type.
         Returns list of strings: ["6", "7", "8"]
@@ -409,6 +405,43 @@ class PipelineOrchestratorService:
         except Exception as e:
             print(f"[ORCHESTRATOR] Error scanning pipeline for deletion: {e}")
             return []
+
+    def _dryrun_compare_schema_paths(
+            self,
+            resolver: PathResolutionService,
+            job_type: JobType,
+            job_model: AbstractJobParams,
+            predicted_job_dir: Path,
+        ) -> None:
+            """
+            Cleanly isolated dry-run check.
+            Enable via env var: CRBOOST_SCHEMA_RESOLVE_DRYRUN=1
+            """
+            if os.environ.get("CRBOOST_SCHEMA_RESOLVE_DRYRUN", "0") != "1":
+                return
+
+            try:
+                schema_paths = resolver.resolve_all_paths(job_type, job_model, predicted_job_dir)
+            except PathResolutionError as e:
+                print(f"[SCHEMA DRYRUN] {job_type.value}: cannot resolve: {e}")
+                return
+            except Exception as e:
+                print(f"[SCHEMA DRYRUN] {job_type.value}: unexpected error: {e}")
+                return
+
+            legacy_paths = job_model.paths or {}
+
+            keys = sorted(set(legacy_paths.keys()) | set(schema_paths.keys()))
+            diffs = []
+            for k in keys:
+                if str(legacy_paths.get(k)) != str(schema_paths.get(k)):
+                    diffs.append((k, legacy_paths.get(k), schema_paths.get(k)))
+
+            if diffs:
+                print(f"[SCHEMA DRYRUN] {job_type.value}: {len(diffs)} path diffs")
+                for k, oldv, newv in diffs:
+                    print(f"  - {k}\n      legacy: {oldv}\n      schema : {newv}")
+
 
 class JobTypeResolver:
 
