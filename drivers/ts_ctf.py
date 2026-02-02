@@ -6,15 +6,16 @@ from pathlib import Path
 from typing import Dict
 import traceback
 
+from services.computing.container_service import get_container_service
+from services.configs.metadata_service import MetadataTranslator
+from services.configs.starfile_service import StarfileService
+
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 try:
     from drivers.driver_base import get_driver_context, run_command
     from services.project_state import TsCtfParams
-    from services.metadata_service import MetadataTranslator
-    from services.starfile_service import StarfileService
-    from services.container_service import get_container_service
 except ImportError as e:
     print("FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
     print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
@@ -25,9 +26,9 @@ except ImportError as e:
 def build_ctf_commands(params: TsCtfParams, paths: dict[str, Path]) -> str:
     """Build CTF commands using input_processing and output_processing."""
     
-    settings_file = shlex.quote(str(paths["warp_tiltseries_settings"]))
-    input_processing = shlex.quote(str(paths["input_processing"]))  # From alignment job
-    output_processing = shlex.quote(str(paths["output_processing"]))  # To current job
+    settings_file     = shlex.quote(str(paths["warp_tiltseries_settings"]))
+    input_processing  = shlex.quote(str(paths["input_processing"]))          # From alignment job
+    output_processing = shlex.quote(str(paths["output_processing"]))         # To current job
 
     # All commands use the same processing overrides
     check_hand_command = (

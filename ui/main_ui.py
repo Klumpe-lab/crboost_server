@@ -8,10 +8,11 @@ Implements the 2-Phase workflow:
 from nicegui import ui, Client, app
 
 from backend import CryoBoostBackend
+from services.configs.user_prefs_service import get_prefs_service
+from services.project_state import get_project_state, reset_project_state
 from ui.ui_state import get_ui_state_manager
 from ui.landing_page import build_landing_page
 from ui.workspace_page import build_workspace_page
-from services.user_prefs_service import get_prefs_service
 
 
 def create_ui_router(backend: CryoBoostBackend):
@@ -23,7 +24,6 @@ def create_ui_router(backend: CryoBoostBackend):
             @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
             @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap');
             
-            /* CRITICAL: Force full viewport height */
             html, body {
                 height: 100vh !important;
                 margin: 0 !important;
@@ -46,7 +46,6 @@ def create_ui_router(backend: CryoBoostBackend):
                 text-transform: none !important; 
             }
             
-            /* Status Animation */
             .pulse-running {
                 animation: pulse-blue 1.5s ease-in-out infinite;
             }
@@ -54,21 +53,48 @@ def create_ui_router(backend: CryoBoostBackend):
                 0%, 100% { transform: scale(1); opacity: 1; }
                 50% { transform: scale(1.2); opacity: 0.7; }
             }
-        </style>
+
+        .status-dot { transform-origin: center; }
+
+        @keyframes cb-pulse {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50%      { transform: scale(1.25); opacity: 0.65; }
+        }
+
+        .pulse-running  { animation: cb-pulse 1.2s ease-in-out infinite; }
+        .pulse-success  { animation: cb-pulse 2.0s ease-in-out infinite; }
+        .pulse-failed   { animation: cb-pulse 1.4s ease-in-out infinite; }
+        .pulse-orphaned { animation: cb-pulse 1.6s ease-in-out infinite; }
+        .pulse-scheduled { /* intentionally static */ }
+    </style>
     """)
 
     # --- PAGE 1: LANDING (Setup) ---
     @ui.page("/")
     async def landing_page(client: Client):
-        # 1. Reset UI State
         ui_mgr = get_ui_state_manager()
+        current_state = get_project_state()
+        
+        # CRITICAL GUARD: If pipeline is running, don't let stale tabs nuke state
+        if current_state.pipeline_active:
+            print(f"[LANDING] Blocked state reset - pipeline is active")
+            ui.notify(
+                "A pipeline is currently running. Redirecting to workspace.", 
+                type="warning",
+                position="top"
+            )
+            # Small delay to let notification show
+            await asyncio.sleep(0.5)
+            ui.navigate.to("/workspace")
+            return
+        
+        # Safe to reset UI state (per-client)
         ui_mgr.reset()
         
-        # 2. Reset Backend Project State (Fixes the "Ghost Project" issue)
-        from services.project_state import reset_project_state
+        # Safe to reset project state (pipeline not running)
         reset_project_state()
         
-        # 3. Hydrate user preferences from storage BEFORE building UI
+        # Hydrate user preferences from storage BEFORE building UI
         prefs_service = get_prefs_service()
         prefs = prefs_service.load_from_app_storage(app.storage.user)
         
@@ -88,9 +114,21 @@ def create_ui_router(backend: CryoBoostBackend):
         ui_mgr = get_ui_state_manager()
         
         # Safety check: if no project is loaded, go back to start
+        # BUT if pipeline is running, try to recover state first
         if not ui_mgr.is_project_created:
-             ui.navigate.to("/")
-             return
+            # Check if there's actually a project in backend state
+            current_state = get_project_state()
+            if current_state.project_path and current_state.project_path.exists():
+                # Recover: sync UI state from backend state
+                print(f"[WORKSPACE] Recovering UI state from backend: {current_state.project_name}")
+                ui_mgr.load_from_project(
+                    project_path=current_state.project_path,
+                    scheme_name="recovered",
+                    jobs=list(current_state.jobs.keys())
+                )
+            else:
+                ui.navigate.to("/")
+                return
 
         # Render the full pipeline UI
         build_workspace_page(backend)
@@ -101,3 +139,7 @@ def create_ui_router(backend: CryoBoostBackend):
         with ui.column().classes("p-8"):
              ui.label("Cluster Info Stub")
              ui.button("Back", on_click=lambda: ui.navigate.back())
+
+
+# Need to import asyncio for the sleep
+import asyncio

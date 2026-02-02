@@ -1,4 +1,4 @@
-# services/config_service.py
+# services/configs/config_service.py
 """
 Pure configuration loader - reads conf.yaml and provides typed access.
 """
@@ -6,19 +6,34 @@ Pure configuration loader - reads conf.yaml and provides typed access.
 import os
 import yaml
 from pathlib import Path
-from functools import lru_cache
 from pydantic import BaseModel, Field
 from typing import Dict, Optional, Literal
 
-# Derive default config path from this file's location
-_THIS_DIR = Path(__file__).parent
-_REPO_ROOT = _THIS_DIR.parent
+def find_repo_root() -> Path:
+    """
+    Robustly find the repository root by looking for 'config/conf.yaml' 
+    starting from the current directory and moving up.
+    """
+    current = Path.cwd()
+    # Check current directory first (most likely when running main.py)
+    if (current / "config" / "conf.yaml").exists():
+        return current
+    
+    # Fallback: check parents (in case we are running a script from a subfolder)
+    for parent in current.parents:
+        if (parent / "config" / "conf.yaml").exists():
+            return parent
+            
+    # Last resort fallback to the old logic but corrected for the new depth
+    # config_service.py is now in services/configs/, so we need .parent.parent
+    return Path(__file__).resolve().parent.parent.parent
+
+_REPO_ROOT = find_repo_root()
 DEFAULT_CONFIG_PATH = _REPO_ROOT / "config" / "conf.yaml"
 
 
 class SlurmDefaultsConfig(BaseModel):
     """SLURM submission defaults from conf.yaml"""
-
     partition: str = "g"
     constraint: str = ""
     nodes: int = 1
@@ -44,16 +59,11 @@ class ToolConfig(BaseModel):
 
 class Config(BaseModel):
     """Root configuration model"""
-
     crboost_root: str = Field(default_factory=lambda: str(_REPO_ROOT))
     venv_path: Optional[str] = None
     local: LocalConfig = Field(default_factory=LocalConfig)
     slurm_defaults: SlurmDefaultsConfig = Field(default_factory=SlurmDefaultsConfig)
-    
-    # Replaces the old simple dict[str, str] containers map
     tools: Dict[str, ToolConfig] = Field(default_factory=dict)
-    
-    # Legacy support if user hasn't migrated conf.yaml yet
     containers: Optional[Dict[str, str]] = None
 
     class Config:
@@ -68,8 +78,10 @@ class ConfigService:
             config_path = DEFAULT_CONFIG_PATH
             
         if not config_path.exists():
+            # Diagnostic info to help debug future path shifts
             raise FileNotFoundError(
                 f"Configuration file not found at: {config_path}\n"
+                f"Repo Root identified as: {_REPO_ROOT}\n"
                 f"Run 'python preflight.py' to create one from the template."
             )
 
@@ -110,21 +122,10 @@ class ConfigService:
     def default_data_globs(self) -> tuple[Optional[str], Optional[str]]:
         return (self._config.local.DefaultMoviesGlob, self._config.local.DefaultMdocsGlob)
 
-    # --- Tool / Container Management ---
-
     def get_tool_config(self, tool_name: str) -> ToolConfig:
-        """
-        Retrieves config for a specific tool. 
-        Falls back to legacy 'containers' dict if 'tools' entry is missing.
-        """
-        # 1. Try new 'tools' section
         if tool_name in self._config.tools:
             return self._config.tools[tool_name]
         
-        # 2. Map known aliases for backward compatibility lookup
-        # (This maps the key used in code to the key used in conf.yaml)
-        # In the new system, we expect the key in conf.yaml to match the tool_name requested.
-        # But for legacy, we need to handle the mapping.
         legacy_mapping = {
             "warptools": "warp_aretomo",
             "aretomo": "warp_aretomo",
@@ -136,23 +137,15 @@ class ConfigService:
         if lookup_name in self._config.tools:
             return self._config.tools[lookup_name]
 
-        # 3. Fallback to legacy 'containers' section if available
         if self._config.containers and lookup_name in self._config.containers:
             return ToolConfig(
                 exec_mode="container",
                 container_path=self._config.containers[lookup_name]
             )
             
-        # 4. Return default (assume binary in path if nothing configured?)
-        # Or return None to let caller handle it. Returning default safe-fail.
         return ToolConfig(exec_mode="binary", bin_path=tool_name)
 
     def get_tool_path(self, tool_name: str) -> Optional[str]:
-        """
-        Returns the filesystem path for the tool.
-        If container: returns path to .sif
-        If binary: returns path to binary
-        """
         config = self.get_tool_config(tool_name)
         if config.exec_mode == "container":
             return config.container_path
@@ -170,6 +163,5 @@ def get_config_service() -> ConfigService:
 
 
 def reset_config_service():
-    """Reset the singleton - useful for testing or after config changes"""
     global _config_service_instance
     _config_service_instance = None

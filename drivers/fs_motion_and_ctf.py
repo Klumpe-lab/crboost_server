@@ -8,6 +8,10 @@ import shlex
 from pathlib import Path
 import traceback
 
+from services.computing.container_service import get_container_service
+from services.configs.metadata_service import MetadataTranslator
+from services.configs.starfile_service import StarfileService
+
 # Add the server root to PYTHONPATH
 server_dir = Path(__file__).parent.parent
 sys.path.append(str(server_dir))
@@ -15,9 +19,6 @@ sys.path.append(str(server_dir))
 try:
     from drivers.driver_base import get_driver_context, run_command
     from services.project_state import FsMotionCtfParams
-    from services.metadata_service import MetadataTranslator
-    from services.starfile_service import StarfileService
-    from services.container_service import get_container_service
 except ImportError as e:
     print(f"FATAL: Could not import services. Check PYTHONPATH.", file=sys.stderr)
     print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
@@ -174,7 +175,7 @@ def main():
         warp_command = build_warp_commands(params, paths)
         print(f"[DRIVER] Built inner command: {warp_command[:500]}...", flush=True)
 
-        container_svc = get_container_service()
+        container_svc     = get_container_service()
         apptainer_command = container_svc.wrap_command_for_tool(
             command=warp_command, 
             cwd=job_dir, 

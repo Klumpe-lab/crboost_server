@@ -71,46 +71,55 @@ def build_workspace_page(backend: CryoBoostBackend):
     # ===================================================================
     # HEADER
     # ===================================================================
-    with ui.header().classes("bg-white border-b border-gray-200 text-gray-800 h-auto px-4 py-2"):
+# ===================================================================
+    # HEADER
+    # ===================================================================
+    with ui.header().classes("bg-white border-b border-gray-200 text-gray-800 h-auto px-4 py-1"):
         with ui.row().classes("w-full items-center justify-between"):
-            # Left: Project info
-            with ui.row().classes("items-center gap-6"):
-                with ui.row().classes("items-center gap-2"):
-                    ui.icon("layers", size="20px").classes("text-blue-600")
-                    ui.label(state.project_name).classes("font-bold text-sm")
-                
-                # Project metadata - compact display
-                with ui.row().classes("items-center gap-4 text-xs text-gray-500"):
-                    if state.project_path:
-                        with ui.row().classes("items-center gap-1"):
-                            ui.icon("folder", size="14px").classes("text-gray-400")
-                            ui.label(str(state.project_path)).classes("font-mono")
-                    
-                    if state.movies_glob:
-                        with ui.row().classes("items-center gap-1"):
-                            ui.icon("movie", size="14px").classes("text-gray-400")
-                            ui.label(state.movies_glob).classes("font-mono")
-                    
-                    if state.mdocs_glob:
-                        with ui.row().classes("items-center gap-1"):
-                            ui.icon("description", size="14px").classes("text-gray-400")
-                            ui.label(state.mdocs_glob).classes("font-mono")
-            
-            # Right: Actions
-            with ui.row().classes("items-center gap-2"):
-                # Sync button - gives users control
-                ui.button(
-                    icon="sync", 
-                    on_click=force_full_sync
-                ).props("flat dense round").classes("text-blue-600").tooltip("Reload from disk")
-                
-                # Close project
-                ui.button(
-                    "Close Project", 
-                    icon="close", 
-                    on_click=lambda: ui.navigate.to("/")
-                ).props("flat dense no-caps text-color=red").classes("text-xs")
+            # Left: Project name + metadata
+            with ui.row().classes("items-center gap-5"):
+                with ui.row().classes("items-center gap-1"):
+                    ui.icon("layers", size="16px").classes("text-blue-600")
+                    ui.label(state.project_name).classes("font-semibold text-xs")
 
+                if state.project_path:
+                    with ui.column().classes("gap-0"):
+                        ui.label("ROOT").classes(
+                            "text-[8px] font-bold text-gray-400 uppercase leading-none"
+                        )
+                        ui.label(str(state.project_path)).classes(
+                            "text-[10px] font-mono text-gray-500 leading-tight"
+                        )
+
+                if state.movies_glob:
+                    with ui.column().classes("gap-0"):
+                        ui.label("MOVIES").classes(
+                            "text-[8px] font-bold text-gray-400 uppercase leading-none"
+                        )
+                        ui.label(state.movies_glob).classes(
+                            "text-[10px] font-mono text-gray-500 leading-tight"
+                        )
+
+                if state.mdocs_glob:
+                    with ui.column().classes("gap-0"):
+                        ui.label("MDOC").classes(
+                            "text-[8px] font-bold text-gray-400 uppercase leading-none"
+                        )
+                        ui.label(state.mdocs_glob).classes(
+                            "text-[10px] font-mono text-gray-500 leading-tight"
+                        )
+
+            # Right: Actions
+            with ui.row().classes("items-center gap-1"):
+                ui.button(
+                    icon="sync",
+                    on_click=force_full_sync,
+                ).props("flat dense round size=sm").classes("text-blue-600").tooltip("Reload from disk")
+
+                ui.button(
+                    icon="close",
+                    on_click=lambda: ui.navigate.to("/"),
+                ).props("flat dense round size=sm").classes("text-red-400").tooltip("Close project")
     # ===================================================================
     # MAIN CONTENT
     # ===================================================================
