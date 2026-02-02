@@ -61,7 +61,8 @@ class PipelineOrchestratorService:
         server_dir = Path(__file__).parent.parent.parent.resolve()
 
         # Schema-based resolver
-        resolver = PathResolutionService(state)
+    
+        resolver = PathResolutionService(state, active_job_types=set(selected_job_types))
 
         report_lines = [
             f"Scheme: {scheme_name}",

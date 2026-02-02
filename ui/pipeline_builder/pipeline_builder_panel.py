@@ -7,9 +7,7 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Callable, List, Set
-
 from nicegui import ui
-
 from backend import CryoBoostBackend
 from services.project_state import JobType, get_state_service
 from ui.status_indicator import ReactiveStatusDot
@@ -47,16 +45,16 @@ from ui.pipeline_builder.job_tab_component import render_job_tab  # CHANGED - re
 
 
 JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
-    JobType.IMPORT_MOVIES: [],
-    JobType.FS_MOTION_CTF: [JobType.IMPORT_MOVIES],
-    JobType.TS_ALIGNMENT: [JobType.FS_MOTION_CTF],
-    JobType.TS_CTF: [JobType.TS_ALIGNMENT],
-    JobType.TS_RECONSTRUCT: [JobType.TS_CTF],
-    JobType.DENOISE_TRAIN: [JobType.TS_RECONSTRUCT],
-    JobType.DENOISE_PREDICT: [JobType.DENOISE_TRAIN, JobType.TS_RECONSTRUCT],
-    JobType.TEMPLATE_MATCH_PYTOM: [JobType.TS_CTF],  # Can use reconstruct OR denoise
+    JobType.IMPORT_MOVIES         : [],
+    JobType.FS_MOTION_CTF         : [JobType.IMPORT_MOVIES],
+    JobType.TS_ALIGNMENT          : [JobType.FS_MOTION_CTF],
+    JobType.TS_CTF                : [JobType.TS_ALIGNMENT],
+    JobType.TS_RECONSTRUCT        : [JobType.TS_CTF],
+    JobType.DENOISE_TRAIN         : [JobType.TS_RECONSTRUCT],
+    JobType.DENOISE_PREDICT       : [JobType.DENOISE_TRAIN, JobType.TS_RECONSTRUCT],
+    JobType.TEMPLATE_MATCH_PYTOM  : [JobType.TS_CTF],                                  # Can use reconstruct OR denoise
     JobType.TEMPLATE_EXTRACT_PYTOM: [JobType.TEMPLATE_MATCH_PYTOM],
-    JobType.SUBTOMO_EXTRACTION: [JobType.TEMPLATE_EXTRACT_PYTOM],
+    JobType.SUBTOMO_EXTRACTION    : [JobType.TEMPLATE_EXTRACT_PYTOM],
 }
 
 def get_missing_dependencies(job_type: JobType, selected_jobs: Set[JobType]) -> List[JobType]:
@@ -168,14 +166,27 @@ def build_pipeline_builder_panel(
         ui_mgr.set_active_job(job_type)
         rebuild_pipeline_ui()
         
+    def _cleanup_stale_overrides(removed_job_type: JobType):
+        """Remove source_overrides in remaining jobs that reference the removed job."""
+        state = state_service.state
+        removed_prefix = removed_job_type.value + ":"
+        for jt, job_model in state.jobs.items():
+            overrides = getattr(job_model, "source_overrides", None)
+            if not overrides:
+                continue
+            stale_keys = [k for k, v in overrides.items() if v.startswith(removed_prefix)]
+            for k in stale_keys:
+                del overrides[k]
+
+
     def remove_job_from_pipeline(job_type: JobType):
-        """Remove a job from the pipeline."""
         if not ui_mgr.remove_job(job_type):
             return
-        
+
+        _cleanup_stale_overrides(job_type)  # NEW
+
         if ui_mgr.is_project_created:
             asyncio.create_task(state_service.save_project())
-        
         rebuild_pipeline_ui()
     
     def toggle_job_in_pipeline(job_type: JobType):
@@ -197,18 +208,8 @@ def build_pipeline_builder_panel(
             add_job_to_pipeline(job_type)
     
     def update_status_label():
-        """Update the pipeline status label."""
-        label = ui_mgr.panel_refs.status_label
-        if not label:
-            return
-        
-        count = len(ui_mgr.selected_jobs)
-        if count == 0:
-            label.set_text("No jobs selected")
-        elif ui_mgr.is_running:
-            label.set_text("Pipeline running...")
-        else:
-            label.set_text(f"{count} jobs ready")
+            """No-op -- status label removed from UI."""
+            pass
     
     def rebuild_pipeline_ui():
         """Rebuild the entire pipeline UI."""
@@ -393,50 +394,51 @@ def build_pipeline_builder_panel(
     # Main Layout
     # ===========================================
         
+# ===========================================
+    # Main Layout
+    # ===========================================
+        
     with ui.column().classes("w-full h-full overflow-hidden").style(
         "gap: 0px; font-family: 'IBM Plex Sans', sans-serif;"
     ):
-        # Header section
-        with ui.column().classes("w-full p-3 bg-white border-b border-gray-200 shrink-0"):
+        # Header: job pills + run button on one row
+        with ui.row().classes(
+            "w-full items-center p-3 bg-white border-b border-gray-200 shrink-0"
+        ).style("gap: 8px;"):
             # Continuation controls container (hidden by default)
             cont_container = ui.column().classes("w-full")
             cont_container.set_visibility(False)
             ui_mgr.panel_refs.continuation_container = cont_container
-            
-            # Job flow visualization
-            job_tags_container = ui.row().classes("w-full flex-wrap items-center mb-3").style("gap: 4px;")
+
+            # Job flow pills -- scrollable horizontally
+            job_tags_container = ui.row().classes(
+                "flex-1 items-center flex-nowrap"
+            ).style("gap: 4px; overflow-x: auto; min-width: 0;")
             ui_mgr.panel_refs.job_tags_container = job_tags_container
-            
+
             with job_tags_container:
                 render_job_flow(ui_mgr.selected_jobs, toggle_job_in_pipeline)
-            
-            # Pipeline controls row
-            with ui.row().classes("w-full items-center justify-end").style("gap: 12px;"):
-                status_label = ui.label("No jobs selected").classes("text-xs text-gray-600")
-                ui_mgr.panel_refs.status_label = status_label
-                
-                run_btn = ui.button(
-                    "Run Pipeline",
-                    icon="play_arrow",
-                    on_click=handle_run_pipeline  # NOT lambda: asyncio.create_task(...)
-                ).props("dense flat no-caps").style(
-                    "background: #f3f4f6; color: #1f2937; padding: 6px 20px; "
-                    "border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;"
-                )
-                ui_mgr.panel_refs.run_button = run_btn
-                
-                stop_btn = ui.button("Stop", icon="stop").props(
-                    "dense flat no-caps disable"
-                ).style(
-                    "background: #f3f4f6; color: #1f2937; padding: 6px 20px; "
-                    "border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb;"
-                )
-                ui_mgr.panel_refs.stop_button = stop_btn
-        
+
+            # Run button pinned right
+            run_btn = ui.button(
+                "Run Pipeline",
+                icon="play_arrow",
+                on_click=handle_run_pipeline,
+            ).props("dense flat no-caps").style(
+                "background: #f3f4f6; color: #1f2937; padding: 6px 20px; "
+                "border-radius: 3px; font-weight: 500; border: 1px solid #e5e7eb; "
+                "flex-shrink: 0;"
+            )
+            ui_mgr.panel_refs.run_button = run_btn
+
+        # Remove stale refs
+        ui_mgr.panel_refs.status_label = None
+        ui_mgr.panel_refs.stop_button = None
+
         # Job tabs container
         tabs_container = ui.column().classes("w-full flex-grow overflow-hidden")
         ui_mgr.panel_refs.job_tabs_container = tabs_container
-        
+
         with tabs_container:
             pass
     

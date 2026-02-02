@@ -69,8 +69,10 @@ class PathResolutionService:
     Now with user override support and candidate enumeration for UI.
     """
 
-    def __init__(self, state: "ProjectState"):
+    def __init__(self, state: "ProjectState", active_job_types: Optional[set] = None):
         self.state = state
+
+        self._active_job_types = active_job_types  # NEW
         self._output_index: Optional[Dict[JobFileType, List[OutputCandidate]]] = None
 
     # -------------------------------------------------------------------------
@@ -336,10 +338,6 @@ class PathResolutionService:
     # -------------------------------------------------------------------------
 
     def _build_output_index(self) -> Dict[JobFileType, List[OutputCandidate]]:
-        """
-        Collect candidates from existing job models in state.
-        Cached for performance during multi-slot resolution.
-        """
         if self._output_index is not None:
             return self._output_index
 
@@ -347,6 +345,10 @@ class PathResolutionService:
         index: Dict[JobFileType, List[OutputCandidate]] = {t: [] for t in JobFileType}
 
         for producer_job_type, producer_model in self.state.jobs.items():
+            # --- NEW: skip jobs not in the active pipeline ---
+            if self._active_job_types is not None and producer_job_type not in self._active_job_types:
+                continue
+
             out_schema = self._get_output_schema(producer_job_type)
             if not out_schema:
                 continue
