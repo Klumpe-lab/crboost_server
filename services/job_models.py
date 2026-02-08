@@ -266,17 +266,6 @@ class AbstractJobParams(BaseModel):
     def mdoc_dir(self) -> Path:
         return self.project_root / "mdoc"
 
-    # --- LOGIC MIGRATION ---
-
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     """
-    #     Calculates the exact paths required for this job.
-    #     Replaces the old _resolve_job_paths_standardized in the orchestrator.
-    #     """
-    #     raise NotImplementedError("Subclasses must implement resolve_paths")
-
-    # --- End of Properties ---
-
     def __setattr__(self, name: str, value: Any) -> None:
         """Enforce immutability for started/completed jobs AND Auto-Save changes"""
         # 1. Bypass logic for private/internal fields
@@ -432,16 +421,6 @@ class ImportMoviesParams(AbstractJobParams):
     def get_tool_name(self) -> str:
         return "relion_import"
 
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     return {
-    #         "job_dir": job_dir,
-    #         "project_root": self.project_root,
-    #         "frames_dir": self.frames_dir,
-    #         "mdoc_dir": self.mdoc_dir,
-    #         "tilt_series_dir": job_dir / "tilt_series",
-    #         "output_star": job_dir / "tilt_series.star",
-    #         "tomostar_dir": self.master_tomostar_dir,
-    #     }
 
 
 class FsMotionCtfParams(AbstractJobParams):
@@ -516,24 +495,6 @@ class FsMotionCtfParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"import": "importmovies"}
 
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     if not upstream_job_dir:
-    #         raise ValueError("FsMotionCtf requires an upstream job directory (Import)")
-
-    #     return {
-    #         "job_dir": job_dir,
-    #         "project_root": self.project_root,
-    #         "frames_dir": self.frames_dir,
-    #         "mdoc_dir": self.mdoc_dir,
-    #         "warp_frameseries_settings": self.master_warp_frameseries_settings,
-    #         "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
-    #         "tomostar_dir": self.master_tomostar_dir,
-    #         "input_star": upstream_job_dir / "tilt_series.star",
-    #         "output_star": job_dir / "fs_motion_and_ctf.star",
-    #         "warp_dir": job_dir / "warp_frameseries",
-    #         "input_processing": None,
-    #         "output_processing": job_dir / "warp_frameseries",
-    #     }
 
 
 class TsAlignmentParams(AbstractJobParams):
@@ -583,23 +544,6 @@ class TsAlignmentParams(AbstractJobParams):
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
 
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     if not upstream_job_dir:
-    #         raise ValueError("TsAlignment requires an upstream job directory (FsMotion)")
-
-    #     return {
-    #         "job_dir": job_dir,
-    #         "project_root": self.project_root,
-    #         "mdoc_dir": self.mdoc_dir,
-    #         "warp_frameseries_settings": self.master_warp_frameseries_settings,
-    #         "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
-    #         "tomostar_dir": self.master_tomostar_dir,
-    #         "input_star": upstream_job_dir / "fs_motion_and_ctf.star",
-    #         "output_star": job_dir / "aligned_tilt_series.star",
-    #         "warp_dir": job_dir / "warp_tiltseries",
-    #         "input_processing": upstream_job_dir / "warp_frameseries",
-    #         "output_processing": job_dir / "warp_tiltseries",
-    #     }
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
@@ -662,22 +606,6 @@ class TsCtfParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"alignment": "aligntiltsWarp"}
 
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     if not upstream_job_dir:
-    #         raise ValueError("TsCtf requires an upstream job directory (Alignment)")
-
-    #     return {
-    #         "job_dir": job_dir,
-    #         "project_root": self.project_root,
-    #         "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
-    #         "tomostar_dir": self.master_tomostar_dir,
-    #         "input_star": upstream_job_dir / "aligned_tilt_series.star",
-    #         "output_star": job_dir / "ts_ctf_tilt_series.star",
-    #         "warp_dir": job_dir / "warp_tiltseries",
-    #         "input_processing": upstream_job_dir / "warp_tiltseries",
-    #         "output_processing": job_dir / "warp_tiltseries",
-    #     }
-
 
 class TsReconstructParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -716,22 +644,6 @@ class TsReconstructParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"ctf": "tsCtf"}
 
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     if not upstream_job_dir:
-    #         raise ValueError("TsReconstruct requires an upstream job directory (Ctf)")
-
-    #     return {
-    #         "job_dir": job_dir,
-    #         "project_root": self.project_root,
-    #         "warp_tiltseries_settings": self.master_warp_tiltseries_settings,
-    #         "tomostar_dir": self.master_tomostar_dir,
-    #         "input_star": upstream_job_dir / "ts_ctf_tilt_series.star",
-    #         "output_star": job_dir / "tomograms.star",
-    #         "warp_dir": job_dir / "warp_tiltseries",
-    #         "input_processing": upstream_job_dir / "warp_tiltseries",
-    #         "output_processing": job_dir / "warp_tiltseries",
-    #     }
-
 
 class DenoiseTrainParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -765,19 +677,6 @@ class DenoiseTrainParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"reconstruct": "tsReconstruct"}
 
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     if not upstream_job_dir:
-    #         print("[WARN] DenoiseTrain resolved with no upstream job! Defaulting to project root (likely to fail).")
-    #         fallback_star = self.project_root / "tomograms.star"
-    #     else:
-    #         fallback_star = upstream_job_dir / "tomograms.star"
-
-    #     return {
-    #         "job_dir": job_dir,
-    #         "project_root": self.project_root,
-    #         "input_star": fallback_star,
-    #         "output_model": job_dir / "denoising_model.tar.gz",
-    #     }
 
 
 class DenoisePredictParams(AbstractJobParams):
@@ -832,56 +731,6 @@ class DenoisePredictParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"train": "denoisetrain"}
 
-    # In DenoisePredictParams
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     """
-    #     DenoisePredict needs:
-    #     1. Model from DenoiseTrain (upstream_job_dir - linear predecessor)
-    #     2. Tomograms from TsReconstruct (looked up from state)
-    #     """
-    #     if not self._project_state:
-    #         raise RuntimeError("DenoisePredictParams not attached to ProjectState")
-
-    #     # --- 1. MODEL PATH (from DenoiseTrain) ---
-    #     if upstream_job_dir:
-    #         model_path = upstream_job_dir / "denoising_model.tar.gz"
-    #     else:
-    #         # Fallback: look for historical train job
-    #         train_job = self._project_state.jobs.get(JobType.DENOISE_TRAIN)
-    #         if train_job and train_job.paths.get("output_model"):
-    #             model_path = Path(train_job.paths["output_model"])
-    #         else:
-    #             raise ValueError("DenoisePredict requires DenoiseTrain (no model path found)")
-
-    #     # --- 2. TOMOGRAMS (from TsReconstruct) ---
-    #     # Look up TsReconstruct's resolved paths from state (set by orchestrator earlier in the loop)
-    #     ts_job = self._project_state.jobs.get(JobType.TS_RECONSTRUCT)
-
-    #     input_star = None
-    #     reconstruct_base = None
-
-    #     # Primary: Get from ts_job's resolved paths (no existence check - files don't exist yet!)
-    #     if ts_job and ts_job.paths.get("output_star"):
-    #         input_star = Path(ts_job.paths["output_star"])
-    #         reconstruct_base = Path(ts_job.paths.get("warp_dir") or ts_job.paths.get("output_processing", ""))
-
-    #     # If TsReconstruct job exists but paths weren't resolved yet, that's a sequencing bug
-    #     if not input_star:
-    #         raise ValueError(
-    #             f"Cannot resolve tomograms path for DenoisePredict. "
-    #             f"TsReconstruct job exists: {ts_job is not None}, "
-    #             f"TsReconstruct.paths: {ts_job.paths if ts_job else 'N/A'}"
-    #         )
-
-    #     return {
-    #         "job_dir"         : job_dir,
-    #         "project_root"    : self.project_root,
-    #         "model_path"      : model_path,
-    #         "input_star"      : input_star,
-    #         "reconstruct_base": reconstruct_base,
-    #         "output_dir"      : job_dir / "denoised",
-    #         "output_star"     : job_dir / "tomograms.star",
-    #     }
 
 
 class TemplateMatchPytomParams(AbstractJobParams):
@@ -898,7 +747,8 @@ class TemplateMatchPytomParams(AbstractJobParams):
         InputSlot(key="input_tiltseries", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
     ]
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
-        OutputSlot(key="output_dir", produces=JobFileType.TM_RESULTS_DIR, path_template="tmResults/", is_dir=True)
+            OutputSlot(key="output_dir", produces=JobFileType.TM_RESULTS_DIR, path_template="tmResults/", is_dir=True),
+            OutputSlot(key="output_tomograms", produces=JobFileType.TOMOGRAMS_STAR, path_template="tomograms.star"),
     ]
 
     # Inputs (Strings here, resolved to Paths in resolve_paths)
@@ -941,64 +791,19 @@ class TemplateMatchPytomParams(AbstractJobParams):
         # We prefer denoised tomograms, but reconstruct works too
         return {"tomograms": "denoisepredict"}
 
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     """
-    #     TemplateMatch needs:
-    #     1. Tomograms (from upstream - either DenoisePredict or TsReconstruct)
-    #     2. Tilt series metadata (from TsCtf - for angles/defocus)
-    #     3. Template and mask (user-provided paths)
-    #     """
-    #     if not self._project_state:
-    #         raise RuntimeError("TemplateMatchPytomParams not attached to ProjectState")
-
-    #     # --- 1. TOMOGRAMS (from upstream or fallback) ---
-    #     if upstream_job_dir:
-    #         # Could be DenoisePredict or TsReconstruct depending on pipeline
-    #         input_tomograms = upstream_job_dir / "tomograms.star"
-    #         if not input_tomograms.exists():
-    #             # DenoisePredict might output differently
-    #             input_tomograms = upstream_job_dir / "denoised" / "tomograms.star"
-    #     else:
-    #         # Fallback: look for reconstruct output
-    #         rec_job = self._project_state.jobs.get(JobType.TS_RECONSTRUCT)
-    #         if rec_job and rec_job.paths.get("output_star"):
-    #             input_tomograms = Path(rec_job.paths["output_star"])
-    #         else:
-    #             raise ValueError("No tomogram source found for TemplateMatching")
-
-    #     # --- 2. TILT SERIES (from TsCtf - for angle/defocus files) ---
-    #     ctf_job = self._project_state.jobs.get(JobType.TS_CTF)
-
-    #     # DON'T check execution_status - just check if paths exist
-    #     if ctf_job and ctf_job.paths.get("output_star"):
-    #         input_tiltseries = Path(ctf_job.paths["output_star"])
-    #     else:
-    #         raise ValueError(
-    #             "TemplateMatching requires TsCtf job with resolved paths (for tilt angle and defocus information)"
-    #         )
-
-    #     return {
-    #         "job_dir": job_dir,
-    #         "project_root": self.project_root,
-    #         "input_tomograms": input_tomograms,
-    #         "input_tiltseries": input_tiltseries,
-    #         "template_path": Path(self.template_path) if self.template_path else None,
-    #         "mask_path": Path(self.mask_path) if self.mask_path else None,
-    #         "output_dir": job_dir / "tmResults",
-    #     }
-
 
 class CandidateExtractPytomParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
+    # In CandidateExtractPytomParams:
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_tm_job", accepts=[JobFileType.TM_RESULTS_DIR], preferred_source="templatematching"),
         InputSlot(
             key="input_tomograms",
-            accepts=[JobFileType.DENOISED_TOMOGRAMS_STAR, JobFileType.TOMOGRAMS_STAR],
-            preferred_source="denoisepredict",
-            required=False,  # your driver tries to recover; keep it optional here
+            accepts=[JobFileType.TOMOGRAMS_STAR, JobFileType.DENOISED_TOMOGRAMS_STAR],
+            preferred_source="templatematching",  # changed from denoisepredict
+            required=True,  # changed from False -- we actually need this
         ),
     ]
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
@@ -1040,52 +845,6 @@ class CandidateExtractPytomParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"tm_job": "templatematching"}
 
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     """
-    #     Resolves paths for candidate extraction.
-    #     upstream_job_dir: The template matching job directory (e.g., External/job007/)
-    #     """
-    #     if not upstream_job_dir:
-    #         raise ValueError("Extraction requires an upstream Template Matching job directory")
-
-    #     # Find tomograms.star - check multiple sources
-    #     input_tomograms = None
-
-    #     # 1. Check if TM job has tomograms.star
-    #     tm_tomograms = upstream_job_dir / "tomograms.star"
-    #     if tm_tomograms.exists():
-    #         input_tomograms = tm_tomograms
-
-    #     # 2. Look in project state for reconstruct/denoise output
-    #     if not input_tomograms and self._project_state:
-    #         for source_job in [JobType.DENOISE_PREDICT, JobType.TS_RECONSTRUCT]:
-    #             source_model = self._project_state.jobs.get(source_job)
-    #             if source_model and source_model.execution_status == JobStatus.SUCCEEDED:
-    #                 source_star = source_model.paths.get("output_star")
-    #                 if source_star and Path(source_star).exists():
-    #                     input_tomograms = Path(source_star)
-    #                     break
-
-    #     # 3. Fallback
-    #     if not input_tomograms:
-    #         print(f"[WARN] Could not resolve input_tomograms, will attempt runtime resolution")
-    #         input_tomograms = upstream_job_dir / "tomograms.star"
-
-    #     # Resolve mask folder if provided
-    #     mask_fold = None
-    #     if self.mask_fold_path and self.mask_fold_path != "None":
-    #         mask_fold = Path(self.mask_fold_path)
-
-    #     return {
-    #         "job_dir": job_dir,
-    #         "project_root": self.project_root,
-    #         "input_tm_job": upstream_job_dir,
-    #         "input_tomograms": input_tomograms,
-    #         "mask_fold": mask_fold,
-    #         "output_star": job_dir / "candidates.star",
-    #         "output_tomograms": job_dir / "tomograms.star",
-    #         "optimisation_set": job_dir / "optimisation_set.star",
-    #     }
 
 
 class SubtomoExtractionParams(AbstractJobParams):
@@ -1136,24 +895,3 @@ class SubtomoExtractionParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         # Depends on candidate extraction output
         return {"optimisation_set": "tmextractcand"}
-
-    # def resolve_paths(self, job_dir: Path, upstream_job_dir: Optional[Path] = None) -> Dict[str, Path]:
-    #     """
-    #     Resolve input/output paths for subtomo extraction.
-    #     Input: optimisation_set.star from candidate extraction
-    #     Output: particles.star + new optimisation_set.star
-    #     """
-    #     if not upstream_job_dir:
-    #         raise ValueError("SubtomoExtraction requires upstream candidate extraction job (tmextractcand)")
-
-    #     input_opt = upstream_job_dir / "optimisation_set.star"
-
-    #     return {
-    #         "job_dir": job_dir,
-    #         "project_root": self.project_root,
-    #         # Input
-    #         "input_optimisation": input_opt,
-    #         # Outputs (RELION generates these)
-    #         "output_particles": job_dir / "particles.star",
-    #         "output_optimisation": job_dir / "optimisation_set.star",
-    #     }

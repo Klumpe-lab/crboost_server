@@ -15,7 +15,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from drivers.driver_base import get_driver_context, run_command
-from services.container_service import get_container_service
+from services.computing.container_service import get_container_service
 
 
 def prepare_local_star_files(input_optimisation: Path, job_dir: Path, project_path: Path) -> Path:

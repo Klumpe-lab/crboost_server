@@ -180,25 +180,16 @@ def main():
 
         base_cmd = [
             "pytom_match_template.py",
-            "-t",
-            str(template_file),
-            "-d",
-            str(tm_results_dir),
-            "-m",
-            str(mask_file),
-            "--angular-search",
-            str(params.angular_search),
-            "--voltage",
-            str(params.voltage),
-            "--spherical-aberration",
-            str(params.spherical_aberration),
-            "--amplitude-contrast",
-            str(params.amplitude_contrast),
-            "--tomogram-ctf-model",
-            "phase-flip",
+            "-t", str(template_file),
+            "-d", str(tm_results_dir),
+            "-m", str(mask_file),
+            "--angular-search", str(params.angular_search),
+            "--voltage", str(state.microscope.acceleration_voltage_kv),
+            "--spherical-aberration", str(state.microscope.spherical_aberration_mm),
+            "--amplitude-contrast", str(state.microscope.amplitude_contrast),
+            "--tomogram-ctf-model", "phase-flip",
             "--per-tilt-weighting",
-            "--log",
-            "debug",
+            "--log", "debug",
             "-g",
         ] + gpu_ids
 
@@ -277,6 +268,13 @@ def main():
             )
 
             run_command(wrapped_cmd, cwd=job_dir)
+
+
+
+        import shutil
+        output_tomograms = job_dir / "tomograms.star"
+        shutil.copy2(input_star_tomos, output_tomograms)
+        print(f"[DRIVER] Copied tomograms.star to {output_tomograms}", flush=True)
 
         success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)

@@ -18,7 +18,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from drivers.driver_base import get_driver_context, run_command
-from services.container_service import get_container_service
+from services.computing.container_service import get_container_service
 
 
 # Columns in star files that contain file paths
@@ -87,36 +87,35 @@ def get_pixel_size_from_star(tomograms_star: Path) -> float:
         return None
 
 
-def cleanup_tomo_names(candidates_star: Path, apix: float):
+def cleanup_tomo_names(candidates_star: Path, apix_fallback: float) -> int:
     """
-    Remove the pixel size suffix from rlnTomoName (e.g., '_12.00Apx' -> '').
+    Remove the pixel size suffix from rlnTomoName.
+    Reads pixel size from the star file itself if available, falls back to provided value.
     """
     try:
-        data = starfile.read(candidates_star)
-        if isinstance(data, dict):
-            df = None
-            for key, val in data.items():
-                if isinstance(val, pd.DataFrame) and "rlnTomoName" in val.columns:
-                    df = val
-                    break
-            if df is None:
-                return 0
+        data = starfile.read(candidates_star, always_dict=True)
+        # Find the particles block
+        df = None
+        for key, val in data.items():
+            if isinstance(val, pd.DataFrame) and "rlnTomoName" in val.columns:
+                df = val
+                break
+        if df is None:
+            return 0
+
+        # Determine pixel size: prefer what's in the file (matches pytom's naming)
+        if "rlnTomoTiltSeriesPixelSize" in df.columns and "rlnTomoTomogramBinning" in df.columns:
+            apix = float(df["rlnTomoTiltSeriesPixelSize"].iloc[0]) * float(df["rlnTomoTomogramBinning"].iloc[0])
+        elif "rlnTomoTiltSeriesPixelSize" in df.columns:
+            apix = float(df["rlnTomoTiltSeriesPixelSize"].iloc[0])
         else:
-            df = data
+            apix = apix_fallback
 
         suffix = f"_{apix:.2f}Apx"
-
-        if "rlnTomoName" in df.columns:
-            df["rlnTomoName"] = df["rlnTomoName"].str.replace(suffix, "", regex=False)
-
-            if isinstance(data, dict):
-                starfile.write(data, candidates_star, overwrite=True)
-            else:
-                starfile.write(df, candidates_star, overwrite=True)
-
-            print(f"[DRIVER] Cleaned rlnTomoName suffix '{suffix}'")
-            return len(df)
-        return 0
+        df["rlnTomoName"] = df["rlnTomoName"].str.replace(suffix, "", regex=False)
+        starfile.write(data, candidates_star, overwrite=True)
+        print(f"[DRIVER] Cleaned rlnTomoName suffix '{suffix}' from {len(df)} particles")
+        return len(df)
     except Exception as e:
         print(f"[WARN] Could not clean tomo names: {e}")
         return 0
@@ -141,35 +140,18 @@ def main():
         additional_binds = context["additional_binds"]
 
         # --- 1. Locate Upstream Template Matching Results ---
-        input_tm_job = paths["input_tm_job"]
-        upstream_results = input_tm_job / "tmResults"
+        upstream_results = paths["input_tm_job"]  # This IS the tmResults dir
 
         if not upstream_results.exists():
             raise FileNotFoundError(f"Upstream tmResults not found at {upstream_results}")
 
         # --- 2. Find Tomograms Star ---
         input_tomograms = paths.get("input_tomograms")
-
         if not input_tomograms or not input_tomograms.exists():
-            tm_tomos = input_tm_job / "tomograms.star"
-            if tm_tomos.exists():
-                input_tomograms = tm_tomos
-            else:
-                tm_job_star = input_tm_job / "job.star"
-                if tm_job_star.exists():
-                    tm_data = starfile.read(tm_job_star)
-                    jobopts = tm_data.get("joboptions_values")
-                    if jobopts is not None:
-                        in_mic_row = jobopts[jobopts["rlnJobOptionVariable"] == "in_mic"]
-                        if not in_mic_row.empty:
-                            in_mic_path = in_mic_row["rlnJobOptionValue"].values[0]
-                            if in_mic_path and (project_path / in_mic_path).exists():
-                                input_tomograms = project_path / in_mic_path
-
-        if not input_tomograms or not input_tomograms.exists():
-            raise FileNotFoundError("Could not locate input tomograms.star")
-
-        print(f"[DRIVER] Input tomograms: {input_tomograms}", flush=True)
+            raise FileNotFoundError(
+                f"Input tomograms.star not found at {input_tomograms}. "
+                "Check that template matching completed successfully."
+            )
 
         # --- 3. Determine Pixel Size ---
         apix = None
@@ -179,8 +161,16 @@ def main():
             apix = get_pixel_size_from_star(input_tomograms)
 
         if apix is None:
-            apix = state.microscope.pixel_size_angstrom * 8.0
-            print(f"[WARN] Using fallback pixel size: {apix} A/px")
+            # Try to compute from reconstruction parameters
+            rec_job = state.jobs.get(JobType.TS_RECONSTRUCT)
+            if rec_job and hasattr(rec_job, 'rescale_angpixs'):
+                apix = rec_job.rescale_angpixs
+                print(f"[WARN] Using pixel size from TsReconstruct params: {apix} A/px")
+            else:
+                raise RuntimeError(
+                    "Could not determine score map pixel size. "
+                    "Set apix_score_map explicitly or check tomograms.star."
+                )
 
         print(f"[DRIVER] Score map pixel size: {apix:.2f} A/px", flush=True)
         print(f"[DRIVER] Particle diameter: {params.particle_diameter_ang} A", flush=True)
