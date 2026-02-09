@@ -279,7 +279,10 @@ class AbstractJobParams(BaseModel):
             "is_orphaned",
             "missing_inputs",
             "slurm_overrides",
-            "source_overrides",  # ADD THIS
+            "source_overrides", 
+            "additional_sources",
+            "merge_only",
+
         ]:
             super().__setattr__(name, value)
             return
@@ -867,6 +870,9 @@ class SubtomoExtractionParams(AbstractJobParams):
             key="output_optimisation", produces=JobFileType.OPTIMISATION_SET_STAR, path_template="optimisation_set.star"
         ),
     ]
+
+    additional_sources: List[str] = Field(default_factory=list, description="Extra optimisation_set.star files or job dirs to merge")
+    merge_only: bool = Field(default=False, description="If true, skip relion_tomo_subtomo and only merge")
 
     # Extraction parameters
     binning: float = Field(default=1.0, description="Binning factor relative to unbinned data")
