@@ -253,7 +253,6 @@ def main():
 
             cmd = base_cmd.copy()
             cmd.extend(["-v", str(local_tomo)])
-            # cmd.extend(["--relion5-tomograms-star", str(input_star_tomos)])
             cmd.extend(["--relion5-tomograms-star", str(patched_tomos)])
 
 
