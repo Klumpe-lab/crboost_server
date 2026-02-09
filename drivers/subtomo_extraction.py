@@ -18,65 +18,6 @@ from drivers.driver_base import get_driver_context, run_command
 from services.computing.container_service import get_container_service
 
 
-def prepare_local_star_files(input_optimisation: Path, job_dir: Path, project_path: Path) -> Path:
-    """
-    Copy optimisation_set.star and tomograms.star locally, fixing broken paths.
-    Returns path to local optimisation_set.star.
-    """
-    # 1. Read upstream optimisation_set
-    opt_data = starfile.read(input_optimisation, always_dict=True)
-    opt_df = list(opt_data.values())[0]
-
-    upstream_tomograms = Path(opt_df["rlnTomoTomogramsFile"].iloc[0])
-    upstream_candidates = Path(opt_df["rlnTomoParticlesFile"].iloc[0])
-
-    # 2. Copy and fix tomograms.star
-    local_tomograms = job_dir / "tomograms.star"
-    tomo_data = starfile.read(upstream_tomograms, always_dict=True)
-
-    for block_name, block_df in tomo_data.items():
-        if not isinstance(block_df, pd.DataFrame):
-            continue
-        if "rlnTomoTiltSeriesStarFile" not in block_df.columns:
-            continue
-
-        for idx, row in block_df.iterrows():
-            ts_path = Path(row["rlnTomoTiltSeriesStarFile"])
-
-            if ts_path.exists():
-                continue
-
-            # Search for the file
-            search_name = ts_path.name
-            found = None
-            for search_dir in [project_path / "External", project_path / "Import"]:
-                if search_dir.exists():
-                    matches = list(search_dir.glob(f"*/tilt_series/{search_name}"))
-                    if matches:
-                        found = sorted(matches)[-1]  # Latest job
-                        break
-
-            if found:
-                print(f"[DRIVER] Fixed path: {ts_path.name} -> {found}")
-                block_df.at[idx, "rlnTomoTiltSeriesStarFile"] = str(found)
-            else:
-                print(f"[WARN] Could not locate {search_name}")
-
-    starfile.write(tomo_data, local_tomograms, overwrite=True)
-
-    # 3. Create local optimisation_set pointing to our local tomograms
-    local_opt = job_dir / "input_optimisation_set.star"
-    local_opt_df = pd.DataFrame(
-        {
-            "rlnTomoParticlesFile": [str(upstream_candidates)],  # Keep original
-            "rlnTomoTomogramsFile": [str(local_tomograms)],  # Use our fixed copy
-        }
-    )
-    starfile.write(local_opt_df, local_opt, overwrite=True)
-
-    return local_opt
-
-
 def main():
     print("--- SLURM JOB START (Subtomogram Extraction) ---", flush=True)
 
@@ -102,7 +43,7 @@ def main():
         print(f"[DRIVER] Output dir: {job_dir}", flush=True)
 
         # Prepare local copies with fixed paths
-        local_opt = prepare_local_star_files(input_optimisation, job_dir, project_path)
+        local_opt = input_optimisation
         print(f"[DRIVER] Using local optimisation: {local_opt}", flush=True)
 
         # Build command with LOCAL optimisation_set

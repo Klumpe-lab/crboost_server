@@ -33,39 +33,6 @@ PATH_COLUMNS = [
 ]
 
 
-def absolutize_star_paths(input_star: Path, output_star: Path, base_path: Path):
-    """
-    Reads a star file and rewrites it with absolute paths.
-    Paths are resolved relative to base_path (usually project root).
-    """
-    print(f"[DRIVER] Absolutizing paths in {input_star.name}...", flush=True)
-    
-    data = starfile.read(input_star, always_dict=True)
-    
-    for block_name, block_data in data.items():
-        if not isinstance(block_data, pd.DataFrame):
-            continue
-            
-        for col in PATH_COLUMNS:
-            if col not in block_data.columns:
-                continue
-                
-            def make_absolute(p):
-                if pd.isna(p) or p == "" or p is None:
-                    return p
-                path = Path(p)
-                if path.is_absolute():
-                    return str(path)
-                # Resolve relative to base_path
-                abs_path = (base_path / path).resolve()
-                return str(abs_path)
-            
-            block_data[col] = block_data[col].apply(make_absolute)
-            print(f"  Absolutized column: {col}", flush=True)
-    
-    starfile.write(data, output_star, overwrite=True)
-    print(f"[DRIVER] Wrote {output_star}", flush=True)
-
 
 def get_pixel_size_from_star(tomograms_star: Path) -> float:
     """
@@ -274,7 +241,7 @@ def main():
 
         # Copy AND ABSOLUTIZE tomograms.star
         output_tomograms = job_dir / "tomograms.star"
-        absolutize_star_paths(input_tomograms, output_tomograms, project_path)
+        shutil.copy2(input_tomograms, output_tomograms)
 
         # Create optimisation_set.star with ABSOLUTE paths
         opt_df = pd.DataFrame({

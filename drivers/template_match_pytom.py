@@ -13,96 +13,62 @@ sys.path.insert(0, str(project_root))
 from drivers.driver_base import get_driver_context, run_command
 from services.computing.container_service import get_container_service
 
+def _get_df_from_star(path: Path) -> pd.DataFrame:
+    d = starfile.read(path, always_dict=True)
+    for v in d.values():
+        if isinstance(v, pd.DataFrame):
+            return v
+    raise ValueError(f"No dataframe blocks found in {path}")
 
-def generate_aux_files(job_dir: Path, tilt_series_star: Path, tomo_name: str) -> bool:
-    """
-    Generates .tlt (angles), defocus.txt, and dose.txt for PyTOM.
-    Reads metadata from the per-tilt-series star file (referenced from main star).
-    """
-    aux_dirs = {"tilt": job_dir / "tiltAngleFiles", "defocus": job_dir / "defocusFiles", "dose": job_dir / "doseFiles"}
-    for d in aux_dirs.values():
-        d.mkdir(exist_ok=True)
+def _resolve_star_path(base_dir: Path, p: str) -> Path:
+    pp = Path(p)
+    return pp if pp.is_absolute() else (base_dir / pp).resolve()
 
-    try:
-        # 1. Read the MAIN star file to find the per-tilt-series star file path
-        main_data = starfile.read(tilt_series_star)
+def make_pytom_tomograms_star(
+    *,
+    tomograms_star: Path,
+    tiltseries_global_star: Path,
+    out_star: Path,
+) -> Path:
+    tomo_df = _get_df_from_star(tomograms_star).copy()
+    ts_df   = _get_df_from_star(tiltseries_global_star).copy()
 
-        # Handle different starfile return formats
-        if isinstance(main_data, dict):
-            main_df = None
-            for key in ["global", "", "data_"]:
-                if key in main_data:
-                    main_df = main_data[key]
-                    break
-            if main_df is None:
-                main_df = list(main_data.values())[0]
-        else:
-            main_df = main_data
+    if "rlnTomoName" not in tomo_df.columns:
+        raise KeyError(f"{tomograms_star} missing rlnTomoName")
+    if "rlnTomoName" not in ts_df.columns or "rlnTomoTiltSeriesStarFile" not in ts_df.columns:
+        raise KeyError(f"{tiltseries_global_star} missing rlnTomoName or rlnTomoTiltSeriesStarFile")
 
-        # Find the row for this tomogram
-        tomo_row = main_df[main_df["rlnTomoName"] == tomo_name]
-        if tomo_row.empty:
-            print(f"[WARN] Tomogram {tomo_name} not found in {tilt_series_star}")
-            return False
+    # Build mapping: tomo name -> ABS path to per-tomo tilt-series star
+    ts_base = tiltseries_global_star.parent
+    name_to_ts = {}
+    for _, r in ts_df.iterrows():
+        name = str(r["rlnTomoName"])
+        ts_path = _resolve_star_path(ts_base, str(r["rlnTomoTiltSeriesStarFile"]))
+        name_to_ts[name] = str(ts_path)
 
-        # Get the per-tilt-series star file path (relative to main star's directory)
-        per_ts_star_rel = tomo_row["rlnTomoTiltSeriesStarFile"].values[0]
-        per_ts_star = tilt_series_star.parent / per_ts_star_rel
+    # Patch tomograms df
+    patched = 0
+    for i, r in tomo_df.iterrows():
+        name = str(r["rlnTomoName"])
+        if name in name_to_ts:
+            tomo_df.at[i, "rlnTomoTiltSeriesStarFile"] = name_to_ts[name]
+            patched += 1
 
-        if not per_ts_star.exists():
-            print(f"[WARN] Per-tilt-series star file not found: {per_ts_star}")
-            return False
+    if patched == 0:
+        raise RuntimeError(
+            "Could not patch any rlnTomoTiltSeriesStarFile entries. "
+            "Check that rlnTomoName matches between tomograms.star and ts_ctf_tilt_series.star."
+        )
 
-        # 2. Read the PER-TILT-SERIES star file
-        per_tilt_data = starfile.read(per_ts_star)
+    out_star.parent.mkdir(parents=True, exist_ok=True)
+    starfile.write({"global": tomo_df}, out_star, overwrite=True)
+    return out_star
 
-        if isinstance(per_tilt_data, dict):
-            per_tilt_df = None
-            for _, val in per_tilt_data.items():
-                if isinstance(val, pd.DataFrame) and not val.empty:
-                    per_tilt_df = val
-                    break
-            if per_tilt_df is None:
-                print(f"[WARN] No data block found in {per_ts_star}")
-                return False
-        else:
-            per_tilt_df = per_tilt_data
 
-        # 3. Write aux files from per-tilt data
-
-        # Tilt Angles - prefer rlnTomoYTilt (refined), fallback to rlnTomoNominalStageTiltAngle
-        if "rlnTomoYTilt" in per_tilt_df.columns:
-            tilt_col = "rlnTomoYTilt"
-        elif "rlnTomoNominalStageTiltAngle" in per_tilt_df.columns:
-            tilt_col = "rlnTomoNominalStageTiltAngle"
-        else:
-            print(f"[WARN] No tilt angle column found in {per_ts_star}")
-            return False
-
-        per_tilt_df[tilt_col].to_csv(aux_dirs["tilt"] / f"{tomo_name}.tlt", index=False, header=False)
-
-        # Defocus (convert from Angstrom to microns / 10 for PyTOM)
-        if "rlnDefocusU" in per_tilt_df.columns:
-            defocus_vals = per_tilt_df["rlnDefocusU"] / 10000.0
-            defocus_vals.to_csv(aux_dirs["defocus"] / f"{tomo_name}.txt", index=False, header=False)
-
-        # Dose accumulation
-        if "rlnMicrographPreExposure" in per_tilt_df.columns:
-            per_tilt_df["rlnMicrographPreExposure"].to_csv(
-                aux_dirs["dose"] / f"{tomo_name}.txt", index=False, header=False
-            )
-
-        print(f"[DRIVER] Generated aux files for {tomo_name} ({len(per_tilt_df)} tilts)")
-        return True
-
-    except Exception as e:
-        print(f"[ERROR] Aux file generation failed for {tomo_name}: {e}")
-        traceback.print_exc()
-        return False
 
 
 def get_gpu_split(requested_split: str) -> list:
-    """Parses the '4:4:2' string into list arguments for PyTOM."""
+    """Parses the '2:1:1' string into list arguments for PyTOM."""
     if requested_split in ["auto", "None", ""]:
         return ["2", "2", "1"]
     return requested_split.split(":")
@@ -228,12 +194,41 @@ def main():
         additional_binds.append(str(mask_file.parent.resolve()))
         additional_binds = list(set(additional_binds))
 
+        patched_tomos = make_pytom_tomograms_star(
+            tomograms_star=input_star_tomos,
+            tiltseries_global_star=input_star_ts,
+            out_star=job_dir / "tomograms_for_pytom.star",
+        )
+
+        print(f"[DRIVER] Using patched tomograms STAR for PyTOM: {patched_tomos}", flush=True)
+        ts_staging_dir = job_dir / "tilt_series"
+        ts_staging_dir.mkdir(exist_ok=True)
+
+        patched_df = _get_df_from_star(patched_tomos)
+        for _, row in patched_df.iterrows():
+            ts_star_abs = Path(row["rlnTomoTiltSeriesStarFile"])
+            link_target = ts_staging_dir / ts_star_abs.name
+            if not link_target.exists():
+                if ts_star_abs.exists():
+                    os.symlink(ts_star_abs.resolve(), link_target)
+                    print(f"  [STAGE] {ts_star_abs.name} -> {ts_star_abs}")
+                else:
+                    raise FileNotFoundError(
+                        f"Tilt series star not found: {ts_star_abs}\n"
+                        f"Cannot stage for PyTOM. Check upstream CTF job output."
+                    )
+
         # 6. Iterate tomograms
         for _, row in tomo_df.iterrows():
             tomo_name = str(row["rlnTomoName"])
             raw_tomo_path = row["rlnTomoReconstructedTomogram"]
 
-            tomo_path = resolve_tomogram_path(raw_tomo_path, tomograms_star=input_star_tomos, project_root=project_path)
+            tomo_path = resolve_tomogram_path(
+                            raw_tomo_path,
+                            tomograms_star=input_star_tomos,
+                            project_root=project_path,
+                        )
+
 
             print(f"[DRIVER] Processing {tomo_name}...", flush=True)
             print(f"[DEBUG] raw tomo path: {raw_tomo_path}", flush=True)
@@ -247,20 +242,20 @@ def main():
                     f"  tomograms.star: {input_star_tomos}"
                 )
 
-            # Generate local aux files (angles, defocus, dose)
-            files_ok = generate_aux_files(job_dir, input_star_ts, tomo_name)
-            if not files_ok:
-                print(f"[SKIP] Metadata generation failed for {tomo_name}")
-                continue
+            # PyTOM derives tomogram ID from volume filename stem.
+            # WarpTools names files as {TomoName}_{pixelsize}Apx.mrc but
+            # rlnTomoName is just {TomoName}. Symlink to match.
+
+            local_tomo = tm_results_dir / f"{tomo_name}{tomo_path.suffix or '.mrc'}"
+            if not local_tomo.exists():
+                os.symlink(tomo_path.resolve(), local_tomo)
+
 
             cmd = base_cmd.copy()
-            cmd.extend(["-v", str(tomo_path)])
-            cmd.extend(["--tilt-angles", str(job_dir / "tiltAngleFiles" / f"{tomo_name}.tlt")])
+            cmd.extend(["-v", str(local_tomo)])
+            # cmd.extend(["--relion5-tomograms-star", str(input_star_tomos)])
+            cmd.extend(["--relion5-tomograms-star", str(patched_tomos)])
 
-            if params.defocus_weight:
-                cmd.extend(["--defocus", str(job_dir / "defocusFiles" / f"{tomo_name}.txt")])
-            if params.dose_weight:
-                cmd.extend(["--dose-accumulation", str(job_dir / "doseFiles" / f"{tomo_name}.txt")])
 
             cmd_str = " ".join(cmd)
             wrapped_cmd = container_service.wrap_command_for_tool(
