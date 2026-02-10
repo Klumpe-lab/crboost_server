@@ -20,10 +20,13 @@ from services.computing.slurm_service import SlurmConfig
 from services.job_models import (
     AbstractJobParams,
     CandidateExtractPytomParams,
+    Class3DParams,
     DenoisePredictParams,
     DenoiseTrainParams,
     FsMotionCtfParams,
     ImportMoviesParams,
+
+    ReconstructParticleParams,        
     SubtomoExtractionParams,
     TemplateMatchPytomParams,
     TsAlignmentParams,
@@ -131,10 +134,9 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
         JobType.TEMPLATE_MATCH_PYTOM: TemplateMatchPytomParams,
         JobType.TEMPLATE_EXTRACT_PYTOM: CandidateExtractPytomParams,
         JobType.SUBTOMO_EXTRACTION: SubtomoExtractionParams,
+        JobType.RECONSTRUCT_PARTICLE: ReconstructParticleParams,  # <-- ADD
+        JobType.CLASS3D: Class3DParams,  # <-- ADD
     }
-
-
-# --- Global Singleton Management ---
 
 _project_state = None
 

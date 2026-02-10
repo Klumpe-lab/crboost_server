@@ -37,6 +37,9 @@ class JobFileType(str, Enum):
 
     # Subtomo extraction
     PARTICLES_STAR = "particles_star"                     # External/jobXXX/particles.star
+    # STA reconstruction / refinement
+    REFERENCE_MAP = "reference_map"    # merged.mrc from reconstruct_particle (or refined map)
+    HALF_MAP      = "half_map"         # half1.mrc (half2 derived by RELION naming convention)
 
 
 # -----------------------------------------------------------------------------

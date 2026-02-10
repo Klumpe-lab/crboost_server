@@ -224,6 +224,8 @@ class PipelineOrchestratorService:
             JobType.TEMPLATE_MATCH_PYTOM  : "template_match_pytom.py",
             JobType.TEMPLATE_EXTRACT_PYTOM: "extract_candidates_pytom.py",
             JobType.SUBTOMO_EXTRACTION    : "subtomo_extraction.py",  
+            JobType.RECONSTRUCT_PARTICLE  : "reconstruct_particle.py",  
+            JobType.CLASS3D               : "class3d.py",
         }
         
         script = driver_map.get(job_type)
@@ -455,6 +457,8 @@ class JobTypeResolver:
         "template_match_pytom.py"    : "templatematching",
         "extract_candidates_pytom.py": "tmextractcand",
         "subtomo_extraction.py"      : "subtomoExtraction", 
+        "reconstruct_particle.py"    : "reconstructParticle",   
+        "class3d.py"                 : "class3d",
     }
     
     def __init__(self, star_handler: StarfileService):

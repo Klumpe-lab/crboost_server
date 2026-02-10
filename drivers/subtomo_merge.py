@@ -12,17 +12,13 @@ Output (written into a target job_dir):
   - tomograms.star (merged)
   - optimisation_set.star (rewritten to point at merged outputs)
   - merge_summary.json (UI-friendly summary)
-
-By default, enforces:
-  - identical core optics/acquisition fields across sources
-  - unique rlnTomoName across tomograms tables
-  - all particle rlnTomoName entries must exist in merged tomograms
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import shutil
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -30,9 +26,10 @@ import pandas as pd
 import starfile
 
 
-# ----------------------------
-# Small parsing helpers
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Parsing helpers
+# ---------------------------------------------------------------------------
+
 
 def _resolve_path(p: str | Path, *, base: Path) -> Path:
     pp = Path(str(p))
@@ -42,96 +39,101 @@ def _resolve_path(p: str | Path, *, base: Path) -> Path:
 
 
 def _find_optimisation_set_in_dir(d: Path) -> Path:
-    """
-    Find optimisation_set.star within a job directory.
-    We prefer exact match in the directory root; otherwise search shallowly.
-    """
     direct = d / "optimisation_set.star"
     if direct.exists():
         return direct
-
-    # Common layout: External/jobXXX/optimisation_set.star already is the root, but just in case:
-    hits = list(d.glob("**/optimisation_set.star"))
+    hits = sorted(d.glob("**/optimisation_set.star"), key=lambda p: len(p.parts))
     if not hits:
         raise FileNotFoundError(f"No optimisation_set.star found under: {d}")
-    # Choose the shortest path (closest to root)
-    hits = sorted(hits, key=lambda p: len(p.parts))
     return hits[0]
 
 
 def _parse_optimisation_set(opt_path: Path) -> Tuple[Path, Path]:
     """
-    Robust minimal parser for optimisation_set.star in key-value format:
-
-    data_
-    _rlnTomoParticlesFile <path>
-    _rlnTomoTomogramsFile <path>
+    Parse optimisation_set.star.  Handles both:
+      - RELION key-value format (data_ block with _rlnTomo... keys)
+      - starfile-written loop format (single-row DataFrame)
     """
+    base = opt_path.parent
+
+    # Try starfile first -- handles both formats
+    try:
+        data = starfile.read(opt_path, always_dict=True)
+        for block in data.values():
+            if isinstance(block, pd.DataFrame):
+                if {"rlnTomoParticlesFile", "rlnTomoTomogramsFile"}.issubset(block.columns):
+                    particles = str(block["rlnTomoParticlesFile"].iloc[0])
+                    tomograms = str(block["rlnTomoTomogramsFile"].iloc[0])
+                    return (_resolve_path(particles, base=base), _resolve_path(tomograms, base=base))
+            elif isinstance(block, dict):
+                if "rlnTomoParticlesFile" in block and "rlnTomoTomogramsFile" in block:
+                    return (
+                        _resolve_path(block["rlnTomoParticlesFile"], base=base),
+                        _resolve_path(block["rlnTomoTomogramsFile"], base=base),
+                    )
+    except Exception:
+        pass
+
+    # Fallback: manual line-by-line for edge cases starfile can't handle
     particles = None
     tomograms = None
-
     for raw in opt_path.read_text().splitlines():
         line = raw.strip()
-        if not line or line.startswith("#"):
+        if not line or line.startswith("#") or line.startswith("data_") or line.startswith("loop_"):
             continue
         if line.startswith("_rlnTomoParticlesFile"):
-            particles = line.split(None, 1)[1].strip()
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                particles = parts[1].strip()
         elif line.startswith("_rlnTomoTomogramsFile"):
-            tomograms = line.split(None, 1)[1].strip()
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                tomograms = parts[1].strip()
 
     if not particles or not tomograms:
         raise ValueError(
-            f"Invalid optimisation_set.star (missing required keys): {opt_path}\n"
+            f"Cannot parse optimisation_set.star (missing required keys): {opt_path}\n"
             f"Found particles={particles} tomograms={tomograms}"
         )
-
-    base = opt_path.parent
     return (_resolve_path(particles, base=base), _resolve_path(tomograms, base=base))
-
-
-def _read_star_as_dict(path: Path) -> Dict[str, Any]:
-    return starfile.read(path, always_dict=True)
 
 
 def _find_df_block(star_dict: Dict[str, Any], required_cols: Sequence[str]) -> pd.DataFrame:
     req = set(required_cols)
-    for _, v in star_dict.items():
+    for v in star_dict.values():
         if isinstance(v, pd.DataFrame) and req.issubset(set(v.columns)):
             return v
-    raise KeyError(f"Could not find a DataFrame block with required columns: {sorted(req)}")
+    raise KeyError(f"No DataFrame block with required columns: {sorted(req)}")
 
 
 def _read_particles_star(particles_star: Path) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
-    """
-    Returns: (optics_df, particles_df, general_kv)
-    general_kv is optional and may be empty if not present/parseable.
-    """
-    d = _read_star_as_dict(particles_star)
+    """Returns (optics_df, particles_df, general_kv)."""
+    d = starfile.read(particles_star, always_dict=True)
 
     optics_df = _find_df_block(d, required_cols=["rlnVoltage", "rlnSphericalAberration", "rlnAmplitudeContrast"])
     particles_df = _find_df_block(d, required_cols=["rlnTomoName", "rlnImageName", "rlnOpticsGroup"])
 
-    # Try to preserve data_general key-values if starfile gave them to us in some form.
-    # If not available, we'll synthesize the most important one later.
     general_kv: Dict[str, Any] = {}
-    for k, v in d.items():
-        # starfile sometimes parses non-loop blocks as dict-like; this is best-effort.
-        if isinstance(v, dict):
-            # Heuristic: only keep rlnTomoSubTomosAre2DStacks if present
-            if "rlnTomoSubTomosAre2DStacks" in v:
-                general_kv["rlnTomoSubTomosAre2DStacks"] = v["rlnTomoSubTomosAre2DStacks"]
+    for v in d.values():
+        if isinstance(v, dict) and "rlnTomoSubTomosAre2DStacks" in v:
+            general_kv["rlnTomoSubTomosAre2DStacks"] = v["rlnTomoSubTomosAre2DStacks"]
 
     return optics_df.copy(), particles_df.copy(), general_kv
 
 
 def _read_tomograms_star(tomograms_star: Path) -> pd.DataFrame:
-    d = _read_star_as_dict(tomograms_star)
-    # Your tomograms.star is data_global with a loop, so it should be a DF block.
+    d = starfile.read(tomograms_star, always_dict=True)
     df = _find_df_block(d, required_cols=["rlnTomoName", "rlnTomoReconstructedTomogram"])
     return df.copy()
 
 
-def _write_optimisation_set(path: Path, *, particles_star: Path, tomograms_star: Path) -> None:
+# ---------------------------------------------------------------------------
+# STAR writers
+# ---------------------------------------------------------------------------
+
+
+def write_optimisation_set(path: Path, *, particles_star: Path, tomograms_star: Path) -> None:
+    """Canonical writer for optimisation_set.star in RELION key-value format."""
     txt = "\n".join(
         [
             "# version 50001",
@@ -149,11 +151,7 @@ def _write_optimisation_set(path: Path, *, particles_star: Path, tomograms_star:
 def _format_star_value(x: Any) -> str:
     if pd.isna(x):
         return ""
-    # keep list-like strings as-is
-    s = str(x)
-    # STAR is whitespace-delimited; paths and tokens here don't contain spaces in your use-case.
-    # If you ever do hit spaces, you'll want to quote them.
-    return s
+    return str(x)
 
 
 def _write_loop_block(f, block_name: str, df: pd.DataFrame) -> None:
@@ -161,9 +159,7 @@ def _write_loop_block(f, block_name: str, df: pd.DataFrame) -> None:
     f.write(f"data_{block_name}\n\n")
     f.write("loop_\n")
     for i, col in enumerate(df.columns, 1):
-        # Ensure STAR tag format
-        tag = col if col.startswith("rln") else col
-        f.write(f"_{tag} #{i}\n")
+        f.write(f"_{col} #{i}\n")
     for _, row in df.iterrows():
         vals = [_format_star_value(row[c]) for c in df.columns]
         f.write(" ".join(vals) + "\n")
@@ -171,20 +167,9 @@ def _write_loop_block(f, block_name: str, df: pd.DataFrame) -> None:
 
 
 def _write_particles_star(
-    out_path: Path,
-    *,
-    optics_df: pd.DataFrame,
-    particles_df: pd.DataFrame,
-    general_kv: Optional[Dict[str, Any]] = None,
+    out_path: Path, *, optics_df: pd.DataFrame, particles_df: pd.DataFrame, general_kv: Optional[Dict[str, Any]] = None
 ) -> None:
-    """
-    Write a RELION5-ish particles.star containing:
-      - data_general (best-effort)
-      - data_optics (loop)
-      - data_particles (loop)
-    """
     general_kv = dict(general_kv or {})
-    # This one is important for 2D stack subtomos; default to 1
     general_kv.setdefault("rlnTomoSubTomosAre2DStacks", 1)
 
     with open(out_path, "w") as f:
@@ -193,7 +178,6 @@ def _write_particles_star(
         for k, v in general_kv.items():
             f.write(f"_{k}                       {v}\n")
         f.write("\n\n")
-
         _write_loop_block(f, "optics", optics_df)
         _write_loop_block(f, "particles", particles_df)
 
@@ -204,28 +188,27 @@ def _write_tomograms_star(out_path: Path, df: pd.DataFrame) -> None:
         f.write("data_global\n\n")
         f.write("loop_\n")
         for i, col in enumerate(df.columns, 1):
-            tag = col if col.startswith("rln") else col
-            f.write(f"_{tag} #{i}\n")
+            f.write(f"_{col} #{i}\n")
         for _, row in df.iterrows():
             vals = [_format_star_value(row[c]) for c in df.columns]
             f.write("\t".join(vals) + "\n")
         f.write("\n")
 
 
-# ----------------------------
-# Merge logic
-# ----------------------------
+# ---------------------------------------------------------------------------
+# Optics validation
+# ---------------------------------------------------------------------------
 
-CORE_OPTICS_COLS = [
-    "rlnVoltage",
-    "rlnSphericalAberration",
-    "rlnAmplitudeContrast",
-    "rlnTomoTiltSeriesPixelSize",
-    "rlnImageDimensionality",
-    "rlnTomoSubtomogramBinning",
-    "rlnImagePixelSize",
-    "rlnImageSize",
-]
+# Hard requirements -- these MUST match across sources
+CRITICAL_OPTICS_COLS = ["rlnVoltage", "rlnSphericalAberration", "rlnAmplitudeContrast", "rlnTomoTiltSeriesPixelSize"]
+
+# Checked only if present in all sources
+OPTIONAL_OPTICS_COLS = ["rlnImageDimensionality", "rlnTomoSubtomogramBinning", "rlnImagePixelSize", "rlnImageSize"]
+
+
+# ---------------------------------------------------------------------------
+# Source resolution
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -238,100 +221,78 @@ class SourceResolved:
     tomo_names: List[str]
 
 
-def _resolve_source_to_optset(source: str, *, project_root: Path) -> Path:
+def _resolve_source_to_optset(source: str) -> Path:
+    """Resolve a source string (absolute path to dir or file) to an optimisation_set.star."""
     p = Path(source)
-    if not p.is_absolute():
-        p = (project_root / p).resolve()
-
+    if not p.exists():
+        raise FileNotFoundError(f"Source not found: {source}")
     if p.is_dir():
         return _find_optimisation_set_in_dir(p)
-
-    if p.is_file():
-        # allow either direct optimisation_set.star path or something else (we only accept optset here)
-        if p.name != "optimisation_set.star":
-            # if user passed a file, but it's not named as such, still accept if it looks like one
-            return p
-        return p
-
-    raise FileNotFoundError(f"Source not found: {source} (resolved to {p})")
+    return p
 
 
-def ensure_local_primary_tomograms_and_optset(
-    *,
-    job_dir: Path,
-    primary_input_optimisation_set: Path,
-    project_root: Path,
-) -> Path:
-    """
-    Ensures this job_dir contains:
-      - tomograms.star (copied from the input optimisation_set's tomograms file)
-      - optimisation_set.star (rewritten to point to *local* job_dir particles/tomograms)
-    Returns: path to job_dir/optimisation_set.star
-    """
-    job_dir.mkdir(parents=True, exist_ok=True)
-
-    # Where RELION wrote (or will write) the local particles:
-    local_particles = (job_dir / "particles.star").resolve()
-    local_tomograms = (job_dir / "tomograms.star").resolve()
-    local_optset = (job_dir / "optimisation_set.star").resolve()
-
-    # Resolve upstream tomograms path and stage a local copy (so merge produces self-contained outputs)
-    _, upstream_tomos = _parse_optimisation_set(primary_input_optimisation_set)
-
-    if not local_tomograms.exists():
-        if not upstream_tomos.exists():
-            raise FileNotFoundError(
-                f"Primary optimisation_set references missing tomograms.star:\n  {upstream_tomos}"
-            )
-        # copy tomograms.star locally
-        local_tomograms.parent.mkdir(parents=True, exist_ok=True)
-        local_tomograms.write_text(upstream_tomos.read_text())
-
-    # Always (re)write local optimisation_set.star to point to local outputs.
-    # This is intentionally "override-friendly" for your minimal working system.
-    _write_optimisation_set(local_optset, particles_star=local_particles, tomograms_star=local_tomograms)
-
-    return local_optset
+# ---------------------------------------------------------------------------
+# Main merge logic
+# ---------------------------------------------------------------------------
 
 
 def merge_optimisation_sets_into_jobdir(
-    *,
-    job_dir: Path,
-    primary_local_optimisation_set: Path,
-    additional_sources: List[str],
-    project_root: Path,
-    strict: bool = True,
-    overwrite: bool = True,
-) -> None:
+    *, job_dir: Path, additional_sources: List[str], strict: bool = True
+) -> Dict[str, Any]:
     """
-    Merges:
-      - primary_local_optimisation_set (must be in job_dir; points to job_dir particles/tomograms)
-      - each item in additional_sources (path to optset.star or a job directory)
+    Merges the primary job_dir's optimisation_set.star with additional sources.
+
+    Expects job_dir to already contain:
+      - optimisation_set.star (from the extraction run)
+      - particles.star
+      - tomograms.star (or referenced by the optimisation_set)
 
     Writes merged outputs into job_dir, overwriting:
-      - job_dir/particles.star
-      - job_dir/tomograms.star
-      - job_dir/optimisation_set.star
-      - job_dir/merge_summary.json
+      - particles.star
+      - tomograms.star
+      - optimisation_set.star
+      - merge_summary.json
+
+    Creates backups before overwriting:
+      - particles_primary.star
+      - tomograms_primary.star
+      - optimisation_set_primary.star
+
+    Returns the summary dict.
     """
     job_dir = job_dir.resolve()
-    if not primary_local_optimisation_set.exists():
-        raise FileNotFoundError(f"Primary local optimisation_set missing: {primary_local_optimisation_set}")
 
-    # Resolve all sources to concrete optimisation_set.star paths
-    optsets: List[Path] = [primary_local_optimisation_set.resolve()]
+    primary_optset = job_dir / "optimisation_set.star"
+    if not primary_optset.exists():
+        raise FileNotFoundError(
+            f"Primary optimisation_set.star missing in job dir: {job_dir}\nRun extraction first before merging."
+        )
+
+    if not additional_sources:
+        raise ValueError("No additional_sources provided -- nothing to merge.")
+
+    # ---- Back up primary outputs before we overwrite ----
+    for name in ["particles.star", "tomograms.star", "optimisation_set.star"]:
+        src = job_dir / name
+        backup = job_dir / name.replace(".star", "_primary.star")
+        if src.exists() and not backup.exists():
+            shutil.copy2(src, backup)
+            print(f"[MERGE] Backed up {name} -> {backup.name}")
+
+    # ---- Collect all sources (primary + additional) ----
+    all_optsets: List[Path] = [primary_optset.resolve()]
     for s in additional_sources:
-        optsets.append(_resolve_source_to_optset(s, project_root=project_root))
+        all_optsets.append(_resolve_source_to_optset(s))
 
-    # Resolve each optset -> particles/tomograms
     resolved_sources: List[SourceResolved] = []
     all_optics: List[pd.DataFrame] = []
     all_particles: List[pd.DataFrame] = []
     all_tomograms: List[pd.DataFrame] = []
     primary_general_kv: Dict[str, Any] = {}
 
-    for opt in optsets:
+    for opt in all_optsets:
         p_star, t_star = _parse_optimisation_set(opt)
+
         if not p_star.exists():
             raise FileNotFoundError(f"Missing particles.star referenced by {opt}: {p_star}")
         if not t_star.exists():
@@ -343,7 +304,6 @@ def merge_optimisation_sets_into_jobdir(
         if not primary_general_kv and general_kv:
             primary_general_kv = dict(general_kv)
 
-        # Basic per-source stats
         tomo_names = sorted(set(particles_df["rlnTomoName"].astype(str).tolist()))
         resolved_sources.append(
             SourceResolved(
@@ -351,7 +311,7 @@ def merge_optimisation_sets_into_jobdir(
                 optimisation_set=opt.resolve(),
                 particles_star=p_star.resolve(),
                 tomograms_star=t_star.resolve(),
-                n_particles=int(len(particles_df)),
+                n_particles=len(particles_df),
                 tomo_names=tomo_names,
             )
         )
@@ -360,77 +320,87 @@ def merge_optimisation_sets_into_jobdir(
         all_particles.append(particles_df)
         all_tomograms.append(tomos_df)
 
-    # ---------------------------------------
-    # Validate / Merge optics
-    # ---------------------------------------
+    # ---- Validate optics ----
     optics_merged = pd.concat(all_optics, ignore_index=True)
 
-    # If strict: enforce that "core optics" are identical across all sources (per optics row signature)
     if strict:
-        missing = [c for c in CORE_OPTICS_COLS if c not in optics_merged.columns]
-        if missing:
-            raise KeyError(f"Optics table missing required columns: {missing}")
+        # Critical columns must exist
+        missing_critical = [c for c in CRITICAL_OPTICS_COLS if c not in optics_merged.columns]
+        if missing_critical:
+            raise KeyError(f"Optics table missing critical columns: {missing_critical}")
 
-        sig = optics_merged[CORE_OPTICS_COLS].astype(str)
-        unique_sigs = sig.drop_duplicates()
-        if len(unique_sigs) > 1:
+        # Check critical columns are identical across all rows
+        sig = optics_merged[CRITICAL_OPTICS_COLS].astype(str)
+        if len(sig.drop_duplicates()) > 1:
             raise ValueError(
-                "Optics/acquisition mismatch across sources (core optics columns differ). "
-                f"Unique signatures: {len(unique_sigs)}"
+                "Optics/acquisition mismatch across sources. "
+                "Critical columns differ: check voltage, Cs, amplitude contrast, pixel size."
             )
+
+        # Check optional columns only if present in ALL sources
+        for col in OPTIONAL_OPTICS_COLS:
+            if col in optics_merged.columns and optics_merged[col].nunique(dropna=False) > 1:
+                print(f"[MERGE WARN] Optional optics column '{col}' varies across sources -- using primary value.")
 
     optics_merged = optics_merged.drop_duplicates().reset_index(drop=True)
 
-    # ---------------------------------------
-    # Merge tomograms and enforce unique rlnTomoName
-    # ---------------------------------------
+    # ---- Merge tomograms with deduplication ----
     tomos_merged = pd.concat(all_tomograms, ignore_index=True)
-    if "rlnTomoName" not in tomos_merged.columns:
-        raise KeyError("tomograms.star missing rlnTomoName")
 
-    # Duplicate tomo names are hard error (they break particle->tomo mapping)
-    name_counts = tomos_merged["rlnTomoName"].astype(str).value_counts()
-    dupes = name_counts[name_counts > 1]
-    if len(dupes) > 0:
-        raise ValueError(f"Duplicate rlnTomoName across sources: {dupes.to_dict()}")
+    # Check for rlnTomoName duplicates and validate consistency
+    tomo_consistency_col = "rlnTomoReconstructedTomogram"
+    grouped = tomos_merged.groupby("rlnTomoName", sort=False)
+    conflicts = []
+    for name, group in grouped:
+        if len(group) <= 1:
+            continue
+        # Same tomo name from multiple sources -- check that reconstruction path agrees
+        if tomo_consistency_col in group.columns:
+            unique_paths = group[tomo_consistency_col].nunique()
+            if unique_paths > 1:
+                paths_seen = group[tomo_consistency_col].unique().tolist()
+                conflicts.append(f"{name}: {paths_seen}")
 
-    # ---------------------------------------
-    # Merge particles; validate their tomo names exist
-    # ---------------------------------------
+    if conflicts:
+        raise ValueError(
+            "Tomogram name conflict -- same rlnTomoName but different reconstruction paths:\n"
+            + "\n".join(conflicts[:10])
+            + ("\n..." if len(conflicts) > 10 else "")
+        )
+
+    # Safe to deduplicate
+    n_before = len(tomos_merged)
+    tomos_merged = tomos_merged.drop_duplicates(subset=["rlnTomoName"], keep="first").reset_index(drop=True)
+    n_deduped = n_before - len(tomos_merged)
+    if n_deduped > 0:
+        print(f"[MERGE] Deduplicated {n_deduped} tomogram rows (same tomo, multiple sources)")
+
+    # ---- Merge particles; validate tomo name references ----
     particles_merged = pd.concat(all_particles, ignore_index=True)
-    if "rlnTomoName" not in particles_merged.columns:
-        raise KeyError("particles.star missing rlnTomoName")
 
-    tomo_set = set(tomos_merged["rlnTomoName"].astype(str).tolist())
-    particle_tomos = set(particles_merged["rlnTomoName"].astype(str).tolist())
+    tomo_set = set(tomos_merged["rlnTomoName"].astype(str))
+    particle_tomos = set(particles_merged["rlnTomoName"].astype(str))
     missing_tomos = sorted(particle_tomos - tomo_set)
     if missing_tomos:
         raise ValueError(
-            "Some particles reference tomograms not present in merged tomograms.star: "
+            "Particles reference tomograms not in merged tomograms.star: "
             + ", ".join(missing_tomos[:20])
             + (" ..." if len(missing_tomos) > 20 else "")
         )
 
-    # ---------------------------------------
-    # Write outputs (in-place overwrite)
-    # ---------------------------------------
+    # ---- Write outputs ----
     out_particles = (job_dir / "particles.star").resolve()
     out_tomograms = (job_dir / "tomograms.star").resolve()
     out_optset = (job_dir / "optimisation_set.star").resolve()
     out_summary = (job_dir / "merge_summary.json").resolve()
 
-    if not overwrite:
-        for p in [out_particles, out_tomograms, out_optset, out_summary]:
-            if p.exists():
-                raise FileExistsError(f"Refusing to overwrite existing file: {p}")
-
-    _write_particles_star(out_particles, optics_df=optics_merged, particles_df=particles_merged, general_kv=primary_general_kv)
+    _write_particles_star(
+        out_particles, optics_df=optics_merged, particles_df=particles_merged, general_kv=primary_general_kv
+    )
     _write_tomograms_star(out_tomograms, tomos_merged)
-    _write_optimisation_set(out_optset, particles_star=out_particles, tomograms_star=out_tomograms)
+    write_optimisation_set(out_optset, particles_star=out_particles, tomograms_star=out_tomograms)
 
-    # ---------------------------------------
-    # Summary for UI
-    # ---------------------------------------
+    # ---- Summary ----
     summary = {
         "merged_outputs": {
             "particles_star": str(out_particles),
@@ -439,8 +409,9 @@ def merge_optimisation_sets_into_jobdir(
         },
         "totals": {
             "n_sources": len(resolved_sources),
-            "n_particles": int(len(particles_merged)),
-            "n_tomograms": int(len(tomos_merged)),
+            "n_particles": len(particles_merged),
+            "n_tomograms": len(tomos_merged),
+            "n_tomograms_deduplicated": n_deduped,
             "tomo_names": sorted(tomos_merged["rlnTomoName"].astype(str).tolist()),
         },
         "sources": [
@@ -456,3 +427,8 @@ def merge_optimisation_sets_into_jobdir(
         ],
     }
     out_summary.write_text(json.dumps(summary, indent=2))
+    print(
+        f"[MERGE] Done. {len(particles_merged)} particles, {len(tomos_merged)} tomograms from {len(resolved_sources)} sources."
+    )
+
+    return summary

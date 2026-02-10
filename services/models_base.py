@@ -40,6 +40,9 @@ class JobType(str, Enum):
     TEMPLATE_MATCH_PYTOM   = "templatematching"
     TEMPLATE_EXTRACT_PYTOM = "tmextractcand"
     SUBTOMO_EXTRACTION     = "subtomoExtraction"
+    RECONSTRUCT_PARTICLE   = "reconstructParticle"
+
+    CLASS3D                = "class3d"
 
     @classmethod
     def from_string(cls, value: str) -> "JobType":

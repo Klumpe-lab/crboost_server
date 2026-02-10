@@ -52,9 +52,11 @@ JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
     JobType.TS_RECONSTRUCT        : [JobType.TS_CTF],
     JobType.DENOISE_TRAIN         : [JobType.TS_RECONSTRUCT],
     JobType.DENOISE_PREDICT       : [JobType.DENOISE_TRAIN, JobType.TS_RECONSTRUCT],
-    JobType.TEMPLATE_MATCH_PYTOM  : [JobType.TS_CTF],                                  # Can use reconstruct OR denoise
+    JobType.TEMPLATE_MATCH_PYTOM  : [JobType.TS_CTF],                                  
     JobType.TEMPLATE_EXTRACT_PYTOM: [JobType.TEMPLATE_MATCH_PYTOM],
     JobType.SUBTOMO_EXTRACTION    : [JobType.TEMPLATE_EXTRACT_PYTOM],
+    JobType.RECONSTRUCT_PARTICLE  : [JobType.SUBTOMO_EXTRACTION],
+    JobType.CLASS3D               : [JobType.RECONSTRUCT_PARTICLE]
 }
 
 def get_missing_dependencies(job_type: JobType, selected_jobs: Set[JobType]) -> List[JobType]:
