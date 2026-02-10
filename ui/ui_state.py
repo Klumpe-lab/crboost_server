@@ -162,7 +162,9 @@ PIPELINE_ORDER: List[JobType] = [
     JobType.DENOISE_PREDICT, 
     JobType.TEMPLATE_MATCH_PYTOM,
     JobType.TEMPLATE_EXTRACT_PYTOM,
-    JobType.SUBTOMO_EXTRACTION
+    JobType.SUBTOMO_EXTRACTION,
+    JobType.RECONSTRUCT_PARTICLE,  
+    JobType.CLASS3D,
 ]
 
 JOB_DISPLAY_NAMES: Dict[JobType, str] = {
@@ -175,7 +177,9 @@ JOB_DISPLAY_NAMES: Dict[JobType, str] = {
     JobType.DENOISE_PREDICT       : "Denoise Predict",
     JobType.TEMPLATE_MATCH_PYTOM  : "Template Match",
     JobType.TEMPLATE_EXTRACT_PYTOM: "Template Extract",
-    JobType.SUBTOMO_EXTRACTION    : "Subtomo Extraction"
+    JobType.SUBTOMO_EXTRACTION    : "Subtomo Extraction",
+    JobType.RECONSTRUCT_PARTICLE  : "Reconstruct Particle", 
+    JobType.CLASS3D               : "Class 3D",
 }
 
 

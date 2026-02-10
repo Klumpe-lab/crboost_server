@@ -876,8 +876,8 @@ class SubtomoExtractionParams(AbstractJobParams):
 
     # Extraction parameters
     binning: float = Field(default=1.0, description="Binning factor relative to unbinned data")
-    box_size: int = Field(default=512, description="Box size in binned pixels")
-    crop_size: int = Field(default=256, description="Cropped box size (-1 = no cropping)")
+    box_size: int = Field(default=384, description="Box size in binned pixels")
+    crop_size: int = Field(default=224, description="Cropped box size (-1 = no cropping)")
 
     # Output format
     do_float16: bool = Field(default=True, description="Write output in float16 to save space")
@@ -901,3 +901,147 @@ class SubtomoExtractionParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         # Depends on candidate extraction output
         return {"optimisation_set": "tmextractcand"}
+
+class ReconstructParticleParams(AbstractJobParams):
+    """
+    Subtomogram reconstruction using relion_tomo_reconstruct_particle.
+    Produces an initial average (merged.mrc) and half-maps from extracted particles.
+    This is the first step after extraction, and produces the reference for Class3D/Refine3D.
+    """
+
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+
+    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+        InputSlot(
+            key="input_optimisation",
+            accepts=[JobFileType.OPTIMISATION_SET_STAR],
+            preferred_source="subtomoExtraction",
+        )
+    ]
+    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+        OutputSlot(key="output_map", produces=JobFileType.REFERENCE_MAP, path_template="merged.mrc"),
+    ]
+
+    # Reconstruction parameters
+    box_size : int = Field(default=384, description="Box size in pixels")
+    crop_size: int = Field(default=224, description="Cropped box size (-1 = no cropping)")
+    symmetry : str = Field(default="C1", description="Symmetry group (C1, C2, I1, etc.)")
+    binning  : int = Field(default=1, ge=1, description="Binning factor")
+
+    # Noise / CTF
+    whiten: bool = Field(default=False, description="Whiten noise by flattening power spectrum")
+    no_ctf: bool = Field(default=False, description="Do not apply CTFs")
+
+    # Threading (CPU-only job, no GPU)
+    threads: int = Field(default=6, ge=1, description="Total OMP threads (--j)")
+    threads_in: int = Field(default=3, ge=1, description="Inner threads (slower, less memory)")
+    threads_out: int = Field(default=2, ge=1, description="Outer threads (faster, more memory)")
+
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+        input_opt = self.paths.get("input_optimisation", "")
+        return [("in_optimisation", str(input_opt))]
+
+    def is_driver_job(self) -> bool:
+        return True
+
+    def get_tool_name(self) -> str:
+        return "relion"
+
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        return {"optimisation_set": "subtomoExtraction"}
+
+class Class3DParams(AbstractJobParams):
+    """
+    3D Classification using relion_refine (without --auto_refine).
+
+    Two main use cases from the tutorial:
+    1. Single-class alignment (K=1) to produce a clean initial reference for mask creation
+    2. Multi-class classification (K>1) to sort heterogeneous particles
+
+    Uses --ios to read tomo optimisation_set directly.
+    """
+
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+
+    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+        InputSlot(
+            key="input_optimisation",
+            accepts=[JobFileType.OPTIMISATION_SET_STAR],
+            preferred_source="subtomoExtraction",
+        ),
+        InputSlot(
+            key="input_reference",
+            accepts=[JobFileType.REFERENCE_MAP],
+            preferred_source="reconstructParticle",
+        ),
+    ]
+    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+        OutputSlot(
+            key="output_optimisation",
+            produces=JobFileType.OPTIMISATION_SET_STAR,
+            path_template="run_optimisation_set.star",
+        ),
+    ]
+
+    # Classification
+    n_classes: int = Field(default=1, ge=1, description="Number of classes (1 for initial alignment, >1 for sorting)")
+    n_iterations: int = Field(default=15, ge=1, description="Number of iterations")
+    tau_fudge: float = Field(default=-1.0, description="Regularisation parameter (-1 = auto)")
+
+    # Angular sampling
+    # Healpix order: 2=15deg, 3=7.5deg, 4=3.75deg, 5=1.875deg
+    healpix_order: int = Field(default=4, ge=1, le=6, description="Angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)")
+    offset_range: int = Field(default=6, ge=0, description="Translational search range (pixels)")
+    offset_step: int = Field(default=2, ge=1, description="Translational search step (pixels)")
+
+    # Local angular searches
+    sigma_ang: float = Field(default=-1.0, description="Local angular search sigma in degrees (-1 = no local search)")
+
+    # Symmetry / filtering
+    symmetry: str = Field(default="C1", description="Symmetry group (C1, C2, I1, etc.)")
+    ini_high: float = Field(default=45.0, ge=0, description="Initial low-pass filter (Angstroms)")
+    particle_diameter: float = Field(default=-1.0, description="Mask diameter (Angstroms, -1 = auto)")
+
+    # Optional mask (string path, like template_match)
+    solvent_mask_path: str = Field(default="", description="Path to soft mask for references (optional)")
+
+    # Reference handling
+    flatten_solvent: bool = Field(default=True, description="Apply mask to references during refinement")
+    firstiter_cc: bool = Field(default=False, description="Use CC in first iteration (if reference not on absolute scale)")
+
+    # Computation
+    use_gpu: bool = Field(default=True, description="Use GPU acceleration")
+    preread_images: bool = Field(default=True, description="Pre-read all particles into RAM")
+    threads: int = Field(default=4, ge=1, description="Number of threads")
+
+    def __init__(self, **data):
+        super().__init__(**data)
+        if "slurm_overrides" not in data:
+            self.slurm_overrides = {
+                "gres": "gpu:1",
+                "mem": "64G",
+                "cpus_per_task": 4,
+                "time": "8:00:00",
+                "preset": SlurmPreset.CUSTOM.value,
+            }
+
+    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+        input_opt = self.paths.get("input_optimisation", "")
+        input_ref = self.paths.get("input_reference", "")
+        return [
+            ("in_optimisation", str(input_opt)),
+            ("in_3dref", str(input_ref)),
+        ]
+
+    def is_driver_job(self) -> bool:
+        return True
+
+    def get_tool_name(self) -> str:
+        return "relion"
+
+    @staticmethod
+    def get_input_requirements() -> Dict[str, str]:
+        return {"optimisation_set": "subtomoExtraction", "reference": "reconstructParticle"}
