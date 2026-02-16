@@ -399,6 +399,14 @@ def render_config_tab(
                         _kv("Tilt Axis (°)", job_model.acquisition, "tilt_axis_degrees")
 
         # -------------------------------------------------------
+        # Merge Panel (only for Subtomo Extraction)
+        # -------------------------------------------------------
+        if job_type == JobType.SUBTOMO_EXTRACTION:
+            ui.separator().classes("my-4")
+            from ui.pipeline_builder.merge_panel_component import render_merge_panel
+            render_merge_panel(job_model, is_frozen, save_handler)
+
+        # -------------------------------------------------------
         # Template Workbench (only for Template Matching)
         # -------------------------------------------------------
         if job_type == JobType.TEMPLATE_MATCH_PYTOM:

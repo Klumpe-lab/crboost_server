@@ -7,6 +7,7 @@ import sys
 import os
 import json
 import shutil
+from drivers.subtomo_merge import write_optimisation_set
 import starfile
 import pandas as pd
 import numpy as np
@@ -244,11 +245,17 @@ def main():
         shutil.copy2(input_tomograms, output_tomograms)
 
         # Create optimisation_set.star with ABSOLUTE paths
-        opt_df = pd.DataFrame({
-            "rlnTomoParticlesFile": [str(candidates_star.resolve())],
-            "rlnTomoTomogramsFile": [str(output_tomograms.resolve())]
-        })
-        starfile.write(opt_df, job_dir / "optimisation_set.star", overwrite=True)
+        # opt_df = pd.DataFrame({
+        #     "rlnTomoParticlesFile": [str(candidates_star.resolve())],
+        #     "rlnTomoTomogramsFile": [str(output_tomograms.resolve())]
+        # })
+        # starfile.write(opt_df, job_dir / "optimisation_set.star", overwrite=True)
+        write_optimisation_set(
+            job_dir / "optimisation_set.star",
+            particles_star=candidates_star,
+            tomograms_star=output_tomograms,
+        )
+        print("[DRIVER] Created optimisation_set.star with absolute paths", flush=True)
         print("[DRIVER] Created optimisation_set.star with absolute paths", flush=True)
 
         # --- 9. Success ---
