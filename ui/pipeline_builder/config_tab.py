@@ -416,3 +416,11 @@ def render_config_tab(
                 from ui.template_workbench import TemplateWorkbench
 
                 TemplateWorkbench(backend, str(ui_mgr.project_path))
+
+        # -------------------------------------------------------
+        # Candidate Visualization (only for Candidate Extraction)
+        # -------------------------------------------------------
+        if job_type == JobType.TEMPLATE_EXTRACT_PYTOM:
+            ui.separator().classes("my-4")
+            from ui.pipeline_builder.candidate_vis_component import render_candidate_vis_panel
+            render_candidate_vis_panel(job_model, ui_mgr)

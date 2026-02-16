@@ -1,4 +1,5 @@
 from __future__ import annotations
+from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Self, Tuple, TYPE_CHECKING
 from pydantic import BaseModel, Field, PrivateAttr
@@ -735,7 +736,6 @@ class DenoisePredictParams(AbstractJobParams):
         return {"train": "denoisetrain"}
 
 
-
 class TemplateMatchPytomParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
@@ -765,8 +765,8 @@ class TemplateMatchPytomParams(AbstractJobParams):
     # Flags
     defocus_weight: bool = True
     dose_weight: bool = True
-    spectral_whitening: bool = True
-    random_phase_correction: bool = False
+    spectral_whitening: bool = False
+    random_phase_correction: bool = True
     non_spherical_mask: bool = False
 
     bandpass_filter: str = Field(default="None")  # Format "low:high"
@@ -794,19 +794,23 @@ class TemplateMatchPytomParams(AbstractJobParams):
         # We prefer denoised tomograms, but reconstruct works too
         return {"tomograms": "denoisepredict"}
 
+class ExtractionCutoffMethod(str, Enum):
+    """How to threshold template matching scores for candidate extraction."""
+    FALSE_POSITIVES = "NumberOfFalsePositives"
+    MANUAL = "ManualCutOff"
+
 
 class CandidateExtractPytomParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    # In CandidateExtractPytomParams:
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_tm_job", accepts=[JobFileType.TM_RESULTS_DIR], preferred_source="templatematching"),
         InputSlot(
             key="input_tomograms",
             accepts=[JobFileType.TOMOGRAMS_STAR, JobFileType.DENOISED_TOMOGRAMS_STAR],
-            preferred_source="templatematching",  # changed from denoisepredict
-            required=True,  # changed from False -- we actually need this
+            preferred_source="templatematching",
+            required=True,
         ),
     ]
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
@@ -816,23 +820,23 @@ class CandidateExtractPytomParams(AbstractJobParams):
         ),
     ]
 
-    # Particle Params (defaults from original job.star)
-    particle_diameter_ang: float = Field(default=200.0)  # param3
-    max_num_particles: int = Field(default=1500)  # param4
+    # Particle params
+    particle_diameter_ang: float = Field(default=200.0)
+    max_num_particles: int = Field(default=1500)
 
-    # Thresholding
-    cutoff_method: str = Field(default="NumberOfFalsePositives")  # param1: "NumberOfFalsePositives" or "ManualCutOff"
-    cutoff_value: float = Field(default=1.0)  # param2
+    # Thresholding -- now an enum
+    cutoff_method: ExtractionCutoffMethod = Field(default=ExtractionCutoffMethod.FALSE_POSITIVES)
+    cutoff_value: float = Field(default=1.0)
 
-    # Score Map
-    apix_score_map: str = Field(default="auto")  # param5
+    # Score map pixel size
+    apix_score_map: str = Field(default="auto")
 
     # Filtering
-    score_filter_method: str = Field(default="None")  # param6: "None" or "tophat"
-    score_filter_value: str = Field(default="None")  # param7: "connectivity:bins" e.g. "1:10"
+    score_filter_method: str = Field(default="None")
+    score_filter_value: str = Field(default="None")
 
-    # Optional mask folder for excluding regions
-    mask_fold_path: str = Field(default="None")  # param8
+    # Optional mask folder
+    mask_fold_path: str = Field(default="None")
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_tm_job = self.paths.get("input_tm_job", "")
@@ -847,8 +851,6 @@ class CandidateExtractPytomParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"tm_job": "templatematching"}
-
-
 
 class SubtomoExtractionParams(AbstractJobParams):
     """
