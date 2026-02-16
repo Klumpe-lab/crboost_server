@@ -19,13 +19,8 @@ from ui.pipeline_builder.logs_tab import render_logs_tab
 from ui.pipeline_builder.files_tab import render_files_tab
 
 
-# ===========================================
-# Helpers
-# ===========================================
-
 def snake_to_title(s: str) -> str:
     return " ".join(word.capitalize() for word in s.split("_"))
-
 
 async def auto_save_state():
     try:
