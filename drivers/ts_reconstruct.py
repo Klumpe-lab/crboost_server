@@ -113,8 +113,29 @@ def main():
             raise Exception(f"Metadata update failed: {result['error']}")
 
         print("[DRIVER] Metadata processing successful.", flush=True)
-        print("[DRIVER] Job finished successfully.", flush=True)
 
+
+        # 4b. Convert f16 reconstructions to f32 for IMOD4 compatibility
+        print("[DRIVER] Converting reconstructions to float32...", flush=True)
+        import mrcfile
+        import numpy as np
+
+        recon_dir = job_dir / "warp_tiltseries" / "reconstruction"
+        for mrc_path in recon_dir.glob("*.mrc"):
+            # Skip subdirs (even/, odd/, ctf/, deconv/) and already-converted files
+            if not mrc_path.is_file() or "_f32" in mrc_path.stem:
+                continue
+            with mrcfile.open(str(mrc_path), mode='r') as mrc:
+                if mrc.data.dtype == np.float16:
+                    out_path = mrc_path.with_name(mrc_path.stem + "_f32.mrc")
+                    with mrcfile.new(str(out_path), overwrite=True) as out:
+                        out.set_data(mrc.data.astype(np.float32))
+                        out.voxel_size = mrc.voxel_size
+                    print(f"  [F32] {mrc_path.name} -> {out_path.name}")
+                else:
+                    print(f"  [F32] {mrc_path.name} already float32, skipping")
+
+        print("[DRIVER] Job finished successfully.", flush=True)
         # 5. Create success file
         success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)

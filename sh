@@ -1,0 +1,2 @@
+apptainer exec /groups/klumpe/software/Setup/cryoboost_containers/imod.sif newstack -mode 2 /users/artem.kushner/dev/crboost_server/projects/post_tomo_correction/External/job005/warp_tiltseries/reconstruction/post_tomo_correction_Position_1_12.00Apx.mrc /users/artem.kushner/dev/crboost_server/projects/post_tomo_correction/External/job005/warp_tiltseries/reconstruction/post_tomo_correction_Position_1_12.00Apx_f32.mrc
+

@@ -8,6 +8,7 @@ import os
 import json
 import shutil
 from drivers.subtomo_merge import write_optimisation_set
+from services.job_models import ExtractionCutoffMethod
 import starfile
 import pandas as pd
 import numpy as np
@@ -180,9 +181,9 @@ def main():
             "--log", "debug",
         ]
 
-        if params.cutoff_method == "NumberOfFalsePositives":
+        if params.cutoff_method == ExtractionCutoffMethod.FALSE_POSITIVES:
             base_cmd.extend(["--number-of-false-positives", str(params.cutoff_value)])
-        elif params.cutoff_method == "ManualCutOff":
+        elif params.cutoff_method == ExtractionCutoffMethod.MANUAL:
             base_cmd.extend(["-c", str(params.cutoff_value)])
 
         if params.score_filter_method == "tophat":
@@ -244,6 +245,20 @@ def main():
         output_tomograms = job_dir / "tomograms.star"
         shutil.copy2(input_tomograms, output_tomograms)
 
+
+    # --- 8b. Generate Visualization (optional, non-fatal) ---
+        try:
+            from services.visualization.imod_vis import generate_candidate_vis
+
+            print("[DRIVER] Generating IMOD visualization...", flush=True)
+            generate_candidate_vis(
+                candidates_star=candidates_star,
+                tomograms_star=output_tomograms,
+                particle_diameter_ang=float(params.particle_diameter_ang),
+                output_dir=job_dir,
+            )
+        except Exception as vis_err:
+            print(f"[DRIVER WARN] Visualization generation failed (non-fatal): {vis_err}", flush=True)
         # Create optimisation_set.star with ABSOLUTE paths
         # opt_df = pd.DataFrame({
         #     "rlnTomoParticlesFile": [str(candidates_star.resolve())],
