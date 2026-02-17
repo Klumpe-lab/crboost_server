@@ -3,6 +3,7 @@
 Config/parameters tab content: job params, SLURM config, global params, template workbench.
 """
 
+from enum import Enum
 from pathlib import Path
 from typing import Callable, List, Tuple
 
@@ -330,13 +331,19 @@ def render_config_tab(
                                             inp.on_value_change(save_handler)
 
                                 elif isinstance(value, str):
-                                    if param_name == "alignment_method" and job_type == JobType.TS_ALIGNMENT:
+                                    # Check if the field type is an Enum
+                                    field_info = job_model.model_fields.get(param_name)
+                                    field_type = field_info.annotation if field_info else None
+                                    is_enum = field_type is not None and isinstance(field_type, type) and issubclass(field_type, Enum)
+
+                                    if is_enum:
                                         with ui.column().classes("gap-1 w-fit"):
                                             ui.label(label).classes(
                                                 "text-[10px] font-bold text-gray-400 uppercase leading-none ml-0.5"
                                             )
+                                            options = [e.value for e in field_type]
                                             sel = ui.select(
-                                                options=[e.value for e in AlignmentMethod], value=value
+                                                options=options, value=value
                                             ).bind_value(job_model, param_name)
                                             sel.props("dense outlined hide-bottom-space")
                                             sel.classes("text-xs font-mono")

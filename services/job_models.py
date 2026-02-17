@@ -756,22 +756,22 @@ class TemplateMatchPytomParams(AbstractJobParams):
 
     # Inputs (Strings here, resolved to Paths in resolve_paths)
     template_path: str = Field(default="")
-    mask_path: str = Field(default="")
+    mask_path    : str = Field(default="")
 
     # Algorithm Params
     angular_search: str = Field(default="12.0")
-    symmetry: str = Field(default="C1")
+    symmetry      : str = Field(default="C1")
 
     # Flags
-    defocus_weight: bool = True
-    dose_weight: bool = True
-    spectral_whitening: bool = False
-    random_phase_correction: bool = True
-    non_spherical_mask: bool = False
+    defocus_weight         : bool = True
+    dose_weight            : bool = True
+    spectral_whitening     : bool = False
+    random_phase_correction: bool = False
+    non_spherical_mask     : bool = False
 
     bandpass_filter: str = Field(default="None")  # Format "low:high"
-    gpu_split: str = Field(default="auto")  # "auto" or "4:4:2"
-    perdevice: int = Field(default=1)
+    gpu_split      : str = Field(default="auto")  # "auto" or "4:4:2"
+    perdevice      : int = Field(default=1)
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         return [

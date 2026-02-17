@@ -18,6 +18,8 @@ notes
 
 PLAN_*.md
 **/PLAN_*.md
+REPORT_*.md
+**/REPORT_*.md
 **/notes
 
 **/*.cif
