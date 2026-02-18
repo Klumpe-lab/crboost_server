@@ -82,10 +82,12 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
                 ui.button(icon="refresh", on_click=lambda: _force_status_refresh(callbacks)).props(
                     "flat dense round"
                 ).classes("text-gray-400 hover:text-gray-800")
+                # The button - no asyncio.create_task, just a direct call
                 if ui_mgr.is_project_created:
-                    ui.button(icon="delete", on_click=lambda: asyncio.create_task(_handle_delete(job_type, job_model, backend, ui_mgr, callbacks))).props(
-                        "flat round dense color=red"
-                    ).tooltip("Delete this job")
+                    ui.button(
+                        icon="delete",
+                        on_click=lambda: _handle_delete(job_type, job_model, backend, ui_mgr, callbacks)
+                    ).props("flat round dense color=red").tooltip("Delete this job")
 
     # --- Content ---
     content_container = ui.column().classes("w-full overflow-hidden").style(
@@ -160,8 +162,8 @@ def _handle_tab_switch(job_type, tab, backend, ui_mgr, callbacks):
 # Delete Handler
 # ===========================================
 
-async def _handle_delete(job_type, job_model, backend, ui_mgr, callbacks):
-    """Handle job deletion with orphan preview."""
+def _handle_delete(job_type, job_model, backend, ui_mgr, callbacks):
+    """Handle job deletion with orphan preview. Must be sync - runs in UI context."""
     deletion_service = get_deletion_service()
     project_path = ui_mgr.project_path
 

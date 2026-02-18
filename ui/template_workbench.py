@@ -698,15 +698,46 @@ class TemplateWorkbench:
         self.masking_active = True
         n = ui.notification("Relion: Creating mask...", type="ongoing", spinner=True, timeout=None)
         try:
-            input_vol = (
-                template_path.replace("_black.mrc", "_white.mrc") if "_black.mrc" in template_path else template_path
+            # Derive the base name to look for a seed file
+            base = Path(template_path).stem.replace("_white", "").replace("_black", "")
+            prefix = base.split("_box")[0]  # "ellipsoid_550_550_550_apix11.80"
+            seed_candidates = [
+                os.path.join(self.output_folder, f)
+                for f in os.listdir(self.output_folder)
+                if f.endswith("_seed.mrc") and prefix in f
+            ]
+
+            if seed_candidates and os.path.exists(seed_candidates[0]):
+                # Use the seed with binary-appropriate defaults
+                input_vol = seed_candidates[0]
+                threshold = 0.5
+                extend = 5
+                soft = 5
+                self._log(f"Using mask seed: {os.path.basename(input_vol)} (threshold={threshold})")
+            else:
+                # Fallback for PDB/EMDB templates: use white template with user params
+                input_vol = (
+                    template_path.replace("_black.mrc", "_white.mrc") 
+                    if "_black.mrc" in template_path else template_path
+                )
+                threshold = self.mask_threshold
+                extend = self.mask_extend
+                soft = self.mask_soft_edge
+                self._log(f"No seed found, using white template with threshold={threshold}")
+
+            output = os.path.join(
+                self.output_folder, 
+                f"{Path(template_path).stem.replace('_white', '').replace('_black', '')}_mask.mrc"
             )
-            output = os.path.join(self.output_folder, f"{Path(input_vol).stem.replace('_white', '')}_mask.mrc")
             res = await self.backend.template_service.create_mask_relion(
-                input_vol, output, self.mask_threshold, self.mask_extend, self.mask_soft_edge, self.mask_lowpass
+                input_vol, output, threshold, extend, soft, self.mask_lowpass
             )
             if res["success"]:
                 self._log(f"Mask created: {os.path.basename(output)}")
+                p = self._get_tm_params()
+                if p:
+                    p.mask_path = output
+                await get_state_service().save_project()
                 await self.refresh_files()
         finally:
             n.dismiss()

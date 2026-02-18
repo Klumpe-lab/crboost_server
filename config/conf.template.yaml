@@ -27,6 +27,10 @@ slurm_defaults:
   mem: "32G"
   time: "2:00:00"
 
+
+processing_defaults:
+  reconstruction_binning: 4
+
 # Tool execution configuration
 # exec_mode: 'container' or 'binary'
 # container_path: path to .sif file (required if exec_mode is container)

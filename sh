@@ -1,2 +1,13 @@
-apptainer exec /groups/klumpe/software/Setup/cryoboost_containers/imod.sif newstack -mode 2 /users/artem.kushner/dev/crboost_server/projects/post_tomo_correction/External/job005/warp_tiltseries/reconstruction/post_tomo_correction_Position_1_12.00Apx.mrc /users/artem.kushner/dev/crboost_server/projects/post_tomo_correction/External/job005/warp_tiltseries/reconstruction/post_tomo_correction_Position_1_12.00Apx_f32.mrc
+python -c "
+import starfile
+df = starfile.read('projects/zval_fixes/External/job007/tmResults/zval_fixes_Position_1_particles.star')
+print(df['rlnTemplateMatchingScore'].describe())
+"
 
+
+python -c "
+import mrcfile, numpy as np
+with mrcfile.open('projects/zval_fixes/External/job007/tmResults/zval_fixes_Position_1_scores.mrc') as m:
+    d = m.data
+    print('max:', d.max(), 'mean:', d.mean(), 'std:', d.std())
+"

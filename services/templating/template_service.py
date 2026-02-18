@@ -113,40 +113,40 @@ class TemplateService:
             dims_ang = np.array([float(x) for x in shape_def.split(":")])
             max_dim_ang = float(np.max(dims_ang))
 
-            # Initial box size for generation (padded)
             box_size = int(((max_dim_ang / pixel_size) * 1.3 + 31) // 32) * 32
             box_size = max(box_size, min_box_size)
 
             radii_pix = (dims_ang / pixel_size) / 2.0
 
-            temp_name = f"temp_shape_{shape_def.replace(':', '_')}.mrc"
-            temp_path = os.path.join(output_folder, temp_name)
+            name_core = f"ellipsoid_{shape_def.replace(':', '_')}"
 
-            # Create mask data
+            # Save the raw binary ellipsoid as a persistent "seed" file
+            seed_name = f"{name_core}_apix{pixel_size:.2f}_seed.mrc"
+            seed_path = os.path.join(output_folder, seed_name)
+
             nz, ny, nx = (box_size, box_size, box_size)
             z, y, x = np.ogrid[-nz / 2 : nz / 2, -ny / 2 : ny / 2, -nx / 2 : nx / 2]
             mask_data = ((x / radii_pix[0]) ** 2 + (y / radii_pix[1]) ** 2 + (z / radii_pix[2]) ** 2) <= 1.0
             mask_data = mask_data.astype(np.float32)
 
-            # Save temporary raw mask
-            with mrcfile.new(temp_path, overwrite=True) as mrc:
+            with mrcfile.new(seed_path, overwrite=True) as mrc:
                 mrc.set_data(mask_data)
                 mrc.voxel_size = pixel_size
 
-            # Use RELION to apply lowpass and finalize box/contrasts
-            # This ensures symmetry and normalization match pdb-derived templates
+            # Now create the lowpassed white/black pair from the seed
             res = await self.process_volume_async(
-                temp_path,
+                seed_path,
                 output_folder,
                 pixel_size,
                 box_size,
                 resolution=lowpass_res,
-                tag=f"ellipsoid_{shape_def.replace(':', '_')}",
+                tag=name_core,
             )
 
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+            if not res["success"]:
+                return res
 
+            res["path_seed"] = seed_path
             return res
 
         except Exception as e:

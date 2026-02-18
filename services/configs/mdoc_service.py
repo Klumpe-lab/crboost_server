@@ -17,7 +17,6 @@ class MdocService:
         if not mdoc_files:
             return {}
 
-        # --- FIX: Filter out directories to avoid [Errno 21] ---
         mdoc_path = None
         for p in mdoc_files:
             if os.path.isfile(p) and p.endswith('.mdoc'):
@@ -40,6 +39,8 @@ class MdocService:
                         continue
 
                     if line.startswith("[ZValue"):
+                        if in_zvalue_section:
+                            break  # First ZValue section is complete, stop here
                         in_zvalue_section = True
                     elif in_zvalue_section and "=" in line:
                         key, value = [x.strip() for x in line.split("=", 1)]
@@ -54,11 +55,9 @@ class MdocService:
                     result["tilt_axis_angle"] = float(header_data["Tilt axis angle"])
             else:
                 result["acquisition_software"] = "Tomo5"
-                # Tomo5 uses RotationAngle field
                 if "RotationAngle" in first_section:
                     result["tilt_axis_angle"] = abs(float(first_section["RotationAngle"]))
 
-            # Extract values, preferring header, falling back to first section
             if "PixelSpacing" in header_data:
                 result["pixel_spacing"] = float(header_data["PixelSpacing"])
             elif "PixelSpacing" in first_section:
@@ -78,18 +77,15 @@ class MdocService:
                 if len(sizes) >= 2:
                     result["detector_dimensions"] = (int(sizes[0]), int(sizes[1]))
 
-            # OLD CRYOBOOST LOGIC: Calculate dose per tilt
             if "ExposureDose" in first_section:
                 exposure_dose = float(first_section["ExposureDose"])
-                # Old code multiplied by 1.5 for some reason - preserve this behavior
                 result["dose_per_tilt"] = round(exposure_dose * 1.5, 2)
-                result["frame_dose"] = exposure_dose  # Store original value too
+                result["frame_dose"] = exposure_dose
             elif "ExposureDose" in header_data:
                 exposure_dose = float(header_data["ExposureDose"])
                 result["dose_per_tilt"] = round(exposure_dose * 1.5, 2)
                 result["frame_dose"] = exposure_dose
 
-            # Extract additional fields from old CryoBoost
             if "Magnification" in first_section:
                 result["nominal_magnification"] = int(first_section["Magnification"])
             elif "Magnification" in header_data:
@@ -105,17 +101,14 @@ class MdocService:
             elif "Binning" in header_data:
                 result["binning"] = int(header_data["Binning"])
 
-            # Detect EER data and set fractions
             subframe_path = first_section.get("SubFramePath", "")
             if "_EER.eer" in subframe_path or ".eer" in subframe_path.lower():
-                result["eer_fractions_per_frame"] = 32  # Default from old code
-                
-            # The old code had complex logic around tilt angle inversion
-            # For now, set defaults that match typical behavior
+                result["eer_fractions_per_frame"] = 32
+
             if result.get("acquisition_software") == "SerialEM":
-                result["invert_tilt_angles"] = False  # SerialEM usually doesn't need inversion
+                result["invert_tilt_angles"] = False
             else:
-                result["invert_tilt_angles"] = True   # Tomo5 often needs inversion
+                result["invert_tilt_angles"] = True
 
             return result
 
