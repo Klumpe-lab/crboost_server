@@ -271,8 +271,14 @@ class ProjectService:
                 # 1. Standard Setup (Dirs, Data Import)
                 if project_dir.exists():
                     return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
+                from services.project_state import reset_project_state
+                reset_project_state()
+
+
 
                 import_prefix = f"{project_name}_"
+                state = self.backend.state_service.state  # now guaranteed fresh
+                state.project_name = project_name
                 
                 # Update Global State Wrapper
                 state = self.backend.state_service.state
@@ -280,6 +286,8 @@ class ProjectService:
                 state.project_path = project_dir
                 state.movies_glob = movies_glob                 
                 state.mdocs_glob = mdocs_glob                   
+
+                await self.backend.state_service.update_from_mdoc(mdocs_glob)
 
                 # Create Dirs & Import Data
                 structure_result = await self.create_project_structure(project_dir, movies_glob, mdocs_glob, import_prefix)
@@ -387,11 +395,11 @@ class ProjectService:
             selected_jobs = [job_type.value for job_type in state.jobs.keys()]
 
             return {
-                "success": True,
-                "project_name": project_name,
+                "success"      : True,
+                "project_name" : project_name,
                 "selected_jobs": selected_jobs,
-                "movies_glob": movies_glob,
-                "mdocs_glob": mdocs_glob,
+                "movies_glob"  : movies_glob,
+                "mdocs_glob"   : mdocs_glob,
             }
         except Exception as e:
             import traceback

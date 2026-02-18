@@ -208,7 +208,6 @@ class CryoBoostBackend:
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
         """Runs mdoc update and returns the entire updated state."""
         await self.state_service.update_from_mdoc(mdocs_glob)
-        # Ensure we save after autodetection
         await self.state_service.save_project()
         return self.state_service.state.model_dump(mode="json", exclude={"project_path"})
 

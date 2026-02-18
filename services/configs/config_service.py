@@ -57,12 +57,17 @@ class ToolConfig(BaseModel):
     bin_path: Optional[str] = None
 
 
+class ProcessingDefaultsConfig(BaseModel):
+    reconstruction_binning: int = 4
+
+
 class Config(BaseModel):
     """Root configuration model"""
     crboost_root: str = Field(default_factory=lambda: str(_REPO_ROOT))
     venv_path: Optional[str] = None
     local: LocalConfig = Field(default_factory=LocalConfig)
     slurm_defaults: SlurmDefaultsConfig = Field(default_factory=SlurmDefaultsConfig)
+    processing_defaults: ProcessingDefaultsConfig = Field(default_factory=ProcessingDefaultsConfig)
     tools: Dict[str, ToolConfig] = Field(default_factory=dict)
     containers: Optional[Dict[str, str]] = None
 
@@ -97,6 +102,10 @@ class ConfigService:
     @property
     def crboost_root(self) -> Path:
         return Path(self._config.crboost_root)
+
+    @property
+    def processing_defaults(self) -> ProcessingDefaultsConfig:
+        return self._config.processing_defaults
 
     @property
     def venv_path(self) -> Optional[Path]:

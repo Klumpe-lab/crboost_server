@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Type, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializeAsAny
 
 from services.models_base import (
     JobStatus,
@@ -51,14 +51,18 @@ class ProjectState(BaseModel):
     acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
     slurm_defaults: SlurmConfig = Field(default_factory=SlurmConfig.from_config_defaults)
 
-    jobs: Dict[JobType, AbstractJobParams] = Field(default_factory=dict)
+
+    jobs: Dict[JobType, SerializeAsAny[AbstractJobParams]] = Field(default_factory=dict)
     pipeline_active: bool = Field(default=False)
+
+    # services/project_state.py
 
     def ensure_job_initialized(self, job_type: JobType, template_path: Optional[Path] = None):
         if job_type in self.jobs:
             return
 
         from services.project_state import jobtype_paramclass
+        from services.configs.config_service import get_config_service
 
         param_class_map = jobtype_paramclass()
         param_class = param_class_map.get(job_type)
@@ -68,6 +72,15 @@ class ProjectState(BaseModel):
 
         job_params = param_class()
         job_params._project_state = self
+
+        # Auto-calculate reconstruction pixel size from raw pixel size + configured binning
+        if hasattr(job_params, 'rescale_angpixs') and self.microscope.pixel_size_angstrom > 0:
+            binning = get_config_service().processing_defaults.reconstruction_binning
+            computed = round(self.microscope.pixel_size_angstrom * binning, 2)
+            job_params.rescale_angpixs = computed
+            print(f"[STATE] Auto-set rescale_angpixs = {computed} "
+                f"({self.microscope.pixel_size_angstrom} * {binning})")
+
         self.jobs[job_type] = job_params
         self.update_modified()
 
@@ -182,17 +195,20 @@ class StateService:
         from services.configs.mdoc_service import get_mdoc_service
 
         mdoc_service = get_mdoc_service()
+        print(f"[MDOC_UPDATE] Parsing mdocs from: {mdocs_glob}")
         mdoc_data = mdoc_service.get_autodetect_params(mdocs_glob)
+        print(f"[MDOC_UPDATE] Result: {mdoc_data}")
         if not mdoc_data:
             return
 
         s = self.state
+        if "dose_per_tilt" in mdoc_data:
+            s.acquisition.dose_per_tilt = mdoc_data["dose_per_tilt"]
+        print(f"[MDOC_UPDATE] Set dose_per_tilt = {mdoc_data['dose_per_tilt']}")
         if "pixel_spacing" in mdoc_data:
             s.microscope.pixel_size_angstrom = mdoc_data["pixel_spacing"]
         if "voltage" in mdoc_data:
             s.microscope.acceleration_voltage_kv = mdoc_data["voltage"]
-        if "dose_per_tilt" in mdoc_data:
-            s.acquisition.dose_per_tilt = mdoc_data["dose_per_tilt"]
         if "tilt_axis_angle" in mdoc_data:
             s.acquisition.tilt_axis_degrees = mdoc_data["tilt_axis_angle"]
         s.update_modified()
