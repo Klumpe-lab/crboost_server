@@ -176,7 +176,9 @@ def main():
         base_cmd = [
             "pytom_extract_candidates.py",
             "-n", str(params.max_num_particles),
+            # Which one??????
             "--particle-diameter", str(int(params.particle_diameter_ang / 2.0 / apix) * apix),
+            # "--particle-diameter", str(params.particle_diameter_ang),
             "--relion5-compat",
             "--log", "debug",
         ]

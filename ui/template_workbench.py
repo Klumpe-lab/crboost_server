@@ -96,7 +96,9 @@ class TemplateWorkbench:
         self.pixel_size = 10.0
         self.box_size = 128
         self.auto_box = True
-        self.template_resolution = 20.0
+
+        self.template_resolution = None  
+        self.apply_lowpass = False
 
         self.basic_shape_def = "550:550:550"
         self.pdb_input_val = ""
@@ -355,19 +357,40 @@ class TemplateWorkbench:
 
         with ui.row().classes("w-full gap-2 items-start"):
             ui.number(
-                "Pixel Size (Å)",
-                value=self.pixel_size,
-                step=0.1,
+                "Pixel Size (Å)", value=self.pixel_size, step=0.1,
                 on_change=self._on_pixel_size_changed,
             ).bind_value(self, "pixel_size").props("dense outlined").classes("flex-1")
 
             self.box_input = (
                 ui.number("Box (px)", value=self.box_size, step=32, min=32)
                 .bind_value(self, "box_size")
-                .props("dense outlined")
-                .classes("flex-1")
+                .props("dense outlined").classes("flex-1")
             )
             self.box_input.on_value_change(self._on_box_size_changed)
+
+            self.lp_input = (
+                ui.number("LP (Å)", value=60, step=5)
+                .bind_value(self, "template_resolution")
+                .props("dense outlined")
+                .classes("w-16")
+            )
+
+        with ui.row().classes("w-full items-center gap-2 px-1"):
+            lp_checkbox = (
+                ui.checkbox("Apply lowpass filter", value=self.apply_lowpass)
+                .props("dense")
+                .classes("text-[11px] text-gray-500")
+            )
+            def _on_lp_toggle(e):
+                self.apply_lowpass = e.value
+                if not e.value:
+                    self.template_resolution = None
+                    self.lp_input.disable()
+                else:
+                    self.template_resolution = 60.0  # sensible default
+                    self.lp_input.enable()
+            lp_checkbox.on_value_change(_on_lp_toggle)
+            self.lp_input.disable()  # starts disabled
 
             if self.auto_box:
                 self.box_input.disable()
@@ -681,9 +704,11 @@ class TemplateWorkbench:
     async def _gen_shape(self):
         if self.auto_box:
             self._recalculate_auto_box()
-        self._log(f"Generating ellipsoid: {self.basic_shape_def}...")
+        lp_str = f" lp={self.template_resolution}Å" if self.template_resolution else " no lowpass"
+        self._log(f"Generating ellipsoid: {self.basic_shape_def},{lp_str}")
         res = await self.backend.template_service.generate_basic_shape_async(
-            self.basic_shape_def, self.pixel_size, self.output_folder, int(self.box_size), self.template_resolution
+            self.basic_shape_def, self.pixel_size, self.output_folder, 
+            int(self.box_size), self.template_resolution  # None passes through cleanly
         )
         if res["success"]:
             self._log(f"Generated shape pair: {os.path.basename(res['path_white'])}")

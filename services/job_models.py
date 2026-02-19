@@ -523,20 +523,20 @@ class TsAlignmentParams(AbstractJobParams):
         ),
     ]
 
-    alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
-    rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
-    tomo_dimensions: str = Field(default="4096x4096x2048")
-    sample_thickness_nm: float = Field(default=200.0, ge=50.0, le=1000.0)  # <-- ADD THIS
-    do_at_most: int = Field(default=-1)
-    perdevice: int = Field(default=1, ge=0, le=8)
-    mdoc_pattern: str = Field(default="*.mdoc")
-    gain_operations: Optional[str] = None
-    patch_x: int = Field(default=2, ge=0)
-    patch_y: int = Field(default=2, ge=0)
-    axis_iter: int = Field(default=1, ge=0)
-    axis_batch: int = Field(default=5, ge=1)
-    imod_patch_size: int = Field(default=200)
-    imod_overlap: int = Field(default=50)
+    alignment_method   : AlignmentMethod = AlignmentMethod.ARETOMO
+    rescale_angpixs    : float           = Field(default=12.0, ge=2.0, le=50.0)
+    tomo_dimensions    : str             = Field(default="4096x4096x2048")
+    sample_thickness_nm: float           = Field(default=200.0, ge=50.0, le=1000.0)  # <-- ADD THIS
+    do_at_most         : int             = Field(default=-1)
+    perdevice          : int             = Field(default=1, ge=0, le=8)
+    mdoc_pattern       : str             = Field(default="*.mdoc")
+    gain_operations    : Optional[str]   = None
+    patch_x            : int             = Field(default=0, ge=0)                    # was 2
+    patch_y            : int             = Field(default=0, ge=0)                    # was 2
+    axis_iter          : int             = Field(default=0, ge=0)                    # was 1
+    axis_batch         : int             = Field(default=5, ge=1)
+    imod_patch_size    : int             = Field(default=200)
+    imod_overlap       : int             = Field(default=50)
 
     def is_driver_job(self) -> bool:
         return True
@@ -574,11 +574,12 @@ class TsCtfParams(AbstractJobParams):
         ),
     ]
 
-    window: int = Field(default=512, ge=128, le=2048)
-    range_min_max: str = Field(default="30:6.0")
-    defocus_min_max: str = Field(default="0.5:8")
+    window         : int = Field(default=512, ge=128, le=2048)
+    range_min_max  : str = Field(default="30:6.0")
+    # defocus_hand   : str = Field(default="auto")   # was "set_flip"
     defocus_hand: str = Field(default="set_flip")
-    perdevice: int = Field(default=1, ge=0, le=8)
+    defocus_min_max: str = Field(default="1.1:6")  # was "0.5:8"
+    perdevice      : int = Field(default=1, ge=0, le=8)
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_star = self.paths.get("input_star", "")

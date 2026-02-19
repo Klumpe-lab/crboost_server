@@ -58,7 +58,7 @@ class MicroscopeParams(BaseModel):
     pixel_size_angstrom     : float          = Field(default=1.35, ge=0.5, le=10.0)
     acceleration_voltage_kv : float          = Field(default=300.0)
     spherical_aberration_mm : float          = Field(default=2.7, ge=0.0, le=10.0)
-    amplitude_contrast      : float          = Field(default=0.07, ge=0.0, le=1.0)
+    amplitude_contrast      : float          = Field(default=0.1, ge=0.0, le=1.0)
 
 class AcquisitionParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
