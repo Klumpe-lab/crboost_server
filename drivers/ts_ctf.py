@@ -24,40 +24,50 @@ except ImportError as e:
 
 
 def build_ctf_commands(params: TsCtfParams, paths: dict[str, Path]) -> str:
-    """Build CTF commands using input_processing and output_processing."""
-    
-    settings_file     = shlex.quote(str(paths["warp_tiltseries_settings"]))
-    input_processing  = shlex.quote(str(paths["input_processing"]))          # From alignment job
-    output_processing = shlex.quote(str(paths["output_processing"]))         # To current job
+    # -------------------------------------------------------------------------
+    # DEFOCUS HANDEDNESS: WHY THIS DEFAULTS TO set_flip
+    #
+    # Defocus hand describes the sign of the relationship between tilt angle and
+    # defocus: for the Krios at CBE, set_flip is correct (rlnTomoHand = -1).
+    #
+    # We debugged this against a ground-truth run (klumpe/run12) on identical
+    # data. GT used set_flip and got a decisive check correlation of -0.958.
+    # Our auto-detection gave weakly positive correlations (0.394, then 0.111
+    # after fixing an upstream alignment bug), causing it to incorrectly select
+    # set_noflip, which produced scattered defocus estimates and wrong hand in
+    # the output STAR. The upstream bug was --patches 2x2 --axis_iter 1 in
+    # ts_aretomo causing AreAnglesInverted="True" in the alignment XML, which
+    # corrupted the check. Even after fixing alignment, the check remained
+    # unreliable (weak positive signal), so we hardcode set_flip for now.
+    #
+    # IDEAL BEHAVIOR: defocus_hand should default to "auto" in TsCtfParams,
+    # with the UI exposing set_flip / set_noflip / auto as a dropdown. Auto
+    # works correctly when upstream alignment is clean and the check correlation
+    # is decisive (|r| > ~0.7). The current hardcode should be revisited once
+    # we have multiple tomograms and reliable alignment to validate against.
+    # -------------------------------------------------------------------------
 
-    # All commands use the same processing overrides
+    settings_file = shlex.quote(str(paths["warp_tiltseries_settings"]))
+    input_processing = shlex.quote(str(paths["input_processing"]))
+    output_processing = shlex.quote(str(paths["output_processing"]))
+
     check_hand_command = (
-        f"WarpTools ts_defocus_hand "
-        f"--settings {settings_file} "
-        f"--input_processing {input_processing} "
-        f"--check"
+        f"WarpTools ts_defocus_hand --settings {settings_file} --input_processing {input_processing} --check"
     )
-    
-    if params.defocus_hand == "set_flip":
-        set_hand_command = (
-            f"WarpTools ts_defocus_hand "
-            f"--settings {settings_file} "
-            f"--input_processing {input_processing} "
-            f"--set_flip"
-        )
-    else:
-        set_hand_command = (
-            f"WarpTools ts_defocus_hand "
-            f"--settings {settings_file} "
-            f"--input_processing {input_processing} "
-            f"--set_noflip"
-        )
+
+    set_flip_cmd = (
+        f"WarpTools ts_defocus_hand --settings {settings_file} --input_processing {input_processing} --set_flip"
+    )
+
+    set_noflip_cmd = (
+        f"WarpTools ts_defocus_hand --settings {settings_file} --input_processing {input_processing} --set_noflip"
+    )
 
     ctf_command = (
         f"WarpTools ts_ctf "
         f"--settings {settings_file} "
         f"--input_processing {input_processing} "
-        f"--output_processing {output_processing} "  # CRITICAL: Write to current job
+        f"--output_processing {output_processing} "
         f"--window {params.window} "
         f"--range_low {params.range_min} "
         f"--range_high {params.range_max} "
@@ -69,7 +79,21 @@ def build_ctf_commands(params: TsCtfParams, paths: dict[str, Path]) -> str:
         f"--perdevice {params.perdevice}"
     )
 
-    return " && ".join([check_hand_command, set_hand_command, ctf_command])
+    if params.defocus_hand == "auto":
+        auto_hand_script = (
+            f"hand_output=$({check_hand_command} 2>&1); "
+            f'echo "$hand_output"; '
+            f'if echo "$hand_output" | grep -q "should be set to \'flip\'"; then '
+            f"  {set_flip_cmd}; "
+            f"else "
+            f"  {set_noflip_cmd}; "
+            f"fi"
+        )
+        return f"{auto_hand_script} && {ctf_command}"
+    elif params.defocus_hand == "set_flip":
+        return " && ".join([check_hand_command, set_flip_cmd, ctf_command])
+    else:
+        return " && ".join([check_hand_command, set_noflip_cmd, ctf_command])
 
 
 def main():
@@ -78,15 +102,8 @@ def main():
     print("--- SLURM JOB START ---", flush=True)
 
     try:
-        (
-            project_state,
-            params,  # This is now the state-aware TsCtfParams object
-            local_params_data,
-            job_dir,
-            project_path,
-            job_type,
-        ) = get_driver_context()
-        
+        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context()
+
     except Exception as e:
         job_dir = Path.cwd()
         (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
@@ -105,7 +122,6 @@ def main():
     failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
 
     try:
-        # 1. Load paths and binds
         print(f"[DRIVER] Params loaded for {job_type}", flush=True)
         paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
         additional_binds = local_params_data["additional_binds"]
@@ -113,33 +129,26 @@ def main():
         if not paths["input_star"].exists():
             raise FileNotFoundError(f"Input STAR file not found: {paths['input_star']}")
 
-        # 2. NO MORE COPYING - WarpTools handles this via input_processing/output_processing
         print("[DRIVER] Using WarpTools input_processing/output_processing for data flow", flush=True)
 
-        # 3. Build and execute WarpTools commands
         print("[DRIVER] Building WarpTools commands...", flush=True)
         ctf_command_str = build_ctf_commands(params, paths)
 
-        # 4. Execute command in container
         print("[DRIVER] Executing container command...", flush=True)
         container_service = get_container_service()
         wrapped_command = container_service.wrap_command_for_tool(
-            command=ctf_command_str, 
-            cwd=job_dir, 
-            tool_name=params.get_tool_name(), 
-            additional_binds=additional_binds
+            command=ctf_command_str, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
         )
         run_command(wrapped_command, cwd=job_dir)
         print("[DRIVER] CTF processing completed successfully", flush=True)
 
-        # 5. Metadata processing
         print("[DRIVER] Computation finished. Starting metadata processing.", flush=True)
         metadata_service = MetadataTranslator(StarfileService())
         result = metadata_service.update_ts_ctf_metadata(
             job_dir=job_dir,
             input_star_path=paths["input_star"],
             output_star_path=paths["output_star"],
-            project_root=project_path,  # Pass project root for proper path resolution
+            project_root=project_path,
             warp_folder="warp_tiltseries",
         )
 
@@ -149,7 +158,6 @@ def main():
         print("[DRIVER] Metadata processing successful.", flush=True)
         print("[DRIVER] Job finished successfully.", flush=True)
 
-        # 6. Create success sentinel
         success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
         sys.exit(0)

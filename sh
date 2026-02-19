@@ -1,13 +1,13 @@
-python -c "
-import starfile
-df = starfile.read('projects/zval_fixes/External/job007/tmResults/zval_fixes_Position_1_particles.star')
-print(df['rlnTemplateMatchingScore'].describe())
-"
+
+grep -n "GridMovement\|PlaneNormal\|AreAnglesInverted" \
+  /users/artem.kushner/dev/crboost_server/projects/zval_fixes/External/job003/warp_tiltseries/zval_fixes_Position_1.xml
+
+grep -n "GridMovement\|PlaneNormal\|AreAnglesInverted" \
+  /groups/klumpe/software/Setup/Testing/test1/run12/External/job003/warp_tiltseries/Position_1.xml
 
 
-python -c "
-import mrcfile, numpy as np
-with mrcfile.open('projects/zval_fixes/External/job007/tmResults/zval_fixes_Position_1_scores.mrc') as m:
-    d = m.data
-    print('max:', d.max(), 'mean:', d.mean(), 'std:', d.std())
-"
+grep -n "GridCTF" \
+  /users/artem.kushner/dev/crboost_server/projects/zval_fixes/External/job003/warp_tiltseries/zval_fixes_Position_1.xml | head -5
+
+grep -n "GridCTF" \
+  /groups/klumpe/software/Setup/Testing/test1/run12/External/job003/warp_tiltseries/Position_1.xml | head -5

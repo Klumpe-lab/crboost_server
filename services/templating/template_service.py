@@ -106,7 +106,8 @@ class TemplateService:
     # =========================================================
 
     async def generate_basic_shape_async(
-        self, shape_def: str, pixel_size: float, output_folder: str, min_box_size: int = 96, lowpass_res: float = 45.0
+        self, shape_def: str, pixel_size: float, output_folder: str, 
+        min_box_size: int = 96, lowpass_res: float | None = None  # None = no filter
     ) -> Dict[str, Any]:
         """Generate ellipsoid with numpy and refine dimensions with RELION."""
         try:
