@@ -264,6 +264,7 @@ def render_config_tab(
             "is_orphaned",
             "missing_inputs",
             "JOB_CATEGORY",
+            "workbench",   
         }
         job_specific_fields = set(job_model.model_fields.keys()) - base_fields
 

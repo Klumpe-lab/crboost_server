@@ -153,7 +153,7 @@ def main():
             "--voltage", str(state.microscope.acceleration_voltage_kv),
             "--spherical-aberration", str(state.microscope.spherical_aberration_mm),
             "--amplitude-contrast", str(state.microscope.amplitude_contrast),
-            # "--tomogram-ctf-model", "phase-flip",
+            "--tomogram-ctf-model", "phase-flip",
             "--per-tilt-weighting",
             "--log", "debug",
             "-g",

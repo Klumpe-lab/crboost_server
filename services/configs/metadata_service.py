@@ -73,6 +73,11 @@ class WarpXmlParser:
         tree = ET.parse(xml_path)
         root = tree.getroot()
 
+        # Read handedness flag from root element.
+        # ts_defocus_hand --set_flip writes AreAnglesInverted="True" here.
+        # This maps to rlnTomoHand = -1 in the output STAR.
+        are_angles_inverted = root.get("AreAnglesInverted", "False").strip() == "True"
+
         # Parse GridCTF (Defocus) - this determines how many valid entries we have
         grid_ctf = root.find("GridCTF")
         defocus_values = []
@@ -103,13 +108,12 @@ class WarpXmlParser:
         movie_paths_all = []
         for path in root.find("MoviePath").text.split("\n"):
             if path.strip():  # Skip empty lines
-                # Get basename and remove extensions
                 movie_name = os.path.basename(path).replace("_EER.eer", "")
                 movie_name = movie_name.replace(".tif", "")
                 movie_name = movie_name.replace(".eer", "")
                 movie_paths_all.append(movie_name)
 
-        # CRITICAL: Only use the first num_entries movies (grids might be shorter if some failed)
+        # CRITICAL: Only use the first num_entries movies
         movie_paths = movie_paths_all[:num_entries]
 
         # Verify all arrays have the same length
@@ -119,7 +123,6 @@ class WarpXmlParser:
                 f"  defocus: {len(defocus_values)}, delta: {len(delta_values)}, "
                 f"angle: {len(angle_values)}, movies: {len(movie_paths)}"
             )
-            # Truncate all to the shortest length
             min_len = min(len(defocus_values), len(delta_values), len(angle_values), len(movie_paths))
             defocus_values = defocus_values[:min_len]
             delta_values = delta_values[:min_len]
@@ -127,7 +130,6 @@ class WarpXmlParser:
             movie_paths = movie_paths[:min_len]
             z_values = z_values[:min_len]
 
-        # Create DataFrame
         df = pd.DataFrame(
             {
                 "Z": z_values,
@@ -135,6 +137,7 @@ class WarpXmlParser:
                 "defocus_delta": delta_values,
                 "defocus_angle": angle_values,
                 "cryoBoostKey": movie_paths,
+                "are_angles_inverted": are_angles_inverted,
             }
         )
 
@@ -287,13 +290,8 @@ class MetadataTranslator:
                 ts_data = self.starfile_service.read(ts_path)
                 ts_df = next(iter(ts_data.values()))
 
-                # Create a lookup key from the movie name
                 ts_df["cryoBoostKey"] = ts_df["rlnMicrographMovieName"].apply(lambda x: Path(x).stem)
-
-                # Repeat the tilt_series row for each tilt
                 ts_row_repeated = pd.concat([pd.DataFrame(ts_row).T] * len(ts_df), ignore_index=True)
-
-                # Merge horizontally
                 merged = pd.concat([ts_row_repeated.reset_index(drop=True), ts_df.reset_index(drop=True)], axis=1)
                 all_tilts.append(merged)
 
@@ -587,7 +585,6 @@ class MetadataTranslator:
             clean_key = key.replace("_EER.eer.mrc", "").replace("_EER.mrc", "").replace(".mrc", "")
             clean_key = clean_key.replace("_EER", "").replace(".eer", "")
 
-            # Also try matching by the base filename without extensions
             base_key = Path(key).stem
             base_key = base_key.replace("_EER", "")
 
@@ -596,7 +593,6 @@ class MetadataTranslator:
             if matches.empty:
                 matches = warp_df[warp_df["cryoBoostKey"] == base_key]
             if matches.empty:
-                # Try partial matching for cases like "001[10.00]" vs "001_10.00"
                 clean_key_alt = clean_key.replace("[", "_").replace("]", "")
                 matches = warp_df[warp_df["cryoBoostKey"].str.contains(clean_key_alt, na=False)]
 
@@ -612,11 +608,16 @@ class MetadataTranslator:
             defocus_angle = float(warp_row["defocus_angle"])
             astigmatism = defocus_u - defocus_v
 
-            # ONLY update CTF parameters (like the old code)
             updated_df.at[index, "rlnDefocusU"] = defocus_u
             updated_df.at[index, "rlnDefocusV"] = defocus_v
             updated_df.at[index, "rlnDefocusAngle"] = defocus_angle
             updated_df.at[index, "rlnCtfAstigmatism"] = astigmatism
+
+            # Update handedness from AreAnglesInverted.
+            # AreAnglesInverted="True"  -> rlnTomoHand = -1  (flip)
+            # AreAnglesInverted="False" -> rlnTomoHand =  1  (no flip)
+            if "are_angles_inverted" in warp_row.index:
+                updated_df.at[index, "rlnTomoHand"] = -1 if bool(warp_row["are_angles_inverted"]) else 1
 
         return updated_df
 
