@@ -736,6 +736,14 @@ class DenoisePredictParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"train": "denoisetrain"}
 
+class TemplateWorkbenchState(BaseModel):
+    pixel_size: float = 0.0
+    box_size: int = 96
+    auto_box: bool = True
+    apply_lowpass: bool = False
+    template_resolution: Optional[float] = None
+    basic_shape_def: str = "550:550:550"
+    auto_infer_seed: bool = True   # <-- new
 
 class TemplateMatchPytomParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -755,6 +763,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
             OutputSlot(key="output_tomograms", produces=JobFileType.TOMOGRAMS_STAR, path_template="tomograms.star"),
     ]
 
+    workbench: TemplateWorkbenchState = Field(default_factory=TemplateWorkbenchState)
     # Inputs (Strings here, resolved to Paths in resolve_paths)
     template_path: str = Field(default="")
     mask_path    : str = Field(default="")

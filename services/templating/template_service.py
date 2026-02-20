@@ -106,8 +106,8 @@ class TemplateService:
     # =========================================================
 
     async def generate_basic_shape_async(
-        self, shape_def: str, pixel_size: float, output_folder: str, 
-        min_box_size: int = 96, lowpass_res: float | None = None  # None = no filter
+        self, shape_def: str, pixel_size: float, output_folder: str,
+        min_box_size: int = 96, lowpass_res: float | None = None
     ) -> Dict[str, Any]:
         """Generate ellipsoid with numpy and refine dimensions with RELION."""
         try:
@@ -134,13 +134,18 @@ class TemplateService:
                 mrc.set_data(mask_data)
                 mrc.voxel_size = pixel_size
 
-            # Now create the lowpassed white/black pair from the seed
+            # For hard-edge seeds, lowpass is not optional. Feeding a binary mask
+            # to relion_image_handler without a lowpass produces Gibbs ringing that
+            # floods the entire box. Old CryoBoost hardcoded 45A unconditionally.
+            # The UI can raise this, but we never go below 45A for seed-based shapes.
+            effective_lowpass = lowpass_res if (lowpass_res is not None and lowpass_res > 0) else 45.0
+
             res = await self.process_volume_async(
                 seed_path,
                 output_folder,
                 pixel_size,
                 box_size,
-                resolution=lowpass_res,
+                resolution=effective_lowpass,
                 tag=name_core,
             )
 
