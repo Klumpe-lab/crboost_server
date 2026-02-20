@@ -24,49 +24,48 @@ except ImportError as e:
 
 
 def build_ctf_commands(params: TsCtfParams, paths: dict[str, Path]) -> str:
-    # -------------------------------------------------------------------------
-    # DEFOCUS HANDEDNESS: WHY THIS DEFAULTS TO set_flip
-    #
-    # Defocus hand describes the sign of the relationship between tilt angle and
-    # defocus: for the Krios at CBE, set_flip is correct (rlnTomoHand = -1).
-    #
-    # We debugged this against a ground-truth run (klumpe/run12) on identical
-    # data. GT used set_flip and got a decisive check correlation of -0.958.
-    # Our auto-detection gave weakly positive correlations (0.394, then 0.111
-    # after fixing an upstream alignment bug), causing it to incorrectly select
-    # set_noflip, which produced scattered defocus estimates and wrong hand in
-    # the output STAR. The upstream bug was --patches 2x2 --axis_iter 1 in
-    # ts_aretomo causing AreAnglesInverted="True" in the alignment XML, which
-    # corrupted the check. Even after fixing alignment, the check remained
-    # unreliable (weak positive signal), so we hardcode set_flip for now.
-    #
-    # IDEAL BEHAVIOR: defocus_hand should default to "auto" in TsCtfParams,
-    # with the UI exposing set_flip / set_noflip / auto as a dropdown. Auto
-    # works correctly when upstream alignment is clean and the check correlation
-    # is decisive (|r| > ~0.7). The current hardcode should be revisited once
-    # we have multiple tomograms and reliable alignment to validate against.
-    # -------------------------------------------------------------------------
-
     settings_file = shlex.quote(str(paths["warp_tiltseries_settings"]))
     input_processing = shlex.quote(str(paths["input_processing"]))
     output_processing = shlex.quote(str(paths["output_processing"]))
 
+    # Step 1: copy job003 XMLs into job004 so the flip is written to the right place
+    # and ts_ctf reads the already-flipped XMLs from job004.
+    #
+    # Sequence:
+    #   copy job003/*.xml → job004/
+    #   ts_defocus_hand --output_processing job004   (no --input_processing: reads from
+    #                                                 settings ProcessingFolder=job003,
+    #                                                 writes AreAnglesInverted to job004)
+    #   ts_ctf --input_processing job004             (reads flipped XMLs from job004,
+    #          --output_processing job004             writes CTF results to job004)
+    #
+    # This matches the GT workflow. Without the copy, ts_defocus_hand has nothing to
+    # write a flip into at job004, and ts_ctf reads unflipped XMLs from job003.
+
+    copy_step = f"mkdir -p {output_processing} && cp {input_processing}/*.xml {output_processing}/"
+
     check_hand_command = (
-        f"WarpTools ts_defocus_hand --settings {settings_file} --input_processing {input_processing} --check"
+        f"WarpTools ts_defocus_hand "
+        f"--settings {settings_file} "
+        f"--output_processing {output_processing} "
+        f"--check"
     )
-
     set_flip_cmd = (
-        f"WarpTools ts_defocus_hand --settings {settings_file} --input_processing {input_processing} --set_flip"
+        f"WarpTools ts_defocus_hand "
+        f"--settings {settings_file} "
+        f"--output_processing {output_processing} "
+        f"--set_flip"
     )
-
     set_noflip_cmd = (
-        f"WarpTools ts_defocus_hand --settings {settings_file} --input_processing {input_processing} --set_noflip"
+        f"WarpTools ts_defocus_hand "
+        f"--settings {settings_file} "
+        f"--output_processing {output_processing} "
+        f"--set_noflip"
     )
-
     ctf_command = (
         f"WarpTools ts_ctf "
         f"--settings {settings_file} "
-        f"--input_processing {input_processing} "
+        f"--input_processing {output_processing} "
         f"--output_processing {output_processing} "
         f"--window {params.window} "
         f"--range_low {params.range_min} "
@@ -80,20 +79,21 @@ def build_ctf_commands(params: TsCtfParams, paths: dict[str, Path]) -> str:
     )
 
     if params.defocus_hand == "auto":
-        auto_hand_script = (
+        hand_step = (
             f"hand_output=$({check_hand_command} 2>&1); "
             f'echo "$hand_output"; '
-            f'if echo "$hand_output" | grep -q "should be set to \'flip\'"; then '
+            f"if echo \"$hand_output\" | grep -q \"should be set to 'flip'\"; then "
             f"  {set_flip_cmd}; "
             f"else "
             f"  {set_noflip_cmd}; "
             f"fi"
         )
-        return f"{auto_hand_script} && {ctf_command}"
     elif params.defocus_hand == "set_flip":
-        return " && ".join([check_hand_command, set_flip_cmd, ctf_command])
+        hand_step = " && ".join([check_hand_command, set_flip_cmd])
     else:
-        return " && ".join([check_hand_command, set_noflip_cmd, ctf_command])
+        hand_step = " && ".join([check_hand_command, set_noflip_cmd])
+
+    return " && ".join([copy_step, hand_step, ctf_command])
 
 
 def main():
