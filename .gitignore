@@ -20,6 +20,8 @@ PLAN_*.md
 **/PLAN_*.md
 REPORT_*.md
 **/REPORT_*.md
+ISSUE_*.md
+**/ISSUE_*.md
 **/notes
 
 **/*.cif
