@@ -577,9 +577,9 @@ class TsCtfParams(AbstractJobParams):
     window         : int = Field(default=512, ge=128, le=2048)
     range_min_max  : str = Field(default="30:6.0")
     # defocus_hand   : str = Field(default="auto")   # was "set_flip"
-    defocus_hand: str = Field(default="set_flip")
-    defocus_min_max: str = Field(default="1.1:6")  # was "0.5:8"
-    perdevice      : int = Field(default=1, ge=0, le=8)
+    defocus_hand   : str  = Field(default="set_flip")
+    defocus_min_max: str  = Field(default="1.1:8")        # was "0.5:8"
+    perdevice       : int = Field(default=1, ge=0, le=8)
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_star = self.paths.get("input_star", "")

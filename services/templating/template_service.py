@@ -50,11 +50,16 @@ class TemplateService:
         target_box: int,
         resolution: float = None,
         tag: str = "",
+        normalize: bool = False,
     ) -> Dict[str, Any]:
         """
         Processes volume using relion_image_handler.
         Replaces legacy scipy zoom with Fourier-space resampling.
         Creates paired white/black contrast templates.
+        If normalize=True, zero-means and unit-variance normalizes the white
+        template after relion processing, then derives black by negation.
+        This matches the behaviour of the old gaussian_lowpass_mrc which the
+        GT pipeline depended on.
         """
         try:
             if not os.path.exists(input_path):
@@ -62,7 +67,6 @@ class TemplateService:
 
             os.makedirs(output_folder, exist_ok=True)
             base = tag if tag else Path(input_path).stem
-            # Sanitize name to prevent relion command issues
             base = base.replace("_white", "").replace("_black", "")
 
             name_core = f"{base}_apix{target_apix:.2f}_box{target_box}"
@@ -72,8 +76,6 @@ class TemplateService:
             path_w = os.path.join(output_folder, f"{name_core}_white.mrc")
             path_b = os.path.join(output_folder, f"{name_core}_black.mrc")
 
-            # 1. Generate White (Positive) Template
-            # We use --rescale_angpix for Fourier downsampling
             cmd_w = (
                 f"relion_image_handler --i {input_path} --o {path_w} "
                 f"--rescale_angpix {target_apix} --new_box {target_box} "
@@ -88,28 +90,40 @@ class TemplateService:
             if not res_w["success"]:
                 return res_w
 
-            # 2. Generate Black (Inverted) Template
-            # Uses the newly created white template as input to save computation
-            cmd_b = f"relion_image_handler --i {path_w} --o {path_b} --multiply_constant -1"
-            res_b = await self.backend.run_shell_command(cmd_b, tool_name="relion", additional_binds=[output_folder])
-
-            if not res_b["success"]:
-                return res_b
+            if normalize:
+                with mrcfile.open(path_w, permissive=True) as mrc:
+                    vol = mrc.data.copy()
+                    vsize = float(mrc.voxel_size.x)
+                vol = vol - np.mean(vol)
+                vol = vol / np.std(vol)
+                with mrcfile.new(path_w, overwrite=True) as mrc:
+                    mrc.set_data(vol.astype(np.float32))
+                    mrc.voxel_size = vsize
+                with mrcfile.new(path_b, overwrite=True) as mrc:
+                    mrc.set_data((-vol).astype(np.float32))
+                    mrc.voxel_size = vsize
+            else:
+                cmd_b = f"relion_image_handler --i {path_w} --o {path_b} --multiply_constant -1"
+                res_b = await self.backend.run_shell_command(
+                    cmd_b, tool_name="relion", additional_binds=[output_folder]
+                )
+                if not res_b["success"]:
+                    return res_b
 
             return {"success": True, "path_white": path_w, "path_black": path_b}
 
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    # =========================================================
-    # SHAPE GENERATION (REFACTORED)
-    # =========================================================
 
     async def generate_basic_shape_async(
         self, shape_def: str, pixel_size: float, output_folder: str,
         min_box_size: int = 96, lowpass_res: float | None = None
     ) -> Dict[str, Any]:
-        """Generate ellipsoid with numpy and refine dimensions with RELION."""
+        """Generate ellipsoid with numpy and refine with RELION.
+        The resulting white/black templates are zero-mean unit-variance,
+        matching the old gaussian_lowpass_mrc normalisation behaviour.
+        """
         try:
             dims_ang = np.array([float(x) for x in shape_def.split(":")])
             max_dim_ang = float(np.max(dims_ang))
@@ -121,7 +135,6 @@ class TemplateService:
 
             name_core = f"ellipsoid_{shape_def.replace(':', '_')}"
 
-            # Save the raw binary ellipsoid as a persistent "seed" file
             seed_name = f"{name_core}_apix{pixel_size:.2f}_seed.mrc"
             seed_path = os.path.join(output_folder, seed_name)
 
@@ -134,10 +147,6 @@ class TemplateService:
                 mrc.set_data(mask_data)
                 mrc.voxel_size = pixel_size
 
-            # For hard-edge seeds, lowpass is not optional. Feeding a binary mask
-            # to relion_image_handler without a lowpass produces Gibbs ringing that
-            # floods the entire box. Old CryoBoost hardcoded 45A unconditionally.
-            # The UI can raise this, but we never go below 45A for seed-based shapes.
             effective_lowpass = lowpass_res if (lowpass_res is not None and lowpass_res > 0) else 45.0
 
             res = await self.process_volume_async(
@@ -147,6 +156,7 @@ class TemplateService:
                 box_size,
                 resolution=effective_lowpass,
                 tag=name_core,
+                normalize=True,
             )
 
             if not res["success"]:
