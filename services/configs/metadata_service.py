@@ -497,13 +497,9 @@ class MetadataTranslator:
                 aln_data = aln_data[aln_data[:, 0].argsort()]
                 keys_rel = [Path(p).name for p in ts_tilts_df["rlnMicrographMovieName"]]
 
-                # Match tomostar using the same base-name logic
-                tomostar_dir = project_root / "tomostar"
-                # The tomostar file name usually matches the folder name Warp created
+                tomostar_dir = job_dir / "tomostar"
                 tomostar_path = tomostar_dir / f"{actual_ts_id}.tomostar"
-
                 if not tomostar_path.exists():
-                    # Fallback: try the base id
                     tomostar_path = tomostar_dir / f"{ts_id_base}.tomostar"
 
                 if not tomostar_path.exists():

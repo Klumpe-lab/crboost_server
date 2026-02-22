@@ -524,24 +524,26 @@ class PathResolutionService:
 
 
 def get_context_paths(job_type: JobType, job_model: "AbstractJobParams", job_dir: Path) -> Dict[str, str]:
-    """
-    Returns context paths - unchanged from before.
-    """
     project_root = job_model.project_root
-
     paths: Dict[str, str] = {"job_dir": str(job_dir), "project_root": str(project_root)}
-
-    if job_type in [JobType.IMPORT_MOVIES, JobType.FS_MOTION_CTF]:
-        paths["frames_dir"] = str(project_root / "frames")
 
     if job_type in [JobType.IMPORT_MOVIES, JobType.FS_MOTION_CTF, JobType.TS_ALIGNMENT]:
         paths["mdoc_dir"] = str(project_root / "mdoc")
 
-    if job_type in [JobType.FS_MOTION_CTF, JobType.TS_ALIGNMENT]:
-        paths["warp_frameseries_settings"] = str(project_root / "warp_frameseries.settings")
+    if job_type in [JobType.IMPORT_MOVIES, JobType.FS_MOTION_CTF]:
+        paths["frames_dir"] = str(project_root / "frames")
 
-    if job_type in [JobType.FS_MOTION_CTF, JobType.TS_ALIGNMENT, JobType.TS_CTF, JobType.TS_RECONSTRUCT]:
-        paths["warp_tiltseries_settings"] = str(project_root / "warp_tiltseries.settings")
+    # if job_type in [JobType.FS_MOTION_CTF, JobType.TS_ALIGNMENT]:
+    #     paths["warp_frameseries_settings"] = str(project_root / "warp_frameseries.settings")
+
+    # REMOVED: warp_tiltseries_settings for TS_CTF and TS_RECONSTRUCT.
+    # It now flows as an input slot from aligntiltsWarp.
+    # TS_ALIGNMENT still needs it injected as a context path because it's
+    # the job that *creates* the settings file - the slot resolver won't
+    # find it upstream yet.
+    # NOTE: TS_ALIGNMENT does NOT need it in context either - it writes
+    # it as output, so it's in OUTPUT_SCHEMA and the orchestrator stores
+    # the path. We just need tomostar_dir and mdoc_dir for the driver.
 
     if job_type in [
         JobType.IMPORT_MOVIES,

@@ -14,9 +14,11 @@ class JobFileType(str, Enum):
     # Import / raw
     TILT_SERIES_STAR = "tilt_series_star"                 # Import/jobXXX/tilt_series.star
 
-                                                     # Warp frameseries
-    FS_MOTION_CTF_STAR   = "fs_motion_and_ctf_star"  # External/jobXXX/fs_motion_and_ctf.star
-    WARP_FRAMESERIES_DIR = "warp_frameseries_dir"    # External/jobXXX/warp_frameseries/
+    WARP_FRAMESERIES_SETTINGS = "warp_frameseries_settings"
+                                                           # Warp frameseries
+    FS_MOTION_CTF_STAR       = "fs_motion_and_ctf_star"    # External/jobXXX/fs_motion_and_ctf.star
+    WARP_FRAMESERIES_DIR     = "warp_frameseries_dir"      # External/jobXXX/warp_frameseries/
+    WARP_TILTSERIES_SETTINGS = "warp_tiltseries_settings"  # External/jobXXX/warp_tiltseries.settings
 
                                                            # Warp tiltseries
     ALIGNED_TILT_SERIES_STAR = "aligned_tilt_series_star"  # External/jobXXX/aligned_tilt_series.star
