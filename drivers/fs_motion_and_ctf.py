@@ -26,116 +26,70 @@ except ImportError as e:
     sys.exit(1)
 
 
-def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path]) -> str:
+def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path], job_dir: Path) -> str:
     """
-    Builds the complete multi-step WarpTools command string using master settings
-    and proper input_processing/output_processing arguments.
+    All paths relative to job_dir. Settings file lands at job_dir/warp_frameseries.settings,
+    processing folder is job_dir/warp_frameseries/. No --output_processing.
+    Mirrors GT layout exactly.
     """
+    frames_rel = shlex.quote(str(os.path.relpath(str(paths["frames_dir"]), str(job_dir))))
 
-    # Get absolute paths
-    frames_dir_abs = shlex.quote(str(paths["frames_dir"]))
-    settings_file_abs = shlex.quote(str(paths["warp_frameseries_settings"]))
-    output_processing_abs = shlex.quote(str(paths["output_processing"]))
-
-    # --- Gain reference handling ---
     gain_path_str = ""
     if params.gain_path and params.gain_path != "None":
         gain_path_str = shlex.quote(params.gain_path)
-
     gain_ops_str = params.gain_operations if params.gain_operations else ""
 
-    # --- EER groups handling ---
-    eer_groups_val = str(params.eer_ngroups)
-
-    # Detect frame extension
-    frame_files = list(paths["frames_dir"].glob(f"*.eer"))
-    if not frame_files:
-        frame_files = list(paths["frames_dir"].glob(f"*.mrc"))
-
-    frame_ext = ".eer"  # Default
-    if frame_files:
-        frame_ext = frame_files[0].suffix
-
-    if frame_ext.lower() == ".eer":
-        eer_groups_val = f"-{params.eer_ngroups}"
+    frame_files = list(paths["frames_dir"].glob("*.eer"))
+    frame_ext = ".eer" if frame_files else ".mrc"
+    eer_groups_val = f"-{params.eer_ngroups}" if frame_ext == ".eer" else str(params.eer_ngroups)
+    if frame_ext == ".eer":
         print(f"[DRIVER] Detected EER files, using eer_ngroups: {eer_groups_val}", flush=True)
 
-    # === STEP 1: Create master settings file (only if it doesn't exist) ===
     create_settings_parts = [
         "WarpTools create_settings",
-        f"--folder_data {frames_dir_abs}",
-        f"--extension '*{frame_ext}'",
-        f"--folder_processing {output_processing_abs}",  # Default location, will be overridden
-        f"--output {settings_file_abs}",
-        "--angpix",
-        str(params.pixel_size),
-        "--eer_ngroups",
-        eer_groups_val,
+        "--folder_data", frames_rel,
+        "--extension", f"'*{frame_ext}'",
+        "--folder_processing", "warp_frameseries",
+        "--output", "warp_frameseries.settings",
+        "--angpix", str(params.pixel_size),
+        "--eer_ngroups", eer_groups_val,
     ]
-
     if gain_path_str:
         create_settings_parts.extend(["--gain_reference", gain_path_str])
         if gain_ops_str:
             create_settings_parts.extend(["--gain_operations", gain_ops_str])
 
-    # === STEP 2: Main motion correction and CTF estimation ===
     run_main_parts = [
         "WarpTools fs_motion_and_ctf",
-        f"--settings {settings_file_abs}",
-        f"--output_processing {output_processing_abs}",  # CRITICAL: Override output location to job directory
-        "--m_grid",
-        params.m_grid,
-        "--m_range_min",
-        str(params.m_range_min),
-        "--m_range_max",
-        str(params.m_range_max),
-        "--m_bfac",
-        str(params.m_bfac),
-        "--c_grid",
-        params.c_grid,
-        "--c_window",
-        str(params.c_window),
-        "--c_range_min",
-        str(params.c_range_min),
-        "--c_range_max",
-        str(params.c_range_max),
-        "--c_defocus_min",
-        str(params.defocus_min_microns),
-        "--c_defocus_max",
-        str(params.defocus_max_microns),
-        "--c_voltage",
-        str(round(float(params.voltage))),
-        "--c_cs",
-        str(params.spherical_aberration),
-        "--c_amplitude",
-        str(params.amplitude_contrast),
-        "--perdevice",
-        str(params.perdevice),
+        "--settings", "warp_frameseries.settings",
+        "--m_grid", params.m_grid,
+        "--m_range_min", str(params.m_range_min),
+        "--m_range_max", str(params.m_range_max),
+        "--m_bfac", str(params.m_bfac),
+        "--c_grid", params.c_grid,
+        "--c_window", str(params.c_window),
+        "--c_range_min", str(params.c_range_min),
+        "--c_range_max", str(params.c_range_max),
+        "--c_defocus_min", str(params.defocus_min_microns),
+        "--c_defocus_max", str(params.defocus_max_microns),
+        "--c_voltage", str(round(float(params.voltage))),
+        "--c_cs", str(params.spherical_aberration),
+        "--c_amplitude", str(params.amplitude_contrast),
+        "--perdevice", str(params.perdevice),
         "--out_averages",
-        "--out_skip_first",
-        str(params.out_skip_first),
-        "--out_skip_last",
-        str(params.out_skip_last),
+        "--out_skip_first", str(params.out_skip_first),
+        "--out_skip_last", str(params.out_skip_last),
     ]
-
-    # Add optional flags
     if params.out_average_halves:
         run_main_parts.append("--out_average_halves")
-
     if params.c_use_sum:
         run_main_parts.append("--c_use_sum")
-
     if params.do_at_most > 0:
         run_main_parts.extend(["--do_at_most", str(params.do_at_most)])
 
-    # Combine into final command: only create settings if they don't exist, then run main processing
-    create_settings_cmd = " ".join(create_settings_parts)
-    run_main_cmd = " ".join(run_main_parts)
-    
-    final_command = f"test -f {settings_file_abs} || ({create_settings_cmd}) && {run_main_cmd}"
-
-    print(f"[DRIVER] Built complete command: {final_command}", flush=True)
-    return final_command
+    create_cmd = " ".join(create_settings_parts)
+    run_cmd = " ".join(run_main_parts)
+    return f"test -f warp_frameseries.settings || ({create_cmd}) && {run_cmd}"
 
 
 def main():
@@ -172,7 +126,7 @@ def main():
         print(f"[DRIVER] Output processing directory: {output_processing_dir}", flush=True)
 
         # 3. Build and run the WarpTools command
-        warp_command = build_warp_commands(params, paths)
+        warp_command = build_warp_commands(params, paths, job_dir)
         print(f"[DRIVER] Built inner command: {warp_command[:500]}...", flush=True)
 
         container_svc     = get_container_service()

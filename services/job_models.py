@@ -435,28 +435,24 @@ class FsMotionCtfParams(AbstractJobParams):
     ]
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_star", produces=JobFileType.FS_MOTION_CTF_STAR, path_template="fs_motion_and_ctf.star"),
-        OutputSlot(
-            key="output_processing",
-            produces=JobFileType.WARP_FRAMESERIES_DIR,
-            path_template="warp_frameseries/",
-            is_dir=True,
-        ),
+        OutputSlot(key="output_processing", produces=JobFileType.WARP_FRAMESERIES_DIR, path_template="warp_frameseries/", is_dir=True),
+        OutputSlot(key="warp_frameseries_settings", produces=JobFileType.WARP_FRAMESERIES_SETTINGS, path_template="warp_frameseries.settings"),
     ]
 
-    m_range_min_max: str = "500:10"
-    m_bfac: int = Field(default=-500)
-    m_grid: str = "1x1x3"
-    c_range_min_max: str = "30:6.0"
-    c_defocus_min_max: str = "1.1:8"
-    c_grid: str = "2x2x1"
-    c_window: int = Field(default=512, ge=128)
-    c_use_sum: bool = False
-    out_average_halves: bool = True
-    out_skip_first: int = 0
-    out_skip_last: int = 0
-    perdevice: int = Field(default=1, ge=0, le=8)
-    do_at_most: int = Field(default=-1)
-    gain_operations: Optional[str] = None
+    m_range_min_max   : str           = "500:10"
+    m_bfac            : int           = Field(default=-500)
+    m_grid            : str           = "1x1x3"
+    c_range_min_max   : str           = "30:6.0"
+    c_defocus_min_max : str           = "1.1:8"
+    c_grid            : str           = "2x2x1"                       # was "2x2x1" - 2x2 goes unstable on high-tilt low-signal frames
+    c_use_sum         : bool          = True                          # fit CTF on sum rather than motion-corrected average
+    c_window          : int           = Field(default=512, ge=128)
+    out_average_halves: bool          = True
+    out_skip_first    : int           = 0
+    out_skip_last     : int           = 0
+    perdevice         : int           = Field(default=1, ge=0, le=8)
+    do_at_most        : int           = Field(default=-1)
+    gain_operations   : Optional[str] = None
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
@@ -521,6 +517,12 @@ class TsAlignmentParams(AbstractJobParams):
             path_template="warp_tiltseries/",
             is_dir=True,
         ),
+        # NEW: settings file now lives in the job directory
+        OutputSlot(
+            key="warp_tiltseries_settings",
+            produces=JobFileType.WARP_TILTSERIES_SETTINGS,
+            path_template="warp_tiltseries.settings",
+        ),
     ]
 
     alignment_method   : AlignmentMethod = AlignmentMethod.ARETOMO
@@ -561,6 +563,8 @@ class TsCtfParams(AbstractJobParams):
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.ALIGNED_TILT_SERIES_STAR], preferred_source="aligntiltsWarp"),
         InputSlot(key="input_processing", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="aligntiltsWarp"),
+        # NEW
+        InputSlot(key="warp_tiltseries_settings", accepts=[JobFileType.WARP_TILTSERIES_SETTINGS], preferred_source="aligntiltsWarp"),
     ]
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
         OutputSlot(
@@ -619,6 +623,7 @@ class TsReconstructParams(AbstractJobParams):
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
         InputSlot(key="input_processing", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="tsCtf"),
+        InputSlot(key="warp_tiltseries_settings", accepts=[JobFileType.WARP_TILTSERIES_SETTINGS], preferred_source="aligntiltsWarp"),
     ]
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
         OutputSlot(key="output_star", produces=JobFileType.TOMOGRAMS_STAR, path_template="tomograms.star"),

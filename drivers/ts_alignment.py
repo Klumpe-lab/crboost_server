@@ -21,77 +21,54 @@ from drivers.driver_base import get_driver_context, run_command
 
 def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], num_tomograms: int, job_dir: Path) -> str:
     """
-    Builds the multi-step WarpTools alignment command string.
-    
-    FIX applied: 
-    1. Outputs (--output) use RELATIVE paths to prevent Warp from nesting paths incorrectly.
-    2. Inputs/References (--folder_data) use ABSOLUTE paths so the generated XML is valid globally.
+    All paths relative to job_dir. This ensures WarpTools stores MoviePath
+    entries in the tomostar relative to the tomostar file's own location,
+    which then copies correctly into the tilt series XML.
+
+    Layout inside job_dir after this runs:
+        tomostar/               <- ts_import output
+        warp_tiltseries/        <- ts_aretomo output
+        warp_tiltseries.settings
     """
+
+    mdoc_dir = shlex.quote(str(paths["mdoc_dir"]))
+
+    # frameseries dir relative to job_dir - this is the key fix.
+    # WarpTools stores _wrpMovieName in the tomostar relative to the tomostar
+    # file's location. Tomostar lands at job_dir/tomostar/, and frameseries
+    # is one job back, so the stored path becomes ../../job002/warp_frameseries/
+    # which resolves correctly when copied into the tilt series XML.
+    frameseries_rel = shlex.quote(os.path.relpath(str(paths["input_processing"]), str(job_dir)))
 
     gain_path_str = ""
     if params.gain_path and params.gain_path != "None":
         gain_path_str = shlex.quote(params.gain_path)
-
     gain_ops_str = params.gain_operations if params.gain_operations else ""
 
-    # --- HYBRID PATH CALCULATION ---
-    try:
-        # Settings Output: Must be RELATIVE (e.g., ../../warp_tiltseries.settings)
-        settings_abs = paths["warp_tiltseries_settings"]
-        settings_rel = os.path.relpath(settings_abs, job_dir)
-        settings_file_out = shlex.quote(settings_rel)
-
-        # Tomostar Output: Must be RELATIVE (e.g., ../../tomostar)
-        tomostar_abs = paths["tomostar_dir"]
-        tomostar_rel = os.path.relpath(tomostar_abs, job_dir)
-        tomostar_dir_out = shlex.quote(tomostar_rel)
-        
-        # Tomostar Reference: Must be ABSOLUTE for the XML (e.g., /users/.../tomostar)
-        # This ensures that when ts_aretomo reads the settings file from ProjectRoot, 
-        # it finds the folder correctly.
-        tomostar_dir_ref = shlex.quote(str(tomostar_abs))
-        
-    except ValueError:
-        # Fallback for Windows/Edge cases
-        settings_file_out = shlex.quote(str(paths["warp_tiltseries_settings"]))
-        tomostar_dir_out = shlex.quote(str(paths["tomostar_dir"]))
-        tomostar_dir_ref = tomostar_dir_out
-
-    # Input paths (mdoc, processing) are inputs, so Absolute is safe and preferred
-    mdoc_dir = shlex.quote(str(paths["mdoc_dir"]))
-    
-    # Handle optional paths
-    input_processing_raw = paths.get("input_processing")
-    input_processing = shlex.quote(str(input_processing_raw)) if input_processing_raw and str(input_processing_raw) != "None" else ""
-    output_processing = shlex.quote(str(paths["output_processing"])) 
-
     # === Step 1: ts_import ===
-    # OUTPUT: Use RELATIVE (tomostar_dir_out) to avoid path nesting bug
     cmd_parts_import = [
         "WarpTools ts_import",
         "--mdocs", mdoc_dir,
         "--pattern", shlex.quote(params.mdoc_pattern),
-        "--frameseries", input_processing if input_processing else shlex.quote(str(paths.get("frameseries_dir", ""))),
-        "--output", tomostar_dir_out, 
+        "--frameseries", frameseries_rel,
+        "--output", "tomostar",
         "--tilt_exposure", str(params.dose_per_tilt),
         "--override_axis", str(params.tilt_axis_angle),
     ]
-
     if not params.invert_tilt_angles:
         cmd_parts_import.append("--dont_invert")
-
     if params.do_at_most > 0:
         cmd_parts_import.extend(["--do_at_most", str(params.do_at_most)])
 
-    # === Step 2: Create master settings ===
-    # OUTPUT: Use RELATIVE (settings_file_out) to avoid path nesting bug
-    # INPUT:  Use ABSOLUTE (tomostar_dir_ref) so the XML contains the full path
+    # === Step 2: create_settings ===
+    # All relative to job_dir. WarpTools resolves DataFolder relative to the
+    # settings file location, so DataFolder="tomostar" -> job_dir/tomostar/
     cmd_parts_settings = [
         "WarpTools create_settings",
-        "--folder_data", tomostar_dir_ref,
+        "--folder_data", "tomostar",
         "--extension '*.tomostar'",
-        "--folder_processing", output_processing, 
-        "--output", settings_file_out,
+        "--folder_processing", "warp_tiltseries",
+        "--output", "warp_tiltseries.settings",
         "--angpix", str(params.pixel_size),
         "--exposure", str(params.dose_per_tilt),
         "--tomo_dimensions", params.tomo_dimensions,
@@ -101,15 +78,14 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
         if gain_ops_str:
             cmd_parts_settings.extend(["--gain_operations", gain_ops_str])
 
-    # === Step 3: Alignment ===
-    # We reference the settings file via the relative path, which works fine 
-    # for locating the file itself.
+    # === Step 3: alignment ===
+    # Settings file and output_processing are relative to job_dir.
+    # No --input_processing: settings ProcessingFolder="warp_tiltseries" is the source.
     if params.alignment_method == AlignmentMethod.ARETOMO:
         cmd_parts_align = [
             "WarpTools ts_aretomo",
-            f"--settings {settings_file_out}",
-            f"--input_processing {input_processing}" if input_processing else "",
-            f"--output_processing {output_processing}",
+            "--settings warp_tiltseries.settings",
+            "--output_processing warp_tiltseries",
             "--angpix", str(params.rescale_angpixs),
             "--alignz", str(int(params.sample_thickness_nm * 10)),
             "--perdevice", str(params.perdevice),
@@ -124,9 +100,8 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
     elif params.alignment_method == AlignmentMethod.IMOD:
         cmd_parts_align = [
             "WarpTools ts_etomo_patches",
-            f"--settings {settings_file_out}",
-            f"--input_processing {input_processing}" if input_processing else "",
-            f"--output_processing {output_processing}",
+            "--settings warp_tiltseries.settings",
+            "--output_processing warp_tiltseries",
             "--angpix", str(params.rescale_angpixs),
             "--patch_size", str(int(params.imod_patch_size * 10)),
         ]
@@ -136,17 +111,10 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
     if params.do_at_most > 0:
         cmd_parts_align.extend(["--do_at_most", str(params.do_at_most)])
 
-    # Clean up commands
-    cmd_parts_align = [part for part in cmd_parts_align if part] 
-
-    # Logic:
-    # 1. If tomostar dir exists AND has files, skip import. Else run import.
-    # 2. If settings file exists, skip creation. Else run create.
-    # 3. Always run alignment.
     return " && ".join([
-        f"test -d {tomostar_dir_out} && ls {tomostar_dir_out}/*.tomostar >/dev/null 2>&1 || ({' '.join(cmd_parts_import)})",
-        f"test -f {settings_file_out} || ({' '.join(cmd_parts_settings)})", 
-        ' '.join(cmd_parts_align)
+        f"test -d tomostar && ls tomostar/*.tomostar >/dev/null 2>&1 || ({' '.join(cmd_parts_import)})",
+        f"test -f warp_tiltseries.settings || ({' '.join(cmd_parts_settings)})",
+        " ".join(cmd_parts_align),
     ])
 
 
