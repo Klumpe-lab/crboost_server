@@ -68,7 +68,6 @@ def make_pytom_tomograms_star(
 
 
 def get_gpu_split(requested_split: str) -> list:
-    """Parses the '2:1:1' string into list arguments for PyTOM."""
     if requested_split in ["auto", "None", ""]:
         return ["2", "2", "1"]
     return requested_split.split(":")
@@ -153,7 +152,7 @@ def main():
             "--voltage", str(state.microscope.acceleration_voltage_kv),
             "--spherical-aberration", str(state.microscope.spherical_aberration_mm),
             "--amplitude-contrast", str(state.microscope.amplitude_contrast),
-            "--tomogram-ctf-model", "phase-flip",
+            # "--tomogram-ctf-model", "phase-flip",
             "--per-tilt-weighting",
             "--log", "debug",
             "-g",

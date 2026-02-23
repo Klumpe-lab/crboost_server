@@ -22,18 +22,15 @@ def _resolve_job_dir(job_model, ui_mgr) -> Path | None:
         return job_dir
     return None
 
-
 def _find_star_file(job_dir: Path, name: str) -> Path | None:
     candidate = job_dir / name
     if candidate.exists():
         return candidate
     return None
 
-
 def _vis_already_exists(job_dir: Path) -> bool:
     imod_dir = job_dir / "vis" / "imodPartRad"
     return imod_dir.exists() and any(imod_dir.glob("*.mod"))
-
 
 def _make_imod_command_runner():
     """
@@ -58,8 +55,7 @@ def _make_imod_command_runner():
 
     return runner
 
-
-def _handle_generate_vis(job_model, job_dir: Path, status_label, generate_btn):
+def _handle_generate_vis(job_model, job_dir: Path,project_root: Path, status_label, generate_btn):
     """Run visualization generation synchronously (fast, no executor needed)."""
     from services.visualization.imod_vis import generate_candidate_vis
 
@@ -87,6 +83,7 @@ def _handle_generate_vis(job_model, job_dir: Path, status_label, generate_btn):
             particle_diameter_ang=diameter,
             output_dir=job_dir,
             command_runner=command_runner,
+            project_root=project_root,
         )
         status_label.set_text("Done -- models written to vis/")
         status_label.classes(replace="text-xs text-green-600")
@@ -98,7 +95,6 @@ def _handle_generate_vis(job_model, job_dir: Path, status_label, generate_btn):
         ui.notify(f"Visualization failed: {e}", type="negative")
     finally:
         generate_btn.props(remove="loading")
-
 
 def render_candidate_vis_panel(job_model, ui_mgr) -> None:
     job_dir = _resolve_job_dir(job_model, ui_mgr)
@@ -134,12 +130,13 @@ def render_candidate_vis_panel(job_model, ui_mgr) -> None:
                 )
 
             with ui.row().classes("items-center gap-3"):
+                project_root = Path(ui_mgr.project_path)
                 generate_btn = ui.button(
                     "Regenerate IMOD Models" if has_vis else "Generate IMOD Models",
                     icon="scatter_plot",
                     on_click=lambda: _handle_generate_vis(
-                        job_model, job_dir, status_label, generate_btn
-                    ),
+                        job_model, job_dir, project_root, status_label, generate_btn
+                    )
                 ).props("dense no-caps unelevated").classes(
                     "bg-blue-50 text-blue-700 border border-blue-200 px-3"
                 )

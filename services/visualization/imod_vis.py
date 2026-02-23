@@ -56,13 +56,12 @@ def _get_unbinned_tomo_size(tomo_row: pd.Series) -> np.ndarray:
     ])
 
 
-def _get_binned_tomo_size(tomo_row: pd.Series) -> np.ndarray:
-    """Read actual tomogram dimensions from the reconstructed MRC file header."""
+
+def _get_binned_tomo_size(tomo_row: pd.Series, project_root: Optional[Path] = None) -> np.ndarray:
     import mrcfile
 
     mrc_col = "rlnTomoReconstructedTomogram"
     if mrc_col not in tomo_row.index:
-        # Fallback: compute from STAR metadata
         unbinned = np.array([
             float(tomo_row["rlnTomoSizeX"]),
             float(tomo_row["rlnTomoSizeY"]),
@@ -72,6 +71,9 @@ def _get_binned_tomo_size(tomo_row: pd.Series) -> np.ndarray:
         return np.round(unbinned / binning).astype(int)
 
     mrc_path = Path(tomo_row[mrc_col])
+    if not mrc_path.is_absolute() and project_root is not None:
+        mrc_path = project_root / mrc_path
+
     if not mrc_path.exists():
         raise FileNotFoundError(
             f"Reconstructed tomogram not found: {mrc_path}. "
@@ -178,6 +180,7 @@ def generate_candidate_vis(
     particle_diameter_ang: float,
     output_dir: Path,
     command_runner: Optional[Callable[[str, Path], None]] = None,
+    project_root: Optional[Path] = None,   # <-- add
 ) -> None:
     """
     Generate IMOD visualization models and Warp-compatible coordinates.
@@ -220,7 +223,7 @@ def generate_candidate_vis(
             continue
 
         pixel_size = _get_pixel_size(tomo_row)
-        tomo_size = _get_binned_tomo_size(tomo_row)
+        tomo_size = _get_binned_tomo_size(tomo_row, project_root=project_root)  # <-- pass through
         tomo_particles = particles_df[particles_df["rlnTomoName"] == tomo_name]
         coords = _get_imod_coords(tomo_particles, tomo_size, pixel_size)
 

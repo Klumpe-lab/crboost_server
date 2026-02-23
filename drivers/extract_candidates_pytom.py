@@ -258,6 +258,7 @@ def main():
                 tomograms_star=output_tomograms,
                 particle_diameter_ang=float(params.particle_diameter_ang),
                 output_dir=job_dir,
+                project_root=project_path,   # already available in driver context
             )
         except Exception as vis_err:
             print(f"[DRIVER WARN] Visualization generation failed (non-fatal): {vis_err}", flush=True)
