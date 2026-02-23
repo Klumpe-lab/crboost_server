@@ -1,8 +1,12 @@
 python3 -c "
 import glob, xml.etree.ElementTree as ET, os, statistics
+# project_name='all_together'
+# project_name='auto_flip_cusesum'
+project_name='442split_pytom'
 
-xmls = sorted(glob.glob('/users/artem.kushner/dev/crboost_server/projects/fsmotion_1x1x1_c_use_sum/External/job002/warp_frameseries/*.xml'))
+xmls = sorted(glob.glob('/users/artem.kushner/dev/crboost_server/projects/{}/External/job002/warp_frameseries/*.xml'.format(project_name)))
 vals = []
+
 for f in xmls:
     root = ET.parse(f).getroot()
     ctf = root.find('.//Param[@Name=\"Defocus\"]')

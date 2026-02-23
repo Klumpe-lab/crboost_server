@@ -129,8 +129,8 @@ class ProjectState(BaseModel):
                     job_params = param_class(**job_data)
                     job_params._project_state = project_state
                     project_state.jobs[job_type] = job_params
-            except ValueError:
-                pass
+            except (ValueError, Exception) as e:
+                print(f"[WARN] Skipping job '{job_type_str}' - failed to deserialize: {e}")
 
         return project_state
 

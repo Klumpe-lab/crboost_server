@@ -138,10 +138,13 @@ def main():
 
             # Check output - cryoCARE creates a directory with the MRC inside
             if out_path.is_dir():
-                # Find the actual MRC file inside the created directory
                 mrc_files = list(out_path.glob("*.mrc"))
                 if mrc_files:
-                    actual_output = mrc_files[0]
+                    # cryoCARE created a subdirectory - flatten it
+                    flat_output = out_path.parent / mrc_files[0].name
+                    mrc_files[0].rename(flat_output)
+                    out_path.rmdir()
+                    actual_output = flat_output
                 else:
                     print(f"[WARN] No MRC file found in output directory: {out_path}")
                     continue

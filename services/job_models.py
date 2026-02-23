@@ -445,7 +445,7 @@ class FsMotionCtfParams(AbstractJobParams):
     c_range_min_max   : str           = "30:6.0"
     c_defocus_min_max : str           = "1.1:8"
     c_grid            : str           = "2x2x1"                       # was "2x2x1" - 2x2 goes unstable on high-tilt low-signal frames
-    c_use_sum         : bool          = True                          # fit CTF on sum rather than motion-corrected average
+    c_use_sum         : bool          = False
     c_window          : int           = Field(default=512, ge=128)
     out_average_halves: bool          = True
     out_skip_first    : int           = 0
@@ -528,7 +528,7 @@ class TsAlignmentParams(AbstractJobParams):
     alignment_method   : AlignmentMethod = AlignmentMethod.ARETOMO
     rescale_angpixs    : float           = Field(default=12.0, ge=2.0, le=50.0)
     tomo_dimensions    : str             = Field(default="4096x4096x2048")
-    sample_thickness_nm: float           = Field(default=200.0, ge=50.0, le=1000.0)  # <-- ADD THIS
+    sample_thickness_nm: float           = Field(default=180.0, ge=50.0, le=1000.0)  
     do_at_most         : int             = Field(default=-1)
     perdevice          : int             = Field(default=1, ge=0, le=8)
     mdoc_pattern       : str             = Field(default="*.mdoc")
@@ -536,7 +536,7 @@ class TsAlignmentParams(AbstractJobParams):
     patch_x            : int             = Field(default=0, ge=0)                    # was 2
     patch_y            : int             = Field(default=0, ge=0)                    # was 2
     axis_iter          : int             = Field(default=0, ge=0)                    # was 1
-    axis_batch         : int             = Field(default=5, ge=1)
+    axis_batch: int = Field(default=0, ge=0)
     imod_patch_size    : int             = Field(default=200)
     imod_overlap       : int             = Field(default=50)
 
@@ -581,7 +581,7 @@ class TsCtfParams(AbstractJobParams):
     window         : int = Field(default=512, ge=128, le=2048)
     range_min_max  : str = Field(default="30:6.0")
     # defocus_hand   : str = Field(default="auto")   # was "set_flip"
-    defocus_hand   : str  = Field(default="set_flip")
+    defocus_hand   : str  = Field(default="auto")
     defocus_min_max: str  = Field(default="1.1:8")        # was "0.5:8"
     perdevice       : int = Field(default=1, ge=0, le=8)
 

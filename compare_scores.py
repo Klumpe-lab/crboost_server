@@ -81,8 +81,11 @@ def compare(a_scores, a_job, b_scores, b_job, sample=5_000_000):
 
 if __name__ == "__main__":
     # EDIT THESE
-    a_scores = "/users/artem.kushner/dev/crboost_server/projects/zval_fixes/External/job006/tmResults/zval_fixes_Position_1_scores.mrc"
-    a_job    = "/users/artem.kushner/dev/crboost_server/projects/zval_fixes/External/job006/tmResults/zval_fixes_Position_1_job.json"
+    # project_name = "fsmotion_2x2_1_cusesum"
+    project_name = "all_together"
+
+    a_scores = "/users/artem.kushner/dev/crboost_server/projects/{}/External/job009/tmResults/{}_Position_1_scores.mrc".format(project_name,project_name)
+    a_job    = "/users/artem.kushner/dev/crboost_server/projects/{}/External/job009/tmResults/{}_Position_1_job.json".format(project_name, project_name)
 
     b_scores = "/groups/klumpe/software/Setup/Testing/test1/run12/External/job006/tmResults/Position_1_11.80Apx_scores.mrc"
     b_job    = "/groups/klumpe/software/Setup/Testing/test1/run12/External/job006/tmResults/Position_1_11.80Apx_job.json"
