@@ -566,6 +566,7 @@ class TsCtfParams(AbstractJobParams):
         # NEW
         InputSlot(key="warp_tiltseries_settings", accepts=[JobFileType.WARP_TILTSERIES_SETTINGS], preferred_source="aligntiltsWarp"),
     ]
+
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
         OutputSlot(
             key="output_star", produces=JobFileType.TS_CTF_TILT_SERIES_STAR, path_template="ts_ctf_tilt_series.star"
@@ -686,7 +687,6 @@ class DenoiseTrainParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"reconstruct": "tsReconstruct"}
-
 
 
 class DenoisePredictParams(AbstractJobParams):

@@ -1,8 +1,8 @@
 python3 -c "
 import glob, xml.etree.ElementTree as ET, os, statistics
 # project_name='all_together'
-# project_name='auto_flip_cusesum'
-project_name='442split_pytom'
+project_name='auto_flip_cusesum'
+# project_name='442split_pytom'
 
 xmls = sorted(glob.glob('/users/artem.kushner/dev/crboost_server/projects/{}/External/job002/warp_frameseries/*.xml'.format(project_name)))
 vals = []
