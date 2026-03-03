@@ -166,11 +166,14 @@ class TemplateWorkbench:
         wb.template_resolution = self.template_resolution
         wb.auto_infer_seed = self.auto_infer_seed
         wb.basic_shape_def = self.basic_shape_def
-        asyncio.create_task(get_state_service().save_project())
+        asyncio.create_task(get_state_service().save_project(project_path=Path(self.project_path)))
+
 
     def _load_project_parameters(self):
         try:
-            state = get_project_state()
+            from services.project_state import get_project_state_for
+            state = get_project_state_for(Path(self.project_path))
+
             if hasattr(state, "microscope") and state.microscope:
                 raw_pix = getattr(state.microscope, "pixel_size_angstrom", None)
                 if raw_pix and raw_pix > 0:
@@ -188,7 +191,6 @@ class TemplateWorkbench:
                                 break
                         break
 
-            # Hydrate workbench params from persisted state
             tm_params = self._get_tm_params()
             if tm_params and hasattr(tm_params, "workbench"):
                 wb = tm_params.workbench
@@ -198,7 +200,6 @@ class TemplateWorkbench:
                     self.pixel_size = self.project_tomo_apix
                 elif self.project_raw_apix:
                     self.pixel_size = self.project_raw_apix
-                # other fields always load (they don't have project-derived defaults)
                 self.auto_infer_seed = wb.auto_infer_seed
                 self.box_size = wb.box_size
                 self.auto_box = wb.auto_box
@@ -722,7 +723,7 @@ class TemplateWorkbench:
                 if os.path.exists(potential_mask):
                     p.mask_path = potential_mask
                     self._log(f"Auto-selected mask: {os.path.basename(potential_mask)}")
-        await get_state_service().save_project()
+        await get_state_service().save_project(project_path=Path(self.project_path))
         await self.refresh_files()
         await self._update_mask_source_panel()
 
@@ -730,8 +731,9 @@ class TemplateWorkbench:
         p = self._get_tm_params()
         if p:
             p.mask_path = "" if p.mask_path == path else path
-        await get_state_service().save_project()
+        await get_state_service().save_project(project_path=Path(self.project_path))
         await self.refresh_files()
+
 
     async def _toggle_structure(self, path):
         self.structure_path = "" if self.structure_path == path else path
@@ -828,7 +830,7 @@ class TemplateWorkbench:
         if not template_path:
             return
         self.masking_active = True
-        n = ui.notification("Creating mask…", type="ongoing", spinner=True, timeout=None)
+        n = ui.notification("Creating mask...", type="ongoing", spinner=True, timeout=None)
         try:
             base = Path(template_path).stem.replace("_white", "").replace("_black", "")
             prefix = base.split("_box")[0]
@@ -859,7 +861,7 @@ class TemplateWorkbench:
                 self._log(f"Mask created: {os.path.basename(output)}")
                 if p:
                     p.mask_path = output
-                await get_state_service().save_project()
+                await get_state_service().save_project(project_path=Path(self.project_path))
                 await self.refresh_files()
             else:
                 self._log(f"Mask failed: {res.get('error')}")
@@ -1054,8 +1056,11 @@ class TemplateWorkbench:
     # MISC
     # ------------------------------------------------------------------
 
+
     def _get_tm_params(self):
-        return get_project_state().jobs.get(JobType.TEMPLATE_MATCH_PYTOM)
+        from services.project_state import get_project_state_for
+        state = get_project_state_for(Path(self.project_path))
+        return state.jobs.get(JobType.TEMPLATE_MATCH_PYTOM)
 
     def _log(self, msg: str):
         if self.log_container:

@@ -1,4 +1,12 @@
 # ui/workspace_page.py
+"""
+Phase 2c: build_workspace_page now calls prepare_for_page_rebuild()
+at the top to clear stale widget refs and callbacks from a previous
+page load.  NiceGUI destroys DOM elements on navigation, but our
+UIStateManager (persisted in app.storage.tab) still holds refs to
+the dead objects.
+"""
+
 import asyncio
 from nicegui import ui
 from backend import CryoBoostBackend
@@ -6,10 +14,22 @@ from services.project_state import get_project_state
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
 from ui.ui_state import get_ui_state_manager
 
+
 def build_workspace_page(backend: CryoBoostBackend):
     ui_mgr = get_ui_state_manager()
     state = get_project_state()
-    
+
+    # ------------------------------------------------------------------
+    # Phase 2c: Clear stale widget refs from previous page loads.
+    #
+    # The UIStateManager persists in app.storage.tab across navigations,
+    # but all the NiceGUI elements it references were destroyed when the
+    # user navigated away.  prepare_for_page_rebuild() nullifies those
+    # dead refs and clears stale subscribers/callbacks so the fresh page
+    # build starts clean.
+    # ------------------------------------------------------------------
+    ui_mgr.prepare_for_page_rebuild()
+
     # ===================================================================
     # SAFETY CHECKS - Prevent rendering with stale/invalid state
     # ===================================================================
@@ -19,7 +39,7 @@ def build_workspace_page(backend: CryoBoostBackend):
             ui.label("No project loaded").classes("text-xl text-gray-600")
             ui.button("Return to Start", icon="home", on_click=lambda: ui.navigate.to("/"))
         return
-    
+
     if not ui_mgr.project_path or not ui_mgr.project_path.exists():
         with ui.column().classes("w-full h-screen items-center justify-center gap-4"):
             ui.icon("folder_off", size="64px").classes("text-orange-400")
@@ -27,51 +47,47 @@ def build_workspace_page(backend: CryoBoostBackend):
             ui.label(f"Path: {ui_mgr.project_path}").classes("text-sm text-gray-400 font-mono")
             ui.button("Return to Start", icon="home", on_click=lambda: ui.navigate.to("/"))
         return
-    
+
     # ===================================================================
-    # FORCE SYNC FUNCTION - Nuclear option for users
+    # FORCE SYNC FUNCTION
     # ===================================================================
     async def force_full_sync():
         """Reload everything from disk and rebuild UI."""
         project_path = ui_mgr.project_path
-        
+
         if not project_path:
             ui.notify("No project loaded", type="warning")
             return
-        
+
         try:
             # 1. Reload backend state from disk
             result = await backend.load_existing_project(str(project_path))
-            
+
             if not result.get("success"):
                 ui.notify(f"Sync failed: {result.get('error')}", type="negative")
                 return
-            
+
             # 2. Force status sync
             await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
-            
+
             # 3. Re-sync UI state with backend
             fresh_state = backend.state_service.state
             ui_mgr.load_from_project(
-                project_path=fresh_state.project_path,
-                scheme_name="default",
-                jobs=list(fresh_state.jobs.keys())
+                project_path=fresh_state.project_path, scheme_name="default", jobs=list(fresh_state.jobs.keys())
             )
-            
+
             # 4. Trigger UI rebuild
             ui_mgr.request_rebuild()
-            
+
             ui.notify("State synced from disk", type="positive")
-            
+
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             ui.notify(f"Sync error: {e}", type="negative")
-    
+
     # ===================================================================
-    # HEADER
-    # ===================================================================
-# ===================================================================
     # HEADER
     # ===================================================================
     with ui.header().classes("bg-white border-b border-gray-200 text-gray-800 h-auto px-4 py-1"):
@@ -84,48 +100,33 @@ def build_workspace_page(backend: CryoBoostBackend):
 
                 if state.project_path:
                     with ui.column().classes("gap-0"):
-                        ui.label("ROOT").classes(
-                            "text-[8px] font-bold text-gray-400 uppercase leading-none"
-                        )
-                        ui.label(str(state.project_path)).classes(
-                            "text-[10px] font-mono text-gray-500 leading-tight"
-                        )
+                        ui.label("ROOT").classes("text-[8px] font-bold text-gray-400 uppercase leading-none")
+                        ui.label(str(state.project_path)).classes("text-[10px] font-mono text-gray-500 leading-tight")
 
                 if state.movies_glob:
                     with ui.column().classes("gap-0"):
-                        ui.label("MOVIES").classes(
-                            "text-[8px] font-bold text-gray-400 uppercase leading-none"
-                        )
-                        ui.label(state.movies_glob).classes(
-                            "text-[10px] font-mono text-gray-500 leading-tight"
-                        )
+                        ui.label("MOVIES").classes("text-[8px] font-bold text-gray-400 uppercase leading-none")
+                        ui.label(state.movies_glob).classes("text-[10px] font-mono text-gray-500 leading-tight")
 
                 if state.mdocs_glob:
                     with ui.column().classes("gap-0"):
-                        ui.label("MDOC").classes(
-                            "text-[8px] font-bold text-gray-400 uppercase leading-none"
-                        )
-                        ui.label(state.mdocs_glob).classes(
-                            "text-[10px] font-mono text-gray-500 leading-tight"
-                        )
+                        ui.label("MDOC").classes("text-[8px] font-bold text-gray-400 uppercase leading-none")
+                        ui.label(state.mdocs_glob).classes("text-[10px] font-mono text-gray-500 leading-tight")
 
             # Right: Actions
             with ui.row().classes("items-center gap-1"):
-                ui.button(
-                    icon="sync",
-                    on_click=force_full_sync,
-                ).props("flat dense round size=sm").classes("text-blue-600").tooltip("Reload from disk")
+                ui.button(icon="sync", on_click=force_full_sync).props("flat dense round size=sm").classes(
+                    "text-blue-600"
+                ).tooltip("Reload from disk")
 
-                ui.button(
-                    icon="close",
-                    on_click=lambda: ui.navigate.to("/"),
-                ).props("flat dense round size=sm").classes("text-red-400").tooltip("Close project")
+                ui.button(icon="close", on_click=lambda: ui.navigate.to("/")).props("flat dense round size=sm").classes(
+                    "text-red-400"
+                ).tooltip("Close project")
+
     # ===================================================================
     # MAIN CONTENT
     # ===================================================================
-    callbacks = {
-        "force_sync": force_full_sync  # Pass to pipeline builder if needed
-    }
-    
+    callbacks = {"force_sync": force_full_sync}
+
     with ui.column().classes("w-full p-0").style("height: calc(100vh - 56px); overflow: hidden;"):
         build_pipeline_builder_panel(backend, callbacks)

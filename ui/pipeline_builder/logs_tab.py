@@ -1,4 +1,3 @@
-# ui/pipeline_builder/logs_tab.py
 """
 Logs tab: stdout/stderr display with auto-polling for running jobs.
 """
@@ -7,7 +6,7 @@ import asyncio
 
 from nicegui import ui
 
-from services.project_state import JobStatus, JobType, get_project_state
+from services.project_state import JobStatus, JobType
 from ui.ui_state import UIStateManager
 
 
@@ -22,6 +21,16 @@ def render_logs_tab(job_type: JobType, job_model, backend, ui_mgr: UIStateManage
         with ui.column().classes("w-full h-full items-center justify-center text-gray-400 gap-2"):
             ui.icon("schedule", size="48px")
             ui.label("Job scheduled. Logs will appear here once running.")
+
+        # Even if the job hasn't started yet, if the pipeline is active
+        # we should poll -- the job will get a relion_job_name once the
+        # schemer reaches it, and we want logs to appear automatically.
+        if ui_mgr.is_running:
+            widget_refs.logs_timer = ui.timer(
+                3.0, lambda: asyncio.create_task(
+                    _refresh_job_logs_with_placeholder_swap(job_type, backend, ui_mgr)
+                )
+            )
         return
 
     with ui.grid(columns=2).classes("w-full h-full gap-4"):
@@ -52,15 +61,53 @@ def render_logs_tab(job_type: JobType, job_model, backend, ui_mgr: UIStateManage
     # Initial fetch
     asyncio.create_task(_refresh_job_logs(job_type, backend, ui_mgr))
 
-    # Poll while running
-    if job_model.execution_status == JobStatus.RUNNING:
+    # Poll while this job is running OR the pipeline is active (job might
+    # transition to running while we're watching)
+    if job_model.execution_status == JobStatus.RUNNING or ui_mgr.is_running:
         widget_refs.logs_timer = ui.timer(
             3.0, lambda: asyncio.create_task(_refresh_job_logs(job_type, backend, ui_mgr))
         )
 
 
+async def _refresh_job_logs_with_placeholder_swap(
+    job_type: JobType, backend, ui_mgr: UIStateManager
+):
+    """Poll variant for the 'job scheduled' placeholder state.
+
+    Once the job gets a relion_job_name (meaning the schemer has reached it),
+    trigger a re-render of the logs tab to swap the placeholder for real log
+    widgets.  Until then, do nothing.
+    """
+    from services.project_state import get_project_state_for
+
+    project_path = ui_mgr.project_path
+    if not project_path:
+        return
+
+    state = get_project_state_for(project_path)
+    job_model = state.jobs.get(job_type)
+
+    if not job_model or not job_model.relion_job_name:
+        # Job hasn't started yet -- keep waiting
+        if not ui_mgr.is_running:
+            # Pipeline finished without this job ever running -- stop polling
+            ui_mgr.cleanup_job_logs_timer(job_type)
+        return
+
+    # Job now has a relion_job_name -- re-render the logs tab to get real log widgets
+    ui_mgr.cleanup_job_logs_timer(job_type)
+    widget_refs = ui_mgr.get_job_widget_refs(job_type)
+    content_container = widget_refs.content_container
+    if content_container:
+        content_container.clear()
+        with content_container:
+            render_logs_tab(job_type, job_model, backend, ui_mgr)
+
+
 async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
     """Refresh the logs display for a job."""
+    from services.project_state import get_project_state_for
+
     widget_refs = ui_mgr.get_job_widget_refs(job_type)
     monitor = widget_refs.monitor_logs
 
@@ -71,15 +118,20 @@ async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
         ui_mgr.cleanup_job_logs_timer(job_type)
         return
 
-    state = get_project_state()
+    # Use registry directly instead of tab-context get_project_state().
+    # Timer callbacks usually have tab context, but being explicit is safer.
+    project_path = ui_mgr.project_path
+    if not project_path:
+        return
+
+    state = get_project_state_for(project_path)
     job_model = state.jobs.get(job_type)
 
     if not job_model or not job_model.relion_job_name:
-        ui_mgr.cleanup_job_logs_timer(job_type)
-        return
-
-    project_path = ui_mgr.project_path
-    if not project_path:
+        # Job hasn't been assigned a relion path yet. If pipeline is still
+        # running, keep the timer alive -- it'll get a name eventually.
+        if not ui_mgr.is_running:
+            ui_mgr.cleanup_job_logs_timer(job_type)
         return
 
     logs = await backend.get_job_logs(str(project_path), job_model.relion_job_name)
@@ -105,3 +157,7 @@ async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
     monitor["stdout"].push(stdout)
     monitor["stderr"].clear()
     monitor["stderr"].push(stderr)
+
+    # Stop polling if job finished and pipeline is done
+    if job_model.execution_status in (JobStatus.SUCCEEDED, JobStatus.FAILED) and not ui_mgr.is_running:
+        ui_mgr.cleanup_job_logs_timer(job_type)

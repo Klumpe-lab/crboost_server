@@ -24,13 +24,14 @@ except ImportError as e:
 
 
 def build_ctf_commands(params: TsCtfParams, paths: dict[str, Path]) -> str:
-    settings_file = shlex.quote(str(paths["warp_tiltseries_settings"]))
-    input_processing = shlex.quote(str(paths["input_processing"]))
+
+    settings_file     = shlex.quote(str(paths["warp_tiltseries_settings"]))
+    input_processing  = shlex.quote(str(paths["input_processing"]))
     output_processing = shlex.quote(str(paths["output_processing"]))
 
     # Step 1: copy job003 XMLs into job004 so the flip is written to the right place
     # and ts_ctf reads the already-flipped XMLs from job004.
-    #
+
     # Sequence:
     #   copy job003/*.xml → job004/
     #   ts_defocus_hand --output_processing job004   (no --input_processing: reads from

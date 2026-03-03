@@ -1,5 +1,3 @@
-# services/pipeline_runner.py
-
 import asyncio
 import sys
 import pandas as pd
@@ -20,7 +18,7 @@ class StatusSyncService:
     """Syncs job model statuses from pipeline.star - single source of truth"""
 
     def __init__(self, backend):
-        self.backend      = backend
+        self.backend = backend
         self.job_resolver = JobTypeResolver(backend.pipeline_orchestrator.star_handler)
 
     async def sync_all_jobs(self, project_path: str) -> Dict[str, bool]:
@@ -36,7 +34,7 @@ class StatusSyncService:
         processes = data.get("pipeline_processes", pd.DataFrame())
 
         changes: Dict[str, bool] = {}
-        state = self.backend.state_service.state
+        state = self.backend.state_service.state_for(Path(project_path))
 
         found_jobs = set()
         for _, row in processes.iterrows():
@@ -99,7 +97,9 @@ class StatusSyncService:
         if changes:
             try:
                 print(f"[SYNC] Persisting {len(changes)} status changes to disk.")
-                await self.backend.state_service.save_project()
+                # CHANGED: explicit project_path -- sync runs from timer callbacks
+                # where tab context *usually* exists, but being explicit is safer.
+                await self.backend.state_service.save_project(project_path=Path(project_path), force=True)
             except Exception as e:
                 print(f"[SYNC ERROR] Failed to persist status changes: {e}")
 
@@ -173,7 +173,8 @@ class PipelineRunnerService:
             if processes.empty:
                 return {}
 
-            state = self.backend.state_service.state
+            # CHANGED: explicit path (no tab context dependency)
+            state = self.backend.state_service.state_for(Path(project_path))
             server_root = self.backend.config_service.crboost_root
 
             for _, process in processes.iterrows():
@@ -191,9 +192,9 @@ class PipelineRunnerService:
                             template_base = server_root / "config" / "Schemes" / "warp_tomo_prep"
                             job_star_path = template_base / job_type.value / "job.star"
 
-                            await self.backend.state_service.ensure_job_initialized(
-                                job_type, job_star_path if job_star_path.exists() else None
-                            )
+                            # CHANGED: call ensure_job_initialized directly on the
+                            # state object we already have (no tab context needed)
+                            state.ensure_job_initialized(job_type, job_star_path if job_star_path.exists() else None)
                             job_model = state.jobs.get(job_type)
 
                             if not job_model:
@@ -327,7 +328,9 @@ class PipelineRunnerService:
         3. Monitor task cleans up state on exit regardless of success/failure
         """
         try:
-            state = self.backend.state_service.state
+            # CHANGED: explicit path (this may be called from asyncio.create_task
+            # where tab context is not guaranteed)
+            state = self.backend.state_service.state_for(project_dir)
 
             # GUARD: Don't start if already running
             if state.pipeline_active:
@@ -365,7 +368,8 @@ class PipelineRunnerService:
 
             # MARK PIPELINE AS ACTIVE - this protects against state resets
             state.pipeline_active = True
-            await self.backend.state_service.save_project()
+            # CHANGED: explicit project_path + force
+            await self.backend.state_service.save_project(project_path=project_dir, force=True)
             print(f"[RUNNER] Pipeline marked active, state protected from resets")
 
             # Setup log files (prevents pipe buffer deadlock)
@@ -403,13 +407,12 @@ class PipelineRunnerService:
 
             self.active_schemer_process = process
 
-            # Start monitor task - passes state reference for cleanup
+            # Start monitor task - passes project_dir for registry lookup
             # This task is NOT tied to any NiceGUI client
             asyncio.create_task(
                 self._monitor_schemer(
                     process=process,
                     project_dir=project_dir,
-                    state=state,
                     stdout_handle=stdout_handle,
                     stderr_handle=stderr_handle,
                     stdout_log=stdout_log,
@@ -431,9 +434,10 @@ class PipelineRunnerService:
 
             # On failure, ensure we don't leave pipeline_active=True
             try:
-                state = self.backend.state_service.state
+                # CHANGED: explicit path
+                state = self.backend.state_service.state_for(project_dir)
                 state.pipeline_active = False
-                await self.backend.state_service.save_project()
+                await self.backend.state_service.save_project(project_path=project_dir, force=True)
             except Exception:
                 pass
 
@@ -443,7 +447,8 @@ class PipelineRunnerService:
         self,
         process: asyncio.subprocess.Process,
         project_dir: Path,
-        state: "ProjectState",
+        # CHANGED: removed `state` parameter -- we re-fetch from registry
+        # in the finally block anyway (in case it was reloaded during execution).
         stdout_handle,
         stderr_handle,
         stdout_log: Path,
@@ -517,16 +522,14 @@ class PipelineRunnerService:
             self._stderr_log_path = None
 
             # Mark pipeline as inactive and persist
-            # We re-fetch state in case it was reloaded during execution
+            # CHANGED: use registry with explicit path (no tab context in background task)
             try:
-                current_state = self.backend.state_service.state
+                current_state = self.backend.state_service.state_for(project_dir)
                 current_state.pipeline_active = False
-                await self.backend.state_service.save_project()
+                await self.backend.state_service.save_project(project_path=project_dir, force=True)
                 print(f"[MONITOR] Pipeline marked inactive, state saved")
             except Exception as e:
                 print(f"[MONITOR] WARNING: Failed to persist pipeline_active=False: {e}")
-                # This is bad but not fatal - on next load we might think pipeline is running
-                # Could add a PID check on startup to detect orphaned state
 
     async def run_generated_scheme(self, project_dir: Path, scheme_name: str, bind_paths: List[str]) -> Dict[str, Any]:
         """

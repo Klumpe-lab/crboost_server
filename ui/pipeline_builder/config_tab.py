@@ -33,7 +33,6 @@ def _ch_width(value, *, min_ch: int = 12, max_ch: int = 34) -> int:
     """
     s = "" if value is None else str(value)
 
-    # If the content looks like a path, let it be wider
     if "/" in s or "\\" in s:
         min_ch = max(min_ch, 32)
         max_ch = max(max_ch, 90)
@@ -58,7 +57,6 @@ def _job_string_width(param_name: str, value: str) -> tuple[int, int]:
     """
     if _is_pathlike_param(param_name):
         return (36, 90)
-    # These often contain range-ish strings that shouldn't clip
     if any(k in param_name.lower() for k in ["range", "grid", "dimensions", "time", "constraint"]):
         return (18, 44)
     return (16, 44)
@@ -92,11 +90,9 @@ def render_slurm_config_section(job_model, is_frozen: bool, save_handler: Callab
                 ui.icon("memory", size="18px").classes("text-gray-500")
                 ui.label("SLURM Resources").classes("text-sm font-bold text-gray-800")
 
-            # Lightweight indicator if overrides exist
             if getattr(job_model, "slurm_overrides", None):
                 ui.badge("overrides", color="orange").props("outline").classes("text-[10px]")
 
-        # Body (refreshable)
         with ui.column().classes("w-full p-3"):
             _render_slurm_content(job_model, is_frozen, save_handler)
 
@@ -118,6 +114,9 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
 
             def apply_preset(p=preset):
                 job_model.apply_slurm_preset(p)
+                # Phase 1b: apply_slurm_preset now marks dirty instead of saving.
+                # Trigger the save handler so the single debounced write happens.
+                save_handler()
                 _render_slurm_content.refresh()
 
             ui.button(preset_info["label"], on_click=apply_preset).props("unelevated no-caps dense").classes(
@@ -127,12 +126,17 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
         ui.space()
 
         if overrides:
-            ui.button(
-                icon="restart_alt",
-                on_click=lambda: (job_model.clear_slurm_overrides(), _render_slurm_content.refresh()),
-            ).props("flat dense round").classes("text-red-400").tooltip("Clear Overrides")
 
-    # Compact but slightly wider per-field widths to avoid overflow
+            def clear_and_save():
+                job_model.clear_slurm_overrides()
+                save_handler()
+                _render_slurm_content.refresh()
+
+            ui.button(icon="restart_alt", on_click=clear_and_save).props("flat dense round").classes(
+                "text-red-400"
+            ).tooltip("Clear Overrides")
+
+    # Compact field widths
     fields = [
         ("partition", "Partition"),
         ("constraint", "Constraint"),
@@ -146,13 +150,13 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
 
     width_hint = {
         "partition": (12, 18),
-        "constraint": (18, 34),  # wider: often a list like "g2|g3|..."
+        "constraint": (18, 34),
         "nodes": (10, 12),
         "ntasks_per_node": (12, 14),
         "cpus_per_task": (12, 14),
         "gres": (14, 24),
         "mem": (12, 16),
-        "time": (14, 18),  # wider so "2:00:00" never clips
+        "time": (14, 18),
     }
 
     with ui.row().classes("w-full flex-wrap gap-x-5 gap-y-3 items-end"):
@@ -163,10 +167,13 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
                 ui.label(label).classes("text-[10px] font-bold text-gray-400 uppercase leading-none ml-0.5")
 
                 def make_blur_handler(fname):
-                    return lambda e: (
-                        job_model.set_slurm_override(fname, e.sender.value),
-                        _render_slurm_content.refresh(),
-                    )
+                    def handler(e):
+                        job_model.set_slurm_override(fname, e.sender.value)
+                        # Phase 1b: set_slurm_override now marks dirty instead of saving.
+                        save_handler()
+                        _render_slurm_content.refresh()
+
+                    return handler
 
                 inp = ui.input(value=str(val))
                 mn, mx = width_hint.get(field_name, (12, 34))
@@ -192,25 +199,22 @@ def render_readonly_paths(job_model):
 
     async def copy_path(p: str) -> None:
         try:
-            ui.clipboard.write(p)  # no await
+            ui.clipboard.write(p)
             ui.notify("Copied", type="positive", timeout=900)
         except Exception:
             safe = p.replace("`", "\\`")
             await ui.run_javascript(f"navigator.clipboard.writeText(`{safe}`)", respond=False)
             ui.notify("Copied", type="positive", timeout=900)
 
-    # Tight table-like list
     with ui.column().classes("w-full border border-gray-200 rounded-md overflow-hidden"):
         for i, (key, value) in enumerate(paths_data.items()):
             bg_class = "bg-white" if i % 2 == 0 else "bg-gray-50"
 
-            # Single-line row, no vertical padding waste
             with ui.row().classes(
                 f"w-full {bg_class} border-b border-gray-100 last:border-0 items-center gap-2 px-2 py-1"
             ):
                 ui.label(snake_to_title(key)).classes("text-[10px] font-bold text-gray-500 uppercase w-32 shrink-0")
 
-                # Truncated but tooltip shows full value
                 with ui.row().classes("flex-1 min-w-0 items-center gap-2"):
                     v_str = str(value)
                     ui.label(v_str).classes("text-xs font-mono text-gray-700 truncate flex-1 min-w-0").tooltip(v_str)
@@ -252,7 +256,7 @@ def render_config_tab(
 
         ui.separator().classes("my-4")
 
-        # Build job-specific field list (same logic)
+        # Build job-specific field list
         base_fields = {
             "execution_status",
             "relion_job_name",
@@ -264,7 +268,7 @@ def render_config_tab(
             "is_orphaned",
             "missing_inputs",
             "JOB_CATEGORY",
-            "workbench",   
+            "workbench",
         }
         job_specific_fields = set(job_model.model_fields.keys()) - base_fields
 
@@ -287,14 +291,11 @@ def render_config_tab(
                     if not job_specific_fields:
                         ui.label("This job has no configurable parameters.").classes("text-xs text-gray-500 italic")
                     else:
-                        # Hand-tuned width hints for common offenders
                         job_width_hint = {
-                            # Template matching / file fields
                             "template_path": (40, 90),
                             "mask_path": (40, 90),
                             "mask_fold_path": (40, 90),
                             "mdoc_pattern": (24, 60),
-                            # Range/grid-ish
                             "c_defocus_min_max": (18, 28),
                             "c_range_min_max": (18, 28),
                             "m_range_min_max": (18, 28),
@@ -305,7 +306,6 @@ def render_config_tab(
                             "gpu_split": (16, 22),
                         }
 
-                        # Wider default for string inputs; wrap to next line as needed
                         with ui.row().classes("w-full flex-wrap gap-x-6 gap-y-3 items-end"):
                             for param_name in sorted(list(job_specific_fields)):
                                 label = snake_to_title(param_name)
@@ -324,7 +324,6 @@ def render_config_tab(
                                             "text-[10px] font-bold text-gray-400 uppercase leading-none ml-0.5"
                                         )
                                         inp = ui.number(value=value, format="%.4g").bind_value(job_model, param_name)
-                                        # slightly wider for spinners/buttons
                                         _style_compact_field(inp, value, min_ch=10, max_ch=20)
                                         if is_frozen:
                                             inp.classes("bg-gray-50 text-gray-500").props("readonly")
@@ -332,10 +331,13 @@ def render_config_tab(
                                             inp.on_value_change(save_handler)
 
                                 elif isinstance(value, str):
-                                    # Check if the field type is an Enum
                                     field_info = job_model.model_fields.get(param_name)
                                     field_type = field_info.annotation if field_info else None
-                                    is_enum = field_type is not None and isinstance(field_type, type) and issubclass(field_type, Enum)
+                                    is_enum = (
+                                        field_type is not None
+                                        and isinstance(field_type, type)
+                                        and issubclass(field_type, Enum)
+                                    )
 
                                     if is_enum:
                                         with ui.column().classes("gap-1 w-fit"):
@@ -343,9 +345,9 @@ def render_config_tab(
                                                 "text-[10px] font-bold text-gray-400 uppercase leading-none ml-0.5"
                                             )
                                             options = [e.value for e in field_type]
-                                            sel = ui.select(
-                                                options=options, value=value
-                                            ).bind_value(job_model, param_name)
+                                            sel = ui.select(options=options, value=value).bind_value(
+                                                job_model, param_name
+                                            )
                                             sel.props("dense outlined hide-bottom-space")
                                             sel.classes("text-xs font-mono")
                                             sel.style("width: 26ch; max-width: 100%;")
@@ -361,7 +363,6 @@ def render_config_tab(
                                             )
                                             inp = ui.input().bind_value(job_model, param_name)
 
-                                            # Wider strings, and path-like fields wide even when empty
                                             if param_name in job_width_hint:
                                                 mn, mx = job_width_hint[param_name]
                                             else:
@@ -375,7 +376,7 @@ def render_config_tab(
                                                 inp.on_value_change(save_handler)
 
             # -------------------------------------------------------
-            # Column 2: SLURM Resources (normal section)
+            # Column 2: SLURM Resources
             # -------------------------------------------------------
             render_slurm_config_section(job_model, is_frozen, save_handler)
 
@@ -399,12 +400,12 @@ def render_config_tab(
 
                 with ui.column().classes("w-full p-3"):
                     with ui.row().classes("w-full flex-wrap gap-x-8 gap-y-2"):
-                        _kv("Pixel Size (Å)", job_model.microscope, "pixel_size_angstrom")
+                        _kv("Pixel Size (A)", job_model.microscope, "pixel_size_angstrom")
                         _kv("Voltage (kV)", job_model.microscope, "acceleration_voltage_kv")
                         _kv("Cs (mm)", job_model.microscope, "spherical_aberration_mm")
                         _kv("Amp Contrast", job_model.microscope, "amplitude_contrast")
                         _kv("Dose / Tilt", job_model.acquisition, "dose_per_tilt")
-                        _kv("Tilt Axis (°)", job_model.acquisition, "tilt_axis_degrees")
+                        _kv("Tilt Axis (deg)", job_model.acquisition, "tilt_axis_degrees")
 
         # -------------------------------------------------------
         # Merge Panel (only for Subtomo Extraction)
@@ -412,6 +413,7 @@ def render_config_tab(
         if job_type == JobType.SUBTOMO_EXTRACTION:
             ui.separator().classes("my-4")
             from ui.pipeline_builder.merge_panel_component import render_merge_panel
+
             render_merge_panel(job_model, is_frozen, save_handler)
 
         # -------------------------------------------------------
@@ -431,4 +433,5 @@ def render_config_tab(
         if job_type == JobType.TEMPLATE_EXTRACT_PYTOM:
             ui.separator().classes("my-4")
             from ui.pipeline_builder.candidate_vis_component import render_candidate_vis_panel
+
             render_candidate_vis_panel(job_model, ui_mgr)

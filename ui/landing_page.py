@@ -27,52 +27,6 @@ def build_landing_page(backend: CryoBoostBackend):
                 build_data_import_panel(backend, callbacks)
 
 
-def create_landing_page_route(backend: CryoBoostBackend):
-    """
-    Creates the landing page route with proper state handling.
-
-    CRITICAL: We must NOT blindly reset state when navigating to /.
-    A stale tab refreshing could nuke a running pipeline.
-    """
-
-    @ui.page("/")
-    async def landing_page(client):
-        from services.project_state import get_project_state, reset_project_state
-
-        ui_mgr = get_ui_state_manager()
-        current_state = get_project_state()
-
-        # GUARD: If pipeline is running, redirect to workspace
-        if current_state.pipeline_active:
-            ui.notify("A pipeline is currently running. Redirecting to workspace.", type="warning", position="top")
-            ui.navigate.to("/workspace")
-            return
-
-        # Reset UI state (this is always safe - it's per-client)
-        ui_mgr.reset()
-
-        # Only reset project state if:
-        # 1. No project is currently loaded, OR
-        # 2. User explicitly wants a fresh start (no pipeline running, check above passed)
-        #
-        # The key insight: if someone has a project loaded but navigates to /,
-        # they probably want to either:
-        # a) Start fresh (fine to reset if no pipeline running)
-        # b) Load a different project (reset will happen naturally)
-        #
-        # The dangerous case (pipeline running) is already guarded above.
-
-        if current_state.project_path is None:
-            # No project loaded, safe to ensure clean state
-            reset_project_state()
-        else:
-            # Project exists but user navigated to landing page
-            # Could be intentional "start over" or accidental
-            # Since pipeline_active=False (checked above), it's safe to reset
-            print(f"[LANDING] User navigated away from project: {current_state.project_name}")
-            reset_project_state()
-
-        # Build the page
-        build_landing_page(backend)
-
-    return landing_page
+# Phase 1d: removed create_landing_page_route() — it was dead code that
+# duplicated the route handler already defined in main_ui.py.  If imported,
+# it would have silently overridden the "/" route.
