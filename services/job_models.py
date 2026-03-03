@@ -445,7 +445,7 @@ class FsMotionCtfParams(AbstractJobParams):
     c_range_min_max   : str           = "30:6.0"
     c_defocus_min_max : str           = "1.1:8"
     c_grid            : str           = "2x2x1"                       # was "2x2x1" - 2x2 goes unstable on high-tilt low-signal frames
-    c_use_sum         : bool          = False
+    c_use_sum         : bool          = True # seems to be False (or at least doens't figure in Florian's logs), but for us produces absolutely terrible ctf values otherwise
     c_window          : int           = Field(default=512, ge=128)
     out_average_halves: bool          = True
     out_skip_first    : int           = 0
