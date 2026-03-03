@@ -17,7 +17,6 @@ from services.computing.container_service import get_container_service
 # Set to True to replicate GT pipeline behavior for score comparison.
 LEGACY_TEXT_INPUT = True
 
-
 def _get_df_from_star(path: Path) -> pd.DataFrame:
     d = starfile.read(path, always_dict=True)
     for v in d.values():
@@ -249,8 +248,6 @@ def main():
         additional_binds.append(str(template_file.parent.resolve()))
         additional_binds.append(str(mask_file.parent.resolve()))
         additional_binds = list(set(additional_binds))
-
-        # ---- Legacy vs RELION5 path ----
         legacy_files = None
         if LEGACY_TEXT_INPUT:
             print("[DRIVER] LEGACY MODE: generating text files for pytom 0.10", flush=True)

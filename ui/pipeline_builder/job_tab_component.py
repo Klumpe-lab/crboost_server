@@ -1,17 +1,14 @@
-# ui/pipeline_builder/job_tab_component.py
-"""
-Job tab component -- coordinator that assembles config/logs/files tabs.
-"""
+# At the top of the file, after existing imports:
 
 import asyncio
 from datetime import datetime
-from typing import Dict, Callable
+from typing import Dict, Callable, Optional
 
 from nicegui import ui
 
 from services.project_state import JobStatus, JobType, get_project_state, get_state_service
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
-from ui.status_indicator import ReactiveStatusBadge, render_status_badge, render_status_dot
+from ui.status_indicator import BoundStatusBadge, BoundStatusDot
 from ui.ui_state import get_ui_state_manager, UIStateManager, MonitorTab, get_job_display_name
 
 from ui.pipeline_builder.config_tab import render_config_tab, is_job_frozen
@@ -22,15 +19,40 @@ from ui.pipeline_builder.files_tab import render_files_tab
 def snake_to_title(s: str) -> str:
     return " ".join(word.capitalize() for word in s.split("_"))
 
-async def auto_save_state():
-    try:
-        await get_state_service().save_project()
-        print("[UI] Auto-saved project state")
-    except Exception as e:
-        print(f"[UI] Auto-save failed: {e}")
+
+# ===========================================
+# Debounced Save
+# ===========================================
+
+class DebouncedSaver:
+    """Coalesces rapid-fire save triggers into a single disk write.
+
+    Each call to trigger() cancels any pending save and restarts
+    the delay. The actual write only happens after `delay` seconds
+    of silence.
+    """
+    def __init__(self, delay: float = 1.0):
+        self._delay = delay
+        self._task: Optional[asyncio.Task] = None
+
+    def trigger(self):
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = asyncio.create_task(self._delayed_save())
+
+    async def _delayed_save(self):
+        try:
+            await asyncio.sleep(self._delay)
+            await get_state_service().save_project()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[UI] Debounced save failed: {e}")
 
 
 def create_save_handler() -> Callable:
+    saver = DebouncedSaver(delay=1.0)
+    return saver.trigger
     return lambda: asyncio.create_task(auto_save_state())
 
 
@@ -62,7 +84,7 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
             with ui.column().classes("gap-0"):
                 with ui.row().classes("items-center gap-2"):
                     ui.label(state.project_name).classes("text-lg font-bold text-gray-800")
-                    ReactiveStatusBadge(job_type)
+                    BoundStatusBadge(job_type)
                 created = (
                     state.created_at.strftime("%Y-%m-%d %H:%M")
                     if isinstance(state.created_at, datetime)
@@ -239,7 +261,5 @@ def _handle_delete(job_type, job_model, backend, ui_mgr, callbacks):
 
 def _force_status_refresh(callbacks: Dict[str, Callable]):
     ui.notify("Refreshing statuses...", timeout=1)
-    render_status_badge.refresh()
-    render_status_dot.refresh()
     if "check_and_update_statuses" in callbacks:
         asyncio.create_task(callbacks["check_and_update_statuses"]())

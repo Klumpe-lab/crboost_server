@@ -1,6 +1,11 @@
 # ui/status_indicator.py
 """
-All status display components: dots, badges, both class-based and @ui.refreshable.
+Bound status indicators: dots and badges that auto-update via NiceGUI's
+binding system (~100ms poll on the source property).
+
+No manual .refresh() calls needed. When the 3-second polling timer updates
+job_model.execution_status in memory, the binding picks up the change
+automatically and re-renders the HTML.
 """
 
 from pathlib import Path
@@ -8,132 +13,125 @@ from nicegui import ui
 from services.project_state import JobStatus, JobType, get_project_state
 
 
-# ===========================================
-# Class-based (used in pipeline_builder_panel tab strip)
-# ===========================================
+# =========================================================================
+# HTML generators
+# =========================================================================
 
-class ReactiveStatusDot:
-    """Status dot that shows running/succeeded/failed/orphaned state."""
+_DOT_COLORS = {
+    JobStatus.SCHEDULED: "#fbbf24",
+    JobStatus.RUNNING:   "#3b82f6",
+    JobStatus.SUCCEEDED: "#10b981",
+    JobStatus.FAILED:    "#ef4444",
+    JobStatus.UNKNOWN:   "#9ca3af",
+}
 
-    def __init__(self, job_type: JobType):
-        self.job_type = job_type
-        self._render()
+_DOT_PULSES = {
+    JobStatus.RUNNING:   "pulse-running",
+    JobStatus.SUCCEEDED: "pulse-success",
+    JobStatus.FAILED:    "pulse-failed",
+}
 
-    def _render(self):
-        state = get_project_state()
-        job_model = state.jobs.get(self.job_type)
-
-        if not job_model:
-            status = JobStatus.SCHEDULED
-            is_orphaned = False
-        else:
-            status = job_model.execution_status
-            is_orphaned = job_model.is_orphaned
-
-        if is_orphaned:
-            color = "#f97316"
-            css_class = "pulse-orphaned"
-            tooltip = "Orphaned: missing input dependencies"
-        else:
-            color_map = {JobStatus.RUNNING: "#3b82f6", JobStatus.SUCCEEDED: "#10b981", JobStatus.FAILED: "#ef4444"}
-            color = color_map.get(status, "#fbbf24")
-            class_map = {
-                JobStatus.RUNNING: "pulse-running",
-                JobStatus.SUCCEEDED: "pulse-success",
-                JobStatus.FAILED: "pulse-failed",
-            }
-            css_class = class_map.get(status, "pulse-scheduled")
-            tooltip = status.value
-
-        dot = (
-            ui.element("div")
-            .classes(f"status-dot {css_class}")
-            .style(f"width: 8px; height: 8px; border-radius: 50%; display: inline-block; background-color: {color};")
-        )
-        dot.tooltip(tooltip)
+_BADGE_STYLES = {
+    JobStatus.SCHEDULED: ("background:#fef3c7;", "color:#92400e;"),
+    JobStatus.RUNNING:   ("background:#dbeafe;", "color:#1e40af;"),
+    JobStatus.SUCCEEDED: ("background:#d1fae5;", "color:#065f46;"),
+    JobStatus.FAILED:    ("background:#fee2e2;", "color:#991b1b;"),
+    JobStatus.UNKNOWN:   ("background:#f3f4f6;", "color:#1f2937;"),
+}
 
 
-class ReactiveStatusBadge:
-    """Status badge with orphan indicator."""
-
-    def __init__(self, job_type: JobType):
-        self.job_type = job_type
-        self._render()
-
-    def _render(self):
-        state = get_project_state()
-        job_model = state.jobs.get(self.job_type)
-
-        if not job_model:
-            status = JobStatus.SCHEDULED
-            is_orphaned = False
-            missing_inputs = []
-        else:
-            status = job_model.execution_status
-            is_orphaned = job_model.is_orphaned
-            missing_inputs = getattr(job_model, "missing_inputs", [])
-
-        with ui.row().classes("items-center gap-1"):
-            colors = {
-                JobStatus.SCHEDULED: ("bg-yellow-100", "text-yellow-800"),
-                JobStatus.RUNNING: ("bg-blue-100", "text-blue-800"),
-                JobStatus.SUCCEEDED: ("bg-green-100", "text-green-800"),
-                JobStatus.FAILED: ("bg-red-100", "text-red-800"),
-                JobStatus.UNKNOWN: ("bg-gray-100", "text-gray-800"),
-            }
-            bg, txt = colors.get(status, ("bg-gray-100", "text-gray-800"))
-            ui.label(status.value).classes(f"text-xs font-bold px-2 py-0.5 rounded-full {bg} {txt}")
-
-            if is_orphaned:
-                tooltip_text = "Orphaned: Missing inputs"
-                if missing_inputs:
-                    items = missing_inputs[:3]
-                    tooltip_text = "Missing:\n" + "\n".join(f"- {Path(p).name}" for p in items)
-                    if len(missing_inputs) > 3:
-                        tooltip_text += f"\n... and {len(missing_inputs) - 3} more"
-                icon = ui.icon("link_off", size="16px").classes("text-orange-500 cursor-help")
-                icon.tooltip(tooltip_text)
-
-
-# ===========================================
-# @ui.refreshable versions (used for global refresh triggers)
-# ===========================================
-
-@ui.refreshable
-def render_status_badge(job_type: JobType):
-    """Refreshable badge -- fetches fresh state on every .refresh() call."""
-    state = get_project_state()
-    job_model = state.jobs.get(job_type)
-    status = job_model.execution_status if job_model else JobStatus.SCHEDULED
-
-    colors = {
-        JobStatus.SCHEDULED: ("bg-yellow-100", "text-yellow-800"),
-        JobStatus.RUNNING: ("bg-blue-100", "text-blue-800"),
-        JobStatus.SUCCEEDED: ("bg-green-100", "text-green-800"),
-        JobStatus.FAILED: ("bg-red-100", "text-red-800"),
-        JobStatus.UNKNOWN: ("bg-gray-100", "text-gray-800"),
-    }
-    bg, txt = colors.get(status, ("bg-gray-100", "text-gray-800"))
-    ui.label(status.value).classes(f"text-xs font-bold px-2 py-0.5 rounded-full {bg} {txt}")
-
-
-@ui.refreshable
-def render_status_dot(job_type: JobType):
-    """Refreshable dot -- pulses when running."""
-    state = get_project_state()
-    job_model = state.jobs.get(job_type)
-    status = job_model.execution_status if job_model else JobStatus.SCHEDULED
-
-    class_map = {
-        JobStatus.RUNNING: "pulse-running",
-        JobStatus.SUCCEEDED: "pulse-success",
-        JobStatus.FAILED: "pulse-failed",
-    }
-    css_class = class_map.get(status, "pulse-scheduled")
-
-    color_map = {JobStatus.RUNNING: "#3b82f6", JobStatus.SUCCEEDED: "#10b981", JobStatus.FAILED: "#ef4444"}
-    color = color_map.get(status, "#fbbf24")
-
-    ui.element("div").classes(f"status-dot {css_class}").style(
-        f"width: 8px; height: 8px; border-radius: 50%; display: inline-block; background-color: {color};"
+def _dot_html(status: JobStatus, is_orphaned: bool = False) -> str:
+    if is_orphaned:
+        color = "#f97316"
+        pulse = "pulse-orphaned"
+        tip = "Orphaned: missing input dependencies"
+    else:
+        color = _DOT_COLORS.get(status, "#fbbf24")
+        pulse = _DOT_PULSES.get(status, "pulse-scheduled")
+        tip = status.value
+    return (
+        f'<span class="status-dot {pulse}" '
+        f'style="width:8px;height:8px;border-radius:50%;display:inline-block;'
+        f'background:{color};" '
+        f'title="{tip}"></span>'
     )
+
+
+def _badge_html(status: JobStatus, is_orphaned: bool = False, missing_inputs: list = None) -> str:
+    bg, txt = _BADGE_STYLES.get(status, ("background:#f3f4f6;", "color:#1f2937;"))
+    html = (
+        f'<span style="{bg}{txt}font-size:12px;font-weight:700;'
+        f'padding:2px 8px;border-radius:9999px;white-space:nowrap;">'
+        f'{status.value}</span>'
+    )
+    if is_orphaned:
+        missing = missing_inputs or []
+        if missing:
+            items = [Path(p).name for p in missing[:3]]
+            tip = "Missing: " + ", ".join(items)
+            if len(missing) > 3:
+                tip += f" +{len(missing) - 3} more"
+        else:
+            tip = "Orphaned: missing input dependencies"
+        html += (
+            f' <span style="color:#f97316;cursor:help;font-size:14px;" '
+            f'title="{tip}">&#9888;</span>'
+        )
+    return html
+
+
+# =========================================================================
+# Bound components (auto-update via NiceGUI binding poll)
+# =========================================================================
+
+class BoundStatusDot:
+    """Status dot bound to job_model.execution_status.
+
+    The backward function also reads is_orphaned from the captured
+    job_model reference. Since orphan state and execution status
+    typically change in the same sync_all_jobs call, the dot updates
+    correctly without needing a second binding.
+    """
+
+    def __init__(self, job_type: JobType):
+        state = get_project_state()
+        job_model = state.jobs.get(job_type)
+
+        if not job_model:
+            ui.html(_dot_html(JobStatus.SCHEDULED), sanitize=False, tag="span")
+            return
+
+        # Closure captures job_model so is_orphaned is read fresh each poll
+        ui.html("", sanitize=False, tag="span").bind_content_from(
+            job_model, "execution_status",
+            backward=lambda s, jm=job_model: _dot_html(s, is_orphaned=jm.is_orphaned),
+        )
+
+
+class BoundStatusBadge:
+    """Status badge bound to job_model.execution_status."""
+
+    def __init__(self, job_type: JobType):
+        state = get_project_state()
+        job_model = state.jobs.get(job_type)
+
+        if not job_model:
+            ui.html(_badge_html(JobStatus.SCHEDULED), sanitize=False, tag="span")
+            return
+
+        ui.html("", sanitize=False, tag="span").bind_content_from(
+            job_model, "execution_status",
+            backward=lambda s, jm=job_model: _badge_html(
+                s,
+                is_orphaned=jm.is_orphaned,
+                missing_inputs=getattr(jm, "missing_inputs", []),
+            ),
+        )
+
+
+# =========================================================================
+# Aliases so existing imports don't break
+# =========================================================================
+
+ReactiveStatusDot = BoundStatusDot
+ReactiveStatusBadge = BoundStatusBadge

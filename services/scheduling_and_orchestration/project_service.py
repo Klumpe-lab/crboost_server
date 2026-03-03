@@ -1,4 +1,3 @@
-# services/project_service.py
 import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -10,7 +9,14 @@ from typing import TYPE_CHECKING
 
 from services.configs.mdoc_service import get_mdoc_service
 from services.configs.starfile_service import StarfileService
-from services.project_state import JobType, get_state_service, jobtype_paramclass
+from services.project_state import (
+    JobType,
+    get_state_service,
+    jobtype_paramclass,
+    # CHANGED: new registry functions
+    set_project_state_for,
+    get_project_state_for,
+)
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 
 if TYPE_CHECKING:
@@ -18,7 +24,6 @@ if TYPE_CHECKING:
 
 
 class DataImportService:
-
     def __init__(self):
         self.mdoc_service = get_mdoc_service()
 
@@ -35,10 +40,9 @@ class DataImportService:
             frames_dir.mkdir(exist_ok=True, parents=True)
             mdoc_dir.mkdir(exist_ok=True, parents=True)
 
-            # Safety check if globs are empty (e.g. creating empty project)
             if not movies_glob or not mdocs_glob:
-                 print("[DATA_IMPORT] Skipping data import - patterns are empty.")
-                 return {"success": True, "message": "Skipped data import (empty patterns)."}
+                print("[DATA_IMPORT] Skipping data import - patterns are empty.")
+                return {"success": True, "message": "Skipped data import (empty patterns)."}
 
             source_movie_dir = Path(movies_glob).parent
             mdoc_files = glob.glob(mdocs_glob)
@@ -88,13 +92,13 @@ class ProjectService:
         self.project_root: Optional[Path] = None
         self.state_service = get_state_service()
 
-
     async def delete_job(self, job_name: str) -> Dict[str, Any]:
         """
         Delete a job from the pipeline using proper Relion-compatible deletion.
         """
         try:
             job_type = JobType(job_name)
+            # This is always called from UI context, so tab lookup works.
             state = self.backend.state_service.state
             project_dir = state.project_path
 
@@ -106,25 +110,24 @@ class ProjectService:
 
             # 1. Find all job paths matching this type
             job_paths = deletion_service.find_jobs_by_type(project_dir, job_type, job_resolver)
-            
+
             if not job_paths:
-                # Job might exist in our state but not in Relion's pipeline yet
-                # Just remove from our state
                 if job_type in state.jobs:
                     del state.jobs[job_type]
                 if job_type.value in state.job_path_mapping:
                     del state.job_path_mapping[job_type.value]
-                await self.backend.state_service.save_project()
+                # CHANGED: explicit project_path for save
+                await self.backend.state_service.save_project(project_path=project_dir, force=True)
                 return {"success": True, "message": f"Job {job_name} removed from project state."}
 
             # 2. Delete each instance (usually just one)
             all_orphans = []
             deleted_count = 0
             errors = []
-            
+
             for job_path in job_paths:
                 result = await deletion_service.delete_job(project_dir, job_path, recursive=False)
-                
+
                 if result.success:
                     deleted_count += 1
                     all_orphans.extend(result.orphaned_jobs)
@@ -138,8 +141,9 @@ class ProjectService:
                 del state.job_path_mapping[job_type.value]
 
             # 4. Persist state
-            await self.backend.state_service.save_project()
-            
+            # CHANGED: explicit project_path
+            await self.backend.state_service.save_project(project_path=project_dir, force=True)
+
             # 5. Sync statuses (this will detect orphaned jobs)
             await self.backend.pipeline_runner.status_sync.sync_all_jobs(str(project_dir))
 
@@ -151,11 +155,11 @@ class ProjectService:
                     "deleted_count": deleted_count,
                     "orphaned_jobs": all_orphans,
                 }
-            
+
             orphan_warning = ""
             if all_orphans:
                 orphan_warning = f" Warning: {len(all_orphans)} downstream job(s) now have broken inputs: {all_orphans}"
-            
+
             return {
                 "success": True,
                 "message": f"Deleted {deleted_count} job instance(s).{orphan_warning}",
@@ -165,20 +169,19 @@ class ProjectService:
 
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
     def set_project_root(self, project_dir: Path):
         """Set the project root for path resolution and update state."""
         self.project_root = project_dir.resolve()
+        # CHANGED: use registry instead of tab-context .state
         if self.backend and self.backend.state_service:
-            self.backend.state_service.state.project_path = self.project_root
+            state = self.backend.state_service.state_for(self.project_root)
+            state.project_path = self.project_root
 
     def get_job_dir(self, job_name: str, job_number: int) -> Path:
-        """
-        Get absolute path to a job directory.
-        Uses the job model's JOB_CATEGORY to determine location.
-        """
         if not self.project_root:
             raise ValueError("Project root not set. Call set_project_root() first.")
 
@@ -222,9 +225,9 @@ class ProjectService:
             upstream_job_dir = self.get_job_dir(upstream_job_type_str, upstream_job_num)
             upstream_outputs[upstream_job_type_str] = upstream_param_class.get_output_assets(upstream_job_dir)
 
-        input_paths  = param_class.get_input_assets(job_dir, self.project_root, upstream_outputs)
+        input_paths = param_class.get_input_assets(job_dir, self.project_root, upstream_outputs)
         output_paths = param_class.get_output_assets(job_dir)
-        all_paths    = {**input_paths, **output_paths}
+        all_paths = {**input_paths, **output_paths}
 
         return all_paths
 
@@ -234,7 +237,7 @@ class ProjectService:
         """Creates the project directory structure and imports the raw data."""
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
-            self.set_project_root(project_dir)  # This now also updates the state
+            self.set_project_root(project_dir)
 
             (project_dir / "Schemes").mkdir(exist_ok=True)
             (project_dir / "Logs").mkdir(exist_ok=True)
@@ -255,7 +258,7 @@ class ProjectService:
         """Copy qsub.sh to project root for relion_schemer to find."""
         source_qsub = Path.cwd() / "config" / "qsub.sh"
         dest_qsub = project_dir / "qsub.sh"
-        
+
         if source_qsub.exists():
             shutil.copy(source_qsub, dest_qsub)
             print(f"[PROJECT] Copied qsub.sh to {dest_qsub}")
@@ -263,88 +266,89 @@ class ProjectService:
             print(f"[PROJECT WARN] qsub.sh not found at {source_qsub}")
 
     async def initialize_new_project(
-            self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
-        ):
-            try:
-                project_dir = Path(project_base_path).expanduser() / project_name
-                
-                # 1. Standard Setup (Dirs, Data Import)
-                if project_dir.exists():
-                    return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
-                from services.project_state import reset_project_state
-                reset_project_state()
+        self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
+    ):
+        try:
+            project_dir = Path(project_base_path).expanduser() / project_name
 
+            # 1. Standard Setup (Dirs, Data Import)
+            if project_dir.exists():
+                return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
 
+            # CHANGED: instead of reset_project_state() + reading from the
+            # singleton, create a fresh ProjectState and register it in the
+            # path-keyed registry. This ensures:
+            #  - No cross-tab contamination (we don't touch any other project)
+            #  - No dependency on tab context (which may not have project_path
+            #    set yet at this point)
+            from services.project_state import ProjectState
 
-                import_prefix = f"{project_name}_"
-                state = self.backend.state_service.state  # now guaranteed fresh
-                state.project_name = project_name
-                
-                # Update Global State Wrapper
-                state = self.backend.state_service.state
-                state.project_name = project_name
-                state.project_path = project_dir
-                state.movies_glob = movies_glob                 
-                state.mdocs_glob = mdocs_glob                   
+            state = ProjectState()
+            state.project_name = project_name
+            state.project_path = project_dir
+            state.movies_glob = movies_glob
+            state.mdocs_glob = mdocs_glob
+            set_project_state_for(project_dir, state)
 
-                await self.backend.state_service.update_from_mdoc(mdocs_glob)
+            # Autodetect microscope/acquisition params from mdoc files.
+            # CHANGED: use update_from_mdoc with explicit project_path so it
+            # finds the state we just registered (tab context doesn't have
+            # this project_path yet).
+            await self.backend.state_service.update_from_mdoc(mdocs_glob, project_path=project_dir)
 
-                # Create Dirs & Import Data
-                structure_result = await self.create_project_structure(project_dir, movies_glob, mdocs_glob, import_prefix)
-                if not structure_result["success"]:
-                    return structure_result
+            # Create Dirs & Import Data
+            import_prefix = f"{project_name}_"
+            structure_result = await self.create_project_structure(project_dir, movies_glob, mdocs_glob, import_prefix)
+            if not structure_result["success"]:
+                return structure_result
 
-                # 2. Load Defaults into Memory (Blueprints)
-                # We DO NOT create scheme folders here. We just load the defaults from config/Schemes 
-                # into our ProjectState so the user sees valid values in the UI.
-                
-                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
-                
-                if selected_jobs:
-                    print(f"[PROJECT_SERVICE] Loading default parameters for: {selected_jobs}")
-                    for job_str in selected_jobs:
-                        try:
-                            job_type = JobType(job_str)
-                            job_star_path = template_base / job_type.value / "job.star"
-                            
-                            # This loads the default values from disk into Python memory
-                            await self.backend.state_service.ensure_job_initialized(
-                                job_type, job_star_path if job_star_path.exists() else None
-                            )
-                        except ValueError:
-                            print(f"[WARN] Skipping unknown job '{job_str}'")
+            # 2. Load Defaults into Memory (Blueprints)
+            template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
 
-                # 3. Save Project State (project_params.json)
-                params_json_path = project_dir / "project_params.json"
-                await self.backend.state_service.save_project(params_json_path)
+            if selected_jobs:
+                print(f"[PROJECT_SERVICE] Loading default parameters for: {selected_jobs}")
+                for job_str in selected_jobs:
+                    try:
+                        job_type = JobType(job_str)
+                        job_star_path = template_base / job_type.value / "job.star"
+                        # CHANGED: call directly on the state object
+                        state.ensure_job_initialized(job_type, job_star_path if job_star_path.exists() else None)
+                    except ValueError:
+                        print(f"[WARN] Skipping unknown job '{job_str}'")
 
-                # 4. Initialize Relion (Create default_pipeline.star)
-                # We initialize an EMPTY pipeline. The Orchestrator will populate it when we run jobs.
-                print(f"[PROJECT_SERVICE] Initializing Relion project...")
-                
-                init_command = "unset DISPLAY && relion --tomo --do_projdir ."
-                # Calculate binds for raw data
-                binds = [str(project_dir.resolve()), str(Path(movies_glob).parent.resolve()), str(Path(mdocs_glob).parent.resolve())]
-                
-                container_cmd = self.backend.container_service.wrap_command_for_tool(
-                    command=init_command, cwd=project_dir, tool_name="relion", additional_binds=binds
-                )
-                
-                proc = await asyncio.create_subprocess_shell(
-                    container_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
-                )
-                await proc.wait()
+            # 3. Save Project State (project_params.json)
+            params_json_path = project_dir / "project_params.json"
+            # CHANGED: explicit project_path + force (first save, must hit disk)
+            await self.backend.state_service.save_project(
+                save_path=params_json_path, project_path=project_dir, force=True
+            )
 
-                return {
-                    "success": True,
-                    "message": f"Project '{project_name}' created.",
-                    "project_path": str(project_dir),
-                }
+            # 4. Initialize Relion (Create default_pipeline.star)
+            print(f"[PROJECT_SERVICE] Initializing Relion project...")
 
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                return {"success": False, "error": str(e)}
+            init_command = "unset DISPLAY && relion --tomo --do_projdir ."
+            binds = [
+                str(project_dir.resolve()),
+                str(Path(movies_glob).parent.resolve()),
+                str(Path(mdocs_glob).parent.resolve()),
+            ]
+
+            container_cmd = self.backend.container_service.wrap_command_for_tool(
+                command=init_command, cwd=project_dir, tool_name="relion", additional_binds=binds
+            )
+
+            proc = await asyncio.create_subprocess_shell(
+                container_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
+            )
+            await proc.wait()
+
+            return {"success": True, "message": f"Project '{project_name}' created.", "project_path": str(project_dir)}
+
+        except Exception as e:
+            import traceback
+
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
 
     async def load_project_state(self, project_path: str) -> Dict[str, Any]:
         """
@@ -379,13 +383,14 @@ class ProjectService:
             except Exception as e:
                 print(f"[LOAD_PROJECT] Warning: could not parse raw JSON for data_sources: {e}")
 
-            # Load via StateService
+            # Load via StateService (this registers into the path-keyed registry)
             load_success = await self.backend.state_service.load_project(params_file)
 
             if not load_success:
                 return {"success": False, "error": f"StateService failed to load project from {params_file}"}
 
-            state = self.backend.state_service.state
+            # CHANGED: use explicit path to get the state we just loaded
+            state = self.backend.state_service.state_for(project_dir)
             self.set_project_root(project_dir)
 
             # Sync job statuses
@@ -395,13 +400,14 @@ class ProjectService:
             selected_jobs = [job_type.value for job_type in state.jobs.keys()]
 
             return {
-                "success"      : True,
-                "project_name" : project_name,
+                "success": True,
+                "project_name": project_name,
                 "selected_jobs": selected_jobs,
-                "movies_glob"  : movies_glob,
-                "mdocs_glob"   : mdocs_glob,
+                "movies_glob": movies_glob,
+                "mdocs_glob": mdocs_glob,
             }
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": str(e)}

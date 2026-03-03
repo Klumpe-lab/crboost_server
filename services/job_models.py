@@ -1,7 +1,7 @@
 from __future__ import annotations
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional, Self, Tuple, TYPE_CHECKING
+from typing import Any, ClassVar, Dict, List, Optional, Self, Set, Tuple, TYPE_CHECKING
 from pydantic import BaseModel, Field, PrivateAttr
 import pandas as pd
 
@@ -28,6 +28,28 @@ class AbstractJobParams(BaseModel):
     IS_TOMO_JOB: ClassVar[bool] = True
     IS_CONTINUE: ClassVar[bool] = False
 
+    # ------------------------------------------------------------------
+    # Phase 1c: USER_PARAMS whitelist.
+    #
+    # Each subclass declares which of its fields are user-tunable
+    # parameters (i.e. things the user edits in the config tab).
+    #
+    # Only these fields get:
+    #   - Immutability enforcement (blocked on running/completed jobs)
+    #   - Dirty-marking on change (triggers persistence at next save point)
+    #
+    # Everything NOT listed here is internal metadata (execution_status,
+    # paths, slurm_overrides, etc.) that can always be written freely
+    # by backend code regardless of job status.
+    #
+    # When you add a new user-facing parameter to a job subclass,
+    # add it to that subclass's USER_PARAMS set. If you forget,
+    # the field will behave as metadata (no immutability, no dirty mark)
+    # which is safe but means edits won't auto-persist -- you'll notice
+    # quickly in testing.
+    # ------------------------------------------------------------------
+    USER_PARAMS: ClassVar[Set[str]] = set()
+
     # Job execution metadata only
     execution_status: JobStatus = Field(default=JobStatus.SCHEDULED)
     relion_job_name: Optional[str] = None
@@ -41,14 +63,12 @@ class AbstractJobParams(BaseModel):
     additional_binds: List[str] = Field(default_factory=list)
 
     slurm_overrides: Dict[str, Any] = Field(default_factory=dict)
-    
-    # NEW: User overrides for input slot sources
+
+    # User overrides for input slot sources
     # Maps input_slot_key -> source specification
     # Format: "jobtype:instance_path" e.g. "tsReconstruct:External/job005"
     #         or "manual:/absolute/path/to/file.star"
     source_overrides: Dict[str, str] = Field(default_factory=dict)
-
-
 
     # This is now a private attribute, not a Pydantic model field.
     _project_state: Optional["ProjectState"] = None
@@ -74,6 +94,8 @@ class AbstractJobParams(BaseModel):
         """Flatten preset values into the overrides dictionary."""
         if preset == SlurmPreset.CUSTOM:
             self.slurm_overrides["preset"] = SlurmPreset.CUSTOM.value
+            if self._project_state:
+                self._project_state.mark_dirty()
             return
 
         preset_data = SLURM_PRESET_MAP.get(preset)
@@ -90,9 +112,10 @@ class AbstractJobParams(BaseModel):
         # 3. Store the preset enum value
         self.slurm_overrides["preset"] = preset.value
 
-        # Manually trigger save since we modified a dict in-place
+        # Phase 1b: mark dirty instead of saving immediately.
+        # The UI save_handler (called right after this) triggers the actual write.
         if self._project_state:
-            self._project_state.save()
+            self._project_state.mark_dirty()
 
     def set_slurm_override(self, field: str, value: Any) -> None:
         """Update a single field and ensure we flip to Custom."""
@@ -101,12 +124,15 @@ class AbstractJobParams(BaseModel):
         if field != "preset":
             self.slurm_overrides["preset"] = SlurmPreset.CUSTOM.value
 
+        # Phase 1b: mark dirty instead of saving immediately.
         if self._project_state:
-            self._project_state.save()
+            self._project_state.mark_dirty()
 
     def clear_slurm_overrides(self) -> None:
         """Clear all per-job SLURM overrides, reverting to project defaults"""
         self.slurm_overrides = {}
+        if self._project_state:
+            self._project_state.mark_dirty()
 
     def generate_job_star(self, job_dir: Path, fn_exe: str, star_handler) -> None:
         """Generate job.star entirely from this model's state."""
@@ -267,35 +293,33 @@ class AbstractJobParams(BaseModel):
     def mdoc_dir(self) -> Path:
         return self.project_root / "mdoc"
 
+    # ------------------------------------------------------------------
+    # Phase 1b + 1c: Rewritten __setattr__
+    #
+    # Uses USER_PARAMS whitelist instead of a fragile bypass blacklist.
+    # Only user-tunable params get immutability enforcement and dirty-marking.
+    # Everything else (metadata fields) is written freely.
+    # ------------------------------------------------------------------
     def __setattr__(self, name: str, value: Any) -> None:
-        """Enforce immutability for started/completed jobs AND Auto-Save changes"""
-        # 1. Bypass logic for private/internal fields
-        if name in [
-            "execution_status",
-            "relion_job_name",
-            "relion_job_number",
-            "_project_state",
-            "paths",
-            "additional_binds",
-            "is_orphaned",
-            "missing_inputs",
-            "slurm_overrides",
-            "source_overrides", 
-            "additional_sources",
-            "merge_only",
-
-        ]:
-            super().__setattr__(name, value)
-            return
-
+        # Private/internal attributes always bypass (Pydantic internals, _project_state, etc.)
         if name.startswith("_"):
             super().__setattr__(name, value)
             return
 
-        # 2. Immutability Check
+        # Only user-tunable parameters get immutability checks and dirty-marking.
+        # All other fields (execution_status, paths, slurm_overrides, etc.) are
+        # internal metadata that backend code can always write freely.
+        if name not in self.USER_PARAMS:
+            super().__setattr__(name, value)
+            return
+
+        # --- From here on, we're dealing with a user-tunable parameter ---
+
+        # Immutability check: block edits on non-SCHEDULED jobs
         try:
             current_status = object.__getattribute__(self, "execution_status")
         except AttributeError:
+            # During __init__, execution_status may not exist yet
             super().__setattr__(name, value)
             return
 
@@ -303,16 +327,13 @@ class AbstractJobParams(BaseModel):
             print(f"[IMMUTABLE] Blocked change to '{name}' on {current_status.value} job")
             return
 
-        # 3. Apply Change
+        # Apply the change
         super().__setattr__(name, value)
 
-        # 4. AUTO-SAVE: If attached to state, persist to disk immediately.
-        # This fixes the UI desync issue.
+        # Mark the project dirty (actual disk write happens at explicit save points:
+        # save_project(), pipeline start, etc.)
         if self._project_state is not None:
-            try:
-                self._project_state.save()
-            except Exception as e:
-                print(f"[WARN] Auto-save failed for {name}: {e}")
+            self._project_state.mark_dirty()
 
     @property
     def display_status(self) -> str:
@@ -353,8 +374,10 @@ class AbstractJobParams(BaseModel):
 
 class ImportMoviesParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
-    RELION_JOB_TYPE: ClassVar[str] = "relion.importtomo"  # Native RELION job!
-    IS_CONTINUE: ClassVar[bool] = True  # From your template
+    RELION_JOB_TYPE: ClassVar[str] = "relion.importtomo"
+    IS_CONTINUE: ClassVar[bool] = True
+
+    USER_PARAMS: ClassVar[Set[str]] = {"optics_group_name", "do_at_most"}
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = []
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
@@ -367,7 +390,6 @@ class ImportMoviesParams(AbstractJobParams):
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         """Import uses relative paths - RELION runs from project root."""
-        # Detect frame extension from the actual files
         frames_dir = self.frames_dir
         if frames_dir.exists():
             eer_files = list(frames_dir.glob("*.eer"))
@@ -381,7 +403,7 @@ class ImportMoviesParams(AbstractJobParams):
             elif tiff_files:
                 frame_ext = "*.tiff"
             else:
-                frame_ext = "*.eer"  # Default fallback
+                frame_ext = "*.eer"
         else:
             frame_ext = "*.eer"
 
@@ -418,7 +440,6 @@ class ImportMoviesParams(AbstractJobParams):
             ("other_args", ""),
         ]
 
-        # Add Slurm placeholders even if do_queue is No
         options.extend(list(slurm_config.to_qsub_extra_dict().items()))
         return options
 
@@ -426,40 +447,63 @@ class ImportMoviesParams(AbstractJobParams):
         return "relion_import"
 
 
-
 class FsMotionCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+
+    USER_PARAMS: ClassVar[Set[str]] = {
+        "m_range_min_max",
+        "m_bfac",
+        "m_grid",
+        "c_range_min_max",
+        "c_defocus_min_max",
+        "c_grid",
+        "c_use_sum",
+        "c_window",
+        "out_average_halves",
+        "out_skip_first",
+        "out_skip_last",
+        "perdevice",
+        "do_at_most",
+        "gain_operations",
+    }
+
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.TILT_SERIES_STAR], preferred_source="importmovies")
     ]
     OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_star", produces=JobFileType.FS_MOTION_CTF_STAR, path_template="fs_motion_and_ctf.star"),
-        OutputSlot(key="output_processing", produces=JobFileType.WARP_FRAMESERIES_DIR, path_template="warp_frameseries/", is_dir=True),
-        OutputSlot(key="warp_frameseries_settings", produces=JobFileType.WARP_FRAMESERIES_SETTINGS, path_template="warp_frameseries.settings"),
+        OutputSlot(
+            key="output_processing",
+            produces=JobFileType.WARP_FRAMESERIES_DIR,
+            path_template="warp_frameseries/",
+            is_dir=True,
+        ),
+        OutputSlot(
+            key="warp_frameseries_settings",
+            produces=JobFileType.WARP_FRAMESERIES_SETTINGS,
+            path_template="warp_frameseries.settings",
+        ),
     ]
 
-    m_range_min_max   : str           = "500:10"
-    m_bfac            : int           = Field(default=-500)
-    m_grid            : str           = "1x1x3"
-    c_range_min_max   : str           = "30:6.0"
-    c_defocus_min_max : str           = "1.1:8"
-    c_grid            : str           = "2x2x1"                       # was "2x2x1" - 2x2 goes unstable on high-tilt low-signal frames
-    c_use_sum         : bool          = True # seems to be False (or at least doens't figure in Florian's logs), but for us produces absolutely terrible ctf values otherwise
-    c_window          : int           = Field(default=512, ge=128)
-    out_average_halves: bool          = True
-    out_skip_first    : int           = 0
-    out_skip_last     : int           = 0
-    perdevice         : int           = Field(default=1, ge=0, le=8)
-    do_at_most        : int           = Field(default=-1)
-    gain_operations   : Optional[str] = None
+    m_range_min_max: str = "500:10"
+    m_bfac: int = Field(default=-500)
+    m_grid: str = "1x1x3"
+    c_range_min_max: str = "30:6.0"
+    c_defocus_min_max: str = "1.1:8"
+    c_grid: str = "2x2x1"
+    c_use_sum: bool = True
+    c_window: int = Field(default=512, ge=128)
+    out_average_halves: bool = True
+    out_skip_first: int = 0
+    out_skip_last: int = 0
+    perdevice: int = Field(default=1, ge=0, le=8)
+    do_at_most: int = Field(default=-1)
+    gain_operations: Optional[str] = None
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
-        return [
-            ("in_mic", str(input_star))
-            # Could add other in_* fields if needed for RELION GUI display
-        ]
+        return [("in_mic", str(input_star))]
 
     def is_driver_job(self) -> bool:
         return True
@@ -496,10 +540,26 @@ class FsMotionCtfParams(AbstractJobParams):
         return {"import": "importmovies"}
 
 
-
 class TsAlignmentParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+
+    USER_PARAMS: ClassVar[Set[str]] = {
+        "alignment_method",
+        "rescale_angpixs",
+        "tomo_dimensions",
+        "sample_thickness_nm",
+        "do_at_most",
+        "perdevice",
+        "mdoc_pattern",
+        "gain_operations",
+        "patch_x",
+        "patch_y",
+        "axis_iter",
+        "axis_batch",
+        "imod_patch_size",
+        "imod_overlap",
+    }
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf"),
@@ -517,7 +577,6 @@ class TsAlignmentParams(AbstractJobParams):
             path_template="warp_tiltseries/",
             is_dir=True,
         ),
-        # NEW: settings file now lives in the job directory
         OutputSlot(
             key="warp_tiltseries_settings",
             produces=JobFileType.WARP_TILTSERIES_SETTINGS,
@@ -525,20 +584,20 @@ class TsAlignmentParams(AbstractJobParams):
         ),
     ]
 
-    alignment_method   : AlignmentMethod = AlignmentMethod.ARETOMO
-    rescale_angpixs    : float           = Field(default=12.0, ge=2.0, le=50.0)
-    tomo_dimensions    : str             = Field(default="4096x4096x2048")
-    sample_thickness_nm: float           = Field(default=180.0, ge=50.0, le=1000.0)  
-    do_at_most         : int             = Field(default=-1)
-    perdevice          : int             = Field(default=1, ge=0, le=8)
-    mdoc_pattern       : str             = Field(default="*.mdoc")
-    gain_operations    : Optional[str]   = None
-    patch_x            : int             = Field(default=0, ge=0)                    # was 2
-    patch_y            : int             = Field(default=0, ge=0)                    # was 2
-    axis_iter          : int             = Field(default=0, ge=0)                    # was 1
+    alignment_method: AlignmentMethod = AlignmentMethod.ARETOMO
+    rescale_angpixs: float = Field(default=12.0, ge=2.0, le=50.0)
+    tomo_dimensions: str = Field(default="4096x4096x2048")
+    sample_thickness_nm: float = Field(default=180.0, ge=50.0, le=1000.0)
+    do_at_most: int = Field(default=-1)
+    perdevice: int = Field(default=1, ge=0, le=8)
+    mdoc_pattern: str = Field(default="*.mdoc")
+    gain_operations: Optional[str] = None
+    patch_x: int = Field(default=0, ge=0)
+    patch_y: int = Field(default=0, ge=0)
+    axis_iter: int = Field(default=0, ge=0)
     axis_batch: int = Field(default=0, ge=0)
-    imod_patch_size    : int             = Field(default=200)
-    imod_overlap       : int             = Field(default=50)
+    imod_patch_size: int = Field(default=200)
+    imod_overlap: int = Field(default=50)
 
     def is_driver_job(self) -> bool:
         return True
@@ -550,7 +609,6 @@ class TsAlignmentParams(AbstractJobParams):
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
 
-
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"motion": "fsMotionAndCtf"}
@@ -560,11 +618,16 @@ class TsCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
+    USER_PARAMS: ClassVar[Set[str]] = {"window", "range_min_max", "defocus_hand", "defocus_min_max", "perdevice"}
+
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.ALIGNED_TILT_SERIES_STAR], preferred_source="aligntiltsWarp"),
         InputSlot(key="input_processing", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="aligntiltsWarp"),
-        # NEW
-        InputSlot(key="warp_tiltseries_settings", accepts=[JobFileType.WARP_TILTSERIES_SETTINGS], preferred_source="aligntiltsWarp"),
+        InputSlot(
+            key="warp_tiltseries_settings",
+            accepts=[JobFileType.WARP_TILTSERIES_SETTINGS],
+            preferred_source="aligntiltsWarp",
+        ),
     ]
 
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
@@ -579,12 +642,11 @@ class TsCtfParams(AbstractJobParams):
         ),
     ]
 
-    window         : int = Field(default=512, ge=128, le=2048)
-    range_min_max  : str = Field(default="30:6.0")
-    # defocus_hand   : str = Field(default="auto")   # was "set_flip"
-    defocus_hand   : str  = Field(default="auto")
-    defocus_min_max: str  = Field(default="1.1:8")        # was "0.5:8"
-    perdevice       : int = Field(default=1, ge=0, le=8)
+    window: int = Field(default=512, ge=128, le=2048)
+    range_min_max: str = Field(default="30:6.0")
+    defocus_hand: str = Field(default="auto")
+    defocus_min_max: str = Field(default="1.1:8")
+    perdevice: int = Field(default=1, ge=0, le=8)
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
@@ -621,10 +683,16 @@ class TsReconstructParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
+    USER_PARAMS: ClassVar[Set[str]] = {"rescale_angpixs", "halfmap_frames", "deconv", "perdevice"}
+
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
         InputSlot(key="input_processing", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="tsCtf"),
-        InputSlot(key="warp_tiltseries_settings", accepts=[JobFileType.WARP_TILTSERIES_SETTINGS], preferred_source="aligntiltsWarp"),
+        InputSlot(
+            key="warp_tiltseries_settings",
+            accepts=[JobFileType.WARP_TILTSERIES_SETTINGS],
+            preferred_source="aligntiltsWarp",
+        ),
     ]
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
         OutputSlot(key="output_star", produces=JobFileType.TOMOGRAMS_STAR, path_template="tomograms.star"),
@@ -661,6 +729,13 @@ class DenoiseTrainParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = True
 
+    USER_PARAMS: ClassVar[Set[str]] = {
+        "tomograms_for_training",
+        "number_training_subvolumes",
+        "subvolume_dimensions",
+        "perdevice",
+    }
+
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.TOMOGRAMS_STAR], preferred_source="tsReconstruct")
     ]
@@ -674,7 +749,6 @@ class DenoiseTrainParams(AbstractJobParams):
     perdevice: int = Field(default=1)
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
-        # This job uses in_tomoset, not in_mic
         input_star = self.paths.get("input_star", "")
         return [("in_tomoset", str(input_star))]
 
@@ -694,6 +768,8 @@ class DenoisePredictParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = True
 
+    USER_PARAMS: ClassVar[Set[str]] = {"ntiles_x", "ntiles_y", "ntiles_z", "denoising_tomo_name", "perdevice"}
+
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="model_path", accepts=[JobFileType.DENOISE_MODEL_TAR], preferred_source="denoisetrain"),
         InputSlot(key="input_star", accepts=[JobFileType.TOMOGRAMS_STAR], preferred_source="tsReconstruct"),
@@ -701,11 +777,7 @@ class DenoisePredictParams(AbstractJobParams):
     ]
 
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
-        OutputSlot(
-            key="output_star",
-            produces=JobFileType.DENOISED_TOMOGRAMS_STAR,
-            path_template="tomograms.star",  # NOT "denoised/tomograms.star"
-        ),
+        OutputSlot(key="output_star", produces=JobFileType.DENOISED_TOMOGRAMS_STAR, path_template="tomograms.star")
     ]
 
     ntiles_x: int = Field(default=4, ge=1)
@@ -719,7 +791,7 @@ class DenoisePredictParams(AbstractJobParams):
         # Set cryoCARE-specific SLURM defaults
         if "slurm_overrides" not in data:
             self.slurm_overrides = {
-                "gres": "gpu:1",  # cryoCARE prediction is single-GPU only!
+                "gres": "gpu:1",
                 "mem": "64G",
                 "cpus_per_task": 4,
                 "time": "4:00:00",
@@ -741,6 +813,7 @@ class DenoisePredictParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"train": "denoisetrain"}
 
+
 class TemplateWorkbenchState(BaseModel):
     pixel_size: float = 0.0
     box_size: int = 96
@@ -748,12 +821,28 @@ class TemplateWorkbenchState(BaseModel):
     apply_lowpass: bool = False
     template_resolution: Optional[float] = None
     basic_shape_def: str = "550:550:550"
-    auto_infer_seed: bool = True   # <-- new
+    auto_infer_seed: bool = True
+
 
 class TemplateMatchPytomParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
-    IS_TOMO_JOB: ClassVar[bool] = False  # From your template
+    IS_TOMO_JOB: ClassVar[bool] = False
+
+    USER_PARAMS: ClassVar[Set[str]] = {
+        "template_path",
+        "mask_path",
+        "angular_search",
+        "symmetry",
+        "defocus_weight",
+        "dose_weight",
+        "spectral_whitening",
+        "random_phase_correction",
+        "non_spherical_mask",
+        "bandpass_filter",
+        "gpu_split",
+        "perdevice",
+    }
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(
@@ -764,35 +853,38 @@ class TemplateMatchPytomParams(AbstractJobParams):
         InputSlot(key="input_tiltseries", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
     ]
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
-            OutputSlot(key="output_dir", produces=JobFileType.TM_RESULTS_DIR, path_template="tmResults/", is_dir=True),
-            OutputSlot(key="output_tomograms", produces=JobFileType.TOMOGRAMS_STAR, path_template="tomograms.star"),
+        OutputSlot(key="output_dir", produces=JobFileType.TM_RESULTS_DIR, path_template="tmResults/", is_dir=True),
+        OutputSlot(key="output_tomograms", produces=JobFileType.TOMOGRAMS_STAR, path_template="tomograms.star"),
     ]
 
+    # workbench is a nested model managed by the TemplateWorkbench widget,
+    # NOT a user param — the widget handles its own persistence.
     workbench: TemplateWorkbenchState = Field(default_factory=TemplateWorkbenchState)
+
     # Inputs (Strings here, resolved to Paths in resolve_paths)
     template_path: str = Field(default="")
-    mask_path    : str = Field(default="")
+    mask_path: str = Field(default="")
 
     # Algorithm Params
     angular_search: str = Field(default="12.0")
-    symmetry      : str = Field(default="C1")
+    symmetry: str = Field(default="C1")
 
     # Flags
-    defocus_weight         : bool = True
-    dose_weight            : bool = True
-    spectral_whitening     : bool = False
+    defocus_weight: bool = True
+    dose_weight: bool = True
+    spectral_whitening: bool = False
     random_phase_correction: bool = False
-    non_spherical_mask     : bool = False
+    non_spherical_mask: bool = False
 
-    bandpass_filter: str = Field(default="None")  # Format "low:high"
-    gpu_split      : str = Field(default="auto")  # "auto" or "4:4:2"
-    perdevice      : int = Field(default=1)
+    bandpass_filter: str = Field(default="None")
+    gpu_split: str = Field(default="auto")
+    perdevice: int = Field(default=1)
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         return [
             ("in_mic", str(self.paths.get("input_tomograms", ""))),
             ("in_3dref", str(self.template_path or "")),
-            ("in_mask",  str(self.mask_path or "")),
+            ("in_mask", str(self.mask_path or "")),
             ("in_coords", ""),
             ("in_mov", ""),
             ("in_part", ""),
@@ -806,11 +898,12 @@ class TemplateMatchPytomParams(AbstractJobParams):
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
-        # We prefer denoised tomograms, but reconstruct works too
         return {"tomograms": "denoisepredict"}
+
 
 class ExtractionCutoffMethod(str, Enum):
     """How to threshold template matching scores for candidate extraction."""
+
     FALSE_POSITIVES = "NumberOfFalsePositives"
     MANUAL = "ManualCutOff"
 
@@ -818,6 +911,17 @@ class ExtractionCutoffMethod(str, Enum):
 class CandidateExtractPytomParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+
+    USER_PARAMS: ClassVar[Set[str]] = {
+        "particle_diameter_ang",
+        "max_num_particles",
+        "cutoff_method",
+        "cutoff_value",
+        "apix_score_map",
+        "score_filter_method",
+        "score_filter_value",
+        "mask_fold_path",
+    }
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_tm_job", accepts=[JobFileType.TM_RESULTS_DIR], preferred_source="templatematching"),
@@ -839,7 +943,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
     particle_diameter_ang: float = Field(default=200.0)
     max_num_particles: int = Field(default=1500)
 
-    # Thresholding -- now an enum
+    # Thresholding
     cutoff_method: ExtractionCutoffMethod = Field(default=ExtractionCutoffMethod.FALSE_POSITIVES)
     cutoff_value: float = Field(default=1.0)
 
@@ -867,6 +971,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"tm_job": "templatematching"}
 
+
 class SubtomoExtractionParams(AbstractJobParams):
     """
     Subtomogram extraction using RELION's relion_tomo_subtomo.
@@ -875,6 +980,24 @@ class SubtomoExtractionParams(AbstractJobParams):
 
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+
+    USER_PARAMS: ClassVar[Set[str]] = {
+        "binning",
+        "box_size",
+        "crop_size",
+        "do_float16",
+        "do_stack2d",
+        "max_dose",
+        "min_frames",
+    }
+    # NOTE: additional_sources and merge_only are intentionally NOT in
+    # USER_PARAMS. They are widget-managed state (the merge panel sets
+    # them directly and triggers its own save). Keeping them out means:
+    #   - No immutability enforcement (the merge panel can write them
+    #     even after the job has run, which is correct — merging is a
+    #     post-hoc operation on existing outputs)
+    #   - No automatic dirty-marking (the merge panel calls save_handler
+    #     explicitly after changing them)
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(
@@ -888,7 +1011,9 @@ class SubtomoExtractionParams(AbstractJobParams):
         ),
     ]
 
-    additional_sources: List[str] = Field(default_factory=list, description="Extra optimisation_set.star files or job dirs to merge")
+    additional_sources: List[str] = Field(
+        default_factory=list, description="Extra optimisation_set.star files or job dirs to merge"
+    )
     merge_only: bool = Field(default=False, description="If true, skip relion_tomo_subtomo and only merge")
 
     # Extraction parameters
@@ -916,35 +1041,44 @@ class SubtomoExtractionParams(AbstractJobParams):
 
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
-        # Depends on candidate extraction output
         return {"optimisation_set": "tmextractcand"}
+
 
 class ReconstructParticleParams(AbstractJobParams):
     """
     Subtomogram reconstruction using relion_tomo_reconstruct_particle.
     Produces an initial average (merged.mrc) and half-maps from extracted particles.
-    This is the first step after extraction, and produces the reference for Class3D/Refine3D.
     """
 
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
+    USER_PARAMS: ClassVar[Set[str]] = {
+        "box_size",
+        "crop_size",
+        "symmetry",
+        "binning",
+        "whiten",
+        "no_ctf",
+        "threads",
+        "threads_in",
+        "threads_out",
+    }
+
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(
-            key="input_optimisation",
-            accepts=[JobFileType.OPTIMISATION_SET_STAR],
-            preferred_source="subtomoExtraction",
+            key="input_optimisation", accepts=[JobFileType.OPTIMISATION_SET_STAR], preferred_source="subtomoExtraction"
         )
     ]
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
-        OutputSlot(key="output_map", produces=JobFileType.REFERENCE_MAP, path_template="merged.mrc"),
+        OutputSlot(key="output_map", produces=JobFileType.REFERENCE_MAP, path_template="merged.mrc")
     ]
 
     # Reconstruction parameters
-    box_size : int = Field(default=384, description="Box size in pixels")
+    box_size: int = Field(default=384, description="Box size in pixels")
     crop_size: int = Field(default=224, description="Cropped box size (-1 = no cropping)")
-    symmetry : str = Field(default="C1", description="Symmetry group (C1, C2, I1, etc.)")
-    binning  : int = Field(default=1, ge=1, description="Binning factor")
+    symmetry: str = Field(default="C1", description="Symmetry group (C1, C2, I1, etc.)")
+    binning: int = Field(default=1, ge=1, description="Binning factor")
 
     # Noise / CTF
     whiten: bool = Field(default=False, description="Whiten noise by flattening power spectrum")
@@ -969,38 +1103,46 @@ class ReconstructParticleParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"optimisation_set": "subtomoExtraction"}
 
+
 class Class3DParams(AbstractJobParams):
     """
     3D Classification using relion_refine (without --auto_refine).
-
-    Two main use cases from the tutorial:
-    1. Single-class alignment (K=1) to produce a clean initial reference for mask creation
-    2. Multi-class classification (K>1) to sort heterogeneous particles
-
-    Uses --ios to read tomo optimisation_set directly.
     """
 
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
+    USER_PARAMS: ClassVar[Set[str]] = {
+        "n_classes",
+        "n_iterations",
+        "tau_fudge",
+        "healpix_order",
+        "offset_range",
+        "offset_step",
+        "sigma_ang",
+        "symmetry",
+        "ini_high",
+        "particle_diameter",
+        "solvent_mask_path",
+        "flatten_solvent",
+        "firstiter_cc",
+        "use_gpu",
+        "preread_images",
+        "threads",
+    }
+
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(
-            key="input_optimisation",
-            accepts=[JobFileType.OPTIMISATION_SET_STAR],
-            preferred_source="subtomoExtraction",
+            key="input_optimisation", accepts=[JobFileType.OPTIMISATION_SET_STAR], preferred_source="subtomoExtraction"
         ),
-        InputSlot(
-            key="input_reference",
-            accepts=[JobFileType.REFERENCE_MAP],
-            preferred_source="reconstructParticle",
-        ),
+        InputSlot(key="input_reference", accepts=[JobFileType.REFERENCE_MAP], preferred_source="reconstructParticle"),
     ]
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
         OutputSlot(
             key="output_optimisation",
             produces=JobFileType.OPTIMISATION_SET_STAR,
             path_template="run_optimisation_set.star",
-        ),
+        )
     ]
 
     # Classification
@@ -1009,7 +1151,6 @@ class Class3DParams(AbstractJobParams):
     tau_fudge: float = Field(default=-1.0, description="Regularisation parameter (-1 = auto)")
 
     # Angular sampling
-    # Healpix order: 2=15deg, 3=7.5deg, 4=3.75deg, 5=1.875deg
     healpix_order: int = Field(default=4, ge=1, le=6, description="Angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)")
     offset_range: int = Field(default=6, ge=0, description="Translational search range (pixels)")
     offset_step: int = Field(default=2, ge=1, description="Translational search step (pixels)")
@@ -1022,12 +1163,14 @@ class Class3DParams(AbstractJobParams):
     ini_high: float = Field(default=45.0, ge=0, description="Initial low-pass filter (Angstroms)")
     particle_diameter: float = Field(default=-1.0, description="Mask diameter (Angstroms, -1 = auto)")
 
-    # Optional mask (string path, like template_match)
+    # Optional mask
     solvent_mask_path: str = Field(default="", description="Path to soft mask for references (optional)")
 
     # Reference handling
     flatten_solvent: bool = Field(default=True, description="Apply mask to references during refinement")
-    firstiter_cc: bool = Field(default=False, description="Use CC in first iteration (if reference not on absolute scale)")
+    firstiter_cc: bool = Field(
+        default=False, description="Use CC in first iteration (if reference not on absolute scale)"
+    )
 
     # Computation
     use_gpu: bool = Field(default=True, description="Use GPU acceleration")
@@ -1048,10 +1191,7 @@ class Class3DParams(AbstractJobParams):
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_opt = self.paths.get("input_optimisation", "")
         input_ref = self.paths.get("input_reference", "")
-        return [
-            ("in_optimisation", str(input_opt)),
-            ("in_3dref", str(input_ref)),
-        ]
+        return [("in_optimisation", str(input_opt)), ("in_3dref", str(input_ref))]
 
     def is_driver_job(self) -> bool:
         return True
