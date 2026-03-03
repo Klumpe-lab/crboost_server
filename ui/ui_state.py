@@ -35,7 +35,7 @@ class JobCardUIState(BaseModel):
 
     model_config = ConfigDict(use_enum_values=True)
 
-    active_monitor_tab: MonitorTab = MonitorTab.CONFIG
+    active_monitor_tab: str = MonitorTab.CONFIG.value   # <-- str, not MonitorTab
     user_switched_tab: bool = False
 
 
@@ -386,9 +386,9 @@ class UIStateManager:
             self._job_widget_refs[job_str] = JobWidgetRefs()
         return self._job_widget_refs[job_str]
 
-    def set_job_monitor_tab(self, job_type: JobType, tab: MonitorTab, user_initiated: bool = False):
+    def set_job_monitor_tab(self, job_type: JobType, tab: str, user_initiated: bool = False):
         ui_state = self.get_job_ui_state(job_type)
-        ui_state.active_monitor_tab = tab
+        ui_state.active_monitor_tab = tab if isinstance(tab, str) else tab.value
         if user_initiated:
             ui_state.user_switched_tab = True
 

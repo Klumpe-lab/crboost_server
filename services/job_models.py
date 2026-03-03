@@ -486,20 +486,20 @@ class FsMotionCtfParams(AbstractJobParams):
         ),
     ]
 
-    m_range_min_max: str = "500:10"
-    m_bfac: int = Field(default=-500)
-    m_grid: str = "1x1x3"
-    c_range_min_max: str = "30:6.0"
-    c_defocus_min_max: str = "1.1:8"
-    c_grid: str = "2x2x1"
-    c_use_sum: bool = True
-    c_window: int = Field(default=512, ge=128)
-    out_average_halves: bool = True
-    out_skip_first: int = 0
-    out_skip_last: int = 0
-    perdevice: int = Field(default=1, ge=0, le=8)
-    do_at_most: int = Field(default=-1)
-    gain_operations: Optional[str] = None
+    m_range_min_max: str = Field(default="500:10", description="Motion estimation range min:max in Angstroms")
+    m_bfac: int = Field(default=-500, description="B-factor for motion estimation (negative = more smoothing)")
+    m_grid: str = Field(default="1x1x3", description="Motion estimation grid XxYxZ")
+    c_range_min_max: str = Field(default="30:6.0", description="CTF fitting resolution range min:max in Angstroms")
+    c_defocus_min_max: str = Field(default="1.1:8", description="Defocus search range min:max in microns")
+    c_grid: str = Field(default="2x2x1", description="CTF estimation grid XxYxZ")
+    c_use_sum: bool = Field(default=True, description="Use frame sum for CTF estimation instead of individual frames")
+    c_window: int = Field(default=512, ge=128, description="CTF estimation window size in pixels")
+    out_average_halves: bool = Field(default=True, description="Output half-set averages for independent validation")
+    out_skip_first: int = Field(default=0, description="Skip this many initial tilts")
+    out_skip_last: int = Field(default=0, description="Skip this many final tilts")
+    perdevice: int = Field(default=1, ge=0, le=8, description="Parallel tilt series per GPU")
+    do_at_most: int = Field(default=-1, description="Process at most N tilt series (-1 = all)")
+    gain_operations: Optional[str] = Field(default=None, description="Gain reference operations (e.g. flip, rotate)")
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_star = self.paths.get("input_star", "")

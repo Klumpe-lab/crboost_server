@@ -1,4 +1,4 @@
-# At the top of the file, after existing imports:
+# ui/pipeline_builder/job_tab_component.py
 
 import asyncio
 from datetime import datetime
@@ -8,29 +8,28 @@ from nicegui import ui
 
 from services.project_state import JobStatus, JobType, get_project_state, get_state_service
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
+from ui.job_plugins import get_extra_tabs
 from ui.status_indicator import BoundStatusBadge, BoundStatusDot
 from ui.ui_state import get_ui_state_manager, UIStateManager, MonitorTab, get_job_display_name
 
 from ui.pipeline_builder.config_tab import render_config_tab, is_job_frozen
+from ui.pipeline_builder.io_tab import render_io_tab
+from ui.pipeline_builder.slurm_tab import render_slurm_tab
 from ui.pipeline_builder.logs_tab import render_logs_tab
 from ui.pipeline_builder.files_tab import render_files_tab
 
 
-def snake_to_title(s: str) -> str:
-    return " ".join(word.capitalize() for word in s.split("_"))
+# Built-in tab keys (beyond the MonitorTab enum)
+TAB_IO = "io"
+TAB_SLURM = "slurm"
 
 
 # ===========================================
 # Debounced Save
 # ===========================================
 
-class DebouncedSaver:
-    """Coalesces rapid-fire save triggers into a single disk write.
 
-    Each call to trigger() cancels any pending save and restarts
-    the delay. The actual write only happens after `delay` seconds
-    of silence.
-    """
+class DebouncedSaver:
     def __init__(self, delay: float = 1.0):
         self._delay = delay
         self._task: Optional[asyncio.Task] = None
@@ -53,14 +52,63 @@ class DebouncedSaver:
 def create_save_handler() -> Callable:
     saver = DebouncedSaver(delay=1.0)
     return saver.trigger
-    return lambda: asyncio.create_task(auto_save_state())
+
+
+# ===========================================
+# Tab list builder
+# ===========================================
+
+
+def _build_tab_list(job_type: JobType):
+    """Return list of (key, label) tuples for all tabs."""
+    tabs = [
+        (MonitorTab.CONFIG.value, "Parameters"),
+        (TAB_IO, "I/O"),
+        (TAB_SLURM, "SLURM"),
+        (MonitorTab.LOGS.value, "Logs"),
+        (MonitorTab.FILES.value, "Files"),
+    ]
+    for et in get_extra_tabs(job_type):
+        tabs.append((et.key, et.label))
+    return tabs
+
+
+# ===========================================
+# Content rendering for a tab key
+# ===========================================
+
+
+def _render_tab_content(tab_key, job_type, job_model, is_frozen, save_handler, backend, ui_mgr):
+    if tab_key == MonitorTab.CONFIG.value:
+        with ui.scroll_area().classes("w-full h-full p-2"):
+            render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend, save_handler)
+    elif tab_key == TAB_IO:
+        with ui.scroll_area().classes("w-full h-full"):
+            render_io_tab(job_type, job_model, is_frozen, ui_mgr, save_handler)
+    elif tab_key == TAB_SLURM:
+        with ui.scroll_area().classes("w-full h-full"):
+            render_slurm_tab(job_model, is_frozen, save_handler)
+    elif tab_key == MonitorTab.LOGS.value:
+        render_logs_tab(job_type, job_model, backend, ui_mgr)
+    elif tab_key == MonitorTab.FILES.value:
+        render_files_tab(job_type, job_model, ui_mgr)
+    else:
+        # Plugin extra tab
+        for et in get_extra_tabs(job_type):
+            if tab_key == et.key:
+                et.render(job_type, job_model, backend, ui_mgr)
+                return
+        ui.label(f"Unknown tab: {tab_key}").classes("text-red-500 p-4")
 
 
 # ===========================================
 # Main Render Function
 # ===========================================
 
-def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks: Dict[str, Callable]) -> None:
+
+def render_job_tab(
+    job_type: JobType, backend, ui_mgr: UIStateManager, callbacks: Dict[str, Callable]
+) -> None:
     state = get_project_state()
     job_model = state.jobs.get(job_type)
 
@@ -74,9 +122,10 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
     frozen = is_job_frozen(job_type)
     active_tab = job_ui_state.active_monitor_tab
 
-    if frozen and active_tab == MonitorTab.CONFIG and not job_ui_state.user_switched_tab:
-        active_tab = MonitorTab.LOGS
-        job_ui_state.active_monitor_tab = MonitorTab.LOGS
+    # Auto-switch to Logs for frozen jobs (unless user explicitly chose a tab)
+    if frozen and active_tab == MonitorTab.CONFIG.value and not job_ui_state.user_switched_tab:
+        active_tab = MonitorTab.LOGS.value
+        job_ui_state.active_monitor_tab = MonitorTab.LOGS.value
 
     # --- Header ---
     with ui.column().classes("w-full border-b border-gray-200 bg-white pl-6 pr-6 pt-4 pb-4"):
@@ -95,20 +144,28 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
                     if isinstance(state.modified_at, datetime)
                     else str(state.modified_at)
                 )
-                ui.label(f"Created: {created} · Modified: {modified}").classes("text-xs text-gray-400")
+                ui.label(f"Created: {created} · Modified: {modified}").classes(
+                    "text-xs text-gray-400"
+                )
 
             with ui.row().classes("items-center gap-4"):
-                switcher_container = ui.row().classes("bg-gray-100 p-1 rounded-lg gap-0 border border-gray-200")
+                switcher_container = ui.row().classes(
+                    "bg-gray-100 p-1 rounded-lg gap-0 border border-gray-200"
+                )
                 widget_refs.switcher_container = switcher_container
-                _render_tab_switcher(switcher_container, job_type, active_tab, backend, ui_mgr, callbacks)
-                ui.button(icon="refresh", on_click=lambda: _force_status_refresh(callbacks)).props(
-                    "flat dense round"
-                ).classes("text-gray-400 hover:text-gray-800")
-                # The button - no asyncio.create_task, just a direct call
+                _render_tab_switcher(
+                    switcher_container, job_type, active_tab, backend, ui_mgr, callbacks
+                )
+                ui.button(
+                    icon="refresh",
+                    on_click=lambda: _force_status_refresh(callbacks),
+                ).props("flat dense round").classes("text-gray-400 hover:text-gray-800")
                 if ui_mgr.is_project_created:
                     ui.button(
                         icon="delete",
-                        on_click=lambda: _handle_delete(job_type, job_model, backend, ui_mgr, callbacks)
+                        on_click=lambda: _handle_delete(
+                            job_type, job_model, backend, ui_mgr, callbacks
+                        ),
                     ).props("flat round dense color=red").tooltip("Delete this job")
 
     # --- Content ---
@@ -120,46 +177,53 @@ def render_job_tab(job_type: JobType, backend, ui_mgr: UIStateManager, callbacks
     save_handler = create_save_handler()
 
     with content_container:
-        if active_tab == MonitorTab.CONFIG:
-            with ui.scroll_area().classes("w-full h-full p-2"):
-
-                render_config_tab(job_type, job_model, frozen, ui_mgr, backend, save_handler)
-        elif active_tab == MonitorTab.LOGS:
-            render_logs_tab(job_type, job_model, backend, ui_mgr)
-        elif active_tab == MonitorTab.FILES:
-            render_files_tab(job_type, job_model, ui_mgr)
+        _render_tab_content(
+            active_tab, job_type, job_model, frozen, save_handler, backend, ui_mgr
+        )
 
 
 # ===========================================
 # Tab Switcher
 # ===========================================
 
+
 def _render_tab_switcher(container, job_type, active_tab, backend, ui_mgr, callbacks):
     container.clear()
-    tabs = [(MonitorTab.CONFIG, "Parameters"), (MonitorTab.LOGS, "Logs"), (MonitorTab.FILES, "Files")]
+    tabs = _build_tab_list(job_type)
 
     with container:
-        for tab, label in tabs:
-            is_active = active_tab == tab
-            btn = ui.button(label, on_click=lambda t=tab: _handle_tab_switch(job_type, t, backend, ui_mgr, callbacks))
+        for tab_key, label in tabs:
+            is_active = active_tab == tab_key
+            btn = ui.button(
+                label,
+                on_click=lambda t=tab_key: _handle_tab_switch(
+                    job_type, t, backend, ui_mgr, callbacks
+                ),
+            )
             btn.props("flat dense no-caps")
             base_style = (
-                "font-size: 12px; font-weight: 500; padding: 4px 16px; border-radius: 6px; transition: all 0.2s;"
+                "font-size: 12px; font-weight: 500; padding: 4px 16px; "
+                "border-radius: 6px; transition: all 0.2s;"
             )
             if is_active:
-                btn.style(f"{base_style} background: white; color: #111827; box-shadow: 0 1px 3px rgba(0,0,0,0.1);")
+                btn.style(
+                    f"{base_style} background: white; color: #111827; "
+                    f"box-shadow: 0 1px 3px rgba(0,0,0,0.1);"
+                )
             else:
                 btn.style(f"{base_style} background: transparent; color: #6b7280;")
 
 
-def _handle_tab_switch(job_type, tab, backend, ui_mgr, callbacks):
-    ui_mgr.set_job_monitor_tab(job_type, tab, user_initiated=True)
+def _handle_tab_switch(job_type, tab_key, backend, ui_mgr, callbacks):
+    ui_mgr.set_job_monitor_tab(job_type, tab_key, user_initiated=True)
     widget_refs = ui_mgr.get_job_widget_refs(job_type)
 
     if widget_refs.switcher_container:
-        _render_tab_switcher(widget_refs.switcher_container, job_type, tab, backend, ui_mgr, callbacks)
+        _render_tab_switcher(
+            widget_refs.switcher_container, job_type, tab_key, backend, ui_mgr, callbacks
+        )
 
-    if tab != MonitorTab.LOGS:
+    if tab_key != MonitorTab.LOGS.value:
         ui_mgr.cleanup_job_logs_timer(job_type)
 
     content_container = widget_refs.content_container
@@ -171,35 +235,33 @@ def _handle_tab_switch(job_type, tab, backend, ui_mgr, callbacks):
 
         content_container.clear()
         with content_container:
-            if tab == MonitorTab.CONFIG:
-                with ui.scroll_area().classes("w-full h-full p-2"):
-                    render_config_tab(job_type, job_model, frozen, ui_mgr, backend, save_handler)
-            elif tab == MonitorTab.LOGS:
-                render_logs_tab(job_type, job_model, backend, ui_mgr)
-            elif tab == MonitorTab.FILES:
-                render_files_tab(job_type, job_model, ui_mgr)
+            _render_tab_content(
+                tab_key, job_type, job_model, frozen, save_handler, backend, ui_mgr
+            )
 
 
 # ===========================================
-# Delete Handler
+# Delete Handler (unchanged)
 # ===========================================
+
 
 def _handle_delete(job_type, job_model, backend, ui_mgr, callbacks):
-    """Handle job deletion with orphan preview. Must be sync - runs in UI context."""
     deletion_service = get_deletion_service()
     project_path = ui_mgr.project_path
 
     preview = None
     if project_path and job_model.relion_job_name:
         preview = deletion_service.preview_deletion(
-            project_path, job_model.relion_job_name, job_resolver=backend.pipeline_orchestrator.job_resolver
+            project_path,
+            job_model.relion_job_name,
+            job_resolver=backend.pipeline_orchestrator.job_resolver,
         )
 
     with ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
         ui.label(f"Delete {get_job_display_name(job_type)}?").classes("text-lg font-bold")
-        ui.label("This will move the job files to Trash/ and remove it from the pipeline.").classes(
-            "text-sm text-gray-600 mb-2"
-        )
+        ui.label(
+            "This will move the job files to Trash/ and remove it from the pipeline."
+        ).classes("text-sm text-gray-600 mb-2")
 
         if preview and preview.get("success") and preview.get("downstream_count", 0) > 0:
             downstream = preview.get("downstream_jobs", [])
@@ -212,13 +274,17 @@ def _handle_delete(job_type, job_model, backend, ui_mgr, callbacks):
                 with ui.column().classes("gap-1 ml-6"):
                     for detail in downstream:
                         with ui.row().classes("items-center gap-2"):
-                            ui.label(detail.get("path", "Unknown")).classes("text-xs font-mono text-gray-700")
+                            ui.label(detail.get("path", "Unknown")).classes(
+                                "text-xs font-mono text-gray-700"
+                            )
                             if detail.get("type"):
                                 ui.label(f"({detail['type']})").classes("text-xs text-gray-500")
-                            ui.label(f"- {detail.get('status', 'Unknown')}").classes("text-xs text-gray-500")
-                ui.label("These jobs will have broken input references and may fail if re-run.").classes(
-                    "text-xs text-orange-700 mt-2"
-                )
+                            ui.label(f"- {detail.get('status', 'Unknown')}").classes(
+                                "text-xs text-gray-500"
+                            )
+                ui.label(
+                    "These jobs will have broken input references and may fail if re-run."
+                ).classes("text-xs text-orange-700 mt-2")
         else:
             ui.label("No downstream jobs will be affected.").classes(
                 "text-sm text-green-600 bg-green-50 p-2 rounded"
@@ -235,14 +301,22 @@ def _handle_delete(job_type, job_model, backend, ui_mgr, callbacks):
                     if result.get("success"):
                         orphans = result.get("orphaned_jobs", [])
                         if orphans:
-                            ui.notify(f"Job deleted. {len(orphans)} downstream job(s) orphaned.", type="warning", timeout=5000)
+                            ui.notify(
+                                f"Job deleted. {len(orphans)} downstream job(s) orphaned.",
+                                type="warning",
+                                timeout=5000,
+                            )
                         else:
                             ui.notify("Job deleted successfully.", type="positive")
                         remove_cb = callbacks.get("remove_job_from_pipeline")
                         if remove_cb:
                             remove_cb(job_type)
                     else:
-                        ui.notify(f"Delete failed: {result.get('error')}", type="negative", timeout=8000)
+                        ui.notify(
+                            f"Delete failed: {result.get('error')}",
+                            type="negative",
+                            timeout=8000,
+                        )
                 except Exception as e:
                     ui.notify(f"Error: {e}", type="negative")
                     import traceback
@@ -254,10 +328,6 @@ def _handle_delete(job_type, job_model, backend, ui_mgr, callbacks):
 
     dialog.open()
 
-
-# ===========================================
-# Status Refresh
-# ===========================================
 
 def _force_status_refresh(callbacks: Dict[str, Callable]):
     ui.notify("Refreshing statuses...", timeout=1)

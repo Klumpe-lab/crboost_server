@@ -1,11 +1,4 @@
 # ui/workspace_page.py
-"""
-Phase 2c: build_workspace_page now calls prepare_for_page_rebuild()
-at the top to clear stale widget refs and callbacks from a previous
-page load.  NiceGUI destroys DOM elements on navigation, but our
-UIStateManager (persisted in app.storage.tab) still holds refs to
-the dead objects.
-"""
 
 import asyncio
 from nicegui import ui
@@ -15,23 +8,22 @@ from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_pa
 from ui.ui_state import get_ui_state_manager
 
 
+def _fmt(v) -> str:
+    if v is None:
+        return "---"
+    if isinstance(v, float):
+        return f"{v:.4g}"
+    return str(v)
+
+
 def build_workspace_page(backend: CryoBoostBackend):
     ui_mgr = get_ui_state_manager()
     state = get_project_state()
 
-    # ------------------------------------------------------------------
-    # Phase 2c: Clear stale widget refs from previous page loads.
-    #
-    # The UIStateManager persists in app.storage.tab across navigations,
-    # but all the NiceGUI elements it references were destroyed when the
-    # user navigated away.  prepare_for_page_rebuild() nullifies those
-    # dead refs and clears stale subscribers/callbacks so the fresh page
-    # build starts clean.
-    # ------------------------------------------------------------------
     ui_mgr.prepare_for_page_rebuild()
 
     # ===================================================================
-    # SAFETY CHECKS - Prevent rendering with stale/invalid state
+    # SAFETY CHECKS
     # ===================================================================
     if not ui_mgr.is_project_created:
         with ui.column().classes("w-full h-screen items-center justify-center gap-4"):
@@ -49,38 +41,25 @@ def build_workspace_page(backend: CryoBoostBackend):
         return
 
     # ===================================================================
-    # FORCE SYNC FUNCTION
+    # FORCE SYNC
     # ===================================================================
     async def force_full_sync():
-        """Reload everything from disk and rebuild UI."""
         project_path = ui_mgr.project_path
-
         if not project_path:
             ui.notify("No project loaded", type="warning")
             return
-
         try:
-            # 1. Reload backend state from disk
             result = await backend.load_existing_project(str(project_path))
-
             if not result.get("success"):
                 ui.notify(f"Sync failed: {result.get('error')}", type="negative")
                 return
-
-            # 2. Force status sync
             await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
-
-            # 3. Re-sync UI state with backend
             fresh_state = backend.state_service.state
             ui_mgr.load_from_project(
                 project_path=fresh_state.project_path, scheme_name="default", jobs=list(fresh_state.jobs.keys())
             )
-
-            # 4. Trigger UI rebuild
             ui_mgr.request_rebuild()
-
             ui.notify("State synced from disk", type="positive")
-
         except Exception as e:
             import traceback
 
@@ -92,11 +71,38 @@ def build_workspace_page(backend: CryoBoostBackend):
     # ===================================================================
     with ui.header().classes("bg-white border-b border-gray-200 text-gray-800 h-auto px-4 py-1"):
         with ui.row().classes("w-full items-center justify-between"):
-            # Left: Project name + metadata
+            # Left: Project name (with global params popover) + metadata
             with ui.row().classes("items-center gap-5"):
+                # Project name + science icon as popover trigger
                 with ui.row().classes("items-center gap-1"):
                     ui.icon("layers", size="16px").classes("text-blue-600")
                     ui.label(state.project_name).classes("font-semibold text-xs")
+
+                    # Global params popover on the science icon
+                    with (
+                        ui.button(icon="science", on_click=None)
+                        .props("flat dense round size=sm")
+                        .classes("text-gray-400 hover:text-blue-600")
+                    ):
+                        with ui.menu().classes("p-0"):
+                            with ui.card().classes("p-3 border border-gray-200 shadow-md").style("min-width: 220px;"):
+                                ui.label("Experimental Parameters").classes(
+                                    "text-[10px] font-black text-gray-400 uppercase tracking-wide mb-2"
+                                )
+                                _params = [
+                                    ("Pixel Size", f"{_fmt(state.microscope.pixel_size_angstrom)} A"),
+                                    ("Voltage", f"{_fmt(state.microscope.acceleration_voltage_kv)} kV"),
+                                    ("Cs", f"{_fmt(state.microscope.spherical_aberration_mm)} mm"),
+                                    ("Amp Contrast", _fmt(state.microscope.amplitude_contrast)),
+                                    ("Dose / Tilt", f"{_fmt(state.acquisition.dose_per_tilt)} e-/A^2"),
+                                    ("Tilt Axis", f"{_fmt(state.acquisition.tilt_axis_degrees)} deg"),
+                                ]
+                                for plabel, pval in _params:
+                                    with ui.row().classes(
+                                        "w-full justify-between py-1 border-b border-gray-100 last:border-0"
+                                    ):
+                                        ui.label(plabel).classes("text-xs text-gray-500")
+                                        ui.label(pval).classes("text-xs font-medium text-gray-700 font-mono")
 
                 if state.project_path:
                     with ui.column().classes("gap-0"):
