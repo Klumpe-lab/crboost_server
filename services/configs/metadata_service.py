@@ -443,6 +443,7 @@ class MetadataTranslator:
             ts_id_failed = []
             updated_tilt_dfs = {}
             all_tilts_list = []
+            name_mapping = {}  # old rlnTomoName -> actual_ts_id from filesystem
 
             for _, ts_row in in_ts_df.iterrows():
                 ts_star_file_rel = ts_row["rlnTomoTiltSeriesStarFile"]
@@ -472,6 +473,7 @@ class MetadataTranslator:
 
                 actual_ts_dir = matching_dirs[0]
                 actual_ts_id = actual_ts_dir.name  # e.g. "new_stage3.5_project_Position_1"
+                name_mapping[ts_row["rlnTomoName"]] = actual_ts_id
 
                 aln_data = None
                 if alignment_method_enum == AlignmentMethod.ARETOMO:
@@ -539,6 +541,7 @@ class MetadataTranslator:
                 updated_tilt_dfs[actual_ts_id] = ts_tilts_df
                 ts_row_df = pd.concat([pd.DataFrame(ts_row).T] * len(ts_tilts_df), ignore_index=True)
                 ts_row_df.index = ts_tilts_df.index
+                ts_row_df["rlnTomoName"] = actual_ts_id
                 all_tilts_list.append(pd.concat([ts_row_df, ts_tilts_df], axis=1))
 
             if not updated_tilt_dfs:
@@ -549,6 +552,8 @@ class MetadataTranslator:
                 self.starfile_service.write({tid: tdf}, output_tilts_dir / f"{tid}.star")
 
             out_ts_df = in_ts_df[~in_ts_df["rlnTomoName"].isin(ts_id_failed)].copy()
+            # Update rlnTomoName to match actual filesystem names (fixes dots-in-name truncation from relion_import)
+            out_ts_df["rlnTomoName"] = out_ts_df["rlnTomoName"].apply(lambda x: name_mapping.get(x, x))
             out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(lambda x: f"tilt_series/{x}.star")
 
             dims = tomo_dimensions.split("x")
