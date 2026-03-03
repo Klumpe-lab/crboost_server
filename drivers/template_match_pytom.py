@@ -31,7 +31,9 @@ def _resolve_star_path(base_dir: Path, p: str) -> Path:
     return pp if pp.is_absolute() else (base_dir / pp).resolve()
 
 
-def generate_legacy_text_files(tiltseries_global_star: Path, output_dir: Path) -> dict[str, dict[str, Path]]:
+def generate_legacy_text_files(tiltseries_global_star: Path,
+    output_dir: Path,
+) -> dict[str, dict[str, Path]]:
     """
     Replicate old CryoBoost's generatePytomInputFiles:
     extract tilt angles, defocus (in um), and dose from per-tilt star files
@@ -76,9 +78,14 @@ def generate_legacy_text_files(tiltseries_global_star: Path, output_dir: Path) -
     return result
 
 
-def make_pytom_tomograms_star(*, tomograms_star: Path, tiltseries_global_star: Path, out_star: Path) -> Path:
+def make_pytom_tomograms_star(
+    *,
+    tomograms_star: Path,
+    tiltseries_global_star: Path,
+    out_star: Path,
+) -> Path:
     tomo_df = _get_df_from_star(tomograms_star).copy()
-    ts_df = _get_df_from_star(tiltseries_global_star).copy()
+    ts_df   = _get_df_from_star(tiltseries_global_star).copy()
 
     if "rlnTomoName" not in tomo_df.columns:
         raise KeyError(f"{tomograms_star} missing rlnTomoName")
@@ -140,7 +147,10 @@ def resolve_tomogram_path(raw_path: str | Path, *, tomograms_star: Path, project
     if rel.is_absolute():
         return rel
 
-    candidates = [tomograms_star.parent / rel, project_root / rel]
+    candidates = [
+        tomograms_star.parent / rel,
+        project_root / rel,
+    ]
     for c in candidates:
         if c.exists():
             return c
@@ -193,23 +203,15 @@ def main():
 
         base_cmd = [
             "pytom_match_template.py",
-            "-t",
-            str(template_file),
-            "-d",
-            str(tm_results_dir),
-            "-m",
-            str(mask_file),
-            "--angular-search",
-            str(params.angular_search),
-            "--voltage",
-            str(state.microscope.acceleration_voltage_kv),
-            "--spherical-aberration",
-            str(state.microscope.spherical_aberration_mm),
-            "--amplitude-contrast",
-            str(state.microscope.amplitude_contrast),
+            "-t", str(template_file),
+            "-d", str(tm_results_dir),
+            "-m", str(mask_file),
+            "--angular-search", str(params.angular_search),
+            "--voltage", str(state.microscope.acceleration_voltage_kv),
+            "--spherical-aberration", str(state.microscope.spherical_aberration_mm),
+            "--amplitude-contrast", str(state.microscope.amplitude_contrast),
             "--per-tilt-weighting",
-            "--log",
-            "debug",
+            "--log", "debug",
             "-g",
         ] + gpu_ids
 
@@ -252,7 +254,10 @@ def main():
         legacy_files = None
         if LEGACY_TEXT_INPUT:
             print("[DRIVER] LEGACY MODE: generating text files for pytom 0.10", flush=True)
-            legacy_files = generate_legacy_text_files(tiltseries_global_star=input_star_ts, output_dir=job_dir)
+            legacy_files = generate_legacy_text_files(
+                tiltseries_global_star=input_star_ts,
+                output_dir=job_dir,
+            )
             base_cmd.extend(["--tomogram-ctf-model", "phase-flip"])
         else:
             patched_tomos = make_pytom_tomograms_star(
@@ -261,6 +266,10 @@ def main():
                 out_star=job_dir / "tomograms_for_pytom.star",
             )
             print(f"[DRIVER] Using patched tomograms STAR for PyTOM: {patched_tomos}", flush=True)
+
+            base_cmd.extend(["--tomogram-ctf-model", "phase-flip"])
+
+
 
             ts_staging_dir = job_dir / "tilt_series"
             ts_staging_dir.mkdir(exist_ok=True)
@@ -283,7 +292,11 @@ def main():
             tomo_name = str(row["rlnTomoName"])
             raw_tomo_path = row["rlnTomoReconstructedTomogram"]
 
-            tomo_path = resolve_tomogram_path(raw_tomo_path, tomograms_star=input_star_tomos, project_root=project_path)
+            tomo_path = resolve_tomogram_path(
+                raw_tomo_path,
+                tomograms_star=input_star_tomos,
+                project_root=project_path,
+            )
 
             print(f"[DRIVER] Processing {tomo_name}...", flush=True)
             print(f"[DEBUG] raw tomo path: {raw_tomo_path}", flush=True)
@@ -320,7 +333,6 @@ def main():
             run_command(wrapped_cmd, cwd=job_dir)
 
         import shutil
-
         output_tomograms = job_dir / "tomograms.star"
         shutil.copy2(input_star_tomos, output_tomograms)
         print(f"[DRIVER] Copied tomograms.star to {output_tomograms}", flush=True)
