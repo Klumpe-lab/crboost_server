@@ -10,10 +10,7 @@ echo "
 
 grep -n "GridMovement\|PlaneNormal\|AreAnglesInverted" \
   /groups/klumpe/software/Setup/Testing/test1/run12/External/job003/warp_tiltseries/Position_1.xml
-
-
 echo '
-
 
 --------- 
 
