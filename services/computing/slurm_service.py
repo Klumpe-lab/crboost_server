@@ -1,6 +1,7 @@
 # services/slurm_service.py
 import asyncio
 from enum import Enum
+from pathlib import Path
 import re
 from typing import ClassVar, Dict, List, Any, Optional
 from dataclasses import dataclass
@@ -9,76 +10,60 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 from services.configs.config_service import get_config_service
 
+
 class SlurmPreset(str, Enum):
     CUSTOM = "Custom"
-    SMALL  = "1gpu:16GB"
+    SMALL = "1gpu:16GB"
     MEDIUM = "2gpu:32GB"
-    LARGE  = "4gpu:64gb"
+    LARGE = "4gpu:64gb"
+
 
 # Descriptive mapping for UI pills and snapping values
 SLURM_PRESET_MAP = {
     SlurmPreset.SMALL: {
         "label": "1 GPU · 16GB · 30m",
-        "values": {
-            "gres"         : "gpu:1",
-            "mem"          : "16G",
-            "cpus_per_task": 2,
-            "time"         : "0:30:00",
-            "nodes"        : 1
-        }
+        "values": {"gres": "gpu:1", "mem": "16G", "cpus_per_task": 2, "time": "0:30:00", "nodes": 1},
     },
     SlurmPreset.MEDIUM: {
         "label": "2 GPUs · 32GB · 2h",
-        "values": {
-            "gres"         : "gpu:2",
-            "mem"          : "32G",
-            "cpus_per_task": 4,
-            "time"         : "2:00:00",
-            "nodes"        : 2
-        }
+        "values": {"gres": "gpu:2", "mem": "32G", "cpus_per_task": 4, "time": "2:00:00", "nodes": 2},
     },
     SlurmPreset.LARGE: {
         "label": "4 GPUs · 64GB · 4h",
-        "values": {
-            "gres"         : "gpu:4",
-            "mem"          : "64G",
-            "cpus_per_task": 8,
-            "time"         : "4:00:00",
-            "nodes"        : 4
-        }
-    }
+        "values": {"gres": "gpu:4", "mem": "64G", "cpus_per_task": 8, "time": "4:00:00", "nodes": 4},
+    },
 }
+
 
 class SlurmConfig(BaseModel):
     """SLURM submission parameters for a job"""
+
     model_config = ConfigDict(validate_assignment=True)
 
-    preset         : SlurmPreset = Field(default=SlurmPreset.CUSTOM)
-    partition      : str         = "g"
-    constraint     : str         = "g2|g3|g4"
-    nodes          : int         = Field(default=1, ge=1)
-    ntasks_per_node: int         = Field(default=1, ge=1)
-    cpus_per_task  : int         = Field(default=4, ge=1)
-    gres           : str         = "gpu:4"
-    mem            : str         = "64G"
-    time           : str         = "3:30:00"
+    preset: SlurmPreset = Field(default=SlurmPreset.CUSTOM)
+    partition: str = "g"
+    constraint: str = "g2|g3|g4"
+    nodes: int = Field(default=1, ge=1)
+    ntasks_per_node: int = Field(default=1, ge=1)
+    cpus_per_task: int = Field(default=4, ge=1)
+    gres: str = "gpu:4"
+    mem: str = "64G"
+    time: str = "3:30:00"
 
     # Standard Relion Tomography aliases for XXXextra1XXX through XXXextra8XXX
     QSUB_EXTRA_MAPPING: ClassVar[Dict[str, str]] = {
-        "partition"      : "qsub_extra1",
-        "constraint"     : "qsub_extra2",
-        "nodes"          : "qsub_extra3",
+        "partition": "qsub_extra1",
+        "constraint": "qsub_extra2",
+        "nodes": "qsub_extra3",
         "ntasks_per_node": "qsub_extra4",
-        "cpus_per_task"  : "qsub_extra5",
-        "gres"           : "qsub_extra6",
-        "mem"            : "qsub_extra7",
-        "time"           : "qsub_extra8",
+        "cpus_per_task": "qsub_extra5",
+        "gres": "qsub_extra6",
+        "mem": "qsub_extra7",
+        "time": "qsub_extra8",
     }
+
     def to_qsub_extra_dict(self) -> Dict[str, str]:
-        return {
-            self.QSUB_EXTRA_MAPPING[field]: str(getattr(self, field))
-            for field in self.QSUB_EXTRA_MAPPING
-        }
+        return {self.QSUB_EXTRA_MAPPING[field]: str(getattr(self, field)) for field in self.QSUB_EXTRA_MAPPING}
 
     @classmethod
     def from_config_defaults(cls) -> "SlurmConfig":
@@ -90,10 +75,10 @@ class SlurmConfig(BaseModel):
             return cls()
 
 
-
 @dataclass
 class SlurmPartition:
     """Information about a SLURM partition"""
+
     name: str
     state: str
     nodes: int
@@ -108,6 +93,7 @@ class SlurmPartition:
 @dataclass
 class SlurmNode:
     """Information about a SLURM node"""
+
     name: str
     partition: str
     state: str
@@ -120,7 +106,6 @@ class SlurmNode:
 
 @dataclass
 class UserJob:
-    """Information about a user's SLURM job"""
     job_id: str
     name: str
     partition: str
@@ -128,19 +113,18 @@ class UserJob:
     time: str
     nodes: int
     nodelist: str
+    work_dir: str = ""
+    stdout_path: str = ""  # %o -- path to stdout file, contains job dir
 
 
 class SlurmService:
-    """Service for querying SLURM cluster information"""
-    
     def __init__(self, username: str):
         self.username = username
         self._cache = {}
         self._cache_timestamp = {}
-        self._cache_ttl = 60  # Cache for 60 seconds
-    
+        self._cache_ttl = 60
+
     async def _run_command(self, cmd: List[str]) -> tuple[bool, str, str]:
-        """Run a shell command and return success, stdout, stderr"""
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -152,53 +136,43 @@ class SlurmService:
             return success, stdout.decode(), stderr.decode()
         except Exception as e:
             return False, "", str(e)
-    
+
     def _is_cache_valid(self, key: str) -> bool:
-        """Check if cached data is still valid"""
         if key not in self._cache or key not in self._cache_timestamp:
             return False
         age = (datetime.now() - self._cache_timestamp[key]).total_seconds()
         return age < self._cache_ttl
-    
+
     async def get_partitions_info(self, force_refresh: bool = False) -> List[SlurmPartition]:
-        """Get information about available partitions"""
         cache_key = "partitions"
         if not force_refresh and self._is_cache_valid(cache_key):
             return self._cache[cache_key]
-        
-        # Query partition info
+
         success, stdout, stderr = await self._run_command([
             "sinfo", "-o", "%P|%a|%D|%l|%m|%c|%G", "--noheader"
         ])
-        
+
         if not success:
             print(f"[ERROR] Failed to get partition info: {stderr}")
             return []
-        
+
         partitions_dict = {}
-        
         for line in stdout.strip().split('\n'):
             if not line:
                 continue
-            
             parts = line.split('|')
             if len(parts) < 7:
                 continue
-            
-            name = parts[0].rstrip('*')  # Remove default marker
-            
-            # Skip if we already have this partition
+            name = parts[0].rstrip('*')
             if name in partitions_dict:
                 continue
-            
             state = parts[1]
             nodes = int(parts[2]) if parts[2].isdigit() else 0
             max_time = parts[3]
             mem = parts[4]
             cpus = int(parts[5]) if parts[5].isdigit() else 0
             gres = parts[6]
-            
-            # Parse GPU info from GRES
+
             gpu_count = 0
             gpu_type = None
             if gres and gres != "(null)":
@@ -210,7 +184,7 @@ class SlurmService:
                     gpu_match = re.search(r'gpu:(\d+)', gres)
                     if gpu_match:
                         gpu_count = int(gpu_match.group(1))
-            
+
             partition = SlurmPartition(
                 name=name,
                 state=state,
@@ -223,38 +197,33 @@ class SlurmService:
                 gpu_type=gpu_type
             )
             partitions_dict[name] = partition
-        
+
         partitions = list(partitions_dict.values())
-        
         self._cache[cache_key] = partitions
         self._cache_timestamp[cache_key] = datetime.now()
         return partitions
-    
+
     async def get_nodes_info(self, partition: Optional[str] = None, force_refresh: bool = False) -> List[SlurmNode]:
-        """Get information about nodes in a partition"""
         cache_key = f"nodes_{partition or 'all'}"
         if not force_refresh and self._is_cache_valid(cache_key):
             return self._cache[cache_key]
-        
+
         cmd = ["sinfo", "-N", "-o", "%N|%P|%T|%c|%m|%G|%f", "--noheader"]
         if partition:
             cmd.extend(["-p", partition])
-        
+
         success, stdout, stderr = await self._run_command(cmd)
-        
         if not success:
             print(f"[ERROR] Failed to get node info: {stderr}")
             return []
-        
+
         nodes = []
         for line in stdout.strip().split('\n'):
             if not line:
                 continue
-            
             parts = line.split('|')
             if len(parts) < 7:
                 continue
-            
             name = parts[0]
             part = parts[1].rstrip('*')
             state = parts[2]
@@ -262,7 +231,7 @@ class SlurmService:
             mem = int(parts[4]) if parts[4].isdigit() else 0
             gres = parts[5]
             features = parts[6].split(',') if parts[6] != "(null)" else []
-            
+
             gpu_count = 0
             gpu_type = None
             if gres and gres != "(null)":
@@ -274,7 +243,7 @@ class SlurmService:
                     gpu_match = re.search(r'gpu:(\d+)', gres)
                     if gpu_match:
                         gpu_count = int(gpu_match.group(1))
-            
+
             node = SlurmNode(
                 name=name,
                 partition=part,
@@ -286,43 +255,47 @@ class SlurmService:
                 features=features
             )
             nodes.append(node)
-        
+
         self._cache[cache_key] = nodes
         self._cache_timestamp[cache_key] = datetime.now()
         return nodes
-    
+
     async def get_user_jobs(self, force_refresh: bool = False) -> List[UserJob]:
-        """Get current user's jobs"""
         cache_key = "user_jobs"
         if not force_refresh and self._is_cache_valid(cache_key):
-            print(f"[DEBUG] Returning cached user jobs for {self.username}")
             return self._cache[cache_key]
-        
+
         print(f"[DEBUG] Fetching jobs for user: {self.username}")
-        
+
+        # %o = stdout file path -- parent dir is the job directory (e.g. External/job002)
+        # %Z = submit working directory -- this is the project root, same for all jobs
         success, stdout, stderr = await self._run_command([
-            "squeue", "-u", self.username, "-o", "%i|%j|%P|%T|%M|%D|%N", "--noheader"
+            "squeue", "-u", self.username,
+            "-o", "%i|%j|%P|%T|%M|%D|%N|%Z|%o",
+            "--noheader"
         ])
-        
+
         print(f"[DEBUG] squeue success={success}")
-        print(f"[DEBUG] squeue stdout: {repr(stdout)}")
-        print(f"[DEBUG] squeue stderr: {repr(stderr)}")
-        
+
         if not success:
             print(f"[ERROR] Failed to get user jobs: {stderr}")
             return []
-        
+
         jobs = []
         for line in stdout.strip().split('\n'):
             if not line:
                 continue
-            
-            print(f"[DEBUG] Parsing job line: {repr(line)}")
             parts = line.split('|')
-            if len(parts) < 7:
-                print(f"[WARN] Skipping malformed line with {len(parts)} parts")
+            if len(parts) < 8:
                 continue
-            
+
+            work_dir = parts[7].strip() if len(parts) > 7 else ""
+            stdout_path = parts[8].strip() if len(parts) > 8 else ""
+
+            # stdout_path may be relative to work_dir -- make it absolute
+            if stdout_path and not stdout_path.startswith('/') and work_dir:
+                stdout_path = str(Path(work_dir) / stdout_path)
+
             job = UserJob(
                 job_id=parts[0],
                 name=parts[1],
@@ -330,28 +303,65 @@ class SlurmService:
                 state=parts[3],
                 time=parts[4],
                 nodes=int(parts[5]) if parts[5].isdigit() else 0,
-                nodelist=parts[6]
+                nodelist=parts[6],
+                work_dir=work_dir,
+                stdout_path=stdout_path,
             )
             jobs.append(job)
-            print(f"[DEBUG] Parsed job: {job.job_id} - {job.name} - {job.state}")
-        
+
         print(f"[DEBUG] Total jobs found: {len(jobs)}")
-        
         self._cache[cache_key] = jobs
         self._cache_timestamp[cache_key] = datetime.now()
         return jobs
-    
+
+    async def find_slurm_job_for_directory(self, job_dir: Path) -> Optional[UserJob]:
+        """
+        Find the SLURM job whose stdout file lives inside the given job directory.
+        RELION sets --output=<job_dir>/run.out, so parent of stdout_path == job_dir.
+        Falls back to work_dir match for safety.
+        """
+        jobs = await self.get_user_jobs(force_refresh=True)
+        target = job_dir.resolve()
+
+        for job in jobs:
+            # Primary: match via stdout file parent directory
+            if job.stdout_path:
+                try:
+                    if Path(job.stdout_path).resolve().parent == target:
+                        print(f"[SLURM] Matched job {job.job_id} via stdout path: {job.stdout_path}")
+                        return job
+                except Exception:
+                    pass
+
+            # Fallback: work_dir match (only works if the job cd'd to job_dir)
+            if job.work_dir:
+                try:
+                    if Path(job.work_dir).resolve() == target:
+                        print(f"[SLURM] Matched job {job.job_id} via work_dir: {job.work_dir}")
+                        return job
+                except Exception:
+                    pass
+
+        print(f"[RUNNER] No SLURM job found for {target}")
+        return None
+
+    async def scancel_jobs(self, job_ids: List[str]) -> Dict[str, Any]:
+        if not job_ids:
+            return {"success": True, "cancelled": []}
+        success, stdout, stderr = await self._run_command(["scancel"] + job_ids)
+        if success:
+            print(f"[SLURM] Cancelled jobs: {job_ids}")
+            return {"success": True, "cancelled": job_ids}
+        print(f"[SLURM] scancel returned non-zero (may be already gone): {stderr.strip()}")
+        return {"success": False, "error": stderr.strip(), "cancelled": job_ids}
+
     async def get_cluster_summary(self) -> Dict[str, Any]:
-        """Get a summary of cluster status"""
         partitions = await self.get_partitions_info()
         user_jobs = await self.get_user_jobs()
-        
         total_nodes = sum(p.nodes for p in partitions)
         total_cpus = sum(p.available_cpus * p.nodes for p in partitions)
         total_gpus = sum(p.available_gpus * p.nodes for p in partitions)
-        
         gpu_partitions = [p for p in partitions if p.available_gpus > 0]
-        
         return {
             "total_partitions": len(partitions),
             "total_nodes": total_nodes,
@@ -362,9 +372,8 @@ class SlurmService:
             "running_jobs": len([j for j in user_jobs if j.state == "RUNNING"]),
             "pending_jobs": len([j for j in user_jobs if j.state == "SCHEDULED"]),
         }
-    
+
     async def get_slurm_partitions(self) -> Dict[str, Any]:
-        """Get SLURM partition information"""
         try:
             partitions = await self.get_partitions_info()
             return {
@@ -387,7 +396,6 @@ class SlurmService:
             return {"success": False, "error": str(e)}
 
     async def get_slurm_nodes(self, partition: str = None) -> Dict[str, Any]:
-        """Get SLURM node information"""
         try:
             nodes = await self.get_nodes_info(partition)
             return {
@@ -410,12 +418,10 @@ class SlurmService:
             return {"success": False, "error": str(e)}
 
     def clear_cache(self):
-        """Clear all cached data"""
         self._cache.clear()
         self._cache_timestamp.clear()
 
     async def get_user_slurm_jobs(self, force_refresh: bool = False) -> Dict[str, Any]:
-        """Get user's SLURM jobs"""
         try:
             jobs = await self.get_user_jobs(force_refresh=force_refresh)
             print(f"[DEBUG] Backend returning {len(jobs)} jobs")
@@ -430,6 +436,8 @@ class SlurmService:
                         "time": j.time,
                         "nodes": j.nodes,
                         "nodelist": j.nodelist,
+                        "work_dir": j.work_dir,
+                        "stdout_path": j.stdout_path,
                     }
                     for j in jobs
                 ],
@@ -437,12 +445,10 @@ class SlurmService:
         except Exception as e:
             print(f"[ERROR] Failed to get user jobs: {e}")
             import traceback
-
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
     async def get_slurm_summary(self, force_refresh: bool = False) -> Dict[str, Any]:
-        """Get cluster summary"""
         try:
             summary = await self.get_cluster_summary()
             return {"success": True, "summary": summary}

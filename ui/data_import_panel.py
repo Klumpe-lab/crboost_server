@@ -562,7 +562,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             load_result = await backend.load_existing_project(str(project_dir))
             if load_result.get("success"):
                 await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_dir))
-                state = backend.state_service.state_for(project_dir)  # reads the registry entry just loaded
+                state = backend.state_service.state_for(project_dir)
                 ui_mgr.load_from_project(
                     project_path=state.project_path,
                     scheme_name=f"scheme_{state.project_name}",
@@ -583,14 +583,26 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                     str(state.project_path.parent) if state.project_path else "", label=state.project_name
                 )
                 prefs_service.save_to_app_storage(app.storage.user)
-                ui.notify(f"Project '{state.project_name}' loaded", type="positive")
+
+                # Restore running UI state if the pipeline was active when the
+                # server went down. The workspace page will pick this up and
+                # lock the UI + start the status timer via rebuild_pipeline_ui.
+                if state.pipeline_active:
+                    ui_mgr.set_pipeline_running(True)
+                    ui.notify(
+                        f"Project '{state.project_name}' loaded -- pipeline was running, resuming monitoring.",
+                        type="warning",
+                        timeout=6000,
+                    )
+                else:
+                    ui.notify(f"Project '{state.project_name}' loaded", type="positive")
+
                 await asyncio.sleep(0.1)
                 ui.navigate.to("/workspace")
             else:
                 ui.notify(f"Failed to load: {load_result.get('error')}", type="negative")
         except Exception as e:
             import traceback
-
             traceback.print_exc()
             ui.notify(f"Error loading project: {e}", type="negative")
 

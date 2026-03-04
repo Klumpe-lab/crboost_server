@@ -16,8 +16,9 @@ from services.project_state import JobType, get_state_service
 from services.computing.slurm_service import SlurmService
 from services.configs.config_service import get_config_service
 
+import getpass
 
-HARDCODED_USER = "cryoboost-user" # this is currently just a stand-in. multi-user multi-session is WIP.
+HARDCODED_USER = getpass.getuser()
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):

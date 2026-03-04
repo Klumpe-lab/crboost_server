@@ -143,6 +143,7 @@ class ProjectState(BaseModel):
                 if "slurm_defaults" in data
                 else SlurmConfig.from_config_defaults()
             ),
+            pipeline_active=data.get("pipeline_active", False),
         )
 
         from services.project_state import jobtype_paramclass
