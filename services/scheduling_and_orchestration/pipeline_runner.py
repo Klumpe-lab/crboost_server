@@ -126,6 +126,73 @@ class StatusSyncService:
         result = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
         return result if result else "unknown"
 
+    async def stop_and_cleanup(self, project_dir: Path, slurm_job_ids: List[str]) -> Dict[str, Any]:
+        """
+        Full stop sequence:
+        1. Terminate the schemer process (stops new submissions)
+        2. scancel any live SLURM jobs
+        3. Patch default_pipeline.star: Running/Pending -> Failed
+        4. Update in-memory job models to FAILED
+        5. Set pipeline_active=False and persist
+
+        Note: _monitor_schemer's finally block will also fire after the process
+        exits and will redundantly save state -- that is harmless.
+        """
+        errors = []
+
+        # 1. Terminate schemer
+        if self.active_schemer_process:
+            pid = self.active_schemer_process.pid
+            print(f"[RUNNER] Stopping schemer PID {pid}")
+            try:
+                self.active_schemer_process.terminate()
+                try:
+                    await asyncio.wait_for(self.active_schemer_process.wait(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    print(f"[RUNNER] Schemer didn't respond to SIGTERM, sending SIGKILL")
+                    self.active_schemer_process.kill()
+                    await self.active_schemer_process.wait()
+            except Exception as e:
+                errors.append(f"schemer termination: {e}")
+
+        # 2. Scancel SLURM jobs
+        if slurm_job_ids:
+            result = await self.backend.slurm_service.scancel_jobs(slurm_job_ids)
+            if not result["success"]:
+                # Non-fatal: log but continue cleanup
+                errors.append(f"scancel: {result.get('error')}")
+
+        # 3. Patch default_pipeline.star
+        pipeline_star = project_dir / "default_pipeline.star"
+        if pipeline_star.exists():
+            star_handler = self.backend.pipeline_orchestrator.star_handler
+            try:
+                data = star_handler.read(pipeline_star)
+                processes = data.get("pipeline_processes", pd.DataFrame())
+                if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
+                    processes["rlnPipeLineProcessStatusLabel"] = processes[
+                        "rlnPipeLineProcessStatusLabel"
+                    ].replace({"Running": "Failed", "Pending": "Failed"})
+                    data["pipeline_processes"] = processes
+                    star_handler.write(data, pipeline_star)
+            except Exception as e:
+                errors.append(f"pipeline star patch: {e}")
+
+        # 4. Update in-memory state
+        # Keep relion_job_name/number so logs remain accessible
+        state = self.backend.state_service.state_for(project_dir)
+        for job_model in state.jobs.values():
+            if job_model.execution_status in (JobStatus.RUNNING, JobStatus.SCHEDULED):
+                job_model.execution_status = JobStatus.FAILED
+
+        # 5. Persist
+        state.pipeline_active = False
+        await self.backend.state_service.save_project(project_path=project_dir, force=True)
+
+        if errors:
+            print(f"[RUNNER] Stop completed with non-fatal errors: {errors}")
+            return {"success": False, "errors": errors}
+        return {"success": True, "cancelled_slurm_jobs": len(slurm_job_ids)}
 
 class PipelineRunnerService:
     def __init__(self, backend_instance: "CryoBoostBackend"):
@@ -136,6 +203,7 @@ class PipelineRunnerService:
         # Track log file handles for active schemer
         self._stdout_log_path: Optional[Path] = None
         self._stderr_log_path: Optional[Path] = None
+
 
     async def start_pipeline(
         self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]
@@ -640,3 +708,145 @@ class PipelineRunnerService:
 
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+    async def stop_and_cleanup(self, project_dir: Path, slurm_job_ids: List[str]) -> Dict[str, Any]:
+        """
+        Full stop sequence:
+        1. Terminate the schemer process
+        2. scancel any live SLURM jobs
+        3. Patch default_pipeline.star: Running/Pending -> Failed
+        4. Update in-memory job models to FAILED
+        5. Set pipeline_active=False and persist
+        """
+        errors = []
+
+        # 1. Terminate schemer
+        if self.active_schemer_process:
+            pid = self.active_schemer_process.pid
+            print(f"[RUNNER] Stopping schemer PID {pid}")
+            try:
+                self.active_schemer_process.terminate()
+                try:
+                    await asyncio.wait_for(self.active_schemer_process.wait(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    print(f"[RUNNER] Schemer didn't respond to SIGTERM, sending SIGKILL")
+                    self.active_schemer_process.kill()
+                    await self.active_schemer_process.wait()
+            except Exception as e:
+                errors.append(f"schemer termination: {e}")
+
+        # 2. scancel SLURM jobs
+        if slurm_job_ids:
+            result = await self.backend.slurm_service.scancel_jobs(slurm_job_ids)
+            if not result["success"]:
+                errors.append(f"scancel: {result.get('error')}")
+
+        # 3. Patch default_pipeline.star
+        pipeline_star = project_dir / "default_pipeline.star"
+        if pipeline_star.exists():
+            star_handler = self.backend.pipeline_orchestrator.star_handler
+            try:
+                data = star_handler.read(pipeline_star)
+                processes = data.get("pipeline_processes", pd.DataFrame())
+                if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
+                    processes["rlnPipeLineProcessStatusLabel"] = processes[
+                        "rlnPipeLineProcessStatusLabel"
+                    ].replace({"Running": "Failed", "Pending": "Failed"})
+                    data["pipeline_processes"] = processes
+                    star_handler.write(data, pipeline_star)
+            except Exception as e:
+                errors.append(f"pipeline star patch: {e}")
+
+        # 4. Update in-memory job models
+        state = self.backend.state_service.state_for(project_dir)
+        for job_model in state.jobs.values():
+            if job_model.execution_status in (JobStatus.RUNNING, JobStatus.SCHEDULED):
+                job_model.execution_status = JobStatus.FAILED
+
+        # 5. Persist
+        state.pipeline_active = False
+        await self.backend.state_service.save_project(project_path=project_dir, force=True)
+
+        if errors:
+            print(f"[RUNNER] Stop completed with non-fatal errors: {errors}")
+            return {"success": False, "errors": errors}
+        return {"success": True, "cancelled_slurm_jobs": len(slurm_job_ids)}
+
+    async def cancel_job(self, project_dir: Path, job_type: "JobType") -> Dict[str, Any]:
+        """
+        Cancel a single running job:
+        1. Find its SLURM job ID by matching working directory and scancel it
+        2. Patch that job's row in default_pipeline.star to Failed
+        3. Update in-memory job model to FAILED
+        4. Terminate the schemer -- it would stall on the failed job anyway,
+            and we want pipeline_active cleared so the user can requeue
+        5. Persist
+        """
+        from services.project_state import JobStatus
+
+        state = self.backend.state_service.state_for(project_dir)
+        job_model = state.jobs.get(job_type)
+
+        if not job_model:
+            return {"success": False, "error": f"Job {job_type.value} not found in state"}
+
+        if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.SCHEDULED):
+            return {"success": False, "error": f"Job is not running (status: {job_model.execution_status})"}
+
+        relion_job_name = job_model.relion_job_name
+        if not relion_job_name:
+            return {"success": False, "error": "Job has no relion_job_name -- cannot locate its directory"}
+
+        job_dir = project_dir / relion_job_name.rstrip("/")
+        print(f"[RUNNER] Looking for SLURM job with stdout in: {job_dir.resolve()}")
+        slurm_job = await self.backend.slurm_service.find_slurm_job_for_directory(job_dir)
+
+        cancelled_id = None
+        if slurm_job:
+            result = await self.backend.slurm_service.scancel_jobs([slurm_job.job_id])
+            cancelled_id = slurm_job.job_id
+            if not result["success"]:
+                print(f"[RUNNER] scancel warning for {slurm_job.job_id}: {result.get('error')}")
+        else:
+            print(f"[RUNNER] No SLURM job found for {job_dir} -- may have already finished")
+
+        # Patch default_pipeline.star for this specific job
+        pipeline_star = project_dir / "default_pipeline.star"
+        if pipeline_star.exists():
+            star_handler = self.backend.pipeline_orchestrator.star_handler
+            try:
+                data = star_handler.read(pipeline_star)
+                processes = data.get("pipeline_processes", pd.DataFrame())
+                if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
+                    job_mask = processes["rlnPipeLineProcessName"] == (relion_job_name.rstrip("/") + "/")
+                    processes.loc[job_mask, "rlnPipeLineProcessStatusLabel"] = "Failed"
+                    data["pipeline_processes"] = processes
+                    star_handler.write(data, pipeline_star)
+            except Exception as e:
+                print(f"[RUNNER] Failed to patch pipeline star for {relion_job_name}: {e}")
+
+        # Update in-memory model
+        job_model.execution_status = JobStatus.FAILED
+
+        # Terminate the schemer -- it would stall on this failed job anyway.
+        # _monitor_schemer's finally block will set pipeline_active=False and save.
+        # We also set it here immediately so the UI can unlock without waiting.
+        if self.active_schemer_process:
+            try:
+                self.active_schemer_process.terminate()
+                print(f"[RUNNER] Terminated schemer after cancelling {relion_job_name}")
+            except Exception as e:
+                print(f"[RUNNER] Could not terminate schemer: {e}")
+
+        state.pipeline_active = False
+        await self.backend.state_service.save_project(project_path=project_dir, force=True)
+
+        return {
+            "success": True,
+            "cancelled_slurm_id": cancelled_id,
+            "message": (
+                f"Cancelled {relion_job_name}"
+                + (f" (SLURM {cancelled_id})" if cancelled_id else " (no active SLURM job found)")
+            ),
+        }

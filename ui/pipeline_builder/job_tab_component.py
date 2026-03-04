@@ -19,14 +19,8 @@ from ui.pipeline_builder.logs_tab import render_logs_tab
 from ui.pipeline_builder.files_tab import render_files_tab
 
 
-# Built-in tab keys (beyond the MonitorTab enum)
 TAB_IO = "io"
 TAB_SLURM = "slurm"
-
-
-# ===========================================
-# Debounced Save
-# ===========================================
 
 
 class DebouncedSaver:
@@ -54,13 +48,7 @@ def create_save_handler() -> Callable:
     return saver.trigger
 
 
-# ===========================================
-# Tab list builder
-# ===========================================
-
-
 def _build_tab_list(job_type: JobType):
-    """Return list of (key, label) tuples for all tabs."""
     tabs = [
         (MonitorTab.CONFIG.value, "Parameters"),
         (TAB_IO, "I/O"),
@@ -71,11 +59,6 @@ def _build_tab_list(job_type: JobType):
     for et in get_extra_tabs(job_type):
         tabs.append((et.key, et.label))
     return tabs
-
-
-# ===========================================
-# Content rendering for a tab key
-# ===========================================
 
 
 def _render_tab_content(tab_key, job_type, job_model, is_frozen, save_handler, backend, ui_mgr):
@@ -93,17 +76,11 @@ def _render_tab_content(tab_key, job_type, job_model, is_frozen, save_handler, b
     elif tab_key == MonitorTab.FILES.value:
         render_files_tab(job_type, job_model, ui_mgr)
     else:
-        # Plugin extra tab
         for et in get_extra_tabs(job_type):
             if tab_key == et.key:
                 et.render(job_type, job_model, backend, ui_mgr)
                 return
         ui.label(f"Unknown tab: {tab_key}").classes("text-red-500 p-4")
-
-
-# ===========================================
-# Main Render Function
-# ===========================================
 
 
 def render_job_tab(
@@ -122,10 +99,11 @@ def render_job_tab(
     frozen = is_job_frozen(job_type)
     active_tab = job_ui_state.active_monitor_tab
 
-    # Auto-switch to Logs for frozen jobs (unless user explicitly chose a tab)
     if frozen and active_tab == MonitorTab.CONFIG.value and not job_ui_state.user_switched_tab:
         active_tab = MonitorTab.LOGS.value
         job_ui_state.active_monitor_tab = MonitorTab.LOGS.value
+
+    is_running = job_model.execution_status == JobStatus.RUNNING
 
     # --- Header ---
     with ui.column().classes("w-full border-b border-gray-200 bg-white pl-6 pr-6 pt-4 pb-4"):
@@ -144,9 +122,7 @@ def render_job_tab(
                     if isinstance(state.modified_at, datetime)
                     else str(state.modified_at)
                 )
-                ui.label(f"Created: {created} · Modified: {modified}").classes(
-                    "text-xs text-gray-400"
-                )
+                ui.label(f"Created: {created} · Modified: {modified}").classes("text-xs text-gray-400")
 
             with ui.row().classes("items-center gap-4"):
                 switcher_container = ui.row().classes(
@@ -160,6 +136,15 @@ def render_job_tab(
                     icon="refresh",
                     on_click=lambda: _force_status_refresh(callbacks),
                 ).props("flat dense round").classes("text-gray-400 hover:text-gray-800")
+
+                if is_running:
+                    ui.button(
+                        icon="stop_circle",
+                        on_click=lambda: _handle_stop_job(job_type, job_model, backend, ui_mgr, callbacks),
+                    ).props("flat round dense").classes("text-orange-500 hover:text-orange-700").tooltip(
+                        "Cancel this job"
+                    )
+
                 if ui_mgr.is_project_created:
                     ui.button(
                         icon="delete",
@@ -180,11 +165,6 @@ def render_job_tab(
         _render_tab_content(
             active_tab, job_type, job_model, frozen, save_handler, backend, ui_mgr
         )
-
-
-# ===========================================
-# Tab Switcher
-# ===========================================
 
 
 def _render_tab_switcher(container, job_type, active_tab, backend, ui_mgr, callbacks):
@@ -240,9 +220,45 @@ def _handle_tab_switch(job_type, tab_key, backend, ui_mgr, callbacks):
             )
 
 
-# ===========================================
-# Delete Handler (unchanged)
-# ===========================================
+def _handle_stop_job(job_type, job_model, backend, ui_mgr, callbacks):
+    project_path = ui_mgr.project_path
+    job_dir = (project_path / job_model.relion_job_name.rstrip("/")) if job_model.relion_job_name else None
+
+    with ui.dialog() as dialog, ui.card().style("min-width: 360px; padding: 16px;"):
+        ui.label(f"Cancel {get_job_display_name(job_type)}?").classes("text-base font-bold text-gray-800")
+        if job_dir:
+            ui.label(str(job_dir)).classes("text-xs font-mono text-gray-500 mt-1")
+        ui.label(
+            "The SLURM job will be cancelled and the job marked Failed. "
+            "You can re-run it once the pipeline is stopped."
+        ).classes("text-sm text-gray-600 mt-2")
+        ui.label("Note: this does not stop the pipeline -- use the Stop button in the toolbar for that.").classes(
+            "text-xs text-amber-600 mt-2"
+        )
+        with ui.row().classes("mt-4 gap-2 justify-end w-full"):
+            ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
+            ui.button(
+                "Stop Job", on_click=lambda: dialog.submit(True)
+            ).props("dense no-caps").style(
+                "background: #f97316; color: white; padding: 4px 16px; border-radius: 3px;"
+            )
+
+    async def run_cancel():
+        confirmed = await dialog
+        if not confirmed:
+            return
+        result = await backend.pipeline_runner.cancel_job(project_path, job_type)
+        await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
+        if "check_and_update_statuses" in callbacks:
+            await callbacks["check_and_update_statuses"]()
+        if "rebuild_pipeline_ui" in callbacks:
+            callbacks["rebuild_pipeline_ui"]()
+        if result.get("success"):
+            ui.notify(result.get("message", "Job cancelled."), type="warning", timeout=5000)
+        else:
+            ui.notify(f"Cancel failed: {result.get('error')}", type="negative", timeout=8000)
+
+    asyncio.create_task(run_cancel())
 
 
 def _handle_delete(job_type, job_model, backend, ui_mgr, callbacks):

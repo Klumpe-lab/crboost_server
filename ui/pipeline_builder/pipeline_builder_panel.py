@@ -24,18 +24,18 @@ from ui.pipeline_builder.job_tab_component import render_job_tab
 
 
 JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
-    JobType.IMPORT_MOVIES: [],
-    JobType.FS_MOTION_CTF: [JobType.IMPORT_MOVIES],
-    JobType.TS_ALIGNMENT: [JobType.FS_MOTION_CTF],
-    JobType.TS_CTF: [JobType.TS_ALIGNMENT],
-    JobType.TS_RECONSTRUCT: [JobType.TS_CTF],
-    JobType.DENOISE_TRAIN: [JobType.TS_RECONSTRUCT],
-    JobType.DENOISE_PREDICT: [JobType.DENOISE_TRAIN, JobType.TS_RECONSTRUCT],
-    JobType.TEMPLATE_MATCH_PYTOM: [JobType.TS_CTF],
+    JobType.IMPORT_MOVIES         : [],
+    JobType.FS_MOTION_CTF         : [JobType.IMPORT_MOVIES],
+    JobType.TS_ALIGNMENT          : [JobType.FS_MOTION_CTF],
+    JobType.TS_CTF                : [JobType.TS_ALIGNMENT],
+    JobType.TS_RECONSTRUCT        : [JobType.TS_CTF],
+    JobType.DENOISE_TRAIN         : [JobType.TS_RECONSTRUCT],
+    JobType.DENOISE_PREDICT       : [JobType.DENOISE_TRAIN, JobType.TS_RECONSTRUCT],
+    JobType.TEMPLATE_MATCH_PYTOM  : [JobType.TS_CTF],
     JobType.TEMPLATE_EXTRACT_PYTOM: [JobType.TEMPLATE_MATCH_PYTOM],
-    JobType.SUBTOMO_EXTRACTION: [JobType.TEMPLATE_EXTRACT_PYTOM],
-    JobType.RECONSTRUCT_PARTICLE: [JobType.SUBTOMO_EXTRACTION],
-    JobType.CLASS3D: [JobType.RECONSTRUCT_PARTICLE],
+    JobType.SUBTOMO_EXTRACTION    : [JobType.TEMPLATE_EXTRACT_PYTOM],
+    JobType.RECONSTRUCT_PARTICLE  : [JobType.SUBTOMO_EXTRACTION],
+    JobType.CLASS3D               : [JobType.RECONSTRUCT_PARTICLE],
 }
 
 
@@ -53,11 +53,11 @@ def render_job_flow(selected_jobs: List[JobType], on_toggle: Callable[[JobType],
     selected_set = set(selected_jobs)
 
     for i, job_type in enumerate(PIPELINE_ORDER):
-        is_selected = job_type in selected_set
-        name = get_job_display_name(job_type)
 
+        is_selected  = job_type in selected_set
+        name         = get_job_display_name(job_type)
         missing_deps = get_missing_dependencies(job_type, selected_set)
-        has_warning = is_selected and len(missing_deps) > 0
+        has_warning  = is_selected and len(missing_deps) > 0
 
         if is_selected:
             if has_warning:
@@ -107,10 +107,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
     _pipeline_status_ref: Dict[str, object] = {}
     _spinner_frames = "\u28cb\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
     _spinner_state = {"index": 0}
-
-    # ===========================================
-    # Tab switching
-    # ===========================================
 
     def _refresh_tab_strip():
         strip = _tab_strip_ref.get("el")
@@ -171,10 +167,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
             container.set_visibility(jt_str == job_type.value)
         _refresh_tab_strip()
 
-    # ===========================================
-    # Job add/remove
-    # ===========================================
-
     def add_job_to_pipeline(job_type: JobType):
         result = ui_mgr.add_job(job_type)
         if not result:
@@ -229,10 +221,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
                 )
             add_job_to_pipeline(job_type)
 
-    # ===========================================
-    # Pipeline UI state helpers
-    # ===========================================
-
     def _set_pipeline_ui_locked(locked: bool):
         if ui_mgr.panel_refs.job_tags_container:
             ui_mgr.panel_refs.job_tags_container.set_visibility(not locked)
@@ -246,10 +234,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         status_row = _pipeline_status_ref.get("row")
         if status_row:
             status_row.set_visibility(locked)
-
-    # ===========================================
-    # Spinner
-    # ===========================================
 
     def _advance_spinner():
         spinner_el = _pipeline_status_ref.get("spinner")
@@ -271,10 +255,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
                 timer.cancel()
             except Exception:
                 pass
-
-    # ===========================================
-    # Running status display
-    # ===========================================
 
     def _update_pipeline_status_display(overview: Dict):
         label_el = _pipeline_status_ref.get("label")
@@ -303,10 +283,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
             msg = f"0/{total} jobs"
 
         label_el.set_text(msg)
-
-    # ===========================================
-    # Full rebuild
-    # ===========================================
 
     def rebuild_pipeline_ui():
         _job_content_containers.clear()
@@ -365,10 +341,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
             _start_spinner_timer()
             if not ui_mgr.status_timer:
                 ui_mgr.status_timer = ui.timer(3.0, safe_status_check)
-
-    # ===========================================
-    # Status polling
-    # ===========================================
 
     async def check_and_update_statuses():
         project_path = ui_mgr.project_path
@@ -435,10 +407,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         except Exception as e:
             print(f"[UI] Status check failed: {e}")
 
-    # ===========================================
-    # Pipeline execution
-    # ===========================================
-
     async def handle_run_pipeline():
         if not ui_mgr.is_project_created:
             ui.notify("Create a project first", type="warning")
@@ -473,6 +441,59 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         finally:
             if ui_mgr.panel_refs.run_button:
                 ui_mgr.panel_refs.run_button.props(remove="loading")
+
+    async def handle_stop_pipeline():
+        slurm_result = await backend.slurm_service.get_user_slurm_jobs(force_refresh=True)
+        running_slurm = [
+            j for j in slurm_result.get("jobs", [])
+            if j["state"] in ("RUNNING", "PENDING")
+        ]
+
+        with ui.dialog() as dialog, ui.card().style("min-width: 380px; padding: 16px;"):
+            ui.label("Stop Pipeline?").classes("text-base font-bold text-gray-800")
+            if running_slurm:
+                ui.label(
+                    f"{len(running_slurm)} SLURM job(s) will be cancelled:"
+                ).classes("text-sm text-gray-600 mt-2")
+                for j in running_slurm:
+                    ui.label(
+                        f"[{j['job_id']}]  {j['name']}  ({j['state']})"
+                    ).classes("text-xs font-mono text-gray-500 ml-2")
+            else:
+                ui.label("No active SLURM jobs found.").classes("text-sm text-gray-500 mt-2")
+            ui.label(
+                "Running and queued jobs will be marked Failed."
+            ).classes("text-xs text-amber-600 mt-3")
+            with ui.row().classes("mt-4 gap-2 justify-end w-full"):
+                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
+                ui.button(
+                    "Stop Pipeline", on_click=lambda: dialog.submit(True)
+                ).props("dense no-caps").style(
+                    "background: #ef4444; color: white; padding: 4px 16px; border-radius: 3px;"
+                )
+
+        confirmed = await dialog
+        if not confirmed:
+            return
+
+        stop_all_timers()
+        ui_mgr.set_pipeline_running(False)
+
+        slurm_job_ids = [j["job_id"] for j in running_slurm]
+        result = await backend.pipeline_runner.stop_and_cleanup(ui_mgr.project_path, slurm_job_ids)
+
+        await backend.pipeline_runner.status_sync.sync_all_jobs(str(ui_mgr.project_path))
+        _set_pipeline_ui_locked(False)
+        rebuild_pipeline_ui()
+
+        if result.get("success"):
+            ui.notify("Pipeline stopped.", type="warning", timeout=4000)
+        else:
+            ui.notify(
+                f"Stopped (with warnings: {'; '.join(result.get('errors', []))})",
+                type="warning",
+                timeout=6000,
+            )
 
     # ===========================================
     # Main Layout
@@ -520,11 +541,18 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
 
                 ui.label("Pipeline running").classes("text-xs font-semibold text-blue-600")
 
-                status_msg = ui.label("starting...").classes("text-xs text-gray-500 font-mono")
+                status_msg = ui.label("fetching...").classes("text-xs text-gray-500 font-mono")
                 _pipeline_status_ref["label"] = status_msg
 
-        ui_mgr.panel_refs.status_label = None
-        ui_mgr.panel_refs.stop_button = None
+                stop_btn = (
+                    ui.button("Stop", icon="stop", on_click=handle_stop_pipeline)
+                    .props("dense flat no-caps")
+                    .style(
+                        "color: #ef4444; padding: 4px 10px; border-radius: 3px; "
+                        "border: 1px solid #fca5a5; font-weight: 500; font-size: 11px;"
+                    )
+                )
+                ui_mgr.panel_refs.stop_button = stop_btn
 
         tabs_container = ui.column().classes("w-full flex-grow overflow-hidden")
         ui_mgr.panel_refs.job_tabs_container = tabs_container
@@ -543,3 +571,9 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
     callbacks["remove_job_from_pipeline"] = remove_job_from_pipeline
 
     rebuild_pipeline_ui()
+
+    # If restoring a running pipeline (e.g. after server restart or page reload),
+    # immediately fetch real status instead of sitting on "fetching..." until the
+    # first 3-second timer tick.
+    if ui_mgr.is_running:
+        ui.timer(0.2, safe_status_check, once=True)
