@@ -138,6 +138,11 @@ class ProjectState(BaseModel):
             mdocs_glob=data.get("mdocs_glob", ""),
             microscope=MicroscopeParams(**data.get("microscope", {})),
             acquisition=AcquisitionParams(**data.get("acquisition", {})),
+            slurm_defaults=(
+                SlurmConfig(**data["slurm_defaults"])
+                if "slurm_defaults" in data
+                else SlurmConfig.from_config_defaults()
+            ),
         )
 
         from services.project_state import jobtype_paramclass

@@ -15,7 +15,6 @@ from services.project_state import (
     jobtype_paramclass,
     # CHANGED: new registry functions
     set_project_state_for,
-    get_project_state_for,
 )
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 

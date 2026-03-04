@@ -323,7 +323,7 @@ class AbstractJobParams(BaseModel):
             super().__setattr__(name, value)
             return
 
-        if current_status != JobStatus.SCHEDULED:
+        if current_status not in (JobStatus.SCHEDULED, JobStatus.FAILED):
             print(f"[IMMUTABLE] Blocked change to '{name}' on {current_status.value} job")
             return
 

@@ -562,7 +562,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             load_result = await backend.load_existing_project(str(project_dir))
             if load_result.get("success"):
                 await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_dir))
-                state = backend.state_service.state
+                state = backend.state_service.state_for(project_dir)  # reads the registry entry just loaded
                 ui_mgr.load_from_project(
                     project_path=state.project_path,
                     scheme_name=f"scheme_{state.project_name}",

@@ -38,7 +38,6 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
     raw_preset = overrides.get("preset", SlurmPreset.CUSTOM)
     current_preset = raw_preset.value if hasattr(raw_preset, "value") else str(raw_preset)
 
-    # Presets row
     with ui.row().classes("w-full items-center gap-2 mb-4"):
         ui.label("Presets").classes("text-[10px] font-black text-gray-400 uppercase mr-1")
 
@@ -51,26 +50,17 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
                 save_handler()
                 _render_slurm_content.refresh()
 
-            ui.button(preset_info["label"], on_click=apply_preset).props(
-                "unelevated no-caps dense"
-            ).classes(
-                f"rounded-full px-3 text-xs "
-                f"{'bg-blue-600 text-white' if is_active else 'bg-gray-100 text-gray-600'}"
+            btn = (
+                ui.button(preset_info["label"], on_click=apply_preset)
+                .props("unelevated no-caps dense")
+                .classes(
+                    f"rounded-full px-3 text-xs "
+                    f"{'bg-blue-600 text-white' if is_active else 'bg-gray-100 text-gray-600'}"
+                )
             )
+            if is_frozen:
+                btn.props("disable")
 
-        ui.space()
-
-        if overrides:
-            def clear_and_save():
-                job_model.clear_slurm_overrides()
-                save_handler()
-                _render_slurm_content.refresh()
-
-            ui.button(icon="restart_alt", on_click=clear_and_save).props(
-                "flat dense round"
-            ).classes("text-red-400").tooltip("Clear Overrides")
-
-    # Fields
     fields = [
         ("partition", "Partition"),
         ("constraint", "Constraint"),
@@ -96,15 +86,14 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
         for field_name, label in fields:
             val = getattr(effective_config, field_name)
             with ui.column().classes("gap-1 w-fit"):
-                ui.label(label).classes(
-                    "text-[10px] font-bold text-gray-400 uppercase leading-none ml-0.5"
-                )
+                ui.label(label).classes("text-[10px] font-bold text-gray-400 uppercase leading-none ml-0.5")
 
                 def make_blur_handler(fname):
                     def handler(e):
                         job_model.set_slurm_override(fname, e.sender.value)
                         save_handler()
                         _render_slurm_content.refresh()
+
                     return handler
 
                 inp = ui.input(value=str(val))
