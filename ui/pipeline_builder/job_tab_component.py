@@ -87,18 +87,48 @@ def _render_tab_content(tab_key, job_type, job_model, is_frozen, save_handler, b
             render_io_tab(job_type, job_model, is_frozen, ui_mgr, save_handler)
     elif tab_key == TAB_SLURM:
         with ui.scroll_area().classes("w-full h-full"):
-            render_slurm_tab(job_model, is_frozen, save_handler)
+            live_timer = render_slurm_tab(job_model, is_frozen, save_handler)
+            widget_refs = ui_mgr.get_job_widget_refs(job_type)
+            widget_refs.slurm_info_timer = live_timer
     elif tab_key == MonitorTab.LOGS.value:
         render_logs_tab(job_type, job_model, backend, ui_mgr)
     elif tab_key == MonitorTab.FILES.value:
         render_files_tab(job_type, job_model, ui_mgr)
     else:
-        # Plugin extra tab
         for et in get_extra_tabs(job_type):
             if tab_key == et.key:
                 et.render(job_type, job_model, backend, ui_mgr)
                 return
         ui.label(f"Unknown tab: {tab_key}").classes("text-red-500 p-4")
+
+
+def _handle_tab_switch(job_type, tab_key, backend, ui_mgr, callbacks):
+    ui_mgr.set_job_monitor_tab(job_type, tab_key, user_initiated=True)
+    widget_refs = ui_mgr.get_job_widget_refs(job_type)
+
+    if widget_refs.switcher_container:
+        _render_tab_switcher(
+            widget_refs.switcher_container, job_type, tab_key, backend, ui_mgr, callbacks
+        )
+
+    # Cancel timers for tabs we're leaving
+    if tab_key != MonitorTab.LOGS.value:
+        ui_mgr.cleanup_job_logs_timer(job_type)
+    if tab_key != TAB_SLURM:
+        ui_mgr.cleanup_job_slurm_timer(job_type)
+
+    content_container = widget_refs.content_container
+    if content_container:
+        state = get_project_state()
+        job_model = state.jobs.get(job_type)
+        frozen = is_job_frozen(job_type)
+        save_handler = create_save_handler()
+
+        content_container.clear()
+        with content_container:
+            _render_tab_content(
+                tab_key, job_type, job_model, frozen, save_handler, backend, ui_mgr
+            )
 
 
 # ===========================================
@@ -212,33 +242,6 @@ def _render_tab_switcher(container, job_type, active_tab, backend, ui_mgr, callb
                 )
             else:
                 btn.style(f"{base_style} background: transparent; color: #6b7280;")
-
-
-def _handle_tab_switch(job_type, tab_key, backend, ui_mgr, callbacks):
-    ui_mgr.set_job_monitor_tab(job_type, tab_key, user_initiated=True)
-    widget_refs = ui_mgr.get_job_widget_refs(job_type)
-
-    if widget_refs.switcher_container:
-        _render_tab_switcher(
-            widget_refs.switcher_container, job_type, tab_key, backend, ui_mgr, callbacks
-        )
-
-    if tab_key != MonitorTab.LOGS.value:
-        ui_mgr.cleanup_job_logs_timer(job_type)
-
-    content_container = widget_refs.content_container
-    if content_container:
-        state = get_project_state()
-        job_model = state.jobs.get(job_type)
-        frozen = is_job_frozen(job_type)
-        save_handler = create_save_handler()
-
-        content_container.clear()
-        with content_container:
-            _render_tab_content(
-                tab_key, job_type, job_model, frozen, save_handler, backend, ui_mgr
-            )
-
 
 # ===========================================
 # Delete Handler (unchanged)

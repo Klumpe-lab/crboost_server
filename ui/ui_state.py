@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from nicegui.element import Element
 
 
+
 class MonitorTab(str, Enum):
     """Explicitly typed tab values."""
 
@@ -91,30 +92,32 @@ class UIState(BaseModel):
     last_status_refresh: Optional[str] = None
 
 
+
 @dataclass
 class JobWidgetRefs:
-    """
-    Non-serializable UI element references for a single job.
-    These hold NiceGUI elements that are per-client and per-page-load.
-    """
-
     logs_timer: Optional[Any] = None
+    slurm_info_timer: Optional[Any] = None  # live status refresh timer
     content_container: Optional[Any] = None
     switcher_container: Optional[Any] = None
-
     monitor_logs: Dict[str, Any] = field(default_factory=dict)
 
     def cleanup(self):
-        """Cancel timers and clear refs."""
         if self.logs_timer:
             try:
                 self.logs_timer.cancel()
             except Exception:
                 pass
             self.logs_timer = None
+        if self.slurm_info_timer:
+            try:
+                self.slurm_info_timer.cancel()
+            except Exception:
+                pass
+            self.slurm_info_timer = None
         self.content_container = None
         self.switcher_container = None
         self.monitor_logs.clear()
+
 
 
 @dataclass
@@ -539,6 +542,15 @@ class UIStateManager:
 
         for refs in self._job_widget_refs.values():
             refs.cleanup()
+
+    def cleanup_job_slurm_timer(self, job_type: JobType):
+        refs = self._job_widget_refs.get(job_type.value)
+        if refs and refs.slurm_info_timer:
+            try:
+                refs.slurm_info_timer.cancel()
+            except Exception:
+                pass
+            refs.slurm_info_timer = None
 
     def cleanup_job_logs_timer(self, job_type: JobType):
         refs = self._job_widget_refs.get(job_type.value)

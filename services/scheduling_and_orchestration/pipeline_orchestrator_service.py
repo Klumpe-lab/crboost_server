@@ -150,7 +150,7 @@ class PipelineOrchestratorService:
         pipeline_star = project_dir / "default_pipeline.star"
 
         if not pipeline_star.exists():
-            return 0
+            return 1  # RELION initializes job_counter to 1, first job is job001
 
         data = self.star_handler.read(pipeline_star)
         general = data.get("pipeline_general")

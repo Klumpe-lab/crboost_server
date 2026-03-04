@@ -97,12 +97,15 @@ class ProjectService:
         """
         try:
             job_type = JobType(job_name)
-            # This is always called from UI context, so tab lookup works.
             state = self.backend.state_service.state
             project_dir = state.project_path
 
             if not project_dir:
                 return {"success": False, "error": "Project not loaded"}
+
+            if state.pipeline_active:
+                return {"success": False, "error": "Cannot delete jobs while the pipeline is running."}
+
 
             deletion_service = get_deletion_service()
             job_resolver = self.backend.pipeline_orchestrator.job_resolver
@@ -184,9 +187,9 @@ class ProjectService:
         if not self.project_root:
             raise ValueError("Project root not set. Call set_project_root() first.")
 
-        job_type = JobType.from_string(job_name)
+        job_type      = JobType.from_string(job_name)
         param_classes = jobtype_paramclass()
-        param_class = param_classes.get(job_type)
+        param_class   = param_classes.get(job_type)
 
         if not param_class:
             raise ValueError(f"Unknown job type: {job_name}")
@@ -349,10 +352,9 @@ class ProjectService:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
+    # project_service.py
+
     async def load_project_state(self, project_path: str) -> Dict[str, Any]:
-        """
-        Loads a project using the new StateService.
-        """
         try:
             project_dir = Path(project_path)
             if not project_dir.exists():
@@ -362,7 +364,6 @@ class ProjectService:
             if not params_file.exists():
                 return {"success": False, "error": "No project_params.json found"}
 
-            # Manually read data_sources for compatibility
             movies_glob = ""
             mdocs_glob = ""
             try:
@@ -382,17 +383,34 @@ class ProjectService:
             except Exception as e:
                 print(f"[LOAD_PROJECT] Warning: could not parse raw JSON for data_sources: {e}")
 
-            # Load via StateService (this registers into the path-keyed registry)
             load_success = await self.backend.state_service.load_project(params_file)
 
             if not load_success:
                 return {"success": False, "error": f"StateService failed to load project from {params_file}"}
 
-            # CHANGED: use explicit path to get the state we just loaded
             state = self.backend.state_service.state_for(project_dir)
             self.set_project_root(project_dir)
 
-            # Sync job statuses
+            # Orphan detection: if a schemer PID survived in the JSON, the server
+            # may have restarted while a pipeline was running. Check if it's still alive.
+            if state.schemer_pid is not None:
+                import os as _os
+                try:
+                    _os.kill(state.schemer_pid, 0)  # signal 0 = existence check only
+                    orphan_alive = True
+                except (ProcessLookupError, PermissionError):
+                    orphan_alive = False
+
+                if orphan_alive:
+                    print(f"[PROJECT] WARNING: schemer PID {state.schemer_pid} appears to still be running. "
+                        f"Pipeline state preserved. User must manually stop or wait.")
+                    # Leave pipeline_active=True and schemer_pid set so the UI can surface a warning.
+                else:
+                    print(f"[PROJECT] Stale schemer PID {state.schemer_pid} found but process is gone. Cleaning up.")
+                    state.pipeline_active = False
+                    state.schemer_pid = None
+                    await self.backend.state_service.save_project(project_path=project_dir, force=True)
+
             await self.backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
 
             project_name = state.project_name
@@ -407,6 +425,5 @@ class ProjectService:
             }
         except Exception as e:
             import traceback
-
             traceback.print_exc()
             return {"success": False, "error": str(e)}

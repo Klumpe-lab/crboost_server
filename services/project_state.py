@@ -1,11 +1,13 @@
 # services/project_state.py
 from __future__ import annotations
 import asyncio
+from dataclasses import dataclass, field
 import json
 import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
+import time
 from typing import Dict, Any, Optional, Type, List
 
 from pydantic import BaseModel, Field, SerializeAsAny
@@ -37,6 +39,17 @@ from services.job_models import (
 )
 
 
+@dataclass
+class SlurmJobInfo:
+    """Ephemeral SLURM correlation data. Never persisted to disk."""
+
+    slurm_job_id: str
+    slurm_state: str
+    elapsed: str
+    node: str = ""
+    last_updated: float = field(default_factory=time.time)
+
+
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
@@ -55,6 +68,11 @@ class ProjectState(BaseModel):
 
     jobs: Dict[JobType, SerializeAsAny[AbstractJobParams]] = Field(default_factory=dict)
     pipeline_active: bool = Field(default=False)
+    schemer_pid: Optional[int] = Field(default=None)
+
+    # Ephemeral SLURM correlation -- excluded from serialization entirely.
+    # Populated by SlurmCorrelationService while pipeline is active.
+    slurm_info: Dict[str, SlurmJobInfo] = Field(default_factory=dict, exclude=True)
 
     _dirty: bool = False
 
@@ -134,6 +152,7 @@ class ProjectState(BaseModel):
             project_path=Path(data["project_path"]) if data.get("project_path") else None,
             created_at=datetime.fromisoformat(data.get("created_at", datetime.now().isoformat())),
             modified_at=datetime.fromisoformat(data.get("modified_at", datetime.now().isoformat())),
+            job_path_mapping=data.get("job_path_mapping", {}),
             movies_glob=data.get("movies_glob", ""),
             mdocs_glob=data.get("mdocs_glob", ""),
             microscope=MicroscopeParams(**data.get("microscope", {})),
@@ -143,6 +162,10 @@ class ProjectState(BaseModel):
                 if "slurm_defaults" in data
                 else SlurmConfig.from_config_defaults()
             ),
+            schemer_pid=data.get("schemer_pid"),
+            # pipeline_active intentionally omitted: if the server restarted,
+            # the schemer process is gone and we must not block new pipelines.
+            # schemer_pid is loaded for orphan detection in load_project_state.
         )
 
         from services.project_state import jobtype_paramclass
@@ -194,20 +217,15 @@ _project_states: Dict[Path, ProjectState] = {}
 
 
 def get_project_state_for(project_path: Path) -> ProjectState:
-    """Get or create ProjectState for a specific project directory.
-
-    Backend/service code that has a project_path available should use
-    this directly (via StateService.state_for(path)).
-    """
     resolved = project_path.resolve()
     if resolved not in _project_states:
-        params_file = resolved / "project_params.json"
-        if params_file.exists():
-            _project_states[resolved] = ProjectState.load(params_file)
-        else:
-            state = ProjectState()
-            state.project_path = resolved
-            _project_states[resolved] = state
+        print(
+            f"[WARN] get_project_state_for: path not in registry: {resolved}. "
+            f"Call StateService.load_project first. Returning detached blank state."
+        )
+        state = ProjectState()
+        state.project_path = resolved
+        return state
     return _project_states[resolved]
 
 
@@ -231,6 +249,7 @@ def get_project_state() -> ProjectState:
     """
     try:
         from ui.ui_state import get_ui_state_manager
+
         ui_mgr = get_ui_state_manager()
         if ui_mgr.project_path:
             return get_project_state_for(ui_mgr.project_path)
@@ -316,13 +335,15 @@ class StateService:
         try:
             new_state = ProjectState.load(project_json_path)
             project_path = new_state.project_path or project_json_path.parent
-            new_state.project_path = project_path          # <-- fix
+            new_state.project_path = project_path  # <-- fix
             set_project_state_for(project_path, new_state)
             return True
         except Exception:
             return False
 
-    async def save_project(self, save_path: Optional[Path] = None, project_path: Optional[Path] = None, force: bool = False):
+    async def save_project(
+        self, save_path: Optional[Path] = None, project_path: Optional[Path] = None, force: bool = False
+    ):
         """Save project state to disk.
 
         Args:

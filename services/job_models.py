@@ -137,40 +137,24 @@ class AbstractJobParams(BaseModel):
     def generate_job_star(self, job_dir: Path, fn_exe: str, star_handler) -> None:
         """Generate job.star entirely from this model's state."""
 
-        # 1. Job metadata block
         job_data = {
             "rlnJobTypeLabel": self.RELION_JOB_TYPE,
             "rlnJobIsContinue": 1 if self.IS_CONTINUE else 0,
             "rlnJobIsTomo": 1 if self.IS_TOMO_JOB else 0,
         }
 
-        # 2. Build options list
         options: List[Tuple[str, str]] = []
 
         if self.RELION_JOB_TYPE == "relion.external":
             options.append(("fn_exe", fn_exe))
 
-        # Add job-specific options (in_mic, in_tomoset, etc.)
         options.extend(self._get_job_specific_options())
-
-        # CRITICAL: Add actual path values for validation
-        # This helps relion_schemer understand dependencies
-        for key, path_value in self.paths.items():
-            if key in ["input_star", "model_path", "input_tomoset"]:
-                # Convert to relative path for RELION
-                try:
-                    rel_path = Path(path_value).relative_to(self.project_root)
-                    options.append((key, f"./{rel_path}"))
-                except ValueError:
-                    options.append((key, str(path_value)))
 
         if self.RELION_JOB_TYPE == "relion.external":
             options.append(("other_args", ""))
 
-        # Add Queue/Slurm options
         options.extend(self._get_queue_options())
 
-        # 3. Create DataFrame and Write
         joboptions_df = pd.DataFrame(options, columns=["rlnJobOptionVariable", "rlnJobOptionValue"])
 
         data = {"job": job_data, "joboptions_values": joboptions_df}
@@ -179,7 +163,6 @@ class AbstractJobParams(BaseModel):
         star_path = job_dir / "job.star"
         star_handler.write(data, star_path)
 
-        # 4. Mandatory RELION version header
         content = star_path.read_text()
         with open(star_path, "w") as f:
             f.write("# version 50001\n\n")

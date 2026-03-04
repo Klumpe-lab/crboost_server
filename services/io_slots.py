@@ -24,7 +24,6 @@ class JobFileType(str, Enum):
     ALIGNED_TILT_SERIES_STAR = "aligned_tilt_series_star"  # External/jobXXX/aligned_tilt_series.star
     TS_CTF_TILT_SERIES_STAR  = "ts_ctf_tilt_series_star"   # External/jobXXX/ts_ctf_tilt_series.star
     WARP_TILTSERIES_DIR      = "warp_tiltseries_dir"       # External/jobXXX/warp_tiltseries/
-
                                                          # Tomograms
     TOMOGRAMS_STAR          = "tomograms_star"           # External/jobXXX/tomograms.star
     DENOISED_TOMOGRAMS_STAR = "denoised_tomograms_star"  # External/jobXXX/denoised/tomograms.star (or similar)
@@ -32,7 +31,6 @@ class JobFileType(str, Enum):
     # Denoising model
     DENOISE_MODEL_TAR = "denoise_model_tar"               # External/jobXXX/denoising_model.tar.gz
 
-                                                     # Template matching / picking
     TM_RESULTS_DIR        = "tm_results_dir"         # External/jobXXX/tmResults/
     CANDIDATES_STAR       = "candidates_star"        # External/jobXXX/candidates.star
     OPTIMISATION_SET_STAR = "optimisation_set_star"  # External/jobXXX/optimisation_set.star

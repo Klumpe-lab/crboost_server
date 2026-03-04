@@ -12,7 +12,7 @@ Pipeline builder panel.
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Callable, List, Set
+from typing import Any, Dict, Callable, List, Set
 
 from nicegui import ui
 
@@ -20,6 +20,7 @@ from backend import CryoBoostBackend
 from services.project_state import JobType, get_state_service
 from ui.status_indicator import BoundStatusDot
 from ui.ui_state import PIPELINE_ORDER, get_ui_state_manager, get_job_display_name
+from typing import Any, Dict, Callable, List, Set
 from ui.pipeline_builder.job_tab_component import render_job_tab
 
 
@@ -96,6 +97,7 @@ def render_job_flow(selected_jobs: List[JobType], on_toggle: Callable[[JobType],
                 ).style("margin: 0 2px;")
 
 
+
 def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str, Callable]) -> None:
     ui_mgr = get_ui_state_manager()
     state_service = get_state_service()
@@ -104,10 +106,28 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
     _tab_strip_ref: Dict[str, object] = {}
     _content_wrapper_ref: Dict[str, object] = {}
 
-    _pipeline_status_ref: Dict[str, object] = {}
+    _pipeline_status_ref: Dict[str, Any] = {}
     _spinner_frames = "\u28cb\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
     _spinner_state = {"index": 0}
 
+
+    @ui.refreshable
+    def _render_header_slurm_chip():
+        from services.project_state import get_project_state
+        state = get_project_state()
+
+        if not state.slurm_info:
+            return
+
+        relion_path, info = next(iter(state.slurm_info.items()))
+        short_name = relion_path.strip("/").split("/")[-1]
+
+        with ui.row().classes("items-center gap-2"):
+            ui.label("·").classes("text-gray-300 text-xs")
+            ui.label(f"{short_name}  {info.slurm_job_id}  {info.elapsed}").classes(
+                "text-xs font-mono text-blue-700 bg-blue-50 border border-blue-200 "
+                "px-2 py-0.5 rounded-full"
+            )
     # ===========================================
     # Tab switching
     # ===========================================
@@ -281,10 +301,10 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         if not label_el:
             return
 
-        total = overview.get("total", 0)
+        total     = overview.get("total", 0)
         completed = overview.get("completed", 0)
-        failed = overview.get("failed", 0)
-        running = overview.get("running", 0)
+        failed    = overview.get("failed", 0)
+        running   = overview.get("running", 0)
         scheduled = overview.get("scheduled", 0)
 
         parts = []
@@ -297,12 +317,27 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         if failed > 0:
             parts.append(f"{failed} failed")
 
-        if parts:
-            msg = f"{completed + failed}/{total} -- " + ", ".join(parts)
-        else:
-            msg = f"0/{total} jobs"
-
+        msg = f"{completed + failed}/{total} -- " + ", ".join(parts) if parts else f"0/{total} jobs"
         label_el.set_text(msg)
+
+        chip = _pipeline_status_ref.get("slurm_chip")
+        chip_row = _pipeline_status_ref.get("slurm_chip_row")
+        if not chip or not chip_row:
+            return
+
+        from services.project_state import get_project_state
+        state = get_project_state()
+
+        print(f"[DEBUG] slurm_info: {state.slurm_info}")
+
+        if not state.slurm_info:
+            chip_row.set_visibility(False)
+            return
+
+        relion_path, info = next(iter(state.slurm_info.items()))
+        short_name = relion_path.strip("/").split("/")[-1]
+        chip.set_text(f"{short_name}  {info.slurm_job_id}  {info.elapsed}")
+        chip_row.set_visibility(True)
 
     # ===========================================
     # Full rebuild
@@ -428,6 +463,12 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
     def stop_all_timers():
         ui_mgr.cleanup_all_timers()
         _stop_spinner_timer()
+        timer = _pipeline_status_ref.pop("slurm_chip_timer", None)
+        if timer:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
 
     async def safe_status_check():
         try:
@@ -522,6 +563,26 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
 
                 status_msg = ui.label("starting...").classes("text-xs text-gray-500 font-mono")
                 _pipeline_status_ref["label"] = status_msg
+
+                with ui.row().classes("items-center gap-2 flex-shrink-0") as slurm_chip_row:
+                    slurm_chip_row.set_visibility(False)
+                    _pipeline_status_ref["slurm_chip_row"] = slurm_chip_row
+                    ui.label("·").classes("text-gray-300 text-xs")
+                    slurm_chip = ui.label("").classes(
+                        "text-xs font-mono text-blue-700 bg-blue-50 border border-blue-200 "
+                        "px-2 py-0.5 rounded-full"
+                    )
+                    _pipeline_status_ref["slurm_chip"] = slurm_chip
+
+                # Separator
+                ui.label("·").classes("text-gray-300 text-xs")
+
+                # Live SLURM status -- refreshed by the existing status polling timer
+                slurm_chip = ui.label("").classes(
+                    "text-xs font-mono text-blue-700 bg-blue-50 border border-blue-200 "
+                    "px-2 py-0.5 rounded-full"
+                ).style("display: none;")
+                _pipeline_status_ref["slurm_chip"] = slurm_chip
 
         ui_mgr.panel_refs.status_label = None
         ui_mgr.panel_refs.stop_button = None
