@@ -311,6 +311,7 @@ class StateService:
         try:
             new_state = ProjectState.load(project_json_path)
             project_path = new_state.project_path or project_json_path.parent
+            new_state.project_path = project_path          # <-- fix
             set_project_state_for(project_path, new_state)
             return True
         except Exception:

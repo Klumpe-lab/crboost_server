@@ -88,6 +88,7 @@ def _load_plugins():
     import importlib
 
     _modules = [
+        "ui.job_plugins.fs_motion_and_ctf",       # <-- add this
         "ui.job_plugins.template_match",
         "ui.job_plugins.subtomo_extraction",
         "ui.job_plugins.candidate_extract",
