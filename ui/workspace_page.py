@@ -1,6 +1,5 @@
 # ui/workspace_page.py
 
-import asyncio
 from nicegui import ui
 from backend import CryoBoostBackend
 from services.project_state import get_project_state
@@ -22,9 +21,6 @@ def build_workspace_page(backend: CryoBoostBackend):
 
     ui_mgr.prepare_for_page_rebuild()
 
-    # ===================================================================
-    # SAFETY CHECKS
-    # ===================================================================
     if not ui_mgr.is_project_created:
         with ui.column().classes("w-full h-screen items-center justify-center gap-4"):
             ui.icon("error_outline", size="64px").classes("text-red-400")
@@ -41,44 +37,15 @@ def build_workspace_page(backend: CryoBoostBackend):
         return
 
     # ===================================================================
-    # FORCE SYNC
-    # ===================================================================
-    async def force_full_sync():
-        project_path = ui_mgr.project_path
-        if not project_path:
-            ui.notify("No project loaded", type="warning")
-            return
-        try:
-            result = await backend.load_existing_project(str(project_path))
-            if not result.get("success"):
-                ui.notify(f"Sync failed: {result.get('error')}", type="negative")
-                return
-            await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
-            fresh_state = backend.state_service.state
-            ui_mgr.load_from_project(
-                project_path=fresh_state.project_path, scheme_name="default", jobs=list(fresh_state.jobs.keys())
-            )
-            ui_mgr.request_rebuild()
-            ui.notify("State synced from disk", type="positive")
-        except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            ui.notify(f"Sync error: {e}", type="negative")
-
-    # ===================================================================
     # HEADER
     # ===================================================================
     with ui.header().classes("bg-white border-b border-gray-200 text-gray-800 h-auto px-4 py-1"):
         with ui.row().classes("w-full items-center justify-between"):
-            # Left: Project name (with global params popover) + metadata
             with ui.row().classes("items-center gap-5"):
-                # Project name + science icon as popover trigger
                 with ui.row().classes("items-center gap-1"):
                     ui.icon("layers", size="16px").classes("text-blue-600")
                     ui.label(state.project_name).classes("font-semibold text-xs")
 
-                    # Global params popover on the science icon
                     with (
                         ui.button(icon="science", on_click=None)
                         .props("flat dense round size=sm")
@@ -119,12 +86,7 @@ def build_workspace_page(backend: CryoBoostBackend):
                         ui.label("MDOC").classes("text-[8px] font-bold text-gray-400 uppercase leading-none")
                         ui.label(state.mdocs_glob).classes("text-[10px] font-mono text-gray-500 leading-tight")
 
-            # Right: Actions
             with ui.row().classes("items-center gap-1"):
-                ui.button(icon="sync", on_click=force_full_sync).props("flat dense round size=sm").classes(
-                    "text-blue-600"
-                ).tooltip("Reload from disk")
-
                 ui.button(icon="close", on_click=lambda: ui.navigate.to("/")).props("flat dense round size=sm").classes(
                     "text-red-400"
                 ).tooltip("Close project")
@@ -132,7 +94,7 @@ def build_workspace_page(backend: CryoBoostBackend):
     # ===================================================================
     # MAIN CONTENT
     # ===================================================================
-    callbacks = {"force_sync": force_full_sync}
+    callbacks = {}
 
     with ui.column().classes("w-full p-0").style("height: calc(100vh - 56px); overflow: hidden;"):
         build_pipeline_builder_panel(backend, callbacks)

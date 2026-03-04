@@ -100,19 +100,16 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
     ui_mgr = get_ui_state_manager()
     state_service = get_state_service()
 
-    # Lazy-rendered job content cache.
-    # Maps job_type.value -> ui.column container.
     _job_content_containers: Dict[str, ui.column] = {}
     _tab_strip_ref: Dict[str, object] = {}
     _content_wrapper_ref: Dict[str, object] = {}
 
-    # Pipeline running status refs
     _pipeline_status_ref: Dict[str, object] = {}
     _spinner_frames = "\u28cb\u2819\u2839\u2838\u283c\u2834\u2826\u2827\u2807\u280f"
     _spinner_state = {"index": 0}
 
     # ===========================================
-    # Tab switching (cheap -- visibility toggle)
+    # Tab switching
     # ===========================================
 
     def _refresh_tab_strip():
@@ -175,7 +172,7 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         _refresh_tab_strip()
 
     # ===========================================
-    # Job add/remove (structural -- full rebuild)
+    # Job add/remove
     # ===========================================
 
     def add_job_to_pipeline(job_type: JobType):
@@ -237,7 +234,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
     # ===========================================
 
     def _set_pipeline_ui_locked(locked: bool):
-        """Toggle UI elements that should be disabled while pipeline is active."""
         if ui_mgr.panel_refs.job_tags_container:
             ui_mgr.panel_refs.job_tags_container.set_visibility(not locked)
         if ui_mgr.panel_refs.run_button:
@@ -247,17 +243,15 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
                 ui_mgr.panel_refs.run_button.set_visibility(True)
                 ui_mgr.panel_refs.run_button.props(remove="disable loading")
 
-        # Show/hide the running status indicator
         status_row = _pipeline_status_ref.get("row")
         if status_row:
             status_row.set_visibility(locked)
 
     # ===========================================
-    # Spinner timer (fast, ~1s rotation)
+    # Spinner
     # ===========================================
 
     def _advance_spinner():
-        """Tick the braille spinner character forward. Called by a dedicated 1s timer."""
         spinner_el = _pipeline_status_ref.get("spinner")
         if not spinner_el:
             return
@@ -265,14 +259,12 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         spinner_el.set_text(_spinner_frames[_spinner_state["index"]])
 
     def _start_spinner_timer():
-        """Start the fast spinner rotation timer. Idempotent."""
         existing = _pipeline_status_ref.get("spinner_timer")
         if existing:
-            return  # already running
+            return
         _pipeline_status_ref["spinner_timer"] = ui.timer(0.17, _advance_spinner)
 
     def _stop_spinner_timer():
-        """Stop the spinner rotation timer."""
         timer = _pipeline_status_ref.pop("spinner_timer", None)
         if timer:
             try:
@@ -281,7 +273,7 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
                 pass
 
     # ===========================================
-    # Pipeline running status display
+    # Running status display
     # ===========================================
 
     def _update_pipeline_status_display(overview: Dict):
@@ -295,7 +287,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         running = overview.get("running", 0)
         scheduled = overview.get("scheduled", 0)
 
-        # Build a short human message
         parts = []
         if completed > 0:
             parts.append(f"{completed} done")
@@ -314,7 +305,7 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         label_el.set_text(msg)
 
     # ===========================================
-    # Full rebuild (structural changes only)
+    # Full rebuild
     # ===========================================
 
     def rebuild_pipeline_ui():
@@ -322,11 +313,9 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         _tab_strip_ref.pop("el", None)
         _content_wrapper_ref.pop("el", None)
 
-        # Show/hide flow pills based on state
         pipeline_active = ui_mgr.is_running
         _set_pipeline_ui_locked(pipeline_active)
 
-        # If pipeline is not active and we have a project, rebuild the pills
         flow_container = ui_mgr.panel_refs.job_tags_container
         if flow_container and not pipeline_active:
             if ui_mgr.is_project_created:
@@ -372,15 +361,10 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
             _ensure_job_rendered(active)
             _job_content_containers[active.value].set_visibility(True)
 
-        # If pipeline is active (e.g. page refresh while running),
-        # restart the spinner and status polling timers, and immediately
-        # fetch current status so we don't show stale "starting...".
         if pipeline_active:
             _start_spinner_timer()
             if not ui_mgr.status_timer:
-                ui_mgr.status_timer = ui.timer(3.0, lambda: asyncio.create_task(safe_status_check()))
-            # Immediate status fetch so we don't sit on "starting..."
-            asyncio.create_task(safe_status_check())
+                ui_mgr.status_timer = ui.timer(3.0, safe_status_check)
 
     # ===========================================
     # Status polling
@@ -391,31 +375,42 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         if not project_path:
             return
 
+        sbatch_errors = backend.pipeline_runner.get_sbatch_errors()
+        if sbatch_errors:
+            await backend.pipeline_runner.stop_pipeline()
+            await backend.pipeline_runner.reset_submission_failure(ui_mgr.project_path)
+            await backend.pipeline_runner.status_sync.sync_all_jobs(str(ui_mgr.project_path))
+
+            ui_mgr.set_pipeline_running(False)
+            stop_all_timers()
+            _set_pipeline_ui_locked(False)
+            rebuild_pipeline_ui()
+            ui.notify(
+                f"SLURM submission failed: {sbatch_errors[0]}",
+                type="negative",
+                timeout=10000,
+            )
+            return
+
         await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
 
         if not ui_mgr.is_running:
             return
 
         overview = await backend.get_pipeline_overview(str(project_path))
-
-        # Update the running status display
         _update_pipeline_status_display(overview)
 
-        total = overview.get("total", 0)
+        total     = overview.get("total", 0)
         completed = overview.get("completed", 0)
-        failed = overview.get("failed", 0)
-        running = overview.get("running", 0)
+        failed    = overview.get("failed", 0)
+        running   = overview.get("running", 0)
         scheduled = overview.get("scheduled", 0)
 
-        # Pipeline is done when nothing is running and at least one job
-        # has produced a result (succeeded or failed), and nothing is
-        # left in the queue.
         all_done = total > 0 and running == 0 and scheduled == 0 and (completed > 0 or failed > 0)
 
         if not all_done:
             return
 
-        # --- Pipeline finished ---
         ui_mgr.set_pipeline_running(False)
         stop_all_timers()
 
@@ -438,7 +433,7 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         try:
             await check_and_update_statuses()
         except Exception as e:
-            print(f"[UI] Status check failed (pipeline still running): {e}")
+            print(f"[UI] Status check failed: {e}")
 
     # ===========================================
     # Pipeline execution
@@ -467,7 +462,7 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
             if result.get("success"):
                 ui_mgr.set_pipeline_running(True)
                 ui.notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
-                ui_mgr.status_timer = ui.timer(3.0, lambda: asyncio.create_task(safe_status_check()))
+                ui_mgr.status_timer = ui.timer(3.0, safe_status_check)
                 _start_spinner_timer()
                 _set_pipeline_ui_locked(True)
             else:
@@ -512,7 +507,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
             )
             ui_mgr.panel_refs.run_button = run_btn
 
-            # Running status indicator (hidden by default, shown while pipeline is active)
             with ui.row().classes("items-center gap-2 flex-shrink-0") as status_row:
                 status_row.set_visibility(False)
                 _pipeline_status_ref["row"] = status_row
@@ -543,10 +537,9 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
 
     callbacks["rebuild_pipeline_ui"] = rebuild_pipeline_ui
     callbacks["stop_all_timers"] = stop_all_timers
-    callbacks["check_and_update_statuses"] = lambda: asyncio.create_task(check_and_update_statuses())
+    callbacks["check_and_update_statuses"] = check_and_update_statuses
     callbacks["enable_run_button"] = lambda: _set_pipeline_ui_locked(False)
     callbacks["add_job_to_pipeline"] = add_job_to_pipeline
     callbacks["remove_job_from_pipeline"] = remove_job_from_pipeline
 
-    # Initial render
     rebuild_pipeline_ui()

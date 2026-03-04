@@ -19,7 +19,7 @@ def is_job_frozen(job_type: JobType) -> bool:
     job_model = state.jobs.get(job_type)
     if not job_model:
         return False
-    return job_model.execution_status in [JobStatus.RUNNING, JobStatus.SUCCEEDED, JobStatus.FAILED]
+    return job_model.execution_status in [JobStatus.RUNNING, JobStatus.SUCCEEDED]
 
 
 def render_config_tab(
