@@ -11,6 +11,29 @@ from services.computing.slurm_service import SLURM_PRESET_MAP, SlurmConfig, Slur
 from services.models_base import JobType, AcquisitionParams, AlignmentMethod, JobCategory, JobStatus, MicroscopeParams
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
+# Add this import at the top, alongside the existing re import isn't there yet:
+import re
+
+# Add this class near the top of the job model definitions, 
+# alongside ExtractionCutoffMethod:
+
+class SymmetryGroup(str, Enum):
+    """RELION point group symmetry designations."""
+    C1 = "C1"
+    C2 = "C2"
+    C3 = "C3"
+    C4 = "C4"
+    C5 = "C5"
+    C6 = "C6"
+    D2 = "D2"
+    D3 = "D3"
+    D4 = "D4"
+    D5 = "D5"
+    D6 = "D6"
+    T  = "T"
+    O  = "O"
+    I1 = "I1"
+    I2 = "I2"
 
 # This prevents the circular import error at runtime
 if TYPE_CHECKING:
@@ -1077,7 +1100,7 @@ class ReconstructParticleParams(AbstractJobParams):
     # Reconstruction parameters
     box_size: int = Field(default=384, description="Box size in pixels")
     crop_size: int = Field(default=224, description="Cropped box size (-1 = no cropping)")
-    symmetry: str = Field(default="C1", description="Symmetry group (C1, C2, I1, etc.)")
+    symmetry: SymmetryGroup = Field(default=SymmetryGroup.C1, description="Point group symmetry")
     binning: int = Field(default=1, ge=1, description="Binning factor")
 
     # Noise / CTF
@@ -1146,22 +1169,22 @@ class Class3DParams(AbstractJobParams):
     ]
 
     # Classification
-    n_classes: int = Field(default=1, ge=1, description="Number of classes (1 for initial alignment, >1 for sorting)")
-    n_iterations: int = Field(default=15, ge=1, description="Number of iterations")
-    tau_fudge: float = Field(default=-1.0, description="Regularisation parameter (-1 = auto)")
+    n_classes   : int   = Field(default=1, ge=1, description="Number of classes (1 for initial alignment, >1 for sorting)")
+    n_iterations: int   = Field(default=15, ge=1, description="Number of iterations")
+    tau_fudge   : float = Field(default=-1.0, description="Regularisation parameter (-1 = auto)")
 
     # Angular sampling
     healpix_order: int = Field(default=4, ge=1, le=6, description="Angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)")
-    offset_range: int = Field(default=6, ge=0, description="Translational search range (pixels)")
-    offset_step: int = Field(default=2, ge=1, description="Translational search step (pixels)")
+    offset_range : int = Field(default=6, ge=0, description="Translational search range (pixels)")
+    offset_step  : int = Field(default=2, ge=1, description="Translational search step (pixels)")
 
     # Local angular searches
     sigma_ang: float = Field(default=-1.0, description="Local angular search sigma in degrees (-1 = no local search)")
 
     # Symmetry / filtering
-    symmetry: str = Field(default="C1", description="Symmetry group (C1, C2, I1, etc.)")
-    ini_high: float = Field(default=45.0, ge=0, description="Initial low-pass filter (Angstroms)")
-    particle_diameter: float = Field(default=-1.0, description="Mask diameter (Angstroms, -1 = auto)")
+    symmetry         : SymmetryGroup = Field(default=SymmetryGroup.C1, description="Point group symmetry")
+    ini_high         : float         = Field(default=45.0, ge=0, description="Initial low-pass filter (Angstroms)")
+    particle_diameter: float         = Field(default=-1.0, description="Mask diameter (Angstroms, -1 = auto)")
 
     # Optional mask
     solvent_mask_path: str = Field(default="", description="Path to soft mask for references (optional)")
@@ -1181,11 +1204,11 @@ class Class3DParams(AbstractJobParams):
         super().__init__(**data)
         if "slurm_overrides" not in data:
             self.slurm_overrides = {
-                "gres": "gpu:1",
-                "mem": "64G",
+                "gres"         : "gpu:1",
+                "mem"          : "64G",
                 "cpus_per_task": 4,
-                "time": "8:00:00",
-                "preset": SlurmPreset.CUSTOM.value,
+                "time"         : "8:00:00",
+                "preset"       : SlurmPreset.CUSTOM.value,
             }
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
