@@ -22,7 +22,6 @@ from ui.status_indicator import BoundStatusDot
 from ui.ui_state import PIPELINE_ORDER, get_ui_state_manager, get_job_display_name
 from ui.pipeline_builder.job_tab_component import render_job_tab
 
-
 JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
     JobType.IMPORT_MOVIES         : [],
     JobType.FS_MOTION_CTF         : [JobType.IMPORT_MOVIES],
@@ -38,7 +37,6 @@ JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
     JobType.CLASS3D               : [JobType.RECONSTRUCT_PARTICLE],
 }
 
-
 def get_missing_dependencies(job_type: JobType, selected_jobs: Set[JobType]) -> List[JobType]:
     deps = JOB_DEPENDENCIES.get(job_type, [])
     if job_type == JobType.TEMPLATE_MATCH_PYTOM:
@@ -47,7 +45,6 @@ def get_missing_dependencies(job_type: JobType, selected_jobs: Set[JobType]) -> 
             return [JobType.TS_RECONSTRUCT]
         return []
     return [d for d in deps if d not in selected_jobs]
-
 
 def render_job_flow(selected_jobs: List[JobType], on_toggle: Callable[[JobType], None]):
     selected_set = set(selected_jobs)
@@ -94,7 +91,6 @@ def render_job_flow(selected_jobs: List[JobType], on_toggle: Callable[[JobType],
                 ui.icon("arrow_forward", size="14px").classes(
                     "text-blue-400" if is_connected else "text-gray-300"
                 ).style("margin: 0 2px;")
-
 
 def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str, Callable]) -> None:
     ui_mgr = get_ui_state_manager()
