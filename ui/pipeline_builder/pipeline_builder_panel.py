@@ -267,6 +267,10 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         running = overview.get("running", 0)
         scheduled = overview.get("scheduled", 0)
 
+        # Use selected job count as authoritative denominator -- pipeline.star
+        # may not have all jobs yet right after the schemer starts
+        display_total = max(total, len(ui_mgr.selected_jobs))
+
         parts = []
         if completed > 0:
             parts.append(f"{completed} done")
@@ -277,10 +281,11 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         if failed > 0:
             parts.append(f"{failed} failed")
 
+        active = completed + failed + running
         if parts:
-            msg = f"{completed + failed}/{total} -- " + ", ".join(parts)
+            msg = f"{active}/{display_total} -- " + ", ".join(parts)
         else:
-            msg = f"0/{total} jobs"
+            msg = f"0/{display_total} jobs"
 
         label_el.set_text(msg)
 
@@ -378,7 +383,13 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
         running   = overview.get("running", 0)
         scheduled = overview.get("scheduled", 0)
 
-        all_done = total > 0 and running == 0 and scheduled == 0 and (completed > 0 or failed > 0)
+        all_done = (
+            total > 0
+            and running == 0
+            and scheduled == 0
+            and (completed > 0 or failed > 0)
+            and backend.pipeline_runner.active_schemer_process is None
+        )
 
         if not all_done:
             return
@@ -413,7 +424,6 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
             return
 
         await state_service.save_project(force=True)
-
         selected_job_strings = [j.value for j in ui_mgr.selected_jobs]
 
         if ui_mgr.panel_refs.run_button:
@@ -427,12 +437,17 @@ def build_pipeline_builder_panel(backend: CryoBoostBackend, callbacks: Dict[str,
                 required_paths=[],
             )
 
+            if result.get("already_complete"):
+                ui.notify("All selected jobs already completed.", type="info")
+                return
+
             if result.get("success"):
                 ui_mgr.set_pipeline_running(True)
                 ui.notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
                 ui_mgr.status_timer = ui.timer(3.0, safe_status_check)
                 _start_spinner_timer()
                 _set_pipeline_ui_locked(True)
+                rebuild_pipeline_ui()  # re-render tabs with reset job state
             else:
                 ui.notify(f"Failed to start: {result.get('error')}", type="negative")
 

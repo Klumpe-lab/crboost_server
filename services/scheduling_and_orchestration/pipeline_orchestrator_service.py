@@ -37,7 +37,12 @@ class PipelineOrchestratorService:
                 jobs_to_run.append(job_type)
 
         if not jobs_to_run:
-            return {"success": True, "message": "All selected jobs are already finished.", "pid": 0}
+            return {
+                "success": True,
+                "already_complete": True,
+                "message": "All selected jobs are already finished.",
+                "pid": 0,
+            }
 
         # Scheme directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -137,6 +142,16 @@ class PipelineOrchestratorService:
             bind_paths.append(str(Path(state.movies_glob).parent.resolve()))
         if state.mdocs_glob:
             bind_paths.append(str(Path(state.mdocs_glob).parent.resolve()))
+
+        # Reset job models for jobs being re-run so the UI immediately
+        # shows "scheduled" instead of stale Failed state and old paths
+        state = self.backend.state_service.state_for(project_dir)
+        for job_type in jobs_to_run:
+            job_model = state.jobs.get(job_type)
+            if job_model:
+                job_model.execution_status = JobStatus.SCHEDULED
+                job_model.relion_job_name = None
+                job_model.relion_job_number = None
 
         return await self.backend.pipeline_runner.run_generated_scheme(
             project_dir=project_dir, scheme_name=scheme_name, bind_paths=list(set(bind_paths))

@@ -571,10 +571,6 @@ class PipelineRunnerService:
             traceback.print_exc()
 
         finally:
-            # ALWAYS clean up, regardless of how we got here
-            print(f"[MONITOR] Cleaning up after PID {pid}")
-
-            # Close file handles
             try:
                 stdout_handle.close()
             except Exception:
@@ -584,20 +580,23 @@ class PipelineRunnerService:
             except Exception:
                 pass
 
-            # Clear process reference
-            self.active_schemer_process = None
-            self._stdout_log_path = None
-            self._stderr_log_path = None
+            # Only clobber shared state if we're still the active schemer.
+            # If a new run started between our termination and this finally block
+            # firing, leave it alone.
+            if self.active_schemer_process is process:
+                self.active_schemer_process = None
+                self._stdout_log_path = None
+                self._stderr_log_path = None
 
-            # Mark pipeline as inactive and persist
-            # CHANGED: use registry with explicit path (no tab context in background task)
-            try:
-                current_state = self.backend.state_service.state_for(project_dir)
-                current_state.pipeline_active = False
-                await self.backend.state_service.save_project(project_path=project_dir, force=True)
-                print(f"[MONITOR] Pipeline marked inactive, state saved")
-            except Exception as e:
-                print(f"[MONITOR] WARNING: Failed to persist pipeline_active=False: {e}")
+                try:
+                    current_state = self.backend.state_service.state_for(project_dir)
+                    current_state.pipeline_active = False
+                    await self.backend.state_service.save_project(project_path=project_dir, force=True)
+                    print(f"[MONITOR] Pipeline marked inactive, state saved")
+                except Exception as e:
+                    print(f"[MONITOR] WARNING: Failed to persist pipeline_active=False: {e}")
+            else:
+                print(f"[MONITOR] Old schemer PID {pid} cleaned up, new pipeline already running -- skipping state reset")
 
 
 
