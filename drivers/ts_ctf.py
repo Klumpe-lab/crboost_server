@@ -22,7 +22,6 @@ except ImportError as e:
     print(f"Error: {e}", file=sys.stderr)
     sys.exit(1)
 
-
 def build_ctf_commands(params: TsCtfParams, paths: dict[str, Path]) -> str:
 
     settings_file     = shlex.quote(str(paths["warp_tiltseries_settings"]))
