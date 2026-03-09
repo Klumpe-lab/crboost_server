@@ -69,11 +69,11 @@ class PathResolutionService:
     Now with user override support and candidate enumeration for UI.
     """
 
-    def __init__(self, state: "ProjectState", active_job_types: Optional[set] = None):
+    def __init__(self, state: "ProjectState", active_instance_ids: Optional[set] = None):
         self.state = state
-
-        self._active_job_types = active_job_types  # NEW
+        self._active_instance_ids = active_instance_ids
         self._output_index: Optional[Dict[JobFileType, List[OutputCandidate]]] = None
+
 
     # -------------------------------------------------------------------------
     # Public API
@@ -344,9 +344,9 @@ class PathResolutionService:
         project_root = self._project_root()
         index: Dict[JobFileType, List[OutputCandidate]] = {t: [] for t in JobFileType}
 
-        for producer_job_type, producer_model in self.state.jobs.items():
-            # --- NEW: skip jobs not in the active pipeline ---
-            if self._active_job_types is not None and producer_job_type not in self._active_job_types:
+        for instance_id, producer_model in self.state.jobs.items():
+            producer_job_type = producer_model.job_type
+            if producer_job_type is None:
                 continue
 
             out_schema = self._get_output_schema(producer_job_type)
@@ -356,14 +356,11 @@ class PathResolutionService:
             relion_job_number = int(getattr(producer_model, "relion_job_number", 0) or 0)
             status = getattr(producer_model, "execution_status", JobStatus.UNKNOWN)
 
-            # Get instance path
-            instance_path = self._get_instance_path(producer_job_type, producer_model)
-            if not instance_path:
-                # Job not yet deployed - use placeholder
-                instance_path = f"pending/{producer_job_type.value}"
+            instance_path = self._get_instance_path(instance_id, producer_model)
 
             for slot in out_schema:
                 path = self._get_producer_output_path(
+                    instance_id=instance_id,
                     producer_job_type=producer_job_type,
                     producer_model=producer_model,
                     slot=slot,
@@ -384,74 +381,53 @@ class PathResolutionService:
                     )
                 )
 
-        # Stable sorting
         for t, lst in index.items():
             index[t] = sorted(lst, key=lambda c: (c.producer_job_type.value, c.instance_path, c.producer_output_key))
 
         self._output_index = index
         return index
 
-    def _get_instance_path(
-        self,
-        job_type: JobType,
-        job_model: "AbstractJobParams",
-    ) -> Optional[str]:
-        """Get the instance path (e.g., 'External/job005') for a job."""
-        # From relion_job_name (job has run)
+    def _get_instance_path(self, instance_id: str, job_model: "AbstractJobParams") -> str:
         relion_job_name = getattr(job_model, "relion_job_name", None)
         if relion_job_name:
             return relion_job_name.rstrip("/")
-        
-        # From job_path_mapping
-        mapped = (self.state.job_path_mapping or {}).get(job_type.value)
+
+        mapped = (self.state.job_path_mapping or {}).get(instance_id)
         if mapped:
             return mapped.rstrip("/")
-        
-        # For pending jobs, use a placeholder
+
         from services.models_base import JobCategory
         category = getattr(job_model, "JOB_CATEGORY", JobCategory.EXTERNAL)
-        return f"{category.value}/pending_{job_type.value}"
+        return f"{category.value}/pending_{instance_id}"
+
 
     def _get_producer_output_path(
         self,
+        instance_id: str,
         producer_job_type: JobType,
         producer_model: "AbstractJobParams",
         slot: OutputSlot,
         project_root: Path,
     ) -> Optional[str]:
-        """
-        How to obtain a producer's output path.
-        
-        For jobs that haven't run yet, we generate a predicted path.
-        The actual path gets resolved at deploy time by the orchestrator.
-        """
-        # 1) stored in paths (from previous run or manual override)
         stored = (producer_model.paths or {}).get(slot.key)
         if stored:
             return str(Path(stored))
 
-        # 2) infer from relion job name (job has run before)
         relion_job_name = getattr(producer_model, "relion_job_name", None)
         if relion_job_name:
             job_dir = (project_root / relion_job_name.rstrip("/")).resolve()
             return str((job_dir / slot.path_template).resolve())
 
-        # 3) infer from job_path_mapping
-        mapped = (self.state.job_path_mapping or {}).get(producer_job_type.value)
+        mapped = (self.state.job_path_mapping or {}).get(instance_id)
         if mapped:
             job_dir = (project_root / mapped.rstrip("/")).resolve()
             return str((job_dir / slot.path_template).resolve())
 
-        # 4) NEW: Generate predicted path for scheduled jobs
-        # This allows the UI to show the job as an option even before it runs.
-        # The actual path will be resolved at deploy time.
         status = getattr(producer_model, "execution_status", None)
-        if status is not None:  # Job exists in state
-            # Use a predictable placeholder structure
-            # Format: <project_root>/<category>/pending_<jobtype>/<path_template>
+        if status is not None:
             from services.models_base import JobCategory
             category = getattr(producer_model, "JOB_CATEGORY", JobCategory.EXTERNAL)
-            predicted_dir = project_root / category.value / f"pending_{producer_job_type.value}"
+            predicted_dir = project_root / category.value / f"pending_{instance_id}"
             return str((predicted_dir / slot.path_template).resolve())
 
         return None
@@ -501,14 +477,16 @@ class PathResolutionService:
     # -------------------------------------------------------------------------
 
     def _get_input_schema(self, job_type: JobType) -> List[InputSlot]:
-        job_model = self.state.jobs.get(job_type)
-        cls = job_model.__class__ if job_model else None
+        from services.job_models import jobtype_paramclass
+        cls = jobtype_paramclass().get(job_type)
         schema = getattr(cls, "INPUT_SCHEMA", None) if cls else None
         return list(schema) if schema else []
 
+
+
     def _get_output_schema(self, job_type: JobType) -> List[OutputSlot]:
-        job_model = self.state.jobs.get(job_type)
-        cls = job_model.__class__ if job_model else None
+        from services.job_models import jobtype_paramclass
+        cls = jobtype_paramclass().get(job_type)
         schema = getattr(cls, "OUTPUT_SCHEMA", None) if cls else None
         return list(schema) if schema else []
 

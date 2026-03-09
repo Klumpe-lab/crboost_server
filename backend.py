@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List
+from typing import Any, AsyncGenerator, Dict, List, Optional
 import pandas as pd
 import os
 from datetime import datetime
@@ -35,29 +35,19 @@ class CryoBoostBackend:
         self.pdb_service           = PDBService(self)
 
     async def start_pipeline(
-            self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]
-        ):
-            """
-            Unified pipeline start method. 
-            Accepts a list of job strings (e.g. ['tsReconstruct', 'denoisetrain']).
-            """
-            job_types = []
-            for j in selected_jobs:
-                try:
-                    job_types.append(JobType(j))
-                except ValueError:
-                    print(f"[BACKEND] Invalid job type: {j}")
-                    
-            return await self.pipeline_orchestrator.deploy_and_run_scheme(
-                project_dir=Path(project_path),
-                selected_job_types=job_types,
-            )
+        self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]
+    ):
+        """
+        Unified pipeline start method.
+        selected_jobs is a list of instance_id strings (e.g. ['tsReconstruct', 'templatematching__ribosome']).
+        """
+        return await self.pipeline_orchestrator.deploy_and_run_scheme(
+            project_dir=Path(project_path),
+            selected_instance_ids=selected_jobs,
+        )
 
-    async def delete_job(self, job_name: str) -> Dict[str, Any]:
-            """
-            Deletes a job by its logical name (e.g. 'fsMotionAndCtf').
-            """
-            return await self.project_service.delete_job(job_name)
+    async def delete_job(self, job_name: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
+        return await self.project_service.delete_job(job_name, instance_id=instance_id)
 
 
     async def get_default_data_globs(self) -> Dict[str, str]:
@@ -127,57 +117,59 @@ class CryoBoostBackend:
         print(f"[SCANNER] Found {len(projects)} valid projects.")
         return projects
 
+    
+
+
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
-        """Get parameters for a specific job, initializing if not present."""
+        """Get parameters for a specific job instance, initializing if not present."""
         try:
-            job_type = JobType.from_string(job_name)
             state = self.state_service.state
 
-            job_model = state.jobs.get(job_type)
+            job_model = state.jobs.get(job_name)
             if not job_model:
-                print(f"[BACKEND] Job {job_type} not in state, initializing from template.")
+                # instance_id not found — try to initialize as a singleton job
+                try:
+                    job_type = JobType.from_string(job_name)
+                except ValueError:
+                    return {"success": False, "error": f"Unknown job instance: {job_name}"}
+
+                print(f"[BACKEND] Job {job_name} not in state, initializing from template.")
                 template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
                 job_star_path = template_base / job_type.value / "job.star"
-
-                await self.state_service.ensure_job_initialized(
-                    job_type, job_star_path if job_star_path.exists() else None
+                state.ensure_job_initialized(
+                    job_type,
+                    instance_id=job_name,
+                    template_path=job_star_path if job_star_path.exists() else None,
                 )
-                job_model = state.jobs.get(job_type)  # Get it again
+                job_model = state.jobs.get(job_name)
 
             if job_model:
                 return {"success": True, "params": job_model.model_dump()}
             else:
-                # This should not happen if ensure_job_initialized works
                 return {"success": False, "error": f"Failed to initialize job {job_name}"}
-        except ValueError as e:
+        except Exception as e:
             return {"success": False, "error": str(e)}
+
 
     async def update_job_parameters(self, job_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Updates parameters for a specific job and PERSISTS to project_params.json.
-        This fixes the synchronization issue where UI changes weren't saved.
+        Updates parameters for a specific job instance and persists to disk.
         """
         try:
-            job_type = JobType.from_string(job_name)
-            
-            # 1. Update the in-memory state
             state = self.state_service.state
-            job_model = state.jobs.get(job_type)
-            
+            job_model = state.jobs.get(job_name)
+
             if not job_model:
                 return {"success": False, "error": f"Job {job_name} not initialized"}
-            
-            # Update fields dynamically
-            # The __setattr__ hook in AbstractJobParams will block changes if the job is running/done
+
             for key, value in params.items():
                 if hasattr(job_model, key):
-                      setattr(job_model, key, value)
-            
-            # 2. PERSIST TO DISK (The missing link)
+                    setattr(job_model, key, value)
+
             await self.state_service.save_project()
-            
+
             return {"success": True, "params": job_model.model_dump()}
-            
+
         except Exception as e:
             import traceback
             traceback.print_exc()

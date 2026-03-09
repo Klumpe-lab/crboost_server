@@ -1,20 +1,9 @@
 # ui/ui_state.py
-"""
-Typed UI State Management - Single source of truth for all UI state.
-
-Phase 2: UIStateManager is now stored per-browser-tab via app.storage.tab
-instead of a module-level global. This means:
-  - Two tabs from the same user get independent UI state
-  - Widget refs, active job selection, form inputs don't bleed across tabs
-  - The module-level get_ui_state_manager() reads from tab storage
-    (must be called within a page handler context after await client.connected())
-"""
-
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, TYPE_CHECKING
+from typing import Dict, List, Optional, Any, Callable, Tuple, TYPE_CHECKING
 from pydantic import BaseModel, Field, ConfigDict
 from services.project_state import JobType, JobStatus
 
@@ -23,25 +12,18 @@ if TYPE_CHECKING:
 
 
 class MonitorTab(str, Enum):
-    """Explicitly typed tab values."""
-
     CONFIG = "config"
     LOGS = "logs"
     FILES = "files"
 
 
 class JobCardUIState(BaseModel):
-    """UI state for a single job card. Serializable."""
-
     model_config = ConfigDict(use_enum_values=True)
-
-    active_monitor_tab: str = MonitorTab.CONFIG.value   # <-- str, not MonitorTab
+    active_monitor_tab: str = MonitorTab.CONFIG.value
     user_switched_tab: bool = False
 
 
 class DataImportFormState(BaseModel):
-    """State for the data import form. Cached for restoration."""
-
     model_config = ConfigDict(use_enum_values=True)
 
     project_name: str = ""
@@ -50,11 +32,9 @@ class DataImportFormState(BaseModel):
     mdocs_glob: str = ""
     import_prefix: str = ""
 
-    # Validation state
     movies_valid: bool = False
     mdocs_valid: bool = False
 
-    # Detected parameters cache
     detected_pixel_size: Optional[float] = None
     detected_voltage: Optional[float] = None
     detected_dose_per_tilt: Optional[float] = None
@@ -62,50 +42,33 @@ class DataImportFormState(BaseModel):
 
 
 class UIState(BaseModel):
-    """
-    Complete UI state - typed and validated.
-    """
-
     model_config = ConfigDict(use_enum_values=True, arbitrary_types_allowed=True)
 
-    # --- Project Context ---
     current_project_path: Optional[str] = None
     current_scheme_name: Optional[str] = None
     project_created: bool = False
     continuation_mode: bool = False
 
-    # --- Pipeline Execution ---
-    selected_jobs: List[str] = Field(default_factory=list)  # JobType values as strings
+    # Instance IDs as strings — singletons use job_type.value,
+    # multi-instance uses "jobtype__2", "jobtype__ribosome", etc.
+    selected_jobs: List[str] = Field(default_factory=list)
     pipeline_running: bool = False
 
-    # --- Navigation ---
-    active_job_tab: Optional[str] = None  # JobType value as string
+    active_job_tab: Optional[str] = None  # instance_id string
 
-    # --- Per-Job UI State ---
     job_ui_states: Dict[str, JobCardUIState] = Field(default_factory=dict)
-
-    # --- Data Import Form ---
     data_import: DataImportFormState = Field(default_factory=DataImportFormState)
-
-    # --- Timestamps ---
     last_status_refresh: Optional[str] = None
 
 
 @dataclass
 class JobWidgetRefs:
-    """
-    Non-serializable UI element references for a single job.
-    These hold NiceGUI elements that are per-client and per-page-load.
-    """
-
     logs_timer: Optional[Any] = None
     content_container: Optional[Any] = None
     switcher_container: Optional[Any] = None
-
     monitor_logs: Dict[str, Any] = field(default_factory=dict)
 
     def cleanup(self):
-        """Cancel timers and clear refs."""
         if self.logs_timer:
             try:
                 self.logs_timer.cancel()
@@ -119,53 +82,51 @@ class JobWidgetRefs:
 
 @dataclass
 class PanelWidgetRefs:
-    """Panel-level widget references."""
-
     job_tabs_container: Optional[Any] = None
-    job_list_container: Optional[Any] = None   # vertical phase job list
-    job_tags_container: Optional[Any] = None   # kept for compat, no longer actively used
-    run_button:         Optional[Any] = None
-    stop_button:        Optional[Any] = None
-    status_label:       Optional[Any] = None
+    job_list_container: Optional[Any] = None
+    job_tags_container: Optional[Any] = None
+    run_button: Optional[Any] = None
+    stop_button: Optional[Any] = None
+    status_label: Optional[Any] = None
     continuation_container: Optional[Any] = None
     job_tag_buttons: Dict[str, Any] = field(default_factory=dict)
 
-    # Data import panel refs (unchanged)
-    movies_input:           Optional[Any] = None
-    mdocs_input:            Optional[Any] = None
-    project_name_input:     Optional[Any] = None
-    project_path_input:     Optional[Any] = None
-    create_button:          Optional[Any] = None
-    load_button:            Optional[Any] = None
-    autodetect_button:      Optional[Any] = None
+    movies_input: Optional[Any] = None
+    mdocs_input: Optional[Any] = None
+    project_name_input: Optional[Any] = None
+    project_path_input: Optional[Any] = None
+    create_button: Optional[Any] = None
+    load_button: Optional[Any] = None
+    autodetect_button: Optional[Any] = None
     params_display_container: Optional[Any] = None
-    movies_hint_label:      Optional[Any] = None
-    mdocs_hint_label:       Optional[Any] = None
-    status_indicator:       Optional[Any] = None
+    movies_hint_label: Optional[Any] = None
+    mdocs_hint_label: Optional[Any] = None
+    status_indicator: Optional[Any] = None
 
     def cleanup(self):
-        self.job_tabs_container    = None
-        self.job_list_container    = None
-        self.job_tags_container    = None
-        self.run_button            = None
-        self.stop_button           = None
-        self.status_label          = None
+        self.job_tabs_container = None
+        self.job_list_container = None
+        self.job_tags_container = None
+        self.run_button = None
+        self.stop_button = None
+        self.status_label = None
         self.continuation_container = None
         self.job_tag_buttons.clear()
-        self.movies_input           = None
-        self.mdocs_input            = None
-        self.project_name_input     = None
-        self.project_path_input     = None
-        self.create_button          = None
-        self.load_button            = None
-        self.autodetect_button      = None
+        self.movies_input = None
+        self.mdocs_input = None
+        self.project_name_input = None
+        self.project_path_input = None
+        self.create_button = None
+        self.load_button = None
+        self.autodetect_button = None
         self.params_display_container = None
-        self.movies_hint_label      = None
-        self.mdocs_hint_label       = None
-        self.status_indicator       = None
+        self.movies_hint_label = None
+        self.mdocs_hint_label = None
+        self.status_indicator = None
 
 
-# Pipeline ordering - centralized
+# ── Pipeline ordering ─────────────────────────────────────────────────────────
+
 PIPELINE_ORDER: List[JobType] = [
     JobType.IMPORT_MOVIES,
     JobType.FS_MOTION_CTF,
@@ -198,7 +159,6 @@ JOB_DISPLAY_NAMES: Dict[JobType, str] = {
 
 
 def get_job_order(job_type: JobType) -> int:
-    """Get the pipeline order index for a job type."""
     try:
         return PIPELINE_ORDER.index(job_type)
     except ValueError:
@@ -206,23 +166,80 @@ def get_job_order(job_type: JobType) -> int:
 
 
 def get_job_display_name(job_type: JobType) -> str:
-    """Get human-readable name for a job type."""
     return JOB_DISPLAY_NAMES.get(job_type, job_type.value)
 
 
 def get_ordered_jobs() -> List[JobType]:
-    """Get all available jobs in pipeline order."""
     return PIPELINE_ORDER.copy()
 
 
-class UIStateManager:
-    """
-    Centralized UI state manager.
+# ── Instance ID helpers ───────────────────────────────────────────────────────
 
-    Phase 2: One instance per browser tab, stored in app.storage.tab.
-    Holds all per-tab UI concerns: which job tab is active, widget refs,
-    form state, timer refs, subscriber callbacks.
+
+def instance_id_to_job_type(instance_id: str) -> JobType:
+    """Extract JobType from an instance_id.
+
+    'templatematching'          -> JobType.TEMPLATE_MATCH_PYTOM
+    'templatematching__2'       -> JobType.TEMPLATE_MATCH_PYTOM
+    'templatematching__ribosome'-> JobType.TEMPLATE_MATCH_PYTOM
     """
+    base = instance_id.split("__")[0]
+    return JobType(base)
+
+
+def get_instance_order(instance_id: str) -> Tuple:
+    """Stable sort key: (type_order, numeric_suffix_or_999, text_suffix)."""
+    try:
+        type_order = get_job_order(instance_id_to_job_type(instance_id))
+    except ValueError:
+        type_order = 999
+    parts = instance_id.split("__", 1)
+    if len(parts) == 1:
+        # base instance always sorts before any suffixed variant
+        return (type_order, 0, "")
+    suffix = parts[1]
+    try:
+        return (type_order, int(suffix), "")
+    except ValueError:
+        return (type_order, 999, suffix)
+
+
+def get_instance_display_name(instance_id: str, job_model=None) -> str:
+    """Human-readable label for a job instance.
+
+    Priority:
+    1. job_model.display_label if set (user-assigned alias)
+    2. Base instance (no suffix): just the job type display name
+    3. Numeric suffix: "Job Name #N"
+    4. Text suffix: "Job Name (suffix)"
+    """
+    if job_model is not None:
+        label = getattr(job_model, "display_label", None)
+        if label:
+            return label
+
+    parts = instance_id.split("__", 1)
+    base = parts[0]
+
+    try:
+        base_name = JOB_DISPLAY_NAMES.get(JobType(base), base)
+    except ValueError:
+        base_name = base
+
+    if len(parts) == 1:
+        return base_name
+
+    suffix = parts[1]
+    if suffix.isdigit():
+        return f"{base_name} #{suffix}"
+    return f"{base_name} ({suffix})"
+
+
+# ── UIStateManager ────────────────────────────────────────────────────────────
+
+
+class UIStateManager:
+    """One instance per browser tab, stored in app.storage.tab."""
 
     def __init__(self):
         self._state = UIState()
@@ -232,29 +249,22 @@ class UIStateManager:
         self._status_timer: Optional[Any] = None
         self._rebuild_callback: Optional[Callable[[], None]] = None
 
-    # ===========================================
-    # Persistence Loading
-    # ===========================================
+    # ── Persistence ───────────────────────────────────────────────────────────
+
     def load_from_storage(self, storage_dict: Dict[str, Any]):
-        """Hydrate state from app.storage.user."""
         if not storage_dict:
             return
         try:
             print("[UI_STATE] Hydrating from browser storage...")
-            restored_state = UIState(**storage_dict)
-            self._state = restored_state
-
-            for job_str in self._state.selected_jobs:
-                if job_str not in self._job_widget_refs:
-                    self._job_widget_refs[job_str] = JobWidgetRefs()
-
+            self._state = UIState(**storage_dict)
+            for iid in self._state.selected_jobs:
+                if iid not in self._job_widget_refs:
+                    self._job_widget_refs[iid] = JobWidgetRefs()
             self._notify()
         except Exception as e:
             print(f"[UI_STATE] Error hydrating state from storage: {e}")
 
-    # ===========================================
-    # Properties for clean access
-    # ===========================================
+    # ── Properties ───────────────────────────────────────────────────────────
 
     @property
     def state(self) -> UIState:
@@ -265,15 +275,23 @@ class UIStateManager:
         return self._panel_refs
 
     @property
-    def selected_jobs(self) -> List[JobType]:
-        """Get selected jobs as JobType enums."""
-        return [JobType(j) for j in self._state.selected_jobs]
+    def selected_jobs(self) -> List[str]:
+        """Ordered list of selected instance_ids."""
+        return list(self._state.selected_jobs)
+
+    @property
+    def active_instance_id(self) -> Optional[str]:
+        """The instance_id of the currently focused tab."""
+        return self._state.active_job_tab
 
     @property
     def active_job(self) -> Optional[JobType]:
-        """Get the currently active job tab as JobType."""
+        """JobType of the active tab. Derived from active_instance_id."""
         if self._state.active_job_tab:
-            return JobType(self._state.active_job_tab)
+            try:
+                return instance_id_to_job_type(self._state.active_job_tab)
+            except ValueError:
+                return None
         return None
 
     @property
@@ -315,85 +333,105 @@ class UIStateManager:
                 pass
         self._status_timer = timer
 
-    # ===========================================
-    # Job Management
-    # ===========================================
+    # ── Instance queries ──────────────────────────────────────────────────────
 
-    def add_job(self, job_type: JobType) -> bool:
-        job_str = job_type.value
+    def get_instances_for_type(self, job_type: JobType) -> List[str]:
+        """All selected instance_ids for a given job type, in pipeline order."""
+        prefix = job_type.value
+        return [s for s in self._state.selected_jobs if s == prefix or s.startswith(prefix + "__")]
 
-        if job_str in self._state.selected_jobs:
+    def is_job_type_selected(self, job_type: JobType) -> bool:
+        return len(self.get_instances_for_type(job_type)) > 0
+
+    def is_job_selected(self, job_type: JobType) -> bool:
+        """Backward compat alias for is_job_type_selected."""
+        return self.is_job_type_selected(job_type)
+
+    # ── Instance management ───────────────────────────────────────────────────
+
+    def add_instance(self, instance_id: str, job_type: JobType) -> bool:
+        if instance_id in self._state.selected_jobs:
             return False
 
-        self._state.selected_jobs.append(job_str)
-        self._state.selected_jobs.sort(key=lambda j: get_job_order(JobType(j)))
+        self._state.selected_jobs.append(instance_id)
+        self._state.selected_jobs.sort(key=get_instance_order)
 
-        self._state.job_ui_states[job_str] = JobCardUIState()
-        self._job_widget_refs[job_str] = JobWidgetRefs()
+        self._state.job_ui_states[instance_id] = JobCardUIState()
+        self._job_widget_refs[instance_id] = JobWidgetRefs()
 
         if self._state.active_job_tab is None:
-            self._state.active_job_tab = job_str
+            self._state.active_job_tab = instance_id
 
         self._notify()
         return True
 
-    def remove_job(self, job_type: JobType) -> bool:
-        job_str = job_type.value
+    def add_job(self, job_type: JobType) -> bool:
+        """Backward compat: add the singleton instance (instance_id = job_type.value)."""
+        return self.add_instance(job_type.value, job_type)
 
-        if job_str not in self._state.selected_jobs:
+    def remove_instance(self, instance_id: str) -> bool:
+        if instance_id not in self._state.selected_jobs:
             return False
 
-        if job_str in self._job_widget_refs:
-            self._job_widget_refs[job_str].cleanup()
-            del self._job_widget_refs[job_str]
+        if instance_id in self._job_widget_refs:
+            self._job_widget_refs[instance_id].cleanup()
+            del self._job_widget_refs[instance_id]
 
-        self._state.selected_jobs.remove(job_str)
+        self._state.selected_jobs.remove(instance_id)
 
-        if job_str in self._state.job_ui_states:
-            del self._state.job_ui_states[job_str]
+        if instance_id in self._state.job_ui_states:
+            del self._state.job_ui_states[instance_id]
 
-        if self._state.active_job_tab == job_str:
+        if self._state.active_job_tab == instance_id:
             self._state.active_job_tab = self._state.selected_jobs[0] if self._state.selected_jobs else None
 
         self._notify()
         return True
 
+    def remove_job(self, job_type: JobType) -> bool:
+        """Backward compat: remove the singleton instance."""
+        return self.remove_instance(job_type.value)
+
     def toggle_job(self, job_type: JobType) -> bool:
-        if job_type.value in self._state.selected_jobs:
-            return self.remove_job(job_type)
-        else:
-            return self.add_job(job_type)
+        instances = self.get_instances_for_type(job_type)
+        if instances:
+            for iid in list(instances):
+                self.remove_instance(iid)
+            return True
+        return self.add_job(job_type)
 
-    def is_job_selected(self, job_type: JobType) -> bool:
-        return job_type.value in self._state.selected_jobs
+    # ── Active tab ────────────────────────────────────────────────────────────
 
-    def set_active_job(self, job_type: JobType):
-        job_str = job_type.value
-        if job_str in self._state.selected_jobs:
-            self._state.active_job_tab = job_str
+    def set_active_instance(self, instance_id: str):
+        if instance_id in self._state.selected_jobs:
+            self._state.active_job_tab = instance_id
             self._notify()
 
-    def get_job_ui_state(self, job_type: JobType) -> JobCardUIState:
-        job_str = job_type.value
-        if job_str not in self._state.job_ui_states:
-            self._state.job_ui_states[job_str] = JobCardUIState()
-        return self._state.job_ui_states[job_str]
+    def set_active_job(self, job_type: JobType):
+        """Backward compat: activate the first instance of a type."""
+        instances = self.get_instances_for_type(job_type)
+        if instances:
+            self.set_active_instance(instances[0])
 
-    def get_job_widget_refs(self, job_type: JobType) -> JobWidgetRefs:
-        job_str = job_type.value
-        if job_str not in self._job_widget_refs:
-            self._job_widget_refs[job_str] = JobWidgetRefs()
-        return self._job_widget_refs[job_str]
+    # ── Per-instance UI state & refs ──────────────────────────────────────────
 
-    def set_job_monitor_tab(self, job_type: JobType, tab: str, user_initiated: bool = False):
-        ui_state = self.get_job_ui_state(job_type)
+    def get_job_ui_state(self, instance_id: str) -> JobCardUIState:
+        if instance_id not in self._state.job_ui_states:
+            self._state.job_ui_states[instance_id] = JobCardUIState()
+        return self._state.job_ui_states[instance_id]
+
+    def get_job_widget_refs(self, instance_id: str) -> JobWidgetRefs:
+        if instance_id not in self._job_widget_refs:
+            self._job_widget_refs[instance_id] = JobWidgetRefs()
+        return self._job_widget_refs[instance_id]
+
+    def set_job_monitor_tab(self, instance_id: str, tab: str, user_initiated: bool = False):
+        ui_state = self.get_job_ui_state(instance_id)
         ui_state.active_monitor_tab = tab if isinstance(tab, str) else tab.value
         if user_initiated:
             ui_state.user_switched_tab = True
 
-    # ===========================================
-    # Project Lifecycle
-    # ===========================================
+    # ── Project lifecycle ─────────────────────────────────────────────────────
 
     def set_project_created(self, project_path: Path, scheme_name: str):
         self._state.current_project_path = str(project_path)
@@ -409,17 +447,18 @@ class UIStateManager:
         self._state.continuation_mode = enabled
         self._notify()
 
-    def load_from_project(self, project_path: Path, scheme_name: str, jobs: List[JobType]):
+    def load_from_project(self, project_path: Path, scheme_name: str, jobs: List[str]):
         self._state.current_project_path = str(project_path)
         self._state.current_scheme_name = scheme_name
         self._state.project_created = True
-        self._state.selected_jobs = sorted([j.value for j in jobs], key=lambda j: get_job_order(JobType(j)))
 
-        for job_str in self._state.selected_jobs:
-            if job_str not in self._state.job_ui_states:
-                self._state.job_ui_states[job_str] = JobCardUIState()
-            if job_str not in self._job_widget_refs:
-                self._job_widget_refs[job_str] = JobWidgetRefs()
+        self._state.selected_jobs = sorted(jobs, key=get_instance_order)
+
+        for iid in self._state.selected_jobs:
+            if iid not in self._state.job_ui_states:
+                self._state.job_ui_states[iid] = JobCardUIState()
+            if iid not in self._job_widget_refs:
+                self._job_widget_refs[iid] = JobWidgetRefs()
 
         if self._state.selected_jobs and self._state.active_job_tab is None:
             self._state.active_job_tab = self._state.selected_jobs[0]
@@ -427,45 +466,21 @@ class UIStateManager:
         self._notify()
 
     def reset(self):
-        """Full reset: clear all state, timers, refs, subscribers."""
         self.cleanup_all_timers()
         self._state = UIState()
         self._job_widget_refs.clear()
         self._panel_refs.cleanup()
-        # Phase 2: also clear subscribers and rebuild callback.
-        # Without this, stale callbacks from a previous page load
-        # would fire against dead UI elements.
         self._subscribers.clear()
         self._rebuild_callback = None
-        # Don't _notify here -- subscribers were just cleared,
-        # and we're about to build a fresh page anyway.
-
-    # ===========================================
-    # Phase 2c: Page rebuild preparation
-    # ===========================================
 
     def prepare_for_page_rebuild(self):
-        """Clean up stale references from a previous page load.
-
-        NiceGUI destroys DOM elements when navigating between pages,
-        but our widget refs and callbacks still point to the dead
-        objects.  Call this at the top of any page-building function
-        (build_workspace_page, etc.) to ensure a clean slate for
-        new element references.
-
-        Unlike reset(), this preserves logical state (selected jobs,
-        active tab, project path, etc.) -- only the ephemeral DOM
-        refs are cleared.
-        """
         self._panel_refs.cleanup()
         for refs in self._job_widget_refs.values():
             refs.cleanup()
         self._rebuild_callback = None
         self._subscribers.clear()
 
-    # ===========================================
-    # Data Import Form
-    # ===========================================
+    # ── Data import form ──────────────────────────────────────────────────────
 
     def update_data_import(
         self,
@@ -513,9 +528,7 @@ class UIStateManager:
     def clear_data_import(self):
         self._state.data_import = DataImportFormState()
 
-    # ===========================================
-    # Callbacks
-    # ===========================================
+    # ── Rebuild callback ──────────────────────────────────────────────────────
 
     def set_rebuild_callback(self, callback: Callable[[], None]):
         self._rebuild_callback = callback
@@ -524,9 +537,7 @@ class UIStateManager:
         if self._rebuild_callback:
             self._rebuild_callback()
 
-    # ===========================================
-    # Cleanup
-    # ===========================================
+    # ── Cleanup ───────────────────────────────────────────────────────────────
 
     def cleanup_all_timers(self):
         if self._status_timer:
@@ -535,12 +546,11 @@ class UIStateManager:
             except Exception:
                 pass
             self._status_timer = None
-
         for refs in self._job_widget_refs.values():
             refs.cleanup()
 
-    def cleanup_job_logs_timer(self, job_type: JobType):
-        refs = self._job_widget_refs.get(job_type.value)
+    def cleanup_job_logs_timer(self, instance_id: str):
+        refs = self._job_widget_refs.get(instance_id)
         if refs and refs.logs_timer:
             try:
                 refs.logs_timer.cancel()
@@ -548,9 +558,7 @@ class UIStateManager:
                 pass
             refs.logs_timer = None
 
-    # ===========================================
-    # Subscription System
-    # ===========================================
+    # ── Subscription system ───────────────────────────────────────────────────
 
     def subscribe(self, callback: Callable[[UIState], None]) -> Callable[[], None]:
         self._subscribers.append(callback)
@@ -564,27 +572,7 @@ class UIStateManager:
                 print(f"[UIStateManager] Subscriber error: {e}")
 
 
-# =========================================================================
-# Phase 2: Per-tab accessor (replaces module-level singleton)
-#
-# get_ui_state_manager() now reads from app.storage.tab, which NiceGUI
-# scopes to each browser tab.  It can hold arbitrary Python objects
-# (not serialized), so the full UIStateManager instance lives there.
-#
-# IMPORTANT: must be called within a page handler context AFTER
-#   await client.connected()
-# This is because app.storage.tab requires an active client connection.
-# All page handlers in main_ui.py do this before calling any build
-# functions.
-# =========================================================================
-
-
 def get_ui_state_manager() -> UIStateManager:
-    """Get or create the UIStateManager for the current browser tab.
-
-    Requires an active client connection (call await client.connected()
-    in the page handler before this is reachable).
-    """
     from nicegui import app
 
     tab = app.storage.tab

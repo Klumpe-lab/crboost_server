@@ -42,25 +42,23 @@ def load_project_state(project_path: Path) -> ProjectState:
 def get_driver_context() -> Tuple[ProjectState, AbstractJobParams, dict, Path, Path, JobType]:
     """
     Primary bootstrap function for all drivers.
-    Identity is derived purely from CLI args and Global State.
+    Identity is now derived from --instance_id rather than --job_type,
+    which supports multiple instances of the same job type per project.
     """
     parser = argparse.ArgumentParser(allow_abbrev=False)
-    # These args are CRITICAL now. They are the only link to identity.
-    parser.add_argument("--job_type", required=True, help="JobType string (e.g., fsMotionAndCtf)")
+    parser.add_argument(
+        "--instance_id",
+        required=True,
+        help="Instance ID string (e.g., 'tsReconstruct' or 'templatematching__ribosome')",
+    )
     parser.add_argument("--project_path", required=True, type=Path, help="Absolute path to project root")
 
     args, _ = parser.parse_known_args()
     project_path = args.project_path.resolve()
     job_dir = Path.cwd().resolve()
+    instance_id = args.instance_id
 
-    # 1. Validate Job Type
-    try:
-        job_type = JobType.from_string(args.job_type)
-    except ValueError:
-        print(f"FATAL: Unknown job type {args.job_type}", file=sys.stderr)
-        sys.exit(1)
-
-    # 2. Load the Single Source of Truth
+    # Load the single source of truth
     try:
         project_state = load_project_state(project_path)
         project_state.project_path = project_path
@@ -68,29 +66,43 @@ def get_driver_context() -> Tuple[ProjectState, AbstractJobParams, dict, Path, P
         print(f"FATAL: Failed to load global project_params.json: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # 3. Find Myself in the Global State
-    job_model = project_state.jobs.get(job_type)
-
+    # Look up the job model by instance_id
+    job_model = project_state.jobs.get(instance_id)
     if not job_model:
-        raise ValueError(f"Job {job_type.value} requested via CLI, but not found in project_params.json.")
+        print(
+            f"FATAL: Instance '{instance_id}' not found in project_params.json. "
+            f"Available: {list(project_state.jobs.keys())}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    # 4. Extract Paths from the Model
+    # Derive job_type from the model
+    job_type = job_model.job_type
+    if job_type is None:
+        print(f"FATAL: job_model for instance '{instance_id}' has no job_type set.", file=sys.stderr)
+        sys.exit(1)
+
     local_paths = job_model.paths
     if not local_paths:
-        print(f"[WARN] Job {job_type.value} has no paths stored in project_params.json!", flush=True)
+        print(f"[WARN] Job instance '{instance_id}' has no paths stored in project_params.json!", flush=True)
 
-    # Construct the context dictionary to mimic the old structure
-    context_data = {"job_type": job_type.value, "paths": local_paths, "additional_binds": job_model.additional_binds}
+    context_data = {
+        "instance_id": instance_id,
+        "job_type": job_type.value,
+        "paths": local_paths,
+        "additional_binds": job_model.additional_binds,
+    }
 
     print(
-        f"[DRIVER_BASE] Context loaded from Global State for {job_type.value}. Status: {job_model.execution_status}",
+        f"[DRIVER_BASE] Context loaded for instance '{instance_id}' "
+        f"(type={job_type.value}, status={job_model.execution_status})",
         flush=True,
     )
 
     return (
         project_state,
-        job_model,  # The State Object (Params)
-        context_data,  # The Context Dict (Paths/Binds)
+        job_model,
+        context_data,
         job_dir,
         project_path,
         job_type,

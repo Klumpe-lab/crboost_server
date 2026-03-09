@@ -1,7 +1,7 @@
 from __future__ import annotations
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional, Self, Set, Tuple, TYPE_CHECKING
+from typing import Any, ClassVar, Dict, List, Optional, Self, Set, Tuple, TYPE_CHECKING, Type
 from pydantic import BaseModel, Field, PrivateAttr
 import pandas as pd
 
@@ -40,12 +40,16 @@ if TYPE_CHECKING:
     from services.project_state import ProjectState
 
 
-class AbstractJobParams(BaseModel):
+class AbstractJobParams(BaseModel): 
     """
     Abstract base class for job parameters.
     Contains NO global parameters, only accessors.
     """
 
+    # Human-readable label shown in the UI roster and tab strip.
+    # Backend code (orchestrator, path resolution, drivers) never reads this.
+    # Set by the user or auto-generated; purely cosmetic.
+    display_label: Optional[str] = None
     JOB_CATEGORY: ClassVar[JobCategory]
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"  # Override for native jobs
     IS_TOMO_JOB: ClassVar[bool] = True
@@ -92,6 +96,8 @@ class AbstractJobParams(BaseModel):
     # Format: "jobtype:instance_path" e.g. "tsReconstruct:External/job005"
     #         or "manual:/absolute/path/to/file.star"
     source_overrides: Dict[str, str] = Field(default_factory=dict)
+    # After the ClassVar declarations, before execution_status:
+    job_type: Optional[JobType] = None
 
     # This is now a private attribute, not a Pydantic model field.
     _project_state: Optional["ProjectState"] = None
@@ -396,6 +402,8 @@ class AbstractJobParams(BaseModel):
 
 
 class ImportMoviesParams(AbstractJobParams):
+
+    job_type: JobType = Field(default=JobType.IMPORT_MOVIES)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
     RELION_JOB_TYPE: ClassVar[str] = "relion.importtomo"
     IS_CONTINUE: ClassVar[bool] = True
@@ -471,6 +479,7 @@ class ImportMoviesParams(AbstractJobParams):
 
 
 class FsMotionCtfParams(AbstractJobParams):
+    job_type: JobType = Field(default=JobType.FS_MOTION_CTF)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
@@ -564,6 +573,8 @@ class FsMotionCtfParams(AbstractJobParams):
 
 
 class TsAlignmentParams(AbstractJobParams):
+
+    job_type: JobType = Field(default=JobType.TS_ALIGNMENT)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
@@ -638,6 +649,8 @@ class TsAlignmentParams(AbstractJobParams):
 
 
 class TsCtfParams(AbstractJobParams):
+    job_type: JobType = Field(default=JobType.TS_CTF)
+
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
@@ -703,6 +716,8 @@ class TsCtfParams(AbstractJobParams):
 
 
 class TsReconstructParams(AbstractJobParams):
+
+    job_type: JobType = Field(default=JobType.TS_RECONSTRUCT)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
@@ -748,6 +763,8 @@ class TsReconstructParams(AbstractJobParams):
 
 
 class DenoiseTrainParams(AbstractJobParams):
+
+    job_type: JobType = Field(default=JobType.DENOISE_TRAIN)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = True
@@ -787,6 +804,8 @@ class DenoiseTrainParams(AbstractJobParams):
 
 
 class DenoisePredictParams(AbstractJobParams):
+
+    job_type: JobType = Field(default=JobType.DENOISE_PREDICT)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = True
@@ -848,6 +867,8 @@ class TemplateWorkbenchState(BaseModel):
 
 
 class TemplateMatchPytomParams(AbstractJobParams):
+
+    job_type: JobType = Field(default=JobType.TEMPLATE_MATCH_PYTOM)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = False
@@ -932,6 +953,8 @@ class ExtractionCutoffMethod(str, Enum):
 
 
 class CandidateExtractPytomParams(AbstractJobParams):
+
+    job_type: JobType = Field(default=JobType.TEMPLATE_EXTRACT_PYTOM)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
@@ -1001,6 +1024,8 @@ class SubtomoExtractionParams(AbstractJobParams):
     Creates pseudo-subtomograms from tilt series for downstream averaging/classification.
     """
 
+
+    job_type: JobType = Field(default=JobType.SUBTOMO_EXTRACTION)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
@@ -1073,6 +1098,9 @@ class ReconstructParticleParams(AbstractJobParams):
     Produces an initial average (merged.mrc) and half-maps from extracted particles.
     """
 
+
+
+    job_type: JobType = Field(default=JobType.RECONSTRUCT_PARTICLE)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
@@ -1132,6 +1160,7 @@ class Class3DParams(AbstractJobParams):
     3D Classification using relion_refine (without --auto_refine).
     """
 
+    job_type: JobType = Field(default=JobType.CLASS3D)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
@@ -1225,3 +1254,21 @@ class Class3DParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"optimisation_set": "subtomoExtraction", "reference": "reconstructParticle"}
+
+def jobtype_paramclass() -> Dict[JobType, Type["AbstractJobParams"]]:
+    """Registry mapping JobType to its parameter class. Lives here to avoid
+    circular imports — project_state and path_resolution_service both need it."""
+    return {
+        JobType.IMPORT_MOVIES: ImportMoviesParams,
+        JobType.FS_MOTION_CTF: FsMotionCtfParams,
+        JobType.TS_ALIGNMENT: TsAlignmentParams,
+        JobType.TS_CTF: TsCtfParams,
+        JobType.TS_RECONSTRUCT: TsReconstructParams,
+        JobType.DENOISE_TRAIN: DenoiseTrainParams,
+        JobType.DENOISE_PREDICT: DenoisePredictParams,
+        JobType.TEMPLATE_MATCH_PYTOM: TemplateMatchPytomParams,
+        JobType.TEMPLATE_EXTRACT_PYTOM: CandidateExtractPytomParams,
+        JobType.SUBTOMO_EXTRACTION: SubtomoExtractionParams,
+        JobType.RECONSTRUCT_PARTICLE: ReconstructParticleParams,
+        JobType.CLASS3D: Class3DParams,
+    }

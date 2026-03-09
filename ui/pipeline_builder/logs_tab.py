@@ -1,7 +1,4 @@
-"""
-Logs tab: stdout/stderr display with auto-polling for running jobs.
-"""
-
+# ui/pipeline_builder/logs_tab.py
 import asyncio
 
 from nicegui import ui
@@ -10,10 +7,9 @@ from services.project_state import JobStatus, JobType
 from ui.ui_state import UIStateManager
 
 
-def render_logs_tab(job_type: JobType, job_model, backend, ui_mgr: UIStateManager):
-    widget_refs = ui_mgr.get_job_widget_refs(job_type)
-
-    ui_mgr.cleanup_job_logs_timer(job_type)
+def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_mgr: UIStateManager):
+    widget_refs = ui_mgr.get_job_widget_refs(instance_id)
+    ui_mgr.cleanup_job_logs_timer(instance_id)
 
     if not job_model.relion_job_name:
         with ui.column().classes("w-full h-full items-center justify-center text-gray-400 gap-2"):
@@ -22,7 +18,7 @@ def render_logs_tab(job_type: JobType, job_model, backend, ui_mgr: UIStateManage
 
         if ui_mgr.is_running:
             widget_refs.logs_timer = ui.timer(
-                3.0, lambda: asyncio.create_task(_refresh_job_logs_with_placeholder_swap(job_type, backend, ui_mgr))
+                3.0, lambda: asyncio.create_task(_refresh_job_logs_with_placeholder_swap(instance_id, backend, ui_mgr))
             )
         return
 
@@ -52,17 +48,15 @@ def render_logs_tab(job_type: JobType, job_model, backend, ui_mgr: UIStateManage
 
     widget_refs.monitor_logs = {"stdout": stdout_log, "stderr": stderr_log}
 
-    asyncio.create_task(_refresh_job_logs(job_type, backend, ui_mgr))
+    asyncio.create_task(_refresh_job_logs(instance_id, backend, ui_mgr))
 
     if is_running or ui_mgr.is_running:
         widget_refs.logs_timer = ui.timer(
-            3.0, lambda: asyncio.create_task(_refresh_job_logs(job_type, backend, ui_mgr))
+            3.0, lambda: asyncio.create_task(_refresh_job_logs(instance_id, backend, ui_mgr))
         )
 
 
-async def _refresh_job_logs_with_placeholder_swap(
-    job_type: JobType, backend, ui_mgr: UIStateManager
-):
+async def _refresh_job_logs_with_placeholder_swap(instance_id: str, backend, ui_mgr: UIStateManager):
     from services.project_state import get_project_state_for
 
     project_path = ui_mgr.project_path
@@ -70,29 +64,32 @@ async def _refresh_job_logs_with_placeholder_swap(
         return
 
     state = get_project_state_for(project_path)
-    job_model = state.jobs.get(job_type)
+    job_model = state.jobs.get(instance_id)
 
     if not job_model or not job_model.relion_job_name:
         if not ui_mgr.is_running:
-            ui_mgr.cleanup_job_logs_timer(job_type)
+            ui_mgr.cleanup_job_logs_timer(instance_id)
         return
 
-    ui_mgr.cleanup_job_logs_timer(job_type)
-    # Full rebuild so the header (Cancel button, job path) reflects the new Running state
+    ui_mgr.cleanup_job_logs_timer(instance_id)
+    # Trigger a full rebuild so the header (Cancel button, job path) reflects
+    # the new Running state. Guard against the background-task slot error --
+    # if we're in a timer callback without a live client, request_rebuild
+    # will call rebuild_pipeline_ui which itself guards the ui.timer creation.
     ui_mgr.request_rebuild()
 
 
-async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
+async def _refresh_job_logs(instance_id: str, backend, ui_mgr: UIStateManager):
     from services.project_state import get_project_state_for
 
-    widget_refs = ui_mgr.get_job_widget_refs(job_type)
+    widget_refs = ui_mgr.get_job_widget_refs(instance_id)
     monitor = widget_refs.monitor_logs
 
     if not monitor or "stdout" not in monitor:
         return
 
     if monitor["stdout"].is_deleted:
-        ui_mgr.cleanup_job_logs_timer(job_type)
+        ui_mgr.cleanup_job_logs_timer(instance_id)
         return
 
     project_path = ui_mgr.project_path
@@ -100,18 +97,16 @@ async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
         return
 
     state = get_project_state_for(project_path)
-    job_model = state.jobs.get(job_type)
+    job_model = state.jobs.get(instance_id)
 
     if not job_model or not job_model.relion_job_name:
         if not ui_mgr.is_running:
-            ui_mgr.cleanup_job_logs_timer(job_type)
+            ui_mgr.cleanup_job_logs_timer(instance_id)
         return
 
-    # If the job was requeued and got a new path, rebuild so the header
-    # and logs both reflect the new job directory
     current_polling_path = monitor.get("_job_path")
     if current_polling_path and current_polling_path != job_model.relion_job_name:
-        ui_mgr.cleanup_job_logs_timer(job_type)
+        ui_mgr.cleanup_job_logs_timer(instance_id)
         ui_mgr.request_rebuild()
         return
     monitor["_job_path"] = job_model.relion_job_name
@@ -141,4 +136,4 @@ async def _refresh_job_logs(job_type: JobType, backend, ui_mgr: UIStateManager):
     monitor["stderr"].push(stderr)
 
     if job_model.execution_status in (JobStatus.SUCCEEDED, JobStatus.FAILED) and not ui_mgr.is_running:
-        ui_mgr.cleanup_job_logs_timer(job_type)
+        ui_mgr.cleanup_job_logs_timer(instance_id)

@@ -1,28 +1,22 @@
-"""
-Pipeline builder panel.
-
-Populates three externally-created shells:
-  primary_sidebar  48px dark strip
-  roster_panel     186px light panel, hidden until a phase button is clicked
-  current context  tab strip + lazy job tab content (inside main_area)
-
-Roster interaction:
-  click unselected job → add to pipeline, auto-focus tab
-  click selected job   → remove from pipeline   (FIX: was broken)
-Tab strip: navigate between selected jobs without modifying selection.
-"""
-
+# ui/pipeline_builder/pipeline_builder_panel.py
 import asyncio
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Callable, List, Set
+from typing import Dict, Callable, List, Optional, Set
 
 from nicegui import ui
 
 from backend import CryoBoostBackend
+from services.models_base import JobStatus
 from services.project_state import JobType, get_project_state, get_state_service
 from ui.status_indicator import BoundStatusDot
-from ui.ui_state import get_ui_state_manager, get_job_display_name
+from ui.ui_state import (
+    get_ui_state_manager,
+    get_job_display_name,
+    get_instance_display_name,
+    instance_id_to_job_type,
+    get_instance_order,
+)
 from ui.pipeline_builder.job_tab_component import render_job_tab
 
 
@@ -75,19 +69,40 @@ JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
     JobType.CLASS3D: [JobType.RECONSTRUCT_PARTICLE],
 }
 
-# Sidebar palette
 _SB_BG   = "#f8fafc"
 _SB_SEP  = "#e2e8f0"
-_SB_MUTE = "#94a3b8"   # inactive icons / labels
-_SB_ACT  = "#3b82f6"   # active accent
-_SB_ABG  = "#eff6ff"   # active button background
+_SB_MUTE = "#94a3b8"
+_SB_ACT  = "#3b82f6"
+_SB_ABG  = "#eff6ff"
 
+def _missing_deps(job_type: JobType, selected_instance_ids: Set[str]) -> List[JobType]:
+    """Job-type-level dependency check. A dep is satisfied if any instance of
+    that type is present in the pipeline."""
 
+    def type_present(jt: JobType) -> bool:
+        prefix = jt.value
+        return any(s == prefix or s.startswith(prefix + "__") for s in selected_instance_ids)
 
-def _missing_deps(job_type: JobType, selected: Set[JobType]) -> List[JobType]:
     if job_type == JobType.TEMPLATE_MATCH_PYTOM:
-        return [] if {JobType.TS_RECONSTRUCT, JobType.DENOISE_PREDICT} & selected else [JobType.TS_RECONSTRUCT]
-    return [d for d in JOB_DEPENDENCIES.get(job_type, []) if d not in selected]
+        if type_present(JobType.TS_RECONSTRUCT) or type_present(JobType.DENOISE_PREDICT):
+            return []
+        return [JobType.TS_RECONSTRUCT]
+
+    return [d for d in JOB_DEPENDENCIES.get(job_type, []) if not type_present(d)]
+
+
+def _next_instance_id(job_type: JobType, existing_ui_ids: List[str], state_keys: List[str]) -> str:
+    """Generate the next available instance_id, avoiding collisions in both
+    the UI roster and the persisted state dict."""
+    taken = set(existing_ui_ids) | set(state_keys)
+    base = job_type.value
+    if base not in taken:
+        return base
+    for n in range(2, 200):
+        candidate = f"{base}__{n}"
+        if candidate not in taken:
+            return candidate
+    return f"{base}__{len(taken) + 1}"
 
 
 def _fmt(v) -> str:
@@ -109,8 +124,6 @@ def build_pipeline_builder_panel(
     _tab_strip_ref: Dict[str, object] = {}
     _content_wrapper_ref: Dict[str, object] = {}
     _refs: Dict[str, object] = {}
-
-    # Add near the other _refs/_roster_state dicts at the top of build_pipeline_builder_panel:
     _flash_state = {"phase": None}
     _roster_state = {"visible": False, "phase": None}
     _spinner_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -125,12 +138,11 @@ def build_pipeline_builder_panel(
         flashing_phase = _flash_state.get("phase")
 
         with roster_panel:
-            selected = set(ui_mgr.selected_jobs)
-
             for phase_id, jobs in PHASE_JOBS.items():
                 icon_name, phase_label, _ = PHASE_META[phase_id]
                 is_flashing = flashing_phase == phase_id
 
+                # Phase header (sticky)
                 with (
                     ui.element("div")
                     .props(f'id="{ROSTER_ANCHOR[phase_id]}"')
@@ -143,86 +155,141 @@ def build_pipeline_builder_panel(
                 ):
                     ui.icon(icon_name, size="12px").style("color: #94a3b8; flex-shrink: 0;")
                     ui.label(phase_label.upper()).style(
-                        "font-size: 9px; font-weight: 700; color: #94a3b8; "
-                        "letter-spacing: 0.07em; line-height: 1;"
+                        "font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.07em; line-height: 1;"
                     )
 
                 for job_type in jobs:
-                    is_sel    = job_type in selected
-                    is_active = is_sel and (ui_mgr.active_job == job_type)
-                    missing   = _missing_deps(job_type, selected) if is_sel else []
+                    instances = ui_mgr.get_instances_for_type(job_type)
+                    has_instances = bool(instances)
 
-                    if is_active:
-                        row_bg, l_border = "#eff6ff", "#3b82f6"
-                        name_color, name_wt = "#1e40af", "600"
-                    elif is_sel:
-                        row_bg, l_border = "#f8fafc", "#cbd5e1"
-                        name_color, name_wt = "#374151", "500"
-                    elif is_flashing:
-                        # Soft two-second backlight for jobs in the clicked phase
-                        row_bg, l_border = "#fefce8", "#fde68a"
-                        name_color, name_wt = "#78716c", "400"
+                    if not has_instances:
+                        # ── Unselected row: click to add first instance ──
+                        if is_flashing:
+                            row_bg, l_border, name_color = "#fefce8", "#fde68a", "#78716c"
+                        else:
+                            row_bg, l_border, name_color = "transparent", "transparent", "#9ca3af"
+
+                        with (
+                            ui.element("div")
+                            .style(
+                                f"display: flex; align-items: center; gap: 6px; "
+                                f"padding: 5px 8px 5px 10px; cursor: pointer; "
+                                f"background: {row_bg}; border-left: 2px solid {l_border}; "
+                                f"border-bottom: 1px solid #f3f4f6;"
+                            )
+                            .on("click", lambda j=job_type: _on_unselected_click(j))
+                        ):
+                            ui.icon("check_box_outline_blank", size="13px").style("color: #d1d5db; flex-shrink: 0;")
+                            ui.label(get_job_display_name(job_type)).style(
+                                f"font-size: 11px; font-weight: 400; color: {name_color}; "
+                                "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                            )
+
                     else:
-                        row_bg, l_border = "transparent", "transparent"
-                        name_color, name_wt = "#9ca3af", "400"
+                        # ── Job type header row ──
+                        missing = _missing_deps(job_type, set(ui_mgr.selected_jobs))
+                        any_active = any(ui_mgr.active_instance_id == iid for iid in instances)
+                        header_border = "#3b82f6" if any_active else "#e5e7eb"
 
-                    with (
-                        ui.element("div")
-                        .style(
+                        with ui.element("div").style(
                             f"display: flex; align-items: center; gap: 6px; "
-                            f"padding: 5px 8px 5px 10px; cursor: pointer; "
-                            f"background: {row_bg}; border-left: 2px solid {l_border}; "
+                            f"padding: 5px 8px 5px 10px; "
+                            f"background: #f8fafc; border-left: 2px solid {header_border}; "
                             f"border-bottom: 1px solid #f3f4f6;"
-                        )
-                        .on("click", lambda j=job_type: _on_row_click(j))
-                    ):
-                        ui.icon(
-                            "check_box" if is_sel else "check_box_outline_blank",
-                            size="13px",
-                        ).style(f"color: {'#3b82f6' if is_sel else '#d1d5db'}; flex-shrink: 0;")
+                        ):
+                            ui.label(get_job_display_name(job_type)).style(
+                                "font-size: 11px; font-weight: 600; color: #374151; "
+                                "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                            )
 
-                        ui.label(get_job_display_name(job_type)).style(
-                            f"font-size: 11px; font-weight: {name_wt}; color: {name_color}; "
-                            f"flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                        )
-
-                        if is_sel:
-                            if missing:
-                                (
-                                    ui.icon("warning", size="11px")
-                                    .style("color: #f59e0b; flex-shrink: 0;")
-                                    .tooltip(
-                                        "Missing: "
-                                        + ", ".join(get_job_display_name(d) for d in missing)
-                                    )
+                            if len(instances) > 1:
+                                ui.label(str(len(instances))).style(
+                                    "font-size: 9px; font-weight: 700; color: #6b7280; "
+                                    "background: #e5e7eb; border-radius: 999px; "
+                                    "padding: 1px 5px; flex-shrink: 0;"
                                 )
-                            else:
-                                with ui.element("span").style(
-                                    "flex-shrink: 0; overflow: visible; line-height: 0;"
-                                ):
-                                    BoundStatusDot(job_type)
 
-    def _on_row_click(job_type: JobType):
-        """Toggle: add if unselected, remove if selected. Tab strip handles navigation."""
+                            if missing:
+                                ui.icon("warning", size="11px").style("color: #f59e0b; flex-shrink: 0;").tooltip(
+                                    "Missing: " + ", ".join(get_job_display_name(d) for d in missing)
+                                )
+
+                            (
+                                ui.button(icon="add", on_click=lambda j=job_type: add_instance_to_pipeline(j))
+                                .props("flat dense round size=xs")
+                                .style("color: #6b7280; flex-shrink: 0;")
+                                .tooltip(f"Add another {get_job_display_name(job_type)}")
+                            )
+
+                        # ── Instance sub-rows ──
+                        for instance_id in instances:
+                            job_model = state_service.state.jobs.get(instance_id)
+                            display = get_instance_display_name(instance_id, job_model)
+                            is_active = ui_mgr.active_instance_id == instance_id
+
+                            if is_active:
+                                row_bg, l_border = "#eff6ff", "#3b82f6"
+                                name_color, name_wt = "#1e40af", "600"
+                            else:
+                                row_bg, l_border = "#fafafa", "#e5e7eb"
+                                name_color, name_wt = "#374151", "400"
+
+                            with ui.element("div").style(
+                                f"display: flex; align-items: center; gap: 6px; "
+                                f"padding: 4px 8px 4px 22px; "
+                                f"background: {row_bg}; border-left: 2px solid {l_border}; "
+                                f"border-bottom: 1px solid #f3f4f6;"
+                            ):
+                                # Left area: click to switch tab
+                                with (
+                                    ui.element("div")
+                                    .style(
+                                        "display: flex; align-items: center; gap: 6px; "
+                                        "flex: 1; cursor: pointer; min-width: 0;"
+                                    )
+                                    .on("click", lambda iid=instance_id: switch_tab(iid))
+                                ):
+                                    ui.label(display).style(
+                                        f"font-size: 11px; font-weight: {name_wt}; color: {name_color}; "
+                                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                                    )
+
+                                # Right area: status dot + remove button
+                                with ui.element("div").style(
+                                    "display: flex; align-items: center; gap: 4px; flex-shrink: 0;"
+                                ):
+                                    with ui.element("span").style("overflow: visible; line-height: 0;"):
+                                        BoundStatusDot(instance_id)
+
+                                    if not ui_mgr.is_running:
+                                        (
+                                            ui.button(
+                                                icon="close",
+                                                on_click=lambda _, iid=instance_id: asyncio.create_task(
+                                                    _on_remove_click(iid)
+                                                ),
+                                            )
+                                            .props("flat dense round size=xs")
+                                            .style("color: #9ca3af;")
+                                            .tooltip("Remove this instance")
+                                        )
+
+    def _on_unselected_click(job_type: JobType):
         if ui_mgr.is_running:
             return
-        if ui_mgr.is_job_selected(job_type):
-            remove_job_from_pipeline(job_type)
-        else:
-            selected = set(ui_mgr.selected_jobs)
-            missing = _missing_deps(job_type, selected)
-            if missing:
-                ui.notify(
-                    f"{get_job_display_name(job_type)} typically requires: "
-                    + ", ".join(get_job_display_name(d) for d in missing),
-                    type="warning",
-                    timeout=3000,
-                )
-            add_job_to_pipeline(job_type)
+        selected = set(ui_mgr.selected_jobs)
+        missing = _missing_deps(job_type, selected)
+        if missing:
+            ui.notify(
+                f"{get_job_display_name(job_type)} typically requires: "
+                + ", ".join(get_job_display_name(d) for d in missing),
+                type="warning",
+                timeout=3000,
+            )
+        add_instance_to_pipeline(job_type)
 
     def _scroll_to_phase(phase_id: str):
         anchor = ROSTER_ANCHOR[phase_id]
-        # requestAnimationFrame ensures visibility has been applied before scrolling.
         ui.run_javascript(
             f"requestAnimationFrame(function(){{"
             f"  var e=document.getElementById('{anchor}');"
@@ -230,18 +297,103 @@ def build_pipeline_builder_panel(
             f"}});"
         )
 
+    async def _on_remove_click(instance_id: str):
+        if ui_mgr.is_running:
+            return
+
+        state = state_service.state
+        job_model = state.jobs.get(instance_id)
+
+        # Never ran -- safe to just pop from roster
+        if not job_model or not job_model.relion_job_name:
+            remove_instance_from_pipeline(instance_id)
+            return
+
+        # Has filesystem presence -- show delete dialog
+        from ui.ui_state import get_instance_display_name
+        from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
+
+        deletion_service = get_deletion_service()
+        project_path = ui_mgr.project_path
+        preview = None
+        if project_path and job_model.relion_job_name:
+            preview = deletion_service.preview_deletion(
+                project_path, job_model.relion_job_name, job_resolver=backend.pipeline_orchestrator.job_resolver
+            )
+
+        with ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
+            ui.label(f"Delete {get_instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
+            ui.label("This will move the job files to Trash/ and remove it from the pipeline.").classes(
+                "text-sm text-gray-600 mb-2"
+            )
+
+            if preview and preview.get("success") and preview.get("downstream_count", 0) > 0:
+                downstream = preview.get("downstream_jobs", [])
+                with ui.card().classes("w-full bg-orange-50 border border-orange-200 p-3 mb-2"):
+                    with ui.row().classes("items-center gap-2 mb-2"):
+                        ui.icon("warning", size="20px").classes("text-orange-600")
+                        ui.label(f"{len(downstream)} job(s) will become orphaned:").classes(
+                            "text-sm font-bold text-orange-800"
+                        )
+                    with ui.column().classes("gap-1 ml-6"):
+                        for detail in downstream:
+                            with ui.row().classes("items-center gap-2"):
+                                ui.label(detail.get("path", "Unknown")).classes("text-xs font-mono text-gray-700")
+                                if detail.get("type"):
+                                    ui.label(f"({detail['type']})").classes("text-xs text-gray-500")
+                                ui.label(f"- {detail.get('status', 'Unknown')}").classes("text-xs text-gray-500")
+                    ui.label("These jobs will have broken input references and may fail if re-run.").classes(
+                        "text-xs text-orange-700 mt-2"
+                    )
+            else:
+                ui.label("No downstream jobs will be affected.").classes(
+                    "text-sm text-green-600 bg-green-50 p-2 rounded"
+                )
+
+            with ui.row().classes("w-full justify-end mt-4 gap-2"):
+                ui.button("Cancel", on_click=dialog.close).props("flat")
+
+                async def confirm():
+                    dialog.close()
+                    try:
+                        result = await backend.delete_job(
+                            instance_id_to_job_type(instance_id).value,
+                            instance_id=instance_id,
+                        )
+                        if result.get("success"):
+                            orphans = result.get("orphaned_jobs", [])
+                            if orphans:
+                                ui.notify(
+                                    f"Deleted. {len(orphans)} downstream job(s) orphaned.",
+                                    type="warning",
+                                    timeout=5000,
+                                )
+                            else:
+                                ui.notify("Job deleted.", type="positive")
+                            remove_instance_from_pipeline(instance_id)
+                        else:
+                            ui.notify(f"Delete failed: {result.get('error')}", type="negative", timeout=8000)
+                    except Exception as e:
+                        ui.notify(f"Error: {e}", type="negative")
+
+                delete_btn = ui.button("Delete", color="red", on_click=confirm)
+                if preview and preview.get("downstream_count", 0) > 0:
+                    delete_btn.props('icon="delete_forever"')
+
+        dialog.open()
+
     def _toggle_roster(phase_id: str):
         same_and_open = _roster_state["visible"] and _roster_state["phase"] == phase_id
         if same_and_open:
             _roster_state["visible"] = False
-            _roster_state["phase"]   = None
-            _flash_state["phase"]    = None
+            _roster_state["phase"] = None
+            _flash_state["phase"] = None
             if roster_panel is not None:
                 roster_panel.style("display: none;")
         else:
             _roster_state["visible"] = True
-            _roster_state["phase"]   = phase_id
-            _flash_state["phase"]    = phase_id
+            _roster_state["phase"] = phase_id
+            _flash_state["phase"] = phase_id
             if roster_panel is not None:
                 roster_panel.style("display: flex;")
             _refresh_roster()
@@ -271,27 +423,9 @@ def build_pipeline_builder_panel(
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
     def _sb_sep():
-        ui.element("div").style(
-            f"height: 1px; background: {_SB_SEP}; width: 24px; margin: 3px auto;"
-        )
-
-
-    def _sb_icon_btn(icon_name: str, on_click=None, tooltip_text: str = "") -> object:
-        btn = (
-            ui.button(icon=icon_name, on_click=on_click)
-            .props("flat dense")
-            .style(
-                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                f"color: {_SB_MUTE}; background: transparent; min-width: 0;"
-            )
-        )
-        if tooltip_text:
-            btn.tooltip(tooltip_text)
-        return btn
-
+        ui.element("div").style(f"height: 1px; background: {_SB_SEP}; width: 24px; margin: 3px auto;")
 
     def _info_popup_btn(icon_name: str, title: str, rows: list):
-        """Light-themed info popup card to the right of the sidebar."""
         btn = (
             ui.button(icon=icon_name)
             .props("flat dense")
@@ -301,12 +435,14 @@ def build_pipeline_builder_panel(
             )
         )
         with btn:
-            with ui.menu().props(
-                'anchor="center right" self="center left" :offset="[8,0]"'
-            ).style(
-                "background: #ffffff; border: 1px solid #e2e8f0; "
-                "border-radius: 5px; overflow: hidden; min-width: 210px; "
-                "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
+            with (
+                ui.menu()
+                .props('anchor="center right" self="center left" :offset="[8,0]"')
+                .style(
+                    "background: #ffffff; border: 1px solid #e2e8f0; "
+                    "border-radius: 5px; overflow: hidden; min-width: 210px; "
+                    "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
+                )
             ):
                 with ui.element("div").style(
                     "padding: 7px 11px 5px; font-size: 9px; font-weight: 700; "
@@ -319,10 +455,7 @@ def build_pipeline_builder_panel(
                         "display: flex; justify-content: space-between; align-items: baseline; "
                         "padding: 5px 11px; border-bottom: 1px solid #f8fafc; gap: 10px;"
                     ):
-                        ui.label(row_lbl).style(
-                            "font-size: 10px; color: #94a3b8; "
-                            "flex-shrink: 0; white-space: nowrap;"
-                        )
+                        ui.label(row_lbl).style("font-size: 10px; color: #94a3b8; flex-shrink: 0;")
                         ui.label(str(row_val)).style(
                             "font-size: 10px; font-family: 'IBM Plex Mono', monospace; "
                             "color: #1e40af; text-align: right; word-break: break-all;"
@@ -338,56 +471,50 @@ def build_pipeline_builder_panel(
         with primary_sidebar:
             ui.element("div").style("height: 8px;")
             ui.icon("biotech", size="14px").style(f"color: {_SB_MUTE}; margin: 0 auto 4px;")
-
             _sb_sep()
 
-            # Info popovers
             _info_popup_btn(
-                icon_name="folder_open",
-                title="Project",
-                rows=[
-                    ("Name",   state.project_name),
-                    ("Root",   str(state.project_path) if state.project_path else "---"),
+                "folder_open",
+                "Project",
+                [
+                    ("Name", state.project_name),
+                    ("Root", str(state.project_path) if state.project_path else "---"),
                     ("Movies", state.movies_glob or "---"),
-                    ("MDOC",   state.mdocs_glob  or "---"),
+                    ("MDOC", state.mdocs_glob or "---"),
                 ],
             )
             _info_popup_btn(
-                icon_name="science",
-                title="Acquisition",
-                rows=[
-                    ("Pixel",    f"{_fmt(state.microscope.pixel_size_angstrom)} Å"),
-                    ("Voltage",  f"{_fmt(state.microscope.acceleration_voltage_kv)} kV"),
-                    ("Cs",       f"{_fmt(state.microscope.spherical_aberration_mm)} mm"),
-                    ("Amp. C.",  _fmt(state.microscope.amplitude_contrast)),
-                    ("Dose",     f"{_fmt(state.acquisition.dose_per_tilt)} e⁻/Å²"),
+                "science",
+                "Acquisition",
+                [
+                    ("Pixel", f"{_fmt(state.microscope.pixel_size_angstrom)} Å"),
+                    ("Voltage", f"{_fmt(state.microscope.acceleration_voltage_kv)} kV"),
+                    ("Cs", f"{_fmt(state.microscope.spherical_aberration_mm)} mm"),
+                    ("Amp. C.", _fmt(state.microscope.amplitude_contrast)),
+                    ("Dose", f"{_fmt(state.acquisition.dose_per_tilt)} e⁻/Å²"),
                     ("Tilt ax.", f"{_fmt(state.acquisition.tilt_axis_degrees)} °"),
                 ],
             )
 
             _sb_sep()
 
-            # Run/stop slot — lives here now
             run_slot = ui.element("div").style(
-                "width: 100%; display: flex; flex-direction: column; "
-                "align-items: center; padding: 2px 6px 2px 6px; gap: 3px;"
+                "width: 100%; display: flex; flex-direction: column; align-items: center; padding: 2px 6px; gap: 3px;"
             )
             _refs["run_slot"] = run_slot
 
-            # Close project
-            close_btn = (
+            (
                 ui.button(icon="close", on_click=lambda: ui.navigate.to("/"))
                 .props("flat dense")
                 .style(
                     f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
                     f"color: {_SB_MUTE}; background: transparent; min-width: 0;"
                 )
+                .tooltip("Close project")
             )
-            close_btn.tooltip("Close project")
 
             _sb_sep()
 
-            # Phase buttons
             for phase_id in PHASE_JOBS:
                 icon_name, label, sub = PHASE_META[phase_id]
                 btn = (
@@ -401,7 +528,6 @@ def build_pipeline_builder_panel(
                 btn.tooltip(f"{label} — {sub}")
                 _refs[f"phase_btn_{phase_id}"] = btn
 
-            # Spacer
             ui.element("div").style("flex: 1;")
 
         _rebuild_run_slot()
@@ -418,8 +544,7 @@ def build_pipeline_builder_panel(
                     .style(
                         "width: 30px; height: 30px; border-radius: 50%; cursor: pointer; "
                         "background: #fef2f2; border: 1px solid #fecaca; "
-                        "display: flex; align-items: center; justify-content: center; "
-                        "flex-shrink: 0;"
+                        "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
                     )
                     .on("click", handle_stop_pipeline)
                     .tooltip("Stop pipeline")
@@ -446,8 +571,7 @@ def build_pipeline_builder_panel(
                     .style(
                         "width: 30px; height: 30px; border-radius: 50%; cursor: pointer; "
                         "background: #f0fdf4; border: 1px solid #bbf7d0; "
-                        "display: flex; align-items: center; justify-content: center; "
-                        "flex-shrink: 0;"
+                        "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
                     )
                     .on("click", handle_run_pipeline)
                     .tooltip("Run pipeline")
@@ -492,10 +616,12 @@ def build_pipeline_builder_panel(
             return
         strip.clear()
         with strip:
-            for job_type in ui_mgr.selected_jobs:
-                is_active = ui_mgr.active_job == job_type
+            for instance_id in ui_mgr.selected_jobs:
+                job_model = state_service.state.jobs.get(instance_id)
+                display = get_instance_display_name(instance_id, job_model)
+                is_active = ui_mgr.active_instance_id == instance_id
                 with (
-                    ui.button(on_click=lambda j=job_type: switch_tab(j))
+                    ui.button(on_click=lambda iid=instance_id: switch_tab(iid))
                     .props("flat no-caps dense")
                     .style(
                         f"padding: 6px 14px; border-radius: 0; "
@@ -507,71 +633,116 @@ def build_pipeline_builder_panel(
                     )
                 ):
                     with ui.row().classes("items-center gap-2"):
-                        ui.label(get_job_display_name(job_type))
-                        BoundStatusDot(job_type)
+                        ui.label(display)
+                        BoundStatusDot(instance_id)
 
     # ── Lazy tab content ──────────────────────────────────────────────────────
 
-    def _ensure_job_rendered(job_type: JobType):
-        if job_type.value in _job_content_containers:
+    def _ensure_job_rendered(instance_id: str):
+        if instance_id in _job_content_containers:
             return
+        try:
+            job_type = instance_id_to_job_type(instance_id)
+        except ValueError:
+            print(f"[PANEL] Unknown job type for instance_id '{instance_id}'")
+            return
+
         wrapper = _content_wrapper_ref.get("el")
         if wrapper is None:
             return
+
         with wrapper:
             container = ui.column().classes("w-full overflow-hidden").style("flex: 1 1 0%; min-height: 0;")
             container.set_visibility(False)
-            _job_content_containers[job_type.value] = container
+            _job_content_containers[instance_id] = container
             with container:
                 render_job_tab(
                     job_type=job_type,
+                    instance_id=instance_id,
                     backend=backend,
                     ui_mgr=ui_mgr,
                     callbacks={
                         **callbacks,
                         "check_and_update_statuses": check_and_update_statuses,
                         "rebuild_pipeline_ui": rebuild_pipeline_ui,
-                        "remove_job_from_pipeline": remove_job_from_pipeline,
+                        "remove_instance_from_pipeline": remove_instance_from_pipeline,
                     },
                 )
 
-    def switch_tab(job_type: JobType):
-        ui_mgr.set_active_job(job_type)
-        _ensure_job_rendered(job_type)
-        for jt_str, c in _job_content_containers.items():
-            c.set_visibility(jt_str == job_type.value)
+    def switch_tab(instance_id: str):
+        ui_mgr.set_active_instance(instance_id)
+        _ensure_job_rendered(instance_id)
+        for iid, c in _job_content_containers.items():
+            c.set_visibility(iid == instance_id)
         _refresh_tab_strip()
         _refresh_roster()
 
-    # ── Job management ────────────────────────────────────────────────────────
+    # ── Job / instance management ─────────────────────────────────────────────
 
-    def add_job_to_pipeline(job_type: JobType):
-        if not ui_mgr.add_job(job_type):
+    def add_instance_to_pipeline(job_type: JobType, instance_id: Optional[str] = None):
+        if ui_mgr.is_running:
             return
+
+        if instance_id is None:
+            state = state_service.state
+            instance_id = _next_instance_id(job_type, ui_mgr.selected_jobs, list(state.jobs.keys()))
+
+        if not ui_mgr.add_instance(instance_id, job_type):
+            return
+
         state = state_service.state
-        if job_type not in state.jobs:
+        if instance_id not in state.jobs:
             template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
             star = template_base / job_type.value / "job.star"
-            state.ensure_job_initialized(job_type, star if star.exists() else None)
+            state.ensure_job_initialized(
+                job_type, instance_id=instance_id, template_path=star if star.exists() else None
+            )
+
         if ui_mgr.is_project_created:
             asyncio.create_task(state_service.save_project())
-        ui_mgr.set_active_job(job_type)
+
+        ui_mgr.set_active_instance(instance_id)
         rebuild_pipeline_ui()
 
-    def _cleanup_stale_overrides(removed: JobType):
-        prefix = removed.value + ":"
-        for _, job_model in state_service.state.jobs.items():
+    def _cleanup_stale_overrides_for_instance(instance_id: str):
+        """Clean source_overrides in other jobs that reference this specific instance."""
+        state = state_service.state
+        removed_model = state.jobs.get(instance_id)
+        job_type_str = instance_id.split("__")[0]
+
+        refs_to_clean: set = set()
+
+        if removed_model:
+            relion_name = getattr(removed_model, "relion_job_name", None)
+            if relion_name:
+                refs_to_clean.add(f"{job_type_str}:{relion_name.rstrip('/')}")
+        # Also catch pending path references
+        refs_to_clean.add(f"{job_type_str}:External/pending_{instance_id}")
+
+        for _, job_model in state.jobs.items():
             overrides = getattr(job_model, "source_overrides", None)
             if not overrides:
                 continue
-            for k in [k for k, v in overrides.items() if v.startswith(prefix)]:
+            stale = [k for k, v in overrides.items() if v in refs_to_clean]
+            for k in stale:
                 del overrides[k]
 
-    def remove_job_from_pipeline(job_type: JobType):
-        if not ui_mgr.remove_job(job_type):
+    def remove_instance_from_pipeline(instance_id: str):
+        if ui_mgr.is_running:
             return
-        _cleanup_stale_overrides(job_type)
-        _job_content_containers.pop(job_type.value, None)
+        if not ui_mgr.remove_instance(instance_id):
+            return
+        _cleanup_stale_overrides_for_instance(instance_id)
+        _job_content_containers.pop(instance_id, None)
+
+        # Remove from state.jobs if the job never succeeded - keeps the ID
+        # from being recycled and inheriting stale Failed/Scheduled state.
+        state = state_service.state
+        job_model = state.jobs.get(instance_id)
+        if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
+            del state.jobs[instance_id]
+            state.job_path_mapping.pop(instance_id, None)
+
         if ui_mgr.is_project_created:
             asyncio.create_task(state_service.save_project())
         rebuild_pipeline_ui()
@@ -598,16 +769,14 @@ def build_pipeline_builder_panel(
                     ui.label("Create a project to begin.").classes("text-sm text-gray-400")
             return
 
-        selected = ui_mgr.selected_jobs
+        selected = ui_mgr.selected_jobs  # List[str] instance_ids
         if not selected:
             with tabs_container:
-                ui.label("Select jobs from the left panel.").classes(
-                    "text-xs text-gray-400 italic p-8"
-                )
+                ui.label("Select jobs from the left panel.").classes("text-xs text-gray-400 italic p-8")
             return
 
-        if ui_mgr.active_job not in selected:
-            ui_mgr.set_active_job(selected[0])
+        if ui_mgr.active_instance_id not in selected:
+            ui_mgr.set_active_instance(selected[0])
 
         with tabs_container:
             strip = ui.element("div").style(
@@ -618,20 +787,24 @@ def build_pipeline_builder_panel(
             _refresh_tab_strip()
 
             wrapper = ui.element("div").style(
-                "display: flex; flex-direction: column; width: 100%; "
-                "flex: 1 1 0%; min-height: 0; overflow: hidden;"
+                "display: flex; flex-direction: column; width: 100%; flex: 1 1 0%; min-height: 0; overflow: hidden;"
             )
             _content_wrapper_ref["el"] = wrapper
 
-        active = ui_mgr.active_job
+        active = ui_mgr.active_instance_id
         if active:
             _ensure_job_rendered(active)
-            _job_content_containers[active.value].set_visibility(True)
+            _job_content_containers[active].set_visibility(True)
 
         if ui_mgr.is_running:
             _start_spinner_timer()
-            # Always cancel and recreate — old timer may be from a dead client connection.
-            ui_mgr.status_timer = ui.timer(3.0, safe_status_check)
+            try:
+                ui_mgr.status_timer = ui.timer(3.0, safe_status_check)
+            except RuntimeError:
+                # Called from a background task (e.g. logs_tab placeholder swap)
+                # without a live client slot. The polling loop will be re-attached
+                # the next time the user interacts with the page.
+                pass
 
     # ── Status polling ────────────────────────────────────────────────────────
 
@@ -697,15 +870,12 @@ def build_pipeline_builder_panel(
             return
 
         await state_service.save_project(force=True)
-        run_btn = ui_mgr.panel_refs.run_button
-        if run_btn:
-            run_btn.props("loading")
 
         try:
             result = await backend.start_pipeline(
                 project_path=str(ui_mgr.project_path),
                 scheme_name=f"run_{datetime.now().strftime('%H%M%S')}",
-                selected_jobs=[j.value for j in ui_mgr.selected_jobs],
+                selected_jobs=ui_mgr.selected_jobs,  # already List[str] instance_ids
                 required_paths=[],
             )
             if result.get("already_complete"):
@@ -720,10 +890,6 @@ def build_pipeline_builder_panel(
                 ui.notify(f"Failed to start: {result.get('error')}", type="negative")
         except Exception as e:
             ui.notify(f"Error: {e}", type="negative")
-        finally:
-            rb = ui_mgr.panel_refs.run_button
-            if rb:
-                rb.props(remove="loading")
 
     async def handle_stop_pipeline():
         slurm_result = await backend.slurm_service.get_user_slurm_jobs(force_refresh=True)
@@ -762,7 +928,7 @@ def build_pipeline_builder_panel(
         else:
             ui.notify(f"Stopped (with warnings: {'; '.join(result.get('errors', []))})", type="warning", timeout=6000)
 
-    # ── Tab content area (inside main_area from workspace_page) ───────────────
+    # ── Tab content area ──────────────────────────────────────────────────────
 
     tabs_container = ui.element("div").style(
         "display: flex; flex-direction: column; width: 100%; flex: 1 1 0%; min-height: 0; overflow: hidden;"
@@ -770,6 +936,7 @@ def build_pipeline_builder_panel(
     ui_mgr.panel_refs.job_tabs_container = tabs_container
 
     # ── Init ──────────────────────────────────────────────────────────────────
+
     ui_mgr.cleanup_all_timers()
     _build_sidebar()
     _refresh_roster()
@@ -779,10 +946,29 @@ def build_pipeline_builder_panel(
     callbacks["stop_all_timers"] = stop_all_timers
     callbacks["check_and_update_statuses"] = check_and_update_statuses
     callbacks["enable_run_button"] = _rebuild_run_slot
-    callbacks["add_job_to_pipeline"] = add_job_to_pipeline
-    callbacks["remove_job_from_pipeline"] = remove_job_from_pipeline
+    callbacks["add_job_to_pipeline"] = lambda jt: add_instance_to_pipeline(jt)
+    callbacks["add_instance_to_pipeline"] = add_instance_to_pipeline
+    callbacks["remove_instance_from_pipeline"] = remove_instance_from_pipeline
 
     rebuild_pipeline_ui()
 
-    if ui_mgr.is_running:
+    # On first render, do an immediate sync to recover status after a server
+    # restart. If default_pipeline.star shows Running jobs, re-attach the
+    # polling loop even when pipeline_active is False in persisted state.
+    if ui_mgr.is_project_created:
+
+        async def _startup_sync():
+            if not ui_mgr.project_path:
+                return
+            await backend.pipeline_runner.status_sync.sync_all_jobs(str(ui_mgr.project_path))
+            state = get_project_state()
+            any_running = any(m.execution_status == JobStatus.RUNNING for m in state.jobs.values())
+            if (any_running or state.pipeline_active) and not ui_mgr.is_running:
+                ui_mgr.set_pipeline_running(True)
+                rebuild_pipeline_ui()
+            elif ui_mgr.is_running:
+                ui_mgr.status_timer = ui.timer(3.0, safe_status_check)
+
+        ui.timer(0.3, _startup_sync, once=True)
+    elif ui_mgr.is_running:
         ui.timer(0.2, safe_status_check, once=True)

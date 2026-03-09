@@ -22,9 +22,6 @@ class StatusSyncService:
         self.job_resolver = JobTypeResolver(backend.pipeline_orchestrator.star_handler)
 
     async def sync_all_jobs(self, project_path: str) -> Dict[str, bool]:
-        """
-        Read pipeline.star and update job models. Returns dict of what changed.
-        """
         pipeline_star = Path(project_path) / "default_pipeline.star"
         if not pipeline_star.exists():
             return {}
@@ -35,71 +32,134 @@ class StatusSyncService:
 
         changes: Dict[str, bool] = {}
         state = self.backend.state_service.state_for(Path(project_path))
+        project_root = Path(project_path)
 
-        found_jobs = set()
+        # Build reverse lookup: filesystem path (stripped) -> instance_id.
+        # Three passes in descending priority. Lower-priority passes must NOT
+        # overwrite entries already written by a higher-priority pass.
+
+        path_to_instance: Dict[str, str] = {}
+
+        # Pass 1 (highest): relion_job_name -- set when the job actually ran.
+        # This is the only authoritative source once a job has executed.
+        for iid, model in state.jobs.items():
+            rjn = getattr(model, "relion_job_name", None)
+            if rjn:
+                path_to_instance[rjn.rstrip("/")] = iid
+
+        # Pass 2: job_path_mapping -- written by previous sync runs,
+        # consistent with relion_job_name. Don't overwrite pass 1 entries.
+        for iid in state.jobs:
+            mapped = (state.job_path_mapping or {}).get(iid)
+            if mapped:
+                key = mapped.rstrip("/")
+                if key not in path_to_instance:
+                    path_to_instance[key] = iid
+
+        # Pass 3 (lowest): paths["job_dir"] -- predicted at deploy time.
+        # Only use for instances that have no relion_job_name (genuinely pending).
+        # Stale predicted paths from previous deploys must not overwrite
+        # completed job mappings, which is why this is pass 3 and we skip
+        # instances that already have a relion_job_name.
+        for iid, model in state.jobs.items():
+            if getattr(model, "relion_job_name", None):
+                continue
+            job_dir_abs = (model.paths or {}).get("job_dir")
+            if job_dir_abs:
+                try:
+                    rel = str(Path(job_dir_abs).relative_to(project_root))
+                    if rel not in path_to_instance:
+                        path_to_instance[rel] = iid
+                except ValueError:
+                    pass
+
+        # Count instances per job type -- needed for safe fallback below.
+        type_instance_count: Dict[str, int] = {}
+        for iid in state.jobs:
+            base = iid.split("__")[0]
+            type_instance_count[base] = type_instance_count.get(base, 0) + 1
+
+        found_instances: set = set()
+
         for _, row in processes.iterrows():
             job_path = row["rlnPipeLineProcessName"]
-            job_type_str = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
+            job_path_clean = job_path.rstrip("/")
 
-            if not job_type_str:
-                continue
+            instance_id = path_to_instance.get(job_path_clean)
 
-            try:
-                job_type = JobType(job_type_str)
-            except ValueError:
-                continue
-
-            if job_type in state.jobs:
-                job_model = state.jobs[job_type]
-                old_status = job_model.execution_status
-
-                status_str = row["rlnPipeLineProcessStatusLabel"]
-
-                if status_str == "Pending":
-                    new_status = JobStatus.SCHEDULED
+            # Fallback: derive instance_id from the driver script name.
+            # Only safe when exactly ONE instance of that job type exists --
+            # with multiple instances we cannot know which one owns this path,
+            # and guessing wrong is worse than skipping.
+            if instance_id is None:
+                job_type_str = self.job_resolver.get_job_type_from_path(
+                    Path(project_path), job_path
+                )
+                if not job_type_str:
+                    continue
+                if type_instance_count.get(job_type_str, 0) == 1:
+                    instance_id = job_type_str
                 else:
-                    try:
-                        new_status = JobStatus(status_str)
-                    except ValueError:
-                        new_status = JobStatus.UNKNOWN
+                    print(
+                        f"[SYNC] Cannot resolve {job_path_clean} to a unique instance "
+                        f"({type_instance_count.get(job_type_str, 0)} instances of "
+                        f"'{job_type_str}' exist) -- skipping row"
+                    )
+                    continue
 
-                job_model.execution_status = new_status
-                job_model.relion_job_name = job_path
-                job_model.relion_job_number = self._extract_job_number(job_path)
+            if instance_id not in state.jobs:
+                continue
 
-                state.job_path_mapping[job_type.value] = job_path
+            job_model = state.jobs[instance_id]
+            old_status = job_model.execution_status
 
-                if old_status != job_model.execution_status:
-                    changes[job_type_str] = True
+            status_str = row["rlnPipeLineProcessStatusLabel"]
+            if status_str == "Pending":
+                new_status = JobStatus.SCHEDULED
+            else:
+                try:
+                    new_status = JobStatus(status_str)
+                except ValueError:
+                    new_status = JobStatus.UNKNOWN
 
-                found_jobs.add(job_type)
+            job_model.execution_status = new_status
+            job_model.relion_job_name = job_path
+            job_model.relion_job_number = self._extract_job_number(job_path)
+            state.job_path_mapping[instance_id] = job_path
 
-        for job_type, job_model in state.jobs.items():
-            if job_type not in found_jobs:
-                old_status = job_model.execution_status
+            if old_status != new_status:
+                changes[instance_id] = True
 
-                if job_model.relion_job_name:
-                    job_model.execution_status = JobStatus.SCHEDULED
-                    job_model.relion_job_name = None
-                    job_model.relion_job_number = None
-                    state.job_path_mapping.pop(job_type.value, None)
+            found_instances.add(instance_id)
 
-                    if old_status != JobStatus.SCHEDULED:
-                        changes[job_type.value] = True
+        # Jobs not found in pipeline.star: reset to Scheduled if they had a
+        # stale job path (the job was deleted or superseded).
+        for instance_id, job_model in state.jobs.items():
+            if instance_id in found_instances:
+                continue
 
-                elif job_model.execution_status not in [JobStatus.SCHEDULED, JobStatus.UNKNOWN]:
-                    job_model.execution_status = JobStatus.SCHEDULED
-                    job_model.relion_job_name = None
-                    job_model.relion_job_number = None
-                    state.job_path_mapping.pop(job_type.value, None)
-                    changes[job_type.value] = True
+            old_status = job_model.execution_status
+
+            if job_model.relion_job_name:
+                job_model.execution_status = JobStatus.SCHEDULED
+                job_model.relion_job_name = None
+                job_model.relion_job_number = None
+                state.job_path_mapping.pop(instance_id, None)
+                if old_status != JobStatus.SCHEDULED:
+                    changes[instance_id] = True
+            elif job_model.execution_status not in (JobStatus.SCHEDULED, JobStatus.UNKNOWN):
+                job_model.execution_status = JobStatus.SCHEDULED
+                job_model.relion_job_name = None
+                job_model.relion_job_number = None
+                state.job_path_mapping.pop(instance_id, None)
+                changes[instance_id] = True
 
         if changes:
             try:
                 print(f"[SYNC] Persisting {len(changes)} status changes to disk.")
-                # CHANGED: explicit project_path -- sync runs from timer callbacks
-                # where tab context *usually* exists, but being explicit is safer.
-                await self.backend.state_service.save_project(project_path=Path(project_path), force=True)
+                await self.backend.state_service.save_project(
+                    project_path=Path(project_path), force=True
+                )
             except Exception as e:
                 print(f"[SYNC ERROR] Failed to persist status changes: {e}")
 
@@ -222,119 +282,29 @@ class PipelineRunnerService:
         # Call internal method to run the schemer
         return await self._run_relion_schemer(project_dir, scheme_name, additional_bind_paths=list(bind_paths))
 
-    async def get_pipeline_job_statuses(self, project_path: str) -> Dict[str, AbstractJobParams]:
-        """
-        Get actual execution status for each job from default_pipeline.star
-        and update the job models directly.
-        """
-        pipeline_star = Path(project_path) / "default_pipeline.star"
-        if not pipeline_star.exists():
-            return {}
-
-        try:
-            star_handler = self.backend.pipeline_orchestrator.star_handler
-            data = star_handler.read(pipeline_star)
-
-            processes = data.get("pipeline_processes", pd.DataFrame())
-
-            updated_jobs = {}
-            if processes.empty:
-                return {}
-
-            # CHANGED: explicit path (no tab context dependency)
-            state = self.backend.state_service.state_for(Path(project_path))
-            server_root = self.backend.config_service.crboost_root
-
-            for _, process in processes.iterrows():
-                job_path = process["rlnPipeLineProcessName"]
-                status_str = process["rlnPipeLineProcessStatusLabel"]
-                job_type_str = self.status_sync._extract_job_type(project_path, job_path)
-
-                if job_type_str and job_type_str != "unknown":
-                    try:
-                        job_type = JobType(job_type_str)
-                        job_model = state.jobs.get(job_type)
-
-                        if not job_model:
-                            print(f"[RUNNER] Job {job_type} not in state, initializing from template.")
-                            template_base = server_root / "config" / "Schemes" / "warp_tomo_prep"
-                            job_star_path = template_base / job_type.value / "job.star"
-
-                            # CHANGED: call ensure_job_initialized directly on the
-                            # state object we already have (no tab context needed)
-                            state.ensure_job_initialized(job_type, job_star_path if job_star_path.exists() else None)
-                            job_model = state.jobs.get(job_type)
-
-                            if not job_model:
-                                print(f"[RUNNER] Failed to initialize job model for {job_type}, skipping")
-                                continue
-
-                        job_number_str = job_path.rstrip("/").split("job")[-1]
-                        job_number = int(job_number_str)
-
-                        if status_str == "Pending":
-                            status_enum = JobStatus.SCHEDULED
-                        else:
-                            try:
-                                status_enum = JobStatus(status_str)
-                            except ValueError:
-                                status_enum = JobStatus.UNKNOWN
-
-                        job_model.execution_status = status_enum
-                        job_model.relion_job_name = job_path
-                        job_model.relion_job_number = job_number
-
-                        updated_jobs[job_type.value] = job_model
-
-                    except ValueError as e:
-                        print(f"[RUNNER] Error processing job {job_type_str}: {e}")
-
-            return updated_jobs
-
-        except Exception as e:
-            print(f"[RUNNER_SERVICE] Error reading pipeline status: {e}", file=sys.stderr)
-            import traceback
-
-            traceback.print_exc(file=sys.stderr)
-            return {}
 
     async def get_pipeline_overview(self, project_path: str):
-        """
-        Reads the default_pipeline.star file to get a high-level overview
-        and detailed job statuses.
-        """
-        job_models = await self.get_pipeline_job_statuses(project_path)
-
-        if not job_models:
+        state = self.backend.state_service.state_for(Path(project_path))
+        
+        if not state.jobs:
             return {
-                "status": "ok",
-                "total": 0,
-                "completed": 0,
-                "running": 0,
-                "failed": 0,
-                "scheduled": 0,
-                "is_complete": True,
-                "jobs": {},
+                "status": "ok", "total": 0, "completed": 0,
+                "running": 0, "failed": 0, "scheduled": 0,
+                "is_complete": True, "jobs": {},
             }
 
-        total = len(job_models)
-        succeeded = 0
-        running = 0
-        failed = 0
-        scheduled = 0
-
-        for job_model in job_models.values():
-            status = job_model.execution_status
-            if status == JobStatus.SUCCEEDED:
+        total = succeeded = running = failed = scheduled = 0
+        for job_model in state.jobs.values():
+            total += 1
+            s = job_model.execution_status
+            if s == JobStatus.SUCCEEDED:
                 succeeded += 1
-            elif status == JobStatus.RUNNING:
+            elif s == JobStatus.RUNNING:
                 running += 1
-            elif status == JobStatus.FAILED:
+            elif s == JobStatus.FAILED:
                 failed += 1
-            elif status == JobStatus.SCHEDULED:
+            elif s == JobStatus.SCHEDULED:
                 scheduled += 1
-
-        is_complete = running == 0 and total > 0
 
         return {
             "status": "ok",
@@ -343,8 +313,8 @@ class PipelineRunnerService:
             "running": int(running),
             "failed": int(failed),
             "scheduled": int(scheduled),
-            "is_complete": is_complete,
-            "jobs": {k: v.model_dump(mode="json") for k, v in job_models.items()},
+            "is_complete": running == 0 and total > 0,
+            "jobs": {},
         }
 
     async def get_job_logs(self, project_path: str, job_name: str) -> Dict[str, str]:
@@ -772,23 +742,12 @@ class PipelineRunnerService:
             return {"success": False, "errors": errors}
         return {"success": True, "cancelled_slurm_jobs": len(slurm_job_ids)}
 
-    async def cancel_job(self, project_dir: Path, job_type: "JobType") -> Dict[str, Any]:
-        """
-        Cancel a single running job:
-        1. Find its SLURM job ID by matching working directory and scancel it
-        2. Patch that job's row in default_pipeline.star to Failed
-        3. Update in-memory job model to FAILED
-        4. Terminate the schemer -- it would stall on the failed job anyway,
-            and we want pipeline_active cleared so the user can requeue
-        5. Persist
-        """
-        from services.project_state import JobStatus
-
+    async def cancel_job(self, project_dir: Path, instance_id: str) -> Dict[str, Any]:
         state = self.backend.state_service.state_for(project_dir)
-        job_model = state.jobs.get(job_type)
+        job_model = state.jobs.get(instance_id)
 
         if not job_model:
-            return {"success": False, "error": f"Job {job_type.value} not found in state"}
+            return {"success": False, "error": f"Job '{instance_id}' not found in state"}
 
         if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.SCHEDULED):
             return {"success": False, "error": f"Job is not running (status: {job_model.execution_status})"}
@@ -796,6 +755,8 @@ class PipelineRunnerService:
         relion_job_name = job_model.relion_job_name
         if not relion_job_name:
             return {"success": False, "error": "Job has no relion_job_name -- cannot locate its directory"}
+
+        # ... rest of the method is unchanged ...
 
         job_dir = project_dir / relion_job_name.rstrip("/")
         print(f"[RUNNER] Looking for SLURM job with stdout in: {job_dir.resolve()}")
