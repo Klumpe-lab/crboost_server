@@ -34,8 +34,8 @@ from services.job_models import (
     TsAlignmentParams,
     TsCtfParams,
     TsReconstructParams,
+    jobtype_paramclass,
 )
-
 
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
@@ -53,7 +53,7 @@ class ProjectState(BaseModel):
     acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
     slurm_defaults: SlurmConfig = Field(default_factory=SlurmConfig.from_config_defaults)
 
-    jobs: Dict[JobType, SerializeAsAny[AbstractJobParams]] = Field(default_factory=dict)
+    jobs: Dict[str, SerializeAsAny[AbstractJobParams]] = Field(default_factory=dict)
     pipeline_active: bool = Field(default=False)
 
     _dirty: bool = False
@@ -69,11 +69,18 @@ class ProjectState(BaseModel):
         if self.is_dirty:
             self.save(path)
 
-    def ensure_job_initialized(self, job_type: JobType, template_path: Optional[Path] = None):
-        if job_type in self.jobs:
+    def ensure_job_initialized(
+        self,
+        job_type: JobType,
+        instance_id: Optional[str] = None,
+        template_path: Optional[Path] = None,
+    ):
+        if instance_id is None:
+            instance_id = job_type.value
+
+        if instance_id in self.jobs:
             return
 
-        from services.project_state import jobtype_paramclass
         from services.configs.config_service import get_config_service
 
         param_class_map = jobtype_paramclass()
@@ -91,7 +98,7 @@ class ProjectState(BaseModel):
             job_params.rescale_angpixs = computed
             print(f"[STATE] Auto-set rescale_angpixs = {computed} ({self.microscope.pixel_size_angstrom} * {binning})")
 
-        self.jobs[job_type] = job_params
+        self.jobs[instance_id] = job_params
         self.update_modified()
 
     def update_modified(self):
@@ -146,38 +153,28 @@ class ProjectState(BaseModel):
             pipeline_active=data.get("pipeline_active", False),
         )
 
-        from services.project_state import jobtype_paramclass
-
         param_class_map = jobtype_paramclass()
-        for job_type_str, job_data in data.get("jobs", {}).items():
+
+        for instance_id, job_data in data.get("jobs", {}).items():
             try:
-                job_type = JobType(job_type_str)
+                # job_type field is persisted on the model. For projects written
+                # before this change the key itself is the job type value, so we
+                # fall back to that.
+                job_type_value = job_data.get("job_type") or instance_id
+                job_type = JobType(job_type_value)
                 param_class = param_class_map.get(job_type)
                 if param_class:
                     job_params = param_class(**job_data)
                     job_params._project_state = project_state
-                    project_state.jobs[job_type] = job_params
+                    project_state.jobs[instance_id] = job_params
+                else:
+                    print(f"[WARN] No param class for job type '{job_type_value}' (instance '{instance_id}'), skipping")
             except (ValueError, Exception) as e:
-                print(f"[WARN] Skipping job '{job_type_str}' - failed to deserialize: {e}")
+                print(f"[WARN] Skipping job instance '{instance_id}' - failed to deserialize: {e}")
 
         return project_state
 
 
-def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
-    return {
-        JobType.IMPORT_MOVIES: ImportMoviesParams,
-        JobType.FS_MOTION_CTF: FsMotionCtfParams,
-        JobType.TS_ALIGNMENT: TsAlignmentParams,
-        JobType.TS_CTF: TsCtfParams,
-        JobType.TS_RECONSTRUCT: TsReconstructParams,
-        JobType.DENOISE_TRAIN: DenoiseTrainParams,
-        JobType.DENOISE_PREDICT: DenoisePredictParams,
-        JobType.TEMPLATE_MATCH_PYTOM: TemplateMatchPytomParams,
-        JobType.TEMPLATE_EXTRACT_PYTOM: CandidateExtractPytomParams,
-        JobType.SUBTOMO_EXTRACTION: SubtomoExtractionParams,
-        JobType.RECONSTRUCT_PARTICLE: ReconstructParticleParams,
-        JobType.CLASS3D: Class3DParams,
-    }
 
 
 # =========================================================================

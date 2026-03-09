@@ -91,13 +91,9 @@ class ProjectService:
         self.project_root: Optional[Path] = None
         self.state_service = get_state_service()
 
-    async def delete_job(self, job_name: str) -> Dict[str, Any]:
-        """
-        Delete a job from the pipeline using proper Relion-compatible deletion.
-        """
+    async def delete_job(self, job_name: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
         try:
             job_type = JobType(job_name)
-            # This is always called from UI context, so tab lookup works.
             state = self.backend.state_service.state
             project_dir = state.project_path
 
@@ -107,46 +103,55 @@ class ProjectService:
             deletion_service = get_deletion_service()
             job_resolver = self.backend.pipeline_orchestrator.job_resolver
 
-            # 1. Find all job paths matching this type
-            job_paths = deletion_service.find_jobs_by_type(project_dir, job_type, job_resolver)
+            # When a specific instance is requested, only delete that one job path.
+            # Otherwise fall back to deleting all instances of the type (legacy behaviour).
+            if instance_id:
+                job_model = state.jobs.get(instance_id)
+                if job_model and job_model.relion_job_name:
+                    job_paths = [job_model.relion_job_name]
+                else:
+                    job_paths = []
+            else:
+                job_paths = deletion_service.find_jobs_by_type(project_dir, job_type, job_resolver)
 
             if not job_paths:
-                if job_type in state.jobs:
-                    del state.jobs[job_type]
-                if job_type.value in state.job_path_mapping:
-                    del state.job_path_mapping[job_type.value]
-                # CHANGED: explicit project_path for save
+                instances_to_remove = [instance_id] if instance_id else [
+                    iid for iid in list(state.jobs.keys())
+                    if iid == job_type.value or iid.startswith(job_type.value + "__")
+                ]
+                for iid in instances_to_remove:
+                    state.jobs.pop(iid, None)
+                    state.job_path_mapping.pop(iid, None)
                 await self.backend.state_service.save_project(project_path=project_dir, force=True)
                 return {"success": True, "message": f"Job {job_name} removed from project state."}
 
-            # 2. Delete each instance (usually just one)
             all_orphans = []
             deleted_count = 0
             errors = []
 
             for job_path in job_paths:
                 result = await deletion_service.delete_job(project_dir, job_path, recursive=False)
-
                 if result.success:
                     deleted_count += 1
                     all_orphans.extend(result.orphaned_jobs)
                 else:
                     errors.append(f"{job_path}: {result.error}")
 
-            # 3. Update our internal state
-            if job_type in state.jobs:
-                del state.jobs[job_type]
-            if job_type.value in state.job_path_mapping:
-                del state.job_path_mapping[job_type.value]
+            # Remove only the affected instances from state
+            if instance_id:
+                instances_to_remove = [instance_id]
+            else:
+                instances_to_remove = [
+                    iid for iid in list(state.jobs.keys())
+                    if iid == job_type.value or iid.startswith(job_type.value + "__")
+                ]
+            for iid in instances_to_remove:
+                state.jobs.pop(iid, None)
+                state.job_path_mapping.pop(iid, None)
 
-            # 4. Persist state
-            # CHANGED: explicit project_path
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
-
-            # 5. Sync statuses (this will detect orphaned jobs)
             await self.backend.pipeline_runner.status_sync.sync_all_jobs(str(project_dir))
 
-            # 6. Build response
             if errors:
                 return {
                     "success": False,
@@ -155,20 +160,16 @@ class ProjectService:
                     "orphaned_jobs": all_orphans,
                 }
 
-            orphan_warning = ""
-            if all_orphans:
-                orphan_warning = f" Warning: {len(all_orphans)} downstream job(s) now have broken inputs: {all_orphans}"
-
             return {
                 "success": True,
-                "message": f"Deleted {deleted_count} job instance(s).{orphan_warning}",
+                "message": f"Deleted {deleted_count} job instance(s)."
+                + (f" Warning: {len(all_orphans)} downstream job(s) now have broken inputs: {all_orphans}" if all_orphans else ""),
                 "deleted_count": deleted_count,
                 "orphaned_jobs": all_orphans,
             }
 
         except Exception as e:
             import traceback
-
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
@@ -396,14 +397,14 @@ class ProjectService:
             await self.backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
 
             project_name = state.project_name
-            selected_jobs = [job_type.value for job_type in state.jobs.keys()]
+            selected_jobs = list(state.jobs.keys())
 
             return {
-                "success": True,
-                "project_name": project_name,
+                "success"      : True,
+                "project_name" : project_name,
                 "selected_jobs": selected_jobs,
-                "movies_glob": movies_glob,
-                "mdocs_glob": mdocs_glob,
+                "movies_glob"  : movies_glob,
+                "mdocs_glob"   : mdocs_glob,
             }
         except Exception as e:
             import traceback

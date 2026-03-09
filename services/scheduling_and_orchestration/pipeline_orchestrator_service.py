@@ -7,8 +7,9 @@ from datetime import datetime
 
 from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
+from services.job_models import ImportMoviesParams
 from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
-from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus, ImportMoviesParams
+from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,21 +23,19 @@ class PipelineOrchestratorService:
         self.config_service = get_config_service()
         self.job_resolver = JobTypeResolver(self.star_handler)
 
-    async def deploy_and_run_scheme(self, project_dir: Path, selected_job_types: List[JobType]) -> Dict[str, Any]:
-        if not selected_job_types:
+    async def deploy_and_run_scheme(self, project_dir: Path, selected_instance_ids: List[str]) -> Dict[str, Any]:
+        if not selected_instance_ids:
             return {"success": False, "message": "No jobs selected."}
 
-        # CHANGED: explicit path (this runs from backend, may not have tab context)
         state = self.backend.state_service.state_for(project_dir)
 
-        # Only run jobs not SUCCEEDED
-        jobs_to_run: List[JobType] = []
-        for job_type in selected_job_types:
-            job_model = state.jobs.get(job_type)
+        instances_to_run: List[str] = []
+        for instance_id in selected_instance_ids:
+            job_model = state.jobs.get(instance_id)
             if not job_model or job_model.execution_status != JobStatus.SUCCEEDED:
-                jobs_to_run.append(job_type)
+                instances_to_run.append(instance_id)
 
-        if not jobs_to_run:
+        if not instances_to_run:
             return {
                 "success": True,
                 "already_complete": True,
@@ -44,96 +43,82 @@ class PipelineOrchestratorService:
                 "pid": 0,
             }
 
-        # Scheme directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         scheme_name = f"run_{timestamp}"
         scheme_dir = project_dir / "Schemes" / scheme_name
         scheme_dir.mkdir(parents=True, exist_ok=True)
 
-        # Predict job numbers
         current_counter = self._get_current_relion_counter(project_dir)
-
         server_dir = Path(__file__).parent.parent.parent.resolve()
 
-        # Schema-based resolver
-        resolver = PathResolutionService(state, active_job_types=set(selected_job_types))
+        resolver = PathResolutionService(state, active_instance_ids=set(instances_to_run))
 
-        report_lines = [f"Scheme: {scheme_name}", f"Jobs_to_run: {[j.value for j in jobs_to_run]}", ""]
+        report_lines = [f"Scheme: {scheme_name}", f"Instances_to_run: {instances_to_run}", ""]
 
-        for i, job_type in enumerate(jobs_to_run):
+        for i, instance_id in enumerate(instances_to_run):
             job_num = current_counter + i
+
+            job_model = state.jobs.get(instance_id)
+            if not job_model:
+                # Instance not yet in state — initialize it. For singleton jobs
+                # instance_id == job_type.value, so we can recover the type.
+                base_type_str = instance_id.split("__")[0]
+                try:
+                    job_type = JobType(base_type_str)
+                except ValueError:
+                    report_lines.append(f"[{instance_id}] UNKNOWN JOB TYPE, skipping")
+                    continue
+                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
+                state.ensure_job_initialized(job_type, instance_id=instance_id, template_path=template_base)
+                job_model = state.jobs.get(instance_id)
+
+            job_type = job_model.job_type
             category = JobCategory.IMPORT if job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
             predicted_job_dir = project_dir / category.value / f"job{job_num:03d}"
 
-            # Ensure model exists
-            job_model = state.jobs.get(job_type)
-            if not job_model:
-                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
-                # CHANGED: call directly on state object (no tab context dependency)
-                state.ensure_job_initialized(job_type, template_base)
-                job_model = state.jobs.get(job_type)
-
-            # -----------------------------------------------------------------
-            # SCHEMA-BASED PATH RESOLUTION (replaces legacy resolve_paths)
-            # -----------------------------------------------------------------
             try:
-                # 1. Resolve I/O paths from schemas
-                io_paths = resolver.resolve_all_paths(job_type, job_model, predicted_job_dir)
-
-                # 2. Add context paths (settings files, project dirs, etc.)
+                io_paths = resolver.resolve_all_paths(job_type, job_model, predicted_job_dir, instance_id=instance_id)
                 context_paths = get_context_paths(job_type, job_model, predicted_job_dir)
-
-                # 3. Merge (context paths are lower priority - I/O wins on conflict)
                 resolved_paths = {**context_paths, **io_paths}
-
             except PathResolutionError as e:
-                # Mark job as orphaned but continue with other jobs
                 job_model.is_orphaned = True
                 job_model.missing_inputs = [str(e)]
-                report_lines.append(f"[{job_type.value}] RESOLUTION FAILED: {e}")
+                report_lines.append(f"[{instance_id}] RESOLUTION FAILED: {e}")
                 report_lines.append("")
-                print(f"[RESOLUTION ERROR] {job_type.value}: {e}")
+                print(f"[RESOLUTION ERROR] {instance_id}: {e}")
                 continue
 
-            # Store resolved paths on the model
             job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v is not None}
             job_model.is_orphaned = False
             job_model.missing_inputs = []
 
-            # CRITICAL: Invalidate resolver cache so the next job sees this job's
-            # real paths instead of stale "pending_" placeholders
             resolver.invalidate_cache()
 
-            # Build report
-            report_lines.append(f"[{job_type.value}] predicted_dir={predicted_job_dir}")
+            report_lines.append(f"[{instance_id}] predicted_dir={predicted_job_dir}")
             for k, v in sorted(job_model.paths.items()):
                 report_lines.append(f"  {k}: {v}")
             report_lines.append("")
 
-            # CHANGED: re-fetch from registry (same object, but explicit about source)
             state = self.backend.state_service.state_for(project_dir)
 
-            # Write job.star into scheme
-            scheme_job_dir = scheme_dir / job_type.value
+            scheme_job_dir = scheme_dir / instance_id
             scheme_job_dir.mkdir(parents=True, exist_ok=True)
 
             self._write_job_star(
                 scheme_job_dir=scheme_job_dir,
+                instance_id=instance_id,
                 job_type=job_type,
                 job_model=job_model,
                 server_dir=server_dir,
                 project_dir=project_dir,
             )
 
-        # Write resolution report
         report_path = scheme_dir / "resolution_report.txt"
         report_path.write_text("\n".join(report_lines))
         print(f"[RESOLUTION] wrote {report_path}")
 
-        # scheme.star
-        self._write_scheme_star(scheme_dir, scheme_name, [j.value for j in jobs_to_run])
+        self._write_scheme_star(scheme_dir, scheme_name, instances_to_run)
 
-        # CHANGED: explicit path
         state = self.backend.state_service.state_for(project_dir)
         os.sync()
 
@@ -143,11 +128,9 @@ class PipelineOrchestratorService:
         if state.mdocs_glob:
             bind_paths.append(str(Path(state.mdocs_glob).parent.resolve()))
 
-        # Reset job models for jobs being re-run so the UI immediately
-        # shows "scheduled" instead of stale Failed state and old paths
         state = self.backend.state_service.state_for(project_dir)
-        for job_type in jobs_to_run:
-            job_model = state.jobs.get(job_type)
+        for instance_id in instances_to_run:
+            job_model = state.jobs.get(instance_id)
             if job_model:
                 job_model.execution_status = JobStatus.SCHEDULED
                 job_model.relion_job_name = None
@@ -157,51 +140,28 @@ class PipelineOrchestratorService:
             project_dir=project_dir, scheme_name=scheme_name, bind_paths=list(set(bind_paths))
         )
 
-    def _get_current_relion_counter(self, project_dir: Path) -> int:
-        """
-        Reads the current job counter from default_pipeline.star.
-        Raises if the file exists but can't be parsed - silent failures cause job path collisions.
-        """
-        pipeline_star = project_dir / "default_pipeline.star"
-
-        if not pipeline_star.exists():
-            return 0
-
-        data = self.star_handler.read(pipeline_star)
-        general = data.get("pipeline_general")
-
-        if general is None:
-            raise ValueError(f"pipeline_general block missing from {pipeline_star}")
-
-        if isinstance(general, dict):
-            counter = general.get("rlnPipeLineJobCounter")
-        elif isinstance(general, pd.DataFrame) and not general.empty:
-            if "rlnPipeLineJobCounter" not in general.columns:
-                raise ValueError(f"rlnPipeLineJobCounter column missing from {pipeline_star}")
-            counter = general["rlnPipeLineJobCounter"].values[0]
-        else:
-            raise ValueError(f"Unexpected pipeline_general format in {pipeline_star}: {type(general)}")
-
-        if counter is None:
-            raise ValueError(f"rlnPipeLineJobCounter not found in {pipeline_star}")
-
-        return int(counter)
 
     def _write_job_star(
         self,
         scheme_job_dir: Path,
+        instance_id: str,
         job_type: JobType,
         job_model: AbstractJobParams,
         server_dir: Path,
         project_dir: Path,
         **kwargs,
     ):
-        """Generate job.star from the Pydantic model. No more templates!"""
-        fn_exe = self._build_fn_exe(job_type, job_model, project_dir, server_dir)
+        fn_exe = self._build_fn_exe(instance_id, job_type, job_model, project_dir, server_dir)
         job_model.generate_job_star(job_dir=scheme_job_dir, fn_exe=fn_exe, star_handler=self.star_handler)
 
+
     def _build_fn_exe(
-        self, job_type: JobType, job_model: AbstractJobParams, project_dir: Path, server_dir: Path
+        self,
+        instance_id: str,
+        job_type: JobType,
+        job_model: AbstractJobParams,
+        project_dir: Path,
+        server_dir: Path,
     ) -> str:
         if job_type == JobType.IMPORT_MOVIES:
             return self._build_import_command(job_model)
@@ -233,9 +193,39 @@ class PipelineOrchestratorService:
         return (
             f"export PYTHONPATH={server_dir}:${{PYTHONPATH}}; "
             f"{python_exe} {script_path} "
-            f"--job_type {job_type.value} "
+            f"--instance_id {instance_id} "
             f"--project_path {project_dir}"
         )
+
+    def _get_current_relion_counter(self, project_dir: Path) -> int:
+        """
+        Reads the current job counter from default_pipeline.star.
+        Raises if the file exists but can't be parsed - silent failures cause job path collisions.
+        """
+        pipeline_star = project_dir / "default_pipeline.star"
+
+        if not pipeline_star.exists():
+            return 0
+
+        data = self.star_handler.read(pipeline_star)
+        general = data.get("pipeline_general")
+
+        if general is None:
+            raise ValueError(f"pipeline_general block missing from {pipeline_star}")
+
+        if isinstance(general, dict):
+            counter = general.get("rlnPipeLineJobCounter")
+        elif isinstance(general, pd.DataFrame) and not general.empty:
+            if "rlnPipeLineJobCounter" not in general.columns:
+                raise ValueError(f"rlnPipeLineJobCounter column missing from {pipeline_star}")
+            counter = general["rlnPipeLineJobCounter"].values[0]
+        else:
+            raise ValueError(f"Unexpected pipeline_general format in {pipeline_star}: {type(general)}")
+
+        if counter is None:
+            raise ValueError(f"rlnPipeLineJobCounter not found in {pipeline_star}")
+
+        return int(counter)
 
     def _build_import_command(self, params: ImportMoviesParams) -> str:
         mdoc_glob = str(params.paths.get("mdoc_glob", ""))
@@ -488,25 +478,3 @@ class JobTypeResolver:
         except Exception as e:
             print(f"[WARN] Could not read job type from {job_star_path}: {e}")
             return None
-
-    def get_all_completed_jobs(self, project_dir: Path) -> Dict[str, str]:
-        pipeline_star = project_dir / "default_pipeline.star"
-        if not pipeline_star.exists():
-            return {}
-        try:
-            data = self.star_handler.read(pipeline_star)
-            processes = data.get("pipeline_processes", pd.DataFrame())
-            if processes.empty:
-                return {}
-            result = {}
-            for _, row in processes.iterrows():
-                job_path = row["rlnPipeLineProcessName"]
-                status = row["rlnPipeLineProcessStatusLabel"]
-                if status in ["Succeeded", "Running"]:
-                    job_type = self.get_job_type_from_path(project_dir, job_path)
-                    if job_type:
-                        result[job_type] = job_path
-            return result
-        except Exception as e:
-            print(f"[WARN] Could not parse pipeline: {e}")
-            return {}
