@@ -50,6 +50,8 @@ class AbstractJobParams(BaseModel):
     # Backend code (orchestrator, path resolution, drivers) never reads this.
     # Set by the user or auto-generated; purely cosmetic.
     display_label: Optional[str] = None
+
+    species_id: Optional[str] = None
     JOB_CATEGORY: ClassVar[JobCategory]
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"  # Override for native jobs
     IS_TOMO_JOB: ClassVar[bool] = True
@@ -903,7 +905,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
 
     # workbench is a nested model managed by the TemplateWorkbench widget,
     # NOT a user param — the widget handles its own persistence.
-    workbench: TemplateWorkbenchState = Field(default_factory=TemplateWorkbenchState)
+    # workbench: TemplateWorkbenchState = Field(default_factory=TemplateWorkbenchState)
 
     # Inputs (Strings here, resolved to Paths in resolve_paths)
     template_path: str = Field(default="")

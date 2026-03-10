@@ -3,12 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, Type, List
 
-from pydantic import BaseModel, Field, SerializeAsAny
+from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny
 
 from services.models_base import (
     JobStatus,
@@ -31,11 +32,28 @@ from services.job_models import (
     ReconstructParticleParams,
     SubtomoExtractionParams,
     TemplateMatchPytomParams,
+    TemplateWorkbenchState,  
     TsAlignmentParams,
     TsCtfParams,
     TsReconstructParams,
     jobtype_paramclass,
 )
+
+def slugify(name: str) -> str:
+    """Convert a display name to a filesystem-safe species id."""
+    s = name.lower().strip()
+    s = re.sub(r"[^\w\s-]", "", s)
+    s = re.sub(r"[\s-]+", "_", s)
+    return s.strip("_") or "species"
+
+
+class ParticleSpecies(BaseModel):
+    id: str                  # slug, used as folder name and instance suffix
+    name: str                # display label
+    color: str = "#3b82f6"
+    template_path: str = ""
+    mask_path: str = ""
+    workbench: TemplateWorkbenchState = Field(default_factory=TemplateWorkbenchState)
 
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
@@ -54,20 +72,44 @@ class ProjectState(BaseModel):
     slurm_defaults: SlurmConfig = Field(default_factory=SlurmConfig.from_config_defaults)
 
     jobs: Dict[str, SerializeAsAny[AbstractJobParams]] = Field(default_factory=dict)
+    species_registry: List[ParticleSpecies] = Field(default_factory=list)
     pipeline_active: bool = Field(default=False)
 
-    _dirty: bool = False
+    _dirty: bool = PrivateAttr(default=False)
+
 
     def mark_dirty(self):
-        object.__setattr__(self, "_dirty", True)
+        self._dirty = True
+
+
 
     @property
     def is_dirty(self) -> bool:
-        return object.__getattribute__(self, "_dirty")
+        return self._dirty
+
 
     def save_if_dirty(self, path: Optional[Path] = None):
         if self.is_dirty:
             self.save(path)
+
+    def get_species(self, species_id: str) -> Optional[ParticleSpecies]:
+        return next((s for s in self.species_registry if s.id == species_id), None)
+
+    def add_species(self, name: str, color: str = "#3b82f6") -> ParticleSpecies:
+        """Create a new species entry from a display name. Caller is responsible
+        for ensuring the name is not blank before calling."""
+        sid = slugify(name)
+        # Avoid id collisions by appending a counter if needed
+        existing_ids = {s.id for s in self.species_registry}
+        base = sid
+        n = 2
+        while sid in existing_ids:
+            sid = f"{base}_{n}"
+            n += 1
+        species = ParticleSpecies(id=sid, name=name, color=color)
+        self.species_registry.append(species)
+        self.update_modified()
+        return species
 
     def ensure_job_initialized(
         self,
@@ -113,7 +155,6 @@ class ProjectState(BaseModel):
 
         data = self.model_dump(exclude={"project_path"})
         data["project_path"] = str(self.project_path) if self.project_path else None
-
         fd, tmp_path = tempfile.mkstemp(dir=str(save_path.parent), suffix=".tmp", prefix=".project_params_")
         try:
             with os.fdopen(fd, "w") as f:
@@ -126,7 +167,7 @@ class ProjectState(BaseModel):
                 pass
             raise
 
-        object.__setattr__(self, "_dirty", False)
+        self._dirty = False
 
     @classmethod
     def load(cls, path: Path):
@@ -153,13 +194,18 @@ class ProjectState(BaseModel):
             pipeline_active=data.get("pipeline_active", False),
         )
 
+        try:
+            project_state.species_registry = [
+                ParticleSpecies(**s) for s in data.get("species_registry", [])
+            ]
+        except Exception as e:
+            print(f"[WARN] Could not load species registry: {e}")
+            project_state.species_registry = []
+
         param_class_map = jobtype_paramclass()
 
         for instance_id, job_data in data.get("jobs", {}).items():
             try:
-                # job_type field is persisted on the model. For projects written
-                # before this change the key itself is the job type value, so we
-                # fall back to that.
                 job_type_value = job_data.get("job_type") or instance_id
                 job_type = JobType(job_type_value)
                 param_class = param_class_map.get(job_type)

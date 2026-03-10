@@ -7,7 +7,7 @@ from pathlib import Path
 import mrcfile
 from nicegui import context
 
-from services.project_state import JobType, get_project_state, get_state_service
+from services.project_state import JobType, get_project_state_for, get_state_service, ParticleSpecies
 
 COLOR_PALETTE = [
     0x5C6BC0,
@@ -80,10 +80,11 @@ def serve_file(path: str):
 
 
 class TemplateWorkbench:
-    def __init__(self, backend, project_path: str):
+    def __init__(self, backend, project_path: str, species_id: str):
         self.backend = backend
         self.project_path = project_path
-        self.output_folder = os.path.join(project_path, "templates")
+        self.species_id = species_id
+        self.output_folder = os.path.join(project_path, "templates", species_id)
         os.makedirs(self.output_folder, exist_ok=True)
 
         self.project_raw_apix = None
@@ -136,11 +137,10 @@ class TemplateWorkbench:
         self.session_item_containers = {}
 
         self.auto_infer_seed = True
-        self._last_mask_template = ""   # tracks which template defaults were last applied for
-        self._last_was_seed = None      # tracks last seed status to detect seed<->non-seed transitions
+        self._last_mask_template = ""
+        self._last_was_seed = None
 
         self._load_project_parameters()
-        # Resolve auto-box immediately so the UI opens with the correct value
         self._recalculate_auto_box()
 
         self.client = None
@@ -151,27 +151,42 @@ class TemplateWorkbench:
         ui.timer(0, self._test_iframe_loaded, once=True)
 
     # ------------------------------------------------------------------
-    # PROJECT PARAMETER LOADING
+    # SPECIES ACCESS
     # ------------------------------------------------------------------
-    def _save_workbench_params(self):
-        """Persist current workbench UI params into the TM job model and save to disk."""
-        tm_params = self._get_tm_params()
-        if tm_params is None or not hasattr(tm_params, "workbench"):
-            return
-        wb = tm_params.workbench
-        wb.pixel_size = self.pixel_size
-        wb.box_size = self.box_size
-        wb.auto_box = self.auto_box
-        wb.apply_lowpass = self.apply_lowpass
-        wb.template_resolution = self.template_resolution
-        wb.auto_infer_seed = self.auto_infer_seed
-        wb.basic_shape_def = self.basic_shape_def
-        asyncio.create_task(get_state_service().save_project(project_path=Path(self.project_path)))
 
+    def _get_species(self) -> "ParticleSpecies | None":
+        state = get_project_state_for(Path(self.project_path))
+        return state.get_species(self.species_id)
+
+    def _mutate_species(self, fn):
+        """Read-modify-write on the species entry and mark state dirty."""
+        state = get_project_state_for(Path(self.project_path))
+        species = state.get_species(self.species_id)
+        if species is None:
+            return
+        fn(species)
+        state.mark_dirty()
+
+    # ------------------------------------------------------------------
+    # PROJECT PARAMETER LOADING / SAVING
+    # ------------------------------------------------------------------
+
+    def _save_workbench_params(self):
+        def _apply(species):
+            wb = species.workbench
+            wb.pixel_size = self.pixel_size
+            wb.box_size = self.box_size
+            wb.auto_box = self.auto_box
+            wb.apply_lowpass = self.apply_lowpass
+            wb.template_resolution = self.template_resolution
+            wb.auto_infer_seed = self.auto_infer_seed
+            wb.basic_shape_def = self.basic_shape_def
+
+        self._mutate_species(_apply)
+        asyncio.create_task(get_state_service().save_project(project_path=Path(self.project_path)))
 
     def _load_project_parameters(self):
         try:
-            from services.project_state import get_project_state_for
             state = get_project_state_for(Path(self.project_path))
 
             if hasattr(state, "microscope") and state.microscope:
@@ -181,7 +196,7 @@ class TemplateWorkbench:
 
             if hasattr(state, "jobs") and state.jobs:
                 for job_type, job_params in state.jobs.items():
-                    if "reconstruct" in job_type.value.lower():
+                    if "reconstruct" in str(job_type).lower():
                         for field in ["rescale_angpixs", "binned_angpix", "output_angpix"]:
                             val = getattr(job_params, field, None)
                             if val and float(val) > 0:
@@ -191,9 +206,9 @@ class TemplateWorkbench:
                                 break
                         break
 
-            tm_params = self._get_tm_params()
-            if tm_params and hasattr(tm_params, "workbench"):
-                wb = tm_params.workbench
+            species = state.get_species(self.species_id)
+            if species and species.workbench:
+                wb = species.workbench
                 if wb.pixel_size > 0:
                     self.pixel_size = wb.pixel_size
                 elif self.project_tomo_apix:
@@ -220,7 +235,6 @@ class TemplateWorkbench:
 
     def _render(self):
         with ui.column().classes("w-full gap-0"):
-            # ---- top strip: status indicators ----
             with ui.row().classes("w-full gap-4 px-3 py-1 bg-gray-50 border-b items-center"):
                 self.validation_dot = ui.icon("fiber_manual_record", size="12px").classes("text-gray-300")
                 for icon_name, label, attr, color in [
@@ -237,7 +251,6 @@ class TemplateWorkbench:
                             ui.label("—").classes("text-[10px] font-mono text-gray-400 max-w-[160px] truncate"),
                         )
 
-            # ---- main control row ----
             with ui.row().classes("w-full gap-0 border-b").style("height: 400px; overflow: hidden;"):
                 with ui.column().classes("w-[38%] p-3 gap-2 border-r overflow-y-auto h-full"):
                     self._render_template_panel()
@@ -248,9 +261,7 @@ class TemplateWorkbench:
                 with ui.column().classes("flex-1 p-3 gap-1 bg-gray-50/40 overflow-hidden h-full"):
                     self._render_log_panel()
 
-            # ---- bottom row: file browser | session tray | viewer ----
             with ui.row().classes("w-full gap-0").style("height: 420px; overflow: hidden;"):
-                # File browser
                 with ui.column().classes("w-[32%] p-3 border-r bg-gray-50/10 flex flex-col h-full gap-1"):
                     with ui.row().classes("items-center gap-1 mb-1 shrink-0"):
                         ui.icon("folder", size="13px").classes("text-gray-400")
@@ -272,7 +283,6 @@ class TemplateWorkbench:
                             "text-[9px] font-mono leading-tight text-gray-600"
                         )
 
-                # Session tray
                 with ui.column().classes("w-[22%] p-3 border-r bg-white h-full flex flex-col"):
                     with ui.row().classes("items-center justify-between mb-2 shrink-0"):
                         with ui.row().classes("items-center gap-1"):
@@ -285,7 +295,6 @@ class TemplateWorkbench:
                         )
                     self.session_list_container = ui.column().classes("w-full gap-1 overflow-y-auto flex-1")
 
-                # Molstar viewer
                 with ui.column().classes("flex-1 bg-black relative overflow-hidden h-full"):
                     ui.element("iframe").props('src="/molstar-workbench" id="molstar-frame"').classes(
                         "absolute inset-0 w-full h-full border-none"
@@ -310,7 +319,6 @@ class TemplateWorkbench:
             ui.icon("settings", size="14px").classes("text-gray-400")
             ui.label("Template Generation").classes("text-[10px] font-bold text-gray-700 uppercase tracking-wide")
 
-        # Pixel size / box / LP on one row
         with ui.row().classes("w-full gap-2 items-end"):
             ui.number(
                 "Pixel Size (Å)", value=self.pixel_size, step=0.1, on_change=self._on_pixel_size_changed
@@ -333,7 +341,6 @@ class TemplateWorkbench:
             self.lp_input.on_value_change(lambda _: self._save_workbench_params())
             self.lp_input.disable()
 
-        # Auto-box + lowpass toggles on one compact row
         with ui.row().classes("w-full items-center gap-3 px-0.5"):
             self.auto_box_checkbox = (
                 ui.checkbox("Auto box", value=self.auto_box).props("dense").classes("text-[10px] text-gray-500")
@@ -356,7 +363,7 @@ class TemplateWorkbench:
                 else:
                     self.template_resolution = 60.0
                     self.lp_input.enable()
-                self._save_workbench_params()   # <--
+                self._save_workbench_params()
 
             lp_checkbox.on_value_change(_on_lp_toggle)
 
@@ -367,7 +374,6 @@ class TemplateWorkbench:
 
         ui.separator().classes("my-1 opacity-40")
 
-        # Ellipsoid creation
         with ui.column().classes("w-full gap-1 bg-gray-50/60 px-2 py-2 rounded"):
             ui.label("Ellipsoid").classes("text-[9px] font-bold text-gray-500 uppercase")
             with ui.row().classes("w-full gap-2 items-center"):
@@ -378,7 +384,6 @@ class TemplateWorkbench:
                     "unelevated dense color=primary size=sm"
                 )
 
-        # Structure / map processing
         with ui.column().classes("w-full gap-1 bg-blue-50/30 px-2 py-2 rounded"):
             ui.label("Structure / Map").classes("text-[9px] font-bold text-blue-500 uppercase")
             with ui.row().classes("w-full gap-2"):
@@ -419,22 +424,18 @@ class TemplateWorkbench:
 
     def _render_mask_panel(self):
         with ui.row().classes("items-center gap-1 mb-1"):
-                ui.icon("architecture", size="14px").classes("text-gray-400")
-                ui.label("Mask Creation").classes("text-[10px] font-bold text-gray-700 uppercase tracking-wide")
+            ui.icon("architecture", size="14px").classes("text-gray-400")
+            ui.label("Mask Creation").classes("text-[10px] font-bold text-gray-700 uppercase tracking-wide")
 
         with ui.row().classes("w-full items-center gap-2 mb-1"):
             ui.checkbox("Auto-infer seed", value=self.auto_infer_seed).props("dense").classes(
                 "text-[10px] text-gray-500"
-            ).bind_value(self, "auto_infer_seed").on_value_change(
-                lambda _: self._save_workbench_params()
-            )
+            ).bind_value(self, "auto_infer_seed").on_value_change(lambda _: self._save_workbench_params())
             ui.label("(uses binary seed for masking when found)").classes("text-[8px] text-gray-400 italic")
-
 
         self.mask_source_label = ui.label("Select a template first").classes("text-[10px] text-orange-500 italic")
 
         with ui.column().classes("w-full gap-2"):
-            # Method selector -- hidden for binary seeds
             with ui.column().classes("w-full gap-1") as self.mask_method_row:
                 ui.label("Threshold method (non-seed maps only)").classes("text-[9px] text-gray-400")
                 ui.select(
@@ -487,8 +488,9 @@ class TemplateWorkbench:
             return
         self.file_list_container.clear()
         files = await self.backend.template_service.list_template_files_async(self.output_folder)
-        params = self._get_tm_params()
-        cur_t, cur_m = (params.template_path, params.mask_path) if params else ("", "")
+        species = self._get_species()
+        cur_t = species.template_path if species else ""
+        cur_m = species.mask_path if species else ""
         with self.file_list_container:
             for f_path in files:
                 self._render_file_row(f_path, cur_t, cur_m)
@@ -529,7 +531,7 @@ class TemplateWorkbench:
                 )
 
     # ------------------------------------------------------------------
-    # SESSION TRAY (now horizontal cards below viewer)
+    # SESSION TRAY
     # ------------------------------------------------------------------
 
     def _update_session_tray(self):
@@ -580,8 +582,6 @@ class TemplateWorkbench:
                 if item_type == "map":
                     iso_value = item.get("isoValue", 1.5)
                     is_inv = item.get("isInverted", False)
-                    stats = item.get("stats", {})
-                    abs_val = stats.get("mean", 0) + iso_value * stats.get("sigma", 1)
                     with ui.row().classes("items-center gap-1 mt-0.5"):
                         ui.label("ISO:").classes("text-[8px] text-gray-400 shrink-0")
                         iso_slider = (
@@ -617,8 +617,8 @@ class TemplateWorkbench:
     # ------------------------------------------------------------------
 
     async def _update_mask_source_panel(self):
-        p = self._get_tm_params()
-        template_path = p.template_path if p else ""
+        species = self._get_species()
+        template_path = species.template_path if species else ""
 
         if not template_path or not os.path.exists(template_path):
             if self.mask_source_label:
@@ -631,7 +631,6 @@ class TemplateWorkbench:
         base = Path(template_path).stem.replace("_white", "").replace("_black", "")
         prefix = base.split("_box")[0]
 
-        # Resolve seed candidate
         seed_path = None
         if self.auto_infer_seed:
             candidates = [
@@ -702,7 +701,7 @@ class TemplateWorkbench:
                     if self.project_tomo_apix:
                         is_valid = abs(apix - self.project_tomo_apix) < 0.01
                         self.validation_dot.classes(replace="text-green-500" if is_valid else "text-red-500")
-            except:
+            except Exception:
                 info = "MRC read error"
         elif ext in [".pdb", ".cif"]:
             res = await self.backend.pdb_service.get_structure_metadata(path)
@@ -715,25 +714,28 @@ class TemplateWorkbench:
             self.meta_label.set_content(info)
 
     async def _toggle_template(self, path):
-        p = self._get_tm_params()
-        if p:
-            p.template_path = "" if p.template_path == path else path
-            if p.template_path:
-                potential_mask = p.template_path.replace("_white.mrc", "_mask.mrc").replace("_black.mrc", "_mask.mrc")
+        def _apply(species):
+            species.template_path = "" if species.template_path == path else path
+            if species.template_path:
+                potential_mask = species.template_path.replace("_white.mrc", "_mask.mrc").replace(
+                    "_black.mrc", "_mask.mrc"
+                )
                 if os.path.exists(potential_mask):
-                    p.mask_path = potential_mask
+                    species.mask_path = potential_mask
                     self._log(f"Auto-selected mask: {os.path.basename(potential_mask)}")
+
+        self._mutate_species(_apply)
         await get_state_service().save_project(project_path=Path(self.project_path))
         await self.refresh_files()
         await self._update_mask_source_panel()
 
     async def _toggle_mask(self, path):
-        p = self._get_tm_params()
-        if p:
-            p.mask_path = "" if p.mask_path == path else path
+        def _apply(species):
+            species.mask_path = "" if species.mask_path == path else path
+
+        self._mutate_species(_apply)
         await get_state_service().save_project(project_path=Path(self.project_path))
         await self.refresh_files()
-
 
     async def _toggle_structure(self, path):
         self.structure_path = "" if self.structure_path == path else path
@@ -825,8 +827,8 @@ class TemplateWorkbench:
             self._log(f"Resample error: {res.get('error')}")
 
     async def _create_mask(self):
-        p = self._get_tm_params()
-        template_path = p.template_path if p else None
+        species = self._get_species()
+        template_path = species.template_path if species else None
         if not template_path:
             return
         self.masking_active = True
@@ -859,8 +861,11 @@ class TemplateWorkbench:
             )
             if res["success"]:
                 self._log(f"Mask created: {os.path.basename(output)}")
-                if p:
-                    p.mask_path = output
+
+                def _apply(sp):
+                    sp.mask_path = output
+
+                self._mutate_species(_apply)
                 await get_state_service().save_project(project_path=Path(self.project_path))
                 await self.refresh_files()
             else:
@@ -869,31 +874,14 @@ class TemplateWorkbench:
             n.dismiss()
             self.masking_active = False
 
-    async def _align_pdb(self):
-        if not self.structure_path:
-            ui.notify("Select a structure first", type="warning")
-            return
-        target = self.structure_path.replace(".cif", "_aligned.cif").replace(".pdb", "_aligned.pdb")
-        self._log("Aligning to principal axes…")
-        res = await self.backend.pdb_service.align_to_principal_axes(self.structure_path, target)
-        if res["success"]:
-            self._log(f"Aligned: {os.path.basename(target)}")
-            await self.refresh_files()
-        else:
-            self._log(f"Alignment error: {res.get('error')}")
-
-    async def _delete(self, path):
-        await self.backend.template_service.delete_file_async(path)
-        await self.refresh_files()
-
     # ------------------------------------------------------------------
     # THRESHOLD / METHOD
     # ------------------------------------------------------------------
 
     async def _on_threshold_method_changed(self, e):
         self.threshold_method = e.value
-        p = self._get_tm_params()
-        template_path = p.template_path if p else ""
+        species = self._get_species()
+        template_path = species.template_path if species else ""
         if not template_path or not os.path.exists(template_path):
             return
         base = Path(template_path).stem.replace("_white", "").replace("_black", "")
@@ -904,7 +892,7 @@ class TemplateWorkbench:
             if f.endswith("_seed.mrc") and prefix in f
         ]
         if seed_candidates and os.path.exists(seed_candidates[0]):
-            return  # seed always 0.5
+            return
         white_path = template_path.replace("_black.mrc", "_white.mrc")
         source = white_path if os.path.exists(white_path) else template_path
         thresholds = await self.backend.template_service.calculate_thresholds_async(source, self.mask_lowpass)
@@ -925,7 +913,7 @@ class TemplateWorkbench:
             return
         self._update_size_estimate()
         self._recalculate_auto_box()
-        self._save_workbench_params()  
+        self._save_workbench_params()
 
     def _on_box_size_changed(self, e=None):
         val = getattr(e, "value", None) if e is not None else None
@@ -938,11 +926,11 @@ class TemplateWorkbench:
         except (TypeError, ValueError):
             return
         self._update_size_estimate()
-        self._save_workbench_params()   # <--
+        self._save_workbench_params()
 
     def _on_shape_changed(self):
         self._recalculate_auto_box()
-        self._save_workbench_params()   # <--
+        self._save_workbench_params()
 
     def _on_auto_box_toggle(self, e):
         self.auto_box = e.value
@@ -953,8 +941,7 @@ class TemplateWorkbench:
             self._recalculate_auto_box()
         else:
             self.box_input.enable()
-
-        self._save_workbench_params()   # <--
+        self._save_workbench_params()
 
     def _recalculate_auto_box(self):
         if not self.auto_box:
@@ -989,8 +976,9 @@ class TemplateWorkbench:
     # ------------------------------------------------------------------
 
     def _update_selection_labels(self):
-        p = self._get_tm_params()
-        t, m = (p.template_path, p.mask_path) if p else ("", "")
+        species = self._get_species()
+        t = species.template_path if species else ""
+        m = species.mask_path if species else ""
         if self.template_label:
             self.template_label.set_text(os.path.basename(t) or "—")
         if self.mask_label:
@@ -1052,15 +1040,13 @@ class TemplateWorkbench:
     def _delete_viewer_item(self, iid):
         self._post_to_viewer("deleteItem", itemId=iid)
 
+    async def _delete(self, path):
+        await self.backend.template_service.delete_file_async(path)
+        await self.refresh_files()
+
     # ------------------------------------------------------------------
     # MISC
     # ------------------------------------------------------------------
-
-
-    def _get_tm_params(self):
-        from services.project_state import get_project_state_for
-        state = get_project_state_for(Path(self.project_path))
-        return state.jobs.get(JobType.TEMPLATE_MATCH_PYTOM)
 
     def _log(self, msg: str):
         if self.log_container:
