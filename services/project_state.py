@@ -194,6 +194,8 @@ class ProjectState(BaseModel):
             pipeline_active=data.get("pipeline_active", False),
         )
 
+        # in ProjectState.load(), after constructing project_state, add:
+        project_state.job_path_mapping = data.get("job_path_mapping", {})
         try:
             project_state.species_registry = [
                 ParticleSpecies(**s) for s in data.get("species_registry", [])
@@ -366,14 +368,14 @@ class StateService:
         except Exception:
             return False
 
-    async def save_project(self, save_path: Optional[Path] = None, project_path: Optional[Path] = None, force: bool = False):
-        """Save project state to disk.
+    # in StateService.save_project(), replace the final save call:
 
-        Args:
-            save_path: Explicit file path to write to.
-            project_path: Explicit project dir (for backend code without tab context).
-            force: If True, write even if dirty flag is not set.
-        """
+    async def save_project(
+        self,
+        save_path: Optional[Path] = None,
+        project_path: Optional[Path] = None,
+        force: bool = False,
+    ):
         async with self._save_lock:
             if project_path:
                 state = get_project_state_for(project_path)
@@ -387,10 +389,12 @@ class StateService:
             else:
                 return
 
+            loop = asyncio.get_event_loop()
             if force:
-                state.save(target_path)
+                await loop.run_in_executor(None, state.save, target_path)
             else:
-                state.save_if_dirty(target_path)
+                if state.is_dirty:
+                    await loop.run_in_executor(None, state.save, target_path)
 
 
 _state_service_instance = None

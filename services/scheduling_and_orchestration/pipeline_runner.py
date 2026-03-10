@@ -30,9 +30,41 @@ class StatusSyncService:
         data = star_handler.read(pipeline_star)
         processes = data.get("pipeline_processes", pd.DataFrame())
 
+        # Reconcile filesystem reality against the star file.
+        # If the schemer died after submitting a job but before updating the star
+        # file, the row stays "Running" forever. Detect this by checking for
+        # RELION_JOB_EXIT_SUCCESS on disk and patch the star file in place so
+        # the rest of this sync -- and all future syncs -- see the correct state.
+        star_patched = False
+        if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
+            for idx, row in processes.iterrows():
+                if row["rlnPipeLineProcessStatusLabel"] == "Running":
+                    job_dir = Path(project_path) / row["rlnPipeLineProcessName"].rstrip("/")
+                    if (job_dir / "RELION_JOB_EXIT_SUCCESS").exists():
+                        processes.at[idx, "rlnPipeLineProcessStatusLabel"] = "Succeeded"
+                        star_patched = True
+                        print(
+                            f"[SYNC] Reconciled {row['rlnPipeLineProcessName']}: "
+                            f"Running -> Succeeded (RELION_JOB_EXIT_SUCCESS found on disk)"
+                        )
+            if star_patched:
+                data["pipeline_processes"] = processes
+                star_handler.write(data, pipeline_star)
+
         changes: Dict[str, bool] = {}
         state = self.backend.state_service.state_for(Path(project_path))
         project_root = Path(project_path)
+
+        # If pipeline_active is True but no schemer is alive in this server
+        # process, we survived a restart with a stale flag. Clear it now so
+        # deploy_and_run_scheme is no longer blocked.
+        if state.pipeline_active and self.backend.pipeline_runner.active_schemer_process is None:
+            print(f"[SYNC] Clearing stale pipeline_active flag (no active schemer process)")
+            state.pipeline_active = False
+            try:
+                await self.backend.state_service.save_project(project_path=Path(project_path), force=True)
+            except Exception as e:
+                print(f"[SYNC] Could not persist pipeline_active reset: {e}")
 
         # Build reverse lookup: filesystem path (stripped) -> instance_id.
         # Three passes in descending priority. Lower-priority passes must NOT
@@ -92,19 +124,15 @@ class StatusSyncService:
             # with multiple instances we cannot know which one owns this path,
             # and guessing wrong is worse than skipping.
             if instance_id is None:
-                job_type_str = self.job_resolver.get_job_type_from_path(
-                    Path(project_path), job_path
-                )
+                job_type_str = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
                 if not job_type_str:
                     continue
                 if type_instance_count.get(job_type_str, 0) == 1:
                     instance_id = job_type_str
                 else:
-                    print(
-                        f"[SYNC] Cannot resolve {job_path_clean} to a unique instance "
-                        f"({type_instance_count.get(job_type_str, 0)} instances of "
-                        f"'{job_type_str}' exist) -- skipping row"
-                    )
+                    # Old/zombie entry from a previous run -- no current instance owns
+                    # this path anymore. Silently skip rather than warning, since this
+                    # is expected when re-running jobs that previously failed.
                     continue
 
             if instance_id not in state.jobs:
@@ -157,9 +185,7 @@ class StatusSyncService:
         if changes:
             try:
                 print(f"[SYNC] Persisting {len(changes)} status changes to disk.")
-                await self.backend.state_service.save_project(
-                    project_path=Path(project_path), force=True
-                )
+                await self.backend.state_service.save_project(project_path=Path(project_path), force=True)
             except Exception as e:
                 print(f"[SYNC ERROR] Failed to persist status changes: {e}")
 
@@ -182,7 +208,6 @@ class StatusSyncService:
         return None
 
     def _extract_job_type(self, project_path: str, job_path: str) -> str:
-        """Use resolver instead of hardcoded mapping."""
         result = self.job_resolver.get_job_type_from_path(Path(project_path), job_path)
         return result if result else "unknown"
 
@@ -215,11 +240,10 @@ class StatusSyncService:
             except Exception as e:
                 errors.append(f"schemer termination: {e}")
 
-        # 2. Scancel SLURM jobs
+        # 2. scancel SLURM jobs
         if slurm_job_ids:
             result = await self.backend.slurm_service.scancel_jobs(slurm_job_ids)
             if not result["success"]:
-                # Non-fatal: log but continue cleanup
                 errors.append(f"scancel: {result.get('error')}")
 
         # 3. Patch default_pipeline.star
@@ -230,16 +254,15 @@ class StatusSyncService:
                 data = star_handler.read(pipeline_star)
                 processes = data.get("pipeline_processes", pd.DataFrame())
                 if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
-                    processes["rlnPipeLineProcessStatusLabel"] = processes[
-                        "rlnPipeLineProcessStatusLabel"
-                    ].replace({"Running": "Failed", "Pending": "Failed"})
+                    processes["rlnPipeLineProcessStatusLabel"] = processes["rlnPipeLineProcessStatusLabel"].replace(
+                        {"Running": "Failed", "Pending": "Failed"}
+                    )
                     data["pipeline_processes"] = processes
                     star_handler.write(data, pipeline_star)
             except Exception as e:
                 errors.append(f"pipeline star patch: {e}")
 
         # 4. Update in-memory state
-        # Keep relion_job_name/number so logs remain accessible
         state = self.backend.state_service.state_for(project_dir)
         for job_model in state.jobs.values():
             if job_model.execution_status in (JobStatus.RUNNING, JobStatus.SCHEDULED):
@@ -254,43 +277,41 @@ class StatusSyncService:
             return {"success": False, "errors": errors}
         return {"success": True, "cancelled_slurm_jobs": len(slurm_job_ids)}
 
+
 class PipelineRunnerService:
     def __init__(self, backend_instance: "CryoBoostBackend"):
         self.backend = backend_instance
         self.active_schemer_process: Optional[asyncio.subprocess.Process] = None
         self.status_sync = StatusSyncService(backend_instance)
 
-        # Track log file handles for active schemer
         self._stdout_log_path: Optional[Path] = None
         self._stderr_log_path: Optional[Path] = None
-
 
     async def start_pipeline(
         self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]
     ):
-        """
-        Validates paths and starts the relion_schemer process.
-        """
         project_dir = Path(project_path)
         if not project_dir.is_dir():
             return {"success": False, "error": f"Project path not found: {project_path}"}
 
-        # Collect bind paths
         bind_paths = {str(Path(p).parent.resolve()) for p in required_paths if p}
         bind_paths.add(str(project_dir.parent.resolve()))
 
-        # Call internal method to run the schemer
         return await self._run_relion_schemer(project_dir, scheme_name, additional_bind_paths=list(bind_paths))
-
 
     async def get_pipeline_overview(self, project_path: str):
         state = self.backend.state_service.state_for(Path(project_path))
-        
+
         if not state.jobs:
             return {
-                "status": "ok", "total": 0, "completed": 0,
-                "running": 0, "failed": 0, "scheduled": 0,
-                "is_complete": True, "jobs": {},
+                "status": "ok",
+                "total": 0,
+                "completed": 0,
+                "running": 0,
+                "failed": 0,
+                "scheduled": 0,
+                "is_complete": True,
+                "jobs": {},
             }
 
         total = succeeded = running = failed = scheduled = 0
@@ -318,10 +339,6 @@ class PipelineRunnerService:
         }
 
     async def get_job_logs(self, project_path: str, job_name: str) -> Dict[str, str]:
-        """
-        Get the run.out and run.err contents for a specific job path.
-        (e.g., job_name = "External/job003/")
-        """
         job_path = Path(project_path) / job_name.rstrip("/")
 
         logs = {"stdout": "", "stderr": "", "exists": False, "path": str(job_path)}
@@ -357,27 +374,17 @@ class PipelineRunnerService:
     async def _run_relion_schemer(
         self, project_dir: Path, scheme_name: str, additional_bind_paths: List[str]
     ) -> Dict[str, Any]:
-        """
-        Start relion_schemer as a background process.
-
-        Key design decisions:
-        1. Log to files instead of pipes to prevent buffer deadlock
-        2. Mark pipeline_active=True BEFORE starting to protect against state resets
-        3. Monitor task cleans up state on exit regardless of success/failure
-        """
         try:
-            # CHANGED: explicit path (this may be called from asyncio.create_task
-            # where tab context is not guaranteed)
             state = self.backend.state_service.state_for(project_dir)
 
-            # GUARD: Don't start if already running
+            # Secondary guard -- deploy_and_run_scheme now checks this first,
+            # but keep it here as a safety net for any other callers.
             if state.pipeline_active:
                 return {
                     "success": False,
                     "error": "Pipeline is already running. Wait for it to complete or restart the server.",
                 }
 
-            # ENSURE default_pipeline.star exists (Relion project init)
             pipeline_star = project_dir / "default_pipeline.star"
             if not pipeline_star.exists():
                 print(f"[RUNNER] default_pipeline.star not found, initializing Relion project...")
@@ -404,13 +411,10 @@ class PipelineRunnerService:
                     await init_process.wait()
                     return {"success": False, "error": "Relion project initialization timed out"}
 
-            # MARK PIPELINE AS ACTIVE - this protects against state resets
             state.pipeline_active = True
-            # CHANGED: explicit project_path + force
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
             print(f"[RUNNER] Pipeline marked active, state protected from resets")
 
-            # Setup log files (prevents pipe buffer deadlock)
             scheme_log_dir = project_dir / "Schemes" / scheme_name
             scheme_log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -420,7 +424,6 @@ class PipelineRunnerService:
             self._stdout_log_path = stdout_log
             self._stderr_log_path = stderr_log
 
-            # Build and run the schemer command
             scheme_control_dir = f"Schemes/{scheme_name}/"
             run_command = (
                 f"unset DISPLAY && relion_schemer --scheme {scheme_name} "
@@ -435,7 +438,6 @@ class PipelineRunnerService:
             print(f"[RUNNER] Starting schemer, logging to {scheme_log_dir}")
             print(f"[RUNNER] Command: {run_command}")
 
-            # Open log files and start process
             stdout_handle = open(stdout_log, "w")
             stderr_handle = open(stderr_log, "w")
 
@@ -445,8 +447,6 @@ class PipelineRunnerService:
 
             self.active_schemer_process = process
 
-            # Start monitor task - passes project_dir for registry lookup
-            # This task is NOT tied to any NiceGUI client
             asyncio.create_task(
                 self._monitor_schemer(
                     process=process,
@@ -470,9 +470,7 @@ class PipelineRunnerService:
 
             traceback.print_exc()
 
-            # On failure, ensure we don't leave pipeline_active=True
             try:
-                # CHANGED: explicit path
                 state = self.backend.state_service.state_for(project_dir)
                 state.pipeline_active = False
                 await self.backend.state_service.save_project(project_path=project_dir, force=True)
@@ -485,34 +483,23 @@ class PipelineRunnerService:
         self,
         process: asyncio.subprocess.Process,
         project_dir: Path,
-        # CHANGED: removed `state` parameter -- we re-fetch from registry
-        # in the finally block anyway (in case it was reloaded during execution).
         stdout_handle,
         stderr_handle,
         stdout_log: Path,
         stderr_log: Path,
     ):
-        """
-        Monitor the schemer process and clean up when it exits.
-
-        This runs as a background asyncio task, completely independent of NiceGUI clients.
-        It will continue running even if all browser tabs are closed.
-        """
         pid = process.pid
         print(f"[MONITOR] Started monitoring schemer PID {pid}")
 
         try:
-            # Wait for process to complete
             return_code = await process.wait()
 
             print(f"[MONITOR] Schemer PID {pid} exited with code: {return_code}")
 
-            # Log final status
             if return_code == 0:
                 print(f"[MONITOR] Pipeline completed successfully")
             else:
                 print(f"[MONITOR] Pipeline failed or was interrupted (code {return_code})")
-                # Dump last few lines of stderr for debugging
                 try:
                     if stderr_log.exists():
                         with open(stderr_log, "r") as f:
@@ -526,7 +513,6 @@ class PipelineRunnerService:
 
         except asyncio.CancelledError:
             print(f"[MONITOR] Monitor task cancelled for PID {pid}")
-            # Try to terminate the process if monitor is cancelled
             try:
                 process.terminate()
                 await asyncio.wait_for(process.wait(), timeout=5.0)
@@ -550,9 +536,6 @@ class PipelineRunnerService:
             except Exception:
                 pass
 
-            # Only clobber shared state if we're still the active schemer.
-            # If a new run started between our termination and this finally block
-            # firing, leave it alone.
             if self.active_schemer_process is process:
                 self.active_schemer_process = None
                 self._stdout_log_path = None
@@ -566,9 +549,9 @@ class PipelineRunnerService:
                 except Exception as e:
                     print(f"[MONITOR] WARNING: Failed to persist pipeline_active=False: {e}")
             else:
-                print(f"[MONITOR] Old schemer PID {pid} cleaned up, new pipeline already running -- skipping state reset")
-
-
+                print(
+                    f"[MONITOR] Old schemer PID {pid} cleaned up, new pipeline already running -- skipping state reset"
+                )
 
     async def reset_submission_failure(self, project_dir: Path):
         """
@@ -586,9 +569,9 @@ class PipelineRunnerService:
                 data = star_handler.read(pipeline_star)
                 processes = data.get("pipeline_processes", pd.DataFrame())
                 if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
-                    processes["rlnPipeLineProcessStatusLabel"] = processes[
-                        "rlnPipeLineProcessStatusLabel"
-                    ].replace("Running", "Failed")
+                    processes["rlnPipeLineProcessStatusLabel"] = processes["rlnPipeLineProcessStatusLabel"].replace(
+                        "Running", "Failed"
+                    )
                     data["pipeline_processes"] = processes
                     star_handler.write(data, pipeline_star)
             except Exception as e:
@@ -603,20 +586,12 @@ class PipelineRunnerService:
 
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
-
     async def run_generated_scheme(self, project_dir: Path, scheme_name: str, bind_paths: List[str]) -> Dict[str, Any]:
-        """
-        Runs a scheme that has already been generated by the Orchestrator.
-        This is the main entry point called by the orchestrator.
-        """
         return await self._run_relion_schemer(
             project_dir=project_dir, scheme_name=scheme_name, additional_bind_paths=bind_paths
         )
+
     def get_sbatch_errors(self) -> List[str]:
-        """
-        Scan the active schemer's stderr log for sbatch submission errors.
-        Returns list of error lines, empty if none found or no log available.
-        """
         if not self._stderr_log_path or not self._stderr_log_path.exists():
             return []
         errors = []
@@ -630,9 +605,6 @@ class PipelineRunnerService:
         return errors
 
     def get_schemer_logs(self) -> Dict[str, str]:
-        """
-        Get current schemer log contents (for debugging/UI display).
-        """
         logs = {"stdout": "", "stderr": "", "running": self.active_schemer_process is not None}
 
         if self._stdout_log_path and self._stdout_log_path.exists():
@@ -652,9 +624,6 @@ class PipelineRunnerService:
         return logs
 
     async def stop_pipeline(self) -> Dict[str, Any]:
-        """
-        Attempt to stop the running schemer process gracefully.
-        """
         if not self.active_schemer_process:
             return {"success": False, "error": "No pipeline is running"}
 
@@ -662,14 +631,12 @@ class PipelineRunnerService:
         print(f"[RUNNER] Stopping schemer PID {pid}")
 
         try:
-            # Try graceful termination first
             self.active_schemer_process.terminate()
 
             try:
                 await asyncio.wait_for(self.active_schemer_process.wait(), timeout=10.0)
                 return {"success": True, "message": f"Pipeline stopped (PID {pid})"}
             except asyncio.TimeoutError:
-                # Force kill if it doesn't respond
                 print(f"[RUNNER] Schemer didn't respond to SIGTERM, sending SIGKILL")
                 self.active_schemer_process.kill()
                 await self.active_schemer_process.wait()
@@ -677,7 +644,6 @@ class PipelineRunnerService:
 
         except Exception as e:
             return {"success": False, "error": str(e)}
-
 
     async def stop_and_cleanup(self, project_dir: Path, slurm_job_ids: List[str]) -> Dict[str, Any]:
         """
@@ -719,9 +685,9 @@ class PipelineRunnerService:
                 data = star_handler.read(pipeline_star)
                 processes = data.get("pipeline_processes", pd.DataFrame())
                 if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
-                    processes["rlnPipeLineProcessStatusLabel"] = processes[
-                        "rlnPipeLineProcessStatusLabel"
-                    ].replace({"Running": "Failed", "Pending": "Failed"})
+                    processes["rlnPipeLineProcessStatusLabel"] = processes["rlnPipeLineProcessStatusLabel"].replace(
+                        {"Running": "Failed", "Pending": "Failed"}
+                    )
                     data["pipeline_processes"] = processes
                     star_handler.write(data, pipeline_star)
             except Exception as e:
@@ -756,8 +722,6 @@ class PipelineRunnerService:
         if not relion_job_name:
             return {"success": False, "error": "Job has no relion_job_name -- cannot locate its directory"}
 
-        # ... rest of the method is unchanged ...
-
         job_dir = project_dir / relion_job_name.rstrip("/")
         print(f"[RUNNER] Looking for SLURM job with stdout in: {job_dir.resolve()}")
         slurm_job = await self.backend.slurm_service.find_slurm_job_for_directory(job_dir)
@@ -786,7 +750,6 @@ class PipelineRunnerService:
             except Exception as e:
                 print(f"[RUNNER] Failed to patch pipeline star for {relion_job_name}: {e}")
 
-        # Update in-memory model
         job_model.execution_status = JobStatus.FAILED
 
         # Terminate the schemer -- it would stall on this failed job anyway.

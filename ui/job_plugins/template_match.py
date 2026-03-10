@@ -1,73 +1,105 @@
-"""Template Matching plugin -- species selector."""
+"""
+Template Matching plugin.
 
+Species is locked at job creation time. template_path and mask_path are
+rendered as scoped selectors showing only MRC files produced under
+templates/{species_id}/ by the Template Workbench.
+"""
+
+from pathlib import Path
 from nicegui import ui
-from services.project_state import get_project_state, get_state_service
+
 from services.models_base import JobType
 from ui.job_plugins import register_params_renderer
-from ui.job_plugins.default_renderer import render_default_params_card
+from ui.job_plugins.default_renderer import render_default_params_card, render_species_badge, _render_group_label
 
 
 @register_params_renderer(JobType.TEMPLATE_MATCH_PYTOM)
 def render_template_match_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None):
-    render_default_params_card(job_type, job_model, is_frozen, save_handler)
+    project_path = str(ui_mgr.project_path) if ui_mgr and ui_mgr.project_path else None
 
-    if ui_mgr is None or not ui_mgr.project_path:
-        return
+    # Species badge -- read-only, locked at creation
+    render_species_badge(job_model, project_path)
 
-    ui.separator().classes("my-4")
-    ui.label("Species").classes("text-xs font-semibold text-gray-700 uppercase tracking-wide px-1")
-
-    state = get_project_state()
-    species_list = state.species_registry
-
-    if not species_list:
-        with ui.row().classes("items-center gap-2 px-1 py-2"):
-            ui.icon("info", size="14px").classes("text-gray-400")
-            ui.label("No species registered. Open the Template Workbench to create one.").classes(
-                "text-xs text-gray-500 italic"
-            )
-        return
-
-    options = {s.id: s.name for s in species_list}
-    current = getattr(job_model, "species_id", None)
-
-    summary_container = ui.column().classes("w-full gap-1 mt-2")
-
-    def _refresh_summary(sid: str):
-        summary_container.clear()
-        fresh_state = get_project_state()
-        sp = fresh_state.get_species(sid)
-        if sp is None:
-            return
-        with summary_container:
-            for label, val in [("Template", sp.template_path), ("Mask", sp.mask_path)]:
-                with ui.row().classes("items-center gap-2 px-1"):
-                    ui.label(f"{label}:").classes("text-[10px] text-gray-500 w-14 flex-shrink-0")
-                    ui.label(val or "—").classes(
-                        "text-[10px] font-mono truncate" + (" text-orange-400" if not val else " text-gray-700")
-                    )
-
-    def _on_species_selected(e):
-        sid = e.value
-        fresh_state = get_project_state()
-        species = fresh_state.get_species(sid)
-        if species is None:
-            return
-        job_model.species_id = sid
-        job_model.template_path = species.template_path
-        job_model.mask_path = species.mask_path
-        # Do NOT set display_label -- let the natural job name convention apply
-        job_model.display_label = None
-        save_handler()
-        _refresh_summary(sid)
-
-    select = (
-        ui.select(options=options, value=current, label="Particle species", on_change=_on_species_selected)
-        .props("outlined dense")
-        .classes("w-full")
+    # All standard params except the two path fields we handle specially below
+    render_default_params_card(
+        job_type, job_model, is_frozen, save_handler, exclude={"template_path", "mask_path"}, ui_mgr=ui_mgr
     )
-    if is_frozen:
-        select.disable()
 
-    if current:
-        _refresh_summary(current)
+    # Species-scoped template/mask selectors
+    with ui.card().classes("w-full border border-gray-200 shadow-sm overflow-hidden bg-white mt-2"):
+        with ui.row().classes("w-full items-center px-3 py-2 bg-gray-50 border-b border-gray-100"):
+            ui.icon("folder_open", size="18px").classes("text-gray-500")
+            ui.label("Template Files").classes("text-sm font-bold text-gray-800")
+
+        with ui.column().classes("w-full p-4 gap-4"):
+            species_id = getattr(job_model, "species_id", None)
+            _render_species_path_selector(
+                "Template Path",
+                "template_path",
+                job_model,
+                is_frozen,
+                save_handler,
+                species_id=species_id,
+                project_path=project_path,
+            )
+            _render_species_path_selector(
+                "Mask Path",
+                "mask_path",
+                job_model,
+                is_frozen,
+                save_handler,
+                species_id=species_id,
+                project_path=project_path,
+            )
+
+
+def _render_species_path_selector(
+    label: str,
+    field_name: str,
+    job_model,
+    is_frozen: bool,
+    save_handler,
+    species_id: str | None,
+    project_path: str | None,
+):
+    """
+    Dropdown populated exclusively with MRC files from templates/{species_id}/.
+    Falls back to a read-only text display if the folder is empty or unreachable.
+    """
+    current = getattr(job_model, field_name, "") or ""
+
+    # Build options: absolute_path -> filename
+    options: dict[str, str] = {}
+    if species_id and project_path:
+        species_dir = Path(project_path) / "templates" / species_id
+        if species_dir.exists():
+            for f in sorted(species_dir.glob("*.mrc")):
+                options[str(f)] = f.name
+
+    with ui.row().classes("w-full items-center gap-3"):
+        ui.label(label).classes("text-[10px] font-bold text-gray-400 uppercase w-28 shrink-0 text-right")
+
+        if not options:
+            ui.label("No MRC files found — run the Template Workbench first.").classes("text-xs text-orange-400 italic")
+            return
+
+        # If current value isn't in the scoped options (e.g. stale path from
+        # before species was assigned) treat it as unset.
+        resolved_current = current if current in options else None
+
+        sel = (
+            ui.select(options=options, value=resolved_current, label=label)
+            .props("outlined dense")
+            .classes("flex-1 text-xs font-mono")
+        )
+
+        if is_frozen:
+            sel.disable()
+        else:
+
+            def _on_change(e, fn=field_name):
+                setattr(job_model, fn, e.value or "")
+                save_handler()
+
+            sel.on_value_change(_on_change)
