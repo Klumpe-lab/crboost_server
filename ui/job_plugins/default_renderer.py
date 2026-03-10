@@ -75,10 +75,10 @@ def _classify_fields(job_model, field_names: Set[str]) -> Dict[str, List[str]]:
 # Public API
 # ------------------------------------------------------------------
 
-
 def render_default_params(job_type, job_model, is_frozen: bool, save_handler: Callable, **_ctx):
     """Render all job-specific fields, grouped by type (no card wrapper)."""
-    job_specific = set(job_model.model_fields.keys()) - BASE_FIELDS
+    user_params = getattr(job_model, "USER_PARAMS", set())
+    job_specific = user_params if user_params else (set(job_model.model_fields.keys()) - BASE_FIELDS)
 
     if not job_specific:
         ui.label("This job has no configurable parameters.").classes("text-xs text-gray-500 italic")

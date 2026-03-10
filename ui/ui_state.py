@@ -205,14 +205,6 @@ def get_instance_order(instance_id: str) -> Tuple:
 
 
 def get_instance_display_name(instance_id: str, job_model=None) -> str:
-    """Human-readable label for a job instance.
-
-    Priority:
-    1. job_model.display_label if set (user-assigned alias)
-    2. Base instance (no suffix): just the job type display name
-    3. Numeric suffix: "Job Name #N"
-    4. Text suffix: "Job Name (suffix)"
-    """
     if job_model is not None:
         label = getattr(job_model, "display_label", None)
         if label:
@@ -226,6 +218,14 @@ def get_instance_display_name(instance_id: str, job_model=None) -> str:
     except ValueError:
         base_name = base
 
+    # If the job has actually run, show its real directory name (e.g. "job004")
+    if job_model is not None:
+        relion_job_name = getattr(job_model, "relion_job_name", None)
+        if relion_job_name:
+            job_dir = relion_job_name.rstrip("/").split("/")[-1]
+            return f"{base_name} ({job_dir})"
+
+    # Not yet run — fall back to instance_id suffix
     if len(parts) == 1:
         return base_name
 
