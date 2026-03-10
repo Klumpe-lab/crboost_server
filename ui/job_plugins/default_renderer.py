@@ -6,12 +6,12 @@ renders with consistent sizing and semantic layout.
 """
 
 from enum import Enum
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from nicegui import ui
 
 
-# Infrastructure fields that never appear in the parameter grid
 BASE_FIELDS: Set[str] = {
     "execution_status",
     "relion_job_name",
@@ -34,7 +34,6 @@ def snake_to_title(s: str) -> str:
 
 
 def _get_description(job_model, param_name: str) -> Optional[str]:
-    """Extract description from Pydantic Field metadata."""
     field_info = job_model.model_fields.get(param_name)
     if field_info and field_info.description:
         return field_info.description
@@ -47,7 +46,6 @@ def _is_pathlike(name: str) -> bool:
 
 
 def _classify_fields(job_model, field_names: Set[str]) -> Dict[str, List[str]]:
-    """Sort fields into semantic groups based on their type and name."""
     groups: Dict[str, List[str]] = {"paths": [], "numeric": [], "text": [], "enum": [], "toggle": []}
 
     for name in sorted(field_names):
@@ -72,13 +70,54 @@ def _classify_fields(job_model, field_names: Set[str]) -> Dict[str, List[str]]:
 
 
 # ------------------------------------------------------------------
+# Species badge -- shared by default renderer and custom plugins
+# ------------------------------------------------------------------
+
+
+def render_species_badge(job_model, project_path: Optional[str]):
+    """
+    Read-only species pill shown at the top of any particle-phase job config.
+    No-ops silently if job has no species_id or the registry lookup fails.
+    """
+    species_id = getattr(job_model, "species_id", None)
+    if not species_id or not project_path:
+        return
+
+    try:
+        from services.project_state import get_project_state_for
+
+        state = get_project_state_for(project_path)
+        species = state.get_species(species_id)
+    except Exception:
+        return
+
+    if species is None:
+        return
+
+    with ui.row().classes("items-center gap-2 px-1 mb-3"):
+        ui.label("Particle").classes("text-[10px] font-bold text-gray-400 uppercase tracking-widest")
+        with ui.element("div").style(
+            f"display: inline-flex; align-items: center; "
+            f"background: {species.color}18; border: 1px solid {species.color}55; "
+            f"border-radius: 999px; padding: 2px 10px;"
+        ):
+            ui.label(species.name).style(f"font-size: 11px; color: {species.color}; font-weight: 600;")
+
+
+# ------------------------------------------------------------------
 # Public API
 # ------------------------------------------------------------------
 
-def render_default_params(job_type, job_model, is_frozen: bool, save_handler: Callable, **_ctx):
+
+def render_default_params(
+    job_type, job_model, is_frozen: bool, save_handler: Callable, exclude: Optional[Set[str]] = None, **_ctx
+):
     """Render all job-specific fields, grouped by type (no card wrapper)."""
     user_params = getattr(job_model, "USER_PARAMS", set())
     job_specific = user_params if user_params else (set(job_model.model_fields.keys()) - BASE_FIELDS)
+
+    if exclude:
+        job_specific = job_specific - exclude
 
     if not job_specific:
         ui.label("This job has no configurable parameters.").classes("text-xs text-gray-500 italic")
@@ -86,14 +125,12 @@ def render_default_params(job_type, job_model, is_frozen: bool, save_handler: Ca
 
     groups = _classify_fields(job_model, job_specific)
 
-    # Paths section
     if groups["paths"]:
         _render_group_label("Paths")
         with ui.column().classes("w-full gap-2 mb-4"):
             for name in groups["paths"]:
                 _render_path_field(name, job_model, is_frozen, save_handler)
 
-    # Numeric + enum + text in a single grid
     param_fields = groups["numeric"] + groups["enum"] + groups["text"]
     if param_fields:
         _render_group_label("Parameters")
@@ -111,7 +148,6 @@ def render_default_params(job_type, job_model, is_frozen: bool, save_handler: Ca
                 else:
                     _render_text_field(name, job_model, is_frozen, save_handler)
 
-    # Toggles as a compact row
     if groups["toggle"]:
         _render_group_label("Options")
         with ui.row().classes("w-full flex-wrap gap-x-5 gap-y-2 items-center"):
@@ -119,15 +155,21 @@ def render_default_params(job_type, job_model, is_frozen: bool, save_handler: Ca
                 _render_toggle_field(name, job_model, is_frozen, save_handler)
 
 
-def render_default_params_card(job_type, job_model, is_frozen: bool, save_handler: Callable, **_ctx):
-    """render_default_params wrapped in the standard card frame."""
+def render_default_params_card(
+    job_type, job_model, is_frozen: bool, save_handler: Callable, exclude: Optional[Set[str]] = None, **_ctx
+):
+    """render_default_params wrapped in the standard card frame, with species badge."""
+    ui_mgr = _ctx.get("ui_mgr")
+    project_path = str(ui_mgr.project_path) if ui_mgr and ui_mgr.project_path else None
+
     with ui.card().classes("w-full border border-gray-200 shadow-sm overflow-hidden bg-white"):
         with ui.row().classes("w-full items-center px-3 py-2 bg-gray-50 border-b border-gray-100"):
             ui.icon("tune", size="18px").classes("text-gray-500")
             ui.label("Job Parameters").classes("text-sm font-bold text-gray-800")
 
         with ui.column().classes("w-full p-4"):
-            render_default_params(job_type, job_model, is_frozen, save_handler)
+            render_species_badge(job_model, project_path)
+            render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
 
 
 # ------------------------------------------------------------------
@@ -145,7 +187,6 @@ def _render_group_label(text: str):
 
 
 def _with_tooltip(element, job_model, param_name: str):
-    """Attach a tooltip from the field's description, if available."""
     desc = _get_description(job_model, param_name)
     if desc:
         element.tooltip(desc)
@@ -158,7 +199,6 @@ def _with_tooltip(element, job_model, param_name: str):
 
 
 def _render_path_field(param_name, job_model, is_frozen, save_handler):
-    """Full-width path input with description as helper text."""
     label = snake_to_title(param_name)
     desc = _get_description(job_model, param_name)
 
@@ -178,7 +218,6 @@ def _render_path_field(param_name, job_model, is_frozen, save_handler):
 
 
 def _render_numeric_field(param_name, job_model, is_frozen, save_handler):
-    """Compact numeric input with consistent width."""
     label = snake_to_title(param_name)
     value = getattr(job_model, param_name)
 
@@ -198,11 +237,9 @@ def _render_numeric_field(param_name, job_model, is_frozen, save_handler):
 
 
 def _render_text_field(param_name, job_model, is_frozen, save_handler):
-    """Compact text input, width adapts to content type."""
     label = snake_to_title(param_name)
     value = getattr(job_model, param_name)
 
-    # Heuristic widths based on content shape
     if any(k in param_name.lower() for k in ("range", "grid", "dimensions")):
         width = "14ch"
     elif len(str(value or "")) > 16:
@@ -226,7 +263,6 @@ def _render_text_field(param_name, job_model, is_frozen, save_handler):
 
 
 def _render_enum_field(param_name, job_model, field_type, is_frozen, save_handler):
-    """Dropdown for enum fields."""
     label = snake_to_title(param_name)
     value = getattr(job_model, param_name)
 
@@ -247,7 +283,6 @@ def _render_enum_field(param_name, job_model, field_type, is_frozen, save_handle
 
 
 def _render_toggle_field(param_name, job_model, is_frozen, save_handler):
-    """Compact checkbox toggle."""
     label = snake_to_title(param_name)
     desc = _get_description(job_model, param_name)
 

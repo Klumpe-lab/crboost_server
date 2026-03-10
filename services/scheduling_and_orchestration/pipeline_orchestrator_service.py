@@ -29,6 +29,16 @@ class PipelineOrchestratorService:
 
         state = self.backend.state_service.state_for(project_dir)
 
+        # Guard FIRST -- before any state mutation.
+        # _run_relion_schemer has the same guard but it fires too late:
+        # by the time it's reached, relion_job_name and job_path_mapping
+        # have already been clobbered, which breaks sync_all_jobs path resolution.
+        if state.pipeline_active:
+            return {
+                "success": False,
+                "message": "Pipeline is already running. Wait for it to complete or cancel it first.",
+            }
+
         instances_to_run: List[str] = []
         for instance_id in selected_instance_ids:
             job_model = state.jobs.get(instance_id)
@@ -60,8 +70,6 @@ class PipelineOrchestratorService:
 
             job_model = state.jobs.get(instance_id)
             if not job_model:
-                # Instance not yet in state — initialize it. For singleton jobs
-                # instance_id == job_type.value, so we can recover the type.
                 base_type_str = instance_id.split("__")[0]
                 try:
                     job_type = JobType(base_type_str)
@@ -92,14 +100,19 @@ class PipelineOrchestratorService:
             job_model.is_orphaned = False
             job_model.missing_inputs = []
 
+            # Write predicted path into job_path_mapping immediately at deploy time.
+            # This makes Pass 2 of sync_all_jobs authoritative before the job has run,
+            # which is the only reliable disambiguation when multiple instances of the
+            # same job type exist.
+            predicted_rel = str(predicted_job_dir.relative_to(project_dir))
+            state.job_path_mapping[instance_id] = predicted_rel
+
             resolver.invalidate_cache()
 
             report_lines.append(f"[{instance_id}] predicted_dir={predicted_job_dir}")
             for k, v in sorted(job_model.paths.items()):
                 report_lines.append(f"  {k}: {v}")
             report_lines.append("")
-
-            state = self.backend.state_service.state_for(project_dir)
 
             scheme_job_dir = scheme_dir / instance_id
             scheme_job_dir.mkdir(parents=True, exist_ok=True)
@@ -119,7 +132,6 @@ class PipelineOrchestratorService:
 
         self._write_scheme_star(scheme_dir, scheme_name, instances_to_run)
 
-        state = self.backend.state_service.state_for(project_dir)
         os.sync()
 
         bind_paths = [str(project_dir.parent.resolve()), str(server_dir.resolve())]
@@ -128,7 +140,6 @@ class PipelineOrchestratorService:
         if state.mdocs_glob:
             bind_paths.append(str(Path(state.mdocs_glob).parent.resolve()))
 
-        state = self.backend.state_service.state_for(project_dir)
         for instance_id in instances_to_run:
             job_model = state.jobs.get(instance_id)
             if job_model:
@@ -139,7 +150,6 @@ class PipelineOrchestratorService:
         return await self.backend.pipeline_runner.run_generated_scheme(
             project_dir=project_dir, scheme_name=scheme_name, bind_paths=list(set(bind_paths))
         )
-
 
     def _write_job_star(
         self,
@@ -153,7 +163,6 @@ class PipelineOrchestratorService:
     ):
         fn_exe = self._build_fn_exe(instance_id, job_type, job_model, project_dir, server_dir)
         job_model.generate_job_star(job_dir=scheme_job_dir, fn_exe=fn_exe, star_handler=self.star_handler)
-
 
     def _build_fn_exe(
         self,

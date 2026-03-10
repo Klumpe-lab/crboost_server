@@ -112,6 +112,66 @@ def _fmt(v) -> str:
     return f"{v:.4g}" if isinstance(v, float) else str(v)
 
 
+# NEW function -- insert alongside the other inner helpers, before _refresh_roster
+
+
+async def _prompt_species_and_add(job_type: JobType):
+    """
+    Gate for PHASE_PARTICLES job creation. Non-particle jobs pass straight through.
+    For particle jobs: require at least one registered species, prompt user to pick one,
+    then create the instance with species_id set from birth.
+    """
+    if ui_mgr.is_running:
+        return
+
+    if job_type not in PHASE_JOBS[PHASE_PARTICLES]:
+        add_instance_to_pipeline(job_type)
+        return
+
+    project_path = ui_mgr.project_path
+    if not project_path:
+        return
+
+    from services.project_state import get_project_state_for
+
+    state = get_project_state_for(project_path)
+
+    if not state.species_registry:
+        ui.notify(
+            "Register at least one particle species in the Template Workbench first.", type="warning", timeout=4000
+        )
+        return
+
+    chosen = {"id": state.species_registry[0].id}
+
+    with ui.dialog() as dialog, ui.card().style("min-width: 300px; padding: 16px;"):
+        ui.label(f"Add {get_job_display_name(job_type)}").classes("text-base font-bold text-gray-800 mb-3")
+
+        options = {s.id: s.name for s in state.species_registry}
+        sel = (
+            ui.select(options=options, value=chosen["id"], label="Particle species")
+            .props("outlined dense")
+            .classes("w-full")
+        )
+
+        def _on_change(e):
+            chosen["id"] = e.value
+
+        sel.on_value_change(_on_change)
+
+        with ui.row().classes("w-full justify-end gap-2 mt-4"):
+            ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
+            ui.button("Add", on_click=lambda: dialog.submit(True)).props("dense no-caps").style(
+                "background: #3b82f6; color: white; padding: 4px 16px; border-radius: 3px;"
+            )
+
+    confirmed = await dialog
+    if not confirmed:
+        return
+
+    add_instance_to_pipeline(job_type, species_id=chosen["id"])
+
+
 # ── Main function ─────────────────────────────────────────────────────────────
 
 
@@ -120,7 +180,7 @@ def build_pipeline_builder_panel(
     callbacks: Dict[str, Callable],
     primary_sidebar=None,
     roster_panel=None,
-    toggle_workbench: Optional[Callable] = None,   # <-- new
+    toggle_workbench: Optional[Callable] = None,
     ensure_pipeline_mode: Optional[Callable] = None,
 ) -> None:
     ui_mgr = get_ui_state_manager()
@@ -136,7 +196,59 @@ def build_pipeline_builder_panel(
     _spinner_idx = [0]
     _refs["ensure_pipeline_mode"] = ensure_pipeline_mode
 
-    # ── Roster ────────────────────────────────────────────────────────────────
+    # ── Species gate for particle job creation ────────────────────────────────
+
+    async def _prompt_species_and_add(job_type: JobType):
+        if ui_mgr.is_running:
+            return
+
+        if job_type not in PHASE_JOBS[PHASE_PARTICLES]:
+            add_instance_to_pipeline(job_type)
+            return
+
+        project_path = ui_mgr.project_path
+        if not project_path:
+            return
+
+        from services.project_state import get_project_state_for
+        state = get_project_state_for(project_path)
+
+        if not state.species_registry:
+            ui.notify(
+                "Register at least one particle species in the Template Workbench first.",
+                type="warning",
+                timeout=4000,
+            )
+            return
+
+        chosen = {"id": state.species_registry[0].id}
+
+        with ui.dialog() as dialog, ui.card().style("min-width: 300px; padding: 16px;"):
+            ui.label(f"Add {get_job_display_name(job_type)}").classes("text-base font-bold text-gray-800 mb-3")
+
+            options = {s.id: s.name for s in state.species_registry}
+            sel = (
+                ui.select(options=options, value=chosen["id"], label="Particle species")
+                .props("outlined dense")
+                .classes("w-full")
+            )
+
+            def _on_change(e):
+                chosen["id"] = e.value
+
+            sel.on_value_change(_on_change)
+
+            with ui.row().classes("w-full justify-end gap-2 mt-4"):
+                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
+                ui.button("Add", on_click=lambda: dialog.submit(True)).props("dense no-caps").style(
+                    "background: #3b82f6; color: white; padding: 4px 16px; border-radius: 3px;"
+                )
+
+        confirmed = await dialog
+        if not confirmed:
+            return
+
+        add_instance_to_pipeline(job_type, species_id=chosen["id"])
 
     def _refresh_roster():
         if roster_panel is None:
@@ -222,7 +334,7 @@ def build_pipeline_builder_panel(
                                 )
 
                             (
-                                ui.button(icon="add", on_click=lambda j=job_type: add_instance_to_pipeline(j))
+                                ui.button(icon="add", on_click=lambda j=job_type: _prompt_species_and_add(j))
                                 .props("flat dense round size=xs")
                                 .style("color: #6b7280; flex-shrink: 0;")
                                 .tooltip(f"Add another {get_job_display_name(job_type)}")
@@ -241,7 +353,9 @@ def build_pipeline_builder_panel(
                                 parts = instance_id.split("__", 1)
                                 if len(parts) > 1:
                                     suffix = parts[1]
-                                    display_text = f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
+                                    display_text = (
+                                        f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
+                                    )
                                 else:
                                     display_text = base_name
 
@@ -249,6 +363,7 @@ def build_pipeline_builder_panel(
                             species = None
                             if species_id and ui_mgr.project_path:
                                 from services.project_state import get_project_state_for
+
                                 s_state = get_project_state_for(ui_mgr.project_path)
                                 species = s_state.get_species(species_id)
 
@@ -303,15 +418,16 @@ def build_pipeline_builder_panel(
                                     if not ui_mgr.is_running:
                                         (
                                             ui.button(
-                                                icon="close",
-                                                on_click=lambda _, iid=instance_id: _on_remove_click(iid),
+                                                icon="close", on_click=lambda _, iid=instance_id: _on_remove_click(iid)
                                             )
                                             .props("flat dense round size=xs")
                                             .style("color: #9ca3af;")
                                             .tooltip("Remove this instance")
                                         )
 
-    def _on_unselected_click(job_type: JobType):
+    # UPDATED -- _on_unselected_click becomes async, delegates to _prompt_species_and_add
+
+    async def _on_unselected_click(job_type: JobType):
         epm = _refs.get("ensure_pipeline_mode")
         if epm:
             epm()
@@ -326,7 +442,7 @@ def build_pipeline_builder_panel(
                 type="warning",
                 timeout=3000,
             )
-        add_instance_to_pipeline(job_type)
+        await _prompt_species_and_add(job_type)
 
     def _scroll_to_phase(phase_id: str):
         anchor = ROSTER_ANCHOR[phase_id]
@@ -697,6 +813,7 @@ def build_pipeline_builder_panel(
                 species = None
                 if species_id and ui_mgr.project_path:
                     from services.project_state import get_project_state_for
+
                     s_state = get_project_state_for(ui_mgr.project_path)
                     species = s_state.get_species(species_id)
 
@@ -717,8 +834,7 @@ def build_pipeline_builder_panel(
                     )
                 ):
                     with ui.element("div").style(
-                        "display: flex; align-items: center; gap: 6px; "
-                        "white-space: nowrap; overflow: hidden;"
+                        "display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden;"
                     ):
                         ui.label(display_text).style("flex-shrink: 0;")
 
@@ -768,23 +884,22 @@ def build_pipeline_builder_panel(
                 )
 
     def invalidate_tm_tabs():
-            """Clear cached renders for TM jobs and re-render the active one if applicable."""
-            tm_prefix = JobType.TEMPLATE_MATCH_PYTOM.value
-            stale = [iid for iid in list(_job_content_containers.keys())
-                    if iid.split("__")[0] == tm_prefix]
-            for iid in stale:
-                container = _job_content_containers.pop(iid, None)
-                if container:
-                    try:
-                        container.delete()
-                    except Exception:
-                        pass
+        """Clear cached renders for TM jobs and re-render the active one if applicable."""
+        tm_prefix = JobType.TEMPLATE_MATCH_PYTOM.value
+        stale = [iid for iid in list(_job_content_containers.keys()) if iid.split("__")[0] == tm_prefix]
+        for iid in stale:
+            container = _job_content_containers.pop(iid, None)
+            if container:
+                try:
+                    container.delete()
+                except Exception:
+                    pass
 
-            active = ui_mgr.active_instance_id
-            if active and active.split("__")[0] == tm_prefix:
-                _ensure_job_rendered(active)
-                for iid, c in _job_content_containers.items():
-                    c.set_visibility(iid == active)
+        active = ui_mgr.active_instance_id
+        if active and active.split("__")[0] == tm_prefix:
+            _ensure_job_rendered(active)
+            for iid, c in _job_content_containers.items():
+                c.set_visibility(iid == active)
 
     def switch_tab(instance_id: str):
         epm = _refs.get("ensure_pipeline_mode")
@@ -799,7 +914,11 @@ def build_pipeline_builder_panel(
 
     # ── Job / instance management ─────────────────────────────────────────────
 
-    def add_instance_to_pipeline(job_type: JobType, instance_id: Optional[str] = None):
+    # UPDATED -- add_instance_to_pipeline gains species_id parameter
+
+    def add_instance_to_pipeline(
+        job_type: JobType, instance_id: Optional[str] = None, species_id: Optional[str] = None
+    ):
         if ui_mgr.is_running:
             return
 
@@ -817,6 +936,22 @@ def build_pipeline_builder_panel(
             state.ensure_job_initialized(
                 job_type, instance_id=instance_id, template_path=star if star.exists() else None
             )
+
+        if species_id is not None:
+            job_model = state.jobs.get(instance_id)
+            if job_model is not None:
+                job_model.species_id = species_id
+                # For TM, pre-populate template/mask from registry as a convenience default.
+                # These will be overwritten by the scoped selector in the config tab,
+                # and again at submission time from the live registry.
+                if job_type == JobType.TEMPLATE_MATCH_PYTOM and ui_mgr.project_path:
+                    from services.project_state import get_project_state_for
+
+                    p_state = get_project_state_for(ui_mgr.project_path)
+                    sp = p_state.get_species(species_id)
+                    if sp:
+                        job_model.template_path = sp.template_path or ""
+                        job_model.mask_path = sp.mask_path or ""
 
         if ui_mgr.is_project_created:
             asyncio.create_task(state_service.save_project())

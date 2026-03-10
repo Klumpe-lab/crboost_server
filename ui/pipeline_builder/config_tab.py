@@ -24,4 +24,4 @@ def render_config_tab(
     if renderer:
         renderer(job_type, job_model, is_frozen, save_handler, ui_mgr=ui_mgr, backend=backend)
     else:
-        render_default_params_card(job_type, job_model, is_frozen, save_handler)
+        render_default_params_card(job_type, job_model, is_frozen, save_handler, ui_mgr=ui_mgr)

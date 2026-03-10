@@ -12,17 +12,17 @@ _DOT_COLORS = {
 }
 
 _DOT_PULSES = {
-    JobStatus.RUNNING: "pulse-running",
+    JobStatus.RUNNING  : "pulse-running",
     JobStatus.SUCCEEDED: "pulse-success",
-    JobStatus.FAILED: "pulse-failed",
+    JobStatus.FAILED   : "pulse-failed",
 }
 
 _BADGE_STYLES = {
     JobStatus.SCHEDULED: ("background:#fef3c7;", "color:#92400e;"),
-    JobStatus.RUNNING: ("background:#dbeafe;", "color:#1e40af;"),
+    JobStatus.RUNNING  : ("background:#dbeafe;", "color:#1e40af;"),
     JobStatus.SUCCEEDED: ("background:#d1fae5;", "color:#065f46;"),
-    JobStatus.FAILED: ("background:#fee2e2;", "color:#991b1b;"),
-    JobStatus.UNKNOWN: ("background:#f3f4f6;", "color:#1f2937;"),
+    JobStatus.FAILED   : ("background:#fee2e2;", "color:#991b1b;"),
+    JobStatus.UNKNOWN  : ("background:#f3f4f6;", "color:#1f2937;"),
 }
 
 
