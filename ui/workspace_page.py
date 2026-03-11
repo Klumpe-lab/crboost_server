@@ -28,19 +28,6 @@ def build_workspace_page(backend: CryoBoostBackend):
     _mode = {"current": "pipeline"}
     _refs = {}
 
-    _SB_MUTE = "#94a3b8"
-    _SB_ACT = "#3b82f6"
-    _SB_ABG = "#eff6ff"
-
-    def _set_wb_btn_style(active: bool):
-        wb_btn = callbacks.get("wb_btn")
-        if wb_btn:
-            wb_btn.style(
-                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                f"background: {_SB_ABG if active else 'transparent'}; "
-                f"color: {(_SB_ACT if active else _SB_MUTE)}; min-width: 0;"
-            )
-
     def _toggle_workbench():
         pipeline_c = _refs.get("pipeline_container")
         workbench_c = _refs.get("workbench_container")
@@ -50,19 +37,19 @@ def build_workspace_page(backend: CryoBoostBackend):
             _mode["current"] = "workbench"
             pipeline_c.style("display: none;")
             workbench_c.style("display: flex; flex-direction: column;")
-            _set_wb_btn_style(True)
         else:
             _mode["current"] = "pipeline"
             pipeline_c.style("display: flex; flex-direction: column;")
             workbench_c.style("display: none;")
-            _set_wb_btn_style(False)
-            # Invalidate cached TM tab renders so they pick up new species
             invalidate = callbacks.get("invalidate_tm_tabs")
             if invalidate:
                 invalidate()
 
+        set_wb = callbacks.get("set_wb_active")
+        if set_wb:
+            set_wb(_mode["current"] == "workbench")
+
     def ensure_pipeline_mode():
-        """Switch to pipeline view if currently in workbench. No-op otherwise."""
         if _mode["current"] == "workbench":
             _toggle_workbench()
 
@@ -88,8 +75,7 @@ def build_workspace_page(backend: CryoBoostBackend):
         )
 
         main_area = ui.element("div").style(
-            "flex: 1; min-width: 0; height: 100%; overflow: hidden; "
-            "display: flex; flex-direction: row; gap: 0;"
+            "flex: 1; min-width: 0; height: 100%; overflow: hidden; display: flex; flex-direction: row; gap: 0;"
         )
 
         with main_area:
@@ -113,5 +99,3 @@ def build_workspace_page(backend: CryoBoostBackend):
             _refs["workbench_container"] = workbench_container
             with workbench_container:
                 build_species_workbench_panel(backend)
-
-        _refs["wb_btn"] = callbacks.get("wb_btn")
