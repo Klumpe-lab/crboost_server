@@ -1,20 +1,26 @@
-import asyncio
-from typing import Dict, Optional, TYPE_CHECKING
-
+from typing import Dict, List, Optional, TYPE_CHECKING
 from nicegui import ui
-
 from services.models_base import JobStatus
 from services.project_state import JobType
 from ui.status_indicator import BoundStatusDot
 from ui.ui_state import get_job_display_name, get_instance_display_name, instance_id_to_job_type
 from ui.pipeline_builder.pipeline_constants import (
-    PHASE_JOBS, PHASE_META, ROSTER_ANCHOR,
-    SB_MUTE, SB_ACT, SB_ABG, SB_SEP,
-    missing_deps, fmt,
+    PHASE_JOBS,
+    PHASE_META,
+    ROSTER_ANCHOR,
+    SB_MUTE,
+    SB_ACT,
+    SB_ABG,
+    SB_SEP,
+    missing_deps,
+    fmt,
 )
 
 if TYPE_CHECKING:
     from ui.pipeline_builder.pipeline_builder_panel import PipelineBuilderPanel
+
+# Muted color for the bottom info-button group
+_SB_INFO = "#c0cad4"
 
 
 class RosterWidget:
@@ -26,6 +32,34 @@ class RosterWidget:
         self._refs: Dict = {}
         self._spinner_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         self._spinner_idx: int = 0
+        # All currently-rendered spinner labels (roster rows + tab strip).
+        # advance_spinner updates these in-place; stale dead refs are pruned
+        # lazily each tick.
+        self._live_spinners: List = []
+
+    def _status_widget(self, instance_id: str):
+        from services.project_state import get_project_state
+        from ui.status_indicator import _dot_html  # reuse the existing dot renderer
+
+        job_model = get_project_state().jobs.get(instance_id)
+        if not job_model:
+            from ui.status_indicator import BoundStatusDot
+            BoundStatusDot(instance_id)
+            return
+
+        def _content(status, jm=job_model):
+            if status == JobStatus.RUNNING:
+                frame = self._spinner_frames[self._spinner_idx]
+                return (
+                    f'<span class="cb-row-spinner" '
+                    f'style="font-family:\'IBM Plex Mono\',monospace;font-size:13px;'
+                    f'color:#3b82f6;line-height:1;flex-shrink:0;">{frame}</span>'
+                )
+            return _dot_html(status, is_orphaned=jm.is_orphaned)
+
+        ui.html("", sanitize=False, tag="span").bind_content_from(
+            job_model, "execution_status", backward=_content
+        )
 
     # ── Roster ────────────────────────────────────────────────────────────────
 
@@ -37,7 +71,7 @@ class RosterWidget:
 
         with panel.roster_panel:
             for phase_id, jobs in PHASE_JOBS.items():
-                icon_name, phase_label, _ = PHASE_META[phase_id]
+                icon_or_svg, phase_label, _ = PHASE_META[phase_id]
                 is_flashing = self._flash_phase == phase_id
 
                 with (
@@ -50,10 +84,17 @@ class RosterWidget:
                         "position: sticky; top: 0; z-index: 2;"
                     )
                 ):
-                    ui.icon(icon_name, size="12px").style("color: #94a3b8; flex-shrink: 0;")
+                    # Handle both Material icon names and raw SVG strings
+                    if icon_or_svg.startswith("<svg"):
+                        ui.html(
+                            self._load_svg(icon_or_svg).replace("currentColor", "#94a3b8"),
+                            sanitize=False,
+                        ).style("width: 12px; height: 12px; flex-shrink: 0; display: flex;")
+                    else:
+                        ui.icon(icon_or_svg, size="12px").style("color: #94a3b8; flex-shrink: 0;")
+
                     ui.label(phase_label.upper()).style(
-                        "font-size: 9px; font-weight: 700; color: #94a3b8; "
-                        "letter-spacing: 0.07em; line-height: 1;"
+                        "font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.07em; line-height: 1;"
                     )
 
                 for job_type in jobs:
@@ -76,9 +117,7 @@ class RosterWidget:
                             )
                             .on("click", lambda j=job_type: self._on_unselected_click(j))
                         ):
-                            ui.icon("check_box_outline_blank", size="13px").style(
-                                "color: #d1d5db; flex-shrink: 0;"
-                            )
+                            ui.icon("check_box_outline_blank", size="13px").style("color: #d1d5db; flex-shrink: 0;")
                             ui.label(get_job_display_name(job_type)).style(
                                 f"font-size: 11px; font-weight: 400; color: {name_color}; "
                                 "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
@@ -105,14 +144,11 @@ class RosterWidget:
                                     "padding: 1px 5px; flex-shrink: 0;"
                                 )
                             if missing:
-                                ui.icon("warning", size="11px").style(
-                                    "color: #f59e0b; flex-shrink: 0;"
-                                ).tooltip("Missing: " + ", ".join(get_job_display_name(d) for d in missing))
-                            (
-                                ui.button(
-                                    icon="add",
-                                    on_click=lambda j=job_type: panel.prompt_species_and_add(j),
+                                ui.icon("warning", size="11px").style("color: #f59e0b; flex-shrink: 0;").tooltip(
+                                    "Missing: " + ", ".join(get_job_display_name(d) for d in missing)
                                 )
+                            (
+                                ui.button(icon="add", on_click=lambda j=job_type: panel.prompt_species_and_add(j))
                                 .props("flat dense round size=xs")
                                 .style("color: #6b7280; flex-shrink: 0;")
                                 .tooltip(f"Add another {get_job_display_name(job_type)}")
@@ -131,9 +167,7 @@ class RosterWidget:
                                 if len(parts) > 1:
                                     suffix = parts[1]
                                     display_text = (
-                                        f"{base_name} #{suffix}"
-                                        if suffix.isdigit()
-                                        else f"{base_name} ({suffix})"
+                                        f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
                                     )
                                 else:
                                     display_text = base_name
@@ -142,6 +176,7 @@ class RosterWidget:
                             species = None
                             if species_id and panel.ui_mgr.project_path:
                                 from services.project_state import get_project_state_for
+
                                 s_state = get_project_state_for(panel.ui_mgr.project_path)
                                 species = s_state.get_species(species_id)
 
@@ -189,7 +224,7 @@ class RosterWidget:
                                     "display: flex; align-items: center; gap: 3px; flex-shrink: 0;"
                                 ):
                                     with ui.element("span").style("overflow: visible; line-height: 0;"):
-                                        BoundStatusDot(instance_id)
+                                        self._status_widget(instance_id)
                                     if not panel.ui_mgr.is_running:
                                         (
                                             ui.button(
@@ -228,6 +263,7 @@ class RosterWidget:
             return
 
         from services.project_state import get_project_state_for
+
         state = get_project_state_for(project_path)
         job_model = state.jobs.get(instance_id)
         status = job_model.execution_status if job_model else None
@@ -237,20 +273,19 @@ class RosterWidget:
             return
 
         from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
+
         deletion_service = get_deletion_service()
         preview = None
         if project_path and job_model.relion_job_name:
             preview = deletion_service.preview_deletion(
-                project_path,
-                job_model.relion_job_name,
-                job_resolver=panel.backend.pipeline_orchestrator.job_resolver,
+                project_path, job_model.relion_job_name, job_resolver=panel.backend.pipeline_orchestrator.job_resolver
             )
 
         with ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
             ui.label(f"Delete {get_instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
-            ui.label(
-                "This will move the job files to Trash/ and remove it from the pipeline."
-            ).classes("text-sm text-gray-600 mb-2")
+            ui.label("This will move the job files to Trash/ and remove it from the pipeline.").classes(
+                "text-sm text-gray-600 mb-2"
+            )
 
             if preview and preview.get("success") and preview.get("downstream_count", 0) > 0:
                 downstream = preview.get("downstream_jobs", [])
@@ -263,17 +298,13 @@ class RosterWidget:
                     with ui.column().classes("gap-1 ml-6"):
                         for detail in downstream:
                             with ui.row().classes("items-center gap-2"):
-                                ui.label(detail.get("path", "Unknown")).classes(
-                                    "text-xs font-mono text-gray-700"
-                                )
+                                ui.label(detail.get("path", "Unknown")).classes("text-xs font-mono text-gray-700")
                                 if detail.get("type"):
                                     ui.label(f"({detail['type']})").classes("text-xs text-gray-500")
-                                ui.label(f"- {detail.get('status', 'Unknown')}").classes(
-                                    "text-xs text-gray-500"
-                                )
-                    ui.label(
-                        "These jobs will have broken input references and may fail if re-run."
-                    ).classes("text-xs text-orange-700 mt-2")
+                                ui.label(f"- {detail.get('status', 'Unknown')}").classes("text-xs text-gray-500")
+                    ui.label("These jobs will have broken input references and may fail if re-run.").classes(
+                        "text-xs text-orange-700 mt-2"
+                    )
             else:
                 ui.label("No downstream jobs will be affected.").classes(
                     "text-sm text-green-600 bg-green-50 p-2 rounded"
@@ -292,17 +323,13 @@ class RosterWidget:
                             orphans = result.get("orphaned_jobs", [])
                             if orphans:
                                 ui.notify(
-                                    f"Deleted. {len(orphans)} downstream job(s) orphaned.",
-                                    type="warning",
-                                    timeout=5000,
+                                    f"Deleted. {len(orphans)} downstream job(s) orphaned.", type="warning", timeout=5000
                                 )
                             else:
                                 ui.notify("Job deleted.", type="positive")
                             panel.remove_instance_from_pipeline(instance_id)
                         else:
-                            ui.notify(
-                                f"Delete failed: {result.get('error')}", type="negative", timeout=8000
-                            )
+                            ui.notify(f"Delete failed: {result.get('error')}", type="negative", timeout=8000)
                     except Exception as e:
                         ui.notify(f"Error: {e}", type="negative")
 
@@ -348,17 +375,92 @@ class RosterWidget:
             f"}});"
         )
 
+    def _gear_info_btn(self, state):
+        """Single gear popup merging project path + acquisition params."""
+        btn = (
+            ui.button(icon="o_settings")
+            .props("flat dense")
+            .style(
+                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                f"color: #c0cad4; background: transparent; min-width: 0;"
+            )
+        )
+        # Once you want to swap this to gear.svg too, replace the button above
+        # with self._sb_svg_btn("gear.svg", ...) — but ui.menu() needs a
+        # parent button element, so keep it as a ui.button for now.
+        with btn:
+            with (
+                ui.menu()
+                .props('anchor="center right" self="center left" :offset="[8,0]"')
+                .style(
+                    "background: #ffffff; border: 1px solid #e2e8f0; "
+                    "border-radius: 5px; overflow: hidden; min-width: 210px; "
+                    "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
+                )
+            ):
+                for section_title, rows in [
+                    (
+                        "Project",
+                        [
+                            ("Name", state.project_name),
+                            ("Root", str(state.project_path) if state.project_path else "---"),
+                            ("Movies", state.movies_glob or "---"),
+                            ("MDOC", state.mdocs_glob or "---"),
+                        ],
+                    ),
+                    (
+                        "Acquisition",
+                        [
+                            ("Pixel", f"{fmt(state.microscope.pixel_size_angstrom)} Å"),
+                            ("Voltage", f"{fmt(state.microscope.acceleration_voltage_kv)} kV"),
+                            ("Cs", f"{fmt(state.microscope.spherical_aberration_mm)} mm"),
+                            ("Amp. C.", fmt(state.microscope.amplitude_contrast)),
+                            ("Dose", f"{fmt(state.acquisition.dose_per_tilt)} e⁻/Å²"),
+                            ("Tilt ax.", f"{fmt(state.acquisition.tilt_axis_degrees)} °"),
+                        ],
+                    ),
+                ]:
+                    with ui.element("div").style(
+                        "padding: 7px 11px 5px; font-size: 9px; font-weight: 700; "
+                        "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase; "
+                        "border-bottom: 1px solid #f1f5f9;"
+                    ):
+                        ui.label(section_title)
+                    for row_lbl, row_val in rows:
+                        with ui.element("div").style(
+                            "display: flex; justify-content: space-between; align-items: baseline; "
+                            "padding: 5px 11px; border-bottom: 1px solid #f8fafc; gap: 10px;"
+                        ):
+                            ui.label(row_lbl).style("font-size: 10px; color: #94a3b8; flex-shrink: 0;")
+                            ui.label(str(row_val)).style(
+                                "font-size: 10px; font-family: 'IBM Plex Mono', monospace; "
+                                "color: #1e40af; text-align: right; word-break: break-all;"
+                            )
+                ui.element("div").style("height: 4px;")
+
     def _update_phase_btn_styles(self):
         for phase_id in PHASE_JOBS:
-            btn = self._refs.get(f"phase_btn_{phase_id}")
-            if btn is None:
+            container = self._refs.get(f"phase_btn_{phase_id}")
+            if container is None:
                 continue
             active = self._roster_visible and self._roster_phase == phase_id
-            btn.style(
+            bg = SB_ABG if active else "transparent"
+            color = SB_ACT if active else SB_MUTE
+
+            container.style(
                 f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                f"background: {SB_ABG if active else 'transparent'}; "
-                f"color: {SB_ACT if active else SB_MUTE}; min-width: 0;"
+                f"background: {bg}; "
+                f"display: flex; align-items: center; justify-content: center; "
+                f"cursor: pointer; flex-shrink: 0;"
             )
+            # Clear and re-render the child SVG with the updated color stamped in
+            svg_source = PHASE_META[phase_id][0]
+            svg = self._load_svg(svg_source).replace("currentColor", color)
+            container.clear()
+            with container:
+                ui.html(svg, sanitize=False).style(
+                    "width: 18px; height: 18px; display: flex; pointer-events: none;"
+                )
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
@@ -367,35 +469,42 @@ class RosterWidget:
         if panel.primary_sidebar is None:
             return
         from services.project_state import get_project_state
+
         state = get_project_state()
 
         with panel.primary_sidebar:
-            ui.element("div").style("height: 8px;")
-            ui.icon("biotech", size="14px").style(f"color: {SB_MUTE}; margin: 0 auto 4px;")
-            self._sb_sep()
+            ui.element("div").style("height: 5px;")
 
-            self._info_popup_btn(
-                "folder_open",
-                "Project",
-                [
-                    ("Name", state.project_name),
-                    ("Root", str(state.project_path) if state.project_path else "---"),
-                    ("Movies", state.movies_glob or "---"),
-                    ("MDOC", state.mdocs_glob or "---"),
-                ],
-            )
-            self._info_popup_btn(
-                "science",
-                "Acquisition",
-                [
-                    ("Pixel", f"{fmt(state.microscope.pixel_size_angstrom)} Å"),
-                    ("Voltage", f"{fmt(state.microscope.acceleration_voltage_kv)} kV"),
-                    ("Cs", f"{fmt(state.microscope.spherical_aberration_mm)} mm"),
-                    ("Amp. C.", fmt(state.microscope.amplitude_contrast)),
-                    ("Dose", f"{fmt(state.acquisition.dose_per_tilt)} e⁻/Å²"),
-                    ("Tilt ax.", f"{fmt(state.acquisition.tilt_axis_degrees)} °"),
-                ],
-            )
+            short_name = state.project_name.split("_")[0][:7] if state.project_name else "---"
+            ui.label(short_name).style(
+                "font-size: 8px; font-weight: 700; color: #94a3b8; "
+                "letter-spacing: 0.05em; text-align: center; text-transform: uppercase; "
+                "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; "
+                "width: 100%; padding: 0 3px;"
+            ).tooltip(state.project_name)
+
+            ui.element("div").style("height: 3px;")
+            self._sb_sep()
+            ui.element("div").style("height: 2px;")
+
+            for phase_id in PHASE_JOBS:
+                svg_source, label, sub = PHASE_META[phase_id]
+                self._sb_svg_btn(
+                    svg_source,
+                    f"{label} — {sub}",
+                    lambda p=phase_id: self.toggle(p),
+                    ref_key=f"phase_btn_{phase_id}",
+                )
+
+            if panel.toggle_workbench is not None:
+                ui.element("div").style("height: 1px;")
+                wb_btn = self._sb_svg_btn(
+                    "vial.svg",
+                    "Template Workbench",
+                    panel.toggle_workbench,
+                    ref_key="wb_btn",
+                )
+                panel.callbacks["wb_btn"] = wb_btn
 
             self._sb_sep()
 
@@ -405,46 +514,17 @@ class RosterWidget:
             )
             self._refs["run_slot"] = run_slot
 
-            (
-                ui.button(icon="close", on_click=lambda: ui.navigate.to("/"))
-                .props("flat dense")
-                .style(
-                    f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                    f"color: {SB_MUTE}; background: transparent; min-width: 0;"
-                )
-                .tooltip("Close project")
+            self._sb_svg_btn(
+                "cross.svg",
+                "Close project",
+                lambda: ui.navigate.to("/"),
             )
 
-            self._sb_sep()
-
-            for phase_id in PHASE_JOBS:
-                icon_name, label, sub = PHASE_META[phase_id]
-                btn = (
-                    ui.button(icon=icon_name, on_click=lambda p=phase_id: self.toggle(p))
-                    .props("flat dense")
-                    .style(
-                        f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                        f"background: transparent; color: {SB_MUTE}; min-width: 0;"
-                    )
-                )
-                btn.tooltip(f"{label} — {sub}")
-                self._refs[f"phase_btn_{phase_id}"] = btn
-
-            if panel.toggle_workbench is not None:
-                self._sb_sep()
-                wb_btn = (
-                    ui.button(icon="biotech", on_click=panel.toggle_workbench)
-                    .props("flat dense")
-                    .style(
-                        f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                        f"background: transparent; color: {SB_MUTE}; min-width: 0;"
-                    )
-                    .tooltip("Template Workbench")
-                )
-                self._refs["wb_btn"] = wb_btn
-                panel.callbacks["wb_btn"] = wb_btn
-
             ui.element("div").style("flex: 1;")
+
+            self._sb_sep()
+            self._gear_info_btn(state)
+            ui.element("div").style("height: 6px;")
 
         self.rebuild_run_slot()
 
@@ -456,17 +536,21 @@ class RosterWidget:
         panel = self.panel
         with run_slot:
             if panel.ui_mgr.is_running:
-                with (
+                # Stop button with stop.svg
+                stop_div = (
                     ui.element("div")
                     .style(
                         "width: 30px; height: 30px; border-radius: 50%; cursor: pointer; "
-                        "background: #fef2f2; border: 1px solid #fecaca; "
+                        "background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; "
                         "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
                     )
                     .on("click", panel.handle_stop_pipeline)
                     .tooltip("Stop pipeline")
-                ):
-                    ui.icon("stop", size="16px").style("color: #b91c1c; pointer-events: none;")
+                )
+                with stop_div:
+                    ui.html(self._load_svg("stop.svg"), sanitize=False).style(
+                        "width: 16px; height: 16px; display: flex; pointer-events: none;"
+                    )
 
                 spinner = ui.label("⠋").style(
                     "font-family: 'IBM Plex Mono', monospace; font-size: 18px; "
@@ -483,17 +567,21 @@ class RosterWidget:
                 )
                 self._refs["status_label"] = status_lbl
             else:
-                with (
+                # Play button with play.svg
+                play_div = (
                     ui.element("div")
                     .style(
                         "width: 30px; height: 30px; border-radius: 50%; cursor: pointer; "
-                        "background: #f0fdf4; border: 1px solid #bbf7d0; "
+                        "background: #f0fdf4; border: 1px solid #bbf7d0; color: #15803d; "
                         "display: flex; align-items: center; justify-content: center; flex-shrink: 0;"
                     )
                     .on("click", panel.handle_run_pipeline)
                     .tooltip("Run pipeline")
-                ):
-                    ui.icon("play_arrow", size="16px").style("color: #15803d; pointer-events: none;")
+                )
+                with play_div:
+                    ui.html(self._load_svg("play.svg"), sanitize=False).style(
+                        "width: 16px; height: 16px; display: flex; pointer-events: none;"
+                    )
 
     # ── Tab strip ─────────────────────────────────────────────────────────────
 
@@ -517,9 +605,7 @@ class RosterWidget:
                     parts = instance_id.split("__", 1)
                     if len(parts) > 1:
                         suffix = parts[1]
-                        display_text = (
-                            f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
-                        )
+                        display_text = f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
                     else:
                         display_text = base_name
 
@@ -527,6 +613,7 @@ class RosterWidget:
                 species = None
                 if species_id and panel.ui_mgr.project_path:
                     from services.project_state import get_project_state_for
+
                     s_state = get_project_state_for(panel.ui_mgr.project_path)
                     species = s_state.get_species(species_id)
 
@@ -546,8 +633,7 @@ class RosterWidget:
                     )
                 ):
                     with ui.element("div").style(
-                        "display: flex; align-items: center; gap: 6px; "
-                        "white-space: nowrap; overflow: hidden;"
+                        "display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden;"
                     ):
                         ui.label(display_text).style("flex-shrink: 0;")
                         if species:
@@ -559,16 +645,22 @@ class RosterWidget:
                                 ui.label(species.name).style(
                                     f"font-size: 9px; color: {species.color}; font-weight: 600;"
                                 )
-                        BoundStatusDot(instance_id)
+                        self._status_widget(instance_id)
 
     # ── Spinner / status label ────────────────────────────────────────────────
 
     def advance_spinner(self):
-        el = self._refs.get("spinner")
-        if el is None:
-            return
         self._spinner_idx = (self._spinner_idx + 1) % len(self._spinner_frames)
-        el.set_text(self._spinner_frames[self._spinner_idx])
+        frame = self._spinner_frames[self._spinner_idx]
+
+        # Sidebar label (still there while running, shows progress count below it)
+        el = self._refs.get("spinner")
+        if el:
+            el.set_text(frame)
+
+        # All roster-row and tab-strip spinners — class-based, no ref tracking needed.
+        # After any refresh() the DOM gets fresh .cb-row-spinner elements automatically.
+        ui.run_javascript(f"document.querySelectorAll('.cb-row-spinner').forEach(e => e.textContent = {repr(frame)});")
 
     def start_spinner_timer(self):
         if self._refs.get("spinner_timer"):
@@ -596,13 +688,52 @@ class RosterWidget:
     def _sb_sep(self):
         ui.element("div").style(f"height: 1px; background: {SB_SEP}; width: 24px; margin: 3px auto;")
 
-    def _info_popup_btn(self, icon_name: str, title: str, rows: list):
+    # ── SVG helper ────────────────────────────────────────────────────────────────
+
+    def _load_svg(self, name: str) -> str:
+        if name.startswith("<svg"):
+            return name
+        from pathlib import Path
+        p = Path("static/icons") / name
+        try:
+            return p.read_text()
+        except FileNotFoundError:
+            return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>'
+
+    def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None):
+        bg = SB_ABG if active else "transparent"
+        color = color_override or (SB_ACT if active else SB_MUTE)
+
+        # Inject the real color value — don't trust CSS inheritance through ui.html wrapper
+        svg = self._load_svg(svg_name).replace("currentColor", color)
+
+        container = (
+            ui.element("div")
+            .style(
+                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                f"background: {bg}; "
+                f"display: flex; align-items: center; justify-content: center; "
+                f"cursor: pointer; flex-shrink: 0;"
+            )
+            .on("click", on_click)
+            .tooltip(tooltip)
+        )
+        with container:
+            ui.html(svg, sanitize=False).style(
+                "width: 18px; height: 18px; display: flex; pointer-events: none;"
+            )
+        if ref_key:
+            self._refs[ref_key] = container
+        return container
+
+    def _info_popup_btn(self, icon_name: str, title: str, rows: list, icon_color: str = None):
+        color = icon_color or SB_MUTE
         btn = (
             ui.button(icon=icon_name)
             .props("flat dense")
             .style(
                 f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                f"color: {SB_MUTE}; background: transparent; min-width: 0;"
+                f"color: {color}; background: transparent; min-width: 0;"
             )
         )
         with btn:
