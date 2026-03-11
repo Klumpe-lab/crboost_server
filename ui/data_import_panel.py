@@ -561,7 +561,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         try:
             load_result = await backend.load_existing_project(str(project_dir))
             if load_result.get("success"):
-                await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_dir))
+                await backend.pipeline_runner.sync_all_jobs(str(project_dir))
                 state = backend.state_service.state_for(project_dir)
                 ui_mgr.load_from_project(
                     project_path=state.project_path,

@@ -35,7 +35,7 @@ class DataImportService:
         """
         try:
             frames_dir = project_dir / "frames"
-            mdoc_dir = project_dir / "mdoc"
+            mdoc_dir   = project_dir / "mdoc"
             frames_dir.mkdir(exist_ok=True, parents=True)
             mdoc_dir.mkdir(exist_ok=True, parents=True)
 
@@ -150,7 +150,7 @@ class ProjectService:
                 state.job_path_mapping.pop(iid, None)
 
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
-            await self.backend.pipeline_runner.status_sync.sync_all_jobs(str(project_dir))
+            await self.backend.pipeline_runner.sync_all_jobs(str(project_dir))
 
             if errors:
                 return {
@@ -394,7 +394,7 @@ class ProjectService:
             self.set_project_root(project_dir)
 
             # Sync job statuses
-            await self.backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
+            await self.backend.pipeline_runner.sync_all_jobs(str(project_path))
 
             project_name = state.project_name
             selected_jobs = list(state.jobs.keys())

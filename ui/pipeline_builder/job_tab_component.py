@@ -242,7 +242,7 @@ async def _handle_stop_job(
         return
 
     result = await backend.pipeline_runner.cancel_job(project_path, instance_id)
-    await backend.pipeline_runner.status_sync.sync_all_jobs(str(project_path))
+    await backend.pipeline_runner.sync_all_jobs(str(project_path))
 
     if "stop_all_timers" in callbacks:
         callbacks["stop_all_timers"]()

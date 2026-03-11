@@ -1,5 +1,4 @@
 import os
-import shutil
 import pandas as pd
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -165,12 +164,7 @@ class PipelineOrchestratorService:
         job_model.generate_job_star(job_dir=scheme_job_dir, fn_exe=fn_exe, star_handler=self.star_handler)
 
     def _build_fn_exe(
-        self,
-        instance_id: str,
-        job_type: JobType,
-        job_model: AbstractJobParams,
-        project_dir: Path,
-        server_dir: Path,
+        self, instance_id: str, job_type: JobType, job_model: AbstractJobParams, project_dir: Path, server_dir: Path
     ) -> str:
         if job_type == JobType.IMPORT_MOVIES:
             return self._build_import_command(job_model)
@@ -209,7 +203,8 @@ class PipelineOrchestratorService:
     def _get_current_relion_counter(self, project_dir: Path) -> int:
         """
         Reads the current job counter from default_pipeline.star.
-        Raises if the file exists but can't be parsed - silent failures cause job path collisions.
+        Raises if the file exists but can't be parsed -- silent failures cause
+        job path collisions.
         """
         pipeline_star = project_dir / "default_pipeline.star"
 
@@ -369,7 +364,7 @@ class PipelineOrchestratorService:
     def _get_all_job_numbers_for_type(self, project_dir: Path, target_job_type: JobType) -> List[str]:
         """
         Scans default_pipeline.star to find ALL job numbers matching the type.
-        Returns list of strings: ["6", "7", "8"]
+        Returns list of strings like ["6", "7", "8"].
         """
         pipeline_star = project_dir / "default_pipeline.star"
         if not pipeline_star.exists():
@@ -385,15 +380,13 @@ class PipelineOrchestratorService:
             job_numbers = []
             for _, row in processes.iterrows():
                 job_path = row["rlnPipeLineProcessName"]
-
                 detected_type_str = self.job_resolver.get_job_type_from_path(project_dir, job_path)
 
                 if detected_type_str == target_job_type.value:
                     try:
                         folder_name = job_path.strip("/").split("/")[-1]
                         number_str = folder_name.replace("job", "")
-                        clean_number = str(int(number_str))
-                        job_numbers.append(clean_number)
+                        job_numbers.append(str(int(number_str)))
                     except ValueError:
                         print(f"[ORCHESTRATOR] Could not parse number from {job_path}")
 
@@ -407,7 +400,7 @@ class PipelineOrchestratorService:
         self, resolver: PathResolutionService, job_type: JobType, job_model: AbstractJobParams, predicted_job_dir: Path
     ) -> None:
         """
-        Cleanly isolated dry-run check.
+        Dry-run path resolution check for debugging.
         Enable via env var: CRBOOST_SCHEMA_RESOLVE_DRYRUN=1
         """
         if os.environ.get("CRBOOST_SCHEMA_RESOLVE_DRYRUN", "0") != "1":
@@ -423,7 +416,6 @@ class PipelineOrchestratorService:
             return
 
         legacy_paths = job_model.paths or {}
-
         keys = sorted(set(legacy_paths.keys()) | set(schema_paths.keys()))
         diffs = []
         for k in keys:
