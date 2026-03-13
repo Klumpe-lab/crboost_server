@@ -1,7 +1,9 @@
+import asyncio
+from pathlib import Path
 from typing import Dict, List, Optional, TYPE_CHECKING
 from nicegui import ui
 from services.models_base import JobStatus
-from services.project_state import JobType
+from services.project_state import JobType, get_project_state
 from ui.status_indicator import BoundStatusDot
 from ui.ui_state import get_job_display_name, get_instance_display_name, instance_id_to_job_type
 from ui.pipeline_builder.pipeline_constants import (
@@ -19,8 +21,27 @@ from ui.pipeline_builder.pipeline_constants import (
 if TYPE_CHECKING:
     from ui.pipeline_builder.pipeline_builder_panel import PipelineBuilderPanel
 
-# Muted color for the bottom info-button group
 _SB_INFO = "#c0cad4"
+_AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
+
+MONO = "font-family: 'IBM Plex Mono', monospace;"
+FONT = "font-family: 'IBM Plex Sans', sans-serif;"
+
+
+def _avatar_color(name: str) -> str:
+    return _AVATAR_PALETTE[hash(name) % len(_AVATAR_PALETTE)]
+
+
+def _inject_svg_color(svg: str, color: str) -> str:
+    """Replace currentColor AND inject explicit fill/stroke so Quasar button doesn't swallow it."""
+    svg = svg.replace("currentColor", color)
+    # If the SVG has no explicit fill or stroke referencing the color yet,
+    # stamp a style onto the root element as a fallback.
+    if 'style="' in svg:
+        svg = svg.replace('style="', f'style="fill:{color};stroke:{color};', 1)
+    else:
+        svg = svg.replace("<svg", f'<svg style="fill:{color};stroke:{color};"', 1)
+    return svg
 
 
 class RosterWidget:
@@ -32,18 +53,14 @@ class RosterWidget:
         self._refs: Dict = {}
         self._spinner_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
         self._spinner_idx: int = 0
-        # All currently-rendered spinner labels (roster rows + tab strip).
-        # advance_spinner updates these in-place; stale dead refs are pruned
-        # lazily each tick.
         self._live_spinners: List = []
 
     def _status_widget(self, instance_id: str):
         from services.project_state import get_project_state
-        from ui.status_indicator import _dot_html  # reuse the existing dot renderer
+        from ui.status_indicator import _dot_html
 
         job_model = get_project_state().jobs.get(instance_id)
         if not job_model:
-            from ui.status_indicator import BoundStatusDot
             BoundStatusDot(instance_id)
             return
 
@@ -52,14 +69,12 @@ class RosterWidget:
                 frame = self._spinner_frames[self._spinner_idx]
                 return (
                     f'<span class="cb-row-spinner" '
-                    f'style="font-family:\'IBM Plex Mono\',monospace;font-size:13px;'
+                    f"style=\"font-family:'IBM Plex Mono',monospace;font-size:13px;"
                     f'color:#3b82f6;line-height:1;flex-shrink:0;">{frame}</span>'
                 )
             return _dot_html(status, is_orphaned=jm.is_orphaned)
 
-        ui.html("", sanitize=False, tag="span").bind_content_from(
-            job_model, "execution_status", backward=_content
-        )
+        ui.html("", sanitize=False, tag="span").bind_content_from(job_model, "execution_status", backward=_content)
 
     # ── Roster ────────────────────────────────────────────────────────────────
 
@@ -84,12 +99,10 @@ class RosterWidget:
                         "position: sticky; top: 0; z-index: 2;"
                     )
                 ):
-                    # Handle both Material icon names and raw SVG strings
                     if icon_or_svg.startswith("<svg"):
-                        ui.html(
-                            self._load_svg(icon_or_svg).replace("currentColor", "#94a3b8"),
-                            sanitize=False,
-                        ).style("width: 12px; height: 12px; flex-shrink: 0; display: flex;")
+                        ui.html(self._load_svg(icon_or_svg).replace("currentColor", "#94a3b8"), sanitize=False).style(
+                            "width: 12px; height: 12px; flex-shrink: 0; display: flex;"
+                        )
                     else:
                         ui.icon(icon_or_svg, size="12px").style("color: #94a3b8; flex-shrink: 0;")
 
@@ -375,69 +388,6 @@ class RosterWidget:
             f"}});"
         )
 
-    def _gear_info_btn(self, state):
-        """Single gear popup merging project path + acquisition params."""
-        btn = (
-            ui.button(icon="o_settings")
-            .props("flat dense")
-            .style(
-                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                f"color: #c0cad4; background: transparent; min-width: 0;"
-            )
-        )
-        # Once you want to swap this to gear.svg too, replace the button above
-        # with self._sb_svg_btn("gear.svg", ...) — but ui.menu() needs a
-        # parent button element, so keep it as a ui.button for now.
-        with btn:
-            with (
-                ui.menu()
-                .props('anchor="center right" self="center left" :offset="[8,0]"')
-                .style(
-                    "background: #ffffff; border: 1px solid #e2e8f0; "
-                    "border-radius: 5px; overflow: hidden; min-width: 210px; "
-                    "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
-                )
-            ):
-                for section_title, rows in [
-                    (
-                        "Project",
-                        [
-                            ("Name", state.project_name),
-                            ("Root", str(state.project_path) if state.project_path else "---"),
-                            ("Movies", state.movies_glob or "---"),
-                            ("MDOC", state.mdocs_glob or "---"),
-                        ],
-                    ),
-                    (
-                        "Acquisition",
-                        [
-                            ("Pixel", f"{fmt(state.microscope.pixel_size_angstrom)} Å"),
-                            ("Voltage", f"{fmt(state.microscope.acceleration_voltage_kv)} kV"),
-                            ("Cs", f"{fmt(state.microscope.spherical_aberration_mm)} mm"),
-                            ("Amp. C.", fmt(state.microscope.amplitude_contrast)),
-                            ("Dose", f"{fmt(state.acquisition.dose_per_tilt)} e⁻/Å²"),
-                            ("Tilt ax.", f"{fmt(state.acquisition.tilt_axis_degrees)} °"),
-                        ],
-                    ),
-                ]:
-                    with ui.element("div").style(
-                        "padding: 7px 11px 5px; font-size: 9px; font-weight: 700; "
-                        "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase; "
-                        "border-bottom: 1px solid #f1f5f9;"
-                    ):
-                        ui.label(section_title)
-                    for row_lbl, row_val in rows:
-                        with ui.element("div").style(
-                            "display: flex; justify-content: space-between; align-items: baseline; "
-                            "padding: 5px 11px; border-bottom: 1px solid #f8fafc; gap: 10px;"
-                        ):
-                            ui.label(row_lbl).style("font-size: 10px; color: #94a3b8; flex-shrink: 0;")
-                            ui.label(str(row_val)).style(
-                                "font-size: 10px; font-family: 'IBM Plex Mono', monospace; "
-                                "color: #1e40af; text-align: right; word-break: break-all;"
-                            )
-                ui.element("div").style("height: 4px;")
-
     def _update_phase_btn_styles(self):
         for phase_id in PHASE_JOBS:
             container = self._refs.get(f"phase_btn_{phase_id}")
@@ -453,14 +403,11 @@ class RosterWidget:
                 f"display: flex; align-items: center; justify-content: center; "
                 f"cursor: pointer; flex-shrink: 0;"
             )
-            # Clear and re-render the child SVG with the updated color stamped in
             svg_source = PHASE_META[phase_id][0]
             svg = self._load_svg(svg_source).replace("currentColor", color)
             container.clear()
             with container:
-                ui.html(svg, sanitize=False).style(
-                    "width: 18px; height: 18px; display: flex; pointer-events: none;"
-                )
+                ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
@@ -468,65 +415,428 @@ class RosterWidget:
         panel = self.panel
         if panel.primary_sidebar is None:
             return
-        from services.project_state import get_project_state
 
         state = get_project_state()
 
         with panel.primary_sidebar:
-            ui.element("div").style("height: 5px;")
+            ui.element("div").style("height: 8px;")
 
-            short_name = state.project_name.split("_")[0][:7] if state.project_name else "---"
-            ui.label(short_name).style(
-                "font-size: 8px; font-weight: 700; color: #94a3b8; "
-                "letter-spacing: 0.05em; text-align: center; text-transform: uppercase; "
-                "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; "
-                "width: 100%; padding: 0 3px;"
-            ).tooltip(state.project_name)
-
-            ui.element("div").style("height: 3px;")
-            self._sb_sep()
+            self._build_project_avatar(state)
             ui.element("div").style("height: 2px;")
+            self._build_metadata_btn(state)
+
+            ui.element("div").style("height: 4px;")
+            self._sb_sep()
+            ui.element("div").style("height: 4px;")
 
             for phase_id in PHASE_JOBS:
                 svg_source, label, sub = PHASE_META[phase_id]
                 self._sb_svg_btn(
-                    svg_source,
-                    f"{label} — {sub}",
-                    lambda p=phase_id: self.toggle(p),
-                    ref_key=f"phase_btn_{phase_id}",
+                    svg_source, f"{label} — {sub}", lambda p=phase_id: self.toggle(p), ref_key=f"phase_btn_{phase_id}"
                 )
 
             if panel.toggle_workbench is not None:
                 ui.element("div").style("height: 1px;")
-                wb_btn = self._sb_svg_btn(
-                    "vial.svg",
-                    "Template Workbench",
-                    panel.toggle_workbench,
-                    ref_key="wb_btn",
-                )
+                wb_btn = self._sb_svg_btn("vial.svg", "Template Workbench", panel.toggle_workbench, ref_key="wb_btn")
                 panel.callbacks["wb_btn"] = wb_btn
 
+            ui.element("div").style("height: 10px;")
             self._sb_sep()
+            ui.element("div").style("height: 6px;")
 
             run_slot = ui.element("div").style(
-                "width: 100%; display: flex; flex-direction: column; "
-                "align-items: center; padding: 2px 6px; gap: 3px;"
+                "width: 100%; display: flex; flex-direction: column; align-items: center; padding: 2px 6px; gap: 3px;"
             )
             self._refs["run_slot"] = run_slot
 
-            self._sb_svg_btn(
-                "cross.svg",
-                "Close project",
-                lambda: ui.navigate.to("/"),
-            )
+            self._sb_svg_btn("cross.svg", "Close project", lambda: ui.navigate.to("/"))
 
             ui.element("div").style("flex: 1;")
-
-            self._sb_sep()
-            self._gear_info_btn(state)
             ui.element("div").style("height: 6px;")
 
         self.rebuild_run_slot()
+
+    def _build_project_avatar(self, state):
+        name = state.project_name or "---"
+        initials = name[:3].upper()
+        color = _avatar_color(name)
+
+        avatar = (
+            ui.element("div")
+            .style(
+                f"width: 34px; height: 34px; border-radius: 50%; "
+                f"background: {color}1a; border: 1.5px solid {color}66; "
+                f"display: flex; align-items: center; justify-content: center; "
+                f"cursor: pointer; flex-shrink: 0;"
+            )
+            .on("click", self._open_project_hub)
+            .tooltip(name)
+        )
+        with avatar:
+            ui.label(initials).style(
+                f"font-size: 9px; font-weight: 700; color: {color}; "
+                "letter-spacing: 0.04em; line-height: 1; pointer-events: none;"
+            )
+        return avatar
+
+    def _build_metadata_btn(self, state):
+        """
+        Dense gear button that opens an anchored popup with project + acquisition params.
+        Uses a plain div (not ui.button) so Quasar doesn't clobber SVG color,
+        but still hosts a ui.menu via a zero-size anchor button trick.
+        """
+        GEAR_COLOR = "#475569"  # slate-600 -- clearly visible against #f8fafc sidebar
+
+        # Outer clickable div matches the style of every other sidebar button
+        outer = (
+            ui.element("div")
+            .style(
+                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                "background: transparent; display: flex; align-items: center; "
+                "justify-content: center; cursor: pointer; flex-shrink: 0; position: relative;"
+            )
+            .tooltip("Project parameters")
+        )
+
+        with outer:
+            svg = _inject_svg_color(self._load_svg("gear.svg"), GEAR_COLOR)
+            ui.html(svg, sanitize=False).style("width: 17px; height: 17px; display: flex; pointer-events: none;")
+
+            # Zero-size invisible button that owns the menu anchor --
+            # positioned absolutely so it doesn't affect layout
+            anchor_btn = (
+                ui.button()
+                .props("flat dense")
+                .style(
+                    "position: absolute; width: 0; height: 0; min-width: 0; "
+                    "padding: 0; opacity: 0; pointer-events: none;"
+                )
+            )
+            with anchor_btn:
+                with (
+                    ui.menu()
+                    .props('anchor="center right" self="center left" :offset="[8,0]"')
+                    .style(
+                        "background: #ffffff; border: 1px solid #e2e8f0; "
+                        "border-radius: 5px; overflow: hidden; min-width: 210px; "
+                        "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
+                    )
+                ) as menu:
+                    for section_title, rows in [
+                        (
+                            "Project",
+                            [
+                                ("Name", state.project_name),
+                                ("Root", str(state.project_path) if state.project_path else "---"),
+                                ("Movies", state.movies_glob or "---"),
+                                ("MDOC", state.mdocs_glob or "---"),
+                            ],
+                        ),
+                        (
+                            "Acquisition",
+                            [
+                                ("Pixel", f"{fmt(state.microscope.pixel_size_angstrom)} Å"),
+                                ("Voltage", f"{fmt(state.microscope.acceleration_voltage_kv)} kV"),
+                                ("Cs", f"{fmt(state.microscope.spherical_aberration_mm)} mm"),
+                                ("Amp. C.", fmt(state.microscope.amplitude_contrast)),
+                                ("Dose", f"{fmt(state.acquisition.dose_per_tilt)} e⁻/Å²"),
+                                ("Tilt ax.", f"{fmt(state.acquisition.tilt_axis_degrees)} °"),
+                            ],
+                        ),
+                    ]:
+                        with ui.element("div").style(
+                            "padding: 7px 11px 5px; font-size: 9px; font-weight: 700; "
+                            "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase; "
+                            "border-bottom: 1px solid #f1f5f9;"
+                        ):
+                            ui.label(section_title)
+                        for row_lbl, row_val in rows:
+                            with ui.element("div").style(
+                                "display: flex; justify-content: space-between; align-items: baseline; "
+                                "padding: 5px 11px; border-bottom: 1px solid #f8fafc; gap: 10px;"
+                            ):
+                                ui.label(row_lbl).style("font-size: 10px; color: #94a3b8; flex-shrink: 0;")
+                                ui.label(str(row_val)).style(
+                                    "font-size: 10px; font-family: 'IBM Plex Mono', monospace; "
+                                    "color: #1e40af; text-align: right; word-break: break-all;"
+                                )
+                    ui.element("div").style("height: 4px;")
+
+            # clicking the outer div opens the menu via JS
+            outer.on("click", lambda: menu.open())
+
+        return outer
+
+    async def _open_project_hub(self):
+        from nicegui import app as ng_app
+        from services.project_state import get_project_state_for
+        from services.configs.user_prefs_service import get_prefs_service
+
+        panel = self.panel
+
+        prefs_service = get_prefs_service()
+        prefs = prefs_service.load_from_app_storage(ng_app.storage.user)
+        base_path = prefs.project_base_path or await panel.backend.get_default_project_base()
+
+        # Mutable scan state -- updated when user picks a different location
+        scan_state = {"base": base_path, "list": await panel.backend.scan_for_projects(base_path)}
+
+        current_path_str = str(panel.ui_mgr.project_path.resolve()) if panel.ui_mgr.project_path else None
+
+        dialog_ref: Dict = {}
+        list_ref: Dict = {}
+        history_refs: Dict = {"container": None, "visible": False, "dropdown": None}
+
+        # ── switch handler ────────────────────────────────────────────────────
+
+        def _make_switch_handler(path_str: str):
+            async def handler():
+                d = dialog_ref.get("dialog")
+                if d:
+                    d.close()
+                await panel.backend.load_existing_project(path_str)
+                p = Path(path_str)
+                loaded_state = get_project_state_for(p)
+                panel.ui_mgr.load_from_project(
+                    project_path=p, scheme_name="loaded", jobs=list(loaded_state.jobs.keys())
+                )
+                ui.navigate.to("/workspace")
+
+            return handler
+
+        # ── project list renderer ─────────────────────────────────────────────
+
+        def _render_list(projects):
+            c = list_ref.get("el")
+            if c is None:
+                return
+            c.clear()
+            other = [p for p in projects if p["path"] != current_path_str]
+            with c:
+                if not other:
+                    with ui.element("div").style("padding: 16px 14px;"):
+                        ui.label("No other projects found.").style(
+                            f"{FONT} font-size: 10px; color: #94a3b8; font-style: italic;"
+                        )
+                    return
+                for proj in other:
+                    is_running = panel.backend.pipeline_runner.is_active(Path(proj["path"])) or proj.get(
+                        "pipeline_active", False
+                    )
+                    proj_name = proj["name"]
+                    proj_color = _avatar_color(proj_name)
+                    creator = proj.get("creator") or ""
+                    date_str = (proj.get("modified") or "")[:10]
+
+                    with (
+                        ui.element("div")
+                        .style(
+                            "display: flex; align-items: center; gap: 10px; "
+                            "padding: 8px 14px; border-bottom: 1px solid #f3f4f6; "
+                            "cursor: pointer;"
+                        )
+                        .classes("hover:bg-slate-50")
+                        .on("click", _make_switch_handler(proj["path"]))
+                    ):
+                        # Mini avatar
+                        with ui.element("div").style(
+                            f"width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0; "
+                            f"background: {proj_color}1a; border: 1px solid {proj_color}55; "
+                            f"display: flex; align-items: center; justify-content: center;"
+                        ):
+                            ui.label(proj_name[:3].upper()).style(
+                                f"font-size: 7px; font-weight: 700; color: {proj_color}; "
+                                "letter-spacing: 0.03em; line-height: 1;"
+                            )
+
+                        # Name + meta
+                        with ui.element("div").style(
+                            "display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 2px;"
+                        ):
+                            with ui.element("div").style("display: flex; align-items: center; gap: 6px;"):
+                                ui.label(proj_name).style(
+                                    f"{FONT} font-size: 11px; font-weight: 500; color: #1e293b; "
+                                    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                                )
+                                if is_running:
+                                    ui.label("running").style(
+                                        f"{FONT} font-size: 8px; color: #3b82f6; font-weight: 700; "
+                                        "background: #eff6ff; border: 1px solid #bfdbfe; "
+                                        "border-radius: 3px; padding: 0 5px; flex-shrink: 0;"
+                                    )
+                            with ui.element("div").style("display: flex; gap: 8px; align-items: center;"):
+                                if creator:
+                                    ui.label(creator).style(f"{MONO} font-size: 9px; color: #64748b;")
+                                if date_str:
+                                    ui.label(date_str).style(f"{MONO} font-size: 9px; color: #cbd5e1;")
+
+        # ── rescan ────────────────────────────────────────────────────────────
+
+        async def _rescan(path_input_el):
+            new_base = path_input_el.value.strip()
+            if not new_base:
+                return
+            scan_state["base"] = new_base
+            scan_state["list"] = await panel.backend.scan_for_projects(new_base)
+            _render_list(scan_state["list"])
+            # Add to recent roots if valid
+            projects = scan_state["list"]
+            if projects:
+                prefs_service.prefs.add_recent_root(new_base)
+                prefs_service.save_to_app_storage(ng_app.storage.user)
+                _render_history()
+
+        # ── history helpers ───────────────────────────────────────────────────
+
+        def _render_history():
+            c = history_refs.get("container")
+            if c is None:
+                return
+            c.clear()
+            roots = prefs_service.prefs.recent_project_roots
+            with c:
+                if not roots:
+                    ui.label("No saved locations").style(
+                        f"{FONT} font-size: 10px; color: #cbd5e1; font-style: italic; padding: 8px 12px;"
+                    )
+                else:
+                    for root in roots[:12]:
+                        with (
+                            ui.element("div")
+                            .style("display: flex; align-items: center; gap: 4px; padding: 5px 10px; cursor: pointer;")
+                            .classes("hover:bg-slate-50")
+                        ):
+                            ui.label(root.path).style(
+                                f"{MONO} font-size: 10px; color: #475569; flex: 1; "
+                                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                            ).on("click", lambda p=root.path: _use_history(p))
+                            (
+                                ui.button(icon="close", on_click=lambda p=root.path: _remove_history(p))
+                                .props("flat dense round size=xs")
+                                .style("color: #cbd5e1; flex-shrink: 0;")
+                            )
+                with ui.element("div").style(
+                    "display: flex; justify-content: flex-end; padding: 4px 10px; border-top: 1px solid #f1f5f9;"
+                ):
+                    ui.button("Clear all", on_click=_clear_history).props("flat dense no-caps").style(
+                        f"{FONT} font-size: 10px; color: #94a3b8;"
+                    )
+
+        def _toggle_history():
+            dd = history_refs.get("dropdown")
+            if dd is None:
+                return
+            if history_refs["visible"]:
+                dd.style("display: none;")
+                history_refs["visible"] = False
+            else:
+                _render_history()
+                dd.style("display: block;")
+                history_refs["visible"] = True
+
+        def _close_history():
+            dd = history_refs.get("dropdown")
+            if dd:
+                dd.style("display: none;")
+            history_refs["visible"] = False
+
+        def _use_history(path: str):
+            _close_history()
+            path_input_ref = history_refs.get("path_input")
+            if path_input_ref:
+                path_input_ref.value = path
+            asyncio.create_task(_rescan_from_path(path))
+
+        async def _rescan_from_path(path: str):
+            scan_state["base"] = path
+            scan_state["list"] = await panel.backend.scan_for_projects(path)
+            _render_list(scan_state["list"])
+
+        def _remove_history(path: str):
+            prefs_service.prefs.remove_recent_root(path)
+            prefs_service.save_to_app_storage(ng_app.storage.user)
+            _render_history()
+
+        def _clear_history():
+            prefs_service.prefs.clear_recent_roots()
+            prefs_service.save_to_app_storage(ng_app.storage.user)
+            _render_history()
+
+        # ── dialog ────────────────────────────────────────────────────────────
+
+        with (
+            ui.dialog() as dialog,
+            ui.card().style(
+                "width: 560px; max-width: 560px; padding: 0; overflow: hidden; "
+                "border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);"
+            ),
+        ):
+            dialog_ref["dialog"] = dialog
+
+            # Base path bar with history dropdown
+            with ui.element("div").style(
+                "display: flex; align-items: center; gap: 6px; "
+                "padding: 7px 10px; border-bottom: 1px solid #e5e7eb; "
+                "background: #f8fafc; position: relative;"
+            ):
+                ui.label("BASE").style(
+                    f"{FONT} font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.09em; flex-shrink: 0;"
+                )
+
+                # Wrapper for input + history dropdown
+                with ui.element("div").style("flex: 1; position: relative; min-width: 0;"):
+                    with ui.element("div").style("display: flex; align-items: center; gap: 4px;"):
+                        path_input = (
+                            ui.input(value=scan_state["base"])
+                            .props("dense borderless")
+                            .style(f"flex: 1; font-size: 10px; {MONO} color: #1e293b; background: transparent;")
+                        )
+                        history_refs["path_input"] = path_input
+                        (
+                            ui.button(icon="expand_more", on_click=_toggle_history)
+                            .props("flat dense round size=xs")
+                            .style("color: #94a3b8; flex-shrink: 0;")
+                            .tooltip("Recent locations")
+                        )
+
+                    # History dropdown
+                    history_dropdown = ui.element("div").style(
+                        "display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; "
+                        "z-index: 9999; background: white; "
+                        "border: 1px solid #e2e8f0; border-radius: 5px; "
+                        "box-shadow: 0 4px 16px rgba(15,23,42,0.10); "
+                        "max-height: 200px; overflow-y: auto;"
+                    )
+                    history_refs["dropdown"] = history_dropdown
+                    with history_dropdown:
+                        history_refs["container"] = ui.element("div").style("width: 100%;")
+
+                (
+                    ui.button(icon="refresh", on_click=lambda: asyncio.create_task(_rescan(path_input)))
+                    .props("flat dense round size=xs")
+                    .style("color: #64748b; flex-shrink: 0;")
+                    .tooltip("Rescan")
+                )
+
+            # Section header
+            with ui.element("div").style(
+                "padding: 7px 14px 5px; font-size: 9px; font-weight: 700; "
+                "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase; "
+                "border-bottom: 1px solid #f1f5f9;"
+            ):
+                ui.label("Projects")
+
+            # Scrollable project list -- taller so you can see more at once
+            with ui.scroll_area().style("height: 420px; width: 100%;"):
+                list_container = ui.element("div").style("width: 100%;")
+                list_ref["el"] = list_container
+
+            ui.element("div").style("height: 4px;")
+
+        _render_list(scan_state["list"])
+        dialog.open()
+
+    # ── Run slot ──────────────────────────────────────────────────────────────
 
     def rebuild_run_slot(self):
         run_slot = self._refs.get("run_slot")
@@ -536,7 +846,6 @@ class RosterWidget:
         panel = self.panel
         with run_slot:
             if panel.ui_mgr.is_running:
-                # Stop button with stop.svg
                 stop_div = (
                     ui.element("div")
                     .style(
@@ -567,7 +876,6 @@ class RosterWidget:
                 )
                 self._refs["status_label"] = status_lbl
             else:
-                # Play button with play.svg
                 play_div = (
                     ui.element("div")
                     .style(
@@ -653,13 +961,10 @@ class RosterWidget:
         self._spinner_idx = (self._spinner_idx + 1) % len(self._spinner_frames)
         frame = self._spinner_frames[self._spinner_idx]
 
-        # Sidebar label (still there while running, shows progress count below it)
         el = self._refs.get("spinner")
         if el:
             el.set_text(frame)
 
-        # All roster-row and tab-strip spinners — class-based, no ref tracking needed.
-        # After any refresh() the DOM gets fresh .cb-row-spinner elements automatically.
         ui.run_javascript(f"document.querySelectorAll('.cb-row-spinner').forEach(e => e.textContent = {repr(frame)});")
 
     def start_spinner_timer(self):
@@ -688,12 +993,9 @@ class RosterWidget:
     def _sb_sep(self):
         ui.element("div").style(f"height: 1px; background: {SB_SEP}; width: 24px; margin: 3px auto;")
 
-    # ── SVG helper ────────────────────────────────────────────────────────────────
-
     def _load_svg(self, name: str) -> str:
         if name.startswith("<svg"):
             return name
-        from pathlib import Path
         p = Path("static/icons") / name
         try:
             return p.read_text()
@@ -704,7 +1006,6 @@ class RosterWidget:
         bg = SB_ABG if active else "transparent"
         color = color_override or (SB_ACT if active else SB_MUTE)
 
-        # Inject the real color value — don't trust CSS inheritance through ui.html wrapper
         svg = self._load_svg(svg_name).replace("currentColor", color)
 
         container = (
@@ -719,9 +1020,7 @@ class RosterWidget:
             .tooltip(tooltip)
         )
         with container:
-            ui.html(svg, sanitize=False).style(
-                "width: 18px; height: 18px; display: flex; pointer-events: none;"
-            )
+            ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
         if ref_key:
             self._refs[ref_key] = container
         return container

@@ -48,14 +48,14 @@ class PipelineBuilderPanel:
         self.roster.refresh()
 
         self.ui_mgr.set_rebuild_callback(self.rebuild_pipeline_ui)
-        self.callbacks["rebuild_pipeline_ui"] = self.rebuild_pipeline_ui
-        self.callbacks["stop_all_timers"] = self.poller.stop_all_timers
-        self.callbacks["check_and_update_statuses"] = self.poller.check_and_update_statuses
-        self.callbacks["enable_run_button"] = self.roster.rebuild_run_slot
-        self.callbacks["add_job_to_pipeline"] = lambda jt: self.add_instance_to_pipeline(jt)
-        self.callbacks["add_instance_to_pipeline"] = self.add_instance_to_pipeline
+        self.callbacks["rebuild_pipeline_ui"]           = self.rebuild_pipeline_ui
+        self.callbacks["stop_all_timers"]               = self.poller.stop_all_timers
+        self.callbacks["check_and_update_statuses"]     = self.poller.check_and_update_statuses
+        self.callbacks["enable_run_button"]             = self.roster.rebuild_run_slot
+        self.callbacks["add_job_to_pipeline"]           = lambda jt: self.add_instance_to_pipeline(jt)
+        self.callbacks["add_instance_to_pipeline"]      = self.add_instance_to_pipeline
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
-        self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
+        self.callbacks["invalidate_tm_tabs"]            = self.invalidate_tm_tabs
 
         self.rebuild_pipeline_ui()
 

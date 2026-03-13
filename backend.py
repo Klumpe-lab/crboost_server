@@ -99,14 +99,15 @@ class CryoBoostBackend:
 
                     created_at = None
                     creator = None
+                    pipeline_active = False
                     try:
                         with open(params_file) as f:
                             data = json.load(f)
                         raw_created = data.get("created_at")
                         if raw_created:
-                            # stored as "2026-03-09 18:44:01.786180"
-                            created_at = str(raw_created)[:16]  # "2026-03-09 18:44"
+                            created_at = str(raw_created)[:16]
                         creator = data.get("created_by")
+                        pipeline_active = bool(data.get("pipeline_active", False))
                     except Exception:
                         pass
 
@@ -123,6 +124,7 @@ class CryoBoostBackend:
                         "modified_timestamp": stats.st_mtime,
                         "created_at": created_at,
                         "creator": creator,
+                        "pipeline_active": pipeline_active,
                     })
                 except Exception as e:
                     print(f"[SCANNER] Error reading {item.name}: {e}")
@@ -135,7 +137,7 @@ class CryoBoostBackend:
         print(f"[SCANNER] Found {len(projects)} valid projects.")
         return projects
 
-    
+        
 
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:

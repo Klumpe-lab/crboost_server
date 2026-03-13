@@ -8,7 +8,7 @@ from nicegui import ui, Client, app
 
 from backend import CryoBoostBackend
 from services.configs.user_prefs_service import get_prefs_service
-from services.project_state import get_project_state
+from services.project_state import get_project_state_for
 from ui.ui_state import get_ui_state_manager
 from ui.data_import_panel import build_data_import_panel
 from ui.workspace_page import build_workspace_page
@@ -80,14 +80,6 @@ def create_ui_router(backend: CryoBoostBackend):
         await client.connected()
 
         ui_mgr = get_ui_state_manager()
-        current_state = get_project_state()
-
-        if current_state.pipeline_active:
-            ui.notify("A pipeline is currently running. Redirecting to workspace.", type="warning", position="top")
-            await asyncio.sleep(0.5)
-            ui.navigate.to("/workspace")
-            return
-
         ui_mgr.reset()
 
         prefs_service = get_prefs_service()
@@ -119,7 +111,6 @@ def create_ui_router(backend: CryoBoostBackend):
 
         if not ui_mgr.is_project_created:
             if ui_mgr.project_path and ui_mgr.project_path.exists():
-                from services.project_state import get_project_state_for
                 recovered_state = get_project_state_for(ui_mgr.project_path)
                 ui_mgr.load_from_project(
                     project_path=recovered_state.project_path,
