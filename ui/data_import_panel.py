@@ -25,14 +25,19 @@ FONT = "font-family: 'IBM Plex Sans', sans-serif;"
 MONO = "font-family: 'IBM Plex Mono', monospace;"
 LABEL = "font-family: system-ui, -apple-system, sans-serif;"
 
-CLR_HEADING = "#1f2937"
-CLR_LABEL = "#6b7280"
-CLR_SUBLABEL = "#9ca3af"
-CLR_GHOST = "#d1d5db"
-CLR_ACCENT = "#2563eb"
+# Blue-tinted slate palette -- feels more like scientific instrument UI
+# than pure neutral grays
+CLR_HEADING = "#0f172a"  # slate-950: dark, authoritative
+CLR_LABEL = "#475569"  # slate-600
+CLR_SUBLABEL = "#94a3b8"  # slate-400
+CLR_GHOST = "#cbd5e1"  # slate-300
+CLR_BORDER = "#e2e8f0"  # slate-200, slightly blue-tinted
+CLR_ACCENT = "#2563eb"  # blue-600
 CLR_ACCENT_LIGHT = "#dbeafe"
 CLR_ACCENT_TEXT = "#1e40af"
-CLR_META = "#64748b"  # project row metadata -- readable but secondary
+CLR_META = "#64748b"  # slate-500 -- readable metadata
+CLR_SUCCESS = "#0d9488"  # teal-600: academic, not shouty green
+CLR_ERROR = "#be4343"  # muted red, not aggressive
 
 
 def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Callable]) -> None:
@@ -42,6 +47,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
     local_refs = {
         "recent_projects_container": None,
         "history_container": None,
+        "history_dropdown_el": None,
+        "history_dropdown_visible": False,
         "projects_path_label": None,
         "default_movies_ext": "*.eer",
         "default_mdocs_ext": "*.mdoc",
@@ -108,7 +115,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             update_input_validation(ui_mgr.panel_refs.movies_input, is_valid, msg)
         if ui_mgr.panel_refs.movies_hint_label:
             ui_mgr.panel_refs.movies_hint_label.set_text(msg)
-            color = "#059669" if is_valid else "#dc2626"
+            color = CLR_SUCCESS if is_valid else CLR_ERROR
             ui_mgr.panel_refs.movies_hint_label.style(f"{FONT} font-size: 9px; color: {color}; padding-left: 2px;")
         update_create_button_state()
 
@@ -120,7 +127,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             update_input_validation(ui_mgr.panel_refs.mdocs_input, is_valid, msg)
         if ui_mgr.panel_refs.mdocs_hint_label:
             ui_mgr.panel_refs.mdocs_hint_label.set_text(msg)
-            color = "#059669" if is_valid else "#dc2626"
+            color = CLR_SUCCESS if is_valid else CLR_ERROR
             ui_mgr.panel_refs.mdocs_hint_label.style(f"{FONT} font-size: 9px; color: {color}; padding-left: 2px;")
         update_create_button_state()
 
@@ -156,25 +163,27 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             btn.classes(remove="opacity-50 cursor-not-allowed")
             btn.style(
                 f"{FONT} font-size: 11px; font-weight: 500; padding: 4px 16px; "
-                f"border-radius: 6px; background: {CLR_ACCENT}; color: white; letter-spacing: 0.01em;"
+                f"border-radius: 6px; background: {CLR_ACCENT}; color: white; "
+                "letter-spacing: 0.01em;"
             )
             if status_label:
                 status_label.set_text("Ready to create")
-                status_label.style(f"{FONT} font-size: 10px; color: #059669;")
+                status_label.style(f"{FONT} font-size: 10px; color: {CLR_SUCCESS};")
         else:
             btn.disable()
             btn.classes("opacity-50 cursor-not-allowed")
             btn.style(
                 f"{FONT} font-size: 11px; font-weight: 500; padding: 4px 16px; "
-                "border-radius: 6px; background: #93c5fd; color: white; letter-spacing: 0.01em;"
+                "border-radius: 6px; background: #93c5fd; color: white; "
+                "letter-spacing: 0.01em;"
             )
             if status_label:
                 if ui_mgr.is_project_created:
                     status_label.set_text("Project created")
-                    status_label.style(f"{FONT} font-size: 10px; color: #059669;")
+                    status_label.style(f"{FONT} font-size: 10px; color: {CLR_SUCCESS};")
                 else:
                     status_label.set_text(f"Missing: {', '.join(missing)}")
-                    status_label.style(f"{FONT} font-size: 10px; color: #dc2626;")
+                    status_label.style(f"{FONT} font-size: 10px; color: {CLR_ERROR};")
 
     def update_locking_state():
         is_running = ui_mgr.is_running
@@ -207,6 +216,80 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             update_create_button_state()
 
     # =========================================================================
+    # HISTORY DROPDOWN
+    # =========================================================================
+
+    def toggle_history_dropdown():
+        el = local_refs["history_dropdown_el"]
+        if el is None:
+            return
+        if local_refs["history_dropdown_visible"]:
+            _close_history_dropdown()
+        else:
+            refresh_history_ui()
+            el.style(remove="display: none;")
+            el.style("display: block;")
+            local_refs["history_dropdown_visible"] = True
+
+    def _close_history_dropdown():
+        el = local_refs["history_dropdown_el"]
+        if el:
+            el.style(remove="display: block;")
+            el.style("display: none;")
+        local_refs["history_dropdown_visible"] = False
+
+    def refresh_history_ui():
+        container = local_refs["history_container"]
+        if not container:
+            return
+        container.clear()
+        roots = prefs_service.prefs.recent_project_roots
+        with container:
+            if not roots:
+                ui.label("No saved locations").style(
+                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 8px 12px;"
+                )
+            else:
+                for root in roots[:10]:
+                    with ui.row().classes("w-full items-center gap-1 py-1 px-3 hover:bg-slate-50 transition-colors"):
+                        ui.label(root.path).style(f"{MONO} font-size: 10px; color: {CLR_LABEL};").classes(
+                            "flex-1 truncate min-w-0"
+                        )
+                        ui.button(icon="arrow_forward", on_click=lambda p=root.path: use_history_path(p)).props(
+                            "flat dense round size=xs"
+                        ).classes("text-blue-400 hover:text-blue-600 shrink-0")
+                        ui.button(icon="close", on_click=lambda p=root.path: remove_history_path(p)).props(
+                            "flat dense round size=xs"
+                        ).classes("text-slate-300 hover:text-red-400 shrink-0")
+            # Clear all footer
+            with ui.row().classes("w-full justify-end px-3 py-1.5 border-t border-slate-100"):
+                ui.button("Clear all", on_click=clear_all_history).props("flat dense no-caps").style(
+                    f"{FONT} font-size: 10px; color: {CLR_SUBLABEL};"
+                )
+
+    def use_history_path(path: str):
+        _close_history_dropdown()
+        ui_mgr.update_data_import(project_base_path=path)
+        if ui_mgr.panel_refs.project_path_input:
+            ui_mgr.panel_refs.project_path_input.value = path
+        if local_refs["projects_path_label"]:
+            local_refs["projects_path_label"].set_text(path or "no location set")
+        prefs_service.update_fields(project_base_path=path)
+        debounced_save()
+        asyncio.create_task(scan_and_display_projects(path))
+
+    def remove_history_path(path: str):
+        prefs_service.prefs.remove_recent_root(path)
+        prefs_service.save_to_app_storage(app.storage.user)
+        refresh_history_ui()
+
+    def clear_all_history():
+        prefs_service.prefs.clear_recent_roots()
+        prefs_service.save_to_app_storage(app.storage.user)
+        refresh_history_ui()
+        ui.notify("History cleared", type="info")
+
+    # =========================================================================
     # PROJECT SCANNING
     # =========================================================================
 
@@ -215,16 +298,17 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         if not container:
             return
 
-        path_label = local_refs["projects_path_label"]
-        if path_label:
-            path_label.set_text(base_path if base_path and base_path.strip() else "no location set")
+        if local_refs["projects_path_label"]:
+            local_refs["projects_path_label"].set_text(
+                base_path if base_path and base_path.strip() else "no location set"
+            )
 
         container.clear()
 
         if not base_path or not base_path.strip():
             with container:
                 ui.label("Set a base location to scan for projects").style(
-                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 4px;"
+                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 0;"
                 )
             return
 
@@ -232,13 +316,13 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         if not path_obj.exists():
             with container:
                 ui.label("Path does not exist").style(
-                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 4px;"
+                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 0;"
                 )
             return
         if not path_obj.is_dir():
             with container:
                 ui.label("Not a directory").style(
-                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 4px;"
+                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 0;"
                 )
             return
 
@@ -251,7 +335,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         with container:
             if not projects:
                 ui.label(f"No projects found in {path_obj.name}/").style(
-                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 4px;"
+                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 0;"
                 )
             else:
                 for proj in projects:
@@ -271,10 +355,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                     with (
                         ui.row()
                         .classes(
-                            "w-full items-center py-1 px-2 gap-2 "
-                            "hover:bg-blue-50/40 transition-colors cursor-pointer group"
+                            "w-full items-center py-1.5 px-5 gap-2 "
+                            "hover:bg-slate-50 transition-colors cursor-pointer group"
                         )
-                        .style("min-height: 28px;")
+                        .style("min-height: 30px;")
                     ):
                         with ui.column().classes("flex-1 gap-0 min-w-0").on("click", make_load_handler(proj["path"])):
                             ui.label(proj["name"]).style(
@@ -287,17 +371,17 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                             if proj.get("creator"):
                                 meta_parts.append(proj["creator"])
                             meta_str = "  \u00b7  ".join(meta_parts) if meta_parts else proj["modified"]
-
                             ui.label(meta_str).style(f"{MONO} font-size: 9px; color: {CLR_META};")
 
                         ui.button(
                             icon="delete_outline", on_click=make_delete_handler(proj["path"], proj["name"])
                         ).props("flat dense round size=xs").classes(
-                            "text-gray-200 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            "text-slate-200 hover:text-red-400 "
+                            "opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
                         )
                         ui.button(icon="arrow_forward", on_click=make_load_handler(proj["path"])).props(
                             "flat dense round size=xs"
-                        ).classes("text-gray-300 hover:text-blue-600")
+                        ).classes("text-slate-300 hover:text-blue-500 shrink-0")
 
     async def _confirm_delete_project(project_dir: Path, project_name: str):
         with ui.dialog() as dialog, ui.card().classes("w-96"):
@@ -309,7 +393,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             )
             ui.label(str(project_dir)).style(
                 f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 6px; "
-                "padding: 5px 7px; background: #f9fafb; border-radius: 4px; word-break: break-all;"
+                "padding: 5px 7px; background: #f8fafc; border-radius: 4px; "
+                "word-break: break-all;"
             )
             with ui.row().classes("w-full justify-end mt-3 gap-2"):
                 ui.button("Cancel", on_click=dialog.close).props("flat no-caps").style(f"{FONT} font-size: 12px;")
@@ -333,56 +418,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                         ui.notify(f"Failed to delete: {e}", type="negative")
 
                 ui.button("Delete permanently", on_click=do_delete).props("no-caps unelevated").style(
-                    f"{FONT} font-size: 12px; background: #dc2626; color: white; border-radius: 6px; padding: 3px 14px;"
+                    f"{FONT} font-size: 12px; background: {CLR_ERROR}; color: white; "
+                    "border-radius: 6px; padding: 3px 14px;"
                 )
         dialog.open()
-
-    # =========================================================================
-    # HISTORY
-    # =========================================================================
-
-    def refresh_history_ui():
-        container = local_refs["history_container"]
-        if not container:
-            return
-        container.clear()
-        roots = prefs_service.prefs.recent_project_roots
-        with container:
-            if not roots:
-                ui.label("No saved locations").style(
-                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 2px;"
-                )
-            else:
-                for root in roots[:10]:
-                    with ui.row().classes("w-full items-center gap-1 py-0.5 px-2"):
-                        ui.label(root.path).style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL};").classes(
-                            "flex-1 truncate min-w-0"
-                        )
-                        ui.button(icon="arrow_forward", on_click=lambda p=root.path: use_history_path(p)).props(
-                            "flat dense round size=xs"
-                        ).classes("text-blue-400 hover:text-blue-600")
-                        ui.button(icon="close", on_click=lambda p=root.path: remove_history_path(p)).props(
-                            "flat dense round size=xs"
-                        ).classes("text-gray-300 hover:text-red-500")
-
-    def use_history_path(path: str):
-        ui_mgr.update_data_import(project_base_path=path)
-        if ui_mgr.panel_refs.project_path_input:
-            ui_mgr.panel_refs.project_path_input.value = path
-        prefs_service.update_fields(project_base_path=path)
-        debounced_save()
-        asyncio.create_task(scan_and_display_projects(path))
-
-    def remove_history_path(path: str):
-        prefs_service.prefs.remove_recent_root(path)
-        prefs_service.save_to_app_storage(app.storage.user)
-        refresh_history_ui()
-
-    def clear_all_history():
-        prefs_service.prefs.clear_recent_roots()
-        prefs_service.save_to_app_storage(app.storage.user)
-        refresh_history_ui()
-        ui.notify("History cleared", type="info")
 
     # =========================================================================
     # FILE PICKERS
@@ -553,9 +592,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         ui_mgr.update_data_import(project_base_path=dir_path)
         if ui_mgr.panel_refs.project_path_input:
             ui_mgr.panel_refs.project_path_input.value = dir_path
-        path_label = local_refs["projects_path_label"]
-        if path_label:
-            path_label.set_text(dir_path)
+        if local_refs["projects_path_label"]:
+            local_refs["projects_path_label"].set_text(dir_path)
         prefs_service.update_fields(project_base_path=dir_path)
         debounced_save()
         await scan_and_display_projects(dir_path)
@@ -644,8 +682,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 for label, value, unit in params:
                     with ui.column().classes("gap-0"):
                         ui.label(label).style(
-                            f"{LABEL} font-size: 8px; font-weight: 400; color: {CLR_SUBLABEL}; "
-                            "line-height: 1; margin-bottom: 1px;"
+                            f"{LABEL} font-size: 8px; font-weight: 400; "
+                            f"color: {CLR_SUBLABEL}; line-height: 1; margin-bottom: 1px;"
                         )
                         with ui.row().classes("items-baseline gap-0.5"):
                             ui.label(value).style(
@@ -704,7 +742,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                     update_mdocs_validation()
 
         await scan_and_display_projects(ui_mgr.data_import.project_base_path)
-        refresh_history_ui()
 
     # =========================================================================
     # AUTO-DETECT TRIGGER
@@ -755,29 +792,27 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
     ui_mgr.panel_refs.load_button = None
 
     card_style = (
-        "background: white; border-radius: 8px; border: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,0.05);"
+        "background: white; border-radius: 8px; "
+        f"border: 1px solid {CLR_BORDER}; "
+        "box-shadow: 0 1px 3px rgba(15,23,42,0.06);"
     )
-    section_style = "border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 10px; background: #fafafa;"
-
-    # Field labels: refined, non-shouty
+    section_style = f"border: 1px solid {CLR_BORDER}; border-radius: 6px; padding: 8px 10px; background: #f8fafc;"
     field_label_style = (
-        f"{LABEL} font-size: 10px; font-weight: 400; color: #64748b; letter-spacing: 0.01em; margin-bottom: 2px;"
+        f"{LABEL} font-size: 10px; font-weight: 400; color: {CLR_LABEL}; letter-spacing: 0.01em; margin-bottom: 2px;"
     )
-
     input_mono_style = f"{MONO} font-size: 11px; flex: 1; border-bottom: 1px solid {CLR_GHOST}; padding: 1px 2px;"
     input_sans_style = f"{FONT} font-size: 12px; width: 100%; border-bottom: 1px solid {CLR_GHOST}; padding: 1px 2px;"
 
     with ui.column().classes("w-full gap-2").style(FONT):
         # =====================================================================
-        # CARD 1: Create Project
+        # CARD 1: Project Setup
         # =====================================================================
         with ui.column().classes("w-full gap-0 px-5 py-4").style(card_style):
             ui.label("Project Setup").style(
-                f"{FONT} font-size: 13px; font-weight: 600; color: #374151; "
+                f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING}; "
                 "letter-spacing: -0.02em; margin-bottom: 10px;"
             )
 
-            # Name + Base Location
             with ui.row().classes("w-full gap-5 mb-3"):
                 with ui.column().classes("gap-0").style("flex: 1;"):
                     ui.label("Project Name").style(field_label_style)
@@ -806,10 +841,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                         with ui.element("div").style("position: relative;"):
                             ui.button(icon="folder", on_click=pick_project_path).props(
                                 "flat dense round size=xs"
-                            ).classes("text-gray-400 hover:text-gray-600")
+                            ).classes("text-slate-400 hover:text-slate-600")
                             ui.tooltip("New project directory will be created here").style(f"{FONT} font-size: 10px;")
 
-            # Data sources + detected config
             with ui.column().classes("w-full gap-2").style(section_style):
                 # Raw Frames
                 with ui.column().classes("w-full gap-0"):
@@ -823,7 +857,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                         )
                         ui_mgr.panel_refs.movies_input = movies_input
                         ui.button(icon="folder", on_click=pick_movies_path).props("flat dense round size=xs").classes(
-                            "text-gray-400 hover:text-gray-600"
+                            "text-slate-400 hover:text-slate-600"
                         )
                     movies_hint = ui.label("No pattern").style(
                         f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; padding-left: 2px; margin-top: 1px;"
@@ -842,7 +876,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                         )
                         ui_mgr.panel_refs.mdocs_input = mdocs_input
                         ui.button(icon="folder", on_click=pick_mdocs_path).props("flat dense round size=xs").classes(
-                            "text-gray-400 hover:text-gray-600"
+                            "text-slate-400 hover:text-slate-600"
                         )
                     mdocs_hint = ui.label("No pattern").style(
                         f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; padding-left: 2px; margin-top: 1px;"
@@ -850,16 +884,17 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                     ui_mgr.panel_refs.mdocs_hint_label = mdocs_hint
 
                 # Detected configuration
-                with ui.column().classes("w-full gap-0").style("border-top: 1px solid #e5e7eb; padding-top: 7px;"):
+                with (
+                    ui.column().classes("w-full gap-0").style(f"border-top: 1px solid {CLR_BORDER}; padding-top: 7px;")
+                ):
                     ui.label("Detected Configuration").style(
-                        f"{LABEL} font-size: 10px; font-weight: 400; color: #64748b; "
-                        "letter-spacing: 0.01em; margin-bottom: 3px;"
+                        f"{LABEL} font-size: 10px; font-weight: 400; "
+                        f"color: {CLR_LABEL}; letter-spacing: 0.01em; margin-bottom: 3px;"
                     )
                     params_container = ui.column().classes("w-full")
                     ui_mgr.panel_refs.params_display_container = params_container
                     refresh_params_display()
 
-            # Status + button
             with ui.row().classes("w-full items-center justify-between mt-3"):
                 status_indicator = ui.label("Enter details to begin...").style(
                     f"{FONT} font-size: 10px; color: {CLR_SUBLABEL};"
@@ -881,39 +916,61 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         # CARD 2: Projects in Base Location
         # =====================================================================
         with ui.column().classes("w-full gap-0").style(card_style):
-            with ui.row().classes("w-full items-start justify-between px-5 pt-3 pb-2"):
-                with ui.column().classes("gap-0"):
-                    ui.label("Projects in Base Location").style(
-                        f"{FONT} font-size: 13px; font-weight: 600; color: #374151; letter-spacing: -0.02em;"
+            # Title row: "Projects in [/path/to/location ▾]"  +  Browse
+            with ui.row().classes("w-full items-center justify-between px-5 pt-3 pb-2"):
+                # Left: title with interactive path dropdown trigger
+                with ui.row().classes("items-baseline gap-1 flex-wrap min-w-0"):
+                    ui.label("Projects in").style(
+                        f"{FONT} font-size: 13px; font-weight: 600; "
+                        f"color: {CLR_HEADING}; letter-spacing: -0.02em; white-space: nowrap;"
                     )
-                    projects_path_label = ui.label(ui_mgr.data_import.project_base_path or "no location set").style(
-                        f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; margin-top: 1px;"
-                    )
-                    local_refs["projects_path_label"] = projects_path_label
 
+                    # Positioned wrapper for the dropdown
+                    with ui.element("div").style("position: relative; display: inline-block; max-width: 460px;"):
+                        # Clickable path pill
+                        with (
+                            ui.row()
+                            .classes("items-center gap-0.5 cursor-pointer rounded")
+                            .style(f"padding: 1px 4px; border-bottom: 1px dashed {CLR_GHOST};")
+                            .on("click", toggle_history_dropdown)
+                        ):
+                            path_label_inline = ui.label(
+                                ui_mgr.data_import.project_base_path or "no location set"
+                            ).style(
+                                f"{MONO} font-size: 11px; color: {CLR_ACCENT}; "
+                                "max-width: 420px; overflow: hidden; "
+                                "text-overflow: ellipsis; white-space: nowrap;"
+                            )
+                            local_refs["projects_path_label"] = path_label_inline
+                            ui.icon("expand_more", size="14px").style(f"color: {CLR_SUBLABEL}; flex-shrink: 0;")
+
+                        # History dropdown (hidden by default)
+                        history_dropdown_el = ui.element("div").style(
+                            "position: absolute; top: calc(100% + 4px); left: 0; "
+                            "z-index: 9999; display: none; background: white; "
+                            f"border: 1px solid {CLR_BORDER}; border-radius: 6px; "
+                            "box-shadow: 0 4px 16px rgba(15,23,42,0.10); "
+                            "min-width: 320px; max-width: 480px; "
+                            "max-height: 220px; overflow-y: auto;"
+                        )
+                        local_refs["history_dropdown_el"] = history_dropdown_el
+                        with history_dropdown_el:
+                            local_refs["history_container"] = ui.column().classes("w-full p-0 gap-0")
+
+                # Right: Browse button
                 with (
                     ui.button(on_click=handle_load_project_click)
                     .props("flat dense no-caps")
-                    .classes("text-gray-400 hover:text-blue-600")
+                    .classes("text-slate-400 hover:text-blue-600 shrink-0")
                 ):
                     with ui.row().classes("items-center gap-1"):
                         ui.icon("folder_open", size="13px")
                         ui.label("Browse").style(f"{FONT} font-size: 10px; font-weight: 500;")
 
-            with ui.scroll_area().classes("w-full px-3 py-0.5").style("min-height: 60px; max-height: 160px;"):
+            # Project list -- no horizontal padding on scroll area,
+            # rows carry their own px-5 to align with the title
+            with ui.scroll_area().classes("w-full").style("min-height: 80px; max-height: 300px;"):
                 local_refs["recent_projects_container"] = ui.column().classes("w-full gap-0")
-
-            with ui.column().classes("w-full gap-0").style("border-top: 1px solid #f3f4f6;"):
-                with ui.row().classes("w-full items-center justify-between px-5 pt-2 pb-1"):
-                    ui.label("Recently Visited Locations").style(
-                        f"{LABEL} font-size: 9px; font-weight: 400; color: #94a3b8; letter-spacing: 0.03em;"
-                    )
-                    ui.button(icon="delete_sweep", on_click=clear_all_history).props(
-                        "flat dense round size=xs"
-                    ).classes("text-gray-300 hover:text-red-400")
-
-                with ui.column().classes("w-full px-3 pb-2"):
-                    local_refs["history_container"] = ui.column().classes("w-full gap-0")
 
     # =========================================================================
     # WIRING
