@@ -61,7 +61,7 @@ def build_workspace_page(backend: CryoBoostBackend):
         "overflow: hidden; gap: 0; margin: 0; padding: 0;"
     ):
         primary_sidebar = ui.element("div").style(
-            "width: 42px; min-width: 42px; height: 100%; flex-shrink: 0; "
+            "width: 60px; min-width: 60px; height: 100%; flex-shrink: 0; "
             "background: #f8fafc; display: flex; flex-direction: column; "
             "align-items: center; gap: 0; overflow: visible; z-index: 20; "
             "border-right: 1px solid #e2e8f0;"
