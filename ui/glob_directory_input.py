@@ -123,10 +123,20 @@ class GlobDirectoryInput:
     def _get_completions(self, typed: str) -> list[str]:
         if not typed or not typed.strip():
             return []
-        p = Path(typed.strip())
-        # If typed path is itself a real dir, list its children
-        # Otherwise list children of the parent (user is typing a partial name)
-        parent = p if p.is_dir() else p.parent
+        typed = typed.strip()
+        p = Path(typed)
+
+        # Path ends with slash: user confirmed a directory, show all children
+        if typed.endswith("/"):
+            parent = p
+            prefix = ""
+        elif p.is_dir():
+            parent = p
+            prefix = ""
+        else:
+            parent = p.parent
+            prefix = p.name.lower()
+
         if not parent.is_dir():
             return []
         try:
@@ -134,7 +144,9 @@ class GlobDirectoryInput:
                 [
                     str(d)
                     for d in parent.iterdir()
-                    if d.is_dir() and not d.name.startswith(".")
+                    if d.is_dir()
+                    and not d.name.startswith(".")
+                    and (not prefix or d.name.lower().startswith(prefix))
                 ],
                 key=lambda x: Path(x).name.lower(),
             )[:10]
