@@ -15,6 +15,7 @@ from services.configs.user_prefs_service import get_prefs_service
 from services.project_state import get_project_state
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
+from ui.glob_directory_input import GlobDirectoryInput
 
 
 DEFAULT_MOVIES_EXT = "*.eer"
@@ -22,6 +23,7 @@ DEFAULT_MDOCS_EXT = "*.mdoc"
 
 FONT = "font-family: 'IBM Plex Sans', sans-serif;"
 MONO = "font-family: 'IBM Plex Mono', monospace;"
+LABEL = "font-family: system-ui, -apple-system, sans-serif;"
 
 CLR_HEADING = "#1f2937"
 CLR_LABEL = "#6b7280"
@@ -30,6 +32,7 @@ CLR_GHOST = "#d1d5db"
 CLR_ACCENT = "#2563eb"
 CLR_ACCENT_LIGHT = "#dbeafe"
 CLR_ACCENT_TEXT = "#1e40af"
+CLR_META = "#64748b"  # project row metadata -- readable but secondary
 
 
 def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Callable]) -> None:
@@ -268,15 +271,25 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                     with (
                         ui.row()
                         .classes(
-                            "w-full items-center py-1 px-2 gap-2 hover:bg-blue-50/40 transition-colors cursor-pointer group"
+                            "w-full items-center py-1 px-2 gap-2 "
+                            "hover:bg-blue-50/40 transition-colors cursor-pointer group"
                         )
-                        .style("min-height: 24px;")
+                        .style("min-height: 28px;")
                     ):
                         with ui.column().classes("flex-1 gap-0 min-w-0").on("click", make_load_handler(proj["path"])):
                             ui.label(proj["name"]).style(
                                 f"{FONT} font-size: 11px; font-weight: 500; color: {CLR_HEADING};"
                             ).classes("truncate")
-                            ui.label(proj["modified"]).style(f"{MONO} font-size: 9px; color: {CLR_GHOST};")
+
+                            meta_parts = []
+                            if proj.get("created_at"):
+                                meta_parts.append(proj["created_at"])
+                            if proj.get("creator"):
+                                meta_parts.append(proj["creator"])
+                            meta_str = "  \u00b7  ".join(meta_parts) if meta_parts else proj["modified"]
+
+                            ui.label(meta_str).style(f"{MONO} font-size: 9px; color: {CLR_META};")
+
                         ui.button(
                             icon="delete_outline", on_click=make_delete_handler(proj["path"], proj["name"])
                         ).props("flat dense round size=xs").classes(
@@ -376,29 +389,24 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
     # =========================================================================
 
     async def pick_movies_path():
-        result = await local_file_picker(directory="~", mode="directory")
-        if result and len(result) > 0:
-            pattern = str(Path(result[0]) / local_refs["default_movies_ext"])
-            ui_mgr.update_data_import(movies_glob=pattern)
+        start = ui_mgr.data_import.movies_glob
+        start_dir = str(Path(start).parent) if start and "*" in start else (start or "~")
+        result = await local_file_picker(directory=start_dir, mode="directory")
+        if result:
             if ui_mgr.panel_refs.movies_input:
-                ui_mgr.panel_refs.movies_input.value = pattern
-            update_movies_validation()
-            prefs_service.update_fields(movies_glob=pattern)
-            debounced_save()
+                ui_mgr.panel_refs.movies_input.set_directory(result[0])
 
     async def pick_mdocs_path():
-        result = await local_file_picker(directory="~", mode="directory")
-        if result and len(result) > 0:
-            pattern = str(Path(result[0]) / local_refs["default_mdocs_ext"])
-            ui_mgr.update_data_import(mdocs_glob=pattern)
+        start = ui_mgr.data_import.mdocs_glob
+        start_dir = str(Path(start).parent) if start and "*" in start else (start or "~")
+        result = await local_file_picker(directory=start_dir, mode="directory")
+        if result:
             if ui_mgr.panel_refs.mdocs_input:
-                ui_mgr.panel_refs.mdocs_input.value = pattern
-            update_mdocs_validation()
-            prefs_service.update_fields(mdocs_glob=pattern)
-            debounced_save()
+                ui_mgr.panel_refs.mdocs_input.set_directory(result[0])
 
     async def pick_project_path():
-        result = await local_file_picker(directory="~", mode="directory")
+        start = ui_mgr.data_import.project_base_path or "~"
+        result = await local_file_picker(directory=start, mode="directory")
         if result and len(result) > 0:
             dir_path = result[0]
             ui_mgr.update_data_import(project_base_path=dir_path)
@@ -448,18 +456,16 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
         asyncio.create_task(check_and_add())
 
-    def on_movies_change(e):
-        value = e.value if hasattr(e, "value") else str(e) if e else ""
-        ui_mgr.update_data_import(movies_glob=value or "")
+    def on_movies_change(glob_str: str):
+        ui_mgr.update_data_import(movies_glob=glob_str)
         update_movies_validation()
-        prefs_service.update_fields(movies_glob=value or "")
+        prefs_service.update_fields(movies_glob=glob_str)
         debounced_save()
 
-    def on_mdocs_change(e):
-        value = e.value if hasattr(e, "value") else str(e) if e else ""
-        ui_mgr.update_data_import(mdocs_glob=value or "")
+    def on_mdocs_change(glob_str: str):
+        ui_mgr.update_data_import(mdocs_glob=glob_str)
         update_mdocs_validation()
-        prefs_service.update_fields(mdocs_glob=value or "")
+        prefs_service.update_fields(mdocs_glob=glob_str)
         debounced_save()
 
     # =========================================================================
@@ -539,7 +545,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             update_locking_state()
 
     async def handle_load_project_click():
-        result = await local_file_picker(directory="~", mode="directory")
+        start = ui_mgr.data_import.project_base_path or "~"
+        result = await local_file_picker(directory=start, mode="directory")
         if not result or len(result) == 0:
             return
         dir_path = result[0]
@@ -584,9 +591,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 )
                 prefs_service.save_to_app_storage(app.storage.user)
 
-                # Restore running UI state if the pipeline was active when the
-                # server went down. The workspace page will pick this up and
-                # lock the UI + start the status timer via rebuild_pipeline_ui.
                 if state.pipeline_active:
                     ui_mgr.set_pipeline_running(True)
                     ui.notify(
@@ -603,6 +607,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 ui.notify(f"Failed to load: {load_result.get('error')}", type="negative")
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             ui.notify(f"Error loading project: {e}", type="negative")
 
@@ -639,8 +644,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 for label, value, unit in params:
                     with ui.column().classes("gap-0"):
                         ui.label(label).style(
-                            f"{FONT} font-size: 8px; font-weight: 500; color: {CLR_SUBLABEL}; "
-                            "text-transform: uppercase; letter-spacing: 0.04em; line-height: 1; margin-bottom: 1px;"
+                            f"{LABEL} font-size: 8px; font-weight: 400; color: {CLR_SUBLABEL}; "
+                            "line-height: 1; margin-bottom: 1px;"
                         )
                         with ui.row().classes("items-baseline gap-0.5"):
                             ui.label(value).style(
@@ -665,6 +670,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         if config_mdocs and "*" in config_mdocs:
             local_refs["default_mdocs_ext"] = "*" + config_mdocs.split("*")[-1]
 
+        if ui_mgr.panel_refs.movies_input:
+            ui_mgr.panel_refs.movies_input.set_extension(local_refs["default_movies_ext"])
+        if ui_mgr.panel_refs.mdocs_input:
+            ui_mgr.panel_refs.mdocs_input.set_extension(local_refs["default_mdocs_ext"])
+
         if not ui_mgr.data_import.project_base_path:
             saved_path = prefs.project_base_path
             if saved_path:
@@ -678,18 +688,20 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         if not ui_mgr.data_import.movies_glob:
             glob_to_use = prefs.movies_glob or config_movies
             if glob_to_use:
-                ui_mgr.update_data_import(movies_glob=glob_to_use)
                 if ui_mgr.panel_refs.movies_input:
-                    ui_mgr.panel_refs.movies_input.value = glob_to_use
-                update_movies_validation()
+                    ui_mgr.panel_refs.movies_input.set_from_glob(glob_to_use)
+                else:
+                    ui_mgr.update_data_import(movies_glob=glob_to_use)
+                    update_movies_validation()
 
         if not ui_mgr.data_import.mdocs_glob:
             glob_to_use = prefs.mdocs_glob or config_mdocs
             if glob_to_use:
-                ui_mgr.update_data_import(mdocs_glob=glob_to_use)
                 if ui_mgr.panel_refs.mdocs_input:
-                    ui_mgr.panel_refs.mdocs_input.value = glob_to_use
-                update_mdocs_validation()
+                    ui_mgr.panel_refs.mdocs_input.set_from_glob(glob_to_use)
+                else:
+                    ui_mgr.update_data_import(mdocs_glob=glob_to_use)
+                    update_mdocs_validation()
 
         await scan_and_display_projects(ui_mgr.data_import.project_base_path)
         refresh_history_ui()
@@ -746,10 +758,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         "background: white; border-radius: 8px; border: 1px solid #e5e7eb; box-shadow: 0 1px 2px rgba(0,0,0,0.05);"
     )
     section_style = "border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 10px; background: #fafafa;"
+
+    # Field labels: refined, non-shouty
     field_label_style = (
-        f"{FONT} font-size: 8px; font-weight: 500; color: {CLR_SUBLABEL}; "
-        "text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 1px;"
+        f"{LABEL} font-size: 10px; font-weight: 400; color: #64748b; letter-spacing: 0.01em; margin-bottom: 2px;"
     )
+
     input_mono_style = f"{MONO} font-size: 11px; flex: 1; border-bottom: 1px solid {CLR_GHOST}; padding: 1px 2px;"
     input_sans_style = f"{FONT} font-size: 12px; width: 100%; border-bottom: 1px solid {CLR_GHOST}; padding: 1px 2px;"
 
@@ -759,8 +773,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         # =====================================================================
         with ui.column().classes("w-full gap-0 px-5 py-4").style(card_style):
             ui.label("Project Setup").style(
-                f"{FONT} font-size: 12px; font-weight: 600; color: #4b5563; "
-                "letter-spacing: -0.01em; margin-bottom: 10px;"
+                f"{FONT} font-size: 13px; font-weight: 600; color: #374151; "
+                "letter-spacing: -0.02em; margin-bottom: 10px;"
             )
 
             # Name + Base Location
@@ -789,9 +803,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                         )
                         project_path_input.on("blur", on_project_path_blur)
                         ui_mgr.panel_refs.project_path_input = project_path_input
-                        ui.button(icon="folder", on_click=pick_project_path).props("flat dense round size=xs").classes(
-                            "text-gray-400 hover:text-gray-600"
-                        )
+                        with ui.element("div").style("position: relative;"):
+                            ui.button(icon="folder", on_click=pick_project_path).props(
+                                "flat dense round size=xs"
+                            ).classes("text-gray-400 hover:text-gray-600")
+                            ui.tooltip("New project directory will be created here").style(f"{FONT} font-size: 10px;")
 
             # Data sources + detected config
             with ui.column().classes("w-full gap-2").style(section_style):
@@ -799,14 +815,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 with ui.column().classes("w-full gap-0"):
                     ui.label("Raw Frames").style(field_label_style)
                     with ui.row().classes("w-full items-center gap-1"):
-                        movies_input = (
-                            ui.input(
-                                value=ui_mgr.data_import.movies_glob, placeholder="*.eer", on_change=on_movies_change
-                            )
-                            .props("dense borderless hide-bottom-space")
-                            .style(input_mono_style)
+                        movies_input = GlobDirectoryInput(
+                            extension=local_refs["default_movies_ext"],
+                            initial_glob=ui_mgr.data_import.movies_glob,
+                            on_change=on_movies_change,
+                            placeholder="/path/to/movies",
                         )
-                        movies_input.on("blur", lambda e: sync_state_from_inputs())
                         ui_mgr.panel_refs.movies_input = movies_input
                         ui.button(icon="folder", on_click=pick_movies_path).props("flat dense round size=xs").classes(
                             "text-gray-400 hover:text-gray-600"
@@ -820,14 +834,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 with ui.column().classes("w-full gap-0"):
                     ui.label("SerialEM Mdocs").style(field_label_style)
                     with ui.row().classes("w-full items-center gap-1"):
-                        mdocs_input = (
-                            ui.input(
-                                value=ui_mgr.data_import.mdocs_glob, placeholder="*.mdoc", on_change=on_mdocs_change
-                            )
-                            .props("dense borderless hide-bottom-space")
-                            .style(input_mono_style)
+                        mdocs_input = GlobDirectoryInput(
+                            extension=local_refs["default_mdocs_ext"],
+                            initial_glob=ui_mgr.data_import.mdocs_glob,
+                            on_change=on_mdocs_change,
+                            placeholder="/path/to/mdocs",
                         )
-                        mdocs_input.on("blur", lambda e: sync_state_from_inputs())
                         ui_mgr.panel_refs.mdocs_input = mdocs_input
                         ui.button(icon="folder", on_click=pick_mdocs_path).props("flat dense round size=xs").classes(
                             "text-gray-400 hover:text-gray-600"
@@ -839,7 +851,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
                 # Detected configuration
                 with ui.column().classes("w-full gap-0").style("border-top: 1px solid #e5e7eb; padding-top: 7px;"):
-                    ui.label("Detected Configuration").style(field_label_style)
+                    ui.label("Detected Configuration").style(
+                        f"{LABEL} font-size: 10px; font-weight: 400; color: #64748b; "
+                        "letter-spacing: 0.01em; margin-bottom: 3px;"
+                    )
                     params_container = ui.column().classes("w-full")
                     ui_mgr.panel_refs.params_display_container = params_container
                     refresh_params_display()
@@ -856,7 +871,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                     .props("no-caps unelevated")
                     .style(
                         f"{FONT} font-size: 11px; font-weight: 500; padding: 4px 16px; "
-                        "border-radius: 6px; background: #93c5fd; color: white; letter-spacing: 0.01em;"
+                        "border-radius: 6px; background: #93c5fd; color: white; "
+                        "letter-spacing: 0.01em;"
                     )
                 )
                 ui_mgr.panel_refs.create_button = create_btn
@@ -868,7 +884,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             with ui.row().classes("w-full items-start justify-between px-5 pt-3 pb-2"):
                 with ui.column().classes("gap-0"):
                     ui.label("Projects in Base Location").style(
-                        f"{FONT} font-size: 12px; font-weight: 600; color: #4b5563; letter-spacing: -0.01em;"
+                        f"{FONT} font-size: 13px; font-weight: 600; color: #374151; letter-spacing: -0.02em;"
                     )
                     projects_path_label = ui.label(ui_mgr.data_import.project_base_path or "no location set").style(
                         f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; margin-top: 1px;"
@@ -890,8 +906,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             with ui.column().classes("w-full gap-0").style("border-top: 1px solid #f3f4f6;"):
                 with ui.row().classes("w-full items-center justify-between px-5 pt-2 pb-1"):
                     ui.label("Recently Visited Locations").style(
-                        f"{FONT} font-size: 8px; font-weight: 600; color: {CLR_SUBLABEL}; "
-                        "text-transform: uppercase; letter-spacing: 0.05em;"
+                        f"{LABEL} font-size: 9px; font-weight: 400; color: #94a3b8; letter-spacing: 0.03em;"
                     )
                     ui.button(icon="delete_sweep", on_click=clear_all_history).props(
                         "flat dense round size=xs"

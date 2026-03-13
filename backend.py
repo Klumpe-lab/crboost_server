@@ -69,12 +69,12 @@ class CryoBoostBackend:
         return str(Path.home())
 
     async def scan_for_projects(self, base_path: str) -> List[Dict[str, Any]]:
-        """
-        Scans for subdirectories containing project_params.json.
-        """
+        import json
+        import pwd
+
         projects = []
         path = Path(base_path)
-        
+
         print(f"[SCANNER] Scanning directory: {path}")
 
         if not path.exists():
@@ -86,33 +86,51 @@ class CryoBoostBackend:
 
         try:
             for item in path.iterdir():
-                if item.is_dir():
-                    # Check for our specific state file
-                    params_file = item / "project_params.json"
-                    
-                    if params_file.exists():
+                if not item.is_dir():
+                    continue
+                params_file = item / "project_params.json"
+                if not params_file.exists():
+                    if not item.name.startswith("."):
+                        print(f"[SCANNER] Skipped '{item.name}' - missing project_params.json")
+                    continue
+                try:
+                    stats = params_file.stat()
+                    mod_time = datetime.fromtimestamp(stats.st_mtime)
+
+                    created_at = None
+                    creator = None
+                    try:
+                        with open(params_file) as f:
+                            data = json.load(f)
+                        raw_created = data.get("created_at")
+                        if raw_created:
+                            # stored as "2026-03-09 18:44:01.786180"
+                            created_at = str(raw_created)[:16]  # "2026-03-09 18:44"
+                        creator = data.get("created_by")
+                    except Exception:
+                        pass
+
+                    if creator is None:
                         try:
-                            stats = params_file.stat()
-                            mod_time = datetime.fromtimestamp(stats.st_mtime)
-                            projects.append({
-                                "name": item.name,
-                                "path": str(item),
-                                "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
-                                "modified_timestamp": stats.st_mtime
-                            })
-                        except Exception as e:
-                            print(f"[SCANNER] Error reading {item.name}: {e}")
-                    else:
-                        # Log why we skipped this folder (useful for debugging your older projects)
-                        # We only check for hidden folders to reduce spam
-                        if not item.name.startswith('.'):
-                            print(f"[SCANNER] Skipped '{item.name}' - missing project_params.json")
+                            creator = pwd.getpwuid(stats.st_uid).pw_name
+                        except Exception:
+                            creator = None
+
+                    projects.append({
+                        "name": item.name,
+                        "path": str(item),
+                        "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
+                        "modified_timestamp": stats.st_mtime,
+                        "created_at": created_at,
+                        "creator": creator,
+                    })
+                except Exception as e:
+                    print(f"[SCANNER] Error reading {item.name}: {e}")
 
         except Exception as e:
             print(f"[BACKEND] Error scanning projects: {e}")
             return []
 
-        # Sort by modification time (newest first)
         projects.sort(key=lambda x: x["modified_timestamp"], reverse=True)
         print(f"[SCANNER] Found {len(projects)} valid projects.")
         return projects
