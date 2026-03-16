@@ -50,7 +50,7 @@ def main():
             "--i", str(input_optimisation),
             "--o", str(job_dir) + "/",
             "--b", str(params.box_size),
-            "--sym", str(params.symmetry),
+            "--sym", params.symmetry.value if hasattr(params.symmetry, 'value') else str(params.symmetry),
             "--j", str(params.threads),
             "--j_in", str(params.threads_in),
             "--j_out", str(params.threads_out),

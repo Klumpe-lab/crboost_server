@@ -62,7 +62,7 @@ def main():
             "--healpix_order", str(params.healpix_order),
             "--offset_range", str(params.offset_range),
             "--offset_step", str(params.offset_step),
-            "--sym", str(params.symmetry),
+            "--sym", params.symmetry.value if hasattr(params.symmetry, 'value') else str(params.symmetry),
             "--j", str(params.threads),
         ]
 
