@@ -21,6 +21,31 @@ from ui.pipeline_builder.pipeline_constants import (
 if TYPE_CHECKING:
     from ui.pipeline_builder.pipeline_builder_panel import PipelineBuilderPanel
 
+_GEAR_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+    'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+    '<circle cx="12" cy="12" r="3"/>'
+    '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06'
+    'a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09'
+    'A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83'
+    'l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09'
+    'A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83'
+    'l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09'
+    'a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83'
+    'l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09'
+    'a1.65 1.65 0 0 0-1.51 1z"/>'
+    '</svg>'
+)
+
+_TOMO_PREVIEW_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
+    'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+    '<circle cx="12" cy="12" r="8"/>'
+    '<line x1="4.5" y1="9" x2="19.5" y2="9"/>'
+    '<line x1="4" y1="12" x2="20" y2="12"/>'
+    '<line x1="4.5" y1="15" x2="19.5" y2="15"/>'
+    '</svg>'
+)
 _SB_INFO = "#c0cad4"
 _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
 
@@ -411,6 +436,9 @@ class RosterWidget:
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
+
+
+
     def build_sidebar(self):
         panel = self.panel
         if panel.primary_sidebar is None:
@@ -439,6 +467,14 @@ class RosterWidget:
                 ui.element("div").style("height: 1px;")
                 wb_btn = self._sb_svg_btn("vial.svg", "Template Workbench", panel.toggle_workbench, ref_key="wb_btn")
                 panel.callbacks["wb_btn"] = wb_btn
+
+            ui.element("div").style("height: 1px;")
+            self._sb_svg_btn(
+                _TOMO_PREVIEW_SVG,
+                "Tomogram Previews",
+                self._open_tomo_previews,
+                ref_key="preview_btn",
+            )
 
             ui.element("div").style("height: 10px;")
             self._sb_sep()
@@ -499,7 +535,9 @@ class RosterWidget:
         )
 
         with outer:
-            svg = _inject_svg_color(self._load_svg("gear.svg"), GEAR_COLOR)
+
+
+            svg = _GEAR_SVG.replace("currentColor", GEAR_COLOR)
             ui.html(svg, sanitize=False).style("width: 17px; height: 17px; display: flex; pointer-events: none;")
 
             # Zero-size invisible button that owns the menu anchor --
@@ -1063,3 +1101,159 @@ class RosterWidget:
                         )
                 ui.element("div").style("height: 4px;")
         return btn
+
+    # In RosterWidget -- add these two methods alongside the other helpers at the bottom
+
+    def _find_reconstruct_pngs(self) -> list:
+        """Return sorted PNG paths from the most recent succeeded TS_RECONSTRUCT job."""
+        project_path = self.panel.ui_mgr.project_path
+        if not project_path:
+            return []
+
+        state = get_project_state()
+        succeeded = []
+        for iid, job_model in state.jobs.items():
+            try:
+                if instance_id_to_job_type(iid) != JobType.TS_RECONSTRUCT:
+                    continue
+            except ValueError:
+                continue
+            if job_model.execution_status != JobStatus.SUCCEEDED:
+                continue
+            relion_name = getattr(job_model, "relion_job_name", None)
+            if relion_name:
+                succeeded.append(relion_name.rstrip("/"))
+
+        if not succeeded:
+            return []
+
+        succeeded.sort()  # lexicographic sort puts job005 after job004
+        recon_dir = project_path / succeeded[-1] / "warp_tiltseries" / "reconstruction"
+        if not recon_dir.exists():
+            return []
+
+        return sorted(recon_dir.glob("*.png"))
+
+
+    async def _open_tomo_previews(self):
+        import base64
+        import shlex
+
+        pngs = self._find_reconstruct_pngs()
+
+        items = []
+        for png_path in pngs:
+            try:
+                data = base64.b64encode(png_path.read_bytes()).decode()
+                recon_dir = png_path.parent
+                f32_path = recon_dir / f"{png_path.stem}_f32.mrc"
+                mrc_path = recon_dir / f"{png_path.stem}.mrc"
+                resolved = f32_path if f32_path.exists() else mrc_path
+                items.append({
+                    "stem": png_path.stem,
+                    "src": f"data:image/png;base64,{data}",
+                    "mrc": str(resolved),
+                })
+            except Exception as e:
+                print(f"[PREVIEW] Could not read {png_path}: {e}")
+
+        def _copy_cmd(cmd: str):
+            ui.clipboard.write(cmd)
+            ui.notify("Copied to clipboard", timeout=1500)
+
+        refs = {}
+
+        with ui.dialog() as dialog, ui.card().style(
+            "width: 90vw; max-width: 1400px; height: 85vh; max-height: 85vh; padding: 0; "
+            "overflow: hidden; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.12); "
+            "display: flex; flex-direction: column;"
+        ):
+            with ui.element("div").style(
+                "display: flex; align-items: center; gap: 10px; flex-shrink: 0; "
+                "padding: 10px 14px; border-bottom: 1px solid #e5e7eb; background: #f8fafc;"
+            ):
+                ui.label("Tomogram Previews").style(
+                    f"{FONT} font-size: 12px; font-weight: 600; color: #1e293b; flex-shrink: 0;"
+                )
+                if items:
+                    filter_input = (
+                        ui.input(placeholder="filter by name...")
+                        .props("dense borderless clearable")
+                        .style(
+                            f"{MONO} font-size: 10px; color: #1e293b; "
+                            "background: white; border: 1px solid #e2e8f0; border-radius: 4px; "
+                            "padding: 0 8px; width: 260px;"
+                        )
+                    )
+                    refs["filter"] = filter_input
+                ui.element("div").style("flex: 1;")
+                (
+                    ui.button(icon="close", on_click=dialog.close)
+                    .props("flat dense round size=xs")
+                    .style("color: #94a3b8;")
+                )
+
+            if not items:
+                with ui.element("div").style(
+                    "flex: 1; display: flex; align-items: center; justify-content: center;"
+                ):
+                    ui.label("No previews available -- run Reconstruct first.").style(
+                        f"{FONT} font-size: 11px; color: #94a3b8; font-style: italic;"
+                    )
+            else:
+                with ui.scroll_area().style(
+                    "flex: 1; min-height: 0; width: 100%; height: calc(85vh - 52px);"
+                ):
+                    grid_container = ui.element("div").style("width: 100%;")
+                    refs["grid"] = grid_container
+
+                def render_grid(ft: str = ""):
+                    c = refs.get("grid")
+                    if c is None:
+                        return
+                    c.clear()
+                    visible = [it for it in items if ft.lower() in it["stem"].lower()]
+                    with c:
+                        if not visible:
+                            with ui.element("div").style("padding: 32px; text-align: center;"):
+                                ui.label("No tomograms match the filter.").style(
+                                    f"{FONT} font-size: 11px; color: #94a3b8; font-style: italic;"
+                                )
+                            return
+                        with ui.element("div").style(
+                            "display: grid; grid-template-columns: repeat(4, 1fr); "
+                            "gap: 16px; padding: 16px;"
+                        ):
+                            for item in visible:
+                                cmd = f"3dmod {shlex.quote(item['mrc'])}"
+                                with ui.element("div").style(
+                                    "display: flex; flex-direction: column; "
+                                    "border-radius: 4px; overflow: hidden; "
+                                    "border: 1px solid #1e293b; background: #0f172a;"
+                                ):
+                                    ui.image(item["src"]).style("width: 100%; display: block;")
+                                    with ui.element("div").style(
+                                        "display: flex; align-items: center; gap: 4px; "
+                                        "padding: 5px 8px; background: #1e293b;"
+                                    ):
+                                        ui.label(item["stem"]).style(
+                                            f"{MONO} font-size: 9px; color: #94a3b8; flex: 1; "
+                                            "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                                        )
+                                        (
+                                            ui.button(
+                                                icon="content_copy",
+                                                on_click=lambda c=cmd: _copy_cmd(c),
+                                            )
+                                            .props("flat dense round size=xs")
+                                            .style("color: #475569; flex-shrink: 0;")
+                                            .tooltip(cmd)
+                                        )
+
+                render_grid()
+
+                fi = refs.get("filter")
+                if fi:
+                    fi.on_value_change(lambda e: render_grid(e.value or ""))
+
+        dialog.open()
