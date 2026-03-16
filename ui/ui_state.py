@@ -12,9 +12,10 @@ if TYPE_CHECKING:
 
 
 class MonitorTab(str, Enum):
+
     CONFIG = "config"
-    LOGS = "logs"
-    FILES = "files"
+    LOGS   = "logs"
+    FILES  = "files"
 
 
 class JobCardUIState(BaseModel):

@@ -22,6 +22,9 @@ sys.path.insert(0, str(project_root))
 from drivers.driver_base import get_driver_context, run_command
 from services.computing.container_service import get_container_service
 
+# At the top of extract_candidates_pytom.py, next to the other imports
+# Match version with template_match_pytom.py
+PYTOM_LEGACY = True  # pytom 0.10: pytom_merge_stars.py -i takes a directory, not file list
 
 # Columns in star files that contain file paths
 PATH_COLUMNS = [
@@ -227,14 +230,16 @@ def main():
             shutil.copy(star_files[0], candidates_star)
         else:
             print(f"[DRIVER] Merging {len(star_files)} particle lists...")
-            merge_cmd = ["pytom_merge_stars.py", "-i"]
-            merge_cmd.extend([str(f) for f in star_files])
-            merge_cmd.extend(["-o", str(candidates_star), "--relion5-compat"])
-
-            wrapped_merge = container_service.wrap_command_for_tool(
-                " ".join(merge_cmd), cwd=job_dir, tool_name="pytom", additional_binds=additional_binds
-            )
-            run_command(wrapped_merge, cwd=job_dir)
+            dfs = []
+            for f in star_files:
+                data = starfile.read(f, always_dict=True)
+                for val in data.values():
+                    if isinstance(val, pd.DataFrame):
+                        dfs.append(val)
+                        break
+            merged = pd.concat(dfs, ignore_index=True)
+            starfile.write({"particles": merged}, candidates_star, overwrite=True)
+            print(f"[DRIVER] Merged {len(merged)} particles from {len(star_files)} tomograms")
 
         # --- 8. Post-Processing ---
         if not candidates_star.exists():
