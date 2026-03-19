@@ -14,11 +14,13 @@ from services.io_slots import InputSlot, OutputSlot, JobFileType
 # Add this import at the top, alongside the existing re import isn't there yet:
 import re
 
-# Add this class near the top of the job model definitions, 
+# Add this class near the top of the job model definitions,
 # alongside ExtractionCutoffMethod:
+
 
 class SymmetryGroup(str, Enum):
     """RELION point group symmetry designations."""
+
     C1 = "C1"
     C2 = "C2"
     C3 = "C3"
@@ -30,17 +32,18 @@ class SymmetryGroup(str, Enum):
     D4 = "D4"
     D5 = "D5"
     D6 = "D6"
-    T  = "T"
-    O  = "O"
+    T = "T"
+    O = "O"
     I1 = "I1"
     I2 = "I2"
+
 
 # This prevents the circular import error at runtime
 if TYPE_CHECKING:
     from services.project_state import ProjectState
 
 
-class AbstractJobParams(BaseModel): 
+class AbstractJobParams(BaseModel):
     """
     Abstract base class for job parameters.
     Contains NO global parameters, only accessors.
@@ -404,7 +407,6 @@ class AbstractJobParams(BaseModel):
 
 
 class ImportMoviesParams(AbstractJobParams):
-
     job_type: JobType = Field(default=JobType.IMPORT_MOVIES)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
     RELION_JOB_TYPE: ClassVar[str] = "relion.importtomo"
@@ -500,6 +502,7 @@ class FsMotionCtfParams(AbstractJobParams):
         "perdevice",
         "do_at_most",
         "gain_operations",
+        "do_phase"
     }
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
@@ -520,10 +523,11 @@ class FsMotionCtfParams(AbstractJobParams):
         ),
     ]
 
+    do_phase: bool = Field(default=True, description="Estimate phase shifts (CTF phase plate or spurious phase)")
     m_range_min_max: str = Field(default="500:10", description="Motion estimation range min:max in Angstroms")
     m_bfac: int = Field(default=-500, description="B-factor for motion estimation (negative = more smoothing)")
     m_grid: str = Field(default="1x1x3", description="Motion estimation grid XxYxZ")
-    c_range_min_max: str = Field(default="30:6.0", description="CTF fitting resolution range min:max in Angstroms")
+    c_range_min_max: str = Field(default="30:4.0", description="CTF fitting resolution range min:max in Angstroms")
     c_defocus_min_max: str = Field(default="1.1:8", description="Defocus search range min:max in microns")
     c_grid: str = Field(default="2x2x1", description="CTF estimation grid XxYxZ")
     c_use_sum: bool = Field(default=True, description="Use frame sum for CTF estimation instead of individual frames")
@@ -575,7 +579,6 @@ class FsMotionCtfParams(AbstractJobParams):
 
 
 class TsAlignmentParams(AbstractJobParams):
-
     job_type: JobType = Field(default=JobType.TS_ALIGNMENT)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
@@ -656,7 +659,7 @@ class TsCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS: ClassVar[Set[str]] = {"window", "range_min_max", "defocus_hand", "defocus_min_max", "perdevice"}
+    USER_PARAMS: ClassVar[Set[str]] = {"window", "range_min_max", "defocus_hand", "defocus_min_max", "perdevice", "do_phase"}
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.ALIGNED_TILT_SERIES_STAR], preferred_source="aligntiltsWarp"),
@@ -680,11 +683,12 @@ class TsCtfParams(AbstractJobParams):
         ),
     ]
 
-    window: int = Field(default=512, ge=128, le=2048)
-    range_min_max: str = Field(default="30:6.0")
-    defocus_hand: str = Field(default="auto")
+    do_phase: bool = Field(default=True, description="Estimate phase shifts (CTF phase plate or spurious phase)")
+    window         : int = Field(default=512, ge=128, le=2048)
+    range_min_max  : str = Field(default="30:4.0")
+    defocus_hand   : str = Field(default="auto")
     defocus_min_max: str = Field(default="1.1:8")
-    perdevice: int = Field(default=1, ge=0, le=8)
+    perdevice      : int = Field(default=1, ge=0, le=8)
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
@@ -718,7 +722,6 @@ class TsCtfParams(AbstractJobParams):
 
 
 class TsReconstructParams(AbstractJobParams):
-
     job_type: JobType = Field(default=JobType.TS_RECONSTRUCT)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
@@ -765,7 +768,6 @@ class TsReconstructParams(AbstractJobParams):
 
 
 class DenoiseTrainParams(AbstractJobParams):
-
     job_type: JobType = Field(default=JobType.DENOISE_TRAIN)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
@@ -806,7 +808,6 @@ class DenoiseTrainParams(AbstractJobParams):
 
 
 class DenoisePredictParams(AbstractJobParams):
-
     job_type: JobType = Field(default=JobType.DENOISE_PREDICT)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
@@ -869,7 +870,6 @@ class TemplateWorkbenchState(BaseModel):
 
 
 class TemplateMatchPytomParams(AbstractJobParams):
-
     job_type: JobType = Field(default=JobType.TEMPLATE_MATCH_PYTOM)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
@@ -955,7 +955,6 @@ class ExtractionCutoffMethod(str, Enum):
 
 
 class CandidateExtractPytomParams(AbstractJobParams):
-
     job_type: JobType = Field(default=JobType.TEMPLATE_EXTRACT_PYTOM)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
@@ -1025,7 +1024,6 @@ class SubtomoExtractionParams(AbstractJobParams):
     Subtomogram extraction using RELION's relion_tomo_subtomo.
     Creates pseudo-subtomograms from tilt series for downstream averaging/classification.
     """
-
 
     job_type: JobType = Field(default=JobType.SUBTOMO_EXTRACTION)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
@@ -1100,8 +1098,6 @@ class ReconstructParticleParams(AbstractJobParams):
     Produces an initial average (merged.mrc) and half-maps from extracted particles.
     """
 
-
-
     job_type: JobType = Field(default=JobType.RECONSTRUCT_PARTICLE)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
@@ -1165,7 +1161,6 @@ class Class3DParams(AbstractJobParams):
     job_type: JobType = Field(default=JobType.CLASS3D)
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
-
     USER_PARAMS: ClassVar[Set[str]] = {
         "n_classes",
         "n_iterations",
@@ -1183,8 +1178,15 @@ class Class3DParams(AbstractJobParams):
         "use_gpu",
         "preread_images",
         "threads",
+        "pool",
+        "oversampling",
+        "do_ctf",
+        "do_norm",
+        "do_scale",
+        "zero_mask",
+        "pad",
+        "dont_combine_weights_via_disc",
     }
-
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(
             key="input_optimisation", accepts=[JobFileType.OPTIMISATION_SET_STAR], preferred_source="subtomoExtraction"
@@ -1200,46 +1202,56 @@ class Class3DParams(AbstractJobParams):
     ]
 
     # Classification
-    n_classes   : int   = Field(default=1, ge=1, description="Number of classes (1 for initial alignment, >1 for sorting)")
-    n_iterations: int   = Field(default=15, ge=1, description="Number of iterations")
-    tau_fudge   : float = Field(default=-1.0, description="Regularisation parameter (-1 = auto)")
+    n_classes: int = Field(default=1, ge=1, description="Number of classes (1 for initial alignment, >1 for sorting)")
+    n_iterations: int = Field(default=15, ge=1, description="Number of iterations")
+    tau_fudge: float = Field(default=1.0, description="Regularisation parameter (-1 = auto)")
 
     # Angular sampling
-    healpix_order: int = Field(default=4, ge=1, le=6, description="Angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)")
-    offset_range : int = Field(default=6, ge=0, description="Translational search range (pixels)")
-    offset_step  : int = Field(default=2, ge=1, description="Translational search step (pixels)")
-
-    # Local angular searches
+    healpix_order: int = Field(default=3, ge=1, le=6, description="Angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)")
+    offset_range: int = Field(default=5, ge=0, description="Translational search range (Angstroms)")
+    offset_step: int = Field(default=2, ge=1, description="Translational search step (Angstroms)")
     sigma_ang: float = Field(default=-1.0, description="Local angular search sigma in degrees (-1 = no local search)")
+    oversampling: int = Field(default=1, ge=0, description="Oversampling order")
 
     # Symmetry / filtering
-    symmetry         : SymmetryGroup = Field(default=SymmetryGroup.C1, description="Point group symmetry")
-    ini_high         : float         = Field(default=45.0, ge=0, description="Initial low-pass filter (Angstroms)")
-    particle_diameter: float         = Field(default=-1.0, description="Mask diameter (Angstroms, -1 = auto)")
+    symmetry: SymmetryGroup = Field(default=SymmetryGroup.C1, description="Point group symmetry")
+    ini_high: float = Field(default=45.0, ge=0, description="Initial low-pass filter (Angstroms)")
+    particle_diameter: float = Field(default=-1.0, description="Mask diameter (Angstroms, -1 = auto)")
 
     # Optional mask
     solvent_mask_path: str = Field(default="", description="Path to soft mask for references (optional)")
 
     # Reference handling
     flatten_solvent: bool = Field(default=True, description="Apply mask to references during refinement")
+    zero_mask: bool = Field(default=True, description="Set outside-mask voxels to zero during refinement")
     firstiter_cc: bool = Field(
-        default=False, description="Use CC in first iteration (if reference not on absolute scale)"
+        default=True, description="Use CC in first iteration (recommended when starting from rough reference)"
     )
+
+    # CTF / normalisation -- all on by default, matching standard tomo STA practice
+    do_ctf: bool = Field(default=True, description="Apply CTF correction")
+    do_norm: bool = Field(default=True, description="Normalise particle images")
+    do_scale: bool = Field(default=True, description="Correct for intensity scale differences")
+    dont_combine_weights_via_disc: bool = Field(
+        default=True, description="Keep combination of weights in memory (faster, needs more RAM)"
+    )
+    pad: int = Field(default=2, ge=1, description="Padding factor for Fourier transforms (2 = standard)")
 
     # Computation
     use_gpu: bool = Field(default=True, description="Use GPU acceleration")
     preread_images: bool = Field(default=True, description="Pre-read all particles into RAM")
     threads: int = Field(default=4, ge=1, description="Number of threads")
+    pool: int = Field(default=30, ge=1, description="Number of particles to pool per thread")
 
     def __init__(self, **data):
         super().__init__(**data)
         if "slurm_overrides" not in data:
             self.slurm_overrides = {
-                "gres"         : "gpu:1",
-                "mem"          : "64G",
+                "gres": "gpu:1",
+                "mem": "64G",
                 "cpus_per_task": 4,
-                "time"         : "8:00:00",
-                "preset"       : SlurmPreset.CUSTOM.value,
+                "time": "8:00:00",
+                "preset": SlurmPreset.CUSTOM.value,
             }
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
@@ -1256,6 +1268,7 @@ class Class3DParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"optimisation_set": "subtomoExtraction", "reference": "reconstructParticle"}
+
 
 def jobtype_paramclass() -> Dict[JobType, Type["AbstractJobParams"]]:
     """Registry mapping JobType to its parameter class. Lives here to avoid

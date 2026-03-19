@@ -86,6 +86,9 @@ def build_warp_commands(params: FsMotionCtfParams, paths: dict[str, Path], job_d
         run_main_parts.append("--c_use_sum")
     if params.do_at_most > 0:
         run_main_parts.extend(["--do_at_most", str(params.do_at_most)])
+    if params.do_phase:
+        run_main_parts.append("--c_fit_phase")
+
 
     create_cmd = " ".join(create_settings_parts)
     run_cmd = " ".join(run_main_parts)
