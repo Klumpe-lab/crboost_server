@@ -78,6 +78,9 @@ def build_ctf_commands(params: TsCtfParams, paths: dict[str, Path]) -> str:
         f"--perdevice {params.perdevice}"
     )
 
+    if params.do_phase:
+        ctf_command += " --fit_phase"
+
     if params.defocus_hand == "auto":
         hand_step = (
             f"hand_output=$({check_hand_command} 2>&1); "

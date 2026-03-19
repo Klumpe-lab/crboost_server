@@ -219,10 +219,19 @@ class CryoBoostBackend:
         return self.state_service.state.model_dump(mode="json", exclude={"project_path"})
 
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
-        """Runs mdoc update and returns the entire updated state."""
-        await self.state_service.update_from_mdoc(mdocs_glob)
-        await self.state_service.save_project()
-        return self.state_service.state.model_dump(mode="json", exclude={"project_path"})
+        from services.configs.mdoc_service import get_mdoc_service
+        mdoc_data = get_mdoc_service().get_autodetect_params(mdocs_glob)
+        return {
+            "microscope": {
+                "pixel_size_angstrom": mdoc_data.get("pixel_spacing"),
+                "acceleration_voltage_kv": mdoc_data.get("voltage"),
+                "spherical_aberration_mm": None,
+            },
+            "acquisition": {
+                "dose_per_tilt": mdoc_data.get("dose_per_tilt"),
+                "tilt_axis_degrees": mdoc_data.get("tilt_axis_angle"),
+            },
+        }
 
     async def run_shell_command(
         self, command: str, cwd: Path = None, tool_name: str = None, additional_binds: List[str] = None

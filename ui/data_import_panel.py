@@ -659,9 +659,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             return
         container.clear()
 
-        d_pix = ui_mgr.data_import.detected_pixel_size
-        d_dose = ui_mgr.data_import.detected_dose_per_tilt
-        has_detection = d_pix is not None or d_dose is not None
+        di = ui_mgr.data_import
+        has_detection = di.detected_pixel_size is not None or di.detected_dose_per_tilt is not None
 
         with container:
             if not has_detection:
@@ -670,13 +669,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 )
                 return
 
-            state = get_project_state()
             params = [
-                ("Pixel Size", f"{state.microscope.pixel_size_angstrom:.3f}", "\u212b"),
-                ("Voltage", f"{state.microscope.acceleration_voltage_kv:.0f}", "kV"),
-                ("Cs", f"{state.microscope.spherical_aberration_mm:.1f}", "mm"),
-                ("Dose/Tilt", f"{state.acquisition.dose_per_tilt:.1f}", "e\u207b/\u212b\u00b2"),
-                ("Tilt Axis", f"{state.acquisition.tilt_axis_degrees:.1f}", "\u00b0"),
+                ("Pixel Size", f"{di.detected_pixel_size:.3f}" if di.detected_pixel_size else "—", "\u212b"),
+                ("Voltage",    f"{di.detected_voltage:.0f}"    if di.detected_voltage    else "—", "kV"),
+                ("Dose/Tilt",  f"{di.detected_dose_per_tilt:.1f}" if di.detected_dose_per_tilt else "—", "e\u207b/\u212b\u00b2"),
+                ("Tilt Axis",  f"{di.detected_tilt_axis:.1f}"  if di.detected_tilt_axis  else "—", "\u00b0"),
             ]
             with ui.row().classes("w-full flex-wrap gap-x-5 gap-y-0"):
                 for label, value, unit in params:
