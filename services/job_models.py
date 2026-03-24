@@ -32,8 +32,8 @@ class SymmetryGroup(str, Enum):
     D4 = "D4"
     D5 = "D5"
     D6 = "D6"
-    T = "T"
-    O = "O"
+    T  = "T"
+    O  = "O"
     I1 = "I1"
     I2 = "I2"
 
@@ -83,18 +83,18 @@ class AbstractJobParams(BaseModel):
     USER_PARAMS: ClassVar[Set[str]] = set()
 
     # Job execution metadata only
-    execution_status: JobStatus = Field(default=JobStatus.SCHEDULED)
-    relion_job_name: Optional[str] = None
-    relion_job_number: Optional[int] = None
+    execution_status  : JobStatus     = Field(default=JobStatus.SCHEDULED)
+    relion_job_name   : Optional[str] = None
+    relion_job_number: Optional[int]  = None
+    slurm_job_id      : Optional[str] = None                                # set when sbatch accepts the job
 
-    is_orphaned: bool = Field(default=False)
-    missing_inputs: List[str] = Field(default_factory=list)
+    is_orphaned       : bool          = Field(default=False)
+    missing_inputs    : List[str]     = Field(default_factory=list)
 
     # We store the resolved paths and binds here to persist them in project_params.json
-    paths: Dict[str, str] = Field(default_factory=dict)
-    additional_binds: List[str] = Field(default_factory=list)
-
-    slurm_overrides: Dict[str, Any] = Field(default_factory=dict)
+    paths           : Dict[str, str] = Field(default_factory=dict)
+    additional_binds: List[str]      = Field(default_factory=list)
+    slurm_overrides : Dict[str, Any] = Field(default_factory=dict)
 
     # User overrides for input slot sources
     # Maps input_slot_key -> source specification
@@ -523,21 +523,21 @@ class FsMotionCtfParams(AbstractJobParams):
         ),
     ]
 
-    do_phase: bool = Field(default=True, description="Estimate phase shifts (CTF phase plate or spurious phase)")
-    m_range_min_max: str = Field(default="500:10", description="Motion estimation range min:max in Angstroms")
-    m_bfac: int = Field(default=-500, description="B-factor for motion estimation (negative = more smoothing)")
-    m_grid: str = Field(default="1x1x3", description="Motion estimation grid XxYxZ")
-    c_range_min_max: str = Field(default="30:4.0", description="CTF fitting resolution range min:max in Angstroms")
-    c_defocus_min_max: str = Field(default="1.1:8", description="Defocus search range min:max in microns")
-    c_grid: str = Field(default="2x2x1", description="CTF estimation grid XxYxZ")
-    c_use_sum: bool = Field(default=True, description="Use frame sum for CTF estimation instead of individual frames")
-    c_window: int = Field(default=512, ge=128, description="CTF estimation window size in pixels")
-    out_average_halves: bool = Field(default=True, description="Output half-set averages for independent validation")
-    out_skip_first: int = Field(default=0, description="Skip this many initial tilts")
-    out_skip_last: int = Field(default=0, description="Skip this many final tilts")
-    perdevice: int = Field(default=1, ge=0, le=8, description="Parallel tilt series per GPU")
-    do_at_most: int = Field(default=-1, description="Process at most N tilt series (-1 = all)")
-    gain_operations: Optional[str] = Field(default=None, description="Gain reference operations (e.g. flip, rotate)")
+    do_phase          : bool          = Field(default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)")
+    m_range_min_max   : str           = Field(default="500:10", description="Motion estimation range min:max in Angstroms")
+    m_bfac            : int           = Field(default=-500, description="B-factor for motion estimation (negative = more smoothing)")
+    m_grid            : str           = Field(default="1x1x3", description="Motion estimation grid XxYxZ")
+    c_range_min_max   : str           = Field(default="30:6.0", description="CTF fitting resolution range min:max in Angstroms")
+    c_defocus_min_max : str           = Field(default="1.1:8", description="Defocus search range min:max in microns")
+    c_grid            : str           = Field(default="2x2x1", description="CTF estimation grid XxYxZ")
+    c_use_sum         : bool          = Field(default=False, description="Use frame sum for CTF estimation instead of individual frames")
+    c_window          : int           = Field(default=512, ge=128, description="CTF estimation window size in pixels")
+    out_average_halves: bool          = Field(default=True, description="Output half-set averages for independent validation")
+    out_skip_first    : int           = Field(default=0, description="Skip this many initial tilts")
+    out_skip_last     : int           = Field(default=0, description="Skip this many final tilts")
+    perdevice         : int           = Field(default=1, ge=0, le=8, description="Parallel tilt series per GPU")
+    do_at_most        : int           = Field(default=-1, description="Process at most N tilt series (-1 = all)")
+    gain_operations   : Optional[str] = Field(default=None, description="Gain reference operations (e.g. flip, rotate)")
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
@@ -683,9 +683,9 @@ class TsCtfParams(AbstractJobParams):
         ),
     ]
 
-    do_phase: bool = Field(default=True, description="Estimate phase shifts (CTF phase plate or spurious phase)")
+    do_phase: bool = Field(default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)")
     window         : int = Field(default=512, ge=128, le=2048)
-    range_min_max  : str = Field(default="30:4.0")
+    range_min_max  : str = Field(default="30:6.0")
     defocus_hand   : str = Field(default="auto")
     defocus_min_max: str = Field(default="1.1:8")
     perdevice      : int = Field(default=1, ge=0, le=8)
@@ -1025,11 +1025,11 @@ class SubtomoExtractionParams(AbstractJobParams):
     Creates pseudo-subtomograms from tilt series for downstream averaging/classification.
     """
 
-    job_type: JobType = Field(default=JobType.SUBTOMO_EXTRACTION)
-    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
-    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
+    job_type        : JobType               = Field(default=JobType.SUBTOMO_EXTRACTION)
+    JOB_CATEGORY    : ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str]          = "relion.external"
 
-    USER_PARAMS: ClassVar[Set[str]] = {
+    USER_PARAMS    : ClassVar[Set[str]]     = {
         "binning",
         "box_size",
         "crop_size",
@@ -1038,6 +1038,7 @@ class SubtomoExtractionParams(AbstractJobParams):
         "max_dose",
         "min_frames",
     }
+
     # NOTE: additional_sources and merge_only are intentionally NOT in
     # USER_PARAMS. They are widget-managed state (the merge panel sets
     # them directly and triggers its own save). Keeping them out means:
@@ -1052,6 +1053,7 @@ class SubtomoExtractionParams(AbstractJobParams):
             key="input_optimisation", accepts=[JobFileType.OPTIMISATION_SET_STAR], preferred_source="tmextractcand"
         )
     ]
+
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
         OutputSlot(key="output_particles", produces=JobFileType.PARTICLES_STAR, path_template="particles.star"),
         OutputSlot(
@@ -1065,10 +1067,9 @@ class SubtomoExtractionParams(AbstractJobParams):
     merge_only: bool = Field(default=False, description="If true, skip relion_tomo_subtomo and only merge")
 
     # Extraction parameters
-    binning: float = Field(default=1.0, description="Binning factor relative to unbinned data")
-    box_size: int = Field(default=384, description="Box size in binned pixels")
-    crop_size: int = Field(default=224, description="Cropped box size (-1 = no cropping)")
-
+    binning  : float = Field(default=1.0, description="Binning factor relative to unbinned data")
+    box_size : int   = Field(default=384, description="Box size in binned pixels")
+    crop_size: int   = Field(default=224, description="Cropped box size (-1 = no cropping)")
     # Output format
     do_float16: bool = Field(default=True, description="Write output in float16 to save space")
     do_stack2d: bool = Field(default=True, description="Write as 2D stacks (preferred for RELION 4.1+)")
@@ -1124,18 +1125,18 @@ class ReconstructParticleParams(AbstractJobParams):
     ]
 
     # Reconstruction parameters
-    box_size: int = Field(default=384, description="Box size in pixels")
-    crop_size: int = Field(default=224, description="Cropped box size (-1 = no cropping)")
-    symmetry: SymmetryGroup = Field(default=SymmetryGroup.C1, description="Point group symmetry")
-    binning: int = Field(default=1, ge=1, description="Binning factor")
+    box_size : int           = Field(default=384, description="Box size in pixels")
+    crop_size: int           = Field(default=224, description="Cropped box size (-1 = no cropping)")
+    symmetry : SymmetryGroup = Field(default=SymmetryGroup.C1, description="Point group symmetry")
+    binning  : int           = Field(default=1, ge=1, description="Binning factor")
 
     # Noise / CTF
     whiten: bool = Field(default=False, description="Whiten noise by flattening power spectrum")
     no_ctf: bool = Field(default=False, description="Do not apply CTFs")
 
     # Threading (CPU-only job, no GPU)
-    threads: int = Field(default=6, ge=1, description="Total OMP threads (--j)")
-    threads_in: int = Field(default=3, ge=1, description="Inner threads (slower, less memory)")
+    threads    : int = Field(default=6, ge=1, description="Total OMP threads (--j)")
+    threads_in : int = Field(default=3, ge=1, description="Inner threads (slower, less memory)")
     threads_out: int = Field(default=2, ge=1, description="Outer threads (faster, more memory)")
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
@@ -1158,10 +1159,10 @@ class Class3DParams(AbstractJobParams):
     3D Classification using relion_refine (without --auto_refine).
     """
 
-    job_type: JobType = Field(default=JobType.CLASS3D)
-    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
-    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
-    USER_PARAMS: ClassVar[Set[str]] = {
+    job_type       : JobType               = Field(default=JobType.CLASS3D)
+    JOB_CATEGORY   : ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str]         = "relion.external"
+    USER_PARAMS    : ClassVar[Set[str]]    = {
         "n_classes",
         "n_iterations",
         "tau_fudge",
@@ -1202,46 +1203,44 @@ class Class3DParams(AbstractJobParams):
     ]
 
     # Classification
-    n_classes: int = Field(default=1, ge=1, description="Number of classes (1 for initial alignment, >1 for sorting)")
-    n_iterations: int = Field(default=15, ge=1, description="Number of iterations")
-    tau_fudge: float = Field(default=1.0, description="Regularisation parameter (-1 = auto)")
+    n_classes   : int   = Field(default=1, ge=1, description="Number of classes (1 for initial alignment, >1 for sorting)")
+    n_iterations: int   = Field(default=15, ge=1, description="Number of iterations")
+    tau_fudge   : float = Field(default=1.0, description="Regularisation parameter (-1 = auto)")
 
     # Angular sampling
-    healpix_order: int = Field(default=3, ge=1, le=6, description="Angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)")
-    offset_range: int = Field(default=5, ge=0, description="Translational search range (Angstroms)")
-    offset_step: int = Field(default=2, ge=1, description="Translational search step (Angstroms)")
-    sigma_ang: float = Field(default=-1.0, description="Local angular search sigma in degrees (-1 = no local search)")
-    oversampling: int = Field(default=1, ge=0, description="Oversampling order")
+    healpix_order: int   = Field(default=3, ge=1, le=6, description="Angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)")
+    offset_range : int   = Field(default=5, ge=0, description="Translational search range (Angstroms)")
+    offset_step  : int   = Field(default=2, ge=1, description="Translational search step (Angstroms)")
+    sigma_ang    : float = Field(default=-1.0, description="Local angular search sigma in degrees (-1 = no local search)")
+    oversampling : int   = Field(default=1, ge=0, description="Oversampling order")
 
     # Symmetry / filtering
-    symmetry: SymmetryGroup = Field(default=SymmetryGroup.C1, description="Point group symmetry")
-    ini_high: float = Field(default=45.0, ge=0, description="Initial low-pass filter (Angstroms)")
-    particle_diameter: float = Field(default=-1.0, description="Mask diameter (Angstroms, -1 = auto)")
+    symmetry         : SymmetryGroup = Field(default=SymmetryGroup.C1, description="Point group symmetry")
+    ini_high         : float         = Field(default=45.0, ge=0, description="Initial low-pass filter (Angstroms)")
+    particle_diameter: float         = Field(default=-1.0, description="Mask diameter (Angstroms, -1 = auto)")
 
     # Optional mask
     solvent_mask_path: str = Field(default="", description="Path to soft mask for references (optional)")
 
     # Reference handling
     flatten_solvent: bool = Field(default=True, description="Apply mask to references during refinement")
-    zero_mask: bool = Field(default=True, description="Set outside-mask voxels to zero during refinement")
-    firstiter_cc: bool = Field(
+    zero_mask      : bool = Field(default=True, description="Set outside-mask voxels to zero during refinement")
+    firstiter_cc   : bool = Field(
         default=True, description="Use CC in first iteration (recommended when starting from rough reference)"
     )
 
     # CTF / normalisation -- all on by default, matching standard tomo STA practice
-    do_ctf: bool = Field(default=True, description="Apply CTF correction")
-    do_norm: bool = Field(default=True, description="Normalise particle images")
-    do_scale: bool = Field(default=True, description="Correct for intensity scale differences")
-    dont_combine_weights_via_disc: bool = Field(
-        default=True, description="Keep combination of weights in memory (faster, needs more RAM)"
-    )
-    pad: int = Field(default=2, ge=1, description="Padding factor for Fourier transforms (2 = standard)")
+    do_ctf                        : bool = Field(default=True, description="Apply CTF correction")
+    do_norm                       : bool = Field(default=True, description="Normalise particle images")
+    do_scale                      : bool = Field(default=True, description="Correct for intensity scale differences")
+    dont_combine_weights_via_disc: bool  = Field(default=True, description="Keep combination of weights in memory (faster, needs more RAM)")
+    pad                          : int   = Field(default=2, ge=1, description="Padding factor for Fourier transforms (2 = standard)")
 
     # Computation
-    use_gpu: bool = Field(default=True, description="Use GPU acceleration")
+    use_gpu       : bool = Field(default=True, description="Use GPU acceleration")
     preread_images: bool = Field(default=True, description="Pre-read all particles into RAM")
-    threads: int = Field(default=4, ge=1, description="Number of threads")
-    pool: int = Field(default=30, ge=1, description="Number of particles to pool per thread")
+    threads       : int  = Field(default=4, ge=1, description="Number of threads")
+    pool          : int  = Field(default=30, ge=1, description="Number of particles to pool per thread")
 
     def __init__(self, **data):
         super().__init__(**data)

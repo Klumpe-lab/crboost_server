@@ -28,6 +28,7 @@ def _field(
     save_handler: Callable,
     is_number: bool = False,
 ):
+
     with ui.column().classes("gap-0"):
         lbl = (
             ui.label(label)
@@ -120,6 +121,7 @@ def render_fs_motion_ctf_params(job_type, job_model, is_frozen, save_handler, *,
         _rule()
 
         # ── CTF Estimation ─────────────────────────────────
+        # ── CTF Estimation ─────────────────────────────────
         _section("CTF Estimation")
         with ui.row().classes("w-full items-end gap-x-8 gap-y-2 mt-1"):
             _field(
@@ -149,6 +151,7 @@ def render_fs_motion_ctf_params(job_type, job_model, is_frozen, save_handler, *,
                 hint="FFT window size for CTF estimation",
             )
             _toggle("Use frame sum", **ctx, attr="c_use_sum", hint="Use summed frames for CTF estimation")
+            _toggle("Do phase", **ctx, attr="do_phase", hint="Estimate phase shifts (CTF phase plate or spurious phase)")
 
         _rule()
 

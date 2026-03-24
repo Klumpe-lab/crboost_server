@@ -61,7 +61,8 @@ def generate_legacy_text_files(tiltseries_global_star: Path,
 
         # Tilt angles (degrees) -- old CB used rlnTomoYTilt
         tlt_path = tlt_dir / f"{name}.tlt"
-        tilt_df["rlnTomoYTilt"].to_csv(tlt_path, index=False, header=False)
+        # tilt_df["rlnTomoYTilt"].to_csv(tlt_path, index=False, header=False)
+        tilt_df["rlnTomoNominalStageTiltAngle"].to_csv(tlt_path, index=False, header=False)
 
         # Defocus in microns -- old CB divided rlnDefocusU by 10000
         def_path = def_dir / f"{name}.txt"
@@ -255,7 +256,7 @@ def main():
                 tiltseries_global_star=input_star_ts,
                 output_dir=job_dir,
             )
-            base_cmd.extend(["--tomogram-ctf-model", "phase-flip"])
+            # base_cmd.extend(["--tomogram-ctf-model", "phase-flip"])
         else:
             patched_tomos = make_pytom_tomograms_star(
                 tomograms_star=input_star_tomos,
@@ -264,7 +265,7 @@ def main():
             )
             print(f"[DRIVER] Using patched tomograms STAR for PyTOM: {patched_tomos}", flush=True)
 
-            base_cmd.extend(["--tomogram-ctf-model", "phase-flip"])
+            # base_cmd.extend(["--tomogram-ctf-model", "phase-flip"])
 
 
 

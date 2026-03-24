@@ -53,7 +53,7 @@ class WarpXmlParser:
         """Parse frame series XML to extract CTF parameters"""
         tree = ET.parse(xml_path)
         root = tree.getroot()
-        ctf = root.find(".//CTF")
+        ctf  = root.find(".//CTF")
 
         if ctf is None:
             raise ValueError(f"No CTF data found in {xml_path}")
@@ -400,6 +400,36 @@ class MetadataTranslator:
 
         return updated_df
 
+    def _infer_alignment_angpix(self, job_dir: Path) -> float:
+        """
+        Infer the pixel size of the binned tilt stack that AreTomo/IMOD
+        aligned against, by reading the MRC header of the .st file.
+        """
+        tiltstack_root = job_dir / "warp_tiltseries" / "tiltstack"
+        if not tiltstack_root.exists():
+            raise FileNotFoundError(
+                f"No tiltstack directory at {tiltstack_root}. "
+                f"Cannot determine alignment pixel size for shift conversion."
+            )
+
+        st_files = list(tiltstack_root.glob("*/*.st"))
+        if not st_files:
+            raise FileNotFoundError(
+                f"No .st files found under {tiltstack_root}. "
+                f"Cannot determine alignment pixel size for shift conversion."
+            )
+
+        import mrcfile
+        with mrcfile.open(st_files[0], header_only=True, mode='r') as mrc:
+            voxel_x = float(mrc.voxel_size.x)
+            if voxel_x <= 0:
+                raise ValueError(
+                    f"Invalid pixel size {voxel_x} in {st_files[0]}. "
+                    f"Cannot determine alignment pixel size for shift conversion."
+                )
+            print(f"[METADATA] Read pixel size {voxel_x:.4f} A from {st_files[0].name}")
+            return voxel_x
+
     def update_ts_alignment_metadata(
         self,
         job_dir: Path,
@@ -408,6 +438,7 @@ class MetadataTranslator:
         project_root: Path,
         tomo_dimensions: str,
         alignment_method: str,
+        alignment_angpix: float = 0,
     ) -> Dict:
         try:
             print(f"[METADATA] Starting tsAlignment update for {input_star_path}")
@@ -419,7 +450,7 @@ class MetadataTranslator:
             if in_ts_df is None:
                 raise ValueError(f"No 'global' block in {input_star_path}")
 
-            # Resolve Pixel Size
+            # Resolve frame pixel size (used for non-shift metadata)
             pixel_size_col = next(
                 (
                     c
@@ -434,7 +465,17 @@ class MetadataTranslator:
             else:
                 pixS = 1.35  # Fallback
 
-            print(f"[METADATA] Using pixel size: {pixS} Å")
+            print(f"[METADATA] Frame pixel size: {pixS} A")
+
+            # Pixel size for converting alignment shifts from pixels to Angstroms.
+            # AreTomo/IMOD operate on the binned tilt stack, so shifts are in
+            # binned pixels (rescale_angpixs), NOT raw frame pixels.
+            if alignment_angpix > 0:
+                shift_angpix = alignment_angpix
+                print(f"[METADATA] Using explicit alignment pixel size for shifts: {shift_angpix} A/px")
+            else:
+                shift_angpix = self._infer_alignment_angpix(job_dir)
+                print(f"[METADATA] Auto-inferred alignment pixel size for shifts: {shift_angpix} A/px")
 
             output_star_path.parent.mkdir(parents=True, exist_ok=True)
             output_tilts_dir = output_star_path.parent / "tilt_series"
@@ -443,13 +484,11 @@ class MetadataTranslator:
             ts_id_failed = []
             updated_tilt_dfs = {}
             all_tilts_list = []
-            name_mapping = {}  # old rlnTomoName -> actual_ts_id from filesystem
+            name_mapping = {}
 
             for _, ts_row in in_ts_df.iterrows():
                 ts_star_file_rel = ts_row["rlnTomoTiltSeriesStarFile"]
 
-                # REFACTOR: ts_id is just the search pattern base.
-                # We need the actual folder name from the filesystem.
                 ts_id_base = Path(ts_star_file_rel).stem
 
                 ts_star_path_abs = (input_star_dir / ts_star_file_rel).resolve()
@@ -460,10 +499,8 @@ class MetadataTranslator:
                 ts_data_in = self.starfile_service.read(ts_star_path_abs)
                 ts_tilts_df = next(iter(ts_data_in.values())).copy()
 
-                # --- NEW ROBUST PATH RESOLUTION ---
-                # Search for the folder in tiltstack that starts with our ID
+                # --- ROBUST PATH RESOLUTION ---
                 tiltstack_root = job_dir / "warp_tiltseries" / "tiltstack"
-                # Search for directory like "new_stage3*"
                 matching_dirs = list(tiltstack_root.glob(f"{ts_id_base}*"))
 
                 if not matching_dirs or not matching_dirs[0].is_dir():
@@ -472,13 +509,11 @@ class MetadataTranslator:
                     continue
 
                 actual_ts_dir = matching_dirs[0]
-                actual_ts_id = actual_ts_dir.name  # e.g. "new_stage3.5_project_Position_1"
+                actual_ts_id = actual_ts_dir.name
                 name_mapping[ts_row["rlnTomoName"]] = actual_ts_id
 
                 aln_data = None
                 if alignment_method_enum == AlignmentMethod.ARETOMO:
-                    # Look for the .aln file inside that specific folder
-                    # Using glob here handles case where filename has extra dots or suffixes
                     aln_files = list(actual_ts_dir.glob("*.st.aln"))
                     if aln_files:
                         print(f"[DEBUG] Found AreTomo alignment: {aln_files[0]}")
@@ -521,7 +556,6 @@ class MetadataTranslator:
                     movie_path = tomo_row["wrpMovieName"]
                     key_base = Path(movie_path).stem
 
-                    # Match by stem to be extension-agnostic
                     matching_positions = [i for i, k in enumerate(keys_rel) if Path(k).stem == key_base]
 
                     if matching_positions:
@@ -529,15 +563,14 @@ class MetadataTranslator:
                         ts_tilts_df.at[pos, "rlnTomoXTilt"] = 0
                         ts_tilts_df.at[pos, "rlnTomoYTilt"] = -1.0 * aln_data[index, 9]
                         ts_tilts_df.at[pos, "rlnTomoZRot"] = aln_data[index, 1]
-                        ts_tilts_df.at[pos, "rlnTomoXShiftAngst"] = aln_data[index, 3] * pixS
-                        ts_tilts_df.at[pos, "rlnTomoYShiftAngst"] = aln_data[index, 4] * pixS
+                        ts_tilts_df.at[pos, "rlnTomoXShiftAngst"] = aln_data[index, 3] * shift_angpix
+                        ts_tilts_df.at[pos, "rlnTomoYShiftAngst"] = aln_data[index, 4] * shift_angpix
                         applied_count += 1
 
                 if applied_count == 0:
                     ts_id_failed.append(ts_id_base)
                     continue
 
-                # Use actual_ts_id for the output filenames to maintain consistency with disk
                 updated_tilt_dfs[actual_ts_id] = ts_tilts_df
                 ts_row_df = pd.concat([pd.DataFrame(ts_row).T] * len(ts_tilts_df), ignore_index=True)
                 ts_row_df.index = ts_tilts_df.index
@@ -552,7 +585,6 @@ class MetadataTranslator:
                 self.starfile_service.write({tid: tdf}, output_tilts_dir / f"{tid}.star")
 
             out_ts_df = in_ts_df[~in_ts_df["rlnTomoName"].isin(ts_id_failed)].copy()
-            # Update rlnTomoName to match actual filesystem names (fixes dots-in-name truncation from relion_import)
             out_ts_df["rlnTomoName"] = out_ts_df["rlnTomoName"].apply(lambda x: name_mapping.get(x, x))
             out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(lambda x: f"tilt_series/{x}.star")
 
