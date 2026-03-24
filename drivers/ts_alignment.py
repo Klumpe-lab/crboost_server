@@ -38,6 +38,7 @@ def build_alignment_commands(params: TsAlignmentParams, paths: dict[str, Path], 
     # file's location. Tomostar lands at job_dir/tomostar/, and frameseries
     # is one job back, so the stored path becomes ../../job002/warp_frameseries/
     # which resolves correctly when copied into the tilt series XML.
+
     frameseries_rel = shlex.quote(os.path.relpath(str(paths["input_processing"]), str(job_dir)))
 
     gain_path_str = ""
@@ -122,13 +123,13 @@ def main():
     try:
         (
             project_state,
-            params, 
-            local_params_data, 
+            params,
+            local_params_data,
             job_dir,
             project_path,
             job_type,
         ) = get_driver_context()
-        
+
     except Exception as e:
         job_dir = Path.cwd()
         (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
@@ -154,7 +155,6 @@ def main():
         print(f"[DRIVER] Found {num_tomograms} tomograms in input STAR file", flush=True)
 
         # 2. Build and run alignment commands
-        # Pass job_dir to allow relative path calculation
         align_command_str = build_alignment_commands(params, paths, num_tomograms, job_dir)
 
         # 3. Execute
@@ -175,9 +175,10 @@ def main():
             job_dir=job_dir,
             input_star_path=input_star_abs,
             output_star_path=output_star_abs,
-            project_root=project_path,  
+            project_root=project_path,
             tomo_dimensions=params.tomo_dimensions,
             alignment_method=params.alignment_method.value,
+            alignment_angpix=params.rescale_angpixs,
         )
 
         if not result["success"]:

@@ -59,6 +59,23 @@ class PipelineRunnerService:
                 data["pipeline_processes"] = processes
                 star_handler.write(data, pipeline_star)
 
+        # build squeue lookup once if any Running rows exist
+        slurm_jobs_by_dir: dict = {}
+        if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
+            has_running = (processes["rlnPipeLineProcessStatusLabel"] == "Running").any()
+            if has_running:
+                try:
+                    slurm_jobs = await self.backend.slurm_service.get_user_jobs(force_refresh=True)
+                    for sj in slurm_jobs:
+                        if sj.stdout_path:
+                            try:
+                                resolved_dir = str(Path(sj.stdout_path).resolve().parent)
+                                slurm_jobs_by_dir[resolved_dir] = sj
+                            except Exception:
+                                pass
+                except Exception as e:
+                    print(f"[SYNC] Could not fetch squeue for QUEUED cross-reference: {e}")
+
         changes: Dict[str, bool] = {}
         state = self.backend.state_service.state_for(Path(project_path))
         project_root = Path(project_path)
@@ -128,6 +145,14 @@ class PipelineRunnerService:
             status_str = row["rlnPipeLineProcessStatusLabel"]
             if status_str == "Pending":
                 new_status = JobStatus.SCHEDULED
+            elif status_str == "Running":
+                job_dir_abs = str((Path(project_path) / job_path_clean).resolve())
+                sj = slurm_jobs_by_dir.get(job_dir_abs)
+                if sj:
+                    job_model.slurm_job_id = sj.job_id
+                    new_status = JobStatus.QUEUED if sj.state == "PENDING" else JobStatus.RUNNING
+                else:
+                    new_status = JobStatus.RUNNING
             else:
                 try:
                     new_status = JobStatus(status_str)
@@ -154,6 +179,7 @@ class PipelineRunnerService:
                 job_model.execution_status = JobStatus.SCHEDULED
                 job_model.relion_job_name = None
                 job_model.relion_job_number = None
+                job_model.slurm_job_id = None
                 state.job_path_mapping.pop(instance_id, None)
                 if old_status != JobStatus.SCHEDULED:
                     changes[instance_id] = True
@@ -161,6 +187,7 @@ class PipelineRunnerService:
                 job_model.execution_status = JobStatus.SCHEDULED
                 job_model.relion_job_name = None
                 job_model.relion_job_number = None
+                job_model.slurm_job_id = None
                 state.job_path_mapping.pop(instance_id, None)
                 changes[instance_id] = True
 

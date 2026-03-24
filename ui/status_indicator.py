@@ -5,12 +5,31 @@ from services.project_state import JobStatus, get_project_state
 
 _DOT_COLORS = {
     JobStatus.SCHEDULED: "#fbbf24",
-    JobStatus.RUNNING: "#3b82f6",
+    JobStatus.QUEUED:    "#a855f7",
+    JobStatus.RUNNING:   "#3b82f6",
     JobStatus.SUCCEEDED: "#10b981",
-    JobStatus.FAILED: "#ef4444",
-    JobStatus.UNKNOWN: "#9ca3af",
+    JobStatus.FAILED:    "#ef4444",
+    JobStatus.UNKNOWN:   "#9ca3af",
 }
 
+
+_DOT_PULSES = {
+    JobStatus.RUNNING:   "pulse-running",
+    JobStatus.QUEUED:    "pulse-running",
+    JobStatus.SUCCEEDED: "pulse-success",
+    JobStatus.FAILED:    "pulse-failed",
+}
+
+
+
+_BADGE_STYLES = {
+    JobStatus.SCHEDULED: ("background:#fef3c7;", "color:#92400e;"),
+    JobStatus.QUEUED:    ("background:#f3e8ff;", "color:#6b21a8;"),
+    JobStatus.RUNNING:   ("background:#dbeafe;", "color:#1e40af;"),
+    JobStatus.SUCCEEDED: ("background:#d1fae5;", "color:#065f46;"),
+    JobStatus.FAILED:    ("background:#fee2e2;", "color:#991b1b;"),
+    JobStatus.UNKNOWN:   ("background:#f3f4f6;", "color:#1f2937;"),
+}
 _DOT_PULSES = {
     JobStatus.RUNNING  : "pulse-running",
     JobStatus.SUCCEEDED: "pulse-success",
@@ -42,12 +61,20 @@ def _dot_html(status: JobStatus, is_orphaned: bool = False) -> str:
     )
 
 
-def _badge_html(status: JobStatus, is_orphaned: bool = False, missing_inputs: list = None) -> str:
+def _badge_html(
+    status: JobStatus,
+    is_orphaned: bool = False,
+    missing_inputs: list = None,
+    slurm_job_id: str = None,
+) -> str:
     bg, txt = _BADGE_STYLES.get(status, ("background:#f3f4f6;", "color:#1f2937;"))
+    label = status.value
+    if status == JobStatus.QUEUED and slurm_job_id:
+        label = f"Queued · {slurm_job_id}"
     html = (
         f'<span style="{bg}{txt}font-size:12px;font-weight:700;'
         f'padding:2px 8px;border-radius:9999px;white-space:nowrap;">'
-        f"{status.value}</span>"
+        f"{label}</span>"
     )
     if is_orphaned:
         missing = missing_inputs or []
@@ -60,6 +87,26 @@ def _badge_html(status: JobStatus, is_orphaned: bool = False, missing_inputs: li
             tip = "Orphaned: missing input dependencies"
         html += f' <span style="color:#f97316;cursor:help;font-size:14px;" title="{tip}">&#9888;</span>'
     return html
+
+
+class BoundStatusBadge:
+    """Status badge bound to a job instance by instance_id."""
+    def __init__(self, instance_id: str):
+        state = get_project_state()
+        job_model = state.jobs.get(instance_id)
+        if not job_model:
+            ui.html(_badge_html(JobStatus.SCHEDULED), sanitize=False, tag="span")
+            return
+        ui.html("", sanitize=False, tag="span").bind_content_from(
+            job_model,
+            "execution_status",
+            backward=lambda s, jm=job_model: _badge_html(
+                s,
+                is_orphaned=jm.is_orphaned,
+                missing_inputs=getattr(jm, "missing_inputs", []),
+                slurm_job_id=getattr(jm, "slurm_job_id", None),
+            ),
+        )
 
 
 class BoundStatusDot:
@@ -78,24 +125,6 @@ class BoundStatusDot:
         )
 
 
-class BoundStatusBadge:
-    """Status badge bound to a job instance by instance_id."""
-
-    def __init__(self, instance_id: str):
-        state = get_project_state()
-        job_model = state.jobs.get(instance_id)
-
-        if not job_model:
-            ui.html(_badge_html(JobStatus.SCHEDULED), sanitize=False, tag="span")
-            return
-
-        ui.html("", sanitize=False, tag="span").bind_content_from(
-            job_model,
-            "execution_status",
-            backward=lambda s, jm=job_model: _badge_html(
-                s, is_orphaned=jm.is_orphaned, missing_inputs=getattr(jm, "missing_inputs", [])
-            ),
-        )
 
 
 ReactiveStatusDot = BoundStatusDot
