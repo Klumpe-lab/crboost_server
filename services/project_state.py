@@ -7,7 +7,7 @@ import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Type, List
+from typing import Dict, Any, Optional, Tuple, Type, List
 
 from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny
 
@@ -39,6 +39,19 @@ from services.job_models import (
     jobtype_paramclass,
 )
 
+# ── Schema version ────────────────────────────────────────────────────────────
+#
+# Bump MINOR when adding new optional fields (backwards-compatible).
+# Bump MAJOR when removing/renaming fields, changing semantics, or restructuring
+# in a way that older code cannot safely ignore.
+#
+# The version is stamped into every project_params.json on save and checked on
+# load.  A major mismatch emits a loud warning; a missing version (pre-versioning
+# files) is treated as (0, 0).
+
+SCHEMA_VERSION: Tuple[int, int] = (1, 0)
+
+
 def slugify(name: str) -> str:
     """Convert a display name to a filesystem-safe species id."""
     s = name.lower().strip()
@@ -58,10 +71,12 @@ class ParticleSpecies(BaseModel):
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
+    schema_version: Tuple[int, int] = Field(default=SCHEMA_VERSION)
     project_name: str = "Untitled"
     project_path: Optional[Path] = None
     created_at: datetime = Field(default_factory=datetime.now)
     modified_at: datetime = Field(default_factory=datetime.now)
+    created_by: Optional[str] = None
     job_path_mapping: Dict[str, str] = Field(default_factory=dict)
 
     movies_glob: str = ""
@@ -153,6 +168,9 @@ class ProjectState(BaseModel):
         )
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Always stamp the current code's schema version on save
+        self.schema_version = SCHEMA_VERSION
+
         data = self.model_dump(exclude={"project_path"})
         data["project_path"] = str(self.project_path) if self.project_path else None
         fd, tmp_path = tempfile.mkstemp(dir=str(save_path.parent), suffix=".tmp", prefix=".project_params_")
@@ -177,11 +195,34 @@ class ProjectState(BaseModel):
         with open(path, "r") as f:
             data = json.load(f)
 
+        # ── Version check ─────────────────────────────────────────────
+        file_ver = tuple(data.get("schema_version", (0, 0)))
+        code_major, code_minor = SCHEMA_VERSION
+        file_major, file_minor = file_ver[0], file_ver[1] if len(file_ver) > 1 else 0
+
+        if file_major == 0 and file_minor == 0:
+            print(f"[STATE] Loading pre-versioned project file: {path.name}")
+        elif file_major != code_major:
+            print(
+                f"[STATE] WARNING: Major schema mismatch! "
+                f"File={file_major}.{file_minor}, Code={code_major}.{code_minor}. "
+                f"Project: {path.parent.name}. "
+                f"Data may not load correctly."
+            )
+        elif file_minor != code_minor:
+            print(
+                f"[STATE] Minor schema difference: "
+                f"file={file_major}.{file_minor}, code={code_major}.{code_minor}. "
+                f"Will be upgraded on next save."
+            )
+
         project_state = cls(
+            schema_version=SCHEMA_VERSION,
             project_name=data.get("project_name", "Untitled"),
             project_path=Path(data["project_path"]) if data.get("project_path") else None,
             created_at=datetime.fromisoformat(data.get("created_at", datetime.now().isoformat())),
             modified_at=datetime.fromisoformat(data.get("modified_at", datetime.now().isoformat())),
+            created_by=data.get("created_by"),
             movies_glob=data.get("movies_glob", ""),
             mdocs_glob=data.get("mdocs_glob", ""),
             microscope=MicroscopeParams(**data.get("microscope", {})),

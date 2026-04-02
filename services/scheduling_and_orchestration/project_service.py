@@ -281,6 +281,7 @@ class ProjectService:
             #  - No cross-tab contamination (we don't touch any other project)
             #  - No dependency on tab context (which may not have project_path
             #    set yet at this point)
+            import getpass
             from services.project_state import ProjectState
 
             state = ProjectState()
@@ -288,6 +289,7 @@ class ProjectService:
             state.project_path = project_dir
             state.movies_glob = movies_glob
             state.mdocs_glob = mdocs_glob
+            state.created_by = getpass.getuser()
             set_project_state_for(project_dir, state)
 
             # Autodetect microscope/acquisition params from mdoc files.
