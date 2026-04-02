@@ -110,7 +110,16 @@ def _read_particles_star(particles_star: Path) -> Tuple[pd.DataFrame, pd.DataFra
     """Returns (optics_df, particles_df, general_kv)."""
     d = starfile.read(particles_star, always_dict=True)
 
-    optics_df = _find_df_block(d, required_cols=["rlnVoltage", "rlnSphericalAberration", "rlnAmplitudeContrast"])
+    try:
+        optics_df = _find_df_block(d, required_cols=["rlnVoltage", "rlnSphericalAberration", "rlnAmplitudeContrast"])
+    except KeyError:
+        block_summary = {k: list(v.columns) if isinstance(v, pd.DataFrame) else type(v).__name__ for k, v in d.items()}
+        raise KeyError(
+            f"No optics block found in {particles_star}\n"
+            f"Blocks present: {block_summary}\n"
+            f"This usually means the source path points at a non-extraction particles file (e.g. TM candidates)."
+        )
+
     particles_df = _find_df_block(d, required_cols=["rlnTomoName", "rlnImageName", "rlnOpticsGroup"])
 
     general_kv: Dict[str, Any] = {}
@@ -292,6 +301,7 @@ def merge_optimisation_sets_into_jobdir(
 
     for opt in all_optsets:
         p_star, t_star = _parse_optimisation_set(opt)
+        print(f"[MERGE DEBUG] opt={opt}  ->  particles={p_star}")    # <-- add this
 
         if not p_star.exists():
             raise FileNotFoundError(f"Missing particles.star referenced by {opt}: {p_star}")
