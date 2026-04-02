@@ -3,7 +3,7 @@ import glob
 from pathlib import Path
 import sys
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from functools import lru_cache
 
 class MdocService:
@@ -236,7 +236,7 @@ class MdocService:
                 f.write("\n")
 
 
-_mdoc_service_instance = None
+_mdoc_service_instance: Optional[MdocService] = None
 
 
 @lru_cache()

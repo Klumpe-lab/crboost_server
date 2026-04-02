@@ -128,7 +128,7 @@ def main():
             job_dir,
             project_path,
             job_type,
-        ) = get_driver_context()
+        ) = get_driver_context(TsAlignmentParams)
 
     except Exception as e:
         job_dir = Path.cwd()

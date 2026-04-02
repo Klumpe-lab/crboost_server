@@ -263,7 +263,7 @@ class ContainerService:
         return final_command
 
 
-_container_service = None
+_container_service: Optional[ContainerService] = None
 
 
 def get_container_service() -> ContainerService:

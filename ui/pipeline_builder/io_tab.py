@@ -5,11 +5,8 @@ from nicegui import ui
 
 from services.project_state import JobType
 from ui.ui_state import UIStateManager
+from ui.utils import snake_to_title
 from ui.pipeline_builder.io_config_component import render_io_config
-
-
-def snake_to_title(s: str) -> str:
-    return " ".join(word.capitalize() for word in s.split("_"))
 
 
 def render_io_tab(

@@ -23,6 +23,7 @@ sys.path.insert(0, str(project_root))
 
 try:
     from drivers.driver_base import get_driver_context, run_command
+    from services.job_models import DenoiseTrainParams
 except ImportError as e:
     print("FATAL: Could not import services.", file=sys.stderr)
     sys.exit(1)
@@ -127,7 +128,7 @@ def main():
             job_dir,
             project_path,
             job_type,
-        ) = get_driver_context()
+        ) = get_driver_context(DenoiseTrainParams)
     except Exception as e:
         print(f"[DRIVER] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr)
         sys.exit(1)

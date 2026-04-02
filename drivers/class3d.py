@@ -12,13 +12,14 @@ sys.path.insert(0, str(project_root))
 
 from drivers.driver_base import get_driver_context, run_command
 from services.computing.container_service import get_container_service
+from services.job_models import Class3DParams
 
 
 def main():
     print("--- SLURM JOB START (Class3D) ---", flush=True)
 
     try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context()
+        (state, params, context, job_dir, project_path, job_type) = get_driver_context(Class3DParams)
     except Exception as e:
         print(f"[DRIVER] BOOTSTRAP ERROR: {e}", file=sys.stderr)
         sys.exit(1)

@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, TYPE_CHECKING
 from nicegui import ui
 from services.models_base import JobStatus
 from services.project_state import JobType, get_project_state
+from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot
 from ui.ui_state import get_job_display_name, get_instance_display_name, instance_id_to_job_type
 from ui.pipeline_builder.pipeline_constants import (
@@ -48,9 +49,6 @@ _TOMO_PREVIEW_SVG = (
 )
 _SB_INFO = "#c0cad4"
 _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
-
-MONO = "font-family: 'IBM Plex Mono', monospace;"
-FONT = "font-family: 'IBM Plex Sans', sans-serif;"
 
 
 def _avatar_color(name: str) -> str:

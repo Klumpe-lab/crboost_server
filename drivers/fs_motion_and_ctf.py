@@ -1,7 +1,5 @@
 #!/usr/bin/env python
 # drivers/fs_motion_and_ctf.py
-import json
-import subprocess
 import sys
 import os
 import shlex
@@ -99,7 +97,7 @@ def main():
     print("[DRIVER] fs_motion_and_ctf driver started.", flush=True)
 
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context()
+        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(FsMotionCtfParams)
     except Exception as e:
         job_dir = Path.cwd()
         (job_dir / "RELION_JOB_EXIT_FAILURE").touch()

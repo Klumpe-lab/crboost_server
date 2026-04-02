@@ -209,7 +209,7 @@ class ProjectState(BaseModel):
         for instance_id, job_data in data.get("jobs", {}).items():
             try:
                 job_type_value = job_data.get("job_type") or instance_id
-                job_type = JobType(job_type_value)
+                job_type = JobType.from_string(job_type_value)
                 param_class = param_class_map.get(job_type)
                 if param_class:
                     job_params = param_class(**job_data)
@@ -217,7 +217,7 @@ class ProjectState(BaseModel):
                     project_state.jobs[instance_id] = job_params
                 else:
                     print(f"[WARN] No param class for job type '{job_type_value}' (instance '{instance_id}'), skipping")
-            except (ValueError, Exception) as e:
+            except Exception as e:
                 print(f"[WARN] Skipping job instance '{instance_id}' - failed to deserialize: {e}")
 
         return project_state
@@ -296,15 +296,6 @@ def set_project_state(new_state: ProjectState):
         # under a sentinel key; get_project_state() won't find it via
         # tab context anyway, and it'll be replaced once a real path exists.
         pass
-
-
-def reset_project_state() -> ProjectState:
-    """No-op when called from the landing page (the blank fallback in
-    get_project_state() handles the 'no project' case).
-
-    Kept as a function so existing imports don't break.
-    """
-    return ProjectState()
 
 
 class StateService:
@@ -397,10 +388,10 @@ class StateService:
                     await loop.run_in_executor(None, state.save, target_path)
 
 
-_state_service_instance = None
+_state_service_instance: Optional[StateService] = None
 
 
-def get_state_service():
+def get_state_service() -> StateService:
     global _state_service_instance
     if _state_service_instance is None:
         _state_service_instance = StateService()

@@ -11,10 +11,7 @@ from services.models_base import JobType, JobStatus
 from services.path_resolution_service import PathResolutionService, OutputCandidate, InputSlotValidation
 from services.project_state import get_project_state, get_state_service
 from ui.ui_state import get_job_display_name
-
-
-def snake_to_title(s: str) -> str:
-    return " ".join(word.capitalize() for word in s.split("_"))
+from ui.utils import snake_to_title
 
 
 STATUS_STYLE = {

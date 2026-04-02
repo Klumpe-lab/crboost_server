@@ -6,10 +6,8 @@ Creates conf.yaml and qsub.sh from templates, validates the environment.
 Run with: python preflight.py
 """
 
-import shutil
 import subprocess
 import sys
-import os
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
