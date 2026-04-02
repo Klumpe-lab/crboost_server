@@ -1,9 +1,11 @@
 from __future__ import annotations
 import asyncio
+import getpass
+import json
+import pwd
+import traceback
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
-import pandas as pd
-import os
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 from services.templating.template_service import TemplateService
@@ -16,19 +18,16 @@ from services.project_state import JobType, get_state_service
 from services.computing.slurm_service import SlurmService
 from services.configs.config_service import get_config_service
 
-import getpass
-
-HARDCODED_USER = getpass.getuser()
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
-        self.username              = HARDCODED_USER
+        self.username              = getpass.getuser()
         self.server_dir            = server_dir
         self.config_service        = get_config_service()
         self.project_service       = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
         self.container_service     = get_container_service()
-        self.slurm_service         = SlurmService(HARDCODED_USER)
+        self.slurm_service         = SlurmService(self.username)
         self.pipeline_runner       = PipelineRunnerService(self)
         self.state_service         = get_state_service()
         self.template_service      = TemplateService(self)
@@ -69,9 +68,6 @@ class CryoBoostBackend:
         return str(Path.home())
 
     async def scan_for_projects(self, base_path: str) -> List[Dict[str, Any]]:
-        import json
-        import pwd
-
         projects = []
         path = Path(base_path)
 
@@ -191,7 +187,6 @@ class CryoBoostBackend:
             return {"success": True, "params": job_model.model_dump()}
 
         except Exception as e:
-            import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 

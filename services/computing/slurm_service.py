@@ -71,7 +71,8 @@ class SlurmConfig(BaseModel):
             config_service = get_config_service()
             defaults = config_service.slurm_defaults
             return cls(**defaults.model_dump())
-        except Exception:
+        except Exception as e:
+            print(f"[SLURM] Could not load config defaults, using built-in: {e}")
             return cls()
 
 
@@ -330,8 +331,8 @@ class SlurmService:
                     if Path(job.stdout_path).resolve().parent == target:
                         print(f"[SLURM] Matched job {job.job_id} via stdout path: {job.stdout_path}")
                         return job
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[SLURM] Error resolving stdout path for job {job.job_id}: {e}")
 
             # Fallback: work_dir match (only works if the job cd'd to job_dir)
             if job.work_dir:
@@ -339,8 +340,8 @@ class SlurmService:
                     if Path(job.work_dir).resolve() == target:
                         print(f"[SLURM] Matched job {job.job_id} via work_dir: {job.work_dir}")
                         return job
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[SLURM] Error resolving work_dir for job {job.job_id}: {e}")
 
         print(f"[RUNNER] No SLURM job found for {target}")
         return None

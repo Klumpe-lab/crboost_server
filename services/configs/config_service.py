@@ -161,7 +161,7 @@ class ConfigService:
         return config.bin_path
 
 
-_config_service_instance = None
+_config_service_instance: Optional[ConfigService] = None
 
 
 def get_config_service() -> ConfigService:

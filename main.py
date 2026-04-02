@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
+import os
 import socket
 import argparse
 from pathlib import Path
@@ -41,7 +42,8 @@ def setup_app():
     
     backend = CryoBoostBackend(Path.cwd())
     create_ui_router(backend) 
-    ui.run_with(app, title="CryoBoost Server", storage_secret="somestuff")
+    storage_secret = os.environ.get("CRBOOST_STORAGE_SECRET", "crboost-change-me")
+    ui.run_with(app, title="CryoBoost Server", storage_secret=storage_secret)
     return app
 
 def get_local_ip():

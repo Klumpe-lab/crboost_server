@@ -16,13 +16,11 @@ from services.project_state import get_project_state
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
 from ui.glob_directory_input import GlobDirectoryInput
+from ui.styles import MONO, SANS as FONT
 
 
 DEFAULT_MOVIES_EXT = "*.eer"
 DEFAULT_MDOCS_EXT = "*.mdoc"
-
-FONT = "font-family: 'IBM Plex Sans', sans-serif;"
-MONO = "font-family: 'IBM Plex Mono', monospace;"
 LABEL = "font-family: system-ui, -apple-system, sans-serif;"
 
 # Blue-tinted slate palette -- feels more like scientific instrument UI

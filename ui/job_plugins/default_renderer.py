@@ -11,6 +11,8 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from nicegui import ui
 
+from ui.utils import snake_to_title
+
 
 BASE_FIELDS: Set[str] = {
     "execution_status",
@@ -27,10 +29,6 @@ BASE_FIELDS: Set[str] = {
     "additional_sources",
     "merge_only",
 }
-
-
-def snake_to_title(s: str) -> str:
-    return " ".join(word.capitalize() for word in s.split("_"))
 
 
 def _get_description(job_model, param_name: str) -> Optional[str]:

@@ -5,13 +5,12 @@ Shared bootstrap logic for all CryoBoost drivers.
 Refactored for Single Source of Truth architecture.
 """
 
-import json
 import subprocess
 import sys
 import os
 import argparse
 from pathlib import Path
-from typing import Tuple, Type
+from typing import Tuple, Type, TypeVar
 
 # Add server root to path to import services
 server_dir = Path(__file__).parent.parent
@@ -39,11 +38,17 @@ def load_project_state(project_path: Path) -> ProjectState:
     return ProjectState.load(params_file)
 
 
-def get_driver_context() -> Tuple[ProjectState, AbstractJobParams, dict, Path, Path, JobType]:
+T = TypeVar("T", bound=AbstractJobParams)
+
+
+def get_driver_context(expected_type: Type[T] = None) -> Tuple[ProjectState, T, dict, Path, Path, JobType]:
     """
     Primary bootstrap function for all drivers.
     Identity is now derived from --instance_id rather than --job_type,
     which supports multiple instances of the same job type per project.
+
+    Pass the expected param class to get full type safety in the driver:
+        state, params, ctx, job_dir, proj, jt = get_driver_context(FsMotionCtfParams)
     """
     parser = argparse.ArgumentParser(allow_abbrev=False)
     parser.add_argument(
@@ -72,6 +77,15 @@ def get_driver_context() -> Tuple[ProjectState, AbstractJobParams, dict, Path, P
         print(
             f"FATAL: Instance '{instance_id}' not found in project_params.json. "
             f"Available: {list(project_state.jobs.keys())}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Runtime type check when a specific class is requested
+    if expected_type is not None and not isinstance(job_model, expected_type):
+        print(
+            f"FATAL: Type mismatch for instance '{instance_id}': "
+            f"expected {expected_type.__name__}, got {type(job_model).__name__}",
             file=sys.stderr,
         )
         sys.exit(1)

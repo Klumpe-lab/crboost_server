@@ -3,6 +3,8 @@ from typing import Optional
 
 from nicegui import ui
 
+from ui.styles import MONO as _MONO, SANS as _SANS
+
 
 _FOLDER_SVG = (
     '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">'
@@ -21,9 +23,6 @@ _FILE_SVG = (
     '<line x1="5.5" y1="11.5" x2="9" y2="11.5" stroke="#e5e7eb" stroke-width="0.75"/>'
     "</svg>"
 )
-
-_MONO = "font-family: 'IBM Plex Mono', monospace;"
-_SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 
 
 class local_file_picker(ui.dialog):

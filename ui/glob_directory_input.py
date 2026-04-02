@@ -3,8 +3,7 @@ from typing import Callable, Optional
 
 from nicegui import ui
 
-_MONO = "font-family: 'IBM Plex Mono', monospace;"
-_SANS = "font-family: 'IBM Plex Sans', sans-serif;"
+from ui.styles import MONO as _MONO
 _CLR_GHOST = "#d1d5db"
 
 

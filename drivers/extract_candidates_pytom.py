@@ -8,7 +8,7 @@ import os
 import json
 import shutil
 from drivers.subtomo_merge import write_optimisation_set
-from services.job_models import ExtractionCutoffMethod
+from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
 import starfile
 import pandas as pd
 import numpy as np
@@ -98,7 +98,7 @@ def main():
     print("--- SLURM JOB START (Extract Candidates) ---", flush=True)
 
     try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context()
+        (state, params, context, job_dir, project_path, job_type) = get_driver_context(CandidateExtractPytomParams)
     except Exception as e:
         print(f"[DRIVER] BOOTSTRAP ERROR: {e}", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)

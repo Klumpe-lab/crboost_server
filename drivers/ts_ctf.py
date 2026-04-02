@@ -105,7 +105,7 @@ def main():
     print("--- SLURM JOB START ---", flush=True)
 
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context()
+        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(TsCtfParams)
 
     except Exception as e:
         job_dir = Path.cwd()

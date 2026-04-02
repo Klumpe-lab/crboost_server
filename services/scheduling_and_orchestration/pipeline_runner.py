@@ -71,8 +71,8 @@ class PipelineRunnerService:
                             try:
                                 resolved_dir = str(Path(sj.stdout_path).resolve().parent)
                                 slurm_jobs_by_dir[resolved_dir] = sj
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"[SYNC] Could not resolve stdout path for SLURM job {sj.job_id}: {e}")
                 except Exception as e:
                     print(f"[SYNC] Could not fetch squeue for QUEUED cross-reference: {e}")
 
@@ -390,10 +390,14 @@ class PipelineRunnerService:
 
             stdout_handle = open(stdout_log, "w")
             stderr_handle = open(stderr_log, "w")
-
-            process = await asyncio.create_subprocess_shell(
-                full_run_command, stdout=stdout_handle, stderr=stderr_handle, cwd=project_dir
-            )
+            try:
+                process = await asyncio.create_subprocess_shell(
+                    full_run_command, stdout=stdout_handle, stderr=stderr_handle, cwd=project_dir
+                )
+            except Exception:
+                stdout_handle.close()
+                stderr_handle.close()
+                raise
             self._active_processes[resolved] = process
 
             asyncio.create_task(
@@ -422,8 +426,8 @@ class PipelineRunnerService:
                 state = self.backend.state_service.state_for(project_dir)
                 state.pipeline_active = False
                 await self.backend.state_service.save_project(project_path=project_dir, force=True)
-            except Exception:
-                pass
+            except Exception as save_err:
+                print(f"[RUNNER] Failed to reset pipeline_active after error: {save_err}")
             return {"success": False, "error": str(e)}
 
     async def _monitor_schemer(
