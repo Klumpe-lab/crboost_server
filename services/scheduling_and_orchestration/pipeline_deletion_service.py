@@ -4,6 +4,7 @@ Proper job deletion following Relion conventions.
 Relion has no CLI for deletion - only GUI. We implement equivalent logic.
 """
 
+import logging
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,6 +12,8 @@ from dataclasses import dataclass, field
 import pandas as pd
 from services.configs.starfile_service import StarfileService
 from services.project_state import JobType
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -105,7 +108,7 @@ class PipelineDeletionService:
                 output_edges=data.get("pipeline_output_edges", pd.DataFrame()),
             )
         except Exception as e:
-            print(f"[DELETION] Failed to load pipeline graph: {e}")
+            logger.info("Failed to load pipeline graph: %s", e)
             return None
     
     def save_pipeline_graph(self, project_dir: Path, graph: PipelineGraph):
@@ -235,7 +238,7 @@ class PipelineDeletionService:
                 shutil.rmtree(trash_dir)
             
             shutil.move(str(job_dir), str(trash_dir))
-            print(f"[DELETION] Moved {job_dir} to {trash_dir}")
+            logger.info("Moved %s to %s", job_dir, trash_dir)
         
         # 10. Write deleted_pipeline.star for audit
         if not deleted_processes.empty:

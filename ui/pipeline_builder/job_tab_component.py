@@ -1,5 +1,6 @@
 # ui/pipeline_builder/job_tab_component.py
 import asyncio
+import logging
 from datetime import datetime
 from typing import Dict, Callable, Optional
 
@@ -23,6 +24,8 @@ from ui.pipeline_builder.slurm_tab import render_slurm_tab
 from ui.pipeline_builder.logs_tab import render_logs_tab
 from ui.pipeline_builder.files_tab import render_files_tab
 
+logger = logging.getLogger(__name__)
+
 
 TAB_IO = "io"
 TAB_SLURM = "slurm"
@@ -45,7 +48,7 @@ class DebouncedSaver:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            print(f"[UI] Debounced save failed: {e}")
+            logger.info("Debounced save failed: %s", e)
 
 
 def create_save_handler() -> Callable:

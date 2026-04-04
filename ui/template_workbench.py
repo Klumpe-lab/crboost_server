@@ -3,11 +3,14 @@ from fastapi.responses import FileResponse, HTMLResponse
 import os
 import json
 import asyncio
+import logging
 from pathlib import Path
 import mrcfile
 from nicegui import context
 
 from services.project_state import JobType, get_project_state_for, get_state_service, ParticleSpecies
+
+logger = logging.getLogger(__name__)
 
 COLOR_PALETTE = [
     0x5C6BC0,
@@ -227,7 +230,7 @@ class TemplateWorkbench:
                 self.pixel_size = self.project_raw_apix
 
         except Exception as e:
-            print(f"[TEMPLATE_WORKBENCH] Load project params error: {e}")
+            logger.info("Load project params error: %s", e)
 
     # ------------------------------------------------------------------
     # RENDER

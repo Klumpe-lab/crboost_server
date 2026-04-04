@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Callable, List, Optional
@@ -8,11 +9,14 @@ from nicegui import ui
 from backend import CryoBoostBackend
 from services.models_base import JobStatus
 from services.project_state import JobType, get_state_service
+
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, next_instance_id
 from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
 from ui.ui_state import get_ui_state_manager, get_job_display_name, instance_id_to_job_type
 from ui.pipeline_builder.job_tab_component import render_job_tab
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineBuilderPanel:
@@ -126,7 +130,7 @@ class PipelineBuilderPanel:
         try:
             job_type = instance_id_to_job_type(instance_id)
         except ValueError:
-            print(f"[PANEL] Unknown job type for instance_id '{instance_id}'")
+            logger.info("Unknown job type for instance_id '%s'", instance_id)
             return
 
         wrapper = self._content_wrapper_ref.get("el")

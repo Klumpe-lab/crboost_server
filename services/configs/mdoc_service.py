@@ -1,10 +1,12 @@
 # services/mdoc_service.py
 import glob
+import logging
 from pathlib import Path
-import sys
 import os
 from typing import Dict, Any, Optional
 from functools import lru_cache
+
+logger = logging.getLogger(__name__)
 
 class MdocService:
     """Singleton service for all .mdoc file interactions."""
@@ -113,7 +115,7 @@ class MdocService:
             return result
 
         except Exception as e:
-            print(f"[ERROR] MdocService failed to parse {mdoc_path}: {e}", file=sys.stderr)
+            logger.error("MdocService failed to parse %s: %s", mdoc_path, e)
             return {}
 
     def parse_all_mdoc_files(self, mdocs_glob: str) -> Dict[str, Any]:
@@ -166,7 +168,7 @@ class MdocService:
                     result["mdoc_files"].append(mdoc_path.name)
                     
             except Exception as e:
-                print(f"[WARN] Failed to parse {mdoc_file}: {e}")
+                logger.warning("Failed to parse %s: %s", mdoc_file, e)
                 continue
 
         result["tilt_series_count"] = len(result["mdoc_files"])

@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import getpass
 import json
+import logging
 import pwd
 import traceback
 from pathlib import Path
@@ -17,6 +18,8 @@ from services.scheduling_and_orchestration.pipeline_runner import PipelineRunner
 from services.project_state import JobType, get_state_service
 from services.computing.slurm_service import SlurmService
 from services.configs.config_service import get_config_service
+
+logger = logging.getLogger(__name__)
 
 
 class CryoBoostBackend:
@@ -71,13 +74,13 @@ class CryoBoostBackend:
         projects = []
         path = Path(base_path)
 
-        print(f"[SCANNER] Scanning directory: {path}")
+        logger.info("Scanning directory: %s", path)
 
         if not path.exists():
-            print(f"[SCANNER] Path does not exist: {path}")
+            logger.info("Path does not exist: %s", path)
             return []
         if not path.is_dir():
-            print(f"[SCANNER] Path is not a directory: {path}")
+            logger.info("Path is not a directory: %s", path)
             return []
 
         try:
@@ -87,7 +90,7 @@ class CryoBoostBackend:
                 params_file = item / "project_params.json"
                 if not params_file.exists():
                     if not item.name.startswith("."):
-                        print(f"[SCANNER] Skipped '{item.name}' - missing project_params.json")
+                        logger.info("Skipped '%s' - missing project_params.json", item.name)
                     continue
                 try:
                     stats = params_file.stat()
@@ -123,14 +126,14 @@ class CryoBoostBackend:
                         "pipeline_active": pipeline_active,
                     })
                 except Exception as e:
-                    print(f"[SCANNER] Error reading {item.name}: {e}")
+                    logger.info("Error reading %s: %s", item.name, e)
 
         except Exception as e:
-            print(f"[BACKEND] Error scanning projects: {e}")
+            logger.error("Error scanning projects: %s", e)
             return []
 
         projects.sort(key=lambda x: x["modified_timestamp"], reverse=True)
-        print(f"[SCANNER] Found {len(projects)} valid projects.")
+        logger.info("Found %d valid projects.", len(projects))
         return projects
 
         
@@ -149,7 +152,7 @@ class CryoBoostBackend:
                 except ValueError:
                     return {"success": False, "error": f"Unknown job instance: {job_name}"}
 
-                print(f"[BACKEND] Job {job_name} not in state, initializing from template.")
+                logger.info("Job %s not in state, initializing from template.", job_name)
                 template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
                 job_star_path = template_base / job_type.value / "job.star"
                 state.ensure_job_initialized(
@@ -234,7 +237,7 @@ class CryoBoostBackend:
         """Runs a shell command, optionally using specified tool's container."""
         try:
             if tool_name:
-                print(f"[DEBUG] Running command with tool: {tool_name}")
+                logger.debug("Running command with tool: %s", tool_name)
                 final_command = self.container_service.wrap_command_for_tool(
                     command=command,
                     cwd=cwd or self.server_dir,
@@ -243,7 +246,7 @@ class CryoBoostBackend:
                 )
             else:
                 final_command = command
-                print(f"[SHELL] Running natively: {final_command}")
+                logger.info("Running natively: %s", final_command)
 
             process = await asyncio.create_subprocess_shell(
                 final_command,
@@ -255,20 +258,20 @@ class CryoBoostBackend:
             try:
                 stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120.0)
 
-                print(f"[DEBUG] Process completed with return code: {process.returncode}")
+                logger.debug("Process completed with return code: %s", process.returncode)
                 if process.returncode == 0:
                     return {"success": True, "output": stdout.decode(), "error": None}
                 else:
                     return {"success": False, "output": stdout.decode(), "error": stderr.decode()}
 
             except asyncio.TimeoutError:
-                print(f"[ERROR] Command timed out after 120 seconds: {final_command}")
+                logger.error("Command timed out after 120 seconds: %s", final_command)
                 process.terminate()
                 await process.wait()
                 return {"success": False, "output": "", "error": "Command execution timed out"}
 
         except Exception as e:
-            print(f"[ERROR] Exception in run_shell_command: {e}")
+            logger.error("Exception in run_shell_command: %s", e)
             return {"success": False, "output": "", "error": str(e)}
 
     async def get_pipeline_overview(self, project_path: str):

@@ -1,9 +1,11 @@
 import asyncio
+import logging
 from pathlib import Path
 from typing import Dict, List, Optional, TYPE_CHECKING
 from nicegui import ui
 from services.models_base import JobStatus
 from services.project_state import JobType, get_project_state
+
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot
 from ui.ui_state import get_job_display_name, get_instance_display_name, instance_id_to_job_type
@@ -21,6 +23,8 @@ from ui.pipeline_builder.pipeline_constants import (
 
 if TYPE_CHECKING:
     from ui.pipeline_builder.pipeline_builder_panel import PipelineBuilderPanel
+
+logger = logging.getLogger(__name__)
 
 _GEAR_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
@@ -1153,7 +1157,7 @@ class RosterWidget:
                     "mrc": str(resolved),
                 })
             except Exception as e:
-                print(f"[PREVIEW] Could not read {png_path}: {e}")
+                logger.info("Could not read %s: %s", png_path, e)
 
         def _copy_cmd(cmd: str):
             ui.clipboard.write(cmd)

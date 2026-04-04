@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import json
+import logging
 import os
 import re
 import tempfile
@@ -32,12 +33,14 @@ from services.job_models import (
     ReconstructParticleParams,
     SubtomoExtractionParams,
     TemplateMatchPytomParams,
-    TemplateWorkbenchState,  
+    TemplateWorkbenchState,
     TsAlignmentParams,
     TsCtfParams,
     TsReconstructParams,
     jobtype_paramclass,
 )
+
+logger = logging.getLogger(__name__)
 
 # ── Schema version ────────────────────────────────────────────────────────────
 #
@@ -153,7 +156,9 @@ class ProjectState(BaseModel):
             binning = get_config_service().processing_defaults.reconstruction_binning
             computed = round(self.microscope.pixel_size_angstrom * binning, 2)
             job_params.rescale_angpixs = computed
-            print(f"[STATE] Auto-set rescale_angpixs = {computed} ({self.microscope.pixel_size_angstrom} * {binning})")
+            logger.info(
+                "Auto-set rescale_angpixs = %s (%s * %s)", computed, self.microscope.pixel_size_angstrom, binning
+            )
 
         self.jobs[instance_id] = job_params
         self.update_modified()
@@ -201,19 +206,16 @@ class ProjectState(BaseModel):
         file_major, file_minor = file_ver[0], file_ver[1] if len(file_ver) > 1 else 0
 
         if file_major == 0 and file_minor == 0:
-            print(f"[STATE] Loading pre-versioned project file: {path.name}")
+            logger.info("Loading pre-versioned project file: %s", path.name)
         elif file_major != code_major:
-            print(
-                f"[STATE] WARNING: Major schema mismatch! "
-                f"File={file_major}.{file_minor}, Code={code_major}.{code_minor}. "
-                f"Project: {path.parent.name}. "
-                f"Data may not load correctly."
+            logger.warning(
+                "Major schema mismatch! File=%s.%s, Code=%s.%s. Project: %s. Data may not load correctly.",
+                file_major, file_minor, code_major, code_minor, path.parent.name,
             )
         elif file_minor != code_minor:
-            print(
-                f"[STATE] Minor schema difference: "
-                f"file={file_major}.{file_minor}, code={code_major}.{code_minor}. "
-                f"Will be upgraded on next save."
+            logger.info(
+                "Minor schema difference: file=%s.%s, code=%s.%s. Will be upgraded on next save.",
+                file_major, file_minor, code_major, code_minor,
             )
 
         project_state = cls(
@@ -242,7 +244,7 @@ class ProjectState(BaseModel):
                 ParticleSpecies(**s) for s in data.get("species_registry", [])
             ]
         except Exception as e:
-            print(f"[WARN] Could not load species registry: {e}")
+            logger.warning("Could not load species registry: %s", e)
             project_state.species_registry = []
 
         param_class_map = jobtype_paramclass()
@@ -257,9 +259,11 @@ class ProjectState(BaseModel):
                     job_params._project_state = project_state
                     project_state.jobs[instance_id] = job_params
                 else:
-                    print(f"[WARN] No param class for job type '{job_type_value}' (instance '{instance_id}'), skipping")
+                    logger.warning(
+                        "No param class for job type '%s' (instance '%s'), skipping", job_type_value, instance_id
+                    )
             except Exception as e:
-                print(f"[WARN] Skipping job instance '{instance_id}' - failed to deserialize: {e}")
+                logger.warning("Skipping job instance '%s' - failed to deserialize: %s", instance_id, e)
 
         return project_state
 
@@ -363,9 +367,9 @@ class StateService:
         from services.configs.mdoc_service import get_mdoc_service
 
         mdoc_service = get_mdoc_service()
-        print(f"[MDOC_UPDATE] Parsing mdocs from: {mdocs_glob}")
+        logger.info("Parsing mdocs from: %s", mdocs_glob)
         mdoc_data = mdoc_service.get_autodetect_params(mdocs_glob)
-        print(f"[MDOC_UPDATE] Result: {mdoc_data}")
+        logger.info("Mdoc autodetect result: %s", mdoc_data)
         if not mdoc_data:
             return
 
@@ -378,7 +382,7 @@ class StateService:
 
         if "dose_per_tilt" in mdoc_data:
             s.acquisition.dose_per_tilt = mdoc_data["dose_per_tilt"]
-            print(f"[MDOC_UPDATE] Set dose_per_tilt = {mdoc_data['dose_per_tilt']}")
+            logger.info("Set dose_per_tilt = %s", mdoc_data["dose_per_tilt"])
         if "pixel_spacing" in mdoc_data:
             s.microscope.pixel_size_angstrom = mdoc_data["pixel_spacing"]
         if "voltage" in mdoc_data:

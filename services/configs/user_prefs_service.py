@@ -6,10 +6,13 @@ and optionally syncs to ~/.crboost/ for server-side access.
 
 from __future__ import annotations
 import json
+import logging
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 MAX_RECENT_ROOTS = 20
 
@@ -107,10 +110,10 @@ class UserPrefsService:
                 # Auto-prune invalid paths on load
                 pruned = self._prefs.prune_invalid_roots()
                 if pruned > 0:
-                    print(f"[PREFS] Pruned {pruned} invalid recent roots")
+                    logger.info("Pruned %d invalid recent roots", pruned)
                 return self._prefs
             except Exception as e:
-                print(f"[PREFS] Failed to parse stored prefs: {e}")
+                logger.error("Failed to parse stored prefs: %s", e)
         
         # Fallback: try loading from file
         self._prefs = self._load_from_file() or UserPreferences()
@@ -130,7 +133,7 @@ class UserPrefsService:
         storage[self.STORAGE_KEY] = {}
         if self._file_path.exists():
             self._file_path.unlink()
-        print("[PREFS] All preferences cleared")
+        logger.info("All preferences cleared")
     
     def _load_from_file(self) -> Optional[UserPreferences]:
         """Load from ~/.crboost/prefs.json"""
@@ -141,7 +144,7 @@ class UserPrefsService:
                 data = json.load(f)
             return UserPreferences(**data)
         except Exception as e:
-            print(f"[PREFS] Failed to load from file: {e}")
+            logger.error("Failed to load from file: %s", e)
             return None
     
     def _save_to_file(self):
@@ -153,7 +156,7 @@ class UserPrefsService:
             with open(self._file_path, "w") as f:
                 json.dump(self._prefs.model_dump(mode="json"), f, indent=2, default=str)
         except Exception as e:
-            print(f"[PREFS] Failed to save to file: {e}")
+            logger.error("Failed to save to file: %s", e)
     
     @property
     def prefs(self) -> UserPreferences:

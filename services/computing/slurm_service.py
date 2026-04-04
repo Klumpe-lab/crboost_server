@@ -1,5 +1,6 @@
 # services/slurm_service.py
 import asyncio
+import logging
 from enum import Enum
 from pathlib import Path
 import re
@@ -9,6 +10,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 from services.configs.config_service import get_config_service
+
+logger = logging.getLogger(__name__)
 
 
 class SlurmPreset(str, Enum):
@@ -72,7 +75,7 @@ class SlurmConfig(BaseModel):
             defaults = config_service.slurm_defaults
             return cls(**defaults.model_dump())
         except Exception as e:
-            print(f"[SLURM] Could not load config defaults, using built-in: {e}")
+            logger.info("Could not load config defaults, using built-in: %s", e)
             return cls()
 
 
@@ -154,7 +157,7 @@ class SlurmService:
         ])
 
         if not success:
-            print(f"[ERROR] Failed to get partition info: {stderr}")
+            logger.error("Failed to get partition info: %s", stderr)
             return []
 
         partitions_dict = {}
@@ -215,7 +218,7 @@ class SlurmService:
 
         success, stdout, stderr = await self._run_command(cmd)
         if not success:
-            print(f"[ERROR] Failed to get node info: {stderr}")
+            logger.error("Failed to get node info: %s", stderr)
             return []
 
         nodes = []
@@ -266,7 +269,7 @@ class SlurmService:
         if not force_refresh and self._is_cache_valid(cache_key):
             return self._cache[cache_key]
 
-        print(f"[DEBUG] Fetching jobs for user: {self.username}")
+        logger.debug("Fetching jobs for user: %s", self.username)
 
         # %o = stdout file path -- parent dir is the job directory (e.g. External/job002)
         # %Z = submit working directory -- this is the project root, same for all jobs
@@ -276,10 +279,10 @@ class SlurmService:
             "--noheader"
         ])
 
-        print(f"[DEBUG] squeue success={success}")
+        logger.debug("squeue success=%s", success)
 
         if not success:
-            print(f"[ERROR] Failed to get user jobs: {stderr}")
+            logger.error("Failed to get user jobs: %s", stderr)
             return []
 
         jobs = []
@@ -310,7 +313,7 @@ class SlurmService:
             )
             jobs.append(job)
 
-        print(f"[DEBUG] Total jobs found: {len(jobs)}")
+        logger.debug("Total jobs found: %d", len(jobs))
         self._cache[cache_key] = jobs
         self._cache_timestamp[cache_key] = datetime.now()
         return jobs
@@ -329,21 +332,21 @@ class SlurmService:
             if job.stdout_path:
                 try:
                     if Path(job.stdout_path).resolve().parent == target:
-                        print(f"[SLURM] Matched job {job.job_id} via stdout path: {job.stdout_path}")
+                        logger.info("Matched job %s via stdout path: %s", job.job_id, job.stdout_path)
                         return job
                 except Exception as e:
-                    print(f"[SLURM] Error resolving stdout path for job {job.job_id}: {e}")
+                    logger.info("Error resolving stdout path for job %s: %s", job.job_id, e)
 
             # Fallback: work_dir match (only works if the job cd'd to job_dir)
             if job.work_dir:
                 try:
                     if Path(job.work_dir).resolve() == target:
-                        print(f"[SLURM] Matched job {job.job_id} via work_dir: {job.work_dir}")
+                        logger.info("Matched job %s via work_dir: %s", job.job_id, job.work_dir)
                         return job
                 except Exception as e:
-                    print(f"[SLURM] Error resolving work_dir for job {job.job_id}: {e}")
+                    logger.info("Error resolving work_dir for job %s: %s", job.job_id, e)
 
-        print(f"[RUNNER] No SLURM job found for {target}")
+        logger.info("No SLURM job found for %s", target)
         return None
 
     async def scancel_jobs(self, job_ids: List[str]) -> Dict[str, Any]:
@@ -351,9 +354,9 @@ class SlurmService:
             return {"success": True, "cancelled": []}
         success, stdout, stderr = await self._run_command(["scancel"] + job_ids)
         if success:
-            print(f"[SLURM] Cancelled jobs: {job_ids}")
+            logger.info("Cancelled jobs: %s", job_ids)
             return {"success": True, "cancelled": job_ids}
-        print(f"[SLURM] scancel returned non-zero (may be already gone): {stderr.strip()}")
+        logger.info("scancel returned non-zero (may be already gone): %s", stderr.strip())
         return {"success": False, "error": stderr.strip(), "cancelled": job_ids}
 
     async def get_cluster_summary(self) -> Dict[str, Any]:
@@ -425,7 +428,7 @@ class SlurmService:
     async def get_user_slurm_jobs(self, force_refresh: bool = False) -> Dict[str, Any]:
         try:
             jobs = await self.get_user_jobs(force_refresh=force_refresh)
-            print(f"[DEBUG] Backend returning {len(jobs)} jobs")
+            logger.debug("Backend returning %d jobs", len(jobs))
             return {
                 "success": True,
                 "jobs": [
@@ -444,7 +447,7 @@ class SlurmService:
                 ],
             }
         except Exception as e:
-            print(f"[ERROR] Failed to get user jobs: {e}")
+            logger.error("Failed to get user jobs: %s", e)
             import traceback
             traceback.print_exc()
             return {"success": False, "error": str(e)}

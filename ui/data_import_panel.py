@@ -5,6 +5,7 @@ Data import panel with debounced saves and history management.
 
 import asyncio
 import glob
+import logging
 from pathlib import Path
 from typing import Dict, Callable
 
@@ -13,10 +14,13 @@ from nicegui import ui, app
 from backend import CryoBoostBackend
 from services.configs.user_prefs_service import get_prefs_service
 from services.project_state import get_project_state
+
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
 from ui.glob_directory_input import GlobDirectoryInput
 from ui.styles import MONO, SANS as FONT
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_MOVIES_EXT = "*.eer"
@@ -765,7 +769,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             refresh_params_display()
             ui.notify("Parameters auto-detected from mdocs", type="positive", timeout=2500)
         except Exception as e:
-            print(f"[AUTO_DETECT] Failed: {e}")
+            logger.info("Auto-detect failed: %s", e)
 
     _original_update_mdocs = update_mdocs_validation
 

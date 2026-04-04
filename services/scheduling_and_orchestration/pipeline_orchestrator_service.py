@@ -1,3 +1,4 @@
+import logging
 import os
 import pandas as pd
 from pathlib import Path
@@ -13,6 +14,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineOrchestratorService:
@@ -92,7 +95,7 @@ class PipelineOrchestratorService:
                 job_model.missing_inputs = [str(e)]
                 report_lines.append(f"[{instance_id}] RESOLUTION FAILED: {e}")
                 report_lines.append("")
-                print(f"[RESOLUTION ERROR] {instance_id}: {e}")
+                logger.info("Resolution failed for %s: %s", instance_id, e)
                 continue
 
             job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v is not None}
@@ -127,7 +130,7 @@ class PipelineOrchestratorService:
 
         report_path = scheme_dir / "resolution_report.txt"
         report_path.write_text("\n".join(report_lines))
-        print(f"[RESOLUTION] wrote {report_path}")
+        logger.info("Wrote %s", report_path)
 
         self._write_scheme_star(scheme_dir, scheme_name, instances_to_run)
 
@@ -339,7 +342,7 @@ class PipelineOrchestratorService:
         if not job_numbers:
             return {"success": False, "error": f"No instances of {job_type.value} found to delete."}
 
-        print(f"[ORCHESTRATOR] Found {len(job_numbers)} instances of {job_type.value} to delete: {job_numbers}")
+        logger.info("Found %d instances of %s to delete: %s", len(job_numbers), job_type.value, job_numbers)
 
         flag = "--harsh_clean" if harsh else "--gentle_clean"
         success_count = 0
@@ -350,10 +353,10 @@ class PipelineOrchestratorService:
             result = await self.backend.run_shell_command(cmd, cwd=project_dir, tool_name="relion")
 
             if result["success"]:
-                print(f"[ORCHESTRATOR] Deleted job {job_num_str}")
+                logger.info("Deleted job %s", job_num_str)
                 success_count += 1
             else:
-                print(f"[ORCHESTRATOR] Failed to delete job {job_num_str}: {result.get('error')}")
+                logger.info("Failed to delete job %s: %s", job_num_str, result.get("error"))
                 errors.append(f"Job {job_num_str}: {result.get('error')}")
 
         if success_count == 0 and errors:
@@ -388,12 +391,12 @@ class PipelineOrchestratorService:
                         number_str = folder_name.replace("job", "")
                         job_numbers.append(str(int(number_str)))
                     except ValueError:
-                        print(f"[ORCHESTRATOR] Could not parse number from {job_path}")
+                        logger.info("Could not parse number from %s", job_path)
 
             return job_numbers
 
         except Exception as e:
-            print(f"[ORCHESTRATOR] Error scanning pipeline for deletion: {e}")
+            logger.error("Error scanning pipeline for deletion: %s", e)
             return []
 
     def _dryrun_compare_schema_paths(
@@ -409,10 +412,10 @@ class PipelineOrchestratorService:
         try:
             schema_paths = resolver.resolve_all_paths(job_type, job_model, predicted_job_dir)
         except PathResolutionError as e:
-            print(f"[SCHEMA DRYRUN] {job_type.value}: cannot resolve: {e}")
+            logger.info("%s: cannot resolve: %s", job_type.value, e)
             return
         except Exception as e:
-            print(f"[SCHEMA DRYRUN] {job_type.value}: unexpected error: {e}")
+            logger.info("%s: unexpected error: %s", job_type.value, e)
             return
 
         legacy_paths = job_model.paths or {}
@@ -423,9 +426,9 @@ class PipelineOrchestratorService:
                 diffs.append((k, legacy_paths.get(k), schema_paths.get(k)))
 
         if diffs:
-            print(f"[SCHEMA DRYRUN] {job_type.value}: {len(diffs)} path diffs")
+            logger.info("%s: %d path diffs", job_type.value, len(diffs))
             for k, oldv, newv in diffs:
-                print(f"  - {k}\n      legacy: {oldv}\n      schema : {newv}")
+                logger.info("  - %s\n      legacy: %s\n      schema : %s", k, oldv, newv)
 
 
 class JobTypeResolver:
@@ -477,5 +480,5 @@ class JobTypeResolver:
             return None
 
         except Exception as e:
-            print(f"[WARN] Could not read job type from {job_star_path}: {e}")
+            logger.warning("Could not read job type from %s: %s", job_star_path, e)
             return None
