@@ -96,11 +96,12 @@ def create_ui_router(backend: CryoBoostBackend):
 
         callbacks = {"rebuild_pipeline_ui": on_project_ready, "check_and_update_statuses": lambda: None}
 
-        with ui.column().classes("w-full bg-gray-50 items-center px-4 py-3").style(
-            "height: 100%; overflow-y: auto; box-sizing: border-box;"
+        with (
+            ui.column()
+            .classes("w-full bg-gray-50 px-6 py-3")
+            .style("height: 100%; overflow-y: auto; box-sizing: border-box;")
         ):
-            with ui.column().classes("w-full gap-2").style("max-width: 860px;"):
-                build_data_import_panel(backend, callbacks)
+            build_data_import_panel(backend, callbacks)
 
     # --- PAGE 2: WORKSPACE ---
     @ui.page("/workspace")
