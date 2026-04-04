@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar, Dict, List, Optional, Self, Set, Tuple, TYPE_CHECKING
@@ -10,6 +11,8 @@ from services.models_base import JobType, AcquisitionParams, JobCategory, JobSta
 
 if TYPE_CHECKING:
     from services.project_state import ProjectState
+
+logger = logging.getLogger(__name__)
 
 
 class SymmetryGroup(str, Enum):
@@ -225,7 +228,7 @@ class AbstractJobParams(BaseModel):
             f.write("# version 50001\n\n")
             f.write(content)
 
-        print(f"[JOBSTAR] Generated {star_path}")
+        logger.info("Generated %s", star_path)
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         """
@@ -364,7 +367,7 @@ class AbstractJobParams(BaseModel):
             return
 
         if current_status not in (JobStatus.SCHEDULED, JobStatus.FAILED):
-            print(f"[IMMUTABLE] Blocked change to '{name}' on {current_status.value} job")
+            logger.info("Blocked change to '%s' on %s job", name, current_status.value)
             return
 
         # Apply the change

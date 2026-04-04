@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import asyncio
 import os
 import socket
 import argparse
@@ -23,10 +22,22 @@ class SuppressPruneStorageError(logging.Filter):
         return "Request is not set" not in record.getMessage()
 
 warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
-logging.getLogger("nicegui").addFilter(SuppressPruneStorageError())
 
-logging.basicConfig(level=logging.DEBUG)
-asyncio.get_event_loop().set_debug(True)
+
+def setup_logging(debug: bool = False):
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    # Quiet down noisy third-party loggers
+    logging.getLogger("nicegui").setLevel(logging.WARNING)
+    logging.getLogger("nicegui").addFilter(SuppressPruneStorageError())
+    logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def setup_app():
@@ -62,8 +73,10 @@ if __name__ in {"__main__", "__mp_main__"}:
     parser = argparse.ArgumentParser(description='CryoBoost Server')
     parser.add_argument('--port', type=int, default=8081, help='Port to run server on')
     parser.add_argument('--host', type=str, default='0.0.0.0', help='Host to bind to')
+    parser.add_argument('--debug', action='store_true', help='Enable DEBUG-level logging')
 
     args     = parser.parse_args()
+    setup_logging(debug=args.debug)
     app      = setup_app()
     local_ip = get_local_ip()
     hostname = socket.gethostname()

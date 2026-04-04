@@ -18,10 +18,13 @@ Jobs without a registered plugin get the generic field-dump from default_rendere
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 from services.models_base import JobType
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -97,7 +100,7 @@ def _load_plugins():
         try:
             importlib.import_module(mod)
         except ImportError as e:
-            print(f"[PLUGINS] Skipped {mod}: {e}")
+            logger.info("Skipped %s: %s", mod, e)
 
 
 _load_plugins()

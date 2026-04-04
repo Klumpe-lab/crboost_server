@@ -1,9 +1,12 @@
 # services/starfile_service.py
 
+import logging
 import starfile
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Union, Any
+
+logger = logging.getLogger(__name__)
 
 class StarfileService:
     def read(self, path: Union[str, Path]) -> Dict[str, Any]:
@@ -20,7 +23,7 @@ class StarfileService:
             
             starfile.write(data, path, overwrite=True)
         except Exception as e:
-            print(f"[STARFILE ERROR] Failed to write {path}: {e}")
+            logger.error("Failed to write %s: %s", path, e)
             starfile.write(data, path, overwrite=True)
 
     def _escape_star_data(self, data_dict: Dict[str, Any]) -> Dict[str, Any]:

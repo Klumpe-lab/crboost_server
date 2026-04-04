@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING
 from nicegui import ui
 from services.models_base import JobStatus
@@ -5,6 +6,8 @@ from services.project_state import get_project_state_for
 
 if TYPE_CHECKING:
     from ui.pipeline_builder.pipeline_builder_panel import PipelineBuilderPanel
+
+logger = logging.getLogger(__name__)
 
 
 class StatusPoller:
@@ -64,7 +67,7 @@ class StatusPoller:
         try:
             await self.check_and_update_statuses()
         except Exception as e:
-            print(f"[UI] Status check failed: {e}")
+            logger.info("Status check failed: %s", e)
 
     def stop_all_timers(self):
         self.panel.ui_mgr.cleanup_all_timers()

@@ -1,11 +1,14 @@
 # services/container_service.py
 
+import logging
 from pathlib import Path
 import re
 import shlex
 from typing import List, Optional, Tuple
 
 from services.configs.config_service import get_config_service
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -168,7 +171,7 @@ class ContainerService:
             # Note: We assume the command string already uses the binary name 
             # (which might need to be absolute if not in PATH). 
             # If the driver constructed the command using 'tool_name', this might work if tool_name == bin_path.
-            print(f"[CONTAINER] Running {tool_name} as binary (Native execution)")
+            logger.info("Running %s as binary (Native execution)", tool_name)
             return command
             
         # Default to container logic
@@ -177,7 +180,7 @@ class ContainerService:
     def _wrap_container_command(self, command: str, cwd: Path, tool_name: str, container_path: str, additional_binds: List[str] = None) -> str:
         """Internal method to wrap command in Apptainer/Singularity"""
         if not container_path:
-            print(f"[CONTAINER WARN] No container path configured for tool '{tool_name}', running natively")
+            logger.warning("No container path configured for tool '%s', running natively", tool_name)
             return command
 
         binds = set()

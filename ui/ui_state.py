@@ -1,5 +1,6 @@
 # ui/ui_state.py
 from __future__ import annotations
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -9,6 +10,8 @@ from services.project_state import JobType, JobStatus
 
 if TYPE_CHECKING:
     from nicegui.element import Element
+
+logger = logging.getLogger(__name__)
 
 
 class MonitorTab(str, Enum):
@@ -256,14 +259,14 @@ class UIStateManager:
         if not storage_dict:
             return
         try:
-            print("[UI_STATE] Hydrating from browser storage...")
+            logger.info("Hydrating from browser storage...")
             self._state = UIState(**storage_dict)
             for iid in self._state.selected_jobs:
                 if iid not in self._job_widget_refs:
                     self._job_widget_refs[iid] = JobWidgetRefs()
             self._notify()
         except Exception as e:
-            print(f"[UI_STATE] Error hydrating state from storage: {e}")
+            logger.info("Error hydrating state from storage: %s", e)
 
     # ── Properties ───────────────────────────────────────────────────────────
 
@@ -570,7 +573,7 @@ class UIStateManager:
             try:
                 sub(self._state)
             except Exception as e:
-                print(f"[UIStateManager] Subscriber error: {e}")
+                logger.info("Subscriber error: %s", e)
 
 
 def get_ui_state_manager() -> UIStateManager:

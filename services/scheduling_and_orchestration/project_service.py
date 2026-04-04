@@ -1,4 +1,5 @@
 import shutil
+import logging
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import os
@@ -21,6 +22,8 @@ from services.scheduling_and_orchestration.pipeline_deletion_service import get_
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
 
+logger = logging.getLogger(__name__)
+
 
 class DataImportService:
     def __init__(self):
@@ -40,7 +43,7 @@ class DataImportService:
             mdoc_dir.mkdir(exist_ok=True, parents=True)
 
             if not movies_glob or not mdocs_glob:
-                print("[DATA_IMPORT] Skipping data import - patterns are empty.")
+                logger.info("Skipping data import - patterns are empty.")
                 return {"success": True, "message": "Skipped data import (empty patterns)."}
 
             source_movie_dir = Path(movies_glob).parent
@@ -261,9 +264,9 @@ class ProjectService:
 
         if source_qsub.exists():
             shutil.copy(source_qsub, dest_qsub)
-            print(f"[PROJECT] Copied qsub.sh to {dest_qsub}")
+            logger.info("Copied qsub.sh to %s", dest_qsub)
         else:
-            print(f"[PROJECT WARN] qsub.sh not found at {source_qsub}")
+            logger.warning("qsub.sh not found at %s", source_qsub)
 
     async def initialize_new_project(
         self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
@@ -308,7 +311,7 @@ class ProjectService:
             template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
 
             if selected_jobs:
-                print(f"[PROJECT_SERVICE] Loading default parameters for: {selected_jobs}")
+                logger.info("Loading default parameters for: %s", selected_jobs)
                 for job_str in selected_jobs:
                     try:
                         job_type = JobType(job_str)
@@ -316,7 +319,7 @@ class ProjectService:
                         # CHANGED: call directly on the state object
                         state.ensure_job_initialized(job_type, job_star_path if job_star_path.exists() else None)
                     except ValueError:
-                        print(f"[WARN] Skipping unknown job '{job_str}'")
+                        logger.warning("Skipping unknown job '%s'", job_str)
 
             # 3. Save Project State (project_params.json)
             params_json_path = project_dir / "project_params.json"
@@ -326,7 +329,7 @@ class ProjectService:
             )
 
             # 4. Initialize Relion (Create default_pipeline.star)
-            print(f"[PROJECT_SERVICE] Initializing Relion project...")
+            logger.info("Initializing Relion project...")
 
             init_command = "unset DISPLAY && relion --tomo --do_projdir ."
             binds = [
@@ -383,7 +386,7 @@ class ProjectService:
                     mdocs_glob = raw_params_data["acquisition"].get("mdocs_glob", "")
 
             except Exception as e:
-                print(f"[LOAD_PROJECT] Warning: could not parse raw JSON for data_sources: {e}")
+                logger.info("Warning: could not parse raw JSON for data_sources: %s", e)
 
             # Load via StateService (this registers into the path-keyed registry)
             load_success = await self.backend.state_service.load_project(params_file)

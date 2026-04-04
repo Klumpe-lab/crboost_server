@@ -15,6 +15,7 @@ Usage:
     )
 """
 
+import logging
 import subprocess
 import os
 import numpy as np
@@ -22,6 +23,8 @@ import starfile
 import pandas as pd
 from pathlib import Path
 from typing import Callable, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def _read_tomogram_info(tomograms_star: Path) -> pd.DataFrame:
@@ -135,9 +138,9 @@ def _write_imod_model(
     )
     try:
         command_runner(cmd, output_txt.parent)
-        print(f"[VIS] Created {output_mod}")
+        logger.info("Created %s", output_mod)
     except RuntimeError as e:
-        print(f"[VIS WARN] point2model failed for {output_mod}: {e}")
+        logger.warning("point2model failed for %s: %s", output_mod, e)
 
 
 def _write_warp_coords(
@@ -171,7 +174,7 @@ def _write_warp_coords(
         df["rlnAutopickFigureOfMerit"] = particles[score_col].values
 
     starfile.write(df, output_dir / f"{tomo_name}.star", overwrite=True)
-    print(f"[VIS] Wrote warp coords: {output_dir / tomo_name}.star")
+    logger.info("Wrote warp coords: %s.star", output_dir / tomo_name)
 
 
 def generate_candidate_vis(
@@ -219,7 +222,7 @@ def generate_candidate_vis(
     for tomo_name in tomo_names:
         tomo_row = tomo_lookup.get(tomo_name)
         if tomo_row is None:
-            print(f"[VIS WARN] Tomogram '{tomo_name}' not found in tomograms.star, skipping")
+            logger.warning("Tomogram '%s' not found in tomograms.star, skipping", tomo_name)
             continue
 
         pixel_size = _get_pixel_size(tomo_row)
@@ -254,7 +257,7 @@ def generate_candidate_vis(
         # Warp-compatible coordinates
         _write_warp_coords(tomo_particles, tomo_name, tomo_size, pixel_size, dir_warp)
 
-    print(f"[VIS] Candidate visualization complete for {len(tomo_names)} tomogram(s)")
+    logger.info("Candidate visualization complete for %d tomogram(s)", len(tomo_names))
 
 
 def view_volume(mrc_path: str, command_runner: Optional[Callable[[str, Path], None]] = None) -> None:
@@ -274,5 +277,5 @@ def view_volume(mrc_path: str, command_runner: Optional[Callable[[str, Path], No
         # Container mode -- run 3dmod through container (blocking)
         command_runner(f"3dmod {mrc_path}", Path(mrc_path).parent)
     else:
-        print(f"[VIS] Launching 3dmod for {mrc_path}")
+        logger.info("Launching 3dmod for %s", mrc_path)
         subprocess.Popen(["3dmod", mrc_path])

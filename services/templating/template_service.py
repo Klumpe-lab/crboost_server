@@ -1,6 +1,7 @@
 import os
 import asyncio
 import gzip
+import logging
 import shutil
 import requests
 import numpy as np
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from services.computing.container_service import get_container_service
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -218,7 +221,7 @@ class TemplateService:
                 "flexible_bounds": float(np.mean(vol) + 1.85 * np.std(vol)),
             }
         except Exception as e:
-            print(f"[TemplateService] Threshold calculation error: {e}")
+            logger.info("Threshold calculation error: %s", e)
             return {"flexible_bounds": 0.001}
 
     def _gaussian_lowpass(self, volume: np.ndarray, cutoff_angstrom: float, voxel_size: float) -> np.ndarray:

@@ -5,15 +5,17 @@ Bridges the gap between fsMotionAndCtf output and downstream jobs.
 """
 
 import glob
+import logging
 import os
 from pathlib import Path
-import sys
 from typing import Dict, Optional
 import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 from services.configs.starfile_service import StarfileService
 from services.project_state import AlignmentMethod
+
+logger = logging.getLogger(__name__)
 
 
 class WarpXmlParser:
@@ -118,10 +120,10 @@ class WarpXmlParser:
 
         # Verify all arrays have the same length
         if not (len(defocus_values) == len(delta_values) == len(angle_values) == len(movie_paths)):
-            print(f"[WARN] Array length mismatch in {xml_path}:")
-            print(
-                f"  defocus: {len(defocus_values)}, delta: {len(delta_values)}, "
-                f"angle: {len(angle_values)}, movies: {len(movie_paths)}"
+            logger.warning("Array length mismatch in %s:", xml_path)
+            logger.warning(
+                "  defocus: %d, delta: %d, angle: %d, movies: %d",
+                len(defocus_values), len(delta_values), len(angle_values), len(movie_paths),
             )
             min_len = min(len(defocus_values), len(delta_values), len(angle_values), len(movie_paths))
             defocus_values = defocus_values[:min_len]
@@ -215,7 +217,7 @@ class MetadataTranslator:
         try:
             xml_pattern = str(job_dir / warp_folder / "*.xml")
             warp_data = WarpXmlParser(xml_pattern)
-            print(f"[METADATA] Parsed {len(warp_data.data_df)} XML files")
+            logger.info("Parsed %d XML files", len(warp_data.data_df))
 
             star_data = self.starfile_service.read(input_star_path)
             tilt_series_df = star_data.get("global", pd.DataFrame())
@@ -237,7 +239,7 @@ class MetadataTranslator:
             }
 
         except Exception as e:
-            print(f"[ERROR] Metadata update failed: {e}")
+            logger.error("Metadata update failed: %s", e)
             import traceback
 
             traceback.print_exc()
@@ -255,7 +257,7 @@ class MetadataTranslator:
         all_tilts = []
 
         input_star_dir = input_star_path.parent
-        print(f"[METADATA] Loading tilt series relative to: {input_star_dir}")
+        logger.info("Loading tilt series relative to: %s", input_star_dir)
 
         for i, (_, ts_row) in enumerate(tilt_series_df.iterrows()):
             ts_file = ts_row["rlnTomoTiltSeriesStarFile"]
@@ -268,23 +270,23 @@ class MetadataTranslator:
 
             ts_path = None
             for path in paths_to_try:
-                print(f"[DEBUG] Trying path: {path}")
-                print(f"[DEBUG]   Path exists: {path.exists()}")
+                logger.debug("Trying path: %s", path)
+                logger.debug("  Path exists: %s", path.exists())
                 if path.exists():
                     ts_path = path
-                    print(f"[DEBUG]   ✓ Using this path")
+                    logger.debug("  Using this path")
                     break
                 else:
-                    print(f"[DEBUG]   ✗ Path does not exist")
+                    logger.debug("  Path does not exist")
 
             if ts_path is None:
-                print(f"[WARN] Tilt series file not found: {ts_file}")
-                print(f"[WARN] Tried the following locations:")
+                logger.warning("Tilt series file not found: %s", ts_file)
+                logger.warning("Tried the following locations:")
                 for path in paths_to_try:
-                    print(f"[WARN]   - {path}")
+                    logger.warning("  - %s", path)
                 continue
 
-            print(f"[METADATA] Loading tilt series from: {ts_path}")
+            logger.info("Loading tilt series from: %s", ts_path)
 
             try:
                 ts_data = self.starfile_service.read(ts_path)
@@ -296,7 +298,7 @@ class MetadataTranslator:
                 all_tilts.append(merged)
 
             except Exception as e:
-                print(f"[ERROR] Failed to load tilt series file {ts_path}: {e}")
+                logger.error("Failed to load tilt series file %s: %s", ts_path, e)
                 continue
 
         if not all_tilts:
@@ -309,7 +311,7 @@ class MetadataTranslator:
         all_tilts_df = all_tilts_df.drop("cryoBoostKey", axis=1)
         all_tilts_df["cryoBoostKey"] = key_values
 
-        print(f"[METADATA] Loaded {len(all_tilts_df)} individual tilts from {len(tilt_series_df)} tilt series")
+        logger.info("Loaded %d individual tilts from %d tilt series", len(all_tilts_df), len(tilt_series_df))
         return all_tilts_df
 
     def _write_updated_star(self, tilts_df: pd.DataFrame, tilt_series_df: pd.DataFrame, output_path: Path):
@@ -351,7 +353,7 @@ class MetadataTranslator:
             ts_file = tilt_series_dir / f"{ts_name}.star"
             self.starfile_service.write({ts_name: ts_tilts_only}, ts_file)
 
-        print(f"[METADATA] Wrote updated STAR files to {output_path}")
+        logger.info("Wrote updated STAR files to %s", output_path)
 
     def _merge_warp_metadata(self, tilts_df: pd.DataFrame, warp_df: pd.DataFrame, warp_folder: Path) -> pd.DataFrame:
         """
@@ -367,7 +369,7 @@ class MetadataTranslator:
             matches = warp_df[warp_df["cryoBoostKey"] == key]
 
             if matches.empty:
-                print(f"[WARN] No WarpTools data for {key}")
+                logger.warning("No WarpTools data for %s", key)
                 continue
 
             warp_row = matches.iloc[0]
@@ -427,7 +429,7 @@ class MetadataTranslator:
                     f"Invalid pixel size {voxel_x} in {st_files[0]}. "
                     f"Cannot determine alignment pixel size for shift conversion."
                 )
-            print(f"[METADATA] Read pixel size {voxel_x:.4f} A from {st_files[0].name}")
+            logger.info("Read pixel size %.4f A from %s", voxel_x, st_files[0].name)
             return voxel_x
 
     def update_ts_alignment_metadata(
@@ -441,7 +443,7 @@ class MetadataTranslator:
         alignment_angpix: float = 0,
     ) -> Dict:
         try:
-            print(f"[METADATA] Starting tsAlignment update for {input_star_path}")
+            logger.info("Starting tsAlignment update for %s", input_star_path)
             alignment_method_enum = AlignmentMethod(alignment_method)
             input_star_dir = input_star_path.parent
             in_star_data = self.starfile_service.read(input_star_path)
@@ -465,17 +467,17 @@ class MetadataTranslator:
             else:
                 pixS = 1.35  # Fallback
 
-            print(f"[METADATA] Frame pixel size: {pixS} A")
+            logger.info("Frame pixel size: %s A", pixS)
 
             # Pixel size for converting alignment shifts from pixels to Angstroms.
             # AreTomo/IMOD operate on the binned tilt stack, so shifts are in
             # binned pixels (rescale_angpixs), NOT raw frame pixels.
             if alignment_angpix > 0:
                 shift_angpix = alignment_angpix
-                print(f"[METADATA] Using explicit alignment pixel size for shifts: {shift_angpix} A/px")
+                logger.info("Using explicit alignment pixel size for shifts: %s A/px", shift_angpix)
             else:
                 shift_angpix = self._infer_alignment_angpix(job_dir)
-                print(f"[METADATA] Auto-inferred alignment pixel size for shifts: {shift_angpix} A/px")
+                logger.info("Auto-inferred alignment pixel size for shifts: %s A/px", shift_angpix)
 
             output_star_path.parent.mkdir(parents=True, exist_ok=True)
             output_tilts_dir = output_star_path.parent / "tilt_series"
@@ -504,7 +506,7 @@ class MetadataTranslator:
                 matching_dirs = list(tiltstack_root.glob(f"{ts_id_base}*"))
 
                 if not matching_dirs or not matching_dirs[0].is_dir():
-                    print(f"[WARN] No output folder found in {tiltstack_root} for {ts_id_base}")
+                    logger.warning("No output folder found in %s for %s", tiltstack_root, ts_id_base)
                     ts_id_failed.append(ts_id_base)
                     continue
 
@@ -516,7 +518,7 @@ class MetadataTranslator:
                 if alignment_method_enum == AlignmentMethod.ARETOMO:
                     aln_files = list(actual_ts_dir.glob("*.st.aln"))
                     if aln_files:
-                        print(f"[DEBUG] Found AreTomo alignment: {aln_files[0]}")
+                        logger.debug("Found AreTomo alignment: %s", aln_files[0])
                         aln_data = self._read_aretomo_aln_file(aln_files[0])
 
                 elif alignment_method_enum == AlignmentMethod.IMOD:
@@ -526,7 +528,7 @@ class MetadataTranslator:
                         aln_data = self._read_imod_xf_tlt_files(xf_files[0], tlt_files[0])
 
                 if aln_data is None:
-                    print(f"[WARN] Alignment data missing in {actual_ts_dir}")
+                    logger.warning("Alignment data missing in %s", actual_ts_dir)
                     ts_id_failed.append(ts_id_base)
                     continue
 
@@ -540,7 +542,7 @@ class MetadataTranslator:
                     tomostar_path = tomostar_dir / f"{ts_id_base}.tomostar"
 
                 if not tomostar_path.exists():
-                    print(f"[WARN] Tomostar not found at {tomostar_path}")
+                    logger.warning("Tomostar not found at %s", tomostar_path)
                     ts_id_failed.append(ts_id_base)
                     continue
 
@@ -601,7 +603,7 @@ class MetadataTranslator:
             return {"success": True, "message": "Metadata updated using robust path resolution."}
 
         except Exception as e:
-            print(f"[ERROR] tsAlignment metadata update failed: {e}")
+            logger.error("tsAlignment metadata update failed: %s", e)
             import traceback
 
             traceback.print_exc()
@@ -630,7 +632,7 @@ class MetadataTranslator:
                 matches = warp_df[warp_df["cryoBoostKey"].str.contains(clean_key_alt, na=False)]
 
             if matches.empty:
-                print(f"[WARN] No CTF data for {key} (tried: {clean_key}, {base_key})")
+                logger.warning("No CTF data for %s (tried: %s, %s)", key, clean_key, base_key)
                 continue
 
             warp_row = matches.iloc[0]
@@ -692,7 +694,7 @@ class MetadataTranslator:
             ts_file = tilt_series_dir / f"{ts_name}.star"
             self.starfile_service.write({ts_name: ts_tilts_only}, ts_file)
 
-        print(f"[METADATA] Wrote updated CTF STAR files to {output_path}")
+        logger.info("Wrote updated CTF STAR files to %s", output_path)
 
     def update_ts_ctf_metadata(
         self,
@@ -703,13 +705,13 @@ class MetadataTranslator:
         warp_folder: str = "warp_tiltseries",
     ) -> Dict:
         try:
-            print(f"[METADATA] Starting tsCTF update for {input_star_path}")
-            print(f"[METADATA] Using project root: {project_root}")
+            logger.info("Starting tsCTF update for %s", input_star_path)
+            logger.info("Using project root: %s", project_root)
 
             # Parse WarpTools XML files from job directory
             xml_pattern = str(job_dir / warp_folder / "*.xml")
             warp_data = WarpXmlParser(xml_pattern)
-            print(f"[METADATA] Parsed {len(warp_data.data_df)} XML files")
+            logger.info("Parsed %d XML files", len(warp_data.data_df))
 
             # Read input tilt series data
             in_star_data = self.starfile_service.read(input_star_path)
@@ -734,7 +736,7 @@ class MetadataTranslator:
             }
 
         except Exception as e:
-            print(f"[ERROR] tsCTF metadata update failed: {e}")
+            logger.error("tsCTF metadata update failed: %s", e)
             import traceback
 
             traceback.print_exc()
@@ -754,7 +756,7 @@ class MetadataTranslator:
         All paths written as ABSOLUTE to avoid resolution ambiguity downstream.
         """
         try:
-            print(f"[METADATA] Starting tsReconstruct update for {input_star_path}")
+            logger.info("Starting tsReconstruct update for %s", input_star_path)
 
             input_star_dir = input_star_path.parent
             in_star_data = self.starfile_service.read(input_star_path)
@@ -786,13 +788,13 @@ class MetadataTranslator:
                 ts_star_rel = row["rlnTomoTiltSeriesStarFile"]
                 ts_star_abs = (input_star_dir / ts_star_rel).resolve()
                 if not ts_star_abs.exists():
-                    print(f"[WARN] Per-tilt star not found at {ts_star_abs}")
+                    logger.warning("Per-tilt star not found at %s", ts_star_abs)
                 out_ts_df.at[index, "rlnTomoTiltSeriesStarFile"] = str(ts_star_abs)
 
             output_star_path.parent.mkdir(parents=True, exist_ok=True)
             self.starfile_service.write({"global": out_ts_df}, output_star_path)
 
-            print(f"[METADATA] Wrote tomograms.star to {output_star_path}")
+            logger.info("Wrote tomograms.star to %s", output_star_path)
 
             return {
                 "success": True,
@@ -801,7 +803,7 @@ class MetadataTranslator:
             }
 
         except Exception as e:
-            print(f"[ERROR] tsReconstruct metadata update failed: {e}")
+            logger.error("tsReconstruct metadata update failed: %s", e)
             import traceback
 
             traceback.print_exc()

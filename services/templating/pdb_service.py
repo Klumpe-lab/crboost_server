@@ -1,12 +1,15 @@
 import os
 import json
 import asyncio
+import logging
 import subprocess
 from pathlib import Path
 import textwrap
 from typing import Dict, Any, Optional
 from Bio.PDB import MMCIFParser, MMCIFIO
 from services.computing.container_service import get_container_service
+
+logger = logging.getLogger(__name__)
 
 
 
@@ -58,7 +61,7 @@ class PDBService:
         if result.get("success") and script_file.exists():
             script_file.unlink()
         else:
-            print(f"[PDBService] Script kept for debugging: {script_file}")
+            logger.info("Script kept for debugging: %s", script_file)
 
         return result
 
@@ -81,7 +84,7 @@ class PDBService:
             io.save(str(cif_path))
             return True
         except Exception as e:
-            print(f"[PDBService] CIF re-parsing failed: {e}")
+            logger.info("CIF re-parsing failed: %s", e)
             return False
 
     # =========================================================================
@@ -251,15 +254,11 @@ except Exception as e:
                 max_dim = meta["max_dim"]
                 sim_box = self._calculate_optimal_box(max_dim, sim_apix)
 
-            print(f"\n{'=' * 70}")
-            print(f"[PDBService] Starting PDB → Template Simulation")
-            print(f"{'=' * 70}")
-            print(f"  Input PDB:     {pdb_path}")
-            print(f"  Output folder: {output_folder}")
-            print(f"  Simulation:    {sim_apix}Å/px, box {sim_box}")
-            print(f"  Target:        {target_apix}Å/px, box {target_box}")
-            print(f"  Resolution:    {resolution}Å")
-            print(f"{'=' * 70}\n")
+            logger.info(
+                "Starting PDB → Template Simulation: input=%s, output=%s, "
+                "sim=%sÅ/px box %s, target=%sÅ/px box %s, resolution=%sÅ",
+                pdb_path, output_folder, sim_apix, sim_box, target_apix, target_box, resolution,
+            )
 
             # Run CISTEM with PyMOL preprocessing
             sim_result = await self._run_cistem_with_pymol(
@@ -294,14 +293,13 @@ except Exception as e:
                 try:
                     os.remove(sim_result["sim_path"])
                 except Exception as e:
-                    print(f"[PDBService] Warning: Could not delete {sim_result['sim_path']}: {e}")
+                    logger.warning("Could not delete %s: %s", sim_result["sim_path"], e)
 
             if final_result.get("success"):
-                print(f"\n{'=' * 70}")
-                print(f"[PDBService] ✓ Template Generation Complete")
-                print(f"  White: {Path(final_result['path_white']).name}")
-                print(f"  Black: {Path(final_result['path_black']).name}")
-                print(f"{'=' * 70}\n")
+                logger.info(
+                    "✓ Template Generation Complete: White=%s, Black=%s",
+                    Path(final_result["path_white"]).name, Path(final_result["path_black"]).name,
+                )
 
             return final_result
 
@@ -309,7 +307,7 @@ except Exception as e:
             import traceback
 
             error_detail = f"Simulation error: {str(e)}\n{traceback.format_exc()}"
-            print(f"[PDBService] ✗ {error_detail}")
+            logger.error("✗ %s", error_detail)
             return {"success": False, "error": error_detail}
 
     async def _run_cistem_with_pymol(
@@ -346,10 +344,10 @@ except Exception as e:
         # Calculate offset for PyMOL transformation
         offset = (sim_box / 2.0) * sim_apix
 
-        print(f"[PDBService] Step 1/3: PyMOL Structure Preparation")
-        print(f"  Input:     {Path(pdb_path).name}")
-        print(f"  Output:    {struct_file.name}")
-        print(f"  Transform: Center COM → Translate [{offset:.1f}, {offset:.1f}, {offset:.1f}]")
+        logger.info(
+            "Step 1/3: PyMOL Structure Preparation: input=%s, output=%s, translate=[%.1f, %.1f, %.1f]",
+            Path(pdb_path).name, struct_file.name, offset, offset, offset,
+        )
 
         # === PYMOL PREPARATION ===
         pymol_script = textwrap.dedent(
@@ -406,11 +404,11 @@ except Exception as e:
             return {"success": False, "error": f"PyMOL did not create {struct_file.name}"}
 
         # CRITICAL: Re-parse CIF using BioPython (matches original libpdb.py lines 69-74)
-        print(f"[PDBService] Re-parsing CIF with BioPython...")
+        logger.info("Re-parsing CIF with BioPython...")
         if not self._reparse_cif(struct_file):
             return {"success": False, "error": "CIF post-processing failed"}
 
-        print(f"[PDBService] ✓ Structure prepared: {struct_file.name} ({struct_file.stat().st_size:,} bytes)")
+        logger.info("✓ Structure prepared: %s (%s bytes)", struct_file.name, f"{struct_file.stat().st_size:,}")
 
         # === RUN CISTEM ===
         # 1. Resolve Tool Path and Mode
@@ -420,14 +418,10 @@ except Exception as e:
         else:
             inner_cmd = tool_config.bin_path  # Absolute path to binary on host
 
-        print(f"\n[PDBService] Step 2/3: cisTEM Density Simulation")
-        print(f"  Mode:      {tool_config.exec_mode}")
-        print(f"  Command:   {inner_cmd}")
-        print(f"  Input:     {struct_file}")
-        print(f"  Output:    {sim_output_path}")
-        print(f"  Box:       {sim_box}")
-        print(f"  Apix:      {sim_apix}")
-        print(f"  Threads:   {num_threads}")
+        logger.info(
+            "Step 2/3: cisTEM Density Simulation: mode=%s, cmd=%s, input=%s, output=%s, box=%s, apix=%s, threads=%s",
+            tool_config.exec_mode, inner_cmd, struct_file, sim_output_path, sim_box, sim_apix, num_threads,
+        )
 
         # Prepare stdin parameters (using absolute paths!)
         # cisTEM reads these line-by-line
@@ -449,10 +443,10 @@ except Exception as e:
             ]
         )
 
-        print(f"[PDBService]   cisTEM stdin parameters:")
+        logger.info("cisTEM stdin parameters:")
         for i, line in enumerate(stdin_input.split("\n"), 1):
             if line:
-                print(f"[PDBService]      {i:2d}. {line}")
+                logger.info("  %2d. %s", i, line)
 
         try:
             # 2. Wrap command (handles containerization or native pass-through)
@@ -491,23 +485,23 @@ except Exception as e:
             stdout = (stdout_b or b"").decode("utf-8", errors="replace")
             stderr = (stderr_b or b"").decode("utf-8", errors="replace")
 
-            print(f"[PDBService] ✓ cisTEM completed (exit code: {process.returncode})")
+            logger.info("✓ cisTEM completed (exit code: %s)", process.returncode)
 
             if stdout:
                 lines = [l for l in stdout.strip().split("\n") if l.strip()]
                 if len(lines) > 30:
-                    print(f"[PDBService]   Output (last 15 lines):")
+                    logger.info("Output (last 15 lines):")
                     for line in lines[-15:]:
-                        print(f"[PDBService]      {line}")
+                        logger.info("  %s", line)
                 else:
-                    print(f"[PDBService]   Output:")
+                    logger.info("Output:")
                     for line in lines:
-                        print(f"[PDBService]      {line}")
+                        logger.info("  %s", line)
 
             if stderr and stderr.strip():
-                print(f"[PDBService] ⚠ cisTEM stderr:")
+                logger.warning("⚠ cisTEM stderr:")
                 for line in stderr.strip().split("\n")[:10]:
-                    print(f"[PDBService]      {line}")
+                    logger.warning("  %s", line)
 
             if process.returncode != 0:
                 error = f"cisTEM failed with exit code {process.returncode}"
@@ -529,18 +523,19 @@ except Exception as e:
                 with mrcfile.open(sim_output_path, "r", permissive=True) as mrc:
                     shape = mrc.data.shape
                     voxel_size = float(mrc.voxel_size.x)
-                    print(f"[PDBService] ✓ Simulation complete: {sim_output_path.name}")
-                    print(f"[PDBService]      Shape: {shape}")
-                    print(f"[PDBService]      Voxel size: {voxel_size:.3f} Å")
+                    logger.info(
+                        "✓ Simulation complete: %s, shape=%s, voxel_size=%.3f Å",
+                        sim_output_path.name, shape, voxel_size,
+                    )
             except Exception as e:
                 return {"success": False, "error": f"Invalid MRC file created: {e}"}
 
             # Cleanup structure file (optional - keep for debugging if needed)
             try:
                 struct_file.unlink()
-                print(f"[PDBService] ✓ Cleaned up: {struct_file.name}")
+                logger.info("✓ Cleaned up: %s", struct_file.name)
             except Exception as e:
-                print(f"[PDBService] ⚠ Could not delete {struct_file.name}: {e}")
+                logger.warning("⚠ Could not delete %s: %s", struct_file.name, e)
 
             return {"success": True, "sim_path": str(sim_output_path)}
 
@@ -563,7 +558,7 @@ except Exception as e:
     ) -> Dict[str, Any]:
         """Process CISTEM output with Relion."""
         try:
-            print(f"\n[PDBService] Step 3/3: Template Finalization (Relion)")
+            logger.info("Step 3/3: Template Finalization (Relion)")
 
             name_core = f"{base_name}_apix{target_apix:.2f}"
             if resolution and resolution > 0:
