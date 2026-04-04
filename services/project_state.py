@@ -93,6 +93,10 @@ class ProjectState(BaseModel):
     species_registry: List[ParticleSpecies] = Field(default_factory=list)
     pipeline_active: bool = Field(default=False)
 
+    # Tilt filtering (standalone tool, not a pipeline job)
+    tilt_filter_labels: Dict[str, str] = Field(default_factory=dict)
+    tilt_filter_png_dir: Optional[str] = None
+
     _dirty: bool = PrivateAttr(default=False)
 
 
