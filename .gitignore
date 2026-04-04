@@ -18,6 +18,8 @@ tmpOut/
 
 # Auth
 auth/
+--git-common-dir
+--git-common-dir/**
 
 # Notes and temporary docs
 q_*.md
