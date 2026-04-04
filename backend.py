@@ -24,17 +24,17 @@ logger = logging.getLogger(__name__)
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
-        self.username              = getpass.getuser()
-        self.server_dir            = server_dir
-        self.config_service        = get_config_service()
-        self.project_service       = ProjectService(self)
+        self.username = getpass.getuser()
+        self.server_dir = server_dir
+        self.config_service = get_config_service()
+        self.project_service = ProjectService(self)
         self.pipeline_orchestrator = PipelineOrchestratorService(self)
-        self.container_service     = get_container_service()
-        self.slurm_service         = SlurmService(self.username)
-        self.pipeline_runner       = PipelineRunnerService(self)
-        self.state_service         = get_state_service()
-        self.template_service      = TemplateService(self)
-        self.pdb_service           = PDBService(self)
+        self.container_service = get_container_service()
+        self.slurm_service = SlurmService(self.username)
+        self.pipeline_runner = PipelineRunnerService(self)
+        self.state_service = get_state_service()
+        self.template_service = TemplateService(self)
+        self.pdb_service = PDBService(self)
 
     async def start_pipeline(
         self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]
@@ -44,30 +44,26 @@ class CryoBoostBackend:
         selected_jobs is a list of instance_id strings (e.g. ['tsReconstruct', 'templatematching__ribosome']).
         """
         return await self.pipeline_orchestrator.deploy_and_run_scheme(
-            project_dir=Path(project_path),
-            selected_instance_ids=selected_jobs,
+            project_dir=Path(project_path), selected_instance_ids=selected_jobs
         )
 
     async def delete_job(self, job_name: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
         return await self.project_service.delete_job(job_name, instance_id=instance_id)
 
-
     async def get_default_data_globs(self) -> Dict[str, str]:
-            """Get default glob patterns from config."""
-            config_service = get_config_service()
-            movies, mdocs = config_service.default_data_globs
-            # Return empty strings if not set, to avoid UI errors
-            return {
-                "movies": movies if movies else "", 
-                "mdocs": mdocs if mdocs else ""
-            }
+        """Get default glob patterns from config."""
+        config_service = get_config_service()
+        movies, mdocs = config_service.default_data_globs
+        # Return empty strings if not set, to avoid UI errors
+        return {"movies": movies if movies else "", "mdocs": mdocs if mdocs else ""}
+
     async def get_default_project_base(self) -> str:
         """Retrieves the default project base path from config."""
         config_service = get_config_service()
         configured_path = config_service.default_project_base
         if configured_path:
             return configured_path
-        
+
         return str(Path.home())
 
     async def scan_for_projects(self, base_path: str) -> List[Dict[str, Any]]:
@@ -116,15 +112,17 @@ class CryoBoostBackend:
                         except Exception:
                             creator = None
 
-                    projects.append({
-                        "name": item.name,
-                        "path": str(item),
-                        "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
-                        "modified_timestamp": stats.st_mtime,
-                        "created_at": created_at,
-                        "creator": creator,
-                        "pipeline_active": pipeline_active,
-                    })
+                    projects.append(
+                        {
+                            "name": item.name,
+                            "path": str(item),
+                            "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
+                            "modified_timestamp": stats.st_mtime,
+                            "created_at": created_at,
+                            "creator": creator,
+                            "pipeline_active": pipeline_active,
+                        }
+                    )
                 except Exception as e:
                     logger.info("Error reading %s: %s", item.name, e)
 
@@ -135,9 +133,6 @@ class CryoBoostBackend:
         projects.sort(key=lambda x: x["modified_timestamp"], reverse=True)
         logger.info("Found %d valid projects.", len(projects))
         return projects
-
-        
-
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
         """Get parameters for a specific job instance, initializing if not present."""
@@ -156,9 +151,7 @@ class CryoBoostBackend:
                 template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
                 job_star_path = template_base / job_type.value / "job.star"
                 state.ensure_job_initialized(
-                    job_type,
-                    instance_id=job_name,
-                    template_path=job_star_path if job_star_path.exists() else None,
+                    job_type, instance_id=job_name, template_path=job_star_path if job_star_path.exists() else None
                 )
                 job_model = state.jobs.get(job_name)
 
@@ -168,7 +161,6 @@ class CryoBoostBackend:
                 return {"success": False, "error": f"Failed to initialize job {job_name}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
-
 
     async def update_job_parameters(self, job_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -218,6 +210,7 @@ class CryoBoostBackend:
 
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
         from services.configs.mdoc_service import get_mdoc_service
+
         mdoc_data = get_mdoc_service().get_autodetect_params(mdocs_glob)
         return {
             "microscope": {
@@ -230,6 +223,13 @@ class CryoBoostBackend:
                 "tilt_axis_degrees": mdoc_data.get("tilt_axis_angle"),
             },
         }
+
+    async def parse_dataset_overview(self, mdocs_glob: str, frames_dir: Optional[str] = None):
+        from services.configs.dataset_parsing_service import get_dataset_parsing_service
+
+        service = get_dataset_parsing_service()
+        overview = await asyncio.to_thread(service.parse_dataset, mdocs_glob, frames_dir)
+        return overview
 
     async def run_shell_command(
         self, command: str, cwd: Path = None, tool_name: str = None, additional_binds: List[str] = None
