@@ -470,6 +470,13 @@ class RosterWidget:
                 wb_btn = self._sb_svg_btn("vial.svg", "Template Workbench", panel.toggle_workbench, ref_key="wb_btn")
                 panel.callbacks["wb_btn"] = wb_btn
 
+            toggle_tf = panel.callbacks.get("toggle_tilt_filter")
+            if toggle_tf is not None:
+                ui.element("div").style("height: 1px;")
+                _TILT_FILTER_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>'
+                tf_btn = self._sb_svg_btn(_TILT_FILTER_SVG, "Tilt Filter", toggle_tf, ref_key="tf_btn")
+                panel.callbacks["tf_btn"] = tf_btn
+
             ui.element("div").style("height: 1px;")
             self._sb_svg_btn(
                 _TOMO_PREVIEW_SVG,
