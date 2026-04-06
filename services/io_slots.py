@@ -10,43 +10,46 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 # Core "artifact types" used for wiring. Keep this stable & explicit.
 # -----------------------------------------------------------------------------
 
+
 class JobFileType(str, Enum):
     # Import / raw
-    TILT_SERIES_STAR = "tilt_series_star"                 # Import/jobXXX/tilt_series.star
+    TILT_SERIES_STAR = "tilt_series_star"  # Import/jobXXX/tilt_series.star
 
     WARP_FRAMESERIES_SETTINGS = "warp_frameseries_settings"
-                                                           # Warp frameseries
-    FS_MOTION_CTF_STAR       = "fs_motion_and_ctf_star"    # External/jobXXX/fs_motion_and_ctf.star
-    WARP_FRAMESERIES_DIR     = "warp_frameseries_dir"      # External/jobXXX/warp_frameseries/
+    # Warp frameseries
+    FS_MOTION_CTF_STAR = "fs_motion_and_ctf_star"  # External/jobXXX/fs_motion_and_ctf.star
+    WARP_FRAMESERIES_DIR = "warp_frameseries_dir"  # External/jobXXX/warp_frameseries/
     WARP_TILTSERIES_SETTINGS = "warp_tiltseries_settings"  # External/jobXXX/warp_tiltseries.settings
 
-                                                           # Warp tiltseries
+    # Warp tiltseries
     ALIGNED_TILT_SERIES_STAR = "aligned_tilt_series_star"  # External/jobXXX/aligned_tilt_series.star
-    TS_CTF_TILT_SERIES_STAR  = "ts_ctf_tilt_series_star"   # External/jobXXX/ts_ctf_tilt_series.star
-    WARP_TILTSERIES_DIR      = "warp_tiltseries_dir"       # External/jobXXX/warp_tiltseries/
+    TS_CTF_TILT_SERIES_STAR = "ts_ctf_tilt_series_star"  # External/jobXXX/ts_ctf_tilt_series.star
+    FILTERED_TILT_SERIES_STAR = "filtered_tilt_series_star"  # External/jobXXX/filtered/tiltseries_filtered.star
+    WARP_TILTSERIES_DIR = "warp_tiltseries_dir"  # External/jobXXX/warp_tiltseries/
 
-                                                         # Tomograms
-    TOMOGRAMS_STAR          = "tomograms_star"           # External/jobXXX/tomograms.star
+    # Tomograms
+    TOMOGRAMS_STAR = "tomograms_star"  # External/jobXXX/tomograms.star
     DENOISED_TOMOGRAMS_STAR = "denoised_tomograms_star"  # External/jobXXX/denoised/tomograms.star (or similar)
 
     # Denoising model
-    DENOISE_MODEL_TAR = "denoise_model_tar"               # External/jobXXX/denoising_model.tar.gz
+    DENOISE_MODEL_TAR = "denoise_model_tar"  # External/jobXXX/denoising_model.tar.gz
 
-                                                     # Template matching / picking
-    TM_RESULTS_DIR        = "tm_results_dir"         # External/jobXXX/tmResults/
-    CANDIDATES_STAR       = "candidates_star"        # External/jobXXX/candidates.star
+    # Template matching / picking
+    TM_RESULTS_DIR = "tm_results_dir"  # External/jobXXX/tmResults/
+    CANDIDATES_STAR = "candidates_star"  # External/jobXXX/candidates.star
     OPTIMISATION_SET_STAR = "optimisation_set_star"  # External/jobXXX/optimisation_set.star
 
     # Subtomo extraction
-    PARTICLES_STAR = "particles_star"                     # External/jobXXX/particles.star
+    PARTICLES_STAR = "particles_star"  # External/jobXXX/particles.star
     # STA reconstruction / refinement
-    REFERENCE_MAP = "reference_map"    # merged.mrc from reconstruct_particle (or refined map)
-    HALF_MAP      = "half_map"         # half1.mrc (half2 derived by RELION naming convention)
+    REFERENCE_MAP = "reference_map"  # merged.mrc from reconstruct_particle (or refined map)
+    HALF_MAP = "half_map"  # half1.mrc (half2 derived by RELION naming convention)
 
 
 # -----------------------------------------------------------------------------
 # Slot models
 # -----------------------------------------------------------------------------
+
 
 class OutputSlot(BaseModel):
     """
@@ -55,13 +58,13 @@ class OutputSlot(BaseModel):
     path_template is intentionally dumb in Stage 0: it's a relative path under job_dir.
     Later (Stage 3) PathResolutionService can interpret it.
     """
+
     model_config = ConfigDict(validate_assignment=True)
 
     key: str = Field(..., description="Logical output name used in job_model.paths")
     produces: JobFileType
     path_template: str = Field(
-        ...,
-        description="Relative path under job_dir, e.g. 'tomograms.star' or 'warp_tiltseries/'."
+        ..., description="Relative path under job_dir, e.g. 'tomograms.star' or 'warp_tiltseries/'."
     )
     is_dir: bool = Field(default=False, description="If true, output is a directory-like artifact")
     description: str = Field(default="")
@@ -82,6 +85,7 @@ class InputSlot(BaseModel):
     preferred_source is not used in Stage 0, but we add it now because
     it’s central to your denoise-vs-reconstruct case.
     """
+
     model_config = ConfigDict(validate_assignment=True)
 
     key: str = Field(..., description="Logical input name used in job_model.paths")
@@ -90,13 +94,11 @@ class InputSlot(BaseModel):
 
     # Preference knobs (used by resolver later)
     preferred_source: Optional[str] = Field(
-        default=None,
-        description="JobType string (or later: job instance id) preferred as source if available"
+        default=None, description="JobType string (or later: job instance id) preferred as source if available"
     )
 
     allow_multiple: bool = Field(
-        default=False,
-        description="If true, resolver may provide a list of paths rather than a single path"
+        default=False, description="If true, resolver may provide a list of paths rather than a single path"
     )
 
     description: str = Field(default="")
@@ -114,10 +116,12 @@ class InputSlot(BaseModel):
 # Resolution record types (still just data in Stage 0)
 # -----------------------------------------------------------------------------
 
+
 class ResolvedInput(BaseModel):
     """
     Result of wiring one InputSlot to one upstream OutputSlot.
     """
+
     model_config = ConfigDict(validate_assignment=True)
 
     input_key: str
@@ -138,6 +142,7 @@ class ResolvedOutput(BaseModel):
     """
     Concrete output path for an OutputSlot.
     """
+
     model_config = ConfigDict(validate_assignment=True)
 
     output_key: str
@@ -151,12 +156,13 @@ class ResolvedManifest(BaseModel):
       - which inputs were satisfied by which upstream outputs
       - and what this job's outputs will be
     """
+
     model_config = ConfigDict(validate_assignment=True)
 
     job_type: str
     instance_id: Optional[str] = None
 
-    inputs : List[ResolvedInput]  = Field(default_factory=list)
+    inputs: List[ResolvedInput] = Field(default_factory=list)
     outputs: List[ResolvedOutput] = Field(default_factory=list)
 
     def as_paths_dict(self) -> Dict[str, Any]:
@@ -179,9 +185,9 @@ class ResolvedManifest(BaseModel):
 # Lightweight schema validation helpers (optional but useful even in Stage 0)
 # -----------------------------------------------------------------------------
 
+
 def validate_schema_uniqueness(
-    input_schema: Sequence[InputSlot],
-    output_schema: Sequence[OutputSlot],
+    input_schema: Sequence[InputSlot], output_schema: Sequence[OutputSlot]
 ) -> Tuple[bool, List[str]]:
     """
     Pure helper you can use in tests to catch typos early.

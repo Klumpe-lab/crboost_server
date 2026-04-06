@@ -52,14 +52,14 @@ class PipelineBuilderPanel:
         self.roster.refresh()
 
         self.ui_mgr.set_rebuild_callback(self.rebuild_pipeline_ui)
-        self.callbacks["rebuild_pipeline_ui"]           = self.rebuild_pipeline_ui
-        self.callbacks["stop_all_timers"]               = self.poller.stop_all_timers
-        self.callbacks["check_and_update_statuses"]     = self.poller.check_and_update_statuses
-        self.callbacks["enable_run_button"]             = self.roster.rebuild_run_slot
-        self.callbacks["add_job_to_pipeline"]           = lambda jt: self.add_instance_to_pipeline(jt)
-        self.callbacks["add_instance_to_pipeline"]      = self.add_instance_to_pipeline
+        self.callbacks["rebuild_pipeline_ui"] = self.rebuild_pipeline_ui
+        self.callbacks["stop_all_timers"] = self.poller.stop_all_timers
+        self.callbacks["check_and_update_statuses"] = self.poller.check_and_update_statuses
+        self.callbacks["enable_run_button"] = self.roster.rebuild_run_slot
+        self.callbacks["add_job_to_pipeline"] = lambda jt: self.add_instance_to_pipeline(jt)
+        self.callbacks["add_instance_to_pipeline"] = self.add_instance_to_pipeline
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
-        self.callbacks["invalidate_tm_tabs"]            = self.invalidate_tm_tabs
+        self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
 
         self.rebuild_pipeline_ui()
 
@@ -83,22 +83,19 @@ class PipelineBuilderPanel:
             return
 
         from services.project_state import get_project_state_for
+
         state = get_project_state_for(project_path)
 
         if not state.species_registry:
             ui.notify(
-                "Register at least one particle species in the Template Workbench first.",
-                type="warning",
-                timeout=4000,
+                "Register at least one particle species in the Template Workbench first.", type="warning", timeout=4000
             )
             return
 
         chosen = {"id": state.species_registry[0].id}
 
         with ui.dialog() as dialog, ui.card().style("min-width: 300px; padding: 16px;"):
-            ui.label(f"Add {get_job_display_name(job_type)}").classes(
-                "text-base font-bold text-gray-800 mb-3"
-            )
+            ui.label(f"Add {get_job_display_name(job_type)}").classes("text-base font-bold text-gray-800 mb-3")
             options = {s.id: s.name for s in state.species_registry}
             sel = (
                 ui.select(options=options, value=chosen["id"], label="Particle species")
@@ -157,10 +154,7 @@ class PipelineBuilderPanel:
 
     def invalidate_tm_tabs(self):
         tm_prefix = JobType.TEMPLATE_MATCH_PYTOM.value
-        stale = [
-            iid for iid in list(self._job_content_containers.keys())
-            if iid.split("__")[0] == tm_prefix
-        ]
+        stale = [iid for iid in list(self._job_content_containers.keys()) if iid.split("__")[0] == tm_prefix]
         for iid in stale:
             container = self._job_content_containers.pop(iid, None)
             if container:
@@ -188,30 +182,38 @@ class PipelineBuilderPanel:
     # ── Job/instance management ───────────────────────────────────────────────
 
     def add_instance_to_pipeline(
-        self,
-        job_type: JobType,
-        instance_id: Optional[str] = None,
-        species_id: Optional[str] = None,
+        self, job_type: JobType, instance_id: Optional[str] = None, species_id: Optional[str] = None
     ):
         if self.ui_mgr.is_running:
             return
 
+        state = self.state_service.state
+
+        # Interactive jobs are singletons — if one already exists, just switch to it.
         if instance_id is None:
-            state = self.state_service.state
-            instance_id = next_instance_id(
-                job_type, self.ui_mgr.selected_jobs, list(state.jobs.keys())
-            )
+            existing = self._find_existing_interactive(job_type, state)
+            if existing:
+                if existing not in self.ui_mgr.selected_jobs:
+                    self.ui_mgr.add_instance(existing, job_type)
+                    self.rebuild_pipeline_ui()
+                self.ui_mgr.set_active_instance(existing)
+                self.rebuild_pipeline_ui()
+                return
+
+        if instance_id is None:
+            instance_id = next_instance_id(job_type, self.ui_mgr.selected_jobs, list(state.jobs.keys()))
 
         if not self.ui_mgr.add_instance(instance_id, job_type):
             return
 
-        state = self.state_service.state
         if instance_id not in state.jobs:
             template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
             star = template_base / job_type.value / "job.star"
             state.ensure_job_initialized(
                 job_type, instance_id=instance_id, template_path=star if star.exists() else None
             )
+            # Restore saved labels for interactive filter jobs.
+            self._restore_interactive_state(job_type, instance_id, state)
 
         if species_id is not None:
             job_model = state.jobs.get(instance_id)
@@ -219,6 +221,7 @@ class PipelineBuilderPanel:
                 job_model.species_id = species_id
                 if job_type == JobType.TEMPLATE_MATCH_PYTOM and self.ui_mgr.project_path:
                     from services.project_state import get_project_state_for
+
                     p_state = get_project_state_for(self.ui_mgr.project_path)
                     sp = p_state.get_species(species_id)
                     if sp:
@@ -269,6 +272,35 @@ class PipelineBuilderPanel:
             asyncio.create_task(self.state_service.save_project())
         self.rebuild_pipeline_ui()
 
+    @staticmethod
+    def _find_existing_interactive(job_type: JobType, state) -> Optional[str]:
+        """Return existing instance_id for a singleton interactive job, or None."""
+        from services.jobs import jobtype_paramclass
+
+        param_cls = jobtype_paramclass().get(job_type)
+        if not param_cls or not getattr(param_cls, "IS_INTERACTIVE", False):
+            return None
+        for iid, jm in state.jobs.items():
+            if jm.job_type == job_type:
+                return iid
+        return None
+
+    @staticmethod
+    def _restore_interactive_state(job_type: JobType, instance_id: str, state):
+        """Restore persisted labels/state when re-creating an interactive job."""
+        if job_type != JobType.TILT_FILTER:
+            return
+        job_model = state.jobs.get(instance_id)
+        if not job_model:
+            return
+        if state.tilt_filter_labels:
+            job_model.tilt_labels = dict(state.tilt_filter_labels)
+            job_model.execution_status = JobStatus.SUCCEEDED
+            # Restore output paths if the filtered star already exists on disk
+            filtered_p = state.project_path / "TiltFilter" / "tiltseries_filtered.star"
+            if filtered_p.exists():
+                job_model.paths["output_star"] = str(filtered_p)
+
     # ── Full rebuild ──────────────────────────────────────────────────────────
 
     def rebuild_pipeline_ui(self):
@@ -294,9 +326,7 @@ class PipelineBuilderPanel:
         selected = self.ui_mgr.selected_jobs
         if not selected:
             with tabs_container:
-                ui.label("Select jobs from the left panel.").classes(
-                    "text-xs text-gray-400 italic p-8"
-                )
+                ui.label("Select jobs from the left panel.").classes("text-xs text-gray-400 italic p-8")
             return
 
         if self.ui_mgr.active_instance_id not in selected:
@@ -311,8 +341,7 @@ class PipelineBuilderPanel:
             self.roster.refresh_tab_strip()
 
             wrapper = ui.element("div").style(
-                "display: flex; flex-direction: column; width: 100%; "
-                "flex: 1 1 0%; min-height: 0; overflow: hidden;"
+                "display: flex; flex-direction: column; width: 100%; flex: 1 1 0%; min-height: 0; overflow: hidden;"
             )
             self._content_wrapper_ref["el"] = wrapper
 
@@ -359,30 +388,24 @@ class PipelineBuilderPanel:
 
     async def handle_stop_pipeline(self):
         slurm_result = await self.backend.slurm_service.get_user_slurm_jobs(force_refresh=True)
-        running_slurm = [
-            j for j in slurm_result.get("jobs", []) if j["state"] in ("RUNNING", "PENDING")
-        ]
+        running_slurm = [j for j in slurm_result.get("jobs", []) if j["state"] in ("RUNNING", "PENDING")]
 
         with ui.dialog() as dialog, ui.card().style("min-width: 360px; padding: 16px;"):
             ui.label("Stop Pipeline?").classes("text-base font-bold text-gray-800")
             if running_slurm:
-                ui.label(f"{len(running_slurm)} SLURM job(s) will be cancelled:").classes(
-                    "text-sm text-gray-600 mt-2"
-                )
+                ui.label(f"{len(running_slurm)} SLURM job(s) will be cancelled:").classes("text-sm text-gray-600 mt-2")
                 for j in running_slurm:
                     ui.label(f"[{j['job_id']}]  {j['name']}  ({j['state']})").classes(
                         "text-xs font-mono text-gray-500 ml-2"
                     )
             else:
                 ui.label("No active SLURM jobs found.").classes("text-sm text-gray-500 mt-2")
-            ui.label("Running and queued jobs will be marked Failed.").classes(
-                "text-xs text-amber-600 mt-3"
-            )
+            ui.label("Running and queued jobs will be marked Failed.").classes("text-xs text-amber-600 mt-3")
             with ui.row().classes("mt-4 gap-2 justify-end w-full"):
                 ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
-                ui.button("Stop Pipeline", on_click=lambda: dialog.submit(True)).props(
-                    "dense no-caps"
-                ).style("background: #ef4444; color: white; padding: 4px 16px; border-radius: 3px;")
+                ui.button("Stop Pipeline", on_click=lambda: dialog.submit(True)).props("dense no-caps").style(
+                    "background: #ef4444; color: white; padding: 4px 16px; border-radius: 3px;"
+                )
 
         confirmed = await dialog
         if not confirmed:
@@ -391,20 +414,14 @@ class PipelineBuilderPanel:
         self.poller.stop_all_timers()
         self.ui_mgr.set_pipeline_running(False)
         slurm_ids = [j["job_id"] for j in running_slurm]
-        result = await self.backend.pipeline_runner.stop_and_cleanup(
-            self.ui_mgr.project_path, slurm_ids
-        )
+        result = await self.backend.pipeline_runner.stop_and_cleanup(self.ui_mgr.project_path, slurm_ids)
         await self.backend.pipeline_runner.sync_all_jobs(str(self.ui_mgr.project_path))
         self.rebuild_pipeline_ui()
 
         if result.get("success"):
             ui.notify("Pipeline stopped.", type="warning", timeout=4000)
         else:
-            ui.notify(
-                f"Stopped (with warnings: {'; '.join(result.get('errors', []))})",
-                type="warning",
-                timeout=6000,
-            )
+            ui.notify(f"Stopped (with warnings: {'; '.join(result.get('errors', []))})", type="warning", timeout=6000)
 
 
 def build_pipeline_builder_panel(
@@ -427,8 +444,7 @@ def build_pipeline_builder_panel(
     # Must be created in the current NiceGUI rendering context before
     # panel.build() is called, since rebuild_pipeline_ui writes into it.
     tabs_container = ui.element("div").style(
-        "display: flex; flex-direction: column; width: 100%; "
-        "flex: 1 1 0%; min-height: 0; overflow: hidden;"
+        "display: flex; flex-direction: column; width: 100%; flex: 1 1 0%; min-height: 0; overflow: hidden;"
     )
     panel.ui_mgr.panel_refs.job_tabs_container = tabs_container
 

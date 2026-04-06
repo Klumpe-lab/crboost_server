@@ -34,7 +34,11 @@ class TemplateMatchPytomParams(AbstractJobParams):
             accepts=[JobFileType.DENOISED_TOMOGRAMS_STAR, JobFileType.TOMOGRAMS_STAR],
             preferred_source="denoisepredict",
         ),
-        InputSlot(key="input_tiltseries", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
+        InputSlot(
+            key="input_tiltseries",
+            accepts=[JobFileType.FILTERED_TILT_SERIES_STAR, JobFileType.TS_CTF_TILT_SERIES_STAR],
+            preferred_source="tiltFilter",
+        ),
     ]
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
         OutputSlot(key="output_dir", produces=JobFileType.TM_RESULTS_DIR, path_template="tmResults/", is_dir=True),

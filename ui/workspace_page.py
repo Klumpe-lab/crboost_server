@@ -2,7 +2,6 @@ from nicegui import ui
 from backend import CryoBoostBackend
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
 from ui.species_workbench_panel import build_species_workbench_panel
-from ui.tilt_filter_panel import build_tilt_filter_panel
 from ui.ui_state import get_ui_state_manager
 
 
@@ -30,12 +29,8 @@ def build_workspace_page(backend: CryoBoostBackend):
     _refs = {}
 
     def _switch_to(mode_name: str):
-        """Switch between pipeline / workbench / tilt_filter views."""
-        containers = {
-            "pipeline": _refs.get("pipeline_container"),
-            "workbench": _refs.get("workbench_container"),
-            "tilt_filter": _refs.get("tilt_filter_container"),
-        }
+        """Switch between pipeline / workbench views."""
+        containers = {"pipeline": _refs.get("pipeline_container"), "workbench": _refs.get("workbench_container")}
         # If already on this mode, toggle back to pipeline
         if _mode["current"] == mode_name and mode_name != "pipeline":
             mode_name = "pipeline"
@@ -58,22 +53,14 @@ def build_workspace_page(backend: CryoBoostBackend):
         if set_wb:
             set_wb(_mode["current"] == "workbench")
 
-        set_tf = callbacks.get("set_tf_active")
-        if set_tf:
-            set_tf(_mode["current"] == "tilt_filter")
-
     def _toggle_workbench():
         _switch_to("workbench")
-
-    def _toggle_tilt_filter():
-        _switch_to("tilt_filter")
 
     def ensure_pipeline_mode():
         if _mode["current"] == "workbench":
             _toggle_workbench()
 
     callbacks["toggle_workbench"] = _toggle_workbench
-    callbacks["toggle_tilt_filter"] = _toggle_tilt_filter
     callbacks["ensure_pipeline_mode"] = ensure_pipeline_mode
 
     with ui.element("div").style(
@@ -119,10 +106,3 @@ def build_workspace_page(backend: CryoBoostBackend):
             _refs["workbench_container"] = workbench_container
             with workbench_container:
                 build_species_workbench_panel(backend)
-
-            tilt_filter_container = ui.element("div").style(
-                "width: 100%; height: 100%; display: none; flex-direction: column;"
-            )
-            _refs["tilt_filter_container"] = tilt_filter_container
-            with tilt_filter_container:
-                build_tilt_filter_panel(backend)

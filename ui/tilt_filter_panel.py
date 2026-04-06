@@ -195,6 +195,48 @@ def build_tilt_filter_panel(backend) -> None:
                 _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c)
 
 
+def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_mgr, save_handler) -> None:
+    """Entry point for the tilt filter when rendered as a pipeline job (full-panel plugin)."""
+    project_path = ui_mgr.project_path
+    if not project_path:
+        ui.label("No project loaded").classes("text-red-500 p-4")
+        return
+
+    with ui.scroll_area().classes("w-full flex-1"):
+        with ui.column().classes("w-full gap-2 p-3"):
+            ts_ctf_star = _find_ts_ctf_star(project_path)
+
+            if not ts_ctf_star:
+                _render_waiting()
+                return
+
+            # ── Stats + Gallery containers (created before DL config so it can reference them) ──
+            stats_c = ui.element("div").classes("w-full")
+            state = get_project_state()
+            pd_str = state.tilt_filter_png_dir if state else None
+            png_dir = Path(pd_str) if pd_str else project_path / "TiltFilter" / "png"
+            gallery_c = ui.column().classes("w-full gap-0")
+
+            # ── DL config (collapsed) ──
+            _render_dl_config(
+                job_model=job_model,
+                backend=backend,
+                project_path=project_path,
+                gallery_c=gallery_c,
+                stats_c=stats_c,
+                png_dir=png_dir,
+            )
+
+            # ── Gallery ──
+            has_pngs = png_dir.exists() and any(png_dir.glob("*.png"))
+
+            if not has_pngs:
+                with gallery_c:
+                    _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+            else:
+                _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+
+
 def _render_waiting():
     with ui.column().classes("w-full items-center justify-center gap-2 py-12"):
         ui.icon("hourglass_empty", size="48px").style(f"color: {CLR_GHOST};")
@@ -204,7 +246,7 @@ def _render_waiting():
         )
 
 
-def _render_dl_config():
+def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c=None, stats_c=None, png_dir=None):
     with (
         ui.expansion("Deep Learning Auto-Filter", icon="smart_toy")
         .props("dense")
@@ -212,43 +254,170 @@ def _render_dl_config():
         .style(f"{CARD} overflow: hidden;")
     ):
         with ui.column().classes("w-full gap-2 px-2 pb-2"):
-            with ui.row().classes("items-center gap-2"):
-                ui.label("Enable").style(f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};")
-                dl_sw = ui.switch(value=False).props("dense").style("transform: scale(0.75);")
+            vals = {
+                "model": getattr(job_model, "model_name", "default") if job_model else "default",
+                "threshold": getattr(job_model, "prob_threshold", 0.1) if job_model else 0.1,
+                "action": getattr(job_model, "prob_action", "assignToGood") if job_model else "assignToGood",
+            }
 
-            dl_body = ui.column().classes("w-full gap-2").style("opacity: 0.3; pointer-events: none;")
-            dl_sw.on_value_change(
-                lambda e: dl_body.style(
-                    f"opacity: {'1' if e.value else '0.3'}; pointer-events: {'auto' if e.value else 'none'};"
-                )
-            )
-            with dl_body:
-                with ui.row().classes("gap-3 flex-wrap"):
-                    with ui.column().classes("gap-0"):
-                        ui.label("Model").style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
-                        (
-                            ui.select(["default", "binary", "oneclass"], value="default")
-                            .props("dense outlined hide-bottom-space")
-                            .classes("w-32")
-                            .style(f"{MONO} font-size: 10px;")
+            with ui.row().classes("gap-3 flex-wrap items-end"):
+                with ui.column().classes("gap-0"):
+                    ui.label("Model").style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
+                    model_sel = (
+                        ui.select(["default", "binary", "oneclass"], value=vals["model"])
+                        .props("dense outlined hide-bottom-space")
+                        .classes("w-32")
+                        .style(f"{MONO} font-size: 10px;")
+                    )
+                with ui.column().classes("gap-0"):
+                    ui.label("Threshold").style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
+                    thresh_inp = (
+                        ui.number(value=vals["threshold"], min=0.0, max=1.0, step=0.05, format="%.2f")
+                        .props("dense outlined hide-bottom-space")
+                        .classes("w-20")
+                        .style(f"{MONO} font-size: 10px;")
+                    )
+                with ui.column().classes("gap-0"):
+                    ui.label("Low-conf. action").style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
+                    action_sel = (
+                        ui.select({"assignToGood": "Keep", "assignToBad": "Remove"}, value=vals["action"])
+                        .props("dense outlined hide-bottom-space")
+                        .classes("w-28")
+                        .style(f"{FONT} font-size: 10px;")
+                    )
+
+            status_row = ui.row().classes("w-full items-center gap-2")
+
+            if job_model is not None and backend is not None and project_path is not None:
+
+                async def _run_dl():
+                    # Sync UI values to job model
+                    job_model.model_name = model_sel.value
+                    job_model.prob_threshold = thresh_inp.value
+                    job_model.prob_action = action_sel.value
+
+                    state = get_project_state()
+                    if state:
+                        state.mark_dirty()
+                        await get_state_service().save_project()
+
+                    status_row.clear()
+                    with status_row:
+                        ui.spinner(size="sm").style(f"color: {CLR_ACCENT};")
+                        status_lbl = ui.label("Submitting to SLURM...").style(
+                            f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
                         )
-                    with ui.column().classes("gap-0"):
-                        ui.label("Threshold").style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
-                        (
-                            ui.number(value=0.1, min=0.0, max=1.0, step=0.05, format="%.2f")
-                            .props("dense outlined hide-bottom-space")
-                            .classes("w-20")
-                            .style(f"{MONO} font-size: 10px;")
+
+                    instance_id = None
+                    for iid, jm in (state.jobs if state else {}).items():
+                        if jm is job_model:
+                            instance_id = iid
+                            break
+                    if not instance_id:
+                        status_row.clear()
+                        with status_row:
+                            ui.label("Error: could not find job instance").style(f"color: {CLR_ERROR};")
+                        return
+
+                    result = await backend.submit_tilt_filter_dl(project_path, instance_id)
+                    if not result.get("success"):
+                        status_row.clear()
+                        with status_row:
+                            ui.icon("error", size="14px").style(f"color: {CLR_ERROR};")
+                            ui.label(result.get("error", "Unknown error")).style(
+                                f"{FONT} font-size: 9px; color: {CLR_ERROR};"
+                            )
+                        return
+
+                    slurm_id = result.get("slurm_job_id", "?")
+                    job_dir = Path(result.get("job_dir", ""))
+                    status_lbl.text = f"SLURM job {slurm_id} running..."
+
+                    # Poll for completion
+                    success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
+                    failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
+                    while True:
+                        await asyncio.sleep(5)
+                        if success_file.exists():
+                            break
+                        if failure_file.exists():
+                            status_row.clear()
+                            with status_row:
+                                ui.icon("error", size="14px").style(f"color: {CLR_ERROR};")
+                                ui.label("DL filter failed. Check logs in TiltFilter/dl_run/").style(
+                                    f"{FONT} font-size: 9px; color: {CLR_ERROR};"
+                                )
+                            job_model.execution_status = JobStatus.FAILED
+                            if state:
+                                state.mark_dirty()
+                                await get_state_service().save_project()
+                            return
+
+                    # Success — reload labels into gallery
+                    status_row.clear()
+                    with status_row:
+                        ui.icon("check_circle", size="14px").style(f"color: {CLR_SUCCESS};")
+                        ui.label("DL filter complete. Reloading labels...").style(
+                            f"{FONT} font-size: 9px; color: {CLR_SUCCESS};"
                         )
-                    with ui.column().classes("gap-0"):
-                        ui.label("Low-conf. action").style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
-                        (
-                            ui.select({"assignToGood": "Keep", "assignToBad": "Remove"}, value="assignToGood")
-                            .props("dense outlined hide-bottom-space")
-                            .classes("w-28")
-                            .style(f"{FONT} font-size: 10px;")
-                        )
-                ui.label("Will dispatch a containerised SLURM job (not yet connected).").style(
+
+                    labeled_star = job_dir / "filtered" / "tiltseries_labeled.star"
+                    if labeled_star.exists():
+                        try:
+                            ts_data = await asyncio.to_thread(load_tilt_series, str(labeled_star), str(project_path))
+                            # Extract DL labels into job model
+                            if "cryoBoostDlLabel" in ts_data.all_tilts_df.columns:
+                                new_labels = {}
+                                for _, row in ts_data.all_tilts_df.iterrows():
+                                    key = row.get("cryoBoostKey", "")
+                                    label = row.get("cryoBoostDlLabel", "good")
+                                    if key:
+                                        new_labels[key] = label
+                                job_model.tilt_labels = new_labels
+                                if state:
+                                    state.tilt_filter_labels = new_labels
+
+                            # Write filtered output for downstream
+                            good_data = filter_good_tilts(ts_data)
+                            out_dir = project_path / "TiltFilter"
+                            out_dir.mkdir(parents=True, exist_ok=True)
+                            filtered_p = out_dir / "tiltseries_filtered.star"
+                            await asyncio.to_thread(write_tilt_series, good_data, filtered_p, "tilt_series_filtered")
+                            labeled_p = out_dir / "tiltseries_labeled.star"
+                            await asyncio.to_thread(write_tilt_series, ts_data, labeled_p, "tilt_series_labeled")
+
+                            job_model.execution_status = JobStatus.SUCCEEDED
+                            job_model.paths["output_star"] = str(filtered_p)
+                            if state:
+                                state.mark_dirty()
+                                await get_state_service().save_project()
+
+                            ui.notify(
+                                f"DL filter applied: {good_data.num_tilts} good tilts", type="positive", timeout=5000
+                            )
+
+                            # Refresh gallery if containers available
+                            ts_ctf_star = _find_ts_ctf_star(project_path)
+                            if gallery_c is not None and stats_c is not None and ts_ctf_star:
+                                gallery_c.clear()
+                                with gallery_c:
+                                    _build_gallery(
+                                        ts_ctf_star,
+                                        project_path,
+                                        png_dir or (project_path / "TiltFilter" / "png"),
+                                        gallery_c,
+                                        stats_c,
+                                        job_model=job_model,
+                                    )
+                        except Exception as e:
+                            logger.exception("Failed to reload DL labels")
+                            status_row.clear()
+                            with status_row:
+                                ui.label(f"Reload error: {e}").style(f"color: {CLR_ERROR};")
+
+                _btn_primary("Run DL Filter", "smart_toy", _run_dl)
+            else:
+                ui.label("Add this job to the pipeline to enable DL auto-filtering.").style(
                     f"{FONT} font-size: 8px; color: {CLR_SUBLABEL}; font-style: italic;"
                 )
 
@@ -256,7 +425,7 @@ def _render_dl_config():
 # ── Generate ─────────────────────────────────────────────────────────────────
 
 
-def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c):
+def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=None):
     with ui.column().classes("w-full items-center justify-center gap-3 py-10"):
         ui.icon("collections", size="48px").style(f"color: {CLR_GHOST};")
         ui.label("Generate tilt thumbnails to begin inspection.").style(f"{FONT} font-size: 11px; color: {CLR_LABEL};")
@@ -286,7 +455,7 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c):
                 ui.notify(f"{n} thumbnails generated", type="positive")
                 gallery_c.clear()
                 with gallery_c:
-                    _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c)
+                    _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
             except Exception as e:
                 logger.exception("Thumbnail generation failed")
                 spinner.style("display: none;")
@@ -301,18 +470,21 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c):
 # ═════════════════════════════════════════════════════════════════════════════
 
 
-def _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c):
+def _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=None):
     try:
         ts_data = load_tilt_series(str(ts_ctf_star), str(project_path))
     except Exception as e:
         ui.label(f"Failed to load tilt series: {e}").style(f"color: {CLR_ERROR};")
         return
-    _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c)
+    _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
 
 
-def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c):
+def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model=None):
     state = get_project_state()
-    labels = dict(state.tilt_filter_labels) if state else {}
+    if job_model is not None:
+        labels = dict(job_model.tilt_labels) if job_model.tilt_labels else {}
+    else:
+        labels = dict(state.tilt_filter_labels) if state else {}
 
     if labels:
         apply_labels(ts_data, labels)
@@ -452,6 +624,12 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c):
             filtered_p = out_dir / "tiltseries_filtered.star"
             await asyncio.to_thread(write_tilt_series, good, filtered_p, "tilt_series_filtered")
 
+            # Persist labels and mark job complete
+            if job_model is not None:
+                job_model.tilt_labels = dict(labels)
+                job_model.execution_status = JobStatus.SUCCEEDED
+                job_model.paths["output_star"] = str(filtered_p)
+                job_model.paths["output_processing"] = job_model.paths.get("input_processing", "")
             if state:
                 state.tilt_filter_labels = labels
                 state.mark_dirty()
@@ -466,11 +644,11 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c):
             with save_info_c:
                 _meta_row("Labeled (all tilts)", str(labeled_p))
                 _meta_row("Filtered (good only)", str(filtered_p))
-                ui.label(
-                    "To use the filtered tilts for reconstruction, go to the TS Reconstruct "
-                    "job\u2019s I/O tab and set its input_star to the filtered path above "
-                    "(use the manual override option)."
-                ).style(f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; line-height: 1.3;")
+                if job_model is not None:
+                    ui.label(
+                        "Labels saved to the Tilt Filter job. Downstream jobs "
+                        "(Reconstruct, Template Match) will use the filtered tilt set."
+                    ).style(f"{FONT} font-size: 9px; color: {CLR_SUCCESS}; line-height: 1.3;")
 
         except Exception as e:
             logger.exception("Save failed")
@@ -481,6 +659,8 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c):
             labels[key] = "good"
         df["cryoBoostDlLabel"] = "good"
         ts_data.all_tilts_df["cryoBoostDlLabel"] = "good"
+        if job_model is not None:
+            job_model.tilt_labels = dict(labels)
         if state:
             state.tilt_filter_labels = labels
             state.mark_dirty()

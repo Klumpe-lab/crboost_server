@@ -50,6 +50,109 @@ class CryoBoostBackend:
     async def delete_job(self, job_name: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
         return await self.project_service.delete_job(job_name, instance_id=instance_id)
 
+    async def submit_tilt_filter_dl(self, project_path: Path, instance_id: str) -> Dict[str, Any]:
+        """Submit the tilt filter DL driver as a standalone SLURM job."""
+        from services.path_resolution_service import PathResolutionService
+        from services.models_base import JobStatus
+
+        state = self.state_service.state_for(project_path)
+        job_model = state.jobs.get(instance_id)
+        if not job_model:
+            return {"success": False, "error": f"Job '{instance_id}' not found"}
+
+        # Resolve input paths
+        resolver = PathResolutionService(state)
+        try:
+            io_paths = resolver.resolve_all_paths(
+                job_model.job_type, job_model, project_path / "TiltFilter", instance_id=instance_id
+            )
+            job_model.paths.update({k: str(v) for k, v in io_paths.items() if v is not None})
+        except Exception as e:
+            return {"success": False, "error": f"Path resolution failed: {e}"}
+
+        # Create job directory and clean up stale markers from previous runs
+        job_dir = project_path / "TiltFilter" / "dl_run"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        for marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
+            (job_dir / marker).unlink(missing_ok=True)
+
+        # Save state so the driver can read it
+        job_model.execution_status = JobStatus.RUNNING
+        state.mark_dirty()
+        await self.state_service.save_project(project_path=project_path, force=True)
+
+        # Build driver command
+        python_exe = self.server_dir / "venv" / "bin" / "python3"
+        if not python_exe.exists():
+            python_exe = "python3"
+        script_path = self.server_dir / "drivers" / "tilt_filter.py"
+        driver_cmd = (
+            f"export PYTHONPATH={self.server_dir}:${{PYTHONPATH}}; "
+            f"{python_exe} {script_path} "
+            f"--instance_id {instance_id} "
+            f"--project_path {project_path}"
+        )
+
+        # Build sbatch script from template
+        qsub_template = self.server_dir / "config" / "qsub.sh"
+        template_text = qsub_template.read_text()
+
+        slurm_cfg = job_model.get_effective_slurm_config()
+        # Strip surrounding quotes that may be stored in config values
+        constraint = slurm_cfg.constraint.strip("'\"")
+        replacements = {
+            "XXXextra1XXX": slurm_cfg.partition,
+            "XXXextra2XXX": constraint,
+            "XXXextra3XXX": str(slurm_cfg.nodes),
+            "XXXextra4XXX": str(slurm_cfg.ntasks_per_node),
+            "XXXextra5XXX": str(slurm_cfg.cpus_per_task),
+            "XXXextra6XXX": slurm_cfg.gres,
+            "XXXextra7XXX": slurm_cfg.mem,
+            "XXXextra8XXX": slurm_cfg.time,
+            "XXXoutfileXXX": str(job_dir / "run.out"),
+            "XXXerrfileXXX": str(job_dir / "run.err"),
+            "XXXcommandXXX": driver_cmd,
+        }
+        script = template_text
+        for placeholder, value in replacements.items():
+            script = script.replace(placeholder, value)
+
+        sbatch_path = job_dir / "run_tilt_filter.sh"
+        sbatch_path.write_text(script)
+        sbatch_path.chmod(0o755)
+
+        # Submit via sbatch
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "sbatch",
+                str(sbatch_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(job_dir),
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                job_model.execution_status = JobStatus.FAILED
+                state.mark_dirty()
+                await self.state_service.save_project(project_path=project_path, force=True)
+                return {"success": False, "error": f"sbatch failed: {stderr.decode().strip()}"}
+
+            # Parse job ID from "Submitted batch job 12345"
+            output = stdout.decode().strip()
+            slurm_job_id = output.split()[-1] if output else None
+            job_model.slurm_job_id = slurm_job_id
+            state.mark_dirty()
+            await self.state_service.save_project(project_path=project_path, force=True)
+
+            logger.info("Tilt filter DL submitted: SLURM job %s", slurm_job_id)
+            return {"success": True, "slurm_job_id": slurm_job_id, "job_dir": str(job_dir)}
+
+        except Exception as e:
+            job_model.execution_status = JobStatus.FAILED
+            state.mark_dirty()
+            await self.state_service.save_project(project_path=project_path, force=True)
+            return {"success": False, "error": str(e)}
+
     async def get_default_data_globs(self) -> Dict[str, str]:
         """Get default glob patterns from config."""
         config_service = get_config_service()

@@ -15,8 +15,12 @@ class TsReconstructParams(AbstractJobParams):
     USER_PARAMS: ClassVar[Set[str]] = {"rescale_angpixs", "halfmap_frames", "deconv", "perdevice"}
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
-        InputSlot(key="input_star", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
-        InputSlot(key="input_processing", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="tsCtf"),
+        InputSlot(
+            key="input_star",
+            accepts=[JobFileType.FILTERED_TILT_SERIES_STAR, JobFileType.TS_CTF_TILT_SERIES_STAR],
+            preferred_source="tiltFilter",
+        ),
+        InputSlot(key="input_processing", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="tiltFilter"),
         InputSlot(
             key="warp_tiltseries_settings",
             accepts=[JobFileType.WARP_TILTSERIES_SETTINGS],

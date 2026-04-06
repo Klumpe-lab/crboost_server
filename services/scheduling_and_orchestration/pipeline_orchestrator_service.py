@@ -45,6 +45,9 @@ class PipelineOrchestratorService:
         for instance_id in selected_instance_ids:
             job_model = state.jobs.get(instance_id)
             if not job_model or job_model.execution_status != JobStatus.SUCCEEDED:
+                # Interactive jobs are never dispatched to the cluster.
+                if job_model and getattr(job_model, "IS_INTERACTIVE", False):
+                    continue
                 instances_to_run.append(instance_id)
 
         if not instances_to_run:
@@ -176,6 +179,7 @@ class PipelineOrchestratorService:
             JobType.FS_MOTION_CTF: "fs_motion_and_ctf.py",
             JobType.TS_ALIGNMENT: "ts_alignment.py",
             JobType.TS_CTF: "ts_ctf.py",
+            JobType.TILT_FILTER: "tilt_filter.py",
             JobType.TS_RECONSTRUCT: "ts_reconstruct.py",
             JobType.DENOISE_TRAIN: "denoise_train.py",
             JobType.DENOISE_PREDICT: "denoise_predict.py",

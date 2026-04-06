@@ -42,6 +42,9 @@ class JobPlugin:
     # (job_type, job_model, is_frozen, save_handler, *, ui_mgr, backend) -> None
     render_params: Optional[Callable] = None
     extra_tabs: List[ExtraTab] = field(default_factory=list)
+    # Full-panel renderer replaces the entire tab chrome.
+    # Signature: (job_type, instance_id, job_model, backend, ui_mgr, save_handler) -> None
+    render_full_panel: Optional[Callable] = None
 
 
 _REGISTRY: Dict[JobType, JobPlugin] = {}
@@ -73,6 +76,22 @@ def register_extra_tab(job_type: JobType, *, key: str, label: str, icon: str = "
     return decorator
 
 
+def register_full_panel_renderer(job_type: JobType):
+    """Decorator for interactive jobs that replace the entire tab chrome with a custom panel.
+    fn(job_type, instance_id, job_model, backend, ui_mgr, save_handler)"""
+
+    def decorator(fn: Callable) -> Callable:
+        _ensure(job_type).render_full_panel = fn
+        return fn
+
+    return decorator
+
+
+def get_full_panel_renderer(job_type: JobType) -> Optional[Callable]:
+    plugin = _REGISTRY.get(job_type)
+    return plugin.render_full_panel if plugin else None
+
+
 def get_params_renderer(job_type: JobType) -> Optional[Callable]:
     plugin = _REGISTRY.get(job_type)
     return plugin.render_params if plugin else None
@@ -91,10 +110,11 @@ def _load_plugins():
     import importlib
 
     _modules = [
-        "ui.job_plugins.fs_motion_and_ctf",       # <-- add this
+        "ui.job_plugins.fs_motion_and_ctf",
         "ui.job_plugins.template_match",
         "ui.job_plugins.subtomo_extraction",
         "ui.job_plugins.candidate_extract",
+        "ui.job_plugins.tilt_filter",
     ]
     for mod in _modules:
         try:
