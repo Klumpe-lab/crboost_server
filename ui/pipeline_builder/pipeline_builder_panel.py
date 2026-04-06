@@ -40,7 +40,6 @@ class PipelineBuilderPanel:
         self.state_service = get_state_service()
 
         self._job_content_containers: Dict[str, object] = {}
-        self._tab_strip_ref: Dict[str, object] = {}
         self._content_wrapper_ref: Dict[str, object] = {}
 
         self.roster = RosterWidget(self)
@@ -176,8 +175,19 @@ class PipelineBuilderPanel:
         self._ensure_job_rendered(instance_id)
         for iid, c in self._job_content_containers.items():
             c.set_visibility(iid == instance_id)
-        self.roster.refresh_tab_strip()
         self.roster.refresh()
+
+    def switch_to_job_subsection(self, instance_id: str, tab_key: str):
+        """Switch to a specific job AND a specific subsection tab."""
+        from ui.pipeline_builder.job_tab_component import _handle_tab_switch
+
+        # Set the desired tab BEFORE ensuring the job is rendered,
+        # so render_job_tab picks it up as the initial active tab.
+        self.ui_mgr.set_job_monitor_tab(instance_id, tab_key, user_initiated=True)
+        self.switch_tab(instance_id)
+        # If the job was already rendered, force a content re-render.
+        job_type = instance_id_to_job_type(instance_id)
+        _handle_tab_switch(job_type, instance_id, tab_key, self.backend, self.ui_mgr, self.callbacks)
 
     # ── Job/instance management ───────────────────────────────────────────────
 
@@ -305,7 +315,6 @@ class PipelineBuilderPanel:
 
     def rebuild_pipeline_ui(self):
         self._job_content_containers.clear()
-        self._tab_strip_ref.pop("el", None)
         self._content_wrapper_ref.pop("el", None)
 
         self.roster.rebuild_run_slot()
@@ -333,13 +342,6 @@ class PipelineBuilderPanel:
             self.ui_mgr.set_active_instance(selected[0])
 
         with tabs_container:
-            strip = ui.element("div").style(
-                "display: flex; flex-direction: row; width: 100%; flex-shrink: 0; "
-                "border-bottom: 1px solid #e5e7eb; overflow-x: auto; gap: 0;"
-            )
-            self._tab_strip_ref["el"] = strip
-            self.roster.refresh_tab_strip()
-
             wrapper = ui.element("div").style(
                 "display: flex; flex-direction: column; width: 100%; flex: 1 1 0%; min-height: 0; overflow: hidden;"
             )

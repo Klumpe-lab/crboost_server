@@ -1,25 +1,31 @@
 # ui/pipeline_builder/io_config_component.py
+"""
+IO slot configuration — structured table layout with dropdowns.
+"""
+
 import asyncio
 import re
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Iterable
+from typing import Callable, Dict, Optional, Iterable
 
 from nicegui import ui
 
-from services.io_slots import InputSlot, JobFileType
+from services.io_slots import JobFileType
 from services.models_base import JobType, JobStatus
-from services.path_resolution_service import PathResolutionService, OutputCandidate, InputSlotValidation
+from services.path_resolution_service import PathResolutionService, InputSlotValidation
 from services.project_state import get_project_state, get_state_service
 from ui.ui_state import get_job_display_name
 from ui.utils import snake_to_title
 
+MONO = "font-family: 'IBM Plex Mono', monospace;"
+FONT = "font-family: 'IBM Plex Sans', sans-serif;"
 
 STATUS_STYLE = {
-    JobStatus.SUCCEEDED: {"color": "#10b981", "label": "done"},
-    JobStatus.RUNNING: {"color": "#3b82f6", "label": "running"},
-    JobStatus.SCHEDULED: {"color": "#f59e0b", "label": "scheduled"},
-    JobStatus.FAILED: {"color": "#ef4444", "label": "failed"},
-    JobStatus.UNKNOWN: {"color": "#6b7280", "label": "?"},
+    JobStatus.SUCCEEDED: {"color": "#10b981", "label": "done", "icon": "check_circle"},
+    JobStatus.RUNNING: {"color": "#3b82f6", "label": "running", "icon": "sync"},
+    JobStatus.SCHEDULED: {"color": "#f59e0b", "label": "scheduled", "icon": "schedule"},
+    JobStatus.FAILED: {"color": "#ef4444", "label": "failed", "icon": "error"},
+    JobStatus.UNKNOWN: {"color": "#6b7280", "label": "?", "icon": "help"},
 }
 
 
@@ -121,7 +127,6 @@ def _is_pending_path(p: Optional[str]) -> bool:
 
 
 class IOConfigComponent:
-
     def __init__(
         self,
         job_type: JobType,
@@ -147,7 +152,7 @@ class IOConfigComponent:
         input_schema = resolver.get_input_schema_for_job(self.job_type)
         output_schema = resolver.get_output_schema_for_job(self.job_type)
 
-        with ui.column().classes("w-full gap-2"):
+        with ui.column().classes("w-full gap-1"):
             if input_schema:
                 self._render_input_slots(resolver, input_schema, job_model)
             if output_schema:
@@ -168,16 +173,17 @@ class IOConfigComponent:
 
         return (project_path / "External" / f"pending_{self.instance_id}").resolve(), True
 
-    def _render_input_slots(self, resolver, schema, job_model):
-        ui.label("Input Slots").classes("text-[10px] font-black text-gray-400 uppercase tracking-wide mb-1")
-        with ui.element("div").classes("grid grid-cols-1 lg:grid-cols-2 gap-2"):
-            for slot in schema:
-                container = ui.column().classes("w-full")
-                self._slot_containers[slot.key] = container
-                with container:
-                    self._render_input_slot_content(resolver, slot, job_model)
+    # ── Input slots (structured rows with dropdowns) ─────────────────────────
 
-    def _render_input_slot_content(self, resolver, slot, job_model):
+    def _render_input_slots(self, resolver, schema, job_model):
+        for slot in schema:
+            container = ui.column().classes("w-full gap-0")
+            self._slot_containers[slot.key] = container
+            with container:
+                self._render_input_slot_row(resolver, slot, job_model)
+
+    def _render_input_slot_row(self, resolver, slot, job_model):
+        """Render a single input slot as a compact row: name | dropdown | status."""
         overrides = getattr(job_model, "source_overrides", {}) or {}
         current_override = overrides.get(slot.key)
 
@@ -196,215 +202,141 @@ class IOConfigComponent:
             manual_path = ""
 
         accept_primary = _primary_accept_label(slot.accepts)
-        accepts_full = ", ".join(_filetype_to_filename_guess(a) for a in slot.accepts) if slot.accepts else "—"
 
+        # Build dropdown options: each candidate becomes an option
+        options = {}
+        for c in candidates:
+            style = STATUS_STYLE.get(c.execution_status, STATUS_STYLE[JobStatus.UNKNOWN])
+            is_pending = "pending_" in (c.instance_path or "")
+            display_name = get_job_display_name(JobType(c.producer_job_type.value))
+            inst = "scheduled" if is_pending else _short_instance_label(c.instance_path or "")
+            status_label = style["label"]
+            option_label = f"[{status_label}] {inst} — {display_name}"
+            options[c.source_key] = option_label
+        options["manual"] = "Manual path…"
+
+        # Status dot color
         if validation.awaiting_upstream:
-            border_class = "border-blue-200 bg-blue-50/20"
+            dot_color = STATUS_STYLE[JobStatus.RUNNING]["color"]
         elif validation.is_valid:
-            border_class = "border-green-200 bg-green-50/20"
+            dot_color = STATUS_STYLE[JobStatus.SUCCEEDED]["color"]
         else:
-            border_class = "border-red-200 bg-red-50/20"
+            dot_color = STATUS_STYLE[JobStatus.FAILED]["color"]
 
-        resolved_for_copy = ""
-        if current_value == "manual" and manual_path:
-            resolved_for_copy = manual_path
-        elif validation.resolved_path and not _is_pending_path(validation.resolved_path):
-            resolved_for_copy = validation.resolved_path
-
-        with ui.card().classes(f"w-full p-2 border shadow-none {border_class}"):
-            with ui.row().classes("w-full items-center justify-between gap-2"):
-                with ui.row().classes("items-center gap-2 min-w-0"):
-                    title = ui.label(snake_to_title(slot.key)).classes("text-sm font-semibold text-gray-700 truncate")
-                    tooltip_lines = [f"Accepts: {accepts_full}"]
-                    if validation.error_message:
-                        tooltip_lines.append(f"Error: {validation.error_message}")
-                    if validation.resolved_path and not _is_pending_path(validation.resolved_path):
-                        tooltip_lines.append(f"Resolved: {validation.resolved_path}")
-                    title.tooltip("\n".join(tooltip_lines))
-
-                    if accept_primary:
-                        ui.label(accept_primary).classes(
-                            "text-[10px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-600 font-mono"
-                        )
-                    if not slot.required:
-                        ui.label("optional").classes("text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded")
-                    if validation.is_user_override:
-                        ui.label("overridden").classes("text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-600 rounded")
-
-                with ui.row().classes("items-center gap-1"):
-                    self._render_validation_badge(validation)
-                    if resolved_for_copy:
-                        ui.button(icon="content_copy", on_click=_make_copy_handler(resolved_for_copy)).props(
-                            "flat dense round size=sm"
-                        ).classes("text-gray-500").tooltip("Copy resolved path")
-                    if validation.is_user_override:
-                        ui.button(icon="restart_alt", on_click=lambda s=slot: self._clear_override(s)).props(
-                            "flat dense round size=sm"
-                        ).classes("text-gray-500").tooltip("Reset to auto")
-
-            with ui.row().classes("w-full flex-wrap items-center gap-2 mt-2"):
-                for c in candidates:
-                    self._render_candidate_pill(slot, c, current_value, validation)
-                self._render_manual_pill(slot, current_value)
-
-            if current_value == "manual":
-                with ui.row().classes("w-full items-center gap-2 mt-2"):
-                    ui.input(
-                        value=manual_path,
-                        placeholder="/path/to/file.star",
-                        on_change=lambda e, s=slot: self._handle_manual_path_change(s, e.value),
-                    ).props("outlined dense").classes("flex-1 font-mono text-xs")
-                    ui.button(icon="folder_open", on_click=lambda s=slot: self._open_file_picker(s)).props(
-                        "flat dense"
-                    ).classes("text-gray-500").tooltip("Browse...")
-
-    def _render_validation_badge(self, validation: InputSlotValidation):
-        if validation.awaiting_upstream:
-            label, color, tip = "awaiting", STATUS_STYLE[JobStatus.RUNNING]["color"], "Upstream job in progress"
-        elif validation.is_valid:
-            if validation.file_exists:
-                label, color, tip = "valid", STATUS_STYLE[JobStatus.SUCCEEDED]["color"], "File exists"
-            else:
-                label, color, tip = "pending", STATUS_STYLE[JobStatus.SCHEDULED]["color"], "Will be created"
-        else:
-            label = "invalid"
-            color = STATUS_STYLE[JobStatus.FAILED]["color"]
-            tip = validation.error_message or "Invalid input"
-
-        with ui.row().classes("items-center gap-1"):
-            ui.element("div").style(f"width: 7px; height: 7px; border-radius: 50%; background: {color};")
-            ui.label(label).classes("text-[10px] text-gray-600 font-medium").tooltip(tip)
-
-    def _render_candidate_pill(self, slot, c, current_value, validation):
-        is_selected = current_value == c.source_key
-        is_pending = "pending_" in (c.instance_path or "")
-        is_preferred = (
-            bool(getattr(slot, "preferred_source", None)) and slot.preferred_source == c.producer_job_type.value
-        )
-
-        style = STATUS_STYLE.get(c.execution_status, STATUS_STYLE[JobStatus.UNKNOWN])
-        display_name = get_job_display_name(JobType(c.producer_job_type.value))
-        inst = "scheduled" if is_pending else _short_instance_label(c.instance_path or "")
-
-        if is_selected:
-            bg, border, text = "white", "#3b82f6", "#1f2937"
-        else:
-            bg, border, text = "#f3f4f6", "#e5e7eb", "#374151"
-
-        border_style = "2px dashed #cbd5e1" if is_pending and not is_selected else f"1px solid {border}"
-
-        btn = (
-            ui.button(on_click=lambda sk=c.source_key, s=slot: self._handle_source_change(s, sk))
-            .props("flat dense no-caps")
-            .style(f"background: {bg}; color: {text}; padding: 3px 9px; border-radius: 999px; border: {border_style};")
-        )
-        with btn:
-            with ui.row().classes("items-center gap-2"):
-                ui.element("div").style(f"width: 7px; height: 7px; border-radius: 50%; background: {style['color']};")
-                ui.label(display_name).classes("text-[11px] font-medium")
-                if is_preferred:
-                    ui.icon("star", size="14px").classes("text-amber-500").tooltip("Preferred default source")
-                if inst:
-                    ui.label(inst).classes("text-[10px] font-mono text-gray-500")
-
-        tip_lines = [display_name, f"Status: {style['label']}"]
-        if c.instance_path and "pending_" not in c.instance_path:
-            tip_lines.append(f"Instance: {c.instance_path}")
-        if is_selected and validation.resolved_path and "pending_" not in validation.resolved_path:
-            tip_lines.append(f"Resolved: {validation.resolved_path}")
-        btn.tooltip("\n".join(tip_lines))
-
-    def _render_manual_pill(self, slot, current_value):
-        is_selected = current_value == "manual"
-        bg = "white" if is_selected else "#f3f4f6"
-        border = "#3b82f6" if is_selected else "#e5e7eb"
-        text = "#1f2937" if is_selected else "#374151"
-
-        btn = (
-            ui.button(on_click=lambda s=slot: self._handle_source_change(s, "manual"))
-            .props("flat dense no-caps")
-            .style(
-                f"background: {bg}; color: {text}; padding: 3px 9px; border-radius: 999px; border: 1px solid {border};"
+        with ui.row().classes("w-full items-center gap-2").style("min-height: 26px;"):
+            # Status dot
+            ui.element("div").style(
+                f"width: 6px; height: 6px; border-radius: 50%; background: {dot_color}; flex-shrink: 0;"
             )
-        )
-        with btn:
-            with ui.row().classes("items-center gap-2"):
-                ui.icon("edit", size="14px").classes("text-gray-500")
-                ui.label("Manual…").classes("text-[11px] font-medium")
-        btn.tooltip("Specify an explicit file path for this input")
+            # Slot name
+            ui.label(snake_to_title(slot.key)).style(
+                f"{FONT} font-size: 10px; font-weight: 500; color: #374151; flex-shrink: 0; width: 90px;"
+            )
+            # File type hint
+            if accept_primary:
+                ui.label(accept_primary).style(f"{MONO} font-size: 9px; color: #94a3b8; flex-shrink: 0;")
+            # Dropdown
+            sel = ui.select(
+                options=options,
+                value=current_value or (list(options.keys())[0] if options else None),
+                on_change=lambda e, s=slot: self._handle_source_change(s, e.value),
+            )
+            sel.props("dense borderless hide-bottom-space")
+            sel.style(f"{MONO} font-size: 10px; color: #475569; flex: 1; min-width: 120px;")
+            # Optional badge
+            if not slot.required:
+                ui.label("opt").style(
+                    f"{FONT} font-size: 8px; color: #94a3b8; background: #f1f5f9; "
+                    "border-radius: 3px; padding: 0 4px; flex-shrink: 0;"
+                )
+            # Override reset
+            if validation.is_user_override:
+                (
+                    ui.button(icon="restart_alt", on_click=lambda s=slot: self._clear_override(s))
+                    .props("flat dense round size=xs")
+                    .style("color: #94a3b8; flex-shrink: 0;")
+                    .tooltip("Reset to auto")
+                )
+
+        # Manual path input row
+        if current_value == "manual":
+            with ui.row().classes("w-full items-center gap-2").style("padding-left: 98px;"):
+                inp = ui.input(
+                    value=manual_path,
+                    placeholder="/path/to/file",
+                    on_change=lambda e, s=slot: self._handle_manual_path_change(s, e.value),
+                )
+                inp.props("dense borderless hide-bottom-space")
+                inp.style(f"{MONO} font-size: 10px; flex: 1; border-bottom: 1px solid #cbd5e1; padding: 1px 2px;")
+                ui.button(icon="folder_open", on_click=lambda s=slot: self._open_file_picker(s)).props(
+                    "flat dense round size=xs"
+                ).style("color: #64748b;").tooltip("Browse…")
+
+    # ── Output slots ─────────────────────────────────────────────────────────
 
     def _render_output_slots(self, schema, job_model):
-        ui.label("Output Slots").classes("text-[10px] font-black text-gray-400 uppercase tracking-wide mt-2 mb-1")
         job_dir, job_dir_pred = self._get_job_dir(job_model)
 
-        with ui.card().classes("w-full p-0 border border-gray-200 shadow-none"):
-            if job_dir:
-                with ui.row().classes("w-full p-2 bg-white border-b border-gray-100 items-center gap-3"):
-                    ui.label("Job Folder").classes("text-xs font-semibold text-gray-700 min-w-[220px]")
-                    if job_dir_pred:
-                        ui.label("Assigned at deploy time").classes("text-[10px] font-mono text-gray-400 italic flex-1")
-                    else:
-                        ui.label(str(job_dir)).classes("text-[10px] font-mono text-gray-700 break-all flex-1")
-                        ui.button(icon="content_copy", on_click=_make_copy_handler(str(job_dir))).props(
-                            "flat dense round size=sm"
-                        ).classes("text-gray-500").tooltip("Copy job folder path")
+        if job_dir and not job_dir_pred:
+            with ui.row().classes("w-full items-baseline gap-2").style("min-height: 20px; margin-bottom: 2px;"):
+                ui.label("Job folder").style(f"{FONT} font-size: 9px; color: #94a3b8; flex-shrink: 0;")
+                ui.label(str(job_dir)).style(
+                    f"{MONO} font-size: 10px; color: #64748b; flex: 1; min-width: 0; "
+                    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                ).tooltip(str(job_dir))
+                (
+                    ui.button(icon="content_copy", on_click=_make_copy_handler(str(job_dir)))
+                    .props("flat dense round size=xs")
+                    .style("color: #94a3b8; flex-shrink: 0;")
+                    .tooltip("Copy")
+                )
 
-            for i, slot in enumerate(schema):
-                bg_class = "bg-gray-50" if i % 2 == 0 else "bg-white"
-                resolved = (job_model.paths or {}).get(slot.key)
+        for slot in schema:
+            resolved = (job_model.paths or {}).get(slot.key)
 
-                full_path: str = ""
-                if resolved:
-                    p = Path(str(resolved))
-                    state = get_project_state()
-                    project_path = getattr(state, "project_path", None)
-                    if project_path and not p.is_absolute():
-                        p = project_path / p
-                    full_path = str(p)
-                else:
-                    if job_dir and getattr(slot, "path_template", None):
-                        t = str(slot.path_template)
-                        tp = Path(t)
-                        full_path = str(job_dir / tp) if not tp.is_absolute() else t
-                    else:
-                        full_path = str(getattr(slot, "path_template", "") or "")
+            full_path: str = ""
+            if resolved:
+                p = Path(str(resolved))
+                state = get_project_state()
+                project_path = getattr(state, "project_path", None)
+                if project_path and not p.is_absolute():
+                    p = project_path / p
+                full_path = str(p)
+            elif job_dir and getattr(slot, "path_template", None):
+                t = str(slot.path_template)
+                tp = Path(t)
+                full_path = str(job_dir / tp) if not tp.is_absolute() else t
+            else:
+                full_path = str(getattr(slot, "path_template", "") or "")
 
-                produces_label = ""
-                if getattr(slot, "path_template", None):
-                    produces_label = _compact_template(Path(str(slot.path_template)).name)
-                else:
-                    produces_label = _filetype_to_filename_guess(slot.produces)
+            if _is_pending_path(full_path):
+                display_path = str(getattr(slot, "path_template", ""))
+                path_color = "#94a3b8"
+            else:
+                display_path = _compact_template(full_path)
+                path_color = "#64748b" if resolved else "#94a3b8"
 
-                if _is_pending_path(full_path):
-                    display_path = slot.path_template
-                    path_class = "text-[10px] font-mono text-gray-400 italic break-all flex-1"
-                    copy_path = None
-                else:
-                    display_path = _compact_template(full_path)
-                    path_class = (
-                        "text-[10px] font-mono text-gray-700 break-all flex-1"
-                        if resolved
-                        else "text-[10px] font-mono text-gray-500 break-all flex-1 italic"
+            with ui.row().classes("w-full items-baseline gap-2").style("min-height: 20px;"):
+                ui.label(snake_to_title(slot.key)).style(
+                    f"{FONT} font-size: 9px; color: #94a3b8; flex-shrink: 0; width: 90px;"
+                )
+                ui.label(display_path).style(
+                    f"{MONO} font-size: 10px; color: {path_color}; flex: 1; min-width: 0; "
+                    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                ).tooltip(full_path)
+                if full_path and not _is_pending_path(full_path):
+                    (
+                        ui.button(icon="content_copy", on_click=_make_copy_handler(full_path))
+                        .props("flat dense round size=xs")
+                        .style("color: #94a3b8; flex-shrink: 0;")
+                        .tooltip("Copy")
                     )
-                    copy_path = full_path
 
-                with ui.row().classes(
-                    f"w-full p-2 {bg_class} border-b border-gray-100 last:border-0 items-center gap-3"
-                ):
-                    with ui.column().classes("gap-0 min-w-[220px]"):
-                        ui.label(snake_to_title(slot.key)).classes("text-xs font-semibold text-gray-700")
-                        ui.label(f"Produces: {produces_label}").classes("text-[10px] text-gray-400 font-mono")
-                    ui.label(display_path).classes(path_class).tooltip(full_path if full_path else "")
-                    if copy_path:
-                        ui.button(icon="content_copy", on_click=_make_copy_handler(copy_path)).props(
-                            "flat dense round size=sm"
-                        ).classes("text-gray-500").tooltip("Copy full path")
-
-    # ── State updates ──────────────────────────────────────────────────────────
+    # ── State updates ────────────────────────────────────────────────────────
 
     def _handle_source_change(self, slot, value):
         state = get_project_state()
-        project_path = state.project_path  # capture while tab context is live
+        project_path = state.project_path
         job_model = state.jobs.get(self.instance_id)
         if not job_model:
             return
@@ -450,7 +382,7 @@ class IOConfigComponent:
             resolver = PathResolutionService(state, active_instance_ids=self.active_instance_ids)
             container.clear()
             with container:
-                self._render_input_slot_content(resolver, slot, job_model)
+                self._render_input_slot_row(resolver, slot, job_model)
         if self.on_change:
             self.on_change()
 

@@ -13,7 +13,7 @@ from nicegui import ui, app
 
 from backend import CryoBoostBackend
 from services.configs.user_prefs_service import get_prefs_service
-from services.project_state import get_project_state
+from services.project_state import get_project_state, ImportPositionSummary
 
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
@@ -671,6 +671,28 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 project_path = Path(result["project_path"])
                 scheme_name = f"scheme_{di.project_name}"
                 ui_mgr.set_project_created(project_path, scheme_name)
+
+                overview = local_refs.get("current_dataset_overview")
+                if overview:
+                    state = get_project_state()
+                    state.import_total_positions = len(overview.positions)
+                    state.import_selected_positions = sum(1 for p in overview.positions if p.selected)
+                    state.import_total_tilt_series = overview.total_tilt_series
+                    state.import_selected_tilt_series = overview.selected_tilt_series
+                    state.import_source_directory = overview.source_directory or ""
+                    state.import_frame_extension = overview.frame_extension or ""
+                    state.import_position_details = [
+                        ImportPositionSummary(
+                            stage_position=p.stage_position,
+                            beam_count=p.beam_count,
+                            tilt_count=p.total_tilts,
+                            selected=p.selected,
+                        )
+                        for p in overview.positions
+                    ]
+                    state.mark_dirty()
+                    state.save_if_dirty()
+
                 ui.notify(f"Project '{di.project_name}' created successfully", type="positive")
                 prefs_service.prefs.add_recent_root(di.project_base_path, label=di.project_name)
                 prefs_service.save_to_app_storage(app.storage.user)

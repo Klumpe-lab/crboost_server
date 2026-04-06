@@ -64,12 +64,22 @@ def slugify(name: str) -> str:
 
 
 class ParticleSpecies(BaseModel):
-    id: str                  # slug, used as folder name and instance suffix
-    name: str                # display label
+    id: str  # slug, used as folder name and instance suffix
+    name: str  # display label
     color: str = "#3b82f6"
     template_path: str = ""
     mask_path: str = ""
     workbench: TemplateWorkbenchState = Field(default_factory=TemplateWorkbenchState)
+
+
+class ImportPositionSummary(BaseModel):
+    """Per-position summary persisted at project creation."""
+
+    stage_position: int
+    beam_count: int = 1
+    tilt_count: int = 0
+    selected: bool = True
+
 
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
@@ -93,22 +103,27 @@ class ProjectState(BaseModel):
     species_registry: List[ParticleSpecies] = Field(default_factory=list)
     pipeline_active: bool = Field(default=False)
 
+    # Dataset import summary (set at project creation)
+    import_total_positions: int = 0
+    import_selected_positions: int = 0
+    import_total_tilt_series: int = 0
+    import_selected_tilt_series: int = 0
+    import_source_directory: str = ""
+    import_frame_extension: str = ""
+    import_position_details: List[ImportPositionSummary] = Field(default_factory=list)
+
     # Tilt filtering (standalone tool, not a pipeline job)
     tilt_filter_labels: Dict[str, str] = Field(default_factory=dict)
     tilt_filter_png_dir: Optional[str] = None
 
     _dirty: bool = PrivateAttr(default=False)
 
-
     def mark_dirty(self):
         self._dirty = True
-
-
 
     @property
     def is_dirty(self) -> bool:
         return self._dirty
-
 
     def save_if_dirty(self, path: Optional[Path] = None):
         if self.is_dirty:
@@ -134,10 +149,7 @@ class ProjectState(BaseModel):
         return species
 
     def ensure_job_initialized(
-        self,
-        job_type: JobType,
-        instance_id: Optional[str] = None,
-        template_path: Optional[Path] = None,
+        self, job_type: JobType, instance_id: Optional[str] = None, template_path: Optional[Path] = None
     ):
         if instance_id is None:
             instance_id = job_type.value
@@ -214,12 +226,19 @@ class ProjectState(BaseModel):
         elif file_major != code_major:
             logger.warning(
                 "Major schema mismatch! File=%s.%s, Code=%s.%s. Project: %s. Data may not load correctly.",
-                file_major, file_minor, code_major, code_minor, path.parent.name,
+                file_major,
+                file_minor,
+                code_major,
+                code_minor,
+                path.parent.name,
             )
         elif file_minor != code_minor:
             logger.info(
                 "Minor schema difference: file=%s.%s, code=%s.%s. Will be upgraded on next save.",
-                file_major, file_minor, code_major, code_minor,
+                file_major,
+                file_minor,
+                code_major,
+                code_minor,
             )
 
         project_state = cls(
@@ -244,9 +263,7 @@ class ProjectState(BaseModel):
         # in ProjectState.load(), after constructing project_state, add:
         project_state.job_path_mapping = data.get("job_path_mapping", {})
         try:
-            project_state.species_registry = [
-                ParticleSpecies(**s) for s in data.get("species_registry", [])
-            ]
+            project_state.species_registry = [ParticleSpecies(**s) for s in data.get("species_registry", [])]
         except Exception as e:
             logger.warning("Could not load species registry: %s", e)
             project_state.species_registry = []
@@ -270,8 +287,6 @@ class ProjectState(BaseModel):
                 logger.warning("Skipping job instance '%s' - failed to deserialize: %s", instance_id, e)
 
         return project_state
-
-
 
 
 # =========================================================================
@@ -326,6 +341,7 @@ def get_project_state() -> ProjectState:
     """
     try:
         from ui.ui_state import get_ui_state_manager
+
         ui_mgr = get_ui_state_manager()
         if ui_mgr.project_path:
             return get_project_state_for(ui_mgr.project_path)
@@ -402,7 +418,7 @@ class StateService:
         try:
             new_state = ProjectState.load(project_json_path)
             project_path = new_state.project_path or project_json_path.parent
-            new_state.project_path = project_path          # <-- fix
+            new_state.project_path = project_path  # <-- fix
             set_project_state_for(project_path, new_state)
             return True
         except Exception:
@@ -411,10 +427,7 @@ class StateService:
     # in StateService.save_project(), replace the final save call:
 
     async def save_project(
-        self,
-        save_path: Optional[Path] = None,
-        project_path: Optional[Path] = None,
-        force: bool = False,
+        self, save_path: Optional[Path] = None, project_path: Optional[Path] = None, force: bool = False
     ):
         async with self._save_lock:
             if project_path:
