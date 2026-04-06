@@ -8,7 +8,7 @@ from nicegui import ui
 
 from services.project_state import JobStatus, JobType, get_project_state, get_state_service
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
-from ui.job_plugins import get_extra_tabs
+from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
 from ui.status_indicator import BoundStatusBadge, BoundStatusDot
 from ui.ui_state import (
     get_ui_state_manager,
@@ -109,6 +109,12 @@ def render_job_tab(
         ui.label(f"Error: Job model for '{instance_id}' not found.").classes("text-xs text-red-600")
         return
 
+    # --- Full-panel interactive jobs (tilt filter, etc.) bypass tab chrome ---
+    full_renderer = get_full_panel_renderer(job_type)
+    if full_renderer:
+        _render_interactive_job(job_type, instance_id, job_model, backend, ui_mgr, callbacks, full_renderer)
+        return
+
     job_ui_state = ui_mgr.get_job_ui_state(instance_id)
     widget_refs = ui_mgr.get_job_widget_refs(instance_id)
 
@@ -168,6 +174,40 @@ def render_job_tab(
 
     with content_container:
         _render_tab_content(active_tab, job_type, instance_id, job_model, frozen, save_handler, backend, ui_mgr)
+
+
+def _render_interactive_job(
+    job_type: JobType,
+    instance_id: str,
+    job_model,
+    backend,
+    ui_mgr: UIStateManager,
+    callbacks: Dict[str, Callable],
+    full_renderer: Callable,
+):
+    """Lightweight chrome for interactive tool-type jobs (no tab strip)."""
+    # --- Compact header ---
+    with (
+        ui.row()
+        .classes("w-full items-center px-6 py-2 border-b border-gray-200 bg-white gap-3")
+        .style("flex-shrink: 0;")
+    ):
+        BoundStatusDot(instance_id)
+        ui.label(get_job_display_name(job_type)).classes("text-sm font-semibold text-gray-800")
+        if job_model.relion_job_name and ui_mgr.project_path:
+            full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
+            ui.label(full_path).classes("text-xs font-mono text-gray-400")
+        ui.space()
+        if ui_mgr.is_project_created:
+            ui.button(
+                icon="delete",
+                on_click=lambda: _handle_delete(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
+            ).props("flat round dense color=red").tooltip("Delete this job")
+
+    # --- Full panel content ---
+    save_handler = create_save_handler()
+    with ui.column().classes("w-full overflow-hidden").style("flex: 1 1 0%; min-height: 0;"):
+        full_renderer(job_type, instance_id, job_model, backend, ui_mgr, save_handler)
 
 
 def _render_tab_switcher(
@@ -262,6 +302,22 @@ async def _handle_stop_job(
 def _handle_delete(
     job_type: JobType, instance_id: str, job_model, backend, ui_mgr: UIStateManager, callbacks: Dict[str, Callable]
 ):
+    # Interactive jobs use the roster's custom removal flow.
+    if getattr(job_model, "IS_INTERACTIVE", False):
+        remove_cb = callbacks.get("remove_instance_from_pipeline")
+        if remove_cb:
+            from services.project_state import get_project_state
+
+            state = get_project_state()
+            if state and instance_id in state.jobs:
+                del state.jobs[instance_id]
+                state.job_path_mapping.pop(instance_id, None)
+                state.mark_dirty()
+                asyncio.create_task(get_state_service().save_project())
+            remove_cb(instance_id)
+            ui.notify("Tilt filter removed. Labels preserved.", type="info")
+        return
+
     deletion_service = get_deletion_service()
     project_path = ui_mgr.project_path
 

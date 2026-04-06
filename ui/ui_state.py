@@ -15,10 +15,9 @@ logger = logging.getLogger(__name__)
 
 
 class MonitorTab(str, Enum):
-
     CONFIG = "config"
-    LOGS   = "logs"
-    FILES  = "files"
+    LOGS = "logs"
+    FILES = "files"
 
 
 class JobCardUIState(BaseModel):
@@ -136,6 +135,7 @@ PIPELINE_ORDER: List[JobType] = [
     JobType.FS_MOTION_CTF,
     JobType.TS_ALIGNMENT,
     JobType.TS_CTF,
+    JobType.TILT_FILTER,
     JobType.TS_RECONSTRUCT,
     JobType.DENOISE_TRAIN,
     JobType.DENOISE_PREDICT,
@@ -151,6 +151,7 @@ JOB_DISPLAY_NAMES: Dict[JobType, str] = {
     JobType.FS_MOTION_CTF: "Motion & CTF",
     JobType.TS_ALIGNMENT: "Alignment",
     JobType.TS_CTF: "TS CTF",
+    JobType.TILT_FILTER: "Tilt Filter",
     JobType.TS_RECONSTRUCT: "Reconstruct",
     JobType.DENOISE_TRAIN: "Denoise Train",
     JobType.DENOISE_PREDICT: "Denoise Predict",

@@ -6,16 +6,12 @@ Canonical import path:  from services.jobs import FsMotionCtfParams
 Legacy shim:            from services.job_models import FsMotionCtfParams  (still works)
 """
 
-from services.jobs._base import (
-    AbstractJobParams,
-    ExtractionCutoffMethod,
-    SymmetryGroup,
-    TemplateWorkbenchState,
-)
+from services.jobs._base import AbstractJobParams, ExtractionCutoffMethod, SymmetryGroup, TemplateWorkbenchState
 from services.jobs.import_movies import ImportMoviesParams
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.jobs.ts_alignment import TsAlignmentParams
 from services.jobs.ts_ctf import TsCtfParams
+from services.jobs.tilt_filter import TiltFilterParams
 from services.jobs.ts_reconstruct import TsReconstructParams
 from services.jobs.denoise_train import DenoiseTrainParams
 from services.jobs.denoise_predict import DenoisePredictParams
@@ -36,6 +32,7 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
         JobType.FS_MOTION_CTF: FsMotionCtfParams,
         JobType.TS_ALIGNMENT: TsAlignmentParams,
         JobType.TS_CTF: TsCtfParams,
+        JobType.TILT_FILTER: TiltFilterParams,
         JobType.TS_RECONSTRUCT: TsReconstructParams,
         JobType.DENOISE_TRAIN: DenoiseTrainParams,
         JobType.DENOISE_PREDICT: DenoisePredictParams,
@@ -56,6 +53,7 @@ __all__ = [
     "FsMotionCtfParams",
     "TsAlignmentParams",
     "TsCtfParams",
+    "TiltFilterParams",
     "TsReconstructParams",
     "DenoiseTrainParams",
     "DenoisePredictParams",

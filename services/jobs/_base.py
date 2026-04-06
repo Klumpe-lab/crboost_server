@@ -29,8 +29,8 @@ class SymmetryGroup(str, Enum):
     D4 = "D4"
     D5 = "D5"
     D6 = "D6"
-    T  = "T"
-    O  = "O"
+    T = "T"
+    O = "O"
     I1 = "I1"
     I2 = "I2"
 
@@ -68,6 +68,7 @@ class AbstractJobParams(BaseModel):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"  # Override for native jobs
     IS_TOMO_JOB: ClassVar[bool] = True
     IS_CONTINUE: ClassVar[bool] = False
+    IS_INTERACTIVE: ClassVar[bool] = False  # Interactive tools manage their own status
 
     # ------------------------------------------------------------------
     # Phase 1c: USER_PARAMS whitelist.
@@ -92,18 +93,18 @@ class AbstractJobParams(BaseModel):
     USER_PARAMS: ClassVar[Set[str]] = set()
 
     # Job execution metadata only
-    execution_status  : JobStatus     = Field(default=JobStatus.SCHEDULED)
-    relion_job_name   : Optional[str] = None
-    relion_job_number: Optional[int]  = None
-    slurm_job_id      : Optional[str] = None                                # set when sbatch accepts the job
+    execution_status: JobStatus = Field(default=JobStatus.SCHEDULED)
+    relion_job_name: Optional[str] = None
+    relion_job_number: Optional[int] = None
+    slurm_job_id: Optional[str] = None  # set when sbatch accepts the job
 
-    is_orphaned       : bool          = Field(default=False)
-    missing_inputs    : List[str]     = Field(default_factory=list)
+    is_orphaned: bool = Field(default=False)
+    missing_inputs: List[str] = Field(default_factory=list)
 
     # We store the resolved paths and binds here to persist them in project_params.json
-    paths           : Dict[str, str] = Field(default_factory=dict)
-    additional_binds: List[str]      = Field(default_factory=list)
-    slurm_overrides : Dict[str, Any] = Field(default_factory=dict)
+    paths: Dict[str, str] = Field(default_factory=dict)
+    additional_binds: List[str] = Field(default_factory=list)
+    slurm_overrides: Dict[str, Any] = Field(default_factory=dict)
 
     # User overrides for input slot sources
     # Maps input_slot_key -> source specification

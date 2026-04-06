@@ -176,6 +176,10 @@ class PipelineRunnerService:
             if instance_id in found_instances:
                 continue
 
+            # Interactive jobs manage their own status; don't reset them.
+            if getattr(job_model, "IS_INTERACTIVE", False):
+                continue
+
             old_status = job_model.execution_status
 
             if job_model.relion_job_name:
@@ -502,9 +506,7 @@ class PipelineRunnerService:
                 except Exception as e:
                     logger.warning("Failed to persist pipeline_active=False: %s", e)
             else:
-                logger.info(
-                    "Old schemer PID %s cleaned up, new pipeline already running -- skipping state reset", pid
-                )
+                logger.info("Old schemer PID %s cleaned up, new pipeline already running -- skipping state reset", pid)
 
     async def stop_pipeline(self, project_path: Path) -> Dict[str, Any]:
         resolved = project_path.resolve()
