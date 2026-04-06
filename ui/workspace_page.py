@@ -75,10 +75,10 @@ def build_workspace_page(backend: CryoBoostBackend):
         )
 
         roster_panel = ui.element("div").style(
-            "width: 224px; min-width: 224px; height: 100%; flex-shrink: 0; "
+            "width: 300px; min-width: 300px; height: 100%; flex-shrink: 0; "
             "background: #ffffff; border-right: 1px solid #e5e7eb; "
             "overflow-y: auto; overflow-x: hidden; "
-            "flex-direction: column; gap: 0; display: none;"
+            "flex-direction: column; gap: 0; display: flex;"
         )
 
         main_area = ui.element("div").style(

@@ -27,8 +27,9 @@ from ui.pipeline_builder.files_tab import render_files_tab
 logger = logging.getLogger(__name__)
 
 
-TAB_IO = "io"
-TAB_SLURM = "slurm"
+_SECTION_LABEL_STYLE = (
+    "font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; font-weight: 600; color: #1e293b; margin-bottom: 4px;"
+)
 
 
 class DebouncedSaver:
@@ -56,13 +57,7 @@ def create_save_handler() -> Callable:
 
 
 def _build_tab_list(job_type: JobType):
-    tabs = [
-        (MonitorTab.CONFIG.value, "Parameters"),
-        (TAB_IO, "I/O"),
-        (TAB_SLURM, "SLURM"),
-        (MonitorTab.LOGS.value, "Logs"),
-        (MonitorTab.FILES.value, "Files"),
-    ]
+    tabs = [(MonitorTab.CONFIG.value, "Config"), (MonitorTab.LOGS.value, "Logs"), (MonitorTab.FILES.value, "Files")]
     for et in get_extra_tabs(job_type):
         tabs.append((et.key, et.label))
     return tabs
@@ -79,14 +74,31 @@ def _render_tab_content(
     ui_mgr: UIStateManager,
 ):
     if tab_key == MonitorTab.CONFIG.value:
-        with ui.scroll_area().classes("w-full h-full p-2"):
-            render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend, save_handler)
-    elif tab_key == TAB_IO:
         with ui.scroll_area().classes("w-full h-full"):
-            render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, save_handler)
-    elif tab_key == TAB_SLURM:
-        with ui.scroll_area().classes("w-full h-full"):
-            render_slurm_tab(job_model, is_frozen, save_handler)
+            with ui.column().classes("w-full gap-0").style("padding: 10px 16px 16px;"):
+                # ── SLURM (collapsible) ──
+                with (
+                    ui.expansion("SLURM / Requested Resources")
+                    .props("dense default-opened")
+                    .classes("w-full")
+                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 6px;") as slurm_exp
+                ):
+                    slurm_exp.props('header-class="text-xs font-semibold text-gray-700 p-0"')
+                    with ui.column().classes("w-full gap-0").style("padding: 4px 0 0;"):
+                        render_slurm_tab(job_model, is_frozen, save_handler)
+                # ── I/O (collapsible) ──
+                with (
+                    ui.expansion("I/O")
+                    .props("dense default-opened")
+                    .classes("w-full")
+                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 6px;") as io_exp
+                ):
+                    io_exp.props('header-class="text-xs font-semibold text-gray-700 p-0"')
+                    with ui.column().classes("w-full gap-0").style("padding: 4px 0 0;"):
+                        render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, save_handler)
+                # ── Parameters ──
+                ui.label("Parameters").style(_SECTION_LABEL_STYLE)
+                render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend, save_handler)
     elif tab_key == MonitorTab.LOGS.value:
         render_logs_tab(job_type, instance_id, job_model, backend, ui_mgr)
     elif tab_key == MonitorTab.FILES.value:
@@ -128,43 +140,51 @@ def render_job_tab(
     is_running = job_model.execution_status == JobStatus.RUNNING
 
     # --- Header ---
-    with ui.column().classes("w-full border-b border-gray-200 bg-white pl-6 pr-6 pt-3 pb-3"):
-        with ui.row().classes("w-full justify-between items-center"):
-            with ui.row().classes("items-center gap-2"):
-                BoundStatusBadge(instance_id)
-                if job_model.relion_job_name and ui_mgr.project_path:
-                    full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
-                    ui.label(full_path).classes("text-xs font-mono text-gray-500")
-                    ui.button(
-                        icon="content_copy",
-                        on_click=lambda p=full_path: ui.run_javascript(f"navigator.clipboard.writeText({repr(p)})"),
-                    ).props("flat dense round size=xs").classes("text-gray-400 hover:text-gray-600").tooltip(
-                        "Copy path"
-                    )
-                if is_running:
-                    ui.button(
-                        "Cancel Job",
-                        icon="stop_circle",
-                        on_click=lambda: _handle_stop_job(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
-                    ).props("dense flat no-caps").style(
-                        "color: #ea580c; border: 1px solid #fed7aa; border-radius: 3px; "
-                        "padding: 2px 10px; font-size: 11px; font-weight: 500;"
-                    )
+    with (
+        ui.row()
+        .classes("w-full items-center border-b border-gray-200 bg-white px-4 gap-2")
+        .style("flex-shrink: 0; min-height: 38px; padding-top: 5px; padding-bottom: 5px;")
+    ):
+        BoundStatusBadge(instance_id)
 
-            with ui.row().classes("items-center gap-2"):
-                switcher_container = ui.row().classes("bg-gray-100 p-1 rounded-lg gap-0 border border-gray-200")
-                widget_refs.switcher_container = switcher_container
-                _render_tab_switcher(switcher_container, job_type, instance_id, active_tab, backend, ui_mgr, callbacks)
+        switcher_container = ui.element("div").style(
+            "display: flex; border: 1px solid #e2e8f0; border-radius: 4px; overflow: hidden; flex-shrink: 0;"
+        )
+        widget_refs.switcher_container = switcher_container
+        _render_tab_switcher(switcher_container, job_type, instance_id, active_tab, backend, ui_mgr, callbacks)
 
-                ui.button(icon="refresh", on_click=lambda: _force_status_refresh(callbacks)).props(
-                    "flat dense round"
-                ).classes("text-gray-400 hover:text-gray-800")
+        if job_model.relion_job_name and ui_mgr.project_path:
+            full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
+            ui.label(full_path).style(
+                "font-size: 10px; font-family: 'IBM Plex Mono', monospace; color: #94a3b8; "
+                "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;"
+            )
+            ui.button(
+                icon="content_copy",
+                on_click=lambda p=full_path: ui.run_javascript(f"navigator.clipboard.writeText({repr(p)})"),
+            ).props("flat dense round size=xs").classes("text-gray-400 hover:text-gray-600").tooltip("Copy path")
 
-                if ui_mgr.is_project_created:
-                    ui.button(
-                        icon="delete",
-                        on_click=lambda: _handle_delete(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
-                    ).props("flat round dense color=red").tooltip("Delete this job")
+        ui.space()
+
+        if is_running:
+            ui.button(
+                "Cancel",
+                icon="stop_circle",
+                on_click=lambda: _handle_stop_job(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
+            ).props("dense flat no-caps").style(
+                "color: #ea580c; border: 1px solid #fed7aa; border-radius: 3px; "
+                "padding: 1px 8px; font-size: 10px; font-weight: 500;"
+            )
+
+        ui.button(icon="refresh", on_click=lambda: _force_status_refresh(callbacks)).props(
+            "flat dense round size=sm"
+        ).classes("text-gray-400 hover:text-gray-800")
+
+        if ui_mgr.is_project_created:
+            ui.button(
+                icon="delete",
+                on_click=lambda: _handle_delete(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
+            ).props("flat round dense size=sm color=red").tooltip("Delete this job")
 
     # --- Content ---
     content_container = ui.column().classes("w-full overflow-hidden").style("flex: 1 1 0%; min-height: 0;")
@@ -222,18 +242,25 @@ def _render_tab_switcher(
     container.clear()
     tabs = _build_tab_list(job_type)
     with container:
-        for tab_key, label in tabs:
+        for i, (tab_key, label) in enumerate(tabs):
             is_active = active_tab == tab_key
+            is_last = i == len(tabs) - 1
             btn = ui.button(
                 label,
                 on_click=lambda t=tab_key: _handle_tab_switch(job_type, instance_id, t, backend, ui_mgr, callbacks),
             )
             btn.props("flat dense no-caps")
-            base = "font-size: 12px; font-weight: 500; padding: 4px 16px; border-radius: 6px; transition: all 0.2s;"
+            border_r = "" if is_last else "border-right: 1px solid #e2e8f0; "
             if is_active:
-                btn.style(f"{base} background: white; color: #111827; box-shadow: 0 1px 3px rgba(0,0,0,0.1);")
+                btn.style(
+                    f"font-size: 10px; font-weight: 600; padding: 3px 10px; border-radius: 0; "
+                    f"background: #f1f5f9; color: #1e293b; {border_r}min-width: 0;"
+                )
             else:
-                btn.style(f"{base} background: transparent; color: #6b7280;")
+                btn.style(
+                    f"font-size: 10px; font-weight: 500; padding: 3px 10px; border-radius: 0; "
+                    f"background: white; color: #64748b; {border_r}min-width: 0;"
+                )
 
 
 def _handle_tab_switch(
@@ -252,6 +279,8 @@ def _handle_tab_switch(
     if content_container:
         state = get_project_state()
         job_model = state.jobs.get(instance_id)
+        if job_model is None:
+            return
         frozen = is_job_frozen(instance_id)
         save_handler = create_save_handler()
         content_container.clear()

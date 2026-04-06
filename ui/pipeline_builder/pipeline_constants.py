@@ -56,8 +56,8 @@ JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
 
 SB_SEP = "#e2e8f0"
 SB_MUTE = "#94a3b8"
-SB_ACT = "#3b82f6"
-SB_ABG = "#eff6ff"
+SB_ACT = "#475569"
+SB_ABG = "#f1f5f9"
 
 
 def missing_deps(job_type: JobType, selected_instance_ids: Set[str]) -> List[JobType]:

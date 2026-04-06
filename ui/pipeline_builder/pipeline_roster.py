@@ -75,7 +75,7 @@ class RosterWidget:
     def __init__(self, panel: "PipelineBuilderPanel"):
         self.panel = panel
         self._flash_phase: Optional[str] = None
-        self._roster_visible: bool = False
+        self._roster_visible: bool = True
         self._roster_phase: Optional[str] = None
         self._refs: Dict = {}
         self._spinner_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -121,7 +121,7 @@ class RosterWidget:
                     .props(f'id="{ROSTER_ANCHOR[phase_id]}"')
                     .style(
                         "display: flex; align-items: center; gap: 5px; "
-                        "padding: 8px 10px 5px 12px; "
+                        "padding: 6px 8px 4px 10px; "
                         "background: #f1f5f9; border-bottom: 1px solid #e5e7eb; "
                         "position: sticky; top: 0; z-index: 2;"
                     )
@@ -139,9 +139,9 @@ class RosterWidget:
 
                 for job_type in jobs:
                     instances = panel.ui_mgr.get_instances_for_type(job_type)
-                    has_instances = bool(instances)
 
-                    if not has_instances:
+                    if not instances:
+                        # Unselected job type — single clickable row
                         if is_flashing:
                             row_bg, l_border, name_color = "#fefce8", "#fde68a", "#78716c"
                         else:
@@ -151,9 +151,8 @@ class RosterWidget:
                             ui.element("div")
                             .style(
                                 f"display: flex; align-items: center; gap: 6px; "
-                                f"padding: 5px 8px 5px 10px; cursor: pointer; "
-                                f"background: {row_bg}; border-left: 2px solid {l_border}; "
-                                f"border-bottom: 1px solid #f3f4f6;"
+                                f"padding: 6px 8px 6px 10px; cursor: pointer; "
+                                f"background: {row_bg}; border-left: 2px solid {l_border};"
                             )
                             .on("click", lambda j=job_type: self._on_unselected_click(j))
                         ):
@@ -162,27 +161,32 @@ class RosterWidget:
                                 f"font-size: 11px; font-weight: 400; color: {name_color}; "
                                 "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                             )
+
+                    elif len(instances) == 1:
+                        # Single instance — flat row, no header/instance split
+                        instance_id = instances[0]
+                        self._render_instance_row(panel, job_type, instance_id, indent=10, show_add=True)
+
                     else:
+                        # Multiple instances — header + instance rows
                         missing = missing_deps(job_type, set(panel.ui_mgr.selected_jobs))
                         any_active = any(panel.ui_mgr.active_instance_id == iid for iid in instances)
                         header_border = "#3b82f6" if any_active else "#e5e7eb"
 
                         with ui.element("div").style(
                             f"display: flex; align-items: center; gap: 6px; "
-                            f"padding: 5px 8px 5px 10px; "
-                            f"background: #f8fafc; border-left: 2px solid {header_border}; "
-                            f"border-bottom: 1px solid #f3f4f6;"
+                            f"padding: 6px 8px 6px 10px; "
+                            f"background: #f8fafc; border-left: 2px solid {header_border};"
                         ):
                             ui.label(get_job_display_name(job_type)).style(
                                 "font-size: 11px; font-weight: 600; color: #374151; "
                                 "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                             )
-                            if len(instances) > 1:
-                                ui.label(str(len(instances))).style(
-                                    "font-size: 9px; font-weight: 700; color: #6b7280; "
-                                    "background: #e5e7eb; border-radius: 999px; "
-                                    "padding: 1px 5px; flex-shrink: 0;"
-                                )
+                            ui.label(str(len(instances))).style(
+                                "font-size: 9px; font-weight: 700; color: #6b7280; "
+                                "background: #e5e7eb; border-radius: 999px; "
+                                "padding: 1px 5px; flex-shrink: 0;"
+                            )
                             if missing:
                                 ui.icon("warning", size="11px").style("color: #f59e0b; flex-shrink: 0;").tooltip(
                                     "Missing: " + ", ".join(get_job_display_name(d) for d in missing)
@@ -195,86 +199,100 @@ class RosterWidget:
                             )
 
                         for instance_id in instances:
-                            job_model = panel.state_service.state.jobs.get(instance_id)
+                            self._render_instance_row(panel, job_type, instance_id, indent=18)
 
-                            base_name = get_job_display_name(job_type)
-                            relion_job_name = getattr(job_model, "relion_job_name", None) if job_model else None
-                            if relion_job_name:
-                                job_folder = relion_job_name.rstrip("/").split("/")[-1]
-                                display_text = f"{base_name} ({job_folder})"
-                            else:
-                                parts = instance_id.split("__", 1)
-                                if len(parts) > 1:
-                                    suffix = parts[1]
-                                    display_text = (
-                                        f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
-                                    )
-                                else:
-                                    display_text = base_name
+    def _render_instance_row(self, panel, job_type, instance_id, indent=18, show_add=False):
+        """Render a single job instance row — single line with icons at end."""
+        job_model = panel.state_service.state.jobs.get(instance_id)
 
-                            species_id = getattr(job_model, "species_id", None) if job_model else None
-                            species = None
-                            if species_id and panel.ui_mgr.project_path:
-                                from services.project_state import get_project_state_for
+        base_name = get_job_display_name(job_type)
+        relion_job_name = getattr(job_model, "relion_job_name", None) if job_model else None
+        if relion_job_name:
+            job_folder = relion_job_name.rstrip("/").split("/")[-1]
+            display_text = f"{base_name} ({job_folder})"
+        else:
+            parts = instance_id.split("__", 1)
+            if len(parts) > 1:
+                suffix = parts[1]
+                display_text = f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
+            else:
+                display_text = base_name
 
-                                s_state = get_project_state_for(panel.ui_mgr.project_path)
-                                species = s_state.get_species(species_id)
+        species_id = getattr(job_model, "species_id", None) if job_model else None
+        species = None
+        if species_id and panel.ui_mgr.project_path:
+            from services.project_state import get_project_state_for
 
-                            is_active = panel.ui_mgr.active_instance_id == instance_id
-                            if is_active:
-                                row_bg, l_border = "#eff6ff", "#3b82f6"
-                                name_color, name_wt = "#1e40af", "600"
-                            else:
-                                row_bg, l_border = "#fafafa", "#e5e7eb"
-                                name_color, name_wt = "#374151", "400"
+            s_state = get_project_state_for(panel.ui_mgr.project_path)
+            species = s_state.get_species(species_id)
 
-                            with ui.element("div").style(
-                                f"display: flex; align-items: center; gap: 4px; "
-                                f"padding: 4px 6px 4px 22px; "
-                                f"background: {row_bg}; border-left: 2px solid {l_border}; "
-                                f"border-bottom: 1px solid #f3f4f6; "
-                                f"min-width: 0; overflow: hidden;"
-                            ):
-                                with (
-                                    ui.element("div")
-                                    .style(
-                                        "display: flex; align-items: center; gap: 5px; "
-                                        "flex: 1; cursor: pointer; min-width: 0; overflow: hidden;"
-                                    )
-                                    .on("click", lambda iid=instance_id: panel.switch_tab(iid))
-                                ):
-                                    ui.label(display_text).style(
-                                        f"font-size: 11px; font-weight: {name_wt}; color: {name_color}; "
-                                        "white-space: nowrap; overflow: hidden; text-overflow: ellipsis; "
-                                        "flex-shrink: 1; min-width: 0;"
-                                    )
-                                    if species:
-                                        with ui.element("div").style(
-                                            f"display: inline-flex; align-items: center; flex-shrink: 0; "
-                                            f"background: {species.color}18; "
-                                            f"border: 1px solid {species.color}55; "
-                                            f"border-radius: 999px; padding: 1px 7px;"
-                                        ):
-                                            ui.label(species.name).style(
-                                                f"font-size: 9px; color: {species.color}; "
-                                                "font-weight: 600; white-space: nowrap;"
-                                            )
+        is_active = panel.ui_mgr.active_instance_id == instance_id
+        if is_active:
+            row_bg, l_border = "#f0f4f8", "#475569"
+            name_color, name_wt = "#1e293b", "600"
+        else:
+            row_bg, l_border = "white", "#e5e7eb"
+            name_color, name_wt = "#1e293b", "400"
 
-                                with ui.element("div").style(
-                                    "display: flex; align-items: center; gap: 3px; flex-shrink: 0;"
-                                ):
-                                    with ui.element("span").style("overflow: visible; line-height: 0;"):
-                                        self._status_widget(instance_id)
-                                    if not panel.ui_mgr.is_running:
-                                        (
-                                            ui.button(
-                                                icon="close",
-                                                on_click=lambda _, iid=instance_id: self._on_remove_click(iid),
-                                            )
-                                            .props("flat dense round size=xs")
-                                            .style("color: #9ca3af;")
-                                            .tooltip("Remove this instance")
-                                        )
+        with ui.element("div").style(
+            f"display: flex; align-items: center; gap: 6px; "
+            f"padding: 7px 4px 7px {indent}px; "
+            f"background: {row_bg}; border-left: 2px solid {l_border}; "
+            f"min-width: 0;"
+        ):
+            # Status dot
+            with ui.element("span").style("overflow: visible; line-height: 0; flex-shrink: 0;"):
+                self._status_widget(instance_id)
+            # Clickable name
+            with (
+                ui.element("div")
+                .style("flex: 1; min-width: 0; cursor: pointer; overflow: hidden;")
+                .on("click", lambda iid=instance_id: panel.switch_tab(iid))
+            ):
+                ui.label(display_text).style(
+                    f"font-size: 11px; font-weight: {name_wt}; color: {name_color}; "
+                    "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+                )
+            # Species badge
+            if species:
+                with ui.element("div").style(
+                    f"display: inline-flex; align-items: center; flex-shrink: 0; "
+                    f"background: {species.color}18; border: 1px solid {species.color}55; "
+                    f"border-radius: 999px; padding: 1px 6px;"
+                ):
+                    ui.label(species.name).style(
+                        f"font-size: 8px; color: {species.color}; font-weight: 600; white-space: nowrap;"
+                    )
+            # Subsection icons + actions (right-aligned, flex-shrink: 0)
+            with ui.element("div").style("display: flex; align-items: center; gap: 0; flex-shrink: 0;"):
+                for icon_name, tab_key, tip in [
+                    ("tune", "config", "Config"),
+                    ("article", "logs", "Logs"),
+                    ("folder_open", "files", "Files"),
+                ]:
+                    (
+                        ui.button(
+                            icon=icon_name,
+                            on_click=lambda iid=instance_id, tk=tab_key: panel.switch_to_job_subsection(iid, tk),
+                        )
+                        .props("flat dense round size=xs")
+                        .style("color: #64748b; flex-shrink: 0;")
+                        .tooltip(tip)
+                    )
+                if show_add and not panel.ui_mgr.is_running:
+                    (
+                        ui.button(icon="add", on_click=lambda j=job_type: panel.prompt_species_and_add(j))
+                        .props("flat dense round size=xs")
+                        .style("color: #94a3b8; flex-shrink: 0;")
+                        .tooltip(f"Add {get_job_display_name(job_type)}")
+                    )
+                if not panel.ui_mgr.is_running:
+                    (
+                        ui.button(icon="close", on_click=lambda _, iid=instance_id: self._on_remove_click(iid))
+                        .props("flat dense round size=xs")
+                        .style("color: #cbd5e1;")
+                        .tooltip("Remove")
+                    )
 
     async def _on_unselected_click(self, job_type: JobType):
         panel = self.panel
@@ -440,60 +458,33 @@ class RosterWidget:
 
     # ── Roster toggle ─────────────────────────────────────────────────────────
 
-    def toggle(self, phase_id: str):
-        same_and_open = self._roster_visible and self._roster_phase == phase_id
-        if same_and_open:
-            self._roster_visible = False
-            self._roster_phase = None
-            self._flash_phase = None
-            if self.panel.roster_panel is not None:
-                self.panel.roster_panel.style("display: none;")
-        else:
-            self._roster_visible = True
-            self._roster_phase = phase_id
-            self._flash_phase = phase_id
-            if self.panel.roster_panel is not None:
-                self.panel.roster_panel.style("display: flex;")
-            self.refresh()
-            self._scroll_to_phase(phase_id)
-            ui.timer(2.0, lambda: self._clear_flash(), once=True)
-
-        self._update_phase_btn_styles()
+    def toggle(self):
+        self._roster_visible = not self._roster_visible
+        if self.panel.roster_panel is not None:
+            self.panel.roster_panel.style(f"display: {'flex' if self._roster_visible else 'none'};")
+        self._update_pipeline_btn_style()
         self.refresh()
 
     def _clear_flash(self):
         self._flash_phase = None
         self.refresh()
 
-    def _scroll_to_phase(self, phase_id: str):
-        anchor = ROSTER_ANCHOR[phase_id]
-        ui.run_javascript(
-            f"requestAnimationFrame(function(){{"
-            f"  var e=document.getElementById('{anchor}');"
-            f"  if(e)e.scrollIntoView({{behavior:'smooth',block:'start'}});"
-            f"}});"
+    def _update_pipeline_btn_style(self):
+        container = self._refs.get("pipeline_btn")
+        if container is None:
+            return
+        bg = SB_ABG if self._roster_visible else "transparent"
+        color = SB_ACT if self._roster_visible else SB_MUTE
+        container.style(
+            f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+            f"background: {bg}; "
+            f"display: flex; align-items: center; justify-content: center; "
+            f"cursor: pointer; flex-shrink: 0;"
         )
-
-    def _update_phase_btn_styles(self):
-        for phase_id in PHASE_JOBS:
-            container = self._refs.get(f"phase_btn_{phase_id}")
-            if container is None:
-                continue
-            active = self._roster_visible and self._roster_phase == phase_id
-            bg = SB_ABG if active else "transparent"
-            color = SB_ACT if active else SB_MUTE
-
-            container.style(
-                f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                f"background: {bg}; "
-                f"display: flex; align-items: center; justify-content: center; "
-                f"cursor: pointer; flex-shrink: 0;"
-            )
-            svg_source = PHASE_META[phase_id][0]
-            svg = self._load_svg(svg_source).replace("currentColor", color)
-            container.clear()
-            with container:
-                ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
+        svg = self._load_svg("layers.svg").replace("currentColor", color)
+        container.clear()
+        with container:
+            ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
@@ -515,11 +506,7 @@ class RosterWidget:
             self._sb_sep()
             ui.element("div").style("height: 4px;")
 
-            for phase_id in PHASE_JOBS:
-                svg_source, label, sub = PHASE_META[phase_id]
-                self._sb_svg_btn(
-                    svg_source, f"{label} — {sub}", lambda p=phase_id: self.toggle(p), ref_key=f"phase_btn_{phase_id}"
-                )
+            self._sb_svg_btn("layers.svg", "Pipeline", lambda: self.toggle(), ref_key="pipeline_btn", active=True)
 
             if panel.toggle_workbench is not None:
                 ui.element("div").style("height: 1px;")
@@ -611,7 +598,7 @@ class RosterWidget:
                         "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
                     )
                 ) as menu:
-                    for section_title, rows in [
+                    sections = [
                         (
                             "Project",
                             [
@@ -632,7 +619,19 @@ class RosterWidget:
                                 ("Tilt ax.", f"{fmt(state.acquisition.tilt_axis_degrees)} °"),
                             ],
                         ),
-                    ]:
+                    ]
+                    if state.import_total_positions or state.import_total_tilt_series:
+                        ds_rows = [
+                            ("Positions", f"{state.import_selected_positions}/{state.import_total_positions}"),
+                            ("Tilt series", f"{state.import_selected_tilt_series}/{state.import_total_tilt_series}"),
+                        ]
+                        if state.import_source_directory:
+                            ds_rows.insert(0, ("Source", state.import_source_directory))
+                        if state.import_frame_extension:
+                            idx = 1 if state.import_source_directory else 0
+                            ds_rows.insert(idx, ("Format", state.import_frame_extension))
+                        sections.append(("Dataset", ds_rows))
+                    for section_title, rows in sections:
                         with ui.element("div").style(
                             "padding: 7px 11px 5px; font-size: 9px; font-weight: 700; "
                             "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase; "
@@ -649,6 +648,34 @@ class RosterWidget:
                                     "font-size: 10px; font-family: 'IBM Plex Mono', monospace; "
                                     "color: #1e40af; text-align: right; word-break: break-all;"
                                 )
+                    # Per-position breakdown (scrollable)
+                    if state.import_position_details:
+                        with ui.element("div").style(
+                            "padding: 7px 11px 5px; font-size: 9px; font-weight: 700; "
+                            "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase; "
+                            "border-bottom: 1px solid #f1f5f9;"
+                        ):
+                            ui.label("Positions")
+                        with ui.element("div").style("max-height: 200px; overflow-y: auto;"):
+                            for pd in state.import_position_details:
+                                sel_mark = "" if pd.selected else " (excl)"
+                                with ui.element("div").style(
+                                    "display: flex; align-items: baseline; gap: 6px; "
+                                    "padding: 2px 11px; border-bottom: 1px solid #fafbfc;"
+                                ):
+                                    ui.label(f"Pos {pd.stage_position}").style(
+                                        "font-size: 9px; font-family: 'IBM Plex Mono', monospace; "
+                                        f"color: {'#94a3b8' if not pd.selected else '#64748b'}; "
+                                        "flex-shrink: 0; width: 48px;"
+                                    )
+                                    ui.label(f"{pd.beam_count} beam{'s' if pd.beam_count != 1 else ''}").style(
+                                        "font-size: 9px; font-family: 'IBM Plex Mono', monospace; "
+                                        "color: #94a3b8; flex-shrink: 0; width: 52px;"
+                                    )
+                                    ui.label(f"{pd.tilt_count} tilts{sel_mark}").style(
+                                        "font-size: 9px; font-family: 'IBM Plex Mono', monospace; "
+                                        f"color: {'#cbd5e1' if not pd.selected else '#94a3b8'};"
+                                    )
                     ui.element("div").style("height: 4px;")
 
             # clicking the outer div opens the menu via JS
@@ -979,70 +1006,6 @@ class RosterWidget:
                     ui.html(self._load_svg("play.svg"), sanitize=False).style(
                         "width: 16px; height: 16px; display: flex; pointer-events: none;"
                     )
-
-    # ── Tab strip ─────────────────────────────────────────────────────────────
-
-    def refresh_tab_strip(self):
-        panel = self.panel
-        strip = panel._tab_strip_ref.get("el")
-        if strip is None:
-            return
-        strip.clear()
-        with strip:
-            for instance_id in panel.ui_mgr.selected_jobs:
-                job_model = panel.state_service.state.jobs.get(instance_id)
-                job_type = instance_id_to_job_type(instance_id)
-
-                base_name = get_job_display_name(job_type)
-                relion_job_name = getattr(job_model, "relion_job_name", None) if job_model else None
-                if relion_job_name:
-                    job_folder = relion_job_name.rstrip("/").split("/")[-1]
-                    display_text = f"{base_name} ({job_folder})"
-                else:
-                    parts = instance_id.split("__", 1)
-                    if len(parts) > 1:
-                        suffix = parts[1]
-                        display_text = f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
-                    else:
-                        display_text = base_name
-
-                species_id = getattr(job_model, "species_id", None) if job_model else None
-                species = None
-                if species_id and panel.ui_mgr.project_path:
-                    from services.project_state import get_project_state_for
-
-                    s_state = get_project_state_for(panel.ui_mgr.project_path)
-                    species = s_state.get_species(species_id)
-
-                is_active = panel.ui_mgr.active_instance_id == instance_id
-                tab_border_color = "#3b82f6" if is_active else "transparent"
-
-                with (
-                    ui.button(on_click=lambda iid=instance_id: panel.switch_tab(iid))
-                    .props("flat no-caps dense")
-                    .style(
-                        f"padding: 0 14px; height: 36px; border-radius: 0; flex-shrink: 0; "
-                        f"background: {'white' if is_active else '#fafafa'}; "
-                        f"color: {'#1f2937' if is_active else '#9ca3af'}; "
-                        f"border-top: 2px solid {tab_border_color}; "
-                        f"border-right: 1px solid #e5e7eb; "
-                        f"font-size: 11px; font-weight: {'500' if is_active else '400'};"
-                    )
-                ):
-                    with ui.element("div").style(
-                        "display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden;"
-                    ):
-                        ui.label(display_text).style("flex-shrink: 0;")
-                        if species:
-                            with ui.element("div").style(
-                                f"display: inline-flex; align-items: center; flex-shrink: 0; "
-                                f"background: {species.color}18; border: 1px solid {species.color}55; "
-                                f"border-radius: 999px; padding: 1px 7px;"
-                            ):
-                                ui.label(species.name).style(
-                                    f"font-size: 9px; color: {species.color}; font-weight: 600;"
-                                )
-                        self._status_widget(instance_id)
 
     # ── Spinner / status label ────────────────────────────────────────────────
 
