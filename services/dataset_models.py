@@ -22,6 +22,7 @@ class TiltInfo(BaseModel):
     tilt_angle: float
     frame_filename: str
     frame_path: Optional[Path] = None
+    mdoc_stats: Dict[str, float] = Field(default_factory=dict)
 
 
 class TiltSeriesInfo(BaseModel):

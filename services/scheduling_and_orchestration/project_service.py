@@ -29,16 +29,18 @@ class DataImportService:
     def __init__(self):
         self.mdoc_service = get_mdoc_service()
 
-    async def setup_project_data(
-        self, project_dir: Path, movies_glob: str, mdocs_glob: str, import_prefix: str
+    def _setup_project_data_sync(
+        self,
+        project_dir: Path,
+        movies_glob: str,
+        mdocs_glob: str,
+        import_prefix: str,
+        selected_mdoc_paths: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """
-        Orchestrates the data import process: creates dirs, symlinks movies,
-        and rewrites mdocs with the specified prefix.
-        """
+        """Synchronous core of data import — runs in thread pool to avoid blocking the event loop."""
         try:
             frames_dir = project_dir / "frames"
-            mdoc_dir   = project_dir / "mdoc"
+            mdoc_dir = project_dir / "mdoc"
             frames_dir.mkdir(exist_ok=True, parents=True)
             mdoc_dir.mkdir(exist_ok=True, parents=True)
 
@@ -47,7 +49,12 @@ class DataImportService:
                 return {"success": True, "message": "Skipped data import (empty patterns)."}
 
             source_movie_dir = Path(movies_glob).parent
-            mdoc_files = glob.glob(mdocs_glob)
+
+            # Import only selected mdocs when a selection is provided
+            if selected_mdoc_paths is not None:
+                mdoc_files = selected_mdoc_paths
+            else:
+                mdoc_files = glob.glob(mdocs_glob)
 
             if not mdoc_files:
                 return {"success": False, "error": f"No .mdoc files found with pattern: {mdocs_glob}"}
@@ -70,7 +77,7 @@ class DataImportService:
                     link_path = frames_dir / prefixed_movie_name
 
                     if not source_movie_path.exists():
-                        print(f"Warning: Source movie not found: {source_movie_path}")
+                        logger.warning("Source movie not found: %s", source_movie_path)
                         continue
 
                     if not link_path.exists():
@@ -83,6 +90,19 @@ class DataImportService:
             return {"success": True, "message": f"Imported {len(mdoc_files)} tilt-series."}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    async def setup_project_data(
+        self,
+        project_dir: Path,
+        movies_glob: str,
+        mdocs_glob: str,
+        import_prefix: str,
+        selected_mdoc_paths: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Async wrapper — offloads blocking file I/O to a thread."""
+        return await asyncio.to_thread(
+            self._setup_project_data_sync, project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths
+        )
 
 
 class ProjectService:
@@ -118,10 +138,15 @@ class ProjectService:
                 job_paths = deletion_service.find_jobs_by_type(project_dir, job_type, job_resolver)
 
             if not job_paths:
-                instances_to_remove = [instance_id] if instance_id else [
-                    iid for iid in list(state.jobs.keys())
-                    if iid == job_type.value or iid.startswith(job_type.value + "__")
-                ]
+                instances_to_remove = (
+                    [instance_id]
+                    if instance_id
+                    else [
+                        iid
+                        for iid in list(state.jobs.keys())
+                        if iid == job_type.value or iid.startswith(job_type.value + "__")
+                    ]
+                )
                 for iid in instances_to_remove:
                     state.jobs.pop(iid, None)
                     state.job_path_mapping.pop(iid, None)
@@ -145,7 +170,8 @@ class ProjectService:
                 instances_to_remove = [instance_id]
             else:
                 instances_to_remove = [
-                    iid for iid in list(state.jobs.keys())
+                    iid
+                    for iid in list(state.jobs.keys())
                     if iid == job_type.value or iid.startswith(job_type.value + "__")
                 ]
             for iid in instances_to_remove:
@@ -166,13 +192,18 @@ class ProjectService:
             return {
                 "success": True,
                 "message": f"Deleted {deleted_count} job instance(s)."
-                + (f" Warning: {len(all_orphans)} downstream job(s) now have broken inputs: {all_orphans}" if all_orphans else ""),
+                + (
+                    f" Warning: {len(all_orphans)} downstream job(s) now have broken inputs: {all_orphans}"
+                    if all_orphans
+                    else ""
+                ),
                 "deleted_count": deleted_count,
                 "orphaned_jobs": all_orphans,
             }
 
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
@@ -235,7 +266,12 @@ class ProjectService:
         return all_paths
 
     async def create_project_structure(
-        self, project_dir: Path, movies_glob: str, mdocs_glob: str, import_prefix: str
+        self,
+        project_dir: Path,
+        movies_glob: str,
+        mdocs_glob: str,
+        import_prefix: str,
+        selected_mdoc_paths: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Creates the project directory structure and imports the raw data."""
         try:
@@ -248,7 +284,7 @@ class ProjectService:
             await self._setup_qsub_templates(project_dir)
 
             import_result = await self.data_importer.setup_project_data(
-                project_dir, movies_glob, mdocs_glob, import_prefix
+                project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths
             )
             if not import_result["success"]:
                 return import_result
@@ -269,7 +305,15 @@ class ProjectService:
             logger.warning("qsub.sh not found at %s", source_qsub)
 
     async def initialize_new_project(
-        self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
+        self,
+        project_name: str,
+        project_base_path: str,
+        selected_jobs: List[str],
+        movies_glob: str,
+        mdocs_glob: str,
+        selected_mdoc_paths: Optional[List[str]] = None,
+        import_summary: Optional[Dict[str, Any]] = None,
+        detected_params: Optional[Dict[str, Any]] = None,
     ):
         try:
             project_dir = Path(project_base_path).expanduser() / project_name
@@ -278,14 +322,8 @@ class ProjectService:
             if project_dir.exists():
                 return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
 
-            # CHANGED: instead of reset_project_state() + reading from the
-            # singleton, create a fresh ProjectState and register it in the
-            # path-keyed registry. This ensures:
-            #  - No cross-tab contamination (we don't touch any other project)
-            #  - No dependency on tab context (which may not have project_path
-            #    set yet at this point)
             import getpass
-            from services.project_state import ProjectState
+            from services.project_state import ProjectState, ImportPositionSummary, ImportTiltSeriesSummary
 
             state = ProjectState()
             state.project_name = project_name
@@ -295,15 +333,47 @@ class ProjectService:
             state.created_by = getpass.getuser()
             set_project_state_for(project_dir, state)
 
-            # Autodetect microscope/acquisition params from mdoc files.
-            # CHANGED: use update_from_mdoc with explicit project_path so it
-            # finds the state we just registered (tab context doesn't have
-            # this project_path yet).
-            await self.backend.state_service.update_from_mdoc(mdocs_glob, project_path=project_dir)
+            # Apply microscope/acquisition params from the already-parsed dataset
+            # overview (avoids re-parsing all mdocs from scratch).
+            if detected_params:
+                if "pixel_size_angstrom" in detected_params:
+                    state.microscope.pixel_size_angstrom = detected_params["pixel_size_angstrom"]
+                if "acceleration_voltage_kv" in detected_params:
+                    state.microscope.acceleration_voltage_kv = detected_params["acceleration_voltage_kv"]
+                if "dose_per_tilt" in detected_params:
+                    state.acquisition.dose_per_tilt = detected_params["dose_per_tilt"]
+                if "tilt_axis_degrees" in detected_params:
+                    state.acquisition.tilt_axis_degrees = detected_params["tilt_axis_degrees"]
+                state.update_modified()
+            else:
+                # Fallback: re-parse mdocs (legacy path / no overview available)
+                await self.backend.state_service.update_from_mdoc(mdocs_glob, project_path=project_dir)
 
-            # Create Dirs & Import Data
+            # Apply dataset import summary so it's saved atomically with the project
+            if import_summary:
+                state.import_total_positions = import_summary.get("total_positions", 0)
+                state.import_selected_positions = import_summary.get("selected_positions", 0)
+                state.import_total_tilt_series = import_summary.get("total_tilt_series", 0)
+                state.import_selected_tilt_series = import_summary.get("selected_tilt_series", 0)
+                state.import_source_directory = import_summary.get("source_directory", "")
+                state.import_frame_extension = import_summary.get("frame_extension", "")
+                position_details = import_summary.get("position_details", [])
+                state.import_position_details = [
+                    pd if isinstance(pd, ImportPositionSummary) else ImportPositionSummary(**pd)
+                    for pd in position_details
+                ]
+                ts_details = import_summary.get("tilt_series_details", [])
+                state.import_tilt_series_details = [
+                    td if isinstance(td, ImportTiltSeriesSummary) else ImportTiltSeriesSummary(**td)
+                    for td in ts_details
+                ]
+                state.tilt_metadata = import_summary.get("tilt_metadata", {})
+
+            # Create Dirs & Import Data (runs blocking I/O in thread pool)
             import_prefix = f"{project_name}_"
-            structure_result = await self.create_project_structure(project_dir, movies_glob, mdocs_glob, import_prefix)
+            structure_result = await self.create_project_structure(
+                project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths
+            )
             if not structure_result["success"]:
                 return structure_result
 
@@ -316,14 +386,12 @@ class ProjectService:
                     try:
                         job_type = JobType(job_str)
                         job_star_path = template_base / job_type.value / "job.star"
-                        # CHANGED: call directly on the state object
                         state.ensure_job_initialized(job_type, job_star_path if job_star_path.exists() else None)
                     except ValueError:
                         logger.warning("Skipping unknown job '%s'", job_str)
 
-            # 3. Save Project State (project_params.json)
+            # 3. Save Project State (project_params.json) — includes import summary
             params_json_path = project_dir / "project_params.json"
-            # CHANGED: explicit project_path + force (first save, must hit disk)
             await self.backend.state_service.save_project(
                 save_path=params_json_path, project_path=project_dir, force=True
             )
@@ -405,11 +473,11 @@ class ProjectService:
             selected_jobs = list(state.jobs.keys())
 
             return {
-                "success"      : True,
-                "project_name" : project_name,
+                "success": True,
+                "project_name": project_name,
                 "selected_jobs": selected_jobs,
-                "movies_glob"  : movies_glob,
-                "mdocs_glob"   : mdocs_glob,
+                "movies_glob": movies_glob,
+                "mdocs_glob": mdocs_glob,
             }
         except Exception as e:
             import traceback

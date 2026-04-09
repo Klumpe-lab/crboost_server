@@ -81,11 +81,11 @@ class MdocService:
 
             if "ExposureDose" in first_section:
                 exposure_dose = float(first_section["ExposureDose"])
-                result["dose_per_tilt"] = round(exposure_dose * 1.5, 2)
+                result["dose_per_tilt"] = round(exposure_dose, 2)
                 result["frame_dose"] = exposure_dose
             elif "ExposureDose" in header_data:
                 exposure_dose = float(header_data["ExposureDose"])
-                result["dose_per_tilt"] = round(exposure_dose * 1.5, 2)
+                result["dose_per_tilt"] = round(exposure_dose, 2)
                 result["frame_dose"] = exposure_dose
 
             if "Magnification" in first_section:
@@ -188,7 +188,7 @@ class MdocService:
             result["voltage"] = next(iter(voltages))
         if dose_rates:
             result["dose_per_frame"] = next(iter(dose_rates))
-            result["dose_per_tilt"] = round(next(iter(dose_rates)) * 1.5, 2)  # Old logic
+            result["dose_per_tilt"] = round(next(iter(dose_rates)), 2)
 
         return result
 

@@ -170,6 +170,9 @@ class CryoBoostBackend:
         return str(Path.home())
 
     async def scan_for_projects(self, base_path: str) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self._scan_for_projects_sync, base_path)
+
+    def _scan_for_projects_sync(self, base_path: str) -> List[Dict[str, Any]]:
         projects = []
         path = Path(base_path)
 
@@ -297,7 +300,15 @@ class CryoBoostBackend:
         return jobs
 
     async def create_project_and_scheme(
-        self, project_name: str, project_base_path: str, selected_jobs: List[str], movies_glob: str, mdocs_glob: str
+        self,
+        project_name: str,
+        project_base_path: str,
+        selected_jobs: List[str],
+        movies_glob: str,
+        mdocs_glob: str,
+        selected_mdoc_paths: Optional[List[str]] = None,
+        import_summary: Optional[Dict[str, Any]] = None,
+        detected_params: Optional[Dict[str, Any]] = None,
     ):
         return await self.project_service.initialize_new_project(
             project_name=project_name,
@@ -305,6 +316,9 @@ class CryoBoostBackend:
             selected_jobs=selected_jobs,
             movies_glob=movies_glob,
             mdocs_glob=mdocs_glob,
+            selected_mdoc_paths=selected_mdoc_paths,
+            import_summary=import_summary,
+            detected_params=detected_params,
         )
 
     async def get_initial_parameters(self) -> Dict[str, Any]:
@@ -314,7 +328,7 @@ class CryoBoostBackend:
     async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
         from services.configs.mdoc_service import get_mdoc_service
 
-        mdoc_data = get_mdoc_service().get_autodetect_params(mdocs_glob)
+        mdoc_data = await asyncio.to_thread(get_mdoc_service().get_autodetect_params, mdocs_glob)
         return {
             "microscope": {
                 "pixel_size_angstrom": mdoc_data.get("pixel_spacing"),

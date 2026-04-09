@@ -1,0 +1,274 @@
+{
+  "schema_version": [
+    1,
+    0
+  ],
+  "project_name": "Untitled",
+  "created_at": "2026-04-07 11:14:54.364486",
+  "modified_at": "2026-04-07 11:14:54.364490",
+  "created_by": null,
+  "job_path_mapping": {},
+  "movies_glob": "",
+  "mdocs_glob": "",
+  "microscope": {
+    "microscope_type": "Custom",
+    "pixel_size_angstrom": 1.35,
+    "acceleration_voltage_kv": 300.0,
+    "spherical_aberration_mm": 2.7,
+    "amplitude_contrast": 0.1
+  },
+  "acquisition": {
+    "dose_per_tilt": 3.0,
+    "detector_dimensions": [
+      4096,
+      4096
+    ],
+    "tilt_axis_degrees": -95.0,
+    "eer_fractions_per_frame": null,
+    "sample_thickness_nm": 300.0,
+    "gain_reference_path": null,
+    "invert_tilt_angles": false,
+    "invert_defocus_hand": false,
+    "acquisition_software": "SerialEM",
+    "nominal_magnification": null,
+    "spot_size": null,
+    "camera_name": null,
+    "binning": 1,
+    "frame_dose": null
+  },
+  "slurm_defaults": {
+    "preset": "Custom",
+    "partition": "g",
+    "constraint": "'g2|g3|g4'",
+    "nodes": 1,
+    "ntasks_per_node": 1,
+    "cpus_per_task": 4,
+    "gres": "gpu:1",
+    "mem": "32G",
+    "time": "2:00:00"
+  },
+  "jobs": {},
+  "species_registry": [],
+  "pipeline_active": false,
+  "import_total_positions": 35,
+  "import_selected_positions": 35,
+  "import_total_tilt_series": 176,
+  "import_selected_tilt_series": 176,
+  "import_source_directory": "/groups/klumpe/001_Data/20260206_412/frames/20260205_412_FCIso_unmilled2",
+  "import_frame_extension": ".eer",
+  "import_position_details": [
+    {
+      "stage_position": 1,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 2,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 3,
+      "beam_count": 5,
+      "tilt_count": 115,
+      "selected": true
+    },
+    {
+      "stage_position": 4,
+      "beam_count": 6,
+      "tilt_count": 246,
+      "selected": true
+    },
+    {
+      "stage_position": 5,
+      "beam_count": 6,
+      "tilt_count": 179,
+      "selected": true
+    },
+    {
+      "stage_position": 6,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 7,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 8,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 9,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 10,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 12,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 13,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 14,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 15,
+      "beam_count": 4,
+      "tilt_count": 164,
+      "selected": true
+    },
+    {
+      "stage_position": 16,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 17,
+      "beam_count": 3,
+      "tilt_count": 123,
+      "selected": true
+    },
+    {
+      "stage_position": 18,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 19,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 20,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 21,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 22,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 23,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 24,
+      "beam_count": 5,
+      "tilt_count": 145,
+      "selected": true
+    },
+    {
+      "stage_position": 25,
+      "beam_count": 5,
+      "tilt_count": 190,
+      "selected": true
+    },
+    {
+      "stage_position": 26,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 27,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 28,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 29,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 30,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 31,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 32,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 33,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 34,
+      "beam_count": 5,
+      "tilt_count": 205,
+      "selected": true
+    },
+    {
+      "stage_position": 35,
+      "beam_count": 6,
+      "tilt_count": 246,
+      "selected": true
+    },
+    {
+      "stage_position": 36,
+      "beam_count": 6,
+      "tilt_count": 246,
+      "selected": true
+    }
+  ],
+  "tilt_filter_labels": {},
+  "tilt_filter_png_dir": null,
+  "project_path": null
+}

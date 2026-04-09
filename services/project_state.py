@@ -81,6 +81,16 @@ class ImportPositionSummary(BaseModel):
     selected: bool = True
 
 
+class ImportTiltSeriesSummary(BaseModel):
+    """Per-tilt-series record persisted at project creation."""
+
+    stage_position: int
+    beam_position: int
+    tilt_count: int = 0
+    selected: bool = True
+    mdoc_filename: str = ""
+
+
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
@@ -111,6 +121,10 @@ class ProjectState(BaseModel):
     import_source_directory: str = ""
     import_frame_extension: str = ""
     import_position_details: List[ImportPositionSummary] = Field(default_factory=list)
+    import_tilt_series_details: List[ImportTiltSeriesSummary] = Field(default_factory=list)
+
+    # Per-tilt MDOC metadata, keyed by frame filename stem (= cryoBoostKey)
+    tilt_metadata: Dict[str, Dict[str, float]] = Field(default_factory=dict)
 
     # Tilt filtering (standalone tool, not a pipeline job)
     tilt_filter_labels: Dict[str, str] = Field(default_factory=dict)
@@ -260,13 +274,38 @@ class ProjectState(BaseModel):
             pipeline_active=data.get("pipeline_active", False),
         )
 
-        # in ProjectState.load(), after constructing project_state, add:
         project_state.job_path_mapping = data.get("job_path_mapping", {})
         try:
             project_state.species_registry = [ParticleSpecies(**s) for s in data.get("species_registry", [])]
         except Exception as e:
             logger.warning("Could not load species registry: %s", e)
             project_state.species_registry = []
+
+        # Restore dataset import summary
+        project_state.import_total_positions = data.get("import_total_positions", 0)
+        project_state.import_selected_positions = data.get("import_selected_positions", 0)
+        project_state.import_total_tilt_series = data.get("import_total_tilt_series", 0)
+        project_state.import_selected_tilt_series = data.get("import_selected_tilt_series", 0)
+        project_state.import_source_directory = data.get("import_source_directory", "")
+        project_state.import_frame_extension = data.get("import_frame_extension", "")
+        try:
+            project_state.import_position_details = [
+                ImportPositionSummary(**pd) for pd in data.get("import_position_details", [])
+            ]
+            project_state.import_tilt_series_details = [
+                ImportTiltSeriesSummary(**td) for td in data.get("import_tilt_series_details", [])
+            ]
+        except Exception as e:
+            logger.warning("Could not load import details: %s", e)
+            project_state.import_position_details = []
+            project_state.import_tilt_series_details = []
+
+        # Restore per-tilt MDOC metadata
+        project_state.tilt_metadata = data.get("tilt_metadata", {})
+
+        # Restore tilt filter state
+        project_state.tilt_filter_labels = data.get("tilt_filter_labels", {})
+        project_state.tilt_filter_png_dir = data.get("tilt_filter_png_dir")
 
         param_class_map = jobtype_paramclass()
 

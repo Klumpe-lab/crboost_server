@@ -67,6 +67,17 @@ def load_tilt_series(star_path: str | Path, project_root: str | Path) -> TiltSer
 
     data = svc.read(star_path)
     tilt_series_df = next(iter(data.values()))
+
+    # Deduplicate tilt series by name (upstream STAR files can list the same
+    # tilt series twice, e.g. with different rlnTomoHand values).
+    n_before = len(tilt_series_df)
+    tilt_series_df = tilt_series_df.drop_duplicates(subset=["rlnTomoName"], keep="first").reset_index(drop=True)
+    if len(tilt_series_df) < n_before:
+        logger.warning(
+            "Deduplicated %d → %d tilt series by rlnTomoName in %s",
+            n_before, len(tilt_series_df), star_path.name,
+        )
+
     num_ts_cols = len(tilt_series_df.columns)
 
     all_tilts: list[pd.DataFrame] = []

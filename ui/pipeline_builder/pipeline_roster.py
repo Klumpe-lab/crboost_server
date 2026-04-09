@@ -26,6 +26,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _ts_cell(text: str, color: str, extra: str = ""):
+    """Tiny monospace cell for the tilt-series table in the metadata popup."""
+    ui.label(text).style(f"font-size: 9px; font-family: 'IBM Plex Mono', monospace; color: {color}; {extra}")
+
+
 _GEAR_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
     'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
@@ -158,7 +164,7 @@ class RosterWidget:
                         ):
                             ui.icon("check_box_outline_blank", size="13px").style("color: #d1d5db; flex-shrink: 0;")
                             ui.label(get_job_display_name(job_type)).style(
-                                f"font-size: 11px; font-weight: 400; color: {name_color}; "
+                                f"{MONO} font-size: 11px; font-weight: 400; color: {name_color}; "
                                 "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                             )
 
@@ -179,7 +185,7 @@ class RosterWidget:
                             f"background: #f8fafc; border-left: 2px solid {header_border};"
                         ):
                             ui.label(get_job_display_name(job_type)).style(
-                                "font-size: 11px; font-weight: 600; color: #374151; "
+                                f"{MONO} font-size: 11px; font-weight: 600; color: #374151; "
                                 "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
                             )
                             ui.label(str(len(instances))).style(
@@ -250,7 +256,7 @@ class RosterWidget:
                 .on("click", lambda iid=instance_id: panel.switch_tab(iid))
             ):
                 ui.label(display_text).style(
-                    f"font-size: 11px; font-weight: {name_wt}; color: {name_color}; "
+                    f"{MONO} font-size: 11px; font-weight: {name_wt}; color: {name_color}; "
                     "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
                 )
             # Species badge
@@ -276,7 +282,7 @@ class RosterWidget:
                             on_click=lambda iid=instance_id, tk=tab_key: panel.switch_to_job_subsection(iid, tk),
                         )
                         .props("flat dense round size=xs")
-                        .style("color: #64748b; flex-shrink: 0;")
+                        .style("color: #374151; flex-shrink: 0;")
                         .tooltip(tip)
                     )
                 if show_add and not panel.ui_mgr.is_running:
@@ -557,26 +563,41 @@ class RosterWidget:
 
     def _build_metadata_btn(self, state):
         """
-        Dense gear button that opens an anchored popup with project + acquisition params.
-        Uses a plain div (not ui.button) so Quasar doesn't clobber SVG color,
-        but still hosts a ui.menu via a zero-size anchor button trick.
+        Compact stats widget showing key dataset numbers inline.
+        Click opens the full metadata popup.
         """
-        GEAR_COLOR = "#475569"  # slate-600 -- clearly visible against #f8fafc sidebar
+        px = state.microscope.pixel_size_angstrom
+        n_ts = state.import_selected_tilt_series or 0
+        n_pos = state.import_selected_positions or 0
 
-        # Outer clickable div matches the style of every other sidebar button
         outer = (
             ui.element("div")
             .style(
-                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                "background: transparent; display: flex; align-items: center; "
-                "justify-content: center; cursor: pointer; flex-shrink: 0; position: relative;"
+                "width: 34px; border-radius: 5px; margin: 1px 0; padding: 4px 0; "
+                "background: #f1f5f9; display: flex; flex-direction: column; "
+                "align-items: center; gap: 3px; cursor: pointer; flex-shrink: 0; "
+                "position: relative; border: 1px solid #e2e8f0;"
             )
-            .tooltip("Project parameters")
+            .tooltip("Click for full project parameters")
         )
 
+        _stat_val = f"{MONO} font-size: 9px; font-weight: 700; color: #1e40af; line-height: 1; pointer-events: none;"
+        _stat_lbl = "font-size: 7px; font-weight: 500; color: #94a3b8; line-height: 1; pointer-events: none;"
+
         with outer:
-            svg = _GEAR_SVG.replace("currentColor", GEAR_COLOR)
-            ui.html(svg, sanitize=False).style("width: 17px; height: 17px; display: flex; pointer-events: none;")
+            # Pixel size
+            ui.label(f"{px:.2f}" if px else "---").style(_stat_val)
+            ui.label("\u212b").style(_stat_lbl)
+            # Separator
+            ui.element("div").style("width: 14px; height: 1px; background: #e2e8f0;")
+            # Tilt series count
+            ui.label(str(n_ts) if n_ts else "---").style(_stat_val)
+            ui.label("ts").style(_stat_lbl)
+            # Positions
+            if n_pos:
+                ui.element("div").style("width: 14px; height: 1px; background: #e2e8f0;")
+                ui.label(str(n_pos)).style(_stat_val)
+                ui.label("pos").style(_stat_lbl)
 
             # Zero-size invisible button that owns the menu anchor --
             # positioned absolutely so it doesn't affect layout
@@ -594,7 +615,8 @@ class RosterWidget:
                     .props('anchor="center right" self="center left" :offset="[8,0]"')
                     .style(
                         "background: #ffffff; border: 1px solid #e2e8f0; "
-                        "border-radius: 5px; overflow: hidden; min-width: 210px; "
+                        "border-radius: 5px; overflow-y: auto; min-width: 280px; "
+                        "max-height: 80vh; "
                         "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
                     )
                 ) as menu:
@@ -621,10 +643,9 @@ class RosterWidget:
                         ),
                     ]
                     if state.import_total_positions or state.import_total_tilt_series:
-                        ds_rows = [
-                            ("Positions", f"{state.import_selected_positions}/{state.import_total_positions}"),
-                            ("Tilt series", f"{state.import_selected_tilt_series}/{state.import_total_tilt_series}"),
-                        ]
+                        sel = state.import_selected_tilt_series
+                        tot = state.import_total_tilt_series
+                        ds_rows = [("Selected", f"{sel} of {tot} tilt-series")]
                         if state.import_source_directory:
                             ds_rows.insert(0, ("Source", state.import_source_directory))
                         if state.import_frame_extension:
@@ -648,33 +669,45 @@ class RosterWidget:
                                     "font-size: 10px; font-family: 'IBM Plex Mono', monospace; "
                                     "color: #1e40af; text-align: right; word-break: break-all;"
                                 )
-                    # Per-position breakdown (scrollable)
-                    if state.import_position_details:
+                    # Per-tilt-series table (scrollable)
+                    ts_details = state.import_tilt_series_details
+                    if ts_details:
+                        selected_ts = [td for td in ts_details if td.selected]
+                        excluded_ts = [td for td in ts_details if not td.selected]
                         with ui.element("div").style(
                             "padding: 7px 11px 5px; font-size: 9px; font-weight: 700; "
                             "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase; "
                             "border-bottom: 1px solid #f1f5f9;"
                         ):
-                            ui.label("Positions")
-                        with ui.element("div").style("max-height: 200px; overflow-y: auto;"):
-                            for pd in state.import_position_details:
-                                sel_mark = "" if pd.selected else " (excl)"
+                            ui.label("Selected tilt-series")
+                        # Table header
+                        with ui.element("div").style(
+                            "display: grid; grid-template-columns: 42px 42px 42px 1fr; gap: 0; "
+                            "padding: 3px 11px; border-bottom: 1px solid #e2e8f0; background: #f8fafc;"
+                        ):
+                            for hdr in ("POS", "BEAM", "TILTS", "MDOC"):
+                                ui.label(hdr).style(
+                                    "font-size: 8px; font-weight: 600; color: #94a3b8; "
+                                    "letter-spacing: 0.04em; text-transform: uppercase;"
+                                )
+                        with ui.element("div").style("max-height: 300px; overflow-y: auto;"):
+                            for td in selected_ts:
                                 with ui.element("div").style(
-                                    "display: flex; align-items: baseline; gap: 6px; "
+                                    "display: grid; grid-template-columns: 42px 42px 42px 1fr; gap: 0; "
                                     "padding: 2px 11px; border-bottom: 1px solid #fafbfc;"
                                 ):
-                                    ui.label(f"Pos {pd.stage_position}").style(
-                                        "font-size: 9px; font-family: 'IBM Plex Mono', monospace; "
-                                        f"color: {'#94a3b8' if not pd.selected else '#64748b'}; "
-                                        "flex-shrink: 0; width: 48px;"
+                                    _ts_cell(str(td.stage_position), "#64748b")
+                                    _ts_cell(str(td.beam_position), "#64748b")
+                                    _ts_cell(str(td.tilt_count), "#64748b")
+                                    _ts_cell(
+                                        td.mdoc_filename,
+                                        "#94a3b8",
+                                        extra="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
                                     )
-                                    ui.label(f"{pd.beam_count} beam{'s' if pd.beam_count != 1 else ''}").style(
-                                        "font-size: 9px; font-family: 'IBM Plex Mono', monospace; "
-                                        "color: #94a3b8; flex-shrink: 0; width: 52px;"
-                                    )
-                                    ui.label(f"{pd.tilt_count} tilts{sel_mark}").style(
-                                        "font-size: 9px; font-family: 'IBM Plex Mono', monospace; "
-                                        f"color: {'#cbd5e1' if not pd.selected else '#94a3b8'};"
+                            if excluded_ts:
+                                with ui.element("div").style("padding: 4px 11px; border-top: 1px solid #e2e8f0;"):
+                                    ui.label(f"+{len(excluded_ts)} excluded").style(
+                                        "font-size: 9px; font-style: italic; color: #cbd5e1;"
                                     )
                     ui.element("div").style("height: 4px;")
 

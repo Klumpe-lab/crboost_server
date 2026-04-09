@@ -27,10 +27,6 @@ from ui.pipeline_builder.files_tab import render_files_tab
 logger = logging.getLogger(__name__)
 
 
-_SECTION_LABEL_STYLE = (
-    "font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; font-weight: 600; color: #1e293b; margin-bottom: 4px;"
-)
-
 
 class DebouncedSaver:
     def __init__(self, delay: float = 1.0):
@@ -78,8 +74,8 @@ def _render_tab_content(
             with ui.column().classes("w-full gap-0").style("padding: 10px 16px 16px;"):
                 # ── SLURM (collapsible) ──
                 with (
-                    ui.expansion("SLURM / Requested Resources")
-                    .props("dense default-opened")
+                    ui.expansion("SLURM / Requested Resources", value=True)
+                    .props("dense")
                     .classes("w-full")
                     .style("border: none; box-shadow: none; background: transparent; margin-bottom: 6px;") as slurm_exp
                 ):
@@ -88,17 +84,24 @@ def _render_tab_content(
                         render_slurm_tab(job_model, is_frozen, save_handler)
                 # ── I/O (collapsible) ──
                 with (
-                    ui.expansion("I/O")
-                    .props("dense default-opened")
+                    ui.expansion("I/O", value=True)
+                    .props("dense")
                     .classes("w-full")
                     .style("border: none; box-shadow: none; background: transparent; margin-bottom: 6px;") as io_exp
                 ):
                     io_exp.props('header-class="text-xs font-semibold text-gray-700 p-0"')
                     with ui.column().classes("w-full gap-0").style("padding: 4px 0 0;"):
                         render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, save_handler)
-                # ── Parameters ──
-                ui.label("Parameters").style(_SECTION_LABEL_STYLE)
-                render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend, save_handler)
+                # ── Parameters (collapsible) ──
+                with (
+                    ui.expansion("Parameters", value=True)
+                    .props("dense")
+                    .classes("w-full")
+                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 6px;") as params_exp
+                ):
+                    params_exp.props('header-class="text-xs font-semibold text-gray-700 p-0"')
+                    with ui.column().classes("w-full gap-0").style("padding: 4px 0 0;"):
+                        render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend, save_handler)
     elif tab_key == MonitorTab.LOGS.value:
         render_logs_tab(job_type, instance_id, job_model, backend, ui_mgr)
     elif tab_key == MonitorTab.FILES.value:
@@ -343,8 +346,8 @@ def _handle_delete(
                 state.job_path_mapping.pop(instance_id, None)
                 state.mark_dirty()
                 asyncio.create_task(get_state_service().save_project())
-            remove_cb(instance_id)
             ui.notify("Tilt filter removed. Labels preserved.", type="info")
+            remove_cb(instance_id)
         return
 
     deletion_service = get_deletion_service()
