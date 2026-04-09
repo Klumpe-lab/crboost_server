@@ -12,6 +12,7 @@ import asyncio
 import base64
 import logging
 import re
+import urllib.parse
 from pathlib import Path
 from typing import Dict
 
@@ -495,6 +496,8 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
     df = ts_data.all_tilts_df
     png_map: Dict[str, Path] = {f.stem: f for f in sorted(png_dir.glob("*.png"))}
     df["_png"] = df["cryoBoostKey"].map(lambda k: str(png_map.get(k, "")))
+    # Unique row ID for DOM identification (cryoBoostKey can have duplicates)
+    df["_row_id"] = [f"r{i}" for i in range(len(df))]
 
     # ── Live stats ──
     def _refresh_stats():
@@ -575,7 +578,6 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
         show_bad = bad_only.value
 
         with group_c:
-            # Show spinner briefly if many groups
             if rendering["active"]:
                 return
             rendering["active"] = True
@@ -589,7 +591,6 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
                     if ts_df.empty:
                         continue
                     ts_df = _sort_ts_df(ts_df)
-                    # Restore expand state or default to collapsed
                     start_expanded = expand_state.get(ts_name, False)
                     refs = _render_ts_group(
                         ts_name, pos_key, beam, ts_df, labels, df, ts_data, _refresh_stats, project_path, start_expanded
@@ -610,6 +611,10 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
             chev_el.style(
                 f"color: {CLR_SUBLABEL}; transition: transform 0.15s; transform: rotate({'0' if expand else '-90'}deg);"
             )
+            # Deferred render on expand-all
+            if expand and not refs["rendered"]["v"]:
+                refs["rendered"]["v"] = True
+                _populate_group_body(refs, labels, df, ts_data, _refresh_stats, project_path)
 
     async def _save():
         try:
@@ -665,8 +670,169 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
             state.tilt_filter_labels = labels
             state.mark_dirty()
         _refresh_stats()
-        _render_groups()
+        # Bulk-update all visible cards via JS — no full re-render needed
+        ui.run_javascript("""
+            document.querySelectorAll('.tilt-card').forEach(card => {
+                card.style.border = '1.5px solid #d1d5db';
+                const dot = card.querySelector('.tilt-dot');
+                if (dot) dot.style.background = 'transparent';
+                const info = card.querySelector('.tilt-info');
+                if (info) info.style.background = '#fafafa';
+            });
+        """)
+        for refs in group_refs:
+            refs["bad_lbl"].text = "\u22120"
+            refs["bad_lbl"].style(f"{MONO} font-size: 9px; font-weight: 600; color: {CLR_ERROR}; display: none;")
         ui.notify("All tilts set to good", type="info")
+
+
+# ── Card grid HTML builder ──────────────────────────────────────────────────
+
+
+def _build_cards_html(ts_df, labels) -> str:
+    """Build the entire card grid for one tilt-series group as a single HTML string."""
+    cards = []
+    for _, row in ts_df.iterrows():
+        key = row["cryoBoostKey"]
+        rid = row["_row_id"]
+        png_path = row.get("_png", "")
+        label = labels.get(key, row.get("cryoBoostDlLabel", "good"))
+        is_bad = label == "bad"
+        angle = row.get("rlnTomoNominalStageTiltAngle", None)
+        prob = row.get("cryoBoostDlProbability", 1.0)
+        defocus_u = row.get("rlnDefocusU", None)
+        motion = row.get("rlnAccumMotionTotal", None)
+        mrc_path = row.get("rlnMicrographName", "")
+
+        bdr = "#ef4444" if is_bad else "#d1d5db"
+        dot_bg = "#ef4444" if is_bad else "transparent"
+        info_bg = "#fef2f2" if is_bad else "#fafafa"
+
+        if png_path:
+            encoded_path = urllib.parse.quote(str(png_path), safe="/")
+            img_html = (
+                f'<img src="/api/tilt-thumb?path={encoded_path}" loading="lazy" '
+                'style="width:100%;aspect-ratio:1;object-fit:cover;display:block;">'
+            )
+        else:
+            img_html = (
+                '<div style="width:100%;aspect-ratio:1;display:flex;align-items:center;'
+                f'justify-content:center;color:{CLR_GHOST};font-size:28px;">&#x1f5bc;</div>'
+            )
+
+        info_parts = []
+        if angle is not None:
+            info_parts.append(f'<span style="font-weight:600;color:{CLR_HEADING};">{angle:.0f}\u00b0</span>')
+        if isinstance(prob, (int, float)) and prob < 1.0:
+            info_parts.append(f'<span style="color:{CLR_SUBLABEL};">p{prob:.2f}</span>')
+        if defocus_u is not None and defocus_u > 0:
+            info_parts.append(f'<span style="color:{CLR_SUBLABEL};">{defocus_u / 10000:.1f}\u00b5</span>')
+        if motion is not None and motion > 0:
+            info_parts.append(f'<span style="color:{CLR_SUBLABEL};">{motion:.1f}px</span>')
+
+        escaped_mrc = mrc_path.replace("&", "&amp;").replace('"', "&quot;")
+        escaped_key = key.replace("&", "&amp;").replace('"', "&quot;")
+
+        cards.append(
+            f'<div class="tilt-card" data-rid="{rid}" data-key="{escaped_key}" data-mrc="{escaped_mrc}" '
+            f'style="border:1.5px solid {bdr};border-radius:4px;overflow:hidden;'
+            'position:relative;cursor:pointer;transition:border-color 0.12s;">'
+            f"{img_html}"
+            f'<div class="tilt-dot" style="position:absolute;top:3px;right:3px;width:8px;height:8px;'
+            f'border-radius:50%;background:{dot_bg};border:1px solid white;pointer-events:none;"></div>'
+            '<button class="tilt-zoom" style="position:absolute;top:2px;left:2px;color:white;'
+            "background:rgba(0,0,0,0.3);width:18px;height:18px;border:none;border-radius:50%;"
+            'cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;" '
+            'title="Upsample &amp; zoom">&#x1F50D;</button>'
+            f'<div class="tilt-info" style="display:flex;gap:3px;padding:2px 4px;align-items:center;'
+            f"background:{info_bg};font-family:'IBM Plex Mono',monospace;font-size:8px;\">"
+            f"{''.join(info_parts)}</div>"
+            "</div>"
+        )
+
+    return (
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:4px;width:100%;">'
+        + "".join(cards)
+        + "</div>"
+    )
+
+
+def _attach_grid_click_handler(html_el, labels, full_df, ts_data, refresh_stats, project_path, ts_df, bad_lbl):
+    """Attach a single event-delegation click handler to a card grid HTML element."""
+
+    def _handle_click(e):
+        args = e.args
+        if not args:
+            return
+        action = args.get("action")
+        key = args.get("key", "")
+
+        if action == "zoom":
+            mrc = args.get("mrc", "")
+            _show_upsample(mrc, key, project_path)
+
+        elif action == "toggle" and key:
+            rid = args.get("rid", "")
+            cur = labels.get(key)
+            if cur is None:
+                mask = full_df["cryoBoostKey"] == key
+                cur = full_df.loc[mask, "cryoBoostDlLabel"].iloc[0] if mask.any() else "good"
+
+            new = "good" if cur == "bad" else "bad"
+            labels[key] = new
+            full_df.loc[full_df["cryoBoostKey"] == key, "cryoBoostDlLabel"] = new
+            ts_data.all_tilts_df.loc[ts_data.all_tilts_df["cryoBoostKey"] == key, "cryoBoostDlLabel"] = new
+
+            is_bad = new == "bad"
+            # Use unique row ID for DOM targeting (cryoBoostKey can have duplicates)
+            ui.run_javascript(f"""
+                const card = document.querySelector('[data-rid="{rid}"]');
+                if (card) {{
+                    card.style.border = '1.5px solid {"#ef4444" if is_bad else "#d1d5db"}';
+                    const dot = card.querySelector('.tilt-dot');
+                    if (dot) dot.style.background = '{"#ef4444" if is_bad else "transparent"}';
+                    const info = card.querySelector('.tilt-info');
+                    if (info) info.style.background = '{"#fef2f2" if is_bad else "#fafafa"}';
+                }}
+            """)
+
+            n_bad_now = int((ts_df["cryoBoostDlLabel"] == "bad").sum())
+            bad_lbl.text = f"\u2212{n_bad_now}"
+            bad_lbl.style(
+                f"{MONO} font-size: 9px; font-weight: 600; color: {CLR_ERROR}; "
+                f"{'display: none' if n_bad_now == 0 else ''};"
+            )
+
+            st = get_project_state()
+            if st:
+                st.tilt_filter_labels = labels
+                st.mark_dirty()
+            refresh_stats()
+
+    html_el.on(
+        "click",
+        handler=_handle_click,
+        js_handler="""(event) => {
+            const zoom = event.target.closest('.tilt-zoom');
+            if (zoom) {
+                event.stopPropagation();
+                const card = zoom.closest('.tilt-card');
+                if (card) emit({action: 'zoom', key: card.dataset.key, mrc: card.dataset.mrc});
+                return;
+            }
+            const card = event.target.closest('.tilt-card');
+            if (card) emit({action: 'toggle', key: card.dataset.key, rid: card.dataset.rid});
+        }""",
+    )
+
+
+def _populate_group_body(refs, labels, full_df, ts_data, refresh_stats, project_path):
+    """Render card HTML into a group body (called on first expand)."""
+    with refs["body"]:
+        html_el = ui.html(_build_cards_html(refs["ts_df"], labels), sanitize=False).classes("w-full")
+        _attach_grid_click_handler(
+            html_el, labels, full_df, ts_data, refresh_stats, project_path, refs["ts_df"], refs["bad_lbl"]
+        )
 
 
 # ── Tilt-series group ────────────────────────────────────────────────────────
@@ -678,6 +844,7 @@ def _render_ts_group(
     n_total = len(ts_df)
     n_bad = int((ts_df["cryoBoostDlLabel"] == "bad").sum())
     expanded = {"v": start_expanded}
+    rendered = {"v": False}
 
     with ui.element("div").classes("w-full").style(CARD):
         hdr = (
@@ -696,7 +863,6 @@ def _render_ts_group(
             chevron = ui.icon("expand_more", size="14px").style(
                 f"color: {CLR_SUBLABEL}; transition: transform 0.15s; transform: rotate({chev_rot}deg);"
             )
-            # Position / beam badge
             pos_txt = f"Pos {pos}" if pos else ts_name
             ui.label(pos_txt).style(f"{MONO} font-size: 10px; font-weight: 600; color: {CLR_HEADING};")
             if beam and beam > 1:
@@ -707,10 +873,25 @@ def _render_ts_group(
             ui.label(ts_name).style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL};")
 
             ui.space()
-            cnt_lbl = ui.label(f"{n_total}").style(f"{MONO} font-size: 9px; color: {CLR_LABEL};")
+            ui.label(f"{n_total}").style(f"{MONO} font-size: 9px; color: {CLR_LABEL};")
             bad_lbl = ui.label(f"\u2212{n_bad}").style(
                 f"{MONO} font-size: 9px; font-weight: 600; color: {CLR_ERROR}; {'display: none' if n_bad == 0 else ''};"
             )
+
+        refs = {
+            "body": body,
+            "chevron": chevron,
+            "expanded": expanded,
+            "ts_name": ts_name,
+            "rendered": rendered,
+            "bad_lbl": bad_lbl,
+            "ts_df": ts_df,
+        }
+
+        # Render cards immediately only if starting expanded
+        if start_expanded:
+            rendered["v"] = True
+            _populate_group_body(refs, labels, full_df, ts_data, refresh_stats, project_path)
 
         def _toggle():
             expanded["v"] = not expanded["v"]
@@ -719,137 +900,14 @@ def _render_ts_group(
                 f"color: {CLR_SUBLABEL}; transition: transform 0.15s; "
                 f"transform: rotate({'0' if expanded['v'] else '-90'}deg);"
             )
+            # Deferred render on first expand
+            if expanded["v"] and not rendered["v"]:
+                rendered["v"] = True
+                _populate_group_body(refs, labels, full_df, ts_data, refresh_stats, project_path)
 
         hdr.on("click", _toggle)
 
-        with body:
-            with (
-                ui.element("div")
-                .classes("w-full")
-                .style("display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 4px;")
-            ):
-                for _, row in ts_df.iterrows():
-                    _render_card(
-                        row, labels, full_df, ts_data, refresh_stats, cnt_lbl, bad_lbl, n_total, ts_df, project_path
-                    )
-
-    return {"body": body, "chevron": chevron, "expanded": expanded, "ts_name": ts_name}
-
-
-# ── Card ─────────────────────────────────────────────────────────────────────
-
-
-def _render_card(row, labels, full_df, ts_data, refresh_stats, cnt_lbl, bad_lbl, n_total, ts_df, project_path):
-    key = row["cryoBoostKey"]
-    png_path = row.get("_png", "")
-    label = row.get("cryoBoostDlLabel", "good")
-    prob = row.get("cryoBoostDlProbability", 1.0)
-    angle = row.get("rlnTomoNominalStageTiltAngle", None)
-    defocus_u = row.get("rlnDefocusU", None)
-    motion = row.get("rlnAccumMotionTotal", None)
-
-    is_bad = label == "bad"
-    bdr = "#ef4444" if is_bad else "#d1d5db"
-
-    with (
-        ui.card()
-        .tight()
-        .classes("overflow-hidden p-0")
-        .style(
-            f"border: 1.5px solid {bdr}; border-radius: 4px; transition: border-color 0.12s; position: relative;"
-        ) as card
-    ):
-        # ── Image ──
-        img_src = None
-        if png_path and Path(png_path).exists():
-            try:
-                with open(png_path, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode()
-                img_src = f"data:image/png;base64,{b64}"
-            except Exception:
-                pass
-
-        if img_src:
-            ui.image(img_src).classes("w-full").style("aspect-ratio: 1; object-fit: cover;")
-        else:
-            ui.icon("broken_image", size="28px").style(f"color: {CLR_GHOST}; margin: 20px auto;")
-
-        # ── Bad dot ──
-        indicator = ui.element("div").style(
-            "position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; "
-            f"border-radius: 50%; background: {'#ef4444' if is_bad else 'transparent'}; "
-            "border: 1px solid white;"
-        )
-
-        # ── Upsample button (stop propagation so it doesn't toggle label) ──
-        if png_path:
-            mrc_path = row.get("rlnMicrographName", "")
-
-            def _upsample(_mrc=mrc_path, _key=key):
-                _show_upsample(_mrc, _key, project_path)
-
-            zoom_btn = (
-                ui.button(icon="zoom_in")
-                .props("flat round dense size=xs")
-                .style(
-                    "position: absolute; top: 2px; left: 2px; color: white; "
-                    "background: rgba(0,0,0,0.3); width: 18px; height: 18px;"
-                )
-                .tooltip("Upsample & zoom")
-            )
-            zoom_btn.on("click.stop", _upsample)
-
-        # ── Info strip ──
-        with (
-            ui.row()
-            .classes("w-full px-1 py-0.5 items-center gap-1")
-            .style(f"background: {'#fef2f2' if is_bad else '#fafafa'};")
-        ):
-            if angle is not None:
-                ui.label(f"{angle:.0f}\u00b0").style(f"{MONO} font-size: 8px; font-weight: 600; color: {CLR_HEADING};")
-            if isinstance(prob, (int, float)) and prob < 1.0:
-                ui.label(f"p{prob:.2f}").style(f"{MONO} font-size: 7px; color: {CLR_SUBLABEL};")
-            if defocus_u is not None and defocus_u > 0:
-                ui.label(f"{defocus_u / 10000:.1f}\u00b5").style(f"{MONO} font-size: 7px; color: {CLR_SUBLABEL};")
-            if motion is not None and motion > 0:
-                ui.label(f"{motion:.1f}px").style(f"{MONO} font-size: 7px; color: {CLR_SUBLABEL};")
-
-        # ── Toggle handler ──
-        def toggle(k=key, c=card, ind=indicator, _ts=ts_df, _cl=cnt_lbl, _bl=bad_lbl):
-            cur = labels.get(k)
-            if cur is None:
-                mask = full_df["cryoBoostKey"] == k
-                cur = full_df.loc[mask, "cryoBoostDlLabel"].iloc[0] if mask.any() else "good"
-
-            new = "good" if cur == "bad" else "bad"
-            labels[k] = new
-            full_df.loc[full_df["cryoBoostKey"] == k, "cryoBoostDlLabel"] = new
-            ts_data.all_tilts_df.loc[ts_data.all_tilts_df["cryoBoostKey"] == k, "cryoBoostDlLabel"] = new
-
-            nb = "#ef4444" if new == "bad" else "#d1d5db"
-            c.style(
-                f"border: 1.5px solid {nb}; border-radius: 4px; transition: border-color 0.12s; position: relative;"
-            )
-            ind.style(
-                "position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; "
-                f"border-radius: 50%; background: {'#ef4444' if new == 'bad' else 'transparent'}; "
-                "border: 1px solid white;"
-            )
-
-            n_bad_now = int((_ts["cryoBoostDlLabel"] == "bad").sum())
-            _bl.text = f"\u2212{n_bad_now}"
-            _bl.style(
-                f"{MONO} font-size: 9px; font-weight: 600; color: {CLR_ERROR}; "
-                f"{'display: none' if n_bad_now == 0 else ''};"
-            )
-
-            st = get_project_state()
-            if st:
-                st.tilt_filter_labels = labels
-                st.mark_dirty()
-            refresh_stats()
-
-        card.on("click", toggle)
+    return refs
 
 
 # ── Zoom / Upsample ─────────────────────────────────────────────────────────

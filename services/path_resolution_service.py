@@ -263,7 +263,7 @@ class PathResolutionService:
             )
 
         is_pending = "pending_" in chosen.path
-        source_in_flight = chosen.execution_status in (JobStatus.RUNNING, JobStatus.SCHEDULED)
+        source_in_flight = chosen.execution_status in (JobStatus.RUNNING, JobStatus.SCHEDULED, JobStatus.QUEUED)
         pipeline_active = getattr(self.state, "pipeline_active", False)
 
         expect_file_later = is_pending or (source_in_flight and pipeline_active)

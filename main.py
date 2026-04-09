@@ -8,6 +8,7 @@ import warnings
 from ui.main_ui import create_ui_router
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from nicegui import ui
 
@@ -43,6 +44,14 @@ def setup_logging(debug: bool = False):
 def setup_app():
     """Configures and returns the FastAPI app."""
     app = FastAPI()
+
+    @app.get("/api/tilt-thumb")
+    def serve_tilt_thumb(path: str):
+        p = Path(path)
+        if p.exists() and p.is_file() and p.suffix == ".png":
+            return FileResponse(p, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
+        return {"error": "not found"}
+
     app.mount("/static", StaticFiles(directory="static"), name="static")
     ui.add_head_html('''
         <link rel="preconnect" href="https://fonts.googleapis.com">

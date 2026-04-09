@@ -199,7 +199,46 @@ class DatasetParsingService:
             if candidate.exists():
                 frame_path = candidate.resolve()
 
-        return TiltInfo(z_value=z_value, tilt_angle=tilt_angle, frame_filename=frame_filename, frame_path=frame_path)
+        # Extract numeric MDOC stats for per-tilt metadata registry
+        mdoc_stats: Dict[str, float] = {}
+        mmm = section.get("MinMaxMean", "")
+        if mmm:
+            parts = mmm.split()
+            if len(parts) >= 3:
+                try:
+                    mdoc_stats["min_intensity"] = float(parts[0])
+                    mdoc_stats["max_intensity"] = float(parts[1])
+                    mdoc_stats["mean_intensity"] = float(parts[2])
+                except (ValueError, TypeError):
+                    pass
+        for mdoc_key, stat_key in [
+            ("ExposureDose", "exposure_dose"),
+            ("PriorRecordDose", "prior_dose"),
+            ("DoseRate", "dose_rate"),
+            ("Defocus", "defocus"),
+            ("ExposureTime", "exposure_time"),
+        ]:
+            val = section.get(mdoc_key)
+            if val is not None:
+                try:
+                    mdoc_stats[stat_key] = float(val)
+                except (ValueError, TypeError):
+                    pass
+        ish = section.get("ImageShift", "")
+        if ish:
+            parts = ish.split()
+            if len(parts) >= 2:
+                try:
+                    mdoc_stats["image_shift_x"] = float(parts[0])
+                    mdoc_stats["image_shift_y"] = float(parts[1])
+                except (ValueError, TypeError):
+                    pass
+
+        return TiltInfo(
+            z_value=z_value, tilt_angle=tilt_angle,
+            frame_filename=frame_filename, frame_path=frame_path,
+            mdoc_stats=mdoc_stats,
+        )
 
     def _extract_acquisition_params(self, mdoc_data: Dict) -> Dict:
         """Extract acquisition parameters from an mdoc's header and first ZValue section."""
@@ -236,7 +275,7 @@ class DatasetParsingService:
         # Dose per tilt (from ExposureDose in first section)
         if "ExposureDose" in first:
             try:
-                result["dose_per_tilt"] = round(float(first["ExposureDose"]) * 1.5, 2)
+                result["dose_per_tilt"] = round(float(first["ExposureDose"]), 2)
             except (ValueError, TypeError):
                 pass
 

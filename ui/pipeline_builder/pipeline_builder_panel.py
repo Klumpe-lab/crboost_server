@@ -184,10 +184,24 @@ class PipelineBuilderPanel:
         # Set the desired tab BEFORE ensuring the job is rendered,
         # so render_job_tab picks it up as the initial active tab.
         self.ui_mgr.set_job_monitor_tab(instance_id, tab_key, user_initiated=True)
-        self.switch_tab(instance_id)
-        # If the job was already rendered, force a content re-render.
+
+        # Make the job active and visible (inline switch_tab without the
+        # roster refresh so the heavy sidebar rebuild doesn't interleave
+        # with the content update below).
+        if self.ensure_pipeline_mode:
+            self.ensure_pipeline_mode()
+        self.ui_mgr.set_active_instance(instance_id)
+        self._ensure_job_rendered(instance_id)
+        for iid, c in self._job_content_containers.items():
+            c.set_visibility(iid == instance_id)
+
+        # Force a content re-render for the requested subsection.
         job_type = instance_id_to_job_type(instance_id)
         _handle_tab_switch(job_type, instance_id, tab_key, self.backend, self.ui_mgr, self.callbacks)
+
+        # Refresh the roster *after* the content is updated so the
+        # sidebar highlight reflects the new active job/tab.
+        self.roster.refresh()
 
     # ── Job/instance management ───────────────────────────────────────────────
 

@@ -13,7 +13,6 @@ from nicegui import ui, app
 
 from backend import CryoBoostBackend
 from services.configs.user_prefs_service import get_prefs_service
-from services.project_state import get_project_state, ImportPositionSummary
 
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
@@ -93,20 +92,33 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
     # VALIDATION
     # =========================================================================
 
-    def validate_glob_pattern(pattern: str) -> tuple[bool, int, str]:
+    # -- Async glob validation (never blocks the event loop) ----------------
+
+    _glob_tasks: Dict[str, asyncio.Task] = {}
+
+    def _validate_glob_quick(pattern: str) -> tuple[bool, str]:
+        """Instant syntax-only check — no filesystem I/O."""
         if not pattern or not pattern.strip():
-            return False, 0, "No pattern specified"
-        try:
-            matches = glob.glob(pattern)
-            files = [m for m in matches if Path(m).is_file()]
-            count = len(files)
-            if count == 0:
-                if len(matches) > 0:
-                    return False, 0, "Pattern matches directories, but no files"
-                return False, 0, "No files match pattern on server"
-            return True, count, f"{count} files found"
-        except Exception as e:
-            return False, 0, f"Invalid pattern: {e}"
+            return False, "No pattern specified"
+        return True, "Checking..."
+
+    async def _validate_glob_full(pattern: str) -> tuple[bool, int, str]:
+        """Full validation with file count — runs glob in a thread."""
+
+        def _do():
+            try:
+                matches = glob.glob(pattern)
+                files = [m for m in matches if Path(m).is_file()]
+                count = len(files)
+                if count == 0:
+                    if len(matches) > 0:
+                        return False, 0, "Pattern matches directories, but no files"
+                    return False, 0, "No files match pattern on server"
+                return True, count, f"{count} files found"
+            except Exception as e:
+                return False, 0, f"Invalid pattern: {e}"
+
+        return await asyncio.to_thread(_do)
 
     def update_input_validation(input_el, is_valid: bool, message: str):
         if not input_el:
@@ -117,35 +129,76 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             safe_msg = message.replace("'", "").replace('"', "").replace("\\", "/")
             input_el.props(f"error=true error-message='{safe_msg}'")
 
+    def _set_hint(hint_label, msg, color):
+        if hint_label and not getattr(hint_label, "is_deleted", False):
+            hint_label.set_text(msg)
+            hint_label.style(f"{FONT} font-size: 9px; color: {color}; padding-left: 2px;")
+
     def update_movies_validation():
         pattern = ui_mgr.data_import.movies_glob
-        is_valid, count, msg = validate_glob_pattern(pattern)
-        ui_mgr.update_data_import(movies_valid=is_valid)
-        if ui_mgr.panel_refs.movies_input:
-            update_input_validation(ui_mgr.panel_refs.movies_input, is_valid, msg)
-        if ui_mgr.panel_refs.movies_hint_label:
-            ui_mgr.panel_refs.movies_hint_label.set_text(msg)
-            color = CLR_SUCCESS if is_valid else CLR_ERROR
-            ui_mgr.panel_refs.movies_hint_label.style(f"{FONT} font-size: 9px; color: {color}; padding-left: 2px;")
-        # Save to data path history when valid
-        if is_valid and pattern:
-            data_dir = str(Path(pattern).parent) if "*" in pattern else pattern
-            prefs_service.prefs.add_recent_data_path(data_dir)
-            prefs_service.save_to_app_storage(app.storage.user)
-            refresh_data_history_ui()
-        update_create_button_state()
+        quick_ok, quick_msg = _validate_glob_quick(pattern)
+        if not quick_ok:
+            ui_mgr.update_data_import(movies_valid=False)
+            _set_hint(ui_mgr.panel_refs.movies_hint_label, quick_msg, CLR_ERROR)
+            if ui_mgr.panel_refs.movies_input:
+                update_input_validation(ui_mgr.panel_refs.movies_input, False, quick_msg)
+            update_create_button_state()
+            return
+
+        _set_hint(ui_mgr.panel_refs.movies_hint_label, quick_msg, CLR_SUBLABEL)
+        # Cancel previous check for this field
+        prev = _glob_tasks.get("movies")
+        if prev and not prev.done():
+            prev.cancel()
+
+        async def _finish():
+            is_valid, count, msg = await _validate_glob_full(pattern)
+            if ui_mgr.data_import.movies_glob != pattern:
+                return  # pattern changed while we were checking
+            ui_mgr.update_data_import(movies_valid=is_valid)
+            if ui_mgr.panel_refs.movies_input:
+                update_input_validation(ui_mgr.panel_refs.movies_input, is_valid, msg)
+            _set_hint(ui_mgr.panel_refs.movies_hint_label, msg, CLR_SUCCESS if is_valid else CLR_ERROR)
+            if is_valid and pattern:
+                data_dir = str(Path(pattern).parent) if "*" in pattern else pattern
+                prefs_service.prefs.add_recent_data_path(data_dir)
+                prefs_service.save_to_app_storage(app.storage.user)
+                refresh_data_history_ui()
+            update_create_button_state()
+
+        _glob_tasks["movies"] = asyncio.create_task(_finish())
 
     def update_mdocs_validation():
         pattern = ui_mgr.data_import.mdocs_glob
-        is_valid, count, msg = validate_glob_pattern(pattern)
-        ui_mgr.update_data_import(mdocs_valid=is_valid)
-        if ui_mgr.panel_refs.mdocs_input:
-            update_input_validation(ui_mgr.panel_refs.mdocs_input, is_valid, msg)
-        if ui_mgr.panel_refs.mdocs_hint_label:
-            ui_mgr.panel_refs.mdocs_hint_label.set_text(msg)
-            color = CLR_SUCCESS if is_valid else CLR_ERROR
-            ui_mgr.panel_refs.mdocs_hint_label.style(f"{FONT} font-size: 9px; color: {color}; padding-left: 2px;")
-        update_create_button_state()
+        quick_ok, quick_msg = _validate_glob_quick(pattern)
+        if not quick_ok:
+            ui_mgr.update_data_import(mdocs_valid=False)
+            _set_hint(ui_mgr.panel_refs.mdocs_hint_label, quick_msg, CLR_ERROR)
+            if ui_mgr.panel_refs.mdocs_input:
+                update_input_validation(ui_mgr.panel_refs.mdocs_input, False, quick_msg)
+            update_create_button_state()
+            return
+
+        _set_hint(ui_mgr.panel_refs.mdocs_hint_label, quick_msg, CLR_SUBLABEL)
+        prev = _glob_tasks.get("mdocs")
+        if prev and not prev.done():
+            prev.cancel()
+
+        async def _finish():
+            is_valid, count, msg = await _validate_glob_full(pattern)
+            if ui_mgr.data_import.mdocs_glob != pattern:
+                return
+            ui_mgr.update_data_import(mdocs_valid=is_valid)
+            if ui_mgr.panel_refs.mdocs_input:
+                update_input_validation(ui_mgr.panel_refs.mdocs_input, is_valid, msg)
+            _set_hint(ui_mgr.panel_refs.mdocs_hint_label, msg, CLR_SUCCESS if is_valid else CLR_ERROR)
+            update_create_button_state()
+            # Trigger autodetect + dataset parsing now that validation is confirmed
+            if is_valid:
+                await _auto_detect_if_ready()
+                await parse_and_display_dataset()
+
+        _glob_tasks["mdocs"] = asyncio.create_task(_finish())
 
     def get_missing_requirements() -> list[str]:
         sync_state_from_inputs()
@@ -443,12 +496,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
                         return handler
 
-                    def make_delete_handler(path_str: str, name: str):
-                        async def handler():
-                            await _confirm_delete_project(Path(path_str), name)
-
-                        return handler
-
                     with (
                         ui.row()
                         .classes(
@@ -456,7 +503,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                             "hover:bg-slate-50 transition-colors cursor-pointer group"
                         )
                         .style("min-height: 28px;")
-                    ):
+                    ) as proj_row:
+
+                        def make_delete_handler(path_str: str, name: str, row_el=proj_row):
+                            async def handler():
+                                await _confirm_delete_project(Path(path_str), name, row_el)
+
+                            return handler
+
                         with ui.column().classes("flex-1 gap-0 min-w-0").on("click", make_load_handler(proj["path"])):
                             ui.label(proj["name"]).style(
                                 f"{FONT} font-size: 11px; font-weight: 500; color: {CLR_HEADING};"
@@ -480,7 +534,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                             "flat dense round size=xs"
                         ).classes("text-slate-300 hover:text-blue-500 shrink-0")
 
-    async def _confirm_delete_project(project_dir: Path, project_name: str):
+    async def _confirm_delete_project(project_dir: Path, project_name: str, row_el=None):
         with ui.dialog() as dialog, ui.card().classes("w-96"):
             ui.label(f"Delete '{project_name}'?").style(
                 f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};"
@@ -498,21 +552,28 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
                 async def do_delete():
                     dialog.close()
+                    # Grey out the project row so user can't click/re-delete
+                    if row_el and not getattr(row_el, "is_deleted", False):
+                        row_el.clear()
+                        with row_el:
+                            ui.spinner("dots", size="xs").style(f"color: {CLR_SUBLABEL};")
+                            ui.label(f"Deleting {project_name}...").style(
+                                f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; font-style: italic;"
+                            )
+                        row_el.style(add="opacity: 0.5; pointer-events: none; cursor: default;")
                     try:
                         import shutil
 
-                        shutil.rmtree(project_dir)
+                        await asyncio.to_thread(shutil.rmtree, project_dir)
                         from services.project_state import remove_project_state
 
                         remove_project_state(project_dir)
                         ui.notify(f"Deleted '{project_name}'", type="positive")
-
-                        async def _rescan():
-                            await scan_and_display_projects(ui_mgr.data_import.project_base_path)
-
-                        ui.timer(0.1, lambda: asyncio.create_task(_rescan()), once=True)
+                        await scan_and_display_projects(ui_mgr.data_import.project_base_path)
                     except Exception as e:
                         ui.notify(f"Failed to delete: {e}", type="negative")
+                        # Restore the row on failure
+                        await scan_and_display_projects(ui_mgr.data_import.project_base_path)
 
                 ui.button("Delete permanently", on_click=do_delete).props("no-caps unelevated").style(
                     f"{FONT} font-size: 12px; background: {CLR_ERROR}; color: white; "
@@ -624,7 +685,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         if not mdocs_glob:
             ui.notify("Please specify mdoc files first", type="warning")
             return
-        is_valid, count, msg = validate_glob_pattern(mdocs_glob)
+        is_valid, msg = _validate_glob_quick(mdocs_glob)
         if not is_valid:
             ui.notify(f"Invalid mdoc pattern: {msg}", type="warning")
             return
@@ -641,7 +702,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 dose_per_tilt=acquisition.get("dose_per_tilt"),
                 tilt_axis=acquisition.get("tilt_axis_degrees"),
             )
-            ui.notify(f"Parameters detected from {count} files", type="positive")
+            ui.notify("Parameters detected from mdoc files", type="positive")
         except Exception as e:
             ui.notify(f"Autodetection failed: {e}", type="negative")
         finally:
@@ -657,8 +718,81 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             return
         di = ui_mgr.data_import
         btn = ui_mgr.panel_refs.create_button
+        overview = local_refs.get("current_dataset_overview")
+
+        # Auto-save selections before attempting creation (survives failures)
+        if overview and di.mdocs_glob:
+            from services.configs.dataset_selection_cache import save_selections
+
+            save_selections(di.mdocs_glob, overview)
+
+        # Collect import data from the already-parsed dataset overview
+        selected_mdoc_paths = None
+        import_summary = None
+        detected_params = None
+        if overview:
+            selected_ts = overview.get_selected_tilt_series()
+            selected_mdoc_paths = [str(ts.mdoc_path) for ts in selected_ts]
+            import_summary = {
+                "total_positions": len(overview.positions),
+                "selected_positions": sum(1 for p in overview.positions if p.selected),
+                "total_tilt_series": overview.total_tilt_series,
+                "selected_tilt_series": overview.selected_tilt_series,
+                "source_directory": overview.source_directory or "",
+                "frame_extension": overview.frame_extension or "",
+                "position_details": [
+                    {
+                        "stage_position": p.stage_position,
+                        "beam_count": p.beam_count,
+                        "tilt_count": p.total_tilts,
+                        "selected": p.selected,
+                    }
+                    for p in overview.positions
+                ],
+                "tilt_series_details": [
+                    {
+                        "stage_position": ts.stage_position,
+                        "beam_position": ts.beam_position,
+                        "tilt_count": ts.tilt_count,
+                        "selected": ts.selected,
+                        "mdoc_filename": ts.mdoc_filename,
+                    }
+                    for p in overview.positions
+                    for ts in p.tilt_series
+                ],
+                "tilt_metadata": {
+                    Path(t.frame_filename).stem: t.mdoc_stats
+                    for ts in selected_ts
+                    for t in ts.tilts
+                    if t.mdoc_stats
+                },
+            }
+            sel_summary = overview.selected_acquisition_summary()
+            detected_params = {}
+            if sel_summary.pixel_sizes:
+                detected_params["pixel_size_angstrom"] = sel_summary.pixel_sizes[0]
+            if sel_summary.voltages:
+                detected_params["acceleration_voltage_kv"] = sel_summary.voltages[0]
+            if sel_summary.doses:
+                detected_params["dose_per_tilt"] = sel_summary.doses[0]
+            if sel_summary.tilt_axes:
+                detected_params["tilt_axis_degrees"] = sel_summary.tilt_axes[0]
+
+        # Show progress overlay in the dataset overview area
+        progress_container = local_refs.get("dataset_overview_container")
+        if progress_container:
+            progress_container.clear()
+            with progress_container:
+                with ui.row().classes("w-full justify-center items-center py-6"):
+                    ui.spinner("dots", size="md").style(f"color: {CLR_ACCENT};")
+                    ui.label("Creating project — importing data and initializing...").style(
+                        f"{FONT} font-size: 11px; color: {CLR_LABEL}; margin-left: 8px;"
+                    )
+
         if btn:
             btn.props("loading")
+            btn.disable()
+
         try:
             result = await backend.create_project_and_scheme(
                 project_name=di.project_name,
@@ -666,49 +800,48 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 selected_jobs=[j.value for j in ui_mgr.selected_jobs],
                 movies_glob=di.movies_glob,
                 mdocs_glob=di.mdocs_glob,
+                selected_mdoc_paths=selected_mdoc_paths,
+                import_summary=import_summary,
+                detected_params=detected_params,
             )
             if result.get("success"):
                 project_path = Path(result["project_path"])
                 scheme_name = f"scheme_{di.project_name}"
                 ui_mgr.set_project_created(project_path, scheme_name)
 
-                overview = local_refs.get("current_dataset_overview")
-                if overview:
-                    state = get_project_state()
-                    state.import_total_positions = len(overview.positions)
-                    state.import_selected_positions = sum(1 for p in overview.positions if p.selected)
-                    state.import_total_tilt_series = overview.total_tilt_series
-                    state.import_selected_tilt_series = overview.selected_tilt_series
-                    state.import_source_directory = overview.source_directory or ""
-                    state.import_frame_extension = overview.frame_extension or ""
-                    state.import_position_details = [
-                        ImportPositionSummary(
-                            stage_position=p.stage_position,
-                            beam_count=p.beam_count,
-                            tilt_count=p.total_tilts,
-                            selected=p.selected,
-                        )
-                        for p in overview.positions
-                    ]
-                    state.mark_dirty()
-                    state.save_if_dirty()
+                # Show success state before navigating
+                if progress_container:
+                    progress_container.clear()
+                    with progress_container:
+                        with ui.row().classes("w-full justify-center items-center py-6"):
+                            ui.icon("check_circle", size="md").style(f"color: {CLR_SUCCESS};")
+                            ui.label(f"Project '{di.project_name}' created — opening workspace...").style(
+                                f"{FONT} font-size: 11px; color: {CLR_SUCCESS}; margin-left: 8px;"
+                            )
 
-                ui.notify(f"Project '{di.project_name}' created successfully", type="positive")
                 prefs_service.prefs.add_recent_root(di.project_base_path, label=di.project_name)
                 prefs_service.save_to_app_storage(app.storage.user)
-                if "rebuild_pipeline_ui" in callbacks:
-                    callbacks["rebuild_pipeline_ui"]()
+                await asyncio.sleep(0.8)
+                # Navigate via JS — the NiceGUI slot context may be stale after the sleep
+                ui.run_javascript('window.location.href = "/workspace"')
+                return
             else:
                 ui.notify(f"Failed: {result.get('error')}", type="negative")
         except Exception as e:
             import traceback
 
             traceback.print_exc()
-            ui.notify(f"Error creating project: {e}", type="negative")
+            try:
+                ui.notify(f"Error creating project: {e}", type="negative")
+            except RuntimeError:
+                pass  # slot already deleted (e.g. page navigated away)
         finally:
-            if btn:
-                btn.props(remove="loading")
-            update_locking_state()
+            try:
+                if btn:
+                    btn.props(remove="loading")
+                update_locking_state()
+            except RuntimeError:
+                pass
 
     async def handle_load_project_click():
         start = ui_mgr.data_import.project_base_path or "~"
@@ -893,10 +1026,35 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 )
 
         try:
+            from services.configs.dataset_selection_cache import apply_selections, save_selections
+
             overview = await backend.parse_dataset_overview(mdocs_glob, frames_dir)
+            # Restore previously saved selections for this dataset
+            restored = apply_selections(mdocs_glob, overview)
+
             local_refs["current_dataset_overview"] = overview
             container.clear()
             with container:
+                # "Save Selection" button row
+                with ui.row().classes("w-full items-center justify-between mb-1"):
+                    if restored:
+                        ui.label("Restored saved selection").style(
+                            f"{FONT} font-size: 9px; color: {CLR_SUCCESS}; font-style: italic;"
+                        )
+                    else:
+                        ui.element("div")  # spacer
+
+                    def _do_save_selection():
+                        ov = local_refs.get("current_dataset_overview")
+                        mg = ui_mgr.data_import.mdocs_glob
+                        if ov and mg:
+                            save_selections(mg, ov)
+                            ui.notify("Selection saved", type="positive")
+
+                    ui.button("Save selection", on_click=_do_save_selection).props("flat dense no-caps").style(
+                        f"{FONT} font-size: 10px; color: {CLR_LABEL}; padding: 2px 8px;"
+                    )
+
                 build_dataset_overview_panel(overview, on_change=update_create_button_state)
         except Exception as e:
             logger.info("Dataset parsing failed: %s", e)
@@ -914,23 +1072,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 ui.button("Close", on_click=dialog.close).props("flat no-caps").style(f"{FONT} font-size: 12px;")
         dialog.open()
 
-    _original_update_mdocs = update_mdocs_validation
-    _parse_timer_ref = [None]
-
-    def update_mdocs_validation_with_autodetect():
-        _original_update_mdocs()
-        if ui_mgr.data_import.mdocs_valid:
-            # Use a short timer to stay within NiceGUI's UI context
-            if _parse_timer_ref[0]:
-                _parse_timer_ref[0].cancel()
-
-            async def _do_parse_and_detect():
-                await _auto_detect_if_ready()
-                await parse_and_display_dataset()
-
-            _parse_timer_ref[0] = ui.timer(0.1, lambda: asyncio.create_task(_do_parse_and_detect()), once=True)
-
-    update_mdocs_validation = update_mdocs_validation_with_autodetect
+    # NOTE: autodetect + dataset parsing is triggered from within
+    # update_mdocs_validation's async _finish() callback when the
+    # glob check succeeds — no separate wrapper needed.
 
     # =========================================================================
     # LAYOUT

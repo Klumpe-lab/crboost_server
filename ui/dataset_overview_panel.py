@@ -8,7 +8,7 @@ from typing import Callable, Dict, List, Optional
 
 from nicegui import ui
 
-from services.dataset_models import DatasetOverview, AcquisitionSummary
+from services.dataset_models import DatasetOverview
 from ui.styles import MONO, SANS as FONT
 
 CLR_HEADING = "#0f172a"
@@ -302,9 +302,10 @@ def _param_chip(label, values, unit, fmt=".2f", category=None):
 
 
 def _build_position_group(pos, overview, refresh_all, row_registry):
-    """Build a collapsible position header + tilt-series rows. Returns pos checkbox."""
+    """Build a collapsible position header + lazily-rendered tilt-series rows. Returns pos checkbox."""
     ts_container_ref = [None]
-    expanded_ref = [True]
+    expanded_ref = [False]
+    rendered_ref = [False]
     chevron_ref = [None]
     ts_checkboxes = []
     pos_cb_ref = [None]
@@ -326,8 +327,62 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
         pos.selected = not none_sel
         refresh_all()
 
+    def _ensure_rendered():
+        """Populate tilt-series rows on first expand (lazy rendering)."""
+        if rendered_ref[0]:
+            return
+        rendered_ref[0] = True
+        with ts_container_ref[0]:
+            for ts_idx, ts in enumerate(pos.tilt_series):
+                is_last = ts_idx == len(pos.tilt_series) - 1
+                border = "" if is_last else f"border-bottom: 1px solid {CLR_BORDER};"
+                a_lo, a_hi = ts.angle_range
+                ts_angle = f"{a_lo:+.1f}\u00b0..{a_hi:+.1f}\u00b0"
+
+                row_el = (
+                    ui.element("div")
+                    .classes("w-full")
+                    .style(f"display: grid; grid-template-columns: {COL_WIDTHS}; background: white; {border}")
+                )
+                row_registry[ts.ts_label] = row_el
+
+                with row_el:
+                    cb = (
+                        ui.checkbox(value=ts.selected, on_change=lambda e, t=ts: on_ts_checkbox(t, e))
+                        .props(CB_PROPS)
+                        .style(CB_STYLE)
+                    )
+                    ts_checkboxes.append(cb)
+
+                    ui.label("").style(CELL)
+                    ui.label(str(ts.beam_position)).style(f"{MONO} font-size: 10px; color: {CLR_LABEL}; {CELL}")
+
+                    tc_style = f"{MONO} font-size: 10px; {CELL}"
+                    if ts.missing_frames > 0:
+                        tc_style += f" color: {CLR_ERROR};"
+                        tc_text = f"{ts.tilt_count}({ts.missing_frames}?)"
+                    else:
+                        tc_style += f" color: {CLR_LABEL};"
+                        tc_text = str(ts.tilt_count)
+                    ui.label(tc_text).style(tc_style)
+
+                    ui.label(ts_angle).style(f"{MONO} font-size: 10px; color: {CLR_LABEL}; {CELL}")
+                    _acq_cell(ts.pixel_size, ".3f")
+                    _acq_cell(ts.voltage, ".0f")
+                    _acq_cell(ts.dose_per_tilt, ".1f")
+                    _acq_cell(ts.tilt_axis, ".1f")
+
+                    mdoc_display = str(ts.mdoc_path)
+                    ui.label(mdoc_display).style(
+                        f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; {CELL} "
+                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; "
+                        "text-align: left;"
+                    ).tooltip(mdoc_display)
+
     def toggle_expand():
         expanded_ref[0] = not expanded_ref[0]
+        if expanded_ref[0]:
+            _ensure_rendered()
         if ts_container_ref[0]:
             ts_container_ref[0].set_visibility(expanded_ref[0])
         if chevron_ref[0]:
@@ -359,7 +414,7 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
         pos_cb_ref[0] = pos_cb
 
         with ui.row().classes("items-center gap-0.5").style(f"{CELL}"):
-            chevron = ui.icon("expand_more", size="12px").style(f"color: {CLR_SUBLABEL};")
+            chevron = ui.icon("chevron_right", size="12px").style(f"color: {CLR_SUBLABEL};")
             chevron_ref[0] = chevron
             ui.label(str(pos.stage_position)).style(f"{MONO} font-size: 11px; font-weight: 600; color: {CLR_HEADING};")
 
@@ -369,63 +424,14 @@ def _build_position_group(pos, overview, refresh_all, row_registry):
         for _ in range(5):
             ui.label("").style(CELL)
 
-    # --- Tilt-series child rows ---
+    # --- Tilt-series container (starts hidden, populated lazily on first expand) ---
     ts_container = ui.column().classes("w-full gap-0")
+    ts_container.set_visibility(False)
     ts_container_ref[0] = ts_container
 
-    with ts_container:
-        for ts_idx, ts in enumerate(pos.tilt_series):
-            is_last = ts_idx == len(pos.tilt_series) - 1
-            border = "" if is_last else f"border-bottom: 1px solid {CLR_BORDER};"
-            a_lo, a_hi = ts.angle_range
-            ts_angle = f"{a_lo:+.1f}\u00b0..{a_hi:+.1f}\u00b0"
-
-            row_el = (
-                ui.element("div")
-                .classes("w-full")
-                .style(f"display: grid; grid-template-columns: {COL_WIDTHS}; background: white; {border}")
-            )
-            row_registry[ts.ts_label] = row_el
-
-            with row_el:
-                cb = (
-                    ui.checkbox(value=ts.selected, on_change=lambda e, t=ts: on_ts_checkbox(t, e))
-                    .props(CB_PROPS)
-                    .style(CB_STYLE)
-                )
-                ts_checkboxes.append(cb)
-
-                ui.label("").style(CELL)
-
-                ui.label(str(ts.beam_position)).style(f"{MONO} font-size: 10px; color: {CLR_LABEL}; {CELL}")
-
-                tc_style = f"{MONO} font-size: 10px; {CELL}"
-                if ts.missing_frames > 0:
-                    tc_style += f" color: {CLR_ERROR};"
-                    tc_text = f"{ts.tilt_count}({ts.missing_frames}?)"
-                else:
-                    tc_style += f" color: {CLR_LABEL};"
-                    tc_text = str(ts.tilt_count)
-                ui.label(tc_text).style(tc_style)
-
-                ui.label(ts_angle).style(f"{MONO} font-size: 10px; color: {CLR_LABEL}; {CELL}")
-
-                _acq_cell(ts.pixel_size, ".3f")
-                _acq_cell(ts.voltage, ".0f")
-                _acq_cell(ts.dose_per_tilt, ".1f")
-                _acq_cell(ts.tilt_axis, ".1f")
-
-                ui.label(ts.mdoc_filename).style(
-                    f"{MONO} font-size: 9px; color: {CLR_SUBLABEL}; {CELL} "
-                    "overflow: hidden; text-overflow: ellipsis; "
-                    "white-space: nowrap;"
-                )
-
-    if pos.beam_count > 6:
-        expanded_ref[0] = False
-        ts_container.set_visibility(False)
-        if chevron_ref[0]:
-            chevron_ref[0].text = "chevron_right"
+    # Auto-expand for small datasets (≤50 total tilt-series and ≤6 beams)
+    if overview.total_tilt_series <= 50 and pos.beam_count <= 6:
+        toggle_expand()
 
     return pos_cb
 
