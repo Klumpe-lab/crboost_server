@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import ClassVar, Dict, List, Optional, Set, Tuple
 from pydantic import Field
 
+from services.computing.slurm_service import SlurmConfig
+from services.configs.config_service import get_config_service
 from services.jobs._base import AbstractJobParams
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
@@ -27,7 +29,8 @@ class FsMotionCtfParams(AbstractJobParams):
         "perdevice",
         "do_at_most",
         "gain_operations",
-        "do_phase"
+        "do_phase",
+        "array_throttle",
     }
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
@@ -48,25 +51,45 @@ class FsMotionCtfParams(AbstractJobParams):
         ),
     ]
 
-    do_phase          : bool          = Field(default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)")
-    m_range_min_max   : str           = Field(default="500:10", description="Motion estimation range min:max in Angstroms")
-    m_bfac            : int           = Field(default=-500, description="B-factor for motion estimation (negative = more smoothing)")
-    m_grid            : str           = Field(default="1x1x3", description="Motion estimation grid XxYxZ")
-    c_range_min_max   : str           = Field(default="30:6.0", description="CTF fitting resolution range min:max in Angstroms")
-    c_defocus_min_max : str           = Field(default="1.1:8", description="Defocus search range min:max in microns")
-    c_grid            : str           = Field(default="2x2x1", description="CTF estimation grid XxYxZ")
-    c_use_sum         : bool          = Field(default=False, description="Use frame sum for CTF estimation instead of individual frames")
-    c_window          : int           = Field(default=512, ge=128, description="CTF estimation window size in pixels")
-    out_average_halves: bool          = Field(default=True, description="Output half-set averages for independent validation")
-    out_skip_first    : int           = Field(default=0, description="Skip this many initial tilts")
-    out_skip_last     : int           = Field(default=0, description="Skip this many final tilts")
-    perdevice         : int           = Field(default=1, ge=0, le=8, description="Parallel tilt series per GPU")
-    do_at_most        : int           = Field(default=-1, description="Process at most N tilt series (-1 = all)")
-    gain_operations   : Optional[str] = Field(default=None, description="Gain reference operations (e.g. flip, rotate)")
+    do_phase: bool = Field(default=False, description="Estimate phase shifts (CTF phase plate or spurious phase)")
+    m_range_min_max: str = Field(default="500:10", description="Motion estimation range min:max in Angstroms")
+    m_bfac: int = Field(default=-500, description="B-factor for motion estimation (negative = more smoothing)")
+    m_grid: str = Field(default="1x1x3", description="Motion estimation grid XxYxZ")
+    c_range_min_max: str = Field(default="30:6.0", description="CTF fitting resolution range min:max in Angstroms")
+    c_defocus_min_max: str = Field(default="1.1:8", description="Defocus search range min:max in microns")
+    c_grid: str = Field(default="2x2x1", description="CTF estimation grid XxYxZ")
+    c_use_sum: bool = Field(default=False, description="Use frame sum for CTF estimation instead of individual frames")
+    c_window: int = Field(default=512, ge=128, description="CTF estimation window size in pixels")
+    out_average_halves: bool = Field(default=True, description="Output half-set averages for independent validation")
+    out_skip_first: int = Field(default=0, description="Skip this many initial tilts")
+    out_skip_last: int = Field(default=0, description="Skip this many final tilts")
+    perdevice: int = Field(default=1, ge=0, le=8, description="Parallel tilt series per GPU")
+    do_at_most: int = Field(default=-1, description="Process at most N tilt series (-1 = all)")
+    gain_operations: Optional[str] = Field(default=None, description="Gain reference operations (e.g. flip, rotate)")
+    array_throttle: int = Field(
+        default=8, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series motion/CTF"
+    )
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
+
+    def _get_queue_options(self) -> List[Tuple[str, str]]:
+        """
+        Override: fs_motion_and_ctf supervisor is lightweight (reads STAR, dispatches array).
+        The user-facing slurm config describes PER-TASK resources for the array.
+        """
+        sup = get_config_service().supervisor_slurm_defaults
+        options = [
+            ("do_queue", "Yes"),
+            ("queuename", sup.partition),
+            ("qsub", "sbatch"),
+            ("qsubscript", "qsub.sh"),
+            ("min_dedicated", "1"),
+        ]
+        for field_name, var_name in SlurmConfig.QSUB_EXTRA_MAPPING.items():
+            options.append((var_name, str(getattr(sup, field_name))))
+        return options
 
     def is_driver_job(self) -> bool:
         return True

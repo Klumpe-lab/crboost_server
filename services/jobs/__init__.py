@@ -9,6 +9,7 @@ Legacy shim:            from services.job_models import FsMotionCtfParams  (stil
 from services.jobs._base import AbstractJobParams, ExtractionCutoffMethod, SymmetryGroup, TemplateWorkbenchState
 from services.jobs.import_movies import ImportMoviesParams
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
+from services.jobs.ts_import import TsImportParams
 from services.jobs.ts_alignment import TsAlignmentParams
 from services.jobs.ts_ctf import TsCtfParams
 from services.jobs.tilt_filter import TiltFilterParams
@@ -30,6 +31,7 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
     return {
         JobType.IMPORT_MOVIES: ImportMoviesParams,
         JobType.FS_MOTION_CTF: FsMotionCtfParams,
+        JobType.TS_IMPORT: TsImportParams,
         JobType.TS_ALIGNMENT: TsAlignmentParams,
         JobType.TS_CTF: TsCtfParams,
         JobType.TILT_FILTER: TiltFilterParams,
@@ -51,6 +53,7 @@ __all__ = [
     "TemplateWorkbenchState",
     "ImportMoviesParams",
     "FsMotionCtfParams",
+    "TsImportParams",
     "TsAlignmentParams",
     "TsCtfParams",
     "TiltFilterParams",
