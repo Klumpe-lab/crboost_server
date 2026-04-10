@@ -177,6 +177,7 @@ class PipelineOrchestratorService:
 
         driver_map = {
             JobType.FS_MOTION_CTF: "fs_motion_and_ctf.py",
+            JobType.TS_IMPORT: "ts_import.py",
             JobType.TS_ALIGNMENT: "ts_alignment.py",
             JobType.TS_CTF: "ts_ctf.py",
             JobType.TILT_FILTER: "tilt_filter.py",
@@ -438,6 +439,7 @@ class PipelineOrchestratorService:
 class JobTypeResolver:
     DRIVER_TO_JOBTYPE = {
         "fs_motion_and_ctf.py": "fsMotionAndCtf",
+        "ts_import.py": "tsImport",
         "ts_alignment.py": "aligntiltsWarp",
         "ts_ctf.py": "tsCtf",
         "ts_reconstruct.py": "tsReconstruct",

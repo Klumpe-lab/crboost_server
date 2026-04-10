@@ -21,6 +21,9 @@ class JobFileType(str, Enum):
     WARP_FRAMESERIES_DIR = "warp_frameseries_dir"  # External/jobXXX/warp_frameseries/
     WARP_TILTSERIES_SETTINGS = "warp_tiltseries_settings"  # External/jobXXX/warp_tiltseries.settings
 
+    # ts_import outputs
+    TOMOSTAR_DIR = "tomostar_dir"  # External/jobXXX/tomostar/
+
     # Warp tiltseries
     ALIGNED_TILT_SERIES_STAR = "aligned_tilt_series_star"  # External/jobXXX/aligned_tilt_series.star
     TS_CTF_TILT_SERIES_STAR = "ts_ctf_tilt_series_star"  # External/jobXXX/ts_ctf_tilt_series.star

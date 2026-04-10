@@ -514,19 +514,16 @@ def get_context_paths(job_type: JobType, job_model: "AbstractJobParams", job_dir
     project_root = job_model.project_root
     paths: Dict[str, str] = {"job_dir": str(job_dir), "project_root": str(project_root)}
 
-    if job_type in [JobType.IMPORT_MOVIES, JobType.FS_MOTION_CTF, JobType.TS_ALIGNMENT]:
+    if job_type in [JobType.IMPORT_MOVIES, JobType.FS_MOTION_CTF, JobType.TS_IMPORT]:
         paths["mdoc_dir"] = str(project_root / "mdoc")
 
     if job_type in [JobType.IMPORT_MOVIES, JobType.FS_MOTION_CTF]:
         paths["frames_dir"] = str(project_root / "frames")
 
-    if job_type in [
-        JobType.IMPORT_MOVIES,
-        JobType.FS_MOTION_CTF,
-        JobType.TS_ALIGNMENT,
-        JobType.TS_CTF,
-        JobType.TS_RECONSTRUCT,
-    ]:
+    # tomostar_dir: for TS_IMPORT it's an output (resolved by IO slots).
+    # For alignment/ctf/reconstruct it comes from upstream via IO slots.
+    # Only import_movies and fs_motion_ctf still use the project-root fallback.
+    if job_type in [JobType.IMPORT_MOVIES, JobType.FS_MOTION_CTF]:
         paths["tomostar_dir"] = str(project_root / "tomostar")
 
     if job_type == JobType.IMPORT_MOVIES:

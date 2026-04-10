@@ -23,6 +23,7 @@ from services.jobs import (  # noqa: F401
     TemplateWorkbenchState,
     TsAlignmentParams,
     TsCtfParams,
+    TsImportParams,
     TsReconstructParams,
     jobtype_paramclass,
 )

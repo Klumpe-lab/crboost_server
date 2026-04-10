@@ -39,6 +39,7 @@ class JobType(str, Enum):
     IMPORT_MOVIES = "importmovies"
     FS_MOTION_CTF = "fsMotionAndCtf"
     TS_ALIGNMENT = "aligntiltsWarp"
+    TS_IMPORT = "tsImport"
     TS_CTF = "tsCtf"
     TILT_FILTER = "tiltFilter"
     TS_RECONSTRUCT = "tsReconstruct"

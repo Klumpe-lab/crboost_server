@@ -28,6 +28,21 @@ slurm_defaults:
   time: "2:00:00"
 
 
+# Resources for the lightweight supervisor sbatch used by array-dispatching jobs
+# (ts_reconstruct, ts_alignment, ts_ctf, fs_motion_and_ctf).
+# The supervisor submits a child SLURM array, polls until done, and runs
+# pure-Python metadata aggregation — no GPU work. The user-facing slurm_defaults
+# above describe PER-TASK resources for the array's child sbatch.
+supervisor_slurm:
+  partition: "gpu"
+  constraint: ""
+  nodes: 1
+  ntasks_per_node: 1
+  cpus_per_task: 1
+  gres: "gpu:1"
+  mem: "4G"
+  time: "4:00:00"
+
 processing_defaults:
   reconstruction_binning: 4
 

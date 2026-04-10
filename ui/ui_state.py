@@ -133,6 +133,7 @@ class PanelWidgetRefs:
 PIPELINE_ORDER: List[JobType] = [
     JobType.IMPORT_MOVIES,
     JobType.FS_MOTION_CTF,
+    JobType.TS_IMPORT,
     JobType.TS_ALIGNMENT,
     JobType.TS_CTF,
     JobType.TILT_FILTER,
@@ -149,6 +150,7 @@ PIPELINE_ORDER: List[JobType] = [
 JOB_DISPLAY_NAMES: Dict[JobType, str] = {
     JobType.IMPORT_MOVIES: "Import",
     JobType.FS_MOTION_CTF: "Motion & CTF",
+    JobType.TS_IMPORT: "TS Import",
     JobType.TS_ALIGNMENT: "Alignment",
     JobType.TS_CTF: "TS CTF",
     JobType.TILT_FILTER: "Tilt Filter",

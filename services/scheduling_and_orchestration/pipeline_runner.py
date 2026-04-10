@@ -73,7 +73,18 @@ class PipelineRunnerService:
                         if sj.stdout_path:
                             try:
                                 resolved_dir = str(Path(sj.stdout_path).resolve().parent)
-                                slurm_jobs_by_dir[resolved_dir] = sj
+                                existing = slurm_jobs_by_dir.get(resolved_dir)
+                                if existing is None:
+                                    slurm_jobs_by_dir[resolved_dir] = sj
+                                else:
+                                    # For array jobs, the supervisor (run.out) and child tasks
+                                    # (task_0.out, task_1.out, ...) all resolve to the same dir.
+                                    # Prefer the supervisor so the model's slurm_job_id is the
+                                    # supervisor ID, which is what cancel_job needs to scancel.
+                                    existing_is_task = Path(existing.stdout_path).name.startswith("task_")
+                                    new_is_task = Path(sj.stdout_path).name.startswith("task_")
+                                    if existing_is_task and not new_is_task:
+                                        slurm_jobs_by_dir[resolved_dir] = sj
                             except Exception as e:
                                 logger.info("Could not resolve stdout path for SLURM job %s: %s", sj.job_id, e)
                 except Exception as e:
@@ -156,6 +167,14 @@ class PipelineRunnerService:
                     new_status = JobStatus.QUEUED if sj.state == "PENDING" else JobStatus.RUNNING
                 else:
                     new_status = JobStatus.RUNNING
+
+                # For array-dispatching jobs: if the supervisor wrote a task
+                # manifest, the job is actively running even if the supervisor's
+                # own SLURM state is still PENDING (children may already be running).
+                if new_status == JobStatus.QUEUED:
+                    manifest_path = Path(project_path) / job_path_clean / ".task_manifest.json"
+                    if manifest_path.exists():
+                        new_status = JobStatus.RUNNING
             else:
                 try:
                     new_status = JobStatus(status_str)
@@ -534,11 +553,13 @@ class PipelineRunnerService:
         """
         Full stop sequence:
         1. Terminate the schemer process
-        2. scancel any live SLURM jobs
+        2. scancel any live SLURM jobs (array task IDs normalized to parent IDs)
         3. Patch default_pipeline.star: Running/Pending -> Failed
         4. Update in-memory job models to FAILED
         5. Set pipeline_active=False and persist
         """
+        from services.computing.slurm_service import normalize_slurm_ids
+
         errors = []
 
         resolved = project_dir.resolve()
@@ -557,8 +578,33 @@ class PipelineRunnerService:
             except Exception as e:
                 errors.append(f"schemer termination: {e}")
 
-        if slurm_job_ids:
-            result = await self.backend.slurm_service.scancel_jobs(slurm_job_ids)
+        # Also collect array_job_ids from any task manifests in running job dirs.
+        state = self.backend.state_service.state_for(project_dir)
+        for job_model in state.jobs.values():
+            if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.SCHEDULED):
+                continue
+            job_dir_str = (job_model.paths or {}).get("job_dir")
+            if not job_dir_str:
+                continue
+            manifest_path = Path(job_dir_str) / ".task_manifest.json"
+            if manifest_path.exists():
+                try:
+                    import json
+
+                    manifest = json.loads(manifest_path.read_text())
+                    array_jid = manifest.get("array_job_id")
+                    if array_jid:
+                        slurm_job_ids.append(str(array_jid))
+                except Exception:
+                    pass
+
+        # Normalize array child IDs (28666490_1) → parent IDs (28666490) so a
+        # single scancel kills entire arrays instead of individual tasks.
+        normalized_ids = normalize_slurm_ids(slurm_job_ids) if slurm_job_ids else []
+        logger.info("stop_and_cleanup: normalized SLURM IDs to cancel: %s", normalized_ids)
+
+        if normalized_ids:
+            result = await self.backend.slurm_service.scancel_jobs(normalized_ids)
             if not result["success"]:
                 errors.append(f"scancel: {result.get('error')}")
 
@@ -588,7 +634,7 @@ class PipelineRunnerService:
         if errors:
             logger.info("Stop completed with non-fatal errors: %s", errors)
             return {"success": False, "errors": errors}
-        return {"success": True, "cancelled_slurm_jobs": len(slurm_job_ids)}
+        return {"success": True, "cancelled_slurm_jobs": len(normalized_ids)}
 
     async def reset_submission_failure(self, project_dir: Path):
         """
@@ -621,6 +667,8 @@ class PipelineRunnerService:
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
     async def cancel_job(self, project_dir: Path, instance_id: str) -> Dict[str, Any]:
+        from services.computing.slurm_service import normalize_slurm_ids
+
         state = self.backend.state_service.state_for(project_dir)
         job_model = state.jobs.get(instance_id)
 
@@ -635,18 +683,48 @@ class PipelineRunnerService:
             return {"success": False, "error": "Job has no relion_job_name -- cannot locate its directory"}
 
         job_dir = project_dir / relion_job_name.rstrip("/")
-        logger.info("Looking for SLURM job with stdout in: %s", job_dir.resolve())
-        slurm_job = await self.backend.slurm_service.find_slurm_job_for_directory(job_dir)
 
-        cancelled_id = None
-        if slurm_job:
-            result = await self.backend.slurm_service.scancel_jobs([slurm_job.job_id])
-            cancelled_id = slurm_job.job_id
+        # ── Collect ALL related SLURM job IDs ──
+        # For array jobs, the same directory can contain a supervisor (run.out) plus
+        # N array tasks (task_0.out, task_1.out, ...).  We need to scancel every one
+        # of them — and normalize array child IDs (28666490_1) to parent IDs (28666490)
+        # so a single scancel kills the whole array.
+        raw_ids: list = []
+
+        logger.info("Looking for SLURM jobs with stdout in: %s", job_dir.resolve())
+        slurm_jobs = await self.backend.slurm_service.find_all_slurm_jobs_for_directory(job_dir)
+        for sj in slurm_jobs:
+            raw_ids.append(sj.job_id)
+
+        # Also check the task manifest for an explicit array_job_id written by the
+        # supervisor. This is the most reliable source because the supervisor records
+        # the parent ID at sbatch time.
+        manifest_path = job_dir / ".task_manifest.json"
+        if manifest_path.exists():
+            try:
+                import json
+
+                manifest = json.loads(manifest_path.read_text())
+                array_jid = manifest.get("array_job_id")
+                if array_jid:
+                    raw_ids.append(str(array_jid))
+                    logger.info("Found array_job_id %s in task manifest", array_jid)
+            except Exception as e:
+                logger.info("Could not read task manifest: %s", e)
+
+        ids_to_cancel = normalize_slurm_ids(raw_ids) if raw_ids else []
+        logger.info("IDs to cancel (normalized): %s", ids_to_cancel)
+
+        cancelled_ids: list = []
+        if ids_to_cancel:
+            result = await self.backend.slurm_service.scancel_jobs(ids_to_cancel)
+            cancelled_ids = ids_to_cancel
             if not result["success"]:
-                logger.info("scancel warning for %s: %s", slurm_job.job_id, result.get("error"))
+                logger.info("scancel warning: %s", result.get("error"))
         else:
-            logger.info("No SLURM job found for %s -- may have already finished", job_dir)
+            logger.info("No SLURM jobs found for %s -- may have already finished", job_dir)
 
+        # ── Patch RELION pipeline star ──
         pipeline_star = project_dir / "default_pipeline.star"
         if pipeline_star.exists():
             star_handler = self.backend.pipeline_orchestrator.star_handler
@@ -663,6 +741,7 @@ class PipelineRunnerService:
 
         job_model.execution_status = JobStatus.FAILED
 
+        # ── Terminate schemer process ──
         resolved = project_dir.resolve()
         process = self._active_processes.get(resolved)
         if process:
@@ -677,9 +756,9 @@ class PipelineRunnerService:
 
         return {
             "success": True,
-            "cancelled_slurm_id": cancelled_id,
+            "cancelled_slurm_ids": cancelled_ids,
             "message": (
                 f"Cancelled {relion_job_name}"
-                + (f" (SLURM {cancelled_id})" if cancelled_id else " (no active SLURM job found)")
+                + (f" (SLURM {', '.join(cancelled_ids)})" if cancelled_ids else " (no active SLURM jobs found)")
             ),
         }

@@ -227,6 +227,10 @@ class PipelineBuilderPanel:
         if instance_id is None:
             instance_id = next_instance_id(job_type, self.ui_mgr.selected_jobs, list(state.jobs.keys()))
 
+        # Auto-add prerequisite jobs that this job type depends on.
+        # e.g. alignment requires tsImport to exist in the pipeline.
+        self._ensure_prerequisites(job_type, state)
+
         if not self.ui_mgr.add_instance(instance_id, job_type):
             return
 
@@ -295,6 +299,30 @@ class PipelineBuilderPanel:
         if self.ui_mgr.is_project_created:
             asyncio.create_task(self.state_service.save_project())
         self.rebuild_pipeline_ui()
+
+    # Job types that require a prerequisite job to exist in the pipeline.
+    # When adding the key job type, the value job type is auto-added if missing.
+    _PREREQUISITES: Dict[JobType, JobType] = {JobType.TS_ALIGNMENT: JobType.TS_IMPORT}
+
+    def _ensure_prerequisites(self, job_type: JobType, state):
+        """Auto-add prerequisite jobs that this job type depends on."""
+        prereq = self._PREREQUISITES.get(job_type)
+        if prereq is None:
+            return
+
+        # Check if the prerequisite already exists in the pipeline
+        prereq_id = prereq.value
+        if prereq_id in state.jobs:
+            # Also ensure it's in the UI selected jobs list
+            if prereq_id not in self.ui_mgr.selected_jobs:
+                self.ui_mgr.add_instance(prereq_id, prereq)
+            return
+
+        # Auto-add the prerequisite
+        self.ui_mgr.add_instance(prereq_id, prereq)
+        template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
+        star = template_base / prereq.value / "job.star"
+        state.ensure_job_initialized(prereq, instance_id=prereq_id, template_path=star if star.exists() else None)
 
     @staticmethod
     def _find_existing_interactive(job_type: JobType, state) -> Optional[str]:

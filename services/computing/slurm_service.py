@@ -121,6 +121,27 @@ class UserJob:
     stdout_path: str = ""  # %o -- path to stdout file, contains job dir
 
 
+def normalize_slurm_ids(job_ids: List[str]) -> List[str]:
+    """
+    Deduplicate SLURM job IDs by normalizing array task IDs to their parent.
+
+    Array tasks look like '28666490_1', '28666490_[3-14%8]', etc.
+    Normalizing to '28666490' ensures a single scancel kills the entire array.
+    Non-array IDs (e.g., '28666489') pass through unchanged.
+
+    Example:
+        ['28666489', '28666490_1', '28666490_2', '28666490_[3-14%8]']
+        → ['28666489', '28666490']
+    """
+    result: set = set()
+    for jid in job_ids:
+        if "_" in jid:
+            result.add(jid.split("_", 1)[0])
+        else:
+            result.add(jid)
+    return sorted(result)
+
+
 class SlurmService:
     def __init__(self, username: str):
         self.username = username
@@ -131,9 +152,7 @@ class SlurmService:
     async def _run_command(self, cmd: List[str]) -> tuple[bool, str, str]:
         try:
             process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
             success = process.returncode == 0
@@ -152,22 +171,20 @@ class SlurmService:
         if not force_refresh and self._is_cache_valid(cache_key):
             return self._cache[cache_key]
 
-        success, stdout, stderr = await self._run_command([
-            "sinfo", "-o", "%P|%a|%D|%l|%m|%c|%G", "--noheader"
-        ])
+        success, stdout, stderr = await self._run_command(["sinfo", "-o", "%P|%a|%D|%l|%m|%c|%G", "--noheader"])
 
         if not success:
             logger.error("Failed to get partition info: %s", stderr)
             return []
 
         partitions_dict = {}
-        for line in stdout.strip().split('\n'):
+        for line in stdout.strip().split("\n"):
             if not line:
                 continue
-            parts = line.split('|')
+            parts = line.split("|")
             if len(parts) < 7:
                 continue
-            name = parts[0].rstrip('*')
+            name = parts[0].rstrip("*")
             if name in partitions_dict:
                 continue
             state = parts[1]
@@ -180,12 +197,12 @@ class SlurmService:
             gpu_count = 0
             gpu_type = None
             if gres and gres != "(null)":
-                gpu_match = re.search(r'gpu:(\w+):(\d+)', gres)
+                gpu_match = re.search(r"gpu:(\w+):(\d+)", gres)
                 if gpu_match:
                     gpu_type = gpu_match.group(1)
                     gpu_count = int(gpu_match.group(2))
                 else:
-                    gpu_match = re.search(r'gpu:(\d+)', gres)
+                    gpu_match = re.search(r"gpu:(\d+)", gres)
                     if gpu_match:
                         gpu_count = int(gpu_match.group(1))
 
@@ -198,7 +215,7 @@ class SlurmService:
                 default_mem_per_cpu=mem,
                 available_cpus=cpus,
                 available_gpus=gpu_count,
-                gpu_type=gpu_type
+                gpu_type=gpu_type,
             )
             partitions_dict[name] = partition
 
@@ -222,29 +239,29 @@ class SlurmService:
             return []
 
         nodes = []
-        for line in stdout.strip().split('\n'):
+        for line in stdout.strip().split("\n"):
             if not line:
                 continue
-            parts = line.split('|')
+            parts = line.split("|")
             if len(parts) < 7:
                 continue
             name = parts[0]
-            part = parts[1].rstrip('*')
+            part = parts[1].rstrip("*")
             state = parts[2]
             cpus = int(parts[3]) if parts[3].isdigit() else 0
             mem = int(parts[4]) if parts[4].isdigit() else 0
             gres = parts[5]
-            features = parts[6].split(',') if parts[6] != "(null)" else []
+            features = parts[6].split(",") if parts[6] != "(null)" else []
 
             gpu_count = 0
             gpu_type = None
             if gres and gres != "(null)":
-                gpu_match = re.search(r'gpu:(\w+):(\d+)', gres)
+                gpu_match = re.search(r"gpu:(\w+):(\d+)", gres)
                 if gpu_match:
                     gpu_type = gpu_match.group(1)
                     gpu_count = int(gpu_match.group(2))
                 else:
-                    gpu_match = re.search(r'gpu:(\d+)', gres)
+                    gpu_match = re.search(r"gpu:(\d+)", gres)
                     if gpu_match:
                         gpu_count = int(gpu_match.group(1))
 
@@ -256,7 +273,7 @@ class SlurmService:
                 memory_mb=mem,
                 gpus=gpu_count,
                 gpu_type=gpu_type,
-                features=features
+                features=features,
             )
             nodes.append(node)
 
@@ -273,11 +290,9 @@ class SlurmService:
 
         # %o = stdout file path -- parent dir is the job directory (e.g. External/job002)
         # %Z = submit working directory -- this is the project root, same for all jobs
-        success, stdout, stderr = await self._run_command([
-            "squeue", "-u", self.username,
-            "-o", "%i|%j|%P|%T|%M|%D|%N|%Z|%o",
-            "--noheader"
-        ])
+        success, stdout, stderr = await self._run_command(
+            ["squeue", "-u", self.username, "-o", "%i|%j|%P|%T|%M|%D|%N|%Z|%o", "--noheader"]
+        )
 
         logger.debug("squeue success=%s", success)
 
@@ -286,10 +301,10 @@ class SlurmService:
             return []
 
         jobs = []
-        for line in stdout.strip().split('\n'):
+        for line in stdout.strip().split("\n"):
             if not line:
                 continue
-            parts = line.split('|')
+            parts = line.split("|")
             if len(parts) < 8:
                 continue
 
@@ -297,7 +312,7 @@ class SlurmService:
             stdout_path = parts[8].strip() if len(parts) > 8 else ""
 
             # stdout_path may be relative to work_dir -- make it absolute
-            if stdout_path and not stdout_path.startswith('/') and work_dir:
+            if stdout_path and not stdout_path.startswith("/") and work_dir:
                 stdout_path = str(Path(work_dir) / stdout_path)
 
             job = UserJob(
@@ -348,6 +363,39 @@ class SlurmService:
 
         logger.info("No SLURM job found for %s", target)
         return None
+
+    async def find_all_slurm_jobs_for_directory(self, job_dir: Path) -> List[UserJob]:
+        """
+        Find ALL SLURM jobs whose stdout file or work_dir matches the given directory.
+
+        For array jobs, squeue returns each task as a separate row (28666490_1,
+        28666490_2, ...) plus the supervisor job (28666489) — all with stdout paths
+        inside the same directory.  Returns every match so the caller can collect
+        all related IDs for a comprehensive scancel.
+        """
+        jobs = await self.get_user_jobs(force_refresh=True)
+        target = job_dir.resolve()
+        matches: List[UserJob] = []
+
+        for job in jobs:
+            matched = False
+            if job.stdout_path:
+                try:
+                    if Path(job.stdout_path).resolve().parent == target:
+                        matched = True
+                except Exception:
+                    pass
+            if not matched and job.work_dir:
+                try:
+                    if Path(job.work_dir).resolve() == target:
+                        matched = True
+                except Exception:
+                    pass
+            if matched:
+                matches.append(job)
+
+        logger.info("Found %d SLURM job(s) for %s: %s", len(matches), target, [j.job_id for j in matches])
+        return matches
 
     async def scancel_jobs(self, job_ids: List[str]) -> Dict[str, Any]:
         if not job_ids:
@@ -449,6 +497,7 @@ class SlurmService:
         except Exception as e:
             logger.error("Failed to get user jobs: %s", e)
             import traceback
+
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
