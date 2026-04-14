@@ -2,6 +2,7 @@ from nicegui import ui
 from backend import CryoBoostBackend
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
 from ui.species_workbench_panel import build_species_workbench_panel
+from ui.components.ts_journey_view import render_ts_journey_view
 from ui.ui_state import get_ui_state_manager
 
 
@@ -29,8 +30,12 @@ def build_workspace_page(backend: CryoBoostBackend):
     _refs = {}
 
     def _switch_to(mode_name: str):
-        """Switch between pipeline / workbench views."""
-        containers = {"pipeline": _refs.get("pipeline_container"), "workbench": _refs.get("workbench_container")}
+        """Switch between pipeline / workbench / journey views."""
+        containers = {
+            "pipeline": _refs.get("pipeline_container"),
+            "workbench": _refs.get("workbench_container"),
+            "journey": _refs.get("journey_container"),
+        }
         # If already on this mode, toggle back to pipeline
         if _mode["current"] == mode_name and mode_name != "pipeline":
             mode_name = "pipeline"
@@ -49,18 +54,34 @@ def build_workspace_page(backend: CryoBoostBackend):
             if invalidate:
                 invalidate()
 
+        # Rebuild journey view content when switching to it
+        if mode_name == "journey":
+            journey_c = _refs.get("journey_container")
+            if journey_c:
+                journey_c.clear()
+                with journey_c:
+                    render_ts_journey_view(backend, ui_mgr)
+
         set_wb = callbacks.get("set_wb_active")
         if set_wb:
             set_wb(_mode["current"] == "workbench")
 
+        set_journey = callbacks.get("set_journey_active")
+        if set_journey:
+            set_journey(_mode["current"] == "journey")
+
     def _toggle_workbench():
         _switch_to("workbench")
 
+    def _toggle_journey():
+        _switch_to("journey")
+
     def ensure_pipeline_mode():
-        if _mode["current"] == "workbench":
-            _toggle_workbench()
+        if _mode["current"] != "pipeline":
+            _switch_to("pipeline")
 
     callbacks["toggle_workbench"] = _toggle_workbench
+    callbacks["toggle_journey"] = _toggle_journey
     callbacks["ensure_pipeline_mode"] = ensure_pipeline_mode
 
     with ui.element("div").style(
@@ -106,3 +127,8 @@ def build_workspace_page(backend: CryoBoostBackend):
             _refs["workbench_container"] = workbench_container
             with workbench_container:
                 build_species_workbench_panel(backend)
+
+            journey_container = ui.element("div").style(
+                "width: 100%; height: 100%; display: none; flex-direction: column;"
+            )
+            _refs["journey_container"] = journey_container

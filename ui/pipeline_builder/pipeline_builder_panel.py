@@ -19,6 +19,17 @@ from ui.pipeline_builder.job_tab_component import render_job_tab
 logger = logging.getLogger(__name__)
 
 
+def _safe_notify(message: str, *, type: str = "info") -> None:
+    """ui.notify that swallows the "client has been deleted" RuntimeError.
+    Happens when the browser tab closes / refreshes while a long-running
+    backend call (e.g. relion container init) is still awaiting — there's
+    no client left to notify, so we just log it."""
+    try:
+        ui.notify(message, type=type)
+    except RuntimeError as e:
+        logger.info("notify dropped (client gone): %s [%s]", message, e)
+
+
 class PipelineBuilderPanel:
     def __init__(
         self,
@@ -405,7 +416,7 @@ class PipelineBuilderPanel:
 
     async def handle_run_pipeline(self):
         if not self.ui_mgr.is_project_created:
-            ui.notify("Create a project first", type="warning")
+            _safe_notify("Create a project first", type="warning")
             return
 
         await self.state_service.save_project(force=True)
@@ -418,24 +429,42 @@ class PipelineBuilderPanel:
                 required_paths=[],
             )
             if result.get("already_complete"):
-                ui.notify("All selected jobs already completed.", type="info")
+                _safe_notify("All selected jobs already completed.", type="info")
                 return
             if result.get("success"):
                 self.ui_mgr.set_pipeline_running(True)
-                ui.notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
+                _safe_notify(f"Pipeline started (PID: {result.get('pid')})", type="positive")
                 self.ui_mgr.status_timer = ui.timer(3.0, self.poller.safe_status_check)
                 self.rebuild_pipeline_ui()
             else:
-                ui.notify(f"Failed to start: {result.get('error')}", type="negative")
+                logger.warning("start_pipeline failed: %s", result.get("error"))
+                _safe_notify(f"Failed to start: {result.get('error')}", type="negative")
         except Exception as e:
-            ui.notify(f"Error: {e}", type="negative")
+            logger.exception("handle_run_pipeline error")
+            _safe_notify(f"Error: {e}", type="negative")
 
     async def handle_stop_pipeline(self):
+        project_path = self.ui_mgr.project_path
+        project_prefix = str(project_path.resolve()) if project_path else None
+
         slurm_result = await self.backend.slurm_service.get_user_slurm_jobs(force_refresh=True)
-        running_slurm = [j for j in slurm_result.get("jobs", []) if j["state"] in ("RUNNING", "PENDING")]
+        all_jobs = [j for j in slurm_result.get("jobs", []) if j["state"] in ("RUNNING", "PENDING")]
+
+        # Filter to jobs that belong to THIS project (by stdout_path or work_dir)
+        if project_prefix:
+            running_slurm = [
+                j
+                for j in all_jobs
+                if (j.get("stdout_path", "").startswith(project_prefix))
+                or (j.get("work_dir", "").startswith(project_prefix))
+            ]
+        else:
+            running_slurm = all_jobs
 
         with ui.dialog() as dialog, ui.card().style("min-width: 360px; padding: 16px;"):
             ui.label("Stop Pipeline?").classes("text-base font-bold text-gray-800")
+            if project_path:
+                ui.label(str(project_path)).classes("text-xs font-mono text-gray-400 mt-1")
             if running_slurm:
                 ui.label(f"{len(running_slurm)} SLURM job(s) will be cancelled:").classes("text-sm text-gray-600 mt-2")
                 for j in running_slurm:
@@ -443,7 +472,7 @@ class PipelineBuilderPanel:
                         "text-xs font-mono text-gray-500 ml-2"
                     )
             else:
-                ui.label("No active SLURM jobs found.").classes("text-sm text-gray-500 mt-2")
+                ui.label("No active SLURM jobs found for this project.").classes("text-sm text-gray-500 mt-2")
             ui.label("Running and queued jobs will be marked Failed.").classes("text-xs text-amber-600 mt-3")
             with ui.row().classes("mt-4 gap-2 justify-end w-full"):
                 ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
@@ -458,8 +487,8 @@ class PipelineBuilderPanel:
         self.poller.stop_all_timers()
         self.ui_mgr.set_pipeline_running(False)
         slurm_ids = [j["job_id"] for j in running_slurm]
-        result = await self.backend.pipeline_runner.stop_and_cleanup(self.ui_mgr.project_path, slurm_ids)
-        await self.backend.pipeline_runner.sync_all_jobs(str(self.ui_mgr.project_path))
+        result = await self.backend.pipeline_runner.stop_and_cleanup(project_path, slurm_ids)
+        await self.backend.pipeline_runner.sync_all_jobs(str(project_path))
         self.rebuild_pipeline_ui()
 
         if result.get("success"):

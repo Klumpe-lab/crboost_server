@@ -41,7 +41,20 @@ class TsImportParams(AbstractJobParams):
     ]
 
     mdoc_pattern: str = Field(default="*.mdoc")
-    min_intensity: float = Field(default=0.3, ge=0.0, le=1.0)
+    # WarpTools `ts_import` runs a contiguous-run intensity walk outward from
+    # 0-tilt and truncates all tilts past the first one whose
+    # `AverageIntensity >= this * cos(angle) * MaxAverage * 0.999` check fails
+    # (see ImportTiltseries.cs:335-350 and TS_REGISTRY_REFACTOR_PLAN.md).
+    # Setting to 0 makes the threshold 0, but frames with negative-median
+    # MRCs (common for zero-mean motion-corrected high-tilt averages) still
+    # fail `>= 0` and get dropped. CLI validation rejects values < 0, so the
+    # filter cannot be fully disabled. Raising this value filters MORE
+    # aggressively. The ts_alignment / ts_ctf adapters now silently skip
+    # rows for frames WarpTools dropped (matching legacy CryoBoost behavior
+    # in src/warp/tsAlignment.py:132-140), so setting min_intensity > 0 no
+    # longer crashes the pipeline — it just excludes more tilts from the
+    # reconstruction.
+    min_intensity: float = Field(default=0.0, ge=0.0, le=1.0)
     do_at_most: int = Field(default=-1)
     tomo_dimensions: str = Field(default="4096x4096x2048")
 

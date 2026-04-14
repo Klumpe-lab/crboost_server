@@ -255,6 +255,11 @@ class UIStateManager:
         self._subscribers: List[Callable[[UIState], None]] = []
         self._status_timer: Optional[Any] = None
         self._rebuild_callback: Optional[Callable[[], None]] = None
+        # Deep-link target for the Tasks tab: when the user clicks a per-TS
+        # row in the roster, we set {instance_id: ts_name} here and switch
+        # the job to its "tasks" tab. The tracker pops this on render to
+        # auto-expand + scroll the matching row into view (one-shot).
+        self.focus_ts_by_instance: Dict[str, str] = {}
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

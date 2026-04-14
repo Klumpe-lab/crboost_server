@@ -10,7 +10,7 @@ Register a custom parameter renderer and/or extra tabs for any JobType.
         ...
 
     @register_extra_tab(JobType.TEMPLATE_MATCH_PYTOM, key="workbench", label="Workbench", icon="build")
-    def render_tm_workbench(job_type, job_model, backend, ui_mgr):
+    def render_tm_workbench(job_type, instance_id, job_model, backend, ui_mgr):
         ...
 
 Jobs without a registered plugin get the generic field-dump from default_renderer.
@@ -67,7 +67,7 @@ def register_params_renderer(job_type: JobType):
 
 
 def register_extra_tab(job_type: JobType, *, key: str, label: str, icon: str = "dashboard"):
-    """Decorator. fn(job_type, job_model, backend, ui_mgr)"""
+    """Decorator. fn(job_type, instance_id, job_model, backend, ui_mgr)"""
 
     def decorator(fn: Callable) -> Callable:
         _ensure(job_type).extra_tabs.append(ExtraTab(key=key, label=label, icon=icon, render=fn))

@@ -54,7 +54,7 @@ class TsCtfParams(AbstractJobParams):
     defocus_min_max: str = Field(default="1.1:8")
     perdevice: int = Field(default=1, ge=0, le=8)
     array_throttle: int = Field(
-        default=8, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series CTF estimation"
+        default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series CTF estimation"
     )
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:

@@ -188,8 +188,12 @@ class IOConfigComponent:
         overrides = getattr(job_model, "source_overrides", {}) or {}
         current_override = overrides.get(slot.key)
 
-        candidates = resolver.get_candidates_for_slot(self.job_type, slot.key)
-        validation = resolver.validate_input_slot(self.job_type, job_model, slot.key, check_filesystem=True)
+        candidates = resolver.get_candidates_for_slot(
+            self.job_type, slot.key, consumer_instance_id=self.instance_id
+        )
+        validation = resolver.validate_input_slot(
+            self.job_type, job_model, slot.key, check_filesystem=True, consumer_instance_id=self.instance_id
+        )
         self._validation_cache[slot.key] = validation
 
         if current_override and current_override.startswith("manual:"):

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 import pandas as pd
 
 from services.computing.slurm_service import SLURM_PRESET_MAP, SlurmConfig, SlurmPreset
+from services.configs.config_service import get_config_service
 from services.models_base import JobType, AcquisitionParams, JobCategory, JobStatus, MicroscopeParams
 
 if TYPE_CHECKING:
@@ -120,19 +121,62 @@ class AbstractJobParams(BaseModel):
     def get_effective_slurm_config(self) -> SlurmConfig:
         """
         Returns the effective SLURM config for this job.
-        Merges project defaults with any per-job overrides.
+        Three-layer merge: slurm_defaults <- job_resource_profiles[jobtype] <- slurm_overrides
         """
         if self._project_state is not None:
             defaults = self._project_state.slurm_defaults
         else:
             defaults = SlurmConfig.from_config_defaults()
 
-        if not self.slurm_overrides:
-            return defaults
+        merged_data = defaults.model_dump()
+
+        # Layer 2: per-job-type resource profile from conf.yaml
+        if self.job_type is not None:
+            try:
+                profile = get_config_service().get_job_resource_profile(self.job_type.value)
+                if profile is not None:
+                    for field, value in profile.model_dump(exclude_none=True).items():
+                        merged_data[field] = value
+            except Exception:
+                pass  # Config not loaded yet (e.g. during testing)
+
+        # Layer 3: per-job user overrides
+        if self.slurm_overrides:
+            merged_data.update(self.slurm_overrides)
+
+        return SlurmConfig(**merged_data)
+
+    def get_profile_slurm_config(self) -> SlurmConfig:
+        """
+        Returns the SLURM config with profile applied but WITHOUT user overrides.
+        Used by the UI "Reset to profile" button.
+        """
+        if self._project_state is not None:
+            defaults = self._project_state.slurm_defaults
+        else:
+            defaults = SlurmConfig.from_config_defaults()
 
         merged_data = defaults.model_dump()
-        merged_data.update(self.slurm_overrides)
+
+        if self.job_type is not None:
+            try:
+                profile = get_config_service().get_job_resource_profile(self.job_type.value)
+                if profile is not None:
+                    for field, value in profile.model_dump(exclude_none=True).items():
+                        merged_data[field] = value
+            except Exception:
+                pass
+
         return SlurmConfig(**merged_data)
+
+    def has_resource_profile(self) -> bool:
+        """Whether this job type has a resource profile in conf.yaml."""
+        if self.job_type is None:
+            return False
+        try:
+            return get_config_service().get_job_resource_profile(self.job_type.value) is not None
+        except Exception:
+            return False
 
     def apply_slurm_preset(self, preset: SlurmPreset) -> None:
         """Flatten preset values into the overrides dictionary."""

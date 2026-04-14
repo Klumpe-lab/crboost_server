@@ -94,12 +94,27 @@ def write_status_atomic(status_dir: Path, item_name: str, ok: bool) -> None:
     os.replace(tmp, target)
 
 
-def clean_status_dir(job_dir: Path) -> Path:
-    """Remove stale .ok/.fail files from a previous run. Returns the status dir."""
+def get_previously_succeeded(job_dir: Path) -> set:
+    """Return the set of item names that have .ok status from a previous run."""
+    status_dir = job_dir / STATUS_DIR_NAME
+    if not status_dir.is_dir():
+        return set()
+    return {p.stem for p in status_dir.glob("*.ok")}
+
+
+def clean_status_dir(job_dir: Path, keep_ok: bool = False) -> Path:
+    """
+    Prepare the status dir for a new run.
+
+    If keep_ok=True, preserve .ok files from the previous run so that
+    already-succeeded items are not re-submitted.  Only .fail files are
+    removed (they will be retried).
+    """
     status_dir = job_dir / STATUS_DIR_NAME
     if status_dir.exists():
-        for f in status_dir.glob("*.ok"):
-            f.unlink()
+        if not keep_ok:
+            for f in status_dir.glob("*.ok"):
+                f.unlink()
         for f in status_dir.glob("*.fail"):
             f.unlink()
     status_dir.mkdir(parents=True, exist_ok=True)
@@ -128,6 +143,55 @@ def collect_task_results(job_dir: Path, ts_names: List[str]) -> ArrayResults:
     missing = sorted(set(ts_names) - set(ok_files) - set(fail_files))
     all_ok = len(ok_files) == len(ts_names) and not fail_files and not missing
     return ArrayResults(ok=ok_files, failed=fail_files, missing=missing, all_succeeded=all_ok)
+
+
+# ----------------------------------------------------------------------
+# Registry preflight — fail loud at dispatch instead of after the subjobs
+# ----------------------------------------------------------------------
+
+
+def preflight_registry(project_path: Path, expected_ts_names: List[str], job_name: str):
+    """Verify the TiltSeries registry covers every TS the supervisor is about
+    to dispatch. Run this BEFORE `submit_array_job` so a mis-built registry
+    surfaces in seconds rather than after the subjobs wasted cluster time
+    doing work whose aggregation will then fail.
+
+    Returns the registry on success; raises with a diagnostic dump on failure.
+    """
+    # Late import — services.tilt_series pulls in pandas/pydantic, fine at
+    # supervisor time but we don't want it on the task-mode hot path.
+    from services.tilt_series import get_registry_for
+
+    registry = get_registry_for(project_path)
+    reg_ids = registry.tilt_series_ids()
+
+    print(
+        f"[{job_name}] PREFLIGHT: registry has {len(reg_ids)} TS, "
+        f"{registry.frame_count()} frames total",
+        flush=True,
+    )
+    if reg_ids:
+        print(f"[{job_name}] PREFLIGHT: registry TS head: {reg_ids[:3]}", flush=True)
+
+    if not reg_ids:
+        raise RuntimeError(
+            f"TiltSeries registry is empty for project {project_path}. "
+            f"Reload the project in the UI to trigger the mdoc backfill, then retry."
+        )
+
+    missing = [t for t in expected_ts_names if not registry.has_tilt_series(t)]
+    if missing:
+        raise RuntimeError(
+            f"{job_name} preflight: registry is missing {len(missing)}/{len(expected_ts_names)} "
+            f"expected TS.\n"
+            f"  expected head: {expected_ts_names[:3]}\n"
+            f"  registry head: {reg_ids[:3]}\n"
+            f"  missing (first 10): {missing[:10]}\n"
+            f"This likely means the registry and the job's input STAR disagree on TS naming "
+            f"(e.g. prefix drift between source mdocs and project mdocs). Reload the project "
+            f"in the UI — the drift detector in load_project_state will rebuild from "
+            f"{project_path}/mdoc/ and align the names."
+        )
 
 
 # ----------------------------------------------------------------------
@@ -363,23 +427,47 @@ def submit_array_job(
     *,
     ts_metadata: Optional[Dict[str, dict]] = None,
     manifest_extra: Optional[dict] = None,
-) -> str:
+) -> Optional[str]:
     """
     Complete supervisor dispatch: write manifest, clean status dir, build + submit array.
 
-    Returns the SLURM array job ID.
-    """
-    n_tasks = len(ts_names)
+    On re-run, already-succeeded tilt-series (with .ok status files) are skipped.
+    Only failed/missing items are re-submitted.  The manifest always contains ALL
+    ts_names so that array index → ts_name mapping stays consistent across runs.
 
-    # 1. Write manifest
+    Returns the SLURM array job ID, or None if all items already succeeded.
+    """
+    # 1. Check which items already succeeded from a previous run
+    previously_ok = get_previously_succeeded(job_dir)
+    indices_to_run = [i for i, ts in enumerate(ts_names) if ts not in previously_ok]
+
+    if previously_ok:
+        print(
+            f"[SUPERVISOR] {len(previously_ok)} tilt-series already succeeded, "
+            f"{len(indices_to_run)} to (re)run",
+            flush=True,
+        )
+
+    if not indices_to_run:
+        print("[SUPERVISOR] All tilt-series already succeeded — nothing to submit", flush=True)
+        return None
+
+    # 2. Write manifest with ALL items (keeps index→name mapping stable)
     write_manifest(job_dir, ts_names, ts_metadata=ts_metadata, extra=manifest_extra)
 
-    # 2. Clean stale status from previous run
-    clean_status_dir(job_dir)
+    # 3. Clean .fail files from previous run; keep .ok files intact
+    clean_status_dir(job_dir, keep_ok=True)
 
-    # 3. Compute array spec with throttle
-    throttle = max(1, min(array_throttle, n_tasks))
-    array_spec = f"0-{n_tasks - 1}%{throttle}"
+    # 4. Compute array spec: only the indices that need (re)processing
+    n_to_run = len(indices_to_run)
+    throttle = max(1, min(array_throttle, n_to_run))
+    if n_to_run == len(ts_names):
+        # Fresh run — simple range
+        array_spec = f"0-{len(ts_names) - 1}%{throttle}"
+    else:
+        # Re-run — comma-separated indices of failed/missing items
+        idx_str = ",".join(str(i) for i in indices_to_run)
+        array_spec = f"{idx_str}%{throttle}"
     print(
         f"[SUPERVISOR] Per-task SLURM: mem={per_task_cfg.mem} time={per_task_cfg.time} "
         f"gres={per_task_cfg.gres} cpus={per_task_cfg.cpus_per_task} | --array={array_spec}",

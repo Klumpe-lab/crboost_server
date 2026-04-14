@@ -58,6 +58,30 @@ class PipelineOrchestratorService:
                 "pid": 0,
             }
 
+        # Partition: jobs that FAILED with an existing External/jobNNN dir get
+        # re-sbatched in place (preserves .task_status/*.ok for per-TS skip).
+        # Fresh jobs go through the schemer as before. If both exist, retries
+        # run first; the monitor hands off to the schemer on success.
+        retry_ids: List[str] = []
+        fresh_ids: List[str] = []
+        for iid in instances_to_run:
+            job_model = state.jobs.get(iid)
+            if (
+                job_model
+                and getattr(job_model, "relion_job_name", None)
+                and job_model.execution_status == JobStatus.FAILED
+            ):
+                retry_ids.append(iid)
+            else:
+                fresh_ids.append(iid)
+
+        if retry_ids:
+            return await self.backend.pipeline_runner.launch_retries(
+                project_dir=project_dir, retry_instance_ids=retry_ids, on_success_fresh_ids=fresh_ids
+            )
+
+        instances_to_run = fresh_ids
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         scheme_name = f"run_{timestamp}"
         scheme_dir = project_dir / "Schemes" / scheme_name
@@ -70,9 +94,8 @@ class PipelineOrchestratorService:
 
         report_lines = [f"Scheme: {scheme_name}", f"Instances_to_run: {instances_to_run}", ""]
 
+        next_job_num = current_counter
         for i, instance_id in enumerate(instances_to_run):
-            job_num = current_counter + i
-
             job_model = state.jobs.get(instance_id)
             if not job_model:
                 base_type_str = instance_id.split("__")[0]
@@ -87,7 +110,19 @@ class PipelineOrchestratorService:
 
             job_type = job_model.job_type
             category = JobCategory.IMPORT if job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
-            predicted_job_dir = project_dir / category.value / f"job{job_num:03d}"
+
+            # Reuse the existing job directory on re-run (e.g. after partial failure)
+            # so that .task_status/*.ok files from the previous run are preserved
+            # and already-succeeded array tasks can be skipped.
+            existing_rjn = getattr(job_model, "relion_job_name", None)
+            if existing_rjn:
+                predicted_job_dir = project_dir / existing_rjn.rstrip("/")
+                # Clean stale exit markers so the schemer doesn't see old results
+                for marker in ["RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"]:
+                    (predicted_job_dir / marker).unlink(missing_ok=True)
+            else:
+                predicted_job_dir = project_dir / category.value / f"job{next_job_num:03d}"
+                next_job_num += 1
 
             try:
                 io_paths = resolver.resolve_all_paths(job_type, job_model, predicted_job_dir, instance_id=instance_id)

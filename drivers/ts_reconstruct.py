@@ -31,6 +31,7 @@ sys.path.insert(0, str(server_dir))
 from drivers.array_job_base import (
     collect_task_results,
     install_cancel_handler,
+    preflight_registry,
     read_manifest,
     stage_per_ts_environment,
     submit_array_job,
@@ -40,9 +41,10 @@ from drivers.array_job_base import (
 )
 from drivers.driver_base import get_driver_context, run_command
 from services.computing.container_service import get_container_service
-from services.configs.metadata_service import MetadataTranslator
 from services.configs.starfile_service import StarfileService
 from services.job_models import TsReconstructParams
+from services.tilt_series import get_registry_for
+from services.tilt_series.adapters import TsReconstructIngestAdapter
 
 
 # ----------------------------------------------------------------------
@@ -158,6 +160,8 @@ def run_supervisor_mode():
         n_tasks = len(ts_names)
         print(f"[SUPERVISOR] Found {n_tasks} tilt-series in input STAR", flush=True)
 
+        preflight_registry(project_path, ts_names, job_name="ts_reconstruct")
+
         per_task_cfg = params.get_effective_slurm_config()
 
         array_job_id = submit_array_job(
@@ -170,8 +174,11 @@ def run_supervisor_mode():
             driver_script=DRIVER_SCRIPT,
         )
 
-        install_cancel_handler(array_job_id, job_dir)
-        wait_for_array_completion(array_job_id, poll_secs=30)
+        if array_job_id is not None:
+            install_cancel_handler(array_job_id, job_dir)
+            wait_for_array_completion(array_job_id, poll_secs=30)
+        else:
+            print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
 
         results = collect_task_results(job_dir, ts_names)
         print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
@@ -185,18 +192,26 @@ def run_supervisor_mode():
             print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
             sys.exit(1)
 
-        print("[SUPERVISOR] All tasks succeeded; aggregating metadata...", flush=True)
-        translator = MetadataTranslator(StarfileService())
-        result = translator.update_ts_reconstruct_metadata(
-            job_dir=job_dir,
-            input_star_path=paths["input_star"],
-            output_star_path=paths["output_star"],
-            warp_folder="warp_tiltseries",
+        # Aggregate metadata via the TiltSeries registry. Fail loud on an
+        # empty registry rather than fall back to the legacy path.
+        print("[SUPERVISOR] All tasks succeeded; aggregating metadata via registry...", flush=True)
+        registry = get_registry_for(project_path)
+        if not registry.tilt_series_ids():
+            raise RuntimeError(
+                f"TiltSeries registry is empty for project {project_path}. "
+                f"Reload the project in the UI to backfill the registry from mdocs, "
+                f"then restart this job."
+            )
+        adapter = TsReconstructIngestAdapter(
+            registry=registry, job_dir=job_dir, job_instance_id=instance_id, warp_folder="warp_tiltseries",
+        )
+        adapter.ingest(
+            ts_names,
             rescale_angpixs=params.rescale_angpixs,
             frame_pixel_size=params.pixel_size,
         )
-        if not result["success"]:
-            raise Exception(f"Metadata aggregation failed: {result['error']}")
+        adapter.emit_star(paths["input_star"], paths["output_star"])
+        registry.save()
 
         (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
         print("[SUPERVISOR] Job finished successfully.", flush=True)

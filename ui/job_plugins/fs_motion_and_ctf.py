@@ -93,7 +93,7 @@ def _rule():
 
 
 @register_params_renderer(JobType.FS_MOTION_CTF)
-def render_fs_motion_ctf_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None):
+def render_fs_motion_ctf_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None, **_ctx):
     ctx = dict(job_model=job_model, is_frozen=is_frozen, save_handler=save_handler)
 
     with ui.card().classes("w-full border border-gray-200 shadow-sm bg-white").style("padding: 16px 20px;"):

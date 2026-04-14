@@ -1,7 +1,6 @@
 # ui/pipeline_builder/job_tab_component.py
 import asyncio
 import logging
-from datetime import datetime
 from typing import Dict, Callable, Optional
 
 from nicegui import ui
@@ -9,9 +8,8 @@ from nicegui import ui
 from services.project_state import JobStatus, JobType, get_project_state, get_state_service
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
-from ui.status_indicator import BoundStatusBadge, BoundStatusDot
+from ui.status_indicator import BoundStatusDot
 from ui.ui_state import (
-    get_ui_state_manager,
     UIStateManager,
     MonitorTab,
     get_job_display_name,
@@ -25,7 +23,6 @@ from ui.pipeline_builder.logs_tab import render_logs_tab
 from ui.pipeline_builder.files_tab import render_files_tab
 
 logger = logging.getLogger(__name__)
-
 
 
 class DebouncedSaver:
@@ -70,37 +67,45 @@ def _render_tab_content(
     ui_mgr: UIStateManager,
 ):
     if tab_key == MonitorTab.CONFIG.value:
+        # Tight padding so the three inner sections (SLURM / I/O / Params) sit
+        # close to the container edge. The q-expansion-item content area also
+        # gets its default horizontal padding zeroed via :deep on our column.
+        exp_content_reset = (
+            "[&_.q-expansion-item__container]:p-0 "
+            "[&_.q-expansion-item__content]:p-0 "
+            "[&_.q-item]:min-h-0 [&_.q-item]:py-0 [&_.q-item]:px-0"
+        )
         with ui.scroll_area().classes("w-full h-full"):
-            with ui.column().classes("w-full gap-0").style("padding: 10px 16px 16px;"):
+            with ui.column().classes(f"w-full gap-0 {exp_content_reset}").style("padding: 2px 4px 4px;"):
                 # ── SLURM (collapsible) ──
                 with (
                     ui.expansion("SLURM / Requested Resources", value=True)
                     .props("dense")
                     .classes("w-full")
-                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 6px;") as slurm_exp
+                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 0;") as slurm_exp
                 ):
-                    slurm_exp.props('header-class="text-xs font-semibold text-gray-700 p-0"')
-                    with ui.column().classes("w-full gap-0").style("padding: 4px 0 0;"):
+                    slurm_exp.props('header-class="text-xs font-semibold text-gray-700 q-px-none"')
+                    with ui.column().classes("w-full gap-0").style("padding: 1px 0 0;"):
                         render_slurm_tab(job_model, is_frozen, save_handler)
                 # ── I/O (collapsible) ──
                 with (
                     ui.expansion("I/O", value=True)
                     .props("dense")
                     .classes("w-full")
-                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 6px;") as io_exp
+                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 0;") as io_exp
                 ):
-                    io_exp.props('header-class="text-xs font-semibold text-gray-700 p-0"')
-                    with ui.column().classes("w-full gap-0").style("padding: 4px 0 0;"):
+                    io_exp.props('header-class="text-xs font-semibold text-gray-700 q-px-none"')
+                    with ui.column().classes("w-full gap-0").style("padding: 1px 0 0;"):
                         render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, save_handler)
                 # ── Parameters (collapsible) ──
                 with (
                     ui.expansion("Parameters", value=True)
                     .props("dense")
                     .classes("w-full")
-                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 6px;") as params_exp
+                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 0;") as params_exp
                 ):
-                    params_exp.props('header-class="text-xs font-semibold text-gray-700 p-0"')
-                    with ui.column().classes("w-full gap-0").style("padding: 4px 0 0;"):
+                    params_exp.props('header-class="text-xs font-semibold text-gray-700 q-px-none"')
+                    with ui.column().classes("w-full gap-0").style("padding: 1px 0 0;"):
                         render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend, save_handler)
     elif tab_key == MonitorTab.LOGS.value:
         render_logs_tab(job_type, instance_id, job_model, backend, ui_mgr)
@@ -109,7 +114,7 @@ def _render_tab_content(
     else:
         for et in get_extra_tabs(job_type):
             if tab_key == et.key:
-                et.render(job_type, job_model, backend, ui_mgr)
+                et.render(job_type, instance_id, job_model, backend, ui_mgr)
                 return
         ui.label(f"Unknown tab: {tab_key}").classes("text-red-500 p-4")
 
@@ -145,13 +150,13 @@ def render_job_tab(
     # --- Header ---
     with (
         ui.row()
-        .classes("w-full items-center border-b border-gray-200 bg-white px-4 gap-2")
-        .style("flex-shrink: 0; min-height: 38px; padding-top: 5px; padding-bottom: 5px;")
+        .classes("w-full items-center border-b border-gray-200 bg-white px-3 gap-2")
+        .style("flex-shrink: 0; min-height: 28px; padding-top: 3px; padding-bottom: 3px;")
     ):
-        BoundStatusBadge(instance_id)
+        BoundStatusDot(instance_id)
 
         switcher_container = ui.element("div").style(
-            "display: flex; border: 1px solid #e2e8f0; border-radius: 4px; overflow: hidden; flex-shrink: 0;"
+            "display: flex; border: 1px solid #e2e8f0; border-radius: 3px; overflow: hidden; flex-shrink: 0;"
         )
         widget_refs.switcher_container = switcher_container
         _render_tab_switcher(switcher_container, job_type, instance_id, active_tab, backend, ui_mgr, callbacks)
@@ -180,14 +185,14 @@ def render_job_tab(
             )
 
         ui.button(icon="refresh", on_click=lambda: _force_status_refresh(callbacks)).props(
-            "flat dense round size=sm"
+            "flat dense round size=xs"
         ).classes("text-gray-400 hover:text-gray-800")
 
         if ui_mgr.is_project_created:
             ui.button(
                 icon="delete",
                 on_click=lambda: _handle_delete(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
-            ).props("flat round dense size=sm color=red").tooltip("Delete this job")
+            ).props("flat round dense size=xs color=red").tooltip("Delete this job")
 
     # --- Content ---
     content_container = ui.column().classes("w-full overflow-hidden").style("flex: 1 1 0%; min-height: 0;")
@@ -256,12 +261,12 @@ def _render_tab_switcher(
             border_r = "" if is_last else "border-right: 1px solid #e2e8f0; "
             if is_active:
                 btn.style(
-                    f"font-size: 10px; font-weight: 600; padding: 3px 10px; border-radius: 0; "
+                    f"font-size: 9px; font-weight: 600; padding: 2px 7px; border-radius: 0; "
                     f"background: #f1f5f9; color: #1e293b; {border_r}min-width: 0;"
                 )
             else:
                 btn.style(
-                    f"font-size: 10px; font-weight: 500; padding: 3px 10px; border-radius: 0; "
+                    f"font-size: 9px; font-weight: 500; padding: 2px 7px; border-radius: 0; "
                     f"background: white; color: #64748b; {border_r}min-width: 0;"
                 )
 

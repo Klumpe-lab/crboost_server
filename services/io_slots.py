@@ -174,13 +174,22 @@ class ResolvedManifest(BaseModel):
 
         - inputs become {input_key: path} (or list of paths if allow_multiple later)
         - outputs become {output_key: path}
+        - when a key appears as both input and output (e.g. warp_tiltseries_settings
+          which is read from upstream and then re-produced), the input wins — the
+          driver needs to read the upstream file at startup; it will copy/produce
+          its own output version during execution.
         """
         d: Dict[str, Any] = {}
         for ri in self.inputs:
-            # In Stage 0 we only store single paths; allow_multiple comes later.
             d[ri.input_key] = ri.path
         for ro in self.outputs:
-            d[ro.output_key] = ro.path
+            if ro.output_key not in d:
+                d[ro.output_key] = ro.path
+            else:
+                # Key collision: input and output share a key (e.g. settings file
+                # that is read from upstream then re-produced). Store the output
+                # path under "output_{key}" so the driver can find both.
+                d[f"output_{ro.output_key}"] = ro.path
         return d
 
 
