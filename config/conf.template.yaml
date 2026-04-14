@@ -39,9 +39,91 @@ supervisor_slurm:
   nodes: 1
   ntasks_per_node: 1
   cpus_per_task: 1
-  gres: "gpu:1"
+  gres: ""
   mem: "4G"
   time: "4:00:00"
+
+# Per-job-type resource defaults for SLURM submissions.
+# Keys must match JobType enum values (e.g. fsMotionAndCtf, tsReconstruct).
+# Only fields present here override slurm_defaults; omitted fields inherit.
+# Users can still override per-job in the UI (slurm_overrides).
+# Merge order: slurm_defaults <- job_resource_profiles[jobtype] <- slurm_overrides
+job_resource_profiles:
+  fsMotionAndCtf:
+    # mem=24G pairs with perdevice=2 (default in FsMotionCtfParams): two
+    # concurrent EER movies per GPU need ~12-18GB GPU RAM plus host-side
+    # frame-staging buffers. Drop to 16G if you set perdevice=1, or push to
+    # 32G if you set perdevice=4 on an A100.
+    gres: "gpu:1"
+    mem: "24G"
+    cpus_per_task: 2
+    time: "0:30:00"
+
+  aligntiltsWarp:
+    gres: "gpu:1"
+    mem: "16G"
+    cpus_per_task: 2
+    time: "0:15:00"
+
+  tsCtf:
+    gres: "gpu:1"
+    mem: "8G"
+    cpus_per_task: 2
+    time: "0:10:00"
+
+  tsReconstruct:
+    gres: "gpu:1"
+    mem: "64G"
+    cpus_per_task: 4
+    time: "1:00:00"
+
+  tsImport:
+    gres: ""
+    mem: "4G"
+    cpus_per_task: 1
+    time: "0:30:00"
+
+  denoisetrain:
+    gres: "gpu:1"
+    mem: "32G"
+    cpus_per_task: 4
+    time: "2:00:00"
+
+  denoisepredict:
+    gres: "gpu:1"
+    mem: "16G"
+    cpus_per_task: 2
+    time: "0:20:00"
+
+  templatematching:
+    gres: "gpu:1"
+    mem: "32G"
+    cpus_per_task: 4
+    time: "1:30:00"
+
+  tmextractcand:
+    gres: "gpu:1"
+    mem: "8G"
+    cpus_per_task: 2
+    time: "0:15:00"
+
+  subtomoExtraction:
+    gres: "gpu:1"
+    mem: "16G"
+    cpus_per_task: 4
+    time: "0:30:00"
+
+  reconstructParticle:
+    gres: "gpu:1"
+    mem: "32G"
+    cpus_per_task: 4
+    time: "2:00:00"
+
+  class3d:
+    gres: "gpu:4"
+    mem: "64G"
+    cpus_per_task: 8
+    time: "8:00:00"
 
 processing_defaults:
   reconstruction_binning: 4

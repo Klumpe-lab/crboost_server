@@ -16,17 +16,25 @@ The only requirement is the file-based contract written by the supervisor:
 Register as an extra tab via the plugin system:
 
     @register_extra_tab(JobType.YOUR_JOB, key="tasks", label="Tasks", icon="view_list")
-    def render(job_type, job_model, backend, ui_mgr):
-        render_array_task_tracker(job_model, ui_mgr)
+    def render(job_type, instance_id, job_model, backend, ui_mgr):
+        render_array_task_tracker(instance_id, job_model, ui_mgr)
 """
 
-import json
-import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from nicegui import ui
 
+from ui.components.task_utils import (
+    shorten_ts_names,
+    sort_ts_by_position,
+    ts_anchor_id,
+    read_tail as _read_tail,
+    escape_html as _escape_html,
+    read_manifest as _read_manifest,
+    scan_statuses as _scan_statuses,
+    resolve_job_dir,
+)
 from ui.styles import MONO
 
 # ── Status constants ──
@@ -47,9 +55,15 @@ _CHIP = {
 # ── Public API ──
 
 
-def render_array_task_tracker(job_model, ui_mgr) -> None:
-    """Render the full task tracker widget inside the current NiceGUI context."""
-    job_dir = _resolve_job_dir(job_model)
+def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
+    """Render the full task tracker widget inside the current NiceGUI context.
+
+    `instance_id` is used to anchor per-TS DOM ids and to consume a one-shot
+    `ui_mgr.focus_ts_by_instance[instance_id]` entry (set when the user clicks
+    a TS row in the roster) so the matching row is auto-expanded + scrolled
+    into view on arrival.
+    """
+    job_dir = resolve_job_dir(job_model)
     if job_dir is None:
         _render_placeholder("Job directory not yet assigned.")
         return
@@ -64,6 +78,18 @@ def render_array_task_tracker(job_model, ui_mgr) -> None:
     if not items:
         _render_placeholder("No items in task manifest.")
         return
+
+    # One-shot deep-link target. Consumed on arrival so subsequent polls /
+    # manual scrolls don't keep pulling the view back to this row.
+    focus_target = None
+    if ui_mgr is not None and hasattr(ui_mgr, "focus_ts_by_instance"):
+        focus_target = ui_mgr.focus_ts_by_instance.pop(instance_id, None)
+
+    # Display in (stage, beam) ascending order. The manifest is the source of
+    # truth for array-index → ts_name mapping (used to read task_{idx}.out),
+    # so we keep that mapping intact and only reorder for display.
+    display_order = sort_ts_by_position(items)
+    item_to_task_idx = {name: i for i, name in enumerate(items)}
 
     with ui.column().classes("w-full h-full overflow-hidden").style("gap: 0;"):
         # ── Summary bar ──
@@ -81,7 +107,7 @@ def render_array_task_tracker(job_model, ui_mgr) -> None:
         # ── Task rows (built once, updated in-place) ──
         with ui.scroll_area().classes("w-full").style("flex: 1; min-height: 0;"):
             with ui.column().classes("w-full gap-0").style("padding: 0;"):
-                row_widgets = _build_task_rows(items, job_dir)
+                row_widgets = _build_task_rows(display_order, item_to_task_idx, job_dir, instance_id, focus_target)
 
     # Initial status update
     statuses = _scan_statuses(job_dir, items)
@@ -98,54 +124,18 @@ def render_array_task_tracker(job_model, ui_mgr) -> None:
 
     ui.timer(5.0, _poll)
 
+    # Scroll the focused TS into view after the DOM settles.
+    if focus_target is not None:
+        anchor = ts_anchor_id(instance_id, focus_target)
+        ui.run_javascript(
+            "setTimeout(() => {"
+            f"  const el = document.getElementById({anchor!r});"
+            "  if (el) el.scrollIntoView({behavior: 'smooth', block: 'center'});"
+            "}, 80);"
+        )
+
 
 # ── Internals ──
-
-
-def _resolve_job_dir(job_model) -> Optional[Path]:
-    stored = (job_model.paths or {}).get("job_dir")
-    if stored:
-        p = Path(stored)
-        if p.is_dir():
-            return p
-    rjn = getattr(job_model, "relion_job_name", None)
-    if rjn and hasattr(job_model, "_project_state") and job_model._project_state:
-        p = job_model._project_state.project_path / rjn
-        if p.is_dir():
-            return p
-    return None
-
-
-def _read_manifest(job_dir: Path) -> Optional[dict]:
-    manifest_path = job_dir / ".task_manifest.json"
-    if not manifest_path.exists():
-        return None
-    try:
-        return json.loads(manifest_path.read_text())
-    except Exception:
-        return None
-
-
-def _scan_statuses(job_dir: Path, items: List[str]) -> Dict[str, str]:
-    status_dir = job_dir / ".task_status"
-    ok_set: set = set()
-    fail_set: set = set()
-    if status_dir.is_dir():
-        for p in status_dir.iterdir():
-            if p.suffix == ".ok":
-                ok_set.add(p.stem)
-            elif p.suffix == ".fail":
-                fail_set.add(p.stem)
-
-    statuses: Dict[str, str] = {}
-    for name in items:
-        if name in ok_set:
-            statuses[name] = _OK
-        elif name in fail_set:
-            statuses[name] = _FAIL
-        else:
-            statuses[name] = _RUNNING if (ok_set or fail_set) else _PENDING
-    return statuses
 
 
 def _update_summary(container: ui.row, statuses: Dict[str, str], item_label: str) -> None:
@@ -184,47 +174,33 @@ def _update_progress(bar: ui.linear_progress, statuses: Dict[str, str]) -> None:
 # ── Row building (once) and updating (on poll) ──
 
 
-def _shorten_ts_names(items: List[str]) -> Dict[str, str]:
-    """Strip the common prefix from TS names for cleaner display.
+def _build_task_rows(
+    display_order: List[str],
+    item_to_task_idx: Dict[str, int],
+    job_dir: Path,
+    instance_id: str,
+    focus_target: str | None,
+) -> Dict[str, dict]:
+    """Build all expansion rows ONCE. Returns {name: {icon, label, expansion, bg_style}} refs.
 
-    'agg5_20251113_412_Position_11'   -> 'Position_11'
-    'agg5_20251113_412_Position_11_2' -> 'Position_11_2'
-
-    If all names share a prefix ending with '_Position_', strip up to and
-    including that prefix's project part. Falls back to the full name.
+    Rows are rendered in `display_order`. The task-output file for each row
+    uses the ORIGINAL manifest index via `item_to_task_idx`, since SLURM task
+    ids are tied to the manifest order.
     """
-    if not items:
-        return {}
-
-    # Find longest common prefix
-    prefix = os.path.commonprefix(items)
-    # Snap to the last underscore so we don't cut mid-word
-    last_sep = prefix.rfind("_")
-    if last_sep > 0:
-        prefix = prefix[: last_sep + 1]
-    else:
-        prefix = ""
-
-    # Only strip if it actually shortens things meaningfully
-    if len(prefix) < 4:
-        return {name: name for name in items}
-
-    return {name: name[len(prefix) :] or name for name in items}
-
-
-def _build_task_rows(items: List[str], job_dir: Path) -> Dict[str, dict]:
-    """Build all expansion rows ONCE. Returns {name: {icon, label, expansion, bg_style}} refs."""
-    display_names = _shorten_ts_names(items)
+    display_names = shorten_ts_names(display_order)
     row_widgets: Dict[str, dict] = {}
-    for idx, name in enumerate(items):
+    for name in display_order:
         icon_name, icon_color, bg_color = _CHIP[_PENDING]
         short_name = display_names.get(name, name)
+        task_idx = item_to_task_idx[name]
+        anchor_id = ts_anchor_id(instance_id, name)
+        is_focus = focus_target == name
 
         with (
-            ui.expansion()
+            ui.expansion(value=is_focus)
             .classes("w-full")
             .style(f"border-bottom: 1px solid #f1f5f9; background: {bg_color}; min-height: 0;")
-            .props("dense") as exp
+            .props(f'dense id="{anchor_id}"') as exp
         ):
             exp.props('header-class="p-0"')
 
@@ -237,7 +213,7 @@ def _build_task_rows(items: List[str], job_dir: Path) -> Dict[str, dict]:
                         f"{MONO} font-size: 9px; color: {icon_color}; text-transform: uppercase; font-weight: 600;"
                     )
 
-            _render_inline_log(job_dir, idx)
+            _render_inline_log(job_dir, task_idx)
 
         row_widgets[name] = {"icon": icon_el, "label": status_label, "expansion": exp}
 
@@ -298,23 +274,6 @@ def _render_inline_log(job_dir: Path, task_idx: int) -> None:
                 f"{_escape_html(stderr_text)}</pre>",
                 sanitize=False,
             )
-
-
-def _read_tail(path: Path, max_lines: int = 200) -> str:
-    if not path.exists():
-        return ""
-    try:
-        text = path.read_text(errors="replace")
-        lines = text.splitlines()
-        if len(lines) > max_lines:
-            return f"[... truncated {len(lines) - max_lines} lines ...]\n" + "\n".join(lines[-max_lines:])
-        return text
-    except Exception:
-        return ""
-
-
-def _escape_html(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def _render_placeholder(message: str) -> None:

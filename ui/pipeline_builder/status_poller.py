@@ -33,6 +33,9 @@ class StatusPoller:
 
         await panel.backend.pipeline_runner.sync_all_jobs(str(project_path))
 
+        # Refresh the roster so per-TS progress, status dots, and counters update live
+        panel.roster.refresh()
+
         if not panel.ui_mgr.is_running:
             return
 

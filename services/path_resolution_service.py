@@ -23,6 +23,7 @@ class OutputCandidate:
 
     # Instance identification
     instance_path: str  # e.g., "External/job005"
+    producer_instance_id: str  # e.g., "tsReconstruct" or "templatematching__ribosome"
 
     # metadata for scoring
     execution_status: JobStatus
@@ -95,7 +96,7 @@ class PathResolutionService:
         Respects source_overrides from job_model and species-aware scoring.
         """
         outputs_manifest = self.resolve_outputs(job_type, job_dir)
-        inputs_manifest = self.resolve_inputs(job_type, job_model)
+        inputs_manifest = self.resolve_inputs(job_type, job_model, consumer_instance_id=instance_id)
 
         manifest = ResolvedManifest(
             job_type=job_type.value, instance_id=instance_id, inputs=inputs_manifest, outputs=outputs_manifest
@@ -114,10 +115,18 @@ class PathResolutionService:
             resolved.append(ResolvedOutput(output_key=slot.key, produces=slot.produces, path=resolved_path))
         return resolved
 
-    def resolve_inputs(self, job_type: JobType, job_model: "AbstractJobParams") -> List[ResolvedInput]:
+    def resolve_inputs(
+        self,
+        job_type: JobType,
+        job_model: "AbstractJobParams",
+        consumer_instance_id: Optional[str] = None,
+    ) -> List[ResolvedInput]:
         """
         Resolve inputs for target job. Checks source_overrides first, then falls
         back to species-aware automatic selection.
+
+        consumer_instance_id excludes the consumer from its own candidate pool
+        (a job's OUTPUT slot is never a valid source for its own INPUT slot).
         """
         input_schema = self._get_input_schema(job_type)
         index = self._build_output_index()
@@ -137,7 +146,9 @@ class PathResolutionService:
 
             # 2. Fall back to species-aware automatic selection
             if chosen is None:
-                chosen = self._choose_candidate_for_slot(slot, index, consumer_species_id)
+                chosen = self._choose_candidate_for_slot(
+                    slot, index, consumer_species_id, consumer_instance_id=consumer_instance_id
+                )
 
             if chosen is None:
                 if slot.required:
@@ -167,12 +178,19 @@ class PathResolutionService:
     # -------------------------------------------------------------------------
 
     def get_candidates_for_slot(
-        self, job_type: JobType, slot_key: str, consumer_species_id: Optional[str] = None
+        self,
+        job_type: JobType,
+        slot_key: str,
+        consumer_species_id: Optional[str] = None,
+        consumer_instance_id: Optional[str] = None,
     ) -> List[OutputCandidate]:
         """
         Get all valid candidates for a specific input slot, sorted with
         species-matched candidates first. Unmatched candidates are included
         but ranked lower -- the UI can dim them to signal the mismatch.
+
+        consumer_instance_id, if provided, excludes the consumer from its own
+        pool so the UI doesn't offer a job's own output as a source for itself.
         """
         input_schema = self._get_input_schema(job_type)
         slot = next((s for s in input_schema if s.key == slot_key), None)
@@ -182,6 +200,8 @@ class PathResolutionService:
 
         index = self._build_output_index()
         candidates = [c for t in slot.accepts for c in index.get(t, [])]
+        if consumer_instance_id is not None:
+            candidates = [c for c in candidates if c.producer_instance_id != consumer_instance_id]
 
         def sort_key(c: OutputCandidate) -> Tuple[int, int, int, str]:
             # Lower value = sorted earlier
@@ -205,7 +225,12 @@ class PathResolutionService:
         return self._get_output_schema(job_type)
 
     def validate_input_slot(
-        self, job_type: JobType, job_model: "AbstractJobParams", slot_key: str, check_filesystem: bool = True
+        self,
+        job_type: JobType,
+        job_model: "AbstractJobParams",
+        slot_key: str,
+        check_filesystem: bool = True,
+        consumer_instance_id: Optional[str] = None,
     ) -> InputSlotValidation:
         """
         Validate a single input slot's current configuration.
@@ -248,7 +273,9 @@ class PathResolutionService:
                 )
 
         if chosen is None:
-            chosen = self._choose_candidate_for_slot(slot, index, consumer_species_id)
+            chosen = self._choose_candidate_for_slot(
+                slot, index, consumer_species_id, consumer_instance_id=consumer_instance_id
+            )
 
         if chosen is None:
             return InputSlotValidation(
@@ -350,6 +377,17 @@ class PathResolutionService:
 
             relion_job_number = int(getattr(producer_model, "relion_job_number", 0) or 0)
             status = getattr(producer_model, "execution_status", JobStatus.UNKNOWN)
+
+            # Interactive jobs (e.g. TiltFilter) are never dispatched by the relion
+            # schemer -- they only produce outputs when the user explicitly commits
+            # them via the UI (which flips execution_status to SUCCEEDED). Until then
+            # they must not appear in the producer pool: otherwise a merely-SCHEDULED
+            # interactive job beats a real upstream via preferred_source and the
+            # schemer ends up polling an `External/pending_<instance>/...` placeholder
+            # that nothing will ever create.
+            if getattr(producer_model, "IS_INTERACTIVE", False) and status != JobStatus.SUCCEEDED:
+                continue
+
             instance_path = self._get_instance_path(instance_id, producer_model)
             species_id = getattr(producer_model, "species_id", None)
 
@@ -371,6 +409,7 @@ class PathResolutionService:
                         producer_output_key=slot.key,
                         path=path,
                         instance_path=instance_path,
+                        producer_instance_id=instance_id,
                         execution_status=status,
                         relion_job_number=relion_job_number,
                         species_id=species_id,
@@ -405,10 +444,11 @@ class PathResolutionService:
         slot: OutputSlot,
         project_root: Path,
     ) -> Optional[str]:
-        stored = (producer_model.paths or {}).get(slot.key)
-        if stored:
-            return str(Path(stored))
-
+        # Prefer relion_job_name + path_template over the cached producer paths dict.
+        # The cached dict is a schedule-time snapshot which drifts when the relion
+        # schemer allocates a different job number than the orchestrator predicted;
+        # relion_job_name is reconciled from default_pipeline.star by sync_all_jobs
+        # and is the authoritative identity once the producer has run.
         relion_job_name = getattr(producer_model, "relion_job_name", None)
         if relion_job_name:
             job_dir = (project_root / relion_job_name.rstrip("/")).resolve()
@@ -418,6 +458,13 @@ class PathResolutionService:
         if mapped:
             job_dir = (project_root / mapped.rstrip("/")).resolve()
             return str((job_dir / slot.path_template).resolve())
+
+        # Fall back to the cached paths snapshot only when the producer has no
+        # reconciled identity yet (e.g. a fresh job whose relion_job_name was
+        # cleared at deploy time and has not yet been picked up by sync_all_jobs).
+        stored = (producer_model.paths or {}).get(slot.key)
+        if stored:
+            return str(Path(stored))
 
         status = getattr(producer_model, "execution_status", None)
         if status is not None:
@@ -442,6 +489,7 @@ class PathResolutionService:
         slot: InputSlot,
         index: Dict[JobFileType, List[OutputCandidate]],
         consumer_species_id: Optional[str] = None,
+        consumer_instance_id: Optional[str] = None,
     ) -> Optional[OutputCandidate]:
         """
         Find best candidate among accepted types using deterministic scoring.
@@ -451,10 +499,19 @@ class PathResolutionService:
           2. Preferred source job type (from slot.preferred_source)
           3. Most recent job number
           4. Succeeded status
+
+        The consumer is always excluded from its own candidate pool: a job whose
+        INPUT and OUTPUT schemas share a JobFileType (e.g. templatematching both
+        consuming and producing TOMOGRAMS_STAR) would otherwise pick its own
+        in-flight output once sync_all_jobs has set its relion_job_name, because
+        the scoring prefers higher job numbers before SUCCEEDED status.
         """
         candidates: List[OutputCandidate] = []
         for t in slot.accepts:
             candidates.extend(index.get(t, []))
+
+        if consumer_instance_id is not None:
+            candidates = [c for c in candidates if c.producer_instance_id != consumer_instance_id]
 
         if not candidates:
             return None

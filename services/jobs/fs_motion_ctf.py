@@ -63,11 +63,11 @@ class FsMotionCtfParams(AbstractJobParams):
     out_average_halves: bool = Field(default=True, description="Output half-set averages for independent validation")
     out_skip_first: int = Field(default=0, description="Skip this many initial tilts")
     out_skip_last: int = Field(default=0, description="Skip this many final tilts")
-    perdevice: int = Field(default=1, ge=0, le=8, description="Parallel tilt series per GPU")
+    perdevice: int = Field(default=2, ge=0, le=8, description="Parallel tilt series per GPU")
     do_at_most: int = Field(default=-1, description="Process at most N tilt series (-1 = all)")
     gain_operations: Optional[str] = Field(default=None, description="Gain reference operations (e.g. flip, rotate)")
     array_throttle: int = Field(
-        default=8, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series motion/CTF"
+        default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series motion/CTF"
     )
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:

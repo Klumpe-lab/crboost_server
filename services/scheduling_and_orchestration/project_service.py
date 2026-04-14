@@ -304,6 +304,64 @@ class ProjectService:
         else:
             logger.warning("qsub.sh not found at %s", source_qsub)
 
+    def _build_and_persist_registry(self, project_dir: Path, mdocs_glob: str) -> int:
+        """Build TiltSeries registry from mdocs and save to {project}/registry/.
+
+        Called from `initialize_new_project` after data import, and from
+        `load_project_state` if the registry sidecar is missing for a legacy
+        project. Returns the number of TS added. Caller swallows exceptions —
+        this is Stage 1 additive plumbing; absence of a registry doesn't break
+        existing flows.
+
+        Reads from `{project_dir}/mdoc/*.mdoc` — the post-import copies, which
+        carry the `{project_name}_` prefix added by `DataImportService`. The
+        TS IDs therefore match what `ts_import` writes into `tilt_series.star`.
+        `mdocs_glob` (the raw source) is kept as a fallback for projects where
+        the project mdoc dir is empty.
+        """
+        from services.tilt_series import get_registry_for, set_registry_for, TiltSeriesRegistry
+        from services.tilt_series.build import build_from_mdocs
+
+        frames_dir = project_dir / "frames"
+        project_mdoc_glob = str(project_dir / "mdoc" / "*.mdoc")
+
+        ts_list = build_from_mdocs(
+            project_mdoc_glob, frames_dir=frames_dir if frames_dir.exists() else None
+        )
+        # Fallback: if the project mdoc dir is empty (shouldn't happen for a
+        # post-import project but can for hand-assembled test projects), fall
+        # back to the source glob. Warn because this produces unprefixed TS
+        # IDs that won't match downstream STARs.
+        if not ts_list and mdocs_glob:
+            logger.warning(
+                "Registry: project mdoc dir empty (%s); falling back to source glob %s. "
+                "TS IDs may not match ts_import output.",
+                project_mdoc_glob, mdocs_glob,
+            )
+            ts_list = build_from_mdocs(
+                mdocs_glob, frames_dir=frames_dir if frames_dir.exists() else None
+            )
+        if not ts_list:
+            logger.info("Registry: no mdocs found for %s", project_dir)
+            return 0
+
+        # Fresh registry (overwrites any stale sidecars from a partial prior run).
+        registry = TiltSeriesRegistry(project_dir)
+        for ts in ts_list:
+            registry.add_tilt_series(ts)
+        problems = registry.sanity_check()
+        if problems:
+            logger.warning("Registry sanity issues for %s: %s", project_dir, problems)
+        registry.save(force=True)
+        set_registry_for(project_dir, registry)
+        logger.info(
+            "Registry: persisted %d tilt-series (%d frames) to %s",
+            len(ts_list), registry.frame_count(), registry.registry_dir,
+        )
+        # Prime the path-keyed cache so backend.registry_for(project_dir) hits.
+        _ = get_registry_for(project_dir)
+        return len(ts_list)
+
     async def initialize_new_project(
         self,
         project_name: str,
@@ -390,13 +448,22 @@ class ProjectService:
                     except ValueError:
                         logger.warning("Skipping unknown job '%s'", job_str)
 
-            # 3. Save Project State (project_params.json) — includes import summary
+            # 3. Build the TiltSeries registry from the imported mdocs, persist to
+            # sidecar JSON under {project}/registry/. Stage-1 addition: failure
+            # here is logged but non-fatal while we harden the registry; the
+            # STAR pipeline continues to work.
+            try:
+                self._build_and_persist_registry(project_dir, mdocs_glob)
+            except Exception as e:
+                logger.warning("Registry construction failed for %s: %s", project_dir, e)
+
+            # 4. Save Project State (project_params.json) — includes import summary
             params_json_path = project_dir / "project_params.json"
             await self.backend.state_service.save_project(
                 save_path=params_json_path, project_path=project_dir, force=True
             )
 
-            # 4. Initialize Relion (Create default_pipeline.star)
+            # 5. Initialize Relion (Create default_pipeline.star)
             logger.info("Initializing Relion project...")
 
             init_command = "unset DISPLAY && relion --tomo --do_projdir ."
@@ -465,6 +532,29 @@ class ProjectService:
             # CHANGED: use explicit path to get the state we just loaded
             state = self.backend.state_service.state_for(project_dir)
             self.set_project_root(project_dir)
+
+            # Rebuild TS registry if it's absent OR its TS IDs have drifted from
+            # the project mdoc dir stems. Drift detection catches the
+            # pre-fix-bug state where the registry was built from unprefixed
+            # source mdocs and produced TS IDs that don't match what ts_import
+            # writes. Without this, a stale registry sidecar would silently
+            # make every ingest step fail with "TS missing from registry".
+            try:
+                registry = self.backend.registry_for(project_dir)
+                reg_ids = set(registry.tilt_series_ids())
+                mdoc_stems = {p.stem for p in (project_dir / "mdoc").glob("*.mdoc")}
+                drift = bool(reg_ids) and bool(mdoc_stems) and reg_ids.isdisjoint(mdoc_stems)
+                if (not reg_ids or drift) and (mdocs_glob or mdoc_stems):
+                    reason = "absent" if not reg_ids else "drifted from project mdocs"
+                    logger.info("Registry %s for %s; rebuilding from mdocs", reason, project_dir)
+                    if drift:
+                        # Clear the stale in-memory registry so the rebuild
+                        # starts from empty rather than merging.
+                        from services.tilt_series import clear_registry
+                        clear_registry(project_dir)
+                    self._build_and_persist_registry(project_dir, mdocs_glob)
+            except Exception as e:
+                logger.warning("Registry backfill failed for %s: %s", project_dir, e)
 
             # Sync job statuses
             await self.backend.pipeline_runner.sync_all_jobs(str(project_path))

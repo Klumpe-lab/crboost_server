@@ -561,6 +561,18 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                                 f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; font-style: italic;"
                             )
                         row_el.style(add="opacity: 0.5; pointer-events: none; cursor: default;")
+
+                    # `ui.notify` uses the current context's client — which
+                    # here is the dialog we just closed. After `await` yields,
+                    # the dialog's client is gone and notify raises "client
+                    # deleted." Swallow it; the UI refresh below is the
+                    # actually-important side effect.
+                    def _safe_notify(msg: str, **kw):
+                        try:
+                            ui.notify(msg, **kw)
+                        except RuntimeError as notify_exc:
+                            logger.debug("notify dropped (client gone): %s — %s", msg, notify_exc)
+
                     try:
                         import shutil
 
@@ -568,10 +580,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                         from services.project_state import remove_project_state
 
                         remove_project_state(project_dir)
-                        ui.notify(f"Deleted '{project_name}'", type="positive")
+                        _safe_notify(f"Deleted '{project_name}'", type="positive")
                         await scan_and_display_projects(ui_mgr.data_import.project_base_path)
                     except Exception as e:
-                        ui.notify(f"Failed to delete: {e}", type="negative")
+                        _safe_notify(f"Failed to delete: {e}", type="negative")
                         # Restore the row on failure
                         await scan_and_display_projects(ui_mgr.data_import.project_base_path)
 

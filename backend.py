@@ -18,6 +18,7 @@ from services.scheduling_and_orchestration.pipeline_runner import PipelineRunner
 from services.project_state import JobType, get_state_service
 from services.computing.slurm_service import SlurmService
 from services.configs.config_service import get_config_service
+from services.tilt_series import TiltSeriesRegistry, get_registry_for
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,12 @@ class CryoBoostBackend:
         self.state_service = get_state_service()
         self.template_service = TemplateService(self)
         self.pdb_service = PDBService(self)
+
+    def registry_for(self, project_path: Path) -> TiltSeriesRegistry:
+        """TiltSeriesRegistry for a project. Lazily loaded from sidecar JSON
+        at `{project_path}/registry/`. Empty for legacy projects without a
+        registry on disk — populate via project_service on import/load."""
+        return get_registry_for(project_path)
 
     async def start_pipeline(
         self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]

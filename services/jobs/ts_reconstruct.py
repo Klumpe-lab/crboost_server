@@ -50,7 +50,7 @@ class TsReconstructParams(AbstractJobParams):
     deconv: int = Field(default=1, ge=0, le=1)
     perdevice: int = Field(default=1, ge=0, le=8)
     array_throttle: int = Field(
-        default=8, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series reconstruction"
+        default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series reconstruction"
     )
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:

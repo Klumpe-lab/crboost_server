@@ -68,7 +68,7 @@ class TsAlignmentParams(AbstractJobParams):
     imod_patch_size: int = Field(default=200)
     imod_overlap: int = Field(default=50)
     array_throttle: int = Field(
-        default=8, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series alignment"
+        default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series alignment"
     )
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:

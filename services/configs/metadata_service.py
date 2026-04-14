@@ -71,7 +71,15 @@ class WarpXmlParser:
         return pd.DataFrame([data])
 
     def _parse_tilt_series_xml(self, xml_path: str) -> pd.DataFrame:
-        """Parse tilt series XML to extract per-tilt CTF parameters"""
+        """Parse tilt series XML to extract per-tilt CTF parameters.
+
+        <MoviePath> is the authoritative ordered list of tilts in the TS.
+        Each <GridCTF>/<GridCTFDefocusDelta>/<GridCTFDefocusAngle> <Node Z="k">
+        addresses into MoviePath by Z. Never slice [:num_entries] — when WarpTools
+        writes fewer grid nodes than MoviePath entries (CTF fit skipped/failed on
+        some tilts), that slice silently drops the tail of MoviePath and routes
+        results to the wrong tilts.
+        """
         tree = ET.parse(xml_path)
         root = tree.getroot()
 
@@ -80,70 +88,66 @@ class WarpXmlParser:
         # This maps to rlnTomoHand = -1 in the output STAR.
         are_angles_inverted = root.get("AreAnglesInverted", "False").strip() == "True"
 
-        # Parse GridCTF (Defocus) - this determines how many valid entries we have
-        grid_ctf = root.find("GridCTF")
-        defocus_values = []
-        z_values = []
-        for node in grid_ctf.findall("Node"):
-            value = float(node.get("Value"))
-            z = int(node.get("Z"))
-            defocus_values.append(value)
-            z_values.append(z)
-
-        num_entries = len(defocus_values)  # This is the authoritative count
-
-        # Parse GridCTFDefocusDelta
-        grid_delta = root.find("GridCTFDefocusDelta")
-        delta_values = []
-        for node in grid_delta.findall("Node"):
-            value = float(node.get("Value"))
-            delta_values.append(value)
-
-        # Parse GridCTFDefocusAngle
-        grid_angle = root.find("GridCTFDefocusAngle")
-        angle_values = []
-        for node in grid_angle.findall("Node"):
-            value = float(node.get("Value"))
-            angle_values.append(value)
-
-        # Parse MoviePath - get ALL movie names, then slice to match grid length
+        # MoviePath is authoritative for tilt ordering and identity.
         movie_paths_all = []
         for path in root.find("MoviePath").text.split("\n"):
-            if path.strip():  # Skip empty lines
+            if path.strip():
                 movie_name = os.path.basename(path).replace("_EER.eer", "")
                 movie_name = movie_name.replace(".tif", "")
                 movie_name = movie_name.replace(".eer", "")
                 movie_paths_all.append(movie_name)
 
-        # CRITICAL: Only use the first num_entries movies
-        movie_paths = movie_paths_all[:num_entries]
+        def _read_grid(grid_name: str) -> dict:
+            grid = root.find(grid_name)
+            if grid is None:
+                raise ValueError(f"No <{grid_name}> element in {xml_path}")
+            return {int(n.get("Z")): float(n.get("Value")) for n in grid.findall("Node")}
 
-        # Verify all arrays have the same length
-        if not (len(defocus_values) == len(delta_values) == len(angle_values) == len(movie_paths)):
-            logger.warning("Array length mismatch in %s:", xml_path)
-            logger.warning(
-                "  defocus: %d, delta: %d, angle: %d, movies: %d",
-                len(defocus_values), len(delta_values), len(angle_values), len(movie_paths),
+        ctf_by_z = _read_grid("GridCTF")
+        delta_by_z = _read_grid("GridCTFDefocusDelta")
+        angle_by_z = _read_grid("GridCTFDefocusAngle")
+
+        # The three grids MUST share an identical Z-set: they are parallel arrays
+        # keyed by Z. Divergence means per-tilt values would get joined across
+        # different tilts — the exact silent-corruption failure we forbid.
+        ctf_z = set(ctf_by_z)
+        if ctf_z != set(delta_by_z) or ctf_z != set(angle_by_z):
+            raise ValueError(
+                f"Grid Z-sets diverge in {xml_path}: "
+                f"GridCTF={sorted(ctf_z)}, Delta={sorted(delta_by_z)}, Angle={sorted(angle_by_z)}"
             )
-            min_len = min(len(defocus_values), len(delta_values), len(angle_values), len(movie_paths))
-            defocus_values = defocus_values[:min_len]
-            delta_values = delta_values[:min_len]
-            angle_values = angle_values[:min_len]
-            movie_paths = movie_paths[:min_len]
-            z_values = z_values[:min_len]
 
-        df = pd.DataFrame(
+        # Every Z must be a valid index into MoviePath. If WarpTools skipped CTF
+        # fitting on some tilts, those Z values are simply absent from the grids;
+        # the tilts_df merge will then report them as unresolved — that's correct,
+        # a missing CTF IS a problem and must be visible, not silently dropped.
+        out_of_range = sorted(z for z in ctf_z if z < 0 or z >= len(movie_paths_all))
+        if out_of_range:
+            raise ValueError(
+                f"GridCTF Z indices {out_of_range} out of range for "
+                f"{len(movie_paths_all)} MoviePath entries in {xml_path}"
+            )
+
+        missing = sorted(set(range(len(movie_paths_all))) - ctf_z)
+        if missing:
+            logger.warning(
+                "%s: %d of %d tilts have no CTF fit (Z=%s); those tilts will be reported "
+                "as unresolved at merge time.",
+                xml_path, len(missing), len(movie_paths_all), missing,
+            )
+
+        rows = [
             {
-                "Z": z_values,
-                "defocus_value": defocus_values,
-                "defocus_delta": delta_values,
-                "defocus_angle": angle_values,
-                "cryoBoostKey": movie_paths,
+                "Z": z,
+                "defocus_value": ctf_by_z[z],
+                "defocus_delta": delta_by_z[z],
+                "defocus_angle": angle_by_z[z],
+                "cryoBoostKey": movie_paths_all[z],
                 "are_angles_inverted": are_angles_inverted,
             }
-        )
-
-        return df
+            for z in sorted(ctf_z)
+        ]
+        return pd.DataFrame(rows)
 
 
 class MetadataTranslator:
@@ -432,6 +436,49 @@ class MetadataTranslator:
             logger.info("Read pixel size %.4f A from %s", voxel_x, st_files[0].name)
             return voxel_x
 
+    def _assert_ts_identity_consistency(self, job_dir: Path, expected_ts_names: set) -> None:
+        """Verify the single-source-of-truth invariant for TS identity in an array job.
+
+        For a completed per-TS array job, THREE independent sets of filenames must agree
+        on the TS identity:
+          * tomostar files          → {job_dir}/tomostar/{ts}.tomostar
+          * per-TS XMLs             → {job_dir}/warp_tiltseries/{ts}.xml
+          * per-TS tiltstack dirs   → {job_dir}/warp_tiltseries/tiltstack/{ts}/
+
+        Any drift between these three sets means an upstream bug and MUST fail loud,
+        otherwise the aggregator would silently route one TS's results through another
+        TS's folder. Also enforces that the input-STAR TS names are a subset of all three.
+        """
+        tomostar_dir = job_dir / "tomostar"
+        warp_dir = job_dir / "warp_tiltseries"
+        tiltstack_dir = warp_dir / "tiltstack"
+
+        tomostar_stems = {p.stem for p in tomostar_dir.glob("*.tomostar")} if tomostar_dir.is_dir() else set()
+        xml_stems = {p.stem for p in warp_dir.glob("*.xml")} if warp_dir.is_dir() else set()
+        tiltstack_stems = {p.name for p in tiltstack_dir.iterdir() if p.is_dir()} if tiltstack_dir.is_dir() else set()
+
+        mismatches = []
+        if tomostar_stems != tiltstack_stems:
+            mismatches.append(
+                f"tomostar vs tiltstack: only-tomostar={sorted(tomostar_stems - tiltstack_stems)}, "
+                f"only-tiltstack={sorted(tiltstack_stems - tomostar_stems)}"
+            )
+        if tomostar_stems != xml_stems:
+            mismatches.append(
+                f"tomostar vs xml: only-tomostar={sorted(tomostar_stems - xml_stems)}, "
+                f"only-xml={sorted(xml_stems - tomostar_stems)}"
+            )
+        input_missing = expected_ts_names - tomostar_stems
+        if input_missing:
+            mismatches.append(f"input STAR refers to TS with no tomostar: {sorted(input_missing)}")
+
+        if mismatches:
+            raise RuntimeError(
+                "TS identity consistency violated in "
+                f"{job_dir}; refusing to aggregate to avoid silent cross-TS contamination.\n  - "
+                + "\n  - ".join(mismatches)
+            )
+
     def update_ts_alignment_metadata(
         self,
         job_dir: Path,
@@ -451,6 +498,10 @@ class MetadataTranslator:
 
             if in_ts_df is None:
                 raise ValueError(f"No 'global' block in {input_star_path}")
+
+            # Strict TS identity invariant — fail loud if anything has drifted.
+            expected_ts = {Path(p).stem for p in in_ts_df["rlnTomoTiltSeriesStarFile"]}
+            self._assert_ts_identity_consistency(job_dir, expected_ts)
 
             # Resolve frame pixel size (used for non-shift metadata)
             pixel_size_col = next(
@@ -483,67 +534,74 @@ class MetadataTranslator:
             output_tilts_dir = output_star_path.parent / "tilt_series"
             output_tilts_dir.mkdir(exist_ok=True)
 
-            ts_id_failed = []
+            # Collect per-TS failures with a structured reason so a partial aggregation
+            # failure surfaces ALL missing series, not just the first one.
+            ts_failures: Dict[str, str] = {}
             updated_tilt_dfs = {}
             all_tilts_list = []
-            name_mapping = {}
+
+            tiltstack_root = job_dir / "warp_tiltseries" / "tiltstack"
+            tomostar_dir = job_dir / "tomostar"
 
             for _, ts_row in in_ts_df.iterrows():
                 ts_star_file_rel = ts_row["rlnTomoTiltSeriesStarFile"]
-
-                ts_id_base = Path(ts_star_file_rel).stem
+                ts_id = Path(ts_star_file_rel).stem
+                # Strict identity: the rlnTomoName MUST equal the tilt_series_star filename stem.
+                # Per-TS STARs are created one-to-one, indexed by name. Divergence would mean
+                # upstream data has already been corrupted.
+                if str(ts_row["rlnTomoName"]) != ts_id:
+                    ts_failures[ts_id] = (
+                        f"rlnTomoName={ts_row['rlnTomoName']!r} does not equal "
+                        f"tilt_series filename stem={ts_id!r}"
+                    )
+                    continue
 
                 ts_star_path_abs = (input_star_dir / ts_star_file_rel).resolve()
                 if not ts_star_path_abs.exists():
-                    ts_id_failed.append(ts_id_base)
+                    ts_failures[ts_id] = f"input tilt_series STAR not found: {ts_star_path_abs}"
                     continue
 
                 ts_data_in = self.starfile_service.read(ts_star_path_abs)
                 ts_tilts_df = next(iter(ts_data_in.values())).copy()
 
-                # --- ROBUST PATH RESOLUTION ---
-                tiltstack_root = job_dir / "warp_tiltseries" / "tiltstack"
-                matching_dirs = list(tiltstack_root.glob(f"{ts_id_base}*"))
-
-                if not matching_dirs or not matching_dirs[0].is_dir():
-                    logger.warning("No output folder found in %s for %s", tiltstack_root, ts_id_base)
-                    ts_id_failed.append(ts_id_base)
+                # Strict exact-name match. No glob, no prefix — tiltstack dir MUST exist with
+                # exactly this name or aggregation fails loud.
+                ts_tiltstack_dir = tiltstack_root / ts_id
+                if not ts_tiltstack_dir.is_dir():
+                    ts_failures[ts_id] = f"no tiltstack dir at {ts_tiltstack_dir}"
                     continue
-
-                actual_ts_dir = matching_dirs[0]
-                actual_ts_id = actual_ts_dir.name
-                name_mapping[ts_row["rlnTomoName"]] = actual_ts_id
 
                 aln_data = None
                 if alignment_method_enum == AlignmentMethod.ARETOMO:
-                    aln_files = list(actual_ts_dir.glob("*.st.aln"))
+                    aln_files = sorted(ts_tiltstack_dir.glob("*.st.aln"))
+                    if len(aln_files) > 1:
+                        ts_failures[ts_id] = f"expected 1 .st.aln file, found {len(aln_files)}: {aln_files}"
+                        continue
                     if aln_files:
-                        logger.debug("Found AreTomo alignment: %s", aln_files[0])
                         aln_data = self._read_aretomo_aln_file(aln_files[0])
-
                 elif alignment_method_enum == AlignmentMethod.IMOD:
-                    xf_files = list(actual_ts_dir.glob("*.xf"))
-                    tlt_files = list(actual_ts_dir.glob("*.tlt"))
+                    xf_files = sorted(ts_tiltstack_dir.glob("*.xf"))
+                    tlt_files = sorted(ts_tiltstack_dir.glob("*.tlt"))
+                    if len(xf_files) > 1 or len(tlt_files) > 1:
+                        ts_failures[ts_id] = (
+                            f"expected 1 .xf and 1 .tlt, found {len(xf_files)} .xf / {len(tlt_files)} .tlt"
+                        )
+                        continue
                     if xf_files and tlt_files:
                         aln_data = self._read_imod_xf_tlt_files(xf_files[0], tlt_files[0])
 
                 if aln_data is None:
-                    logger.warning("Alignment data missing in %s", actual_ts_dir)
-                    ts_id_failed.append(ts_id_base)
+                    ts_failures[ts_id] = f"alignment output files missing in {ts_tiltstack_dir}"
                     continue
 
                 # Sort by tilt index
                 aln_data = aln_data[aln_data[:, 0].argsort()]
                 keys_rel = [Path(p).name for p in ts_tilts_df["rlnMicrographMovieName"]]
 
-                tomostar_dir = job_dir / "tomostar"
-                tomostar_path = tomostar_dir / f"{actual_ts_id}.tomostar"
+                # Strict exact-name tomostar lookup — no id_base fallback.
+                tomostar_path = tomostar_dir / f"{ts_id}.tomostar"
                 if not tomostar_path.exists():
-                    tomostar_path = tomostar_dir / f"{ts_id_base}.tomostar"
-
-                if not tomostar_path.exists():
-                    logger.warning("Tomostar not found at %s", tomostar_path)
-                    ts_id_failed.append(ts_id_base)
+                    ts_failures[ts_id] = f"tomostar not found at {tomostar_path}"
                     continue
 
                 tomostar_data = self.starfile_service.read(tomostar_path)
@@ -570,25 +628,37 @@ class MetadataTranslator:
                         applied_count += 1
 
                 if applied_count == 0:
-                    ts_id_failed.append(ts_id_base)
+                    ts_failures[ts_id] = (
+                        "no movie names in the tomostar matched the per-TS input STAR — "
+                        "likely a cross-TS contamination of the staging dir"
+                    )
                     continue
 
-                updated_tilt_dfs[actual_ts_id] = ts_tilts_df
+                updated_tilt_dfs[ts_id] = ts_tilts_df
                 ts_row_df = pd.concat([pd.DataFrame(ts_row).T] * len(ts_tilts_df), ignore_index=True)
                 ts_row_df.index = ts_tilts_df.index
-                ts_row_df["rlnTomoName"] = actual_ts_id
                 all_tilts_list.append(pd.concat([ts_row_df, ts_tilts_df], axis=1))
 
-            if not updated_tilt_dfs:
-                raise Exception("Alignment metadata update failed for all series. Check naming conventions.")
+            # Fail loud on any per-TS problem. Silently dropping rows from the output STAR
+            # is the exact "tomogram produced from the wrong tilt-series" risk we are
+            # explicitly guarding against.
+            if ts_failures:
+                detail = "\n  - ".join(f"{tid}: {reason}" for tid, reason in sorted(ts_failures.items()))
+                raise RuntimeError(
+                    f"tsAlignment metadata aggregation failed for {len(ts_failures)} tilt-series:\n  - {detail}"
+                )
 
             # Write outputs
             for tid, tdf in updated_tilt_dfs.items():
                 self.starfile_service.write({tid: tdf}, output_tilts_dir / f"{tid}.star")
 
-            out_ts_df = in_ts_df[~in_ts_df["rlnTomoName"].isin(ts_id_failed)].copy()
-            out_ts_df["rlnTomoName"] = out_ts_df["rlnTomoName"].apply(lambda x: name_mapping.get(x, x))
+            # No more name_mapping: rlnTomoName already equals the canonical TS id (asserted above).
+            out_ts_df = in_ts_df.copy()
             out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(lambda x: f"tilt_series/{x}.star")
+
+            if out_ts_df["rlnTomoName"].duplicated().any():
+                dups = out_ts_df.loc[out_ts_df["rlnTomoName"].duplicated(keep=False), "rlnTomoName"].tolist()
+                raise RuntimeError(f"duplicate rlnTomoName values in alignment output STAR: {sorted(set(dups))}")
 
             dims = tomo_dimensions.split("x")
             out_ts_df["rlnTomoSizeX"], out_ts_df["rlnTomoSizeY"], out_ts_df["rlnTomoSizeZ"] = map(int, dims)
@@ -610,32 +680,50 @@ class MetadataTranslator:
             return {"success": False, "error": str(e)}
 
     def _merge_ctf_metadata(self, tilts_df: pd.DataFrame, warp_df: pd.DataFrame) -> pd.DataFrame:
-        """Merge CTF parameters from WarpTools into tilt series DataFrame."""
+        """Merge CTF parameters from WarpTools into tilt series DataFrame.
+
+        Strict key matching only. We try a small set of canonical normalizations of
+        the movie-stem key (stripping the _EER / .eer / .mrc wrappers that different
+        WarpTools versions strip differently), and for each candidate key we require
+        EXACTLY ONE matching row in warp_df. Any ambiguity (>1 match) or miss (0 match
+        after all candidates) is a hard failure, because silently picking .iloc[0]
+        or falling back to a substring match can route CTF values from one tilt to
+        another without the user ever seeing it.
+        """
         updated_df = tilts_df.copy()
+        unresolved: list[str] = []
+        ambiguous: list[str] = []
 
         for index, row in updated_df.iterrows():
             key = row["cryoBoostKey"]
 
-            # More comprehensive key cleaning to match WarpTools format
+            # Only the raw key + the EER/MRC-stripping cascade. Do NOT use
+            # Path(key).stem as a third candidate — tilt filenames embed the
+            # tilt angle (e.g. "_52.00_") and Path treats everything after the
+            # last "." as the suffix, corrupting the key to "..._52" and either
+            # matching nothing or, worse, matching the wrong tilt by prefix.
             clean_key = key.replace("_EER.eer.mrc", "").replace("_EER.mrc", "").replace(".mrc", "")
             clean_key = clean_key.replace("_EER", "").replace(".eer", "")
 
-            base_key = Path(key).stem
-            base_key = base_key.replace("_EER", "")
+            candidates = [key] if clean_key == key else [key, clean_key]
 
-            # Find matching WarpTools data - try multiple key formats
-            matches = warp_df[warp_df["cryoBoostKey"] == clean_key]
-            if matches.empty:
-                matches = warp_df[warp_df["cryoBoostKey"] == base_key]
-            if matches.empty:
-                clean_key_alt = clean_key.replace("[", "_").replace("]", "")
-                matches = warp_df[warp_df["cryoBoostKey"].str.contains(clean_key_alt, na=False)]
+            warp_row = None
+            hit_ambiguous = False
+            for cand in candidates:
+                matches = warp_df[warp_df["cryoBoostKey"] == cand]
+                if len(matches) == 1:
+                    warp_row = matches.iloc[0]
+                    break
+                if len(matches) > 1:
+                    ambiguous.append(f"{key!r} (candidate {cand!r} matched {len(matches)} rows)")
+                    hit_ambiguous = True
+                    break
 
-            if matches.empty:
-                logger.warning("No CTF data for %s (tried: %s, %s)", key, clean_key, base_key)
+            if hit_ambiguous:
                 continue
-
-            warp_row = matches.iloc[0]
+            if warp_row is None:
+                unresolved.append(f"{key!r} (tried {candidates})")
+                continue
 
             # Calculate defocus values (convert microns to Angstroms)
             defocus_u = (float(warp_row["defocus_value"]) + float(warp_row["defocus_delta"])) * 10000
@@ -653,6 +741,17 @@ class MetadataTranslator:
             # AreAnglesInverted="False" -> rlnTomoHand =  1  (no flip)
             if "are_angles_inverted" in warp_row.index:
                 updated_df.at[index, "rlnTomoHand"] = -1 if bool(warp_row["are_angles_inverted"]) else 1
+
+        # Fail loud on any unresolved or ambiguous keys. Silently leaving a tilt with
+        # un-updated CTF values (or worse — pulling CTF from the wrong tilt via a
+        # substring match) is exactly the silent-corruption failure mode we forbid.
+        problems = []
+        if ambiguous:
+            problems.append(f"{len(ambiguous)} ambiguous key(s): " + "; ".join(ambiguous))
+        if unresolved:
+            problems.append(f"{len(unresolved)} unresolved key(s): " + "; ".join(unresolved))
+        if problems:
+            raise RuntimeError("CTF metadata merge has identity conflicts — " + " | ".join(problems))
 
         return updated_df
 
@@ -719,6 +818,19 @@ class MetadataTranslator:
 
             if in_ts_df is None:
                 raise ValueError(f"No 'global' block in {input_star_path}")
+
+            # Identity invariant: every TS in the input STAR MUST have a matching per-TS
+            # XML file in the output processing dir. Drift would mean the CTF merge is
+            # pulling values across TS boundaries. Fail loud rather than produce silent
+            # cross-contamination.
+            xml_stems = {p.stem for p in (job_dir / warp_folder).glob("*.xml")}
+            input_ts_names = {str(n) for n in in_ts_df["rlnTomoName"]}
+            missing_xml = input_ts_names - xml_stems
+            if missing_xml:
+                raise RuntimeError(
+                    f"tsCtf aggregation aborted: {len(missing_xml)} tilt-series from the input STAR "
+                    f"have no XML in {job_dir / warp_folder}: {sorted(missing_xml)}"
+                )
 
             # Load all tilt series data - pass input_star_path for proper path resolution
             all_tilts_df = self._load_all_tilt_series(project_root, input_star_path, in_ts_df)

@@ -15,7 +15,7 @@ from ui.job_plugins.default_renderer import render_default_params_card, render_s
 
 
 @register_params_renderer(JobType.TEMPLATE_MATCH_PYTOM)
-def render_template_match_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None):
+def render_template_match_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None, **_ctx):
     project_path = str(ui_mgr.project_path) if ui_mgr and ui_mgr.project_path else None
 
     # Species badge -- read-only, locked at creation

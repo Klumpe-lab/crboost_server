@@ -61,9 +61,26 @@ class SupervisorSlurmConfig(BaseModel):
     nodes: int = 1
     ntasks_per_node: int = 1
     cpus_per_task: int = 1
-    gres: str = "gpu:1"
+    gres: str = ""
     mem: str = "4G"
     time: str = "4:00:00"
+
+
+class JobResourceProfile(BaseModel):
+    """
+    Per-job-type SLURM resource defaults.  All fields are optional — only the
+    fields present in conf.yaml override the global slurm_defaults.
+    Keys in conf.yaml must match JobType.value strings.
+    """
+
+    partition: Optional[str] = None
+    constraint: Optional[str] = None
+    nodes: Optional[int] = None
+    ntasks_per_node: Optional[int] = None
+    cpus_per_task: Optional[int] = None
+    gres: Optional[str] = None
+    mem: Optional[str] = None
+    time: Optional[str] = None
 
 
 # Backward compat alias
@@ -98,6 +115,7 @@ class Config(BaseModel):
     # Accepts both new key "supervisor_slurm" and legacy "tsreconstruct_supervisor_slurm"
     supervisor_slurm: SupervisorSlurmConfig = Field(default_factory=SupervisorSlurmConfig)
     tsreconstruct_supervisor_slurm: Optional[SupervisorSlurmConfig] = None
+    job_resource_profiles: Dict[str, JobResourceProfile] = Field(default_factory=dict)
     processing_defaults: ProcessingDefaultsConfig = Field(default_factory=ProcessingDefaultsConfig)
     tools: Dict[str, ToolConfig] = Field(default_factory=dict)
     containers: Optional[Dict[str, str]] = None
@@ -174,6 +192,10 @@ class ConfigService:
     @property
     def default_data_globs(self) -> tuple[Optional[str], Optional[str]]:
         return (self._config.local.DefaultMoviesGlob, self._config.local.DefaultMdocsGlob)
+
+    def get_job_resource_profile(self, job_type_value: str) -> Optional[JobResourceProfile]:
+        """Return the resource profile for a job type, or None if not configured."""
+        return self._config.job_resource_profiles.get(job_type_value)
 
     def get_tool_config(self, tool_name: str) -> ToolConfig:
         if tool_name in self._config.tools:

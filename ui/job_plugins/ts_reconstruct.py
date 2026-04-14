@@ -13,5 +13,5 @@ from ui.job_plugins import register_extra_tab
 
 
 @register_extra_tab(JobType.TS_RECONSTRUCT, key="tasks", label="Tasks", icon="view_list")
-def render_tasks_tab(job_type, job_model, backend, ui_mgr):
-    render_array_task_tracker(job_model, ui_mgr)
+def render_tasks_tab(job_type, instance_id, job_model, backend, ui_mgr):
+    render_array_task_tracker(instance_id, job_model, ui_mgr)

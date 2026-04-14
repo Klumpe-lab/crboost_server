@@ -30,6 +30,7 @@ sys.path.insert(0, str(server_dir))
 from drivers.array_job_base import (
     collect_task_results,
     install_cancel_handler,
+    preflight_registry,
     read_manifest,
     submit_array_job,
     wait_for_array_completion,
@@ -38,9 +39,10 @@ from drivers.array_job_base import (
 )
 from drivers.driver_base import get_driver_context, run_command
 from services.computing.container_service import get_container_service
-from services.configs.metadata_service import MetadataTranslator
 from services.configs.starfile_service import StarfileService
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
+from services.tilt_series import get_registry_for
+from services.tilt_series.adapters import FsMotionCtfIngestAdapter
 
 
 DRIVER_SCRIPT = Path(__file__).resolve()
@@ -106,8 +108,12 @@ def build_warp_commands(params: FsMotionCtfParams, frames_rel: str) -> str:
         gain_path_str = shlex.quote(params.gain_path)
     gain_ops_str = params.gain_operations if params.gain_operations else ""
 
-    # Detect frame extension from the frames_rel dir name context
-    # We'll detect at runtime inside the staged dir
+    # Negative sign on --eer_ngroups reinterprets the value as "EER fractions" (RELION
+    # semantics): fewer, higher-SNR output sub-frames instead of many low-SNR ones.
+    # For low-dose cryo-ET this is what gives motion correction enough signal per group
+    # to produce a sharp average; dropping the sign collapses CTF fits into the floor
+    # of the defocus search range on low-SNR (high-tilt) images. The old CryoBoost and
+    # the pre-refactor driver both applied this sign for EER inputs.
     create_settings_parts = [
         "WarpTools create_settings",
         "--folder_data",
@@ -121,7 +127,7 @@ def build_warp_commands(params: FsMotionCtfParams, frames_rel: str) -> str:
         "--angpix",
         str(params.pixel_size),
         "--eer_ngroups",
-        str(params.eer_ngroups),
+        f"-{params.eer_ngroups}",
     ]
     if gain_path_str:
         create_settings_parts.extend(["--gain_reference", gain_path_str])
@@ -304,6 +310,11 @@ def run_supervisor_mode():
         for ts in ts_names:
             print(f"  {ts}: {len(ts_frame_map[ts])} frames", flush=True)
 
+        # Registry preflight — fail in ~1s if the registry can't cover every
+        # TS we're about to dispatch. Stops the "burn an hour on subjobs then
+        # fail aggregation" failure mode cold.
+        preflight_registry(project_path, ts_names, job_name="fs_motion_and_ctf")
+
         # Write the manifest with the frame mapping embedded
         per_task_cfg = params.get_effective_slurm_config()
 
@@ -318,9 +329,13 @@ def run_supervisor_mode():
             manifest_extra={"ts_frames": ts_frame_map},
         )
 
-        install_cancel_handler(array_job_id, job_dir)
-        wait_for_array_completion(array_job_id, poll_secs=30)
+        if array_job_id is not None:
+            install_cancel_handler(array_job_id, job_dir)
+            wait_for_array_completion(array_job_id, poll_secs=30)
+        else:
+            print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
 
+        # Check results against ALL ts_names (includes previously succeeded)
         results = collect_task_results(job_dir, ts_names)
         print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
         if results.failed:
@@ -333,23 +348,28 @@ def run_supervisor_mode():
             print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
             sys.exit(1)
 
-        # Aggregate metadata
-        print("[SUPERVISOR] All tasks succeeded; aggregating metadata...", flush=True)
+        # Aggregate metadata via the TiltSeries registry. If the registry is
+        # empty (legacy project), fail loud rather than fall back to the old
+        # string-keyed merge — that's the path that produced the
+        # silent-corruption bug we explicitly guarded against.
+        print("[SUPERVISOR] All tasks succeeded; aggregating metadata via registry...", flush=True)
 
-        # Ensure output processing dir exists
         output_processing_dir = paths.get("output_processing", job_dir / "warp_frameseries")
         output_processing_dir.mkdir(parents=True, exist_ok=True)
 
-        translator = MetadataTranslator(StarfileService())
-        result = translator.update_fs_motion_and_ctf_metadata(
-            job_dir=job_dir,
-            input_star_path=input_star_path,
-            output_star_path=paths["output_star"],
-            project_root=project_path,
-            warp_folder="warp_frameseries",
+        registry = get_registry_for(project_path)
+        if not registry.tilt_series_ids():
+            raise RuntimeError(
+                f"TiltSeries registry is empty for project {project_path}. "
+                f"Reload the project in the UI to backfill the registry from mdocs, "
+                f"then restart this job."
+            )
+        adapter = FsMotionCtfIngestAdapter(
+            registry=registry, job_dir=job_dir, job_instance_id=instance_id, warp_folder="warp_frameseries",
         )
-        if not result["success"]:
-            raise Exception(f"Metadata aggregation failed: {result['error']}")
+        adapter.ingest(ts_names)
+        adapter.emit_star(input_star_path, paths["output_star"], project_root=project_path)
+        registry.save()
 
         print("[SUPERVISOR] Metadata processing successful.", flush=True)
 

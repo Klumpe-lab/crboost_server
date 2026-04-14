@@ -1,10 +1,12 @@
 import asyncio
 import logging
+import os
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from typing import TYPE_CHECKING
 
+from services.models_base import JobType
 from services.project_state import JobStatus
 from services.scheduling_and_orchestration.pipeline_orchestrator_service import JobTypeResolver
 
@@ -28,10 +30,15 @@ class PipelineRunnerService:
         self._active_processes: Dict[Path, asyncio.subprocess.Process] = {}
         self._stdout_log_paths: Dict[Path, Path] = {}
         self._stderr_log_paths: Dict[Path, Path] = {}
+        # Retry monitors bypass the schemer but still count as pipeline activity —
+        # tracked here so is_active() reports true and sync_all_jobs doesn't clear
+        # pipeline_active out from under a running retry.
+        self._retry_monitors: Dict[Path, asyncio.Task] = {}
         self.job_resolver = JobTypeResolver(backend_instance.pipeline_orchestrator.star_handler)
 
     def is_active(self, project_path: Path) -> bool:
-        return project_path.resolve() in self._active_processes
+        resolved = project_path.resolve()
+        return resolved in self._active_processes or resolved in self._retry_monitors
 
     # -------------------------------------------------------------------------
     # Status sync
@@ -56,6 +63,13 @@ class PipelineRunnerService:
                         star_patched = True
                         logger.info(
                             "Reconciled %s: Running -> Succeeded (RELION_JOB_EXIT_SUCCESS found on disk)",
+                            row["rlnPipeLineProcessName"],
+                        )
+                    elif (job_dir / "RELION_JOB_EXIT_FAILURE").exists():
+                        processes.at[idx, "rlnPipeLineProcessStatusLabel"] = "Failed"
+                        star_patched = True
+                        logger.info(
+                            "Reconciled %s: Running -> Failed (RELION_JOB_EXIT_FAILURE found on disk)",
                             row["rlnPipeLineProcessName"],
                         )
             if star_patched:
@@ -253,6 +267,19 @@ class PipelineRunnerService:
 
         total = succeeded = running = failed = scheduled = 0
         for job_model in state.jobs.values():
+            # IMPORT_MOVIES is a local pre-step; TS_IMPORT is a silently-injected
+            # prerequisite of TS_ALIGNMENT (see pipeline_builder_panel._PREREQUISITES).
+            # Neither appears in the user-visible roster (PHASE_JOBS), so both
+            # must be excluded to keep the counter denominator aligned with the UI.
+            if job_model.job_type in (JobType.IMPORT_MOVIES, JobType.TS_IMPORT):
+                continue
+            # Interactive jobs (e.g. TiltFilter) are never dispatched by the relion
+            # schemer and manage their own status via the UI. If we counted them
+            # here, a merely-scheduled interactive job would keep `scheduled > 0`
+            # forever and the status poller would never mark the pipeline complete
+            # (ui/pipeline_builder/status_poller.py:45).
+            if getattr(job_model, "IS_INTERACTIVE", False):
+                continue
             total += 1
             s = job_model.execution_status
             if s == JobStatus.SUCCEEDED:
@@ -377,7 +404,9 @@ class PipelineRunnerService:
                     init_full_command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=project_dir
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(init_process.communicate(), timeout=30.0)
+                    # 30s was too tight: on a shared filesystem the apptainer
+                    # cold-start + relion first-run can push past that easily.
+                    stdout, stderr = await asyncio.wait_for(init_process.communicate(), timeout=180.0)
                     if init_process.returncode != 0:
                         logger.info("Relion init failed: %s", stderr.decode())
                         return {"success": False, "error": f"Failed to initialize Relion project: {stderr.decode()}"}
@@ -455,6 +484,225 @@ class PipelineRunnerService:
             except Exception as save_err:
                 logger.info("Failed to reset pipeline_active after error: %s", save_err)
             return {"success": False, "error": str(e)}
+
+    # -------------------------------------------------------------------------
+    # Retry path: re-sbatch an existing job dir's supervisor without schemer.
+    #
+    # When a previous run left per-task .ok files in External/jobNNN/.task_status/,
+    # re-sbatching External/jobNNN/run_submit.script puts the driver back in
+    # supervisor mode in the same dir. submit_array_job() (drivers/array_job_base.py)
+    # diffs .ok files against ts_names and submits a sparse --array for only the
+    # failed/missing tilt-series. No new jobNNN gets allocated.
+    #
+    # After all retries succeed, we hand off to the schemer for any downstream
+    # fresh jobs (e.g. alignment/tsctf that never ran because motionctf failed).
+    # -------------------------------------------------------------------------
+
+    async def launch_retries(
+        self, project_dir: Path, retry_instance_ids: List[str], on_success_fresh_ids: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Re-sbatch the supervisor script of each failed job in place. Register an
+        async monitor that waits for RELION_JOB_EXIT_{SUCCESS,FAILURE} markers,
+        then invokes deploy_and_run_scheme for on_success_fresh_ids.
+        """
+        state = self.backend.state_service.state_for(project_dir)
+
+        if state.pipeline_active or self.is_active(project_dir):
+            return {
+                "success": False,
+                "message": "Pipeline is already running. Wait for it to complete or cancel it first.",
+            }
+
+        prepared: List[tuple] = []  # (instance_id, job_dir, script_path)
+        for iid in retry_instance_ids:
+            job_model = state.jobs.get(iid)
+            if not job_model:
+                return {"success": False, "message": f"Retry target {iid} not in state"}
+            rjn = getattr(job_model, "relion_job_name", None)
+            if not rjn:
+                return {"success": False, "message": f"Retry target {iid} has no relion_job_name"}
+            job_dir = project_dir / rjn.rstrip("/")
+            script = job_dir / "run_submit.script"
+            if not script.exists():
+                return {"success": False, "message": f"Cannot retry {iid}: {script} missing"}
+            prepared.append((iid, job_dir, script))
+
+        # Clean stale markers, flip pipeline.star to Running, sbatch each supervisor.
+        for iid, job_dir, script in prepared:
+            for marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
+                (job_dir / marker).unlink(missing_ok=True)
+
+            rjn = state.jobs[iid].relion_job_name
+            self._patch_pipeline_process_status(project_dir, rjn, "Running")
+
+            try:
+                slurm_id = await self._sbatch_script(script, cwd=project_dir)
+            except Exception as e:
+                logger.exception("sbatch failed for retry of %s", iid)
+                self._patch_pipeline_process_status(project_dir, rjn, "Failed")
+                return {"success": False, "message": f"sbatch failed for {iid}: {e}"}
+
+            job_model = state.jobs[iid]
+            job_model.slurm_job_id = slurm_id
+            job_model.execution_status = JobStatus.RUNNING
+            logger.info("Retry sbatched: instance=%s dir=%s slurm=%s", iid, job_dir, slurm_id)
+
+        state.pipeline_active = True
+        await self.backend.state_service.save_project(project_path=project_dir, force=True)
+
+        resolved = project_dir.resolve()
+        monitor_task = asyncio.create_task(
+            self._monitor_retries_and_handoff(
+                project_dir=project_dir,
+                retry_dirs=[(iid, d) for iid, d, _ in prepared],
+                on_success_fresh_ids=on_success_fresh_ids,
+            )
+        )
+        self._retry_monitors[resolved] = monitor_task
+
+        message = (
+            f"Retrying {len(prepared)} job(s) in place; "
+            f"will continue with {len(on_success_fresh_ids)} fresh job(s) on success"
+        )
+        return {"success": True, "message": message, "pid": 0}
+
+    async def _monitor_retries_and_handoff(
+        self,
+        project_dir: Path,
+        retry_dirs: List[tuple],  # [(instance_id, job_dir), ...]
+        on_success_fresh_ids: List[str],
+    ) -> None:
+        resolved = project_dir.resolve()
+        poll_interval = 5.0
+        try:
+            while True:
+                pending = []
+                failed = []
+                for iid, job_dir in retry_dirs:
+                    if (job_dir / "RELION_JOB_EXIT_FAILURE").exists():
+                        failed.append((iid, job_dir))
+                    elif (job_dir / "RELION_JOB_EXIT_SUCCESS").exists():
+                        continue
+                    else:
+                        pending.append((iid, job_dir))
+
+                if not pending:
+                    break
+                await asyncio.sleep(poll_interval)
+
+            if failed:
+                logger.info("Retry monitor: %d retry(ies) failed: %s", len(failed), [i for i, _ in failed])
+                state = self.backend.state_service.state_for(project_dir)
+                state.pipeline_active = False
+                await self.backend.state_service.save_project(project_path=project_dir, force=True)
+                return
+
+            logger.info("Retry monitor: all %d retry(ies) succeeded", len(retry_dirs))
+
+            # Clear pipeline_active so deploy_and_run_scheme's guard passes when
+            # we hand off. The schemer branch sets it back to True.
+            state = self.backend.state_service.state_for(project_dir)
+            state.pipeline_active = False
+            await self.backend.state_service.save_project(project_path=project_dir, force=True)
+
+            if not on_success_fresh_ids:
+                logger.info("Retry monitor: no fresh jobs to hand off to schemer")
+                return
+
+            # Remove our monitor entry BEFORE calling deploy so is_active() sees no activity.
+            self._retry_monitors.pop(resolved, None)
+
+            result = await self.backend.pipeline_orchestrator.deploy_and_run_scheme(
+                project_dir=project_dir, selected_instance_ids=on_success_fresh_ids
+            )
+            if not result.get("success"):
+                logger.info("Retry->schemer handoff failed: %s", result)
+
+        except asyncio.CancelledError:
+            logger.info("Retry monitor cancelled for %s", project_dir)
+            raise
+        except Exception:
+            logger.exception("Retry monitor crashed for %s", project_dir)
+        finally:
+            self._retry_monitors.pop(resolved, None)
+
+    def _finalize_stopped_task_statuses(self, job_dir: Path) -> int:
+        """For each manifest item without .ok/.fail but with task_{idx}.out on
+        disk (i.e. it was actively running when the pipeline got stopped), write
+        a .fail marker atomically. Returns the count of markers written."""
+        import json
+
+        manifest_path = job_dir / ".task_manifest.json"
+        if not manifest_path.exists():
+            return 0
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except Exception:
+            return 0
+        items = manifest.get("items") or []
+        if not items:
+            return 0
+
+        status_dir = job_dir / ".task_status"
+        status_dir.mkdir(parents=True, exist_ok=True)
+        existing = {p.stem for p in status_dir.glob("*.ok")} | {p.stem for p in status_dir.glob("*.fail")}
+
+        marked = 0
+        for idx, name in enumerate(items):
+            if name in existing:
+                continue
+            if not (job_dir / f"task_{idx}.out").exists():
+                continue
+            # Atomic write: temp then rename.
+            tmp = status_dir / f".{name}.fail.tmp"
+            target = status_dir / f"{name}.fail"
+            try:
+                tmp.write_text("")
+                os.replace(tmp, target)
+                marked += 1
+            except Exception:
+                tmp.unlink(missing_ok=True)
+        return marked
+
+    def _patch_pipeline_process_status(self, project_dir: Path, job_path: str, new_status: str) -> None:
+        pipeline_star = project_dir / "default_pipeline.star"
+        if not pipeline_star.exists():
+            return
+        star_handler = self.backend.pipeline_orchestrator.star_handler
+        try:
+            data = star_handler.read(pipeline_star)
+            processes = data.get("pipeline_processes", pd.DataFrame())
+            if processes.empty or "rlnPipeLineProcessName" not in processes.columns:
+                return
+            key = job_path.rstrip("/") + "/"
+            mask = processes["rlnPipeLineProcessName"] == key
+            if mask.any():
+                processes.loc[mask, "rlnPipeLineProcessStatusLabel"] = new_status
+                data["pipeline_processes"] = processes
+                star_handler.write(data, pipeline_star)
+        except Exception as e:
+            logger.warning("Could not patch %s status to %s: %s", job_path, new_status, e)
+
+    async def _sbatch_script(self, script_path: Path, cwd: Path) -> str:
+        """sbatch in an env stripped of SLURM_*/SBATCH_* so the submission
+        doesn't inherit any parent job context. Returns the SLURM job ID."""
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_"))}
+        process = await asyncio.create_subprocess_exec(
+            "sbatch",
+            str(script_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(cwd),
+            env=clean_env,
+        )
+        stdout_b, stderr_b = await process.communicate()
+        stdout = stdout_b.decode()
+        stderr = stderr_b.decode()
+        if process.returncode != 0:
+            raise RuntimeError(f"sbatch rc={process.returncode} stderr={stderr!r}")
+        # "Submitted batch job 12345"
+        return stdout.strip().split()[-1]
 
     async def _monitor_schemer(
         self,
@@ -578,6 +826,12 @@ class PipelineRunnerService:
             except Exception as e:
                 errors.append(f"schemer termination: {e}")
 
+        # Cancel any retry monitor so it doesn't try to hand off to the schemer
+        # after we've cancelled the underlying SLURM jobs.
+        retry_task = self._retry_monitors.pop(resolved, None)
+        if retry_task and not retry_task.done():
+            retry_task.cancel()
+
         # Also collect array_job_ids from any task manifests in running job dirs.
         state = self.backend.state_service.state_for(project_dir)
         for job_model in state.jobs.values():
@@ -607,6 +861,24 @@ class PipelineRunnerService:
             result = await self.backend.slurm_service.scancel_jobs(normalized_ids)
             if not result["success"]:
                 errors.append(f"scancel: {result.get('error')}")
+
+        # After scancel: any array task that was actively running (task_{idx}.out
+        # exists, no .ok/.fail) got SIGTERM'd mid-execution and won't write its
+        # own status file. Mark those as .fail so the UI tracker flips Running
+        # -> Failed on the next poll. Pending tasks (no task_{idx}.out) are left
+        # alone — they never started and the sparse-array retry will pick them up.
+        for job_model in state.jobs.values():
+            if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.SCHEDULED):
+                continue
+            job_dir_str = (job_model.paths or {}).get("job_dir")
+            if not job_dir_str:
+                continue
+            try:
+                n = self._finalize_stopped_task_statuses(Path(job_dir_str))
+                if n:
+                    logger.info("Marked %d stopped task(s) as .fail in %s", n, job_dir_str)
+            except Exception as e:
+                logger.info("Could not finalize task statuses in %s: %s", job_dir_str, e)
 
         pipeline_star = project_dir / "default_pipeline.star"
         if pipeline_star.exists():

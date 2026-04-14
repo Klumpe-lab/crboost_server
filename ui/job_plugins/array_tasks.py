@@ -13,15 +13,15 @@ from ui.job_plugins import register_extra_tab
 
 
 @register_extra_tab(JobType.FS_MOTION_CTF, key="tasks", label="Tasks", icon="view_list")
-def render_fs_tasks(job_type, job_model, backend, ui_mgr):
-    render_array_task_tracker(job_model, ui_mgr)
+def render_fs_tasks(job_type, instance_id, job_model, backend, ui_mgr):
+    render_array_task_tracker(instance_id, job_model, ui_mgr)
 
 
 @register_extra_tab(JobType.TS_ALIGNMENT, key="tasks", label="Tasks", icon="view_list")
-def render_align_tasks(job_type, job_model, backend, ui_mgr):
-    render_array_task_tracker(job_model, ui_mgr)
+def render_align_tasks(job_type, instance_id, job_model, backend, ui_mgr):
+    render_array_task_tracker(instance_id, job_model, ui_mgr)
 
 
 @register_extra_tab(JobType.TS_CTF, key="tasks", label="Tasks", icon="view_list")
-def render_ctf_tasks(job_type, job_model, backend, ui_mgr):
-    render_array_task_tracker(job_model, ui_mgr)
+def render_ctf_tasks(job_type, instance_id, job_model, backend, ui_mgr):
+    render_array_task_tracker(instance_id, job_model, ui_mgr)
