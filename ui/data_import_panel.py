@@ -4,6 +4,7 @@ Data import panel with debounced saves and history management.
 """
 
 import asyncio
+import getpass
 import glob
 import logging
 from pathlib import Path
@@ -40,6 +41,18 @@ CLR_ACCENT_TEXT = "#1e40af"
 CLR_META = "#64748b"  # slate-500 -- readable metadata
 CLR_SUCCESS = "#0d9488"  # teal-600: academic, not shouty green
 CLR_ERROR = "#be4343"  # muted red, not aggressive
+CLR_RUNNING = "#3b82f6"  # blue-500: active pipeline badge
+
+# Shared palette with pipeline_roster avatars — keeps per-project/per-user
+# color identity consistent across the app.
+_AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
+
+
+def _avatar_color(key: str) -> str:
+    return _AVATAR_PALETTE[hash(key) % len(_AVATAR_PALETTE)]
+
+
+CURRENT_USER = getpass.getuser()
 
 
 def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Callable]) -> None:
@@ -62,6 +75,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         "mdocs_separate_container": None,
         "parsing_spinner": None,
         "data_history_container": None,
+        "all_projects": [],
+        "mine_toggle_label": None,
     }
 
     # =========================================================================
@@ -454,85 +469,132 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             )
 
         container.clear()
+        local_refs["all_projects"] = []
 
         if not base_path or not base_path.strip():
-            with container:
-                ui.label("Set a base location to scan for projects").style(
-                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 0;"
-                )
+            render_project_list("Set a base location to scan for projects")
             return
 
         path_obj = Path(base_path)
         if not path_obj.exists():
-            with container:
-                ui.label("Path does not exist").style(
-                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 0;"
-                )
+            render_project_list("Path does not exist")
             return
         if not path_obj.is_dir():
-            with container:
-                ui.label("Not a directory").style(
-                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 0;"
-                )
+            render_project_list("Not a directory")
             return
 
         with container:
             ui.spinner("dots").classes("self-center my-1")
 
         projects = await backend.scan_for_projects(base_path)
+        local_refs["all_projects"] = projects
+        render_project_list(empty_msg=f"No projects found in {path_obj.name}/")
 
+    def render_project_list(empty_msg: str = ""):
+        container = local_refs["recent_projects_container"]
+        if not container:
+            return
         container.clear()
+
+        projects = local_refs["all_projects"]
+        show_only_mine = prefs_service.prefs.show_only_mine
+        if show_only_mine:
+            visible = [p for p in projects if (p.get("creator") or "") == CURRENT_USER]
+        else:
+            visible = projects
+
+        # Update the toggle label with mine/total counts
+        mine_lbl = local_refs.get("mine_toggle_label")
+        if mine_lbl:
+            mine_count = sum(1 for p in projects if (p.get("creator") or "") == CURRENT_USER)
+            mine_lbl.set_text(f"Only mine ({mine_count}/{len(projects)})")
+
         with container:
-            if not projects:
-                ui.label(f"No projects found in {path_obj.name}/").style(
-                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 0;"
+            if not visible:
+                if projects and show_only_mine:
+                    ui.label(f"No projects owned by {CURRENT_USER}").style(
+                        f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 0;"
+                    )
+                else:
+                    ui.label(empty_msg or "No projects").style(
+                        f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 6px 0;"
+                    )
+                return
+
+            for proj in visible:
+                _render_project_row(proj)
+
+    def _render_project_row(proj):
+        def make_load_handler(path_str: str):
+            async def handler():
+                await handle_load_project(Path(path_str))
+
+            return handler
+
+        name = proj["name"]
+        creator = proj.get("creator") or ""
+        is_running = bool(proj.get("pipeline_active", False))
+        proj_color = _avatar_color(name)
+        creator_color = _avatar_color(creator) if creator else CLR_META
+        initials = name[:3].upper()
+
+        with (
+            ui.row()
+            .classes("w-full items-center py-1.5 px-3 gap-2 hover:bg-slate-50 transition-colors cursor-pointer group")
+            .style("min-height: 32px;")
+        ) as proj_row:
+
+            def make_delete_handler(path_str: str, pname: str, row_el=proj_row):
+                async def handler():
+                    await _confirm_delete_project(Path(path_str), pname, row_el)
+
+                return handler
+
+            # Avatar
+            with (
+                ui.element("div")
+                .style(
+                    f"width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0; "
+                    f"background: {proj_color}1a; border: 1px solid {proj_color}55; "
+                    f"display: flex; align-items: center; justify-content: center;"
                 )
-            else:
-                for proj in projects:
+                .on("click", make_load_handler(proj["path"]))
+            ):
+                ui.label(initials).style(
+                    f"font-size: 8px; font-weight: 700; color: {proj_color}; "
+                    "letter-spacing: 0.03em; line-height: 1; pointer-events: none;"
+                )
 
-                    def make_load_handler(path_str: str):
-                        async def handler():
-                            await handle_load_project(Path(path_str))
-
-                        return handler
-
-                    with (
-                        ui.row()
-                        .classes(
-                            "w-full items-center py-1.5 px-3 gap-1 "
-                            "hover:bg-slate-50 transition-colors cursor-pointer group"
+            with ui.column().classes("flex-1 gap-0 min-w-0").on("click", make_load_handler(proj["path"])):
+                with ui.row().classes("items-center gap-1 min-w-0"):
+                    ui.label(name).style(
+                        f"{FONT} font-size: 11px; font-weight: 500; color: {CLR_HEADING};"
+                    ).classes("truncate")
+                    if is_running:
+                        ui.label("running").style(
+                            f"{FONT} font-size: 8px; color: {CLR_RUNNING}; font-weight: 700; "
+                            f"background: #eff6ff; border: 1px solid #bfdbfe; "
+                            "border-radius: 3px; padding: 0 5px; flex-shrink: 0; letter-spacing: 0.03em;"
                         )
-                        .style("min-height: 28px;")
-                    ) as proj_row:
 
-                        def make_delete_handler(path_str: str, name: str, row_el=proj_row):
-                            async def handler():
-                                await _confirm_delete_project(Path(path_str), name, row_el)
-
-                            return handler
-
-                        with ui.column().classes("flex-1 gap-0 min-w-0").on("click", make_load_handler(proj["path"])):
-                            ui.label(proj["name"]).style(
-                                f"{FONT} font-size: 11px; font-weight: 500; color: {CLR_HEADING};"
-                            ).classes("truncate")
-
-                            meta_parts = []
-                            if proj.get("created_at"):
-                                meta_parts.append(proj["created_at"])
-                            if proj.get("creator"):
-                                meta_parts.append(proj["creator"])
-                            meta_str = "  \u00b7  ".join(meta_parts) if meta_parts else proj["modified"]
-                            ui.label(meta_str).style(f"{MONO} font-size: 9px; color: {CLR_META};")
-
-                        ui.button(
-                            icon="delete_outline", on_click=make_delete_handler(proj["path"], proj["name"])
-                        ).props("flat dense round size=xs").classes(
-                            "text-slate-200 hover:text-red-400 "
-                            "opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                with ui.row().classes("items-center gap-2"):
+                    if proj.get("created_at"):
+                        ui.label(proj["created_at"]).style(f"{MONO} font-size: 9px; color: {CLR_META};")
+                    if creator:
+                        ui.label(creator).style(
+                            f"{MONO} font-size: 9px; font-weight: 600; color: {creator_color};"
                         )
-                        ui.button(icon="arrow_forward", on_click=make_load_handler(proj["path"])).props(
-                            "flat dense round size=xs"
-                        ).classes("text-slate-300 hover:text-blue-500 shrink-0")
+                    if not proj.get("created_at") and not creator:
+                        ui.label(proj["modified"]).style(f"{MONO} font-size: 9px; color: {CLR_META};")
+
+            ui.button(icon="delete_outline", on_click=make_delete_handler(proj["path"], name)).props(
+                "flat dense round size=xs"
+            ).classes(
+                "text-slate-200 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+            )
+            ui.button(icon="arrow_forward", on_click=make_load_handler(proj["path"])).props(
+                "flat dense round size=xs"
+            ).classes("text-slate-300 hover:text-blue-500 shrink-0")
 
     async def _confirm_delete_project(project_dir: Path, project_name: str, row_el=None):
         with ui.dialog() as dialog, ui.card().classes("w-96"):
@@ -1271,6 +1333,26 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                         with ui.row().classes("items-center gap-1"):
                             ui.icon("folder_open", size="12px")
                             ui.label("Browse").style(f"{FONT} font-size: 9px; font-weight: 500;")
+
+                # "Only mine" filter toggle
+                def on_mine_toggle(e):
+                    prefs_service.prefs.show_only_mine = bool(e.value)
+                    prefs_service.save_to_app_storage(app.storage.user)
+                    render_project_list()
+
+                with ui.row().classes("w-full items-center gap-2 px-4 pb-2"):
+                    mine_switch = (
+                        ui.switch(value=prefs_service.prefs.show_only_mine, on_change=on_mine_toggle)
+                        .props("dense color=blue")
+                        .style("transform: scale(0.7); margin-left: -4px;")
+                    )
+                    mine_switch.tooltip(f"Filter to projects created by {CURRENT_USER}")
+                    local_refs["mine_toggle_label"] = ui.label("Only mine").style(
+                        f"{FONT} font-size: 10px; color: {CLR_LABEL}; cursor: pointer;"
+                    )
+                    local_refs["mine_toggle_label"].on(
+                        "click", lambda: mine_switch.set_value(not mine_switch.value)
+                    )
 
                 with ui.scroll_area().classes("w-full").style("min-height: 60px; max-height: 240px;"):
                     local_refs["recent_projects_container"] = ui.column().classes("w-full gap-0")

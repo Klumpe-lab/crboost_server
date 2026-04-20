@@ -2,6 +2,8 @@ from __future__ import annotations
 from typing import ClassVar, Dict, List, Set, Tuple
 from pydantic import Field
 
+from services.computing.slurm_service import SlurmConfig
+from services.configs.config_service import get_config_service
 from services.jobs._base import AbstractJobParams
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
@@ -26,6 +28,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
         "bandpass_filter",
         "gpu_split",
         "perdevice",
+        "array_throttle",
     }
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
@@ -67,6 +70,9 @@ class TemplateMatchPytomParams(AbstractJobParams):
     bandpass_filter: str = Field(default="None")
     gpu_split: str = Field(default="auto")
     perdevice: int = Field(default=1)
+    array_throttle: int = Field(
+        default=4, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram template matching"
+    )
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:
         return [
@@ -77,6 +83,26 @@ class TemplateMatchPytomParams(AbstractJobParams):
             ("in_mov", ""),
             ("in_part", ""),
         ]
+
+    def _get_queue_options(self) -> List[Tuple[str, str]]:
+        """
+        Override: TM's parent sbatch is a lightweight CPU-only supervisor that
+        enumerates tomograms, submits a per-tomogram SLURM array, polls, and
+        aggregates. The user-facing slurm config (per-task GPU resources) is
+        consumed by the supervisor when it builds the array sbatch in
+        drivers/template_match_pytom.py -- NOT by this supervisor's own sbatch.
+        """
+        sup = get_config_service().supervisor_slurm_defaults
+        options = [
+            ("do_queue", "Yes"),
+            ("queuename", sup.partition),
+            ("qsub", "sbatch"),
+            ("qsubscript", "qsub.sh"),
+            ("min_dedicated", "1"),
+        ]
+        for field_name, var_name in SlurmConfig.QSUB_EXTRA_MAPPING.items():
+            options.append((var_name, str(getattr(sup, field_name))))
+        return options
 
     def is_driver_job(self) -> bool:
         return True

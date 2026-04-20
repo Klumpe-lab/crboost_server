@@ -1,0 +1,129 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/cuda:11.2.2-cudnn8-devel-ubuntu20.04
+
+# ----------------------------------------------------------------------------
+# easymode — https://github.com/mgflast/easymode
+#
+# Thin CLI bundling pretrained cryo-ET segmentation and picking models.
+# Subcommands: list, segment, pick, denoise, reconstruct (and possibly
+# select_tilts in newer versions — verify with `easymode --help`).
+#
+# Pretrained weights are downloaded from HuggingFace on first use. To cache
+# across jobs, bind-mount a host directory to /opt/hf_cache (set via HF_HOME
+# in %environment). Otherwise weights re-download per job.
+#
+# Per upstream install guide:
+#   Python 3.10 / TF 2.11.0 / CUDA 11.2 / cuDNN 8.1 / protobuf 3.20.3
+# ----------------------------------------------------------------------------
+
+%environment
+    # 1. Isolation
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+
+    # 2. Paths
+    export PATH="/opt/miniforge3/envs/easymode/bin:/opt/miniforge3/bin:$PATH"
+    export CUDA_HOME="/usr/local/cuda"
+    export LD_LIBRARY_PATH="/opt/miniforge3/envs/easymode/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH"
+
+    # 3. HuggingFace weights cache — bind /opt/hf_cache to persist across runs
+    export HF_HOME="${HF_HOME:-/opt/hf_cache}"
+    export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-/opt/hf_cache}"
+
+    # 4. Quiet TF logs
+    export TF_CPP_MIN_LOG_LEVEL=3
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    export PYTHONNOUSERSITE=1
+    unset PYTHONPATH
+    unset PYTHONHOME
+
+    # 1. System deps
+    apt-get update && apt-get install -y \
+        wget \
+        git \
+        build-essential \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        && rm -rf /var/lib/apt/lists/*
+
+    # 2. Miniforge
+    cd /opt
+    wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O miniforge.sh
+    bash miniforge.sh -b -p /opt/miniforge3
+    rm miniforge.sh
+    export PATH="/opt/miniforge3/bin:$PATH"
+
+    # 3. HF cache target (bind-mount point)
+    mkdir -p /opt/hf_cache
+
+    # 4. Create env with the upstream-documented pinning
+    conda create -n easymode -y -c conda-forge \
+        python=3.10 cudatoolkit=11.2 cudnn=8.1 git pip
+
+    # 5. Install TF and easymode.
+    #    NOTE 1: upstream easymode docs pin protobuf==3.20.3, but TF 2.11's
+    #      own metadata requires protobuf<3.20 — that pin is unbuildable.
+    #      3.19.6 is the latest 3.x under the cap and preserves ABI.
+    #    NOTE 2: TF 2.11 was compiled against NumPy 1.x and crashes with
+    #      _ARRAY_API errors on NumPy 2.x. TF's wheel only says numpy>=1.20
+    #      so pip will happily install 2.x — cap it explicitly.
+    /opt/miniforge3/envs/easymode/bin/pip install --no-cache-dir \
+        tensorflow==2.11.0 protobuf==3.19.6 "numpy<2"
+    /opt/miniforge3/envs/easymode/bin/pip install --no-cache-dir \
+        "easymode @ git+https://github.com/mgflast/easymode.git"
+
+    # 6. Build verification
+    echo "--- BUILD VERIFICATION ---"
+    /opt/miniforge3/envs/easymode/bin/python --version
+    /opt/miniforge3/envs/easymode/bin/python -c "import tensorflow as tf; print('TF:', tf.__version__); print('CUDA build:', tf.test.is_built_with_cuda())"
+    /opt/miniforge3/envs/easymode/bin/python -c "import easymode; print('easymode import OK')" \
+        || echo "WARN: easymode python import failed"
+    /opt/miniforge3/envs/easymode/bin/easymode --help > /dev/null 2>&1 \
+        && echo "easymode CLI OK" \
+        || echo "WARN: easymode CLI help failed"
+
+    conda clean --all -y
+
+%runscript
+    #!/bin/bash
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+
+    source /opt/miniforge3/etc/profile.d/conda.sh
+    conda activate easymode
+
+    if [ $# -eq 0 ]; then
+        /bin/bash
+    else
+        exec "$@"
+    fi
+
+%test
+    export PATH="/opt/miniforge3/envs/easymode/bin:$PATH"
+    python -c "import easymode, tensorflow; print('easymode OK, TF', tensorflow.__version__)"
+    easymode --help | head -n 5
+
+%help
+    easymode — pretrained cryo-ET segmentation and picking CLI.
+
+    Usage:
+      apptainer exec --nv --no-home --cleanenv <image>.sif easymode list
+      apptainer exec --nv --no-home --cleanenv <image>.sif easymode segment ribosome <tomos>
+      apptainer exec --nv --no-home --cleanenv <image>.sif easymode pick ribosome <segs>
+
+    HuggingFace cache (avoid re-downloading weights per job):
+      apptainer exec --nv --no-home --cleanenv \
+          -B /shared/cryo/hf_cache:/opt/hf_cache \
+          <image>.sif easymode segment ribosome <tomos>
+
+    Build:
+      apptainer build --fakeroot easymode.sif container_defs/easymode.def
+
+%labels
+    Author Artem Kushner & Sven Klumpe
+    Version 1.0.0
+    Description easymode pretrained cryoET segmentation/picking CLI (Py 3.10 / TF 2.11 / CUDA 11.2)

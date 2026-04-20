@@ -54,6 +54,7 @@ class PipelineRunnerService:
         processes = data.get("pipeline_processes", pd.DataFrame())
 
         star_patched = False
+        failed_job_paths: List[str] = []
         if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
             for idx, row in processes.iterrows():
                 if row["rlnPipeLineProcessStatusLabel"] == "Running":
@@ -68,6 +69,7 @@ class PipelineRunnerService:
                     elif (job_dir / "RELION_JOB_EXIT_FAILURE").exists():
                         processes.at[idx, "rlnPipeLineProcessStatusLabel"] = "Failed"
                         star_patched = True
+                        failed_job_paths.append(row["rlnPipeLineProcessName"])
                         logger.info(
                             "Reconciled %s: Running -> Failed (RELION_JOB_EXIT_FAILURE found on disk)",
                             row["rlnPipeLineProcessName"],
@@ -75,6 +77,25 @@ class PipelineRunnerService:
             if star_patched:
                 data["pipeline_processes"] = processes
                 star_handler.write(data, pipeline_star)
+
+        # Stop the pipeline on any job failure. Using stop_and_cleanup (not just
+        # stop_pipeline) so that any Scheduled/Pending downstream jobs are
+        # patched to Failed too — otherwise the UI's all_done check in
+        # status_poller.py:45-51 sees `scheduled > 0` and the spinner never
+        # resolves. Also scancels any live array tasks collected from job
+        # manifests. The failed job's own supervisor already exited, so this
+        # is idempotent on that side.
+        if failed_job_paths:
+            active = self.is_active(Path(project_path))
+            logger.info(
+                "STOP-ON-FAIL: failure(s) detected in %s — %s; is_active=%s",
+                project_path, failed_job_paths, active,
+            )
+            try:
+                result = await self.stop_and_cleanup(Path(project_path), slurm_job_ids=[])
+                logger.info("STOP-ON-FAIL: stop_and_cleanup returned %s", result)
+            except Exception as e:
+                logger.warning("STOP-ON-FAIL: stop_and_cleanup raised: %s", e)
 
         # build squeue lookup once if any Running rows exist
         slurm_jobs_by_dir: dict = {}

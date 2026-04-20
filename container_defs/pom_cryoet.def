@@ -1,0 +1,130 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/cuda:11.2.2-cudnn8-devel-ubuntu20.04
+
+# ----------------------------------------------------------------------------
+# Pom — https://github.com/bionanopatterning/Pom
+#
+# Comprehensive segmentation contextualization for cryo-ET. CLI entry
+# `pom`; subcommands documented at pom-cryoet.readthedocs.io (include
+# `add_source` and `contextualize` per upstream plan).
+#
+# Pom-cryoET (tested v1.1.1) transitively pulls Ais-cryoET and Pommie as
+# pip dependencies, along with TensorFlow 2.8 and Keras 2.8. So despite
+# the light setup.py install_requires, this image actually contains the
+# full Pom + Ais + Pommie + TF 2.8 stack. Consider whether a separate
+# ais.sif is still needed given this — decide based on upgrade-cycle
+# independence rather than duplication alone.
+#
+# Base image is CUDA 11.2.2 + cuDNN 8 (devel variant, Ubuntu 20.04) —
+# TF 2.8's officially tested pairing. `--nv` exposes the host GPU driver
+# (libcuda.so) which is forward-compatible from CUDA 12.x hosts; the
+# toolkit libs (libcudart.so.11.0 / libcublas.so.11 / libcudnn.so.8)
+# live inside the image so TF doesn't need module-loaded host CUDA.
+# ----------------------------------------------------------------------------
+
+%environment
+    # 1. Isolation
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+
+    # 2. Paths — include CUDA toolkit from base image so TF finds it
+    export PATH="/opt/miniforge3/envs/pom/bin:/opt/miniforge3/bin:$PATH"
+    export CUDA_HOME="/usr/local/cuda"
+    export LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
+
+    # 3. Quiet TF logs
+    export TF_CPP_MIN_LOG_LEVEL=3
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    export PYTHONNOUSERSITE=1
+    unset PYTHONPATH
+    unset PYTHONHOME
+
+    # 1. System deps
+    #    libgl1-mesa-glx + X11 libs are required by Ais: its main module
+    #    unconditionally imports OpenGL.GL at startup (even for CLI),
+    #    which fails if libGL.so isn't present in the image.
+    apt-get update && apt-get install -y \
+        wget \
+        git \
+        build-essential \
+        ca-certificates \
+        libgl1-mesa-glx \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        && rm -rf /var/lib/apt/lists/*
+
+    # 2. Miniforge
+    cd /opt
+    wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O miniforge.sh
+    bash miniforge.sh -b -p /opt/miniforge3
+    rm miniforge.sh
+    export PATH="/opt/miniforge3/bin:$PATH"
+
+    # 3. Env
+    conda create -n pom -y -c conda-forge python=3.10 pip
+
+    # 4. Install Pom from PyPI.
+    #    Pom-cryoET 1.1.1 imports `starfile` in Pom.core.cli_fn but does
+    #    NOT declare it in install_requires (upstream packaging bug).
+    #    Install explicitly so the CLI works.
+    /opt/miniforge3/envs/pom/bin/pip install --no-cache-dir Pom-cryoET starfile
+
+    # 5. Build verification
+    # NOTE: Pom writes project_configuration.json into CWD at import time,
+    # so run verifications from /tmp (writable) — / is read-only during build.
+    echo "--- BUILD VERIFICATION ---"
+    /opt/miniforge3/envs/pom/bin/python --version
+    cd /tmp
+    /opt/miniforge3/envs/pom/bin/python -c "import Pom; print('Pom import OK')" \
+        || echo "WARN: Pom python import failed"
+    /opt/miniforge3/envs/pom/bin/pom --help > /dev/null 2>&1 \
+        && echo "pom CLI OK" \
+        || echo "WARN: pom CLI help failed"
+    rm -f /tmp/project_configuration.json
+
+    conda clean --all -y
+
+%runscript
+    #!/bin/bash
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+
+    source /opt/miniforge3/etc/profile.d/conda.sh
+    conda activate pom
+
+    if [ $# -eq 0 ]; then
+        /bin/bash
+    else
+        exec "$@"
+    fi
+
+%test
+    export PATH="/opt/miniforge3/envs/pom/bin:$PATH"
+    cd /tmp
+    python -c "import Pom; print('Pom OK')"
+    pom --help | head -n 5
+    rm -f /tmp/project_configuration.json
+
+%help
+    Pom — cryo-ET segmentation contextualization CLI.
+
+    Usage:
+      apptainer exec --no-home --cleanenv <image>.sif pom add_source <tomos> <segs>
+      apptainer exec --no-home --cleanenv <image>.sif pom contextualize <particles.star> ...
+
+    Image ships CUDA 11.2 + cuDNN 8 for TF 2.8. Invoke with --nv to
+    bind host GPU driver (CUDA 12.x hosts are forward-compatible).
+
+    Build:
+      apptainer build --fakeroot pom_cryoet.sif container_defs/pom_cryoet.def
+
+%labels
+    Author Artem Kushner & Sven Klumpe
+    Version 1.0.0
+    Description Pom-cryoET + Ais + Pommie + TF 2.8 on CUDA 11.2 / cuDNN 8

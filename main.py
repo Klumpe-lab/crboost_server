@@ -63,7 +63,17 @@ def setup_app():
     backend = CryoBoostBackend(Path.cwd())
     create_ui_router(backend) 
     storage_secret = os.environ.get("CRBOOST_STORAGE_SECRET", "crboost-change-me")
-    ui.run_with(app, title="CryoBoost Server", storage_secret=storage_secret)
+    # Default reconnect_timeout is 3s, which sets ping_interval=4s / ping_timeout=2s
+    # (nicegui/nicegui.py:129-130). Over an SSH tunnel any latency blip trips the
+    # 2s pong deadline → socket drops → client teardown after 3s → full rebuild.
+    # 30s is generous for tunneled sessions and still catches real disconnects.
+    reconnect_timeout = float(os.environ.get("CRBOOST_RECONNECT_TIMEOUT", "30"))
+    ui.run_with(
+        app,
+        title="CryoBoost Server",
+        storage_secret=storage_secret,
+        reconnect_timeout=reconnect_timeout,
+    )
     return app
 
 def get_local_ip():
