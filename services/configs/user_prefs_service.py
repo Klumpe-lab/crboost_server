@@ -35,6 +35,7 @@ class UserPreferences(BaseModel):
     project_base_path: str = ""
     movies_glob: str = ""
     mdocs_glob: str = ""
+    show_only_mine: bool = True
     recent_project_roots: List[RecentPath] = Field(default_factory=list)
     recent_data_paths: List[RecentPath] = Field(default_factory=list)
 
