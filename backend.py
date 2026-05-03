@@ -206,16 +206,30 @@ class CryoBoostBackend:
                     mod_time = datetime.fromtimestamp(stats.st_mtime)
 
                     created_at = None
+                    created_ts = None
                     creator = None
                     pipeline_active = False
+                    total_jobs_planned = 0
+                    ts_count = 0
                     try:
                         with open(params_file) as f:
                             data = json.load(f)
                         raw_created = data.get("created_at")
                         if raw_created:
                             created_at = str(raw_created)[:16]
+                            try:
+                                created_ts = datetime.fromisoformat(str(raw_created)).timestamp()
+                            except Exception:
+                                created_ts = None
                         creator = data.get("created_by")
                         pipeline_active = bool(data.get("pipeline_active", False))
+                        jobs_dict = data.get("jobs") or {}
+                        total_jobs_planned = len(jobs_dict)
+                        ts_count = (
+                            data.get("import_selected_tilt_series")
+                            or data.get("import_total_tilt_series")
+                            or 0
+                        )
                     except Exception:
                         pass
 
@@ -225,6 +239,18 @@ class CryoBoostBackend:
                         except Exception:
                             creator = None
 
+                    if created_ts is None:
+                        # Stable fallback: directory ctime (creation on most filesystems).
+                        try:
+                            created_ts = item.stat().st_ctime
+                        except Exception:
+                            created_ts = stats.st_mtime
+
+                    derived = self._derive_live_status(item, jobs_dict)
+                    derived["pipeline_active_flag"] = pipeline_active
+
+                    last_activity_ts = max(stats.st_mtime, derived.get("last_activity_ts", 0.0))
+
                     projects.append(
                         {
                             "name": item.name,
@@ -232,8 +258,14 @@ class CryoBoostBackend:
                             "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
                             "modified_timestamp": stats.st_mtime,
                             "created_at": created_at,
+                            "created_timestamp": created_ts,
                             "creator": creator,
                             "pipeline_active": pipeline_active,
+                            "total_jobs_planned": total_jobs_planned,
+                            "ts_count": ts_count,
+                            "last_activity_ts": last_activity_ts,
+                            "last_activity": datetime.fromtimestamp(last_activity_ts).strftime("%Y-%m-%d %H:%M"),
+                            **derived,
                         }
                     )
                 except Exception as e:
@@ -243,9 +275,94 @@ class CryoBoostBackend:
             logger.error("Error scanning projects: %s", e)
             return []
 
-        projects.sort(key=lambda x: x["modified_timestamp"], reverse=True)
+        # Stable order: oldest-first by created_at (or ctime fallback). Newly
+        # created projects always go to the end -- positions never shuffle on
+        # in-place edits to project_params.json.
+        projects.sort(key=lambda x: (x["created_timestamp"], x["name"]))
+        for idx, proj in enumerate(projects, start=1):
+            proj["stable_index"] = idx
         logger.info("Found %d valid projects.", len(projects))
         return projects
+
+    @staticmethod
+    def _derive_live_status(project_dir: Path, jobs_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Derive pipeline status for the roster from project_params.json's
+        `jobs` dict (canonical: includes tiltFilter and other non-RELION
+        jobs that aren't in default_pipeline.star). Disk RELION_JOB_EXIT_*
+        markers are only used to reconcile in-memory `Running` statuses
+        that the schemer crashed before persisting -- otherwise the project
+        state is the source of truth."""
+        out: Dict[str, Any] = {
+            "executed_jobs": 0,
+            "succeeded": 0,
+            "running_live": 0,
+            "failed": 0,
+            "scheduled": 0,
+            "live_status": "idle",
+            "last_activity_ts": 0.0,
+        }
+        pipeline_star = project_dir / "default_pipeline.star"
+        if pipeline_star.exists():
+            try:
+                out["last_activity_ts"] = pipeline_star.stat().st_mtime
+            except Exception:
+                pass
+
+        if not isinstance(jobs_dict, dict) or not jobs_dict:
+            return out
+
+        for _iid, job in jobs_dict.items():
+            if not isinstance(job, dict):
+                continue
+            status = (job.get("execution_status") or "").strip()
+            relion_name = job.get("relion_job_name")
+            # Reconcile Running against on-disk exit markers so a crashed
+            # schemer doesn't leave us perpetually showing a dead job as
+            # "live".
+            if status == "Running" and relion_name:
+                job_dir = project_dir / relion_name.rstrip("/")
+                success_marker = job_dir / "RELION_JOB_EXIT_SUCCESS"
+                failure_marker = job_dir / "RELION_JOB_EXIT_FAILURE"
+                if success_marker.exists():
+                    status = "Succeeded"
+                    try:
+                        out["last_activity_ts"] = max(
+                            out["last_activity_ts"], success_marker.stat().st_mtime
+                        )
+                    except Exception:
+                        pass
+                elif failure_marker.exists():
+                    status = "Failed"
+                    try:
+                        out["last_activity_ts"] = max(
+                            out["last_activity_ts"], failure_marker.stat().st_mtime
+                        )
+                    except Exception:
+                        pass
+
+            if status == "Succeeded":
+                out["succeeded"] += 1
+                out["executed_jobs"] += 1
+            elif status == "Running":
+                out["running_live"] += 1
+                out["executed_jobs"] += 1
+            elif status == "Failed":
+                out["failed"] += 1
+                out["executed_jobs"] += 1
+            elif status == "Scheduled":
+                out["scheduled"] += 1
+            # Anything else (Idle / Pending / unknown) is ignored.
+
+        if out["running_live"] > 0:
+            out["live_status"] = "running"
+        elif out["failed"] > 0:
+            out["live_status"] = "failed"
+        elif out["succeeded"] > 0 and out["scheduled"] == 0 and out["failed"] == 0 and out["running_live"] == 0:
+            out["live_status"] = "done"
+        else:
+            out["live_status"] = "idle"
+
+        return out
 
     async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
         """Get parameters for a specific job instance, initializing if not present."""

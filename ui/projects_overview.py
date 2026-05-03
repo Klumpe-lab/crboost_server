@@ -1,0 +1,559 @@
+"""
+ProjectsOverview -- reusable widget that renders a roster of cryoboost
+projects with live, disk-derived status. Used in two places:
+  1. The landing page (data_import_panel) sidebar.
+  2. The in-workspace "switch project" dialog (pipeline_roster).
+
+Status fields come from backend.scan_for_projects (see _scan_for_projects_sync
++ _derive_live_status in backend.py). The component owns the 15-second
+auto-refresh timer and the "Only mine" filter; both mount points get the
+same behaviour.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import getpass
+import logging
+from pathlib import Path
+from typing import Awaitable, Callable, Dict, List, Optional
+
+from nicegui import ui, app
+
+from services.configs.user_prefs_service import get_prefs_service
+from ui.styles import MONO, SANS as FONT
+
+logger = logging.getLogger(__name__)
+
+
+# Palette is shared with the rest of data_import_panel / pipeline_roster so
+# avatars carry the same per-project identity across all surfaces.
+_AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
+
+CLR_HEADING = "#0f172a"
+CLR_LABEL = "#475569"
+CLR_SUBLABEL = "#94a3b8"
+CLR_GHOST = "#cbd5e1"
+CLR_BORDER = "#e2e8f0"
+CLR_META = "#64748b"
+CLR_RUNNING = "#3b82f6"
+CLR_FAILED = "#dc2626"
+CLR_DONE = "#0d9488"
+CLR_IDLE = "#94a3b8"
+
+CURRENT_USER = getpass.getuser()
+DEFAULT_REFRESH_SEC = 15.0
+
+
+def avatar_color(key: str) -> str:
+    return _AVATAR_PALETTE[hash(key) % len(_AVATAR_PALETTE)]
+
+
+_STATUS_STYLES = {
+    "running": {"color": CLR_RUNNING, "bg": "#eff6ff", "border": "#bfdbfe", "label": "live"},
+    "failed":  {"color": CLR_FAILED,  "bg": "#fef2f2", "border": "#fecaca", "label": "failed"},
+    "done":    {"color": CLR_DONE,    "bg": "#ecfdf5", "border": "#a7f3d0", "label": "done"},
+    "idle":    {"color": CLR_IDLE,    "bg": "#f1f5f9", "border": "#e2e8f0", "label": "idle"},
+}
+
+
+class ProjectsOverview:
+    """Reusable projects roster.
+
+    Parameters
+    ----------
+    backend : CryoBoostBackend
+    on_open : async callback (path: Path) -> None
+        Called when the user clicks a row's open button. The component does
+        not navigate or load anything itself -- the caller decides.
+    on_delete : optional async callback (path: Path) -> None
+        If provided, a delete button is rendered on hover; the callback owns
+        the confirm-and-delete dialog. If omitted, the delete button is
+        hidden (e.g. inside the in-workspace switcher we don't want users
+        nuking projects mid-session).
+    base_path_provider : callable () -> str
+        Returns the directory to scan. Re-evaluated on every refresh so
+        external base-path changes (Browse button, Recent Locations clicks)
+        are picked up automatically.
+    auto_refresh_sec : float
+        Polling interval in seconds. Set to 0 to disable.
+    current_path : optional str
+        Project directory currently loaded by the caller. Renders that row
+        with a "current" highlight, no click handler, and no delete button
+        (so the switcher keeps continuity but won't reload the project the
+        user is already in).
+    show_filter : bool
+        Whether to render the "Only mine" toggle in the header.
+    height_px : int
+        Vertical room for the scroll area.
+    """
+
+    def __init__(
+        self,
+        backend,
+        *,
+        on_open: Callable[[Path], Awaitable[None]],
+        base_path_provider: Callable[[], str],
+        on_delete: Optional[Callable[[Path, str], Awaitable[None]]] = None,
+        auto_refresh_sec: float = DEFAULT_REFRESH_SEC,
+        current_path: Optional[str] = None,
+        show_filter: bool = True,
+        height_px: int = 380,
+        title: str = "Projects Overview",
+    ):
+        self.backend = backend
+        self.on_open = on_open
+        self.on_delete = on_delete
+        self.base_path_provider = base_path_provider
+        self.auto_refresh_sec = auto_refresh_sec
+        self.current_path = current_path
+        self.show_filter = show_filter
+        self.height_px = height_px
+        self.title = title
+        self.prefs = get_prefs_service()
+        try:
+            self._current_resolved = (
+                str(Path(current_path).resolve()) if current_path else None
+            )
+        except Exception:
+            self._current_resolved = None
+
+        self._projects: List[Dict] = []
+        self._outer_container = None
+        self._list_container = None
+        self._counts_label = None
+        self._mine_label = None
+        self._timer = None
+        self._last_scanned_base: Optional[str] = None
+        self._refresh_lock = asyncio.Lock()
+        # Set while a delete is in progress -- blocks auto-refresh so the
+        # greyed-out row stays visible until rmtree completes.
+        self._pause_refresh = False
+
+    # =====================================================================
+    # PUBLIC API
+    # =====================================================================
+
+    def build(self):
+        """Build the UI tree and return the outermost container.
+        Triggers the first scan + starts the auto-refresh timer."""
+        outer = ui.column().classes("w-full gap-0").style(
+            "background: white; border-radius: 8px; "
+            f"border: 1px solid {CLR_BORDER}; "
+            "box-shadow: 0 1px 3px rgba(15,23,42,0.06);"
+        )
+        self._outer_container = outer
+        with outer:
+            self._build_header()
+            with ui.scroll_area().classes("w-full").style(
+                f"height: {self.height_px}px; padding: 0;"
+            ):
+                self._list_container = ui.column().classes("w-full").style("gap: 0; padding: 0;")
+                with self._list_container:
+                    self._render_loading_skeleton()
+
+        # Kick off the first scan; subsequent ones are timer-driven.
+        # Hand the coroutines directly to ui.timer -- wrapping them in
+        # asyncio.create_task detaches them from the NiceGUI client context,
+        # which silently breaks ui.navigate.to and ui.notify in any handler
+        # they end up calling.
+        ui.timer(0.05, self.refresh, once=True)
+        if self.auto_refresh_sec > 0:
+            self._timer = ui.timer(self.auto_refresh_sec, self.refresh)
+        return outer
+
+    async def refresh(self):
+        """Re-scan the base path and re-render. Re-entrant-safe via lock."""
+        if self._list_container is None:
+            return
+        if self._pause_refresh:
+            return
+        async with self._refresh_lock:
+            base = (self.base_path_provider() or "").strip()
+            try:
+                if not base:
+                    self._projects = []
+                else:
+                    self._projects = await self.backend.scan_for_projects(base)
+                self._last_scanned_base = base
+                self._render_list()
+            except Exception as e:
+                logger.info("ProjectsOverview refresh failed: %s", e)
+
+    def stop(self):
+        """Cancel the auto-refresh timer (e.g. when a dialog closes)."""
+        if self._timer is not None:
+            try:
+                self._timer.cancel()
+            except Exception:
+                pass
+            self._timer = None
+
+    # =====================================================================
+    # HEADER
+    # =====================================================================
+
+    def _build_header(self):
+        with ui.row().classes("w-full items-center px-4 pt-3 pb-2").style("gap: 10px;"):
+            ui.label(self.title).style(
+                f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING}; "
+                "letter-spacing: -0.01em; flex-shrink: 0;"
+            )
+            self._counts_label = ui.label("").style(
+                f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; flex: 1;"
+            )
+
+            # Refresh button -- explicit re-scan in addition to the timer.
+            ui.button(
+                icon="refresh",
+                on_click=self.refresh,
+            ).props("flat dense round size=xs").classes(
+                "text-slate-400 hover:text-blue-600 shrink-0"
+            ).tooltip(f"Rescan now (auto every {int(self.auto_refresh_sec)}s)")
+
+            if self.show_filter:
+                self._build_mine_toggle()
+
+    def _build_mine_toggle(self):
+        def on_toggle(e):
+            self.prefs.prefs.show_only_mine = bool(e.value)
+            self.prefs.save_to_app_storage(app.storage.user)
+            self._render_list()
+
+        switch = (
+            ui.switch(value=self.prefs.prefs.show_only_mine, on_change=on_toggle)
+            .props("dense color=blue")
+            .style("transform: scale(0.7);")
+        )
+        switch.tooltip(f"Filter to projects created by {CURRENT_USER}")
+        self._mine_label = ui.label("Only mine").style(
+            f"{FONT} font-size: 10px; color: {CLR_LABEL}; cursor: pointer; flex-shrink: 0;"
+        )
+        self._mine_label.on("click", lambda: switch.set_value(not switch.value))
+
+    # =====================================================================
+    # LIST
+    # =====================================================================
+
+    def _render_loading_skeleton(self):
+        with ui.row().classes("w-full items-center justify-center").style("padding: 24px 0;"):
+            ui.spinner("dots", size="sm").style(f"color: {CLR_SUBLABEL};")
+            ui.label("Scanning…").style(
+                f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; margin-left: 8px;"
+            )
+
+    def _render_list(self):
+        if self._list_container is None:
+            return
+        self._list_container.clear()
+
+        all_projects = self._projects
+        show_only_mine = self.prefs.prefs.show_only_mine
+        if show_only_mine:
+            visible = [p for p in all_projects if (p.get("creator") or "") == CURRENT_USER]
+        else:
+            visible = all_projects
+
+        # Header counts: live / failed / total visible.
+        live_n = sum(1 for p in visible if p.get("live_status") == "running")
+        failed_n = sum(1 for p in visible if p.get("live_status") == "failed")
+        if self._counts_label is not None:
+            base = self._last_scanned_base or ""
+            base_short = base.rsplit("/", 1)[-1] if base else ""
+            counts = f"{len(visible)} project{'s' if len(visible) != 1 else ''}"
+            if live_n:
+                counts += f" · {live_n} live"
+            if failed_n:
+                counts += f" · {failed_n} failed"
+            if base_short:
+                counts += f"  in  {base_short}/"
+            self._counts_label.set_text(counts)
+
+        if self._mine_label is not None:
+            mine_count = sum(1 for p in all_projects if (p.get("creator") or "") == CURRENT_USER)
+            self._mine_label.set_text(f"Only mine ({mine_count}/{len(all_projects)})")
+
+        with self._list_container:
+            if not visible:
+                msg = "No projects to show"
+                base = self._last_scanned_base or ""
+                if not base:
+                    msg = "Set a base location to scan for projects"
+                elif all_projects and show_only_mine:
+                    msg = f"No projects owned by {CURRENT_USER}"
+                ui.label(msg).style(
+                    f"{FONT} font-size: 11px; color: {CLR_GHOST}; "
+                    "font-style: italic; padding: 24px 16px; text-align: center;"
+                )
+                return
+
+            for proj in visible:
+                self._render_row(proj)
+
+    # =====================================================================
+    # ROW
+    # =====================================================================
+
+    def _render_row(self, proj: Dict):
+        path_str = proj["path"]
+        name = proj["name"]
+        creator = proj.get("creator") or ""
+        proj_color = avatar_color(name)
+        creator_color = avatar_color(creator) if creator else CLR_META
+        initials = name[:3].upper()
+        stable_index = proj.get("stable_index", 0)
+        ts_count = proj.get("ts_count") or 0
+        total_planned = proj.get("total_jobs_planned") or 0
+        succeeded = proj.get("succeeded") or 0
+        failed = proj.get("failed") or 0
+        running_live = proj.get("running_live") or 0
+        executed = proj.get("executed_jobs") or 0
+        live_status = proj.get("live_status") or "idle"
+        last_activity = proj.get("last_activity") or proj.get("modified") or ""
+
+        # Is this the project the caller is currently in? If so we render
+        # it inert with a "current" highlight so the switcher keeps
+        # numbering continuity but doesn't let the user reload the same
+        # project on top of itself.
+        is_current = False
+        if self._current_resolved:
+            try:
+                is_current = str(Path(path_str).resolve()) == self._current_resolved
+            except Exception:
+                is_current = False
+
+        async def _open():
+            try:
+                await self.on_open(Path(path_str))
+            except Exception as e:
+                logger.info("Open project failed: %s", e)
+                ui.notify(f"Failed to open project: {e}", type="negative")
+
+        # Current row: highlighted bg + cursor:default, no click handler.
+        # Other rows: hover effect + cursor:pointer + click opens.
+        if is_current:
+            row = (
+                ui.row()
+                .classes("w-full items-center group")
+                .style(
+                    f"min-height: 56px; padding: 10px 14px; gap: 10px; "
+                    f"border-bottom: 1px solid {CLR_BORDER}; "
+                    "background: #eff6ff; cursor: default; "
+                    "border-left: 3px solid #3b82f6; padding-left: 11px;"
+                )
+            )
+        else:
+            row = (
+                ui.row()
+                .classes(
+                    "w-full items-center hover:bg-slate-50 transition-colors cursor-pointer group"
+                )
+                .style(
+                    f"min-height: 56px; padding: 10px 14px; gap: 10px; "
+                    f"border-bottom: 1px solid {CLR_BORDER};"
+                )
+                .on("click", _open)
+            )
+        with row as row_el:
+
+            # Index + status pill, stacked in a fixed-width left column so the
+            # pill stays in a consistent position no matter how long the
+            # project name is.
+            with ui.column().classes("items-center").style(
+                "gap: 4px; flex-shrink: 0; width: 56px;"
+            ):
+                ui.label(f"#{stable_index:02d}").style(
+                    f"{MONO} font-size: 10px; font-weight: 600; color: {CLR_GHOST}; "
+                    "letter-spacing: 0.04em; line-height: 1;"
+                )
+                self._render_status_pill(live_status)
+
+            # Avatar
+            with ui.element("div").style(
+                f"width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; "
+                f"background: {proj_color}1a; border: 1px solid {proj_color}55; "
+                "display: flex; align-items: center; justify-content: center;"
+            ):
+                ui.label(initials).style(
+                    f"font-size: 10px; font-weight: 700; color: {proj_color}; "
+                    "letter-spacing: 0.05em; line-height: 1; pointer-events: none;"
+                )
+
+            # Main info column (name + creator + meta)
+            with ui.column().classes("flex-1 gap-0 min-w-0"):
+                # Row 1: name (+ "current" marker if this is the loaded project)
+                with ui.row().classes("items-center min-w-0").style("gap: 8px;"):
+                    ui.label(name).style(
+                        f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING}; "
+                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; "
+                        "letter-spacing: -0.01em;"
+                    )
+                    if is_current:
+                        ui.label("current").style(
+                            f"{FONT} font-size: 9px; color: #1e40af; font-weight: 700; "
+                            "background: #dbeafe; border: 1px solid #93c5fd; "
+                            "border-radius: 3px; padding: 1px 6px; flex-shrink: 0; "
+                            "letter-spacing: 0.05em; text-transform: uppercase;"
+                        )
+
+                # Row 2: creator · ts count · job progress · last activity
+                with ui.row().classes("items-center").style("gap: 10px; margin-top: 3px;"):
+                    if creator:
+                        ui.label(creator).style(
+                            f"{MONO} font-size: 10px; font-weight: 600; color: {creator_color};"
+                        )
+                    if ts_count:
+                        with ui.row().classes("items-center").style("gap: 3px;"):
+                            ui.icon("layers", size="11px").style(f"color: {CLR_SUBLABEL};")
+                            ui.label(f"{ts_count} TS").style(
+                                f"{MONO} font-size: 10px; color: {CLR_LABEL};"
+                            )
+                    if total_planned:
+                        progress_text = f"job {succeeded}/{total_planned}"
+                        if running_live:
+                            progress_text += f"  ▸ {running_live} running"
+                        elif failed:
+                            progress_text += f"  ▸ {failed} failed"
+                        ui.label(progress_text).style(
+                            f"{MONO} font-size: 10px; color: {CLR_LABEL};"
+                        )
+                    if last_activity:
+                        ui.label(last_activity).style(
+                            f"{MONO} font-size: 10px; color: {CLR_GHOST};"
+                        )
+
+            # Right-side: progress bar + delete (no arrow -- whole row is the
+            # click target now). Delete is suppressed on the current row so
+            # the user can't nuke the project they have loaded.
+            with ui.column().classes("items-end").style("gap: 4px; flex-shrink: 0;"):
+                self._render_progress_bar(succeeded, failed, running_live, executed, total_planned)
+                if self.on_delete is not None and not is_current:
+                    async def _del(p=path_str, n=name, r=row_el):
+                        await self._handle_delete(Path(p), n, r)
+                    (
+                        ui.button(icon="delete_outline", on_click=_del)
+                        .props("flat dense round size=xs")
+                        .classes(
+                            "text-slate-200 hover:text-red-400 opacity-0 "
+                            "group-hover:opacity-100 transition-opacity"
+                        )
+                        .on("click.stop", lambda: None)
+                    )
+
+    def _render_status_pill(self, status: str):
+        s = _STATUS_STYLES.get(status, _STATUS_STYLES["idle"])
+        with ui.row().classes("items-center").style("gap: 4px; flex-shrink: 0;"):
+            if status == "running":
+                ui.spinner("dots", size="10px").style(f"color: {s['color']};")
+            ui.label(s["label"]).style(
+                f"{FONT} font-size: 9px; color: {s['color']}; font-weight: 700; "
+                f"background: {s['bg']}; border: 1px solid {s['border']}; "
+                "border-radius: 3px; padding: 1px 6px; letter-spacing: 0.05em; "
+                "text-transform: uppercase;"
+            )
+
+    def _render_progress_bar(
+        self, succeeded: int, failed: int, running_live: int, executed: int, total_planned: int
+    ):
+        # Width is the planned total. Anything beyond `executed` is shown as
+        # the "remaining/scheduled" portion (light grey).
+        total = max(total_planned, executed, 1)
+        succ_pct = (succeeded / total) * 100
+        fail_pct = (failed / total) * 100
+        run_pct = (running_live / total) * 100
+        # Cap to 100% in case state is briefly inconsistent.
+        used = min(100.0, succ_pct + fail_pct + run_pct)
+        rest_pct = max(0.0, 100.0 - used)
+
+        with ui.element("div").style(
+            "width: 100px; height: 6px; border-radius: 3px; overflow: hidden; "
+            "display: flex; background: #f1f5f9;"
+        ):
+            if succ_pct > 0:
+                ui.element("div").style(f"width: {succ_pct:.1f}%; background: {CLR_DONE};")
+            if run_pct > 0:
+                ui.element("div").style(f"width: {run_pct:.1f}%; background: {CLR_RUNNING};")
+            if fail_pct > 0:
+                ui.element("div").style(f"width: {fail_pct:.1f}%; background: {CLR_FAILED};")
+            if rest_pct > 0:
+                ui.element("div").style(f"width: {rest_pct:.1f}%; background: transparent;")
+
+    async def _handle_delete(self, project_dir: Path, name: str, row_el):
+        """Full delete lifecycle owned by the component:
+        1. show confirm dialog (anchored to outer container so it's not
+           destroyed by row re-renders)
+        2. on confirm, pause auto-refresh + grey out the row
+        3. await on_delete (just the rmtree)
+        4. resume auto-refresh and refresh the list
+        on_delete is intentionally only the rmtree -- the consumer doesn't
+        need to know about the confirmation flow or the visual state."""
+        if self.on_delete is None or self._outer_container is None:
+            return
+        with self._outer_container:
+            confirmed = await self._show_delete_confirm(project_dir, name)
+        if not confirmed:
+            return
+
+        self._pause_refresh = True
+        try:
+            self._mark_row_deleting(row_el, name)
+            try:
+                await self.on_delete(project_dir, name)
+                ui.notify(f"Deleted '{name}'", type="positive")
+            except Exception as e:
+                logger.info("Delete failed for %s: %s", project_dir, e)
+                # Try to notify, but the client context may be gone after
+                # an error in the rmtree pathway -- swallow if so.
+                try:
+                    ui.notify(f"Failed to delete: {e}", type="negative")
+                except Exception:
+                    pass
+        finally:
+            self._pause_refresh = False
+            await self.refresh()
+
+    async def _show_delete_confirm(self, project_dir: Path, name: str) -> bool:
+        with ui.dialog() as dialog, ui.card().classes("w-96"):
+            ui.label(f"Delete '{name}'?").style(
+                f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};"
+            )
+            ui.label(
+                "This will permanently remove the project directory and all its contents."
+            ).style(f"{FONT} font-size: 12px; color: {CLR_LABEL}; margin-top: 4px;")
+            ui.label(str(project_dir)).style(
+                f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 6px; "
+                "padding: 5px 7px; background: #f8fafc; border-radius: 4px; "
+                "word-break: break-all;"
+            )
+            with ui.row().classes("w-full justify-end mt-3 gap-2"):
+                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props(
+                    "flat no-caps"
+                ).style(f"{FONT} font-size: 12px;")
+                ui.button(
+                    "Delete permanently", on_click=lambda: dialog.submit(True)
+                ).props("no-caps unelevated").style(
+                    f"{FONT} font-size: 12px; background: #be4343; color: white; "
+                    "border-radius: 6px; padding: 3px 14px;"
+                )
+        result = await dialog
+        return bool(result)
+
+    @staticmethod
+    def _mark_row_deleting(row_el, name: str):
+        """Replace the row's contents with a spinner + 'Deleting…' label
+        and dim it so it's visibly in-flight. Survives until refresh()
+        re-renders the list."""
+        if row_el is None or getattr(row_el, "is_deleted", False):
+            return
+        try:
+            row_el.clear()
+            with row_el:
+                ui.spinner("dots", size="xs").style(f"color: {CLR_SUBLABEL};")
+                ui.label(f"Deleting {name}...").style(
+                    f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; "
+                    "font-style: italic; margin-left: 8px;"
+                )
+            row_el.style(add="opacity: 0.5; pointer-events: none; cursor: default;")
+            row_el.is_deleted = True
+        except Exception as e:
+            logger.debug("Could not grey out row: %s", e)

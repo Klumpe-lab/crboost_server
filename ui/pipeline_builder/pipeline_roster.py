@@ -1052,6 +1052,7 @@ class RosterWidget:
         from nicegui import app as ng_app
         from services.project_state import get_project_state_for
         from services.configs.user_prefs_service import get_prefs_service
+        from ui.projects_overview import ProjectsOverview
 
         panel = self.panel
 
@@ -1059,113 +1060,29 @@ class RosterWidget:
         prefs = prefs_service.load_from_app_storage(ng_app.storage.user)
         base_path = prefs.project_base_path or await panel.backend.get_default_project_base()
 
-        # Mutable scan state -- updated when user picks a different location
-        scan_state = {"base": base_path, "list": await panel.backend.scan_for_projects(base_path)}
-
         current_path_str = str(panel.ui_mgr.project_path.resolve()) if panel.ui_mgr.project_path else None
 
-        dialog_ref: Dict = {}
-        list_ref: Dict = {}
-        history_refs: Dict = {"container": None, "visible": False, "dropdown": None}
+        # Mutable base path read by the overview each refresh; updated by the
+        # BASE input + Recent Locations dropdown. Holding a reference here
+        # rather than capturing the value avoids stale closures when the
+        # auto-refresh fires.
+        current_base = {"path": base_path}
+        history_refs: Dict = {"container": None, "visible": False, "dropdown": None, "path_input": None}
+        overview_ref: Dict = {"comp": None}
 
         # ── switch handler ────────────────────────────────────────────────────
 
-        def _make_switch_handler(path_str: str):
-            async def handler():
-                d = dialog_ref.get("dialog")
-                if d:
-                    d.close()
-                await panel.backend.load_existing_project(path_str)
-                p = Path(path_str)
-                loaded_state = get_project_state_for(p)
-                panel.ui_mgr.load_from_project(
-                    project_path=p, scheme_name="loaded", jobs=list(loaded_state.jobs.keys())
-                )
-                ui.navigate.to("/workspace")
-
-            return handler
-
-        # ── project list renderer ─────────────────────────────────────────────
-
-        def _render_list(projects):
-            c = list_ref.get("el")
-            if c is None:
-                return
-            c.clear()
-            other = [p for p in projects if p["path"] != current_path_str]
-            with c:
-                if not other:
-                    with ui.element("div").style("padding: 16px 14px;"):
-                        ui.label("No other projects found.").style(
-                            f"{FONT} font-size: 10px; color: #94a3b8; font-style: italic;"
-                        )
-                    return
-                for proj in other:
-                    is_running = panel.backend.pipeline_runner.is_active(Path(proj["path"])) or proj.get(
-                        "pipeline_active", False
-                    )
-                    proj_name = proj["name"]
-                    proj_color = _avatar_color(proj_name)
-                    creator = proj.get("creator") or ""
-                    date_str = (proj.get("modified") or "")[:10]
-
-                    with (
-                        ui.element("div")
-                        .style(
-                            "display: flex; align-items: center; gap: 10px; "
-                            "padding: 8px 14px; border-bottom: 1px solid #f3f4f6; "
-                            "cursor: pointer;"
-                        )
-                        .classes("hover:bg-slate-50")
-                        .on("click", _make_switch_handler(proj["path"]))
-                    ):
-                        # Mini avatar
-                        with ui.element("div").style(
-                            f"width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0; "
-                            f"background: {proj_color}1a; border: 1px solid {proj_color}55; "
-                            f"display: flex; align-items: center; justify-content: center;"
-                        ):
-                            ui.label(proj_name[:3].upper()).style(
-                                f"font-size: 7px; font-weight: 700; color: {proj_color}; "
-                                "letter-spacing: 0.03em; line-height: 1;"
-                            )
-
-                        # Name + meta
-                        with ui.element("div").style(
-                            "display: flex; flex-direction: column; flex: 1; min-width: 0; gap: 2px;"
-                        ):
-                            with ui.element("div").style("display: flex; align-items: center; gap: 6px;"):
-                                ui.label(proj_name).style(
-                                    f"{FONT} font-size: 11px; font-weight: 500; color: #1e293b; "
-                                    "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                                )
-                                if is_running:
-                                    ui.label("running").style(
-                                        f"{FONT} font-size: 8px; color: #3b82f6; font-weight: 700; "
-                                        "background: #eff6ff; border: 1px solid #bfdbfe; "
-                                        "border-radius: 3px; padding: 0 5px; flex-shrink: 0;"
-                                    )
-                            with ui.element("div").style("display: flex; gap: 8px; align-items: center;"):
-                                if creator:
-                                    ui.label(creator).style(f"{MONO} font-size: 9px; color: #64748b;")
-                                if date_str:
-                                    ui.label(date_str).style(f"{MONO} font-size: 9px; color: #cbd5e1;")
-
-        # ── rescan ────────────────────────────────────────────────────────────
-
-        async def _rescan(path_input_el):
-            new_base = path_input_el.value.strip()
-            if not new_base:
-                return
-            scan_state["base"] = new_base
-            scan_state["list"] = await panel.backend.scan_for_projects(new_base)
-            _render_list(scan_state["list"])
-            # Add to recent roots if valid
-            projects = scan_state["list"]
-            if projects:
-                prefs_service.prefs.add_recent_root(new_base)
-                prefs_service.save_to_app_storage(ng_app.storage.user)
-                _render_history()
+        async def _switch_project(target: Path):
+            dialog.close()
+            comp = overview_ref.get("comp")
+            if comp is not None:
+                comp.stop()
+            await panel.backend.load_existing_project(str(target))
+            loaded_state = get_project_state_for(target)
+            panel.ui_mgr.load_from_project(
+                project_path=target, scheme_name="loaded", jobs=list(loaded_state.jobs.keys())
+            )
+            ui.navigate.to("/workspace")
 
         # ── history helpers ───────────────────────────────────────────────────
 
@@ -1221,17 +1138,15 @@ class RosterWidget:
                 dd.style("display: none;")
             history_refs["visible"] = False
 
-        def _use_history(path: str):
+        async def _use_history(path: str):
             _close_history()
             path_input_ref = history_refs.get("path_input")
             if path_input_ref:
                 path_input_ref.value = path
-            asyncio.create_task(_rescan_from_path(path))
-
-        async def _rescan_from_path(path: str):
-            scan_state["base"] = path
-            scan_state["list"] = await panel.backend.scan_for_projects(path)
-            _render_list(scan_state["list"])
+            current_base["path"] = path
+            comp = overview_ref.get("comp")
+            if comp is not None:
+                await comp.refresh()
 
         def _remove_history(path: str):
             prefs_service.prefs.remove_recent_root(path)
@@ -1243,17 +1158,28 @@ class RosterWidget:
             prefs_service.save_to_app_storage(ng_app.storage.user)
             _render_history()
 
+        async def _apply_base_change():
+            new_base = (history_refs["path_input"].value or "").strip()
+            if not new_base:
+                return
+            current_base["path"] = new_base
+            comp = overview_ref.get("comp")
+            if comp is not None:
+                await comp.refresh()
+                if comp._projects:
+                    prefs_service.prefs.add_recent_root(new_base)
+                    prefs_service.save_to_app_storage(ng_app.storage.user)
+                    _render_history()
+
         # ── dialog ────────────────────────────────────────────────────────────
 
         with (
             ui.dialog() as dialog,
             ui.card().style(
-                "width: 560px; max-width: 560px; padding: 0; overflow: hidden; "
+                "width: 720px; max-width: 720px; padding: 0; overflow: hidden; "
                 "border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);"
             ),
         ):
-            dialog_ref["dialog"] = dialog
-
             # Base path bar with history dropdown
             with ui.element("div").style(
                 "display: flex; align-items: center; gap: 6px; "
@@ -1264,13 +1190,13 @@ class RosterWidget:
                     f"{FONT} font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.09em; flex-shrink: 0;"
                 )
 
-                # Wrapper for input + history dropdown
                 with ui.element("div").style("flex: 1; position: relative; min-width: 0;"):
                     with ui.element("div").style("display: flex; align-items: center; gap: 4px;"):
                         path_input = (
-                            ui.input(value=scan_state["base"])
+                            ui.input(value=current_base["path"])
                             .props("dense borderless")
                             .style(f"flex: 1; font-size: 10px; {MONO} color: #1e293b; background: transparent;")
+                            .on("blur", _apply_base_change)
                         )
                         history_refs["path_input"] = path_input
                         (
@@ -1280,7 +1206,6 @@ class RosterWidget:
                             .tooltip("Recent locations")
                         )
 
-                    # History dropdown
                     history_dropdown = ui.element("div").style(
                         "display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; "
                         "z-index: 9999; background: white; "
@@ -1292,29 +1217,27 @@ class RosterWidget:
                     with history_dropdown:
                         history_refs["container"] = ui.element("div").style("width: 100%;")
 
-                (
-                    ui.button(icon="refresh", on_click=lambda: asyncio.create_task(_rescan(path_input)))
-                    .props("flat dense round size=xs")
-                    .style("color: #64748b; flex-shrink: 0;")
-                    .tooltip("Rescan")
-                )
+            # Mount the same Projects Overview widget as the landing page.
+            # Delete is intentionally disabled in the in-workspace switcher --
+            # too easy to nuke a project mid-session by mistake. The
+            # currently-loaded project is shown but rendered inert with a
+            # "current" highlight so the roster keeps continuity.
+            overview = ProjectsOverview(
+                panel.backend,
+                on_open=_switch_project,
+                on_delete=None,
+                base_path_provider=lambda: current_base["path"],
+                auto_refresh_sec=15.0,
+                current_path=current_path_str,
+                show_filter=True,
+                height_px=460,
+                title="Projects Overview",
+            )
+            overview_ref["comp"] = overview
+            overview.build()
 
-            # Section header
-            with ui.element("div").style(
-                "padding: 7px 14px 5px; font-size: 9px; font-weight: 700; "
-                "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase; "
-                "border-bottom: 1px solid #f1f5f9;"
-            ):
-                ui.label("Projects")
-
-            # Scrollable project list -- taller so you can see more at once
-            with ui.scroll_area().style("height: 420px; width: 100%;"):
-                list_container = ui.element("div").style("width: 100%;")
-                list_ref["el"] = list_container
-
-            ui.element("div").style("height: 4px;")
-
-        _render_list(scan_state["list"])
+        # Cancel auto-refresh when the user dismisses the dialog
+        dialog.on("hide", lambda: overview.stop())
         dialog.open()
 
     # ── Run slot ──────────────────────────────────────────────────────────────
