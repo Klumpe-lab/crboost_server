@@ -246,7 +246,7 @@ def _resolve_source_to_optset(source: str) -> Path:
 
 
 def merge_optimisation_sets_into_jobdir(
-    *, job_dir: Path, additional_sources: List[str], strict: bool = True
+    *, job_dir: Path, additional_sources: List[str], strict: bool = True, allow_no_primary: bool = False
 ) -> Dict[str, Any]:
     """
     Merges the primary job_dir's optimisation_set.star with additional sources.
@@ -267,12 +267,19 @@ def merge_optimisation_sets_into_jobdir(
       - tomograms_primary.star
       - optimisation_set_primary.star
 
+    With `allow_no_primary=True`, a job_dir that has never been extracted is
+    valid: all `additional_sources` are merged directly into job_dir without
+    a primary contribution and no _primary.star backups are created. This is
+    the aggregation-project mode.
+
     Returns the summary dict.
     """
     job_dir = job_dir.resolve()
 
     primary_optset = job_dir / "optimisation_set.star"
-    if not primary_optset.exists():
+    has_primary = primary_optset.exists()
+
+    if not has_primary and not allow_no_primary:
         raise FileNotFoundError(
             f"Primary optimisation_set.star missing in job dir: {job_dir}\nRun extraction first before merging."
         )
@@ -280,16 +287,19 @@ def merge_optimisation_sets_into_jobdir(
     if not additional_sources:
         raise ValueError("No additional_sources provided -- nothing to merge.")
 
-    # ---- Back up primary outputs before we overwrite ----
-    for name in ["particles.star", "tomograms.star", "optimisation_set.star"]:
-        src = job_dir / name
-        backup = job_dir / name.replace(".star", "_primary.star")
-        if src.exists() and not backup.exists():
-            shutil.copy2(src, backup)
-            print(f"[MERGE] Backed up {name} -> {backup.name}")
+    # ---- Back up primary outputs before we overwrite (only if a primary exists) ----
+    if has_primary:
+        for name in ["particles.star", "tomograms.star", "optimisation_set.star"]:
+            src = job_dir / name
+            backup = job_dir / name.replace(".star", "_primary.star")
+            if src.exists() and not backup.exists():
+                shutil.copy2(src, backup)
+                print(f"[MERGE] Backed up {name} -> {backup.name}")
 
     # ---- Collect all sources (primary + additional) ----
-    all_optsets: List[Path] = [primary_optset.resolve()]
+    all_optsets: List[Path] = []
+    if has_primary:
+        all_optsets.append(primary_optset.resolve())
     for s in additional_sources:
         all_optsets.append(_resolve_source_to_optset(s))
 

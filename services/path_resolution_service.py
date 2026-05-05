@@ -144,6 +144,23 @@ class PathResolutionService:
             if override_key:
                 chosen = self._resolve_override(slot, override_key, index)
 
+                # Manual overrides (manual:/abs/path) are never resolvable via
+                # the producer index. Materialize them directly into a
+                # ResolvedInput so they actually populate job_model.paths.
+                if chosen is None and override_key.startswith("manual:"):
+                    manual_path = override_key[len("manual:"):]
+                    resolved_inputs.append(
+                        ResolvedInput(
+                            input_key=slot.key,
+                            chosen_type=slot.accepts[0],
+                            source_job_type="manual",
+                            source_instance_id=None,
+                            source_output_key="manual",
+                            path=manual_path,
+                        )
+                    )
+                    continue
+
             # 2. Fall back to species-aware automatic selection
             if chosen is None:
                 chosen = self._choose_candidate_for_slot(
@@ -416,11 +433,39 @@ class PathResolutionService:
                     )
                 )
 
+        self._add_merged_sources_candidates(index, project_root)
+
         for t, lst in index.items():
             index[t] = sorted(lst, key=lambda c: (c.producer_job_type.value, c.instance_path, c.producer_output_key))
 
         self._output_index = index
         return index
+
+    def _add_merged_sources_candidates(
+        self, index: Dict[JobFileType, List[OutputCandidate]], project_root: Path
+    ) -> None:
+        # MergedSources/optimisation_set.star is a project-level resource produced
+        # by the aggregation merge widget, not a pipeline job. Surface it as a
+        # synthetic producer whenever the file exists so consumers (Class3D /
+        # Refine3D / ReconstructParticle in aggregation projects) discover it
+        # through the normal candidate enumeration -- works regardless of the
+        # state.is_aggregation flag, which has been a single point of failure.
+        merged_optset = project_root / "MergedSources" / "optimisation_set.star"
+        if not merged_optset.exists():
+            return
+        index[JobFileType.OPTIMISATION_SET_STAR].append(
+            OutputCandidate(
+                produces=JobFileType.OPTIMISATION_SET_STAR,
+                producer_job_type=JobType.MERGED_SOURCES,
+                producer_output_key="output_optimisation",
+                path=str(merged_optset),
+                instance_path="MergedSources",
+                producer_instance_id="mergedSources",
+                execution_status=JobStatus.SUCCEEDED,
+                relion_job_number=0,
+                species_id=None,
+            )
+        )
 
     def _get_instance_path(self, instance_id: str, job_model: "AbstractJobParams") -> str:
         relion_job_name = getattr(job_model, "relion_job_name", None)

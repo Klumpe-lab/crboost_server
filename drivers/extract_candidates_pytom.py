@@ -308,6 +308,27 @@ def run_supervisor_mode():
         except Exception as vis_err:
             print(f"[SUPERVISOR WARN] Visualization generation failed (non-fatal): {vis_err}", flush=True)
 
+        try:
+            from services.visualization.preview_orchestrator import generate_candidate_previews
+            print("[SUPERVISOR] Rendering candidate preview PNGs...", flush=True)
+            preview_summary = generate_candidate_previews(
+                candidates_star=candidates_star,
+                tomograms_star=output_tomograms,
+                particle_diameter_ang=float(params.particle_diameter_ang),
+                output_dir=job_dir,
+                project_root=project_path,
+            )
+            print(
+                "[SUPERVISOR] Previews: "
+                f"{len(preview_summary['ok'])} rendered, "
+                f"{len(preview_summary['skipped_cached'])} cached, "
+                f"{len(preview_summary['missing_volume'])} missing volume, "
+                f"{len(preview_summary['errored'])} errored",
+                flush=True,
+            )
+        except Exception as preview_err:
+            print(f"[SUPERVISOR WARN] Preview rendering failed (non-fatal): {preview_err}", flush=True)
+
         write_optimisation_set(
             job_dir / "optimisation_set.star",
             particles_star=candidates_star,

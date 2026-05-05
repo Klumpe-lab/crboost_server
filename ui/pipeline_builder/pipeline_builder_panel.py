@@ -267,6 +267,13 @@ class PipelineBuilderPanel:
                         job_model.template_path = sp.template_path or ""
                         job_model.mask_path = sp.mask_path or ""
 
+        # Aggregation projects: if the merge has been done, point any new
+        # consumer's input_optimisation slot at MergedSources/optimisation_set.star
+        # so the user doesn't need to manually configure the override.
+        from ui.aggregation_merge_card import apply_aggregation_overrides
+
+        apply_aggregation_overrides(state)
+
         if self.ui_mgr.is_project_created:
             asyncio.create_task(self.state_service.save_project())
 
@@ -513,6 +520,21 @@ def build_pipeline_builder_panel(
         toggle_workbench=toggle_workbench,
         ensure_pipeline_mode=ensure_pipeline_mode,
     )
+
+    # Idempotent: for aggregation projects with a completed merge, retroactively
+    # wire any consumer jobs (Class3D/Refine3D/...) that were added before the
+    # merge happened or before the auto-override hook was wired. Cheap to call
+    # on every workspace render — only writes when a value would actually change.
+    from ui.aggregation_merge_card import apply_aggregation_overrides
+
+    n_wired = apply_aggregation_overrides(panel.state_service.state)
+    if n_wired and panel.ui_mgr.is_project_created:
+        # Persist so the wiring survives reload — otherwise we'd self-heal in
+        # memory but the next reload starts cold and the user sees the same
+        # "empty input" symptom.
+        import asyncio as _asyncio
+
+        _asyncio.create_task(panel.state_service.save_project())
 
     # Must be created in the current NiceGUI rendering context before
     # panel.build() is called, since rebuild_pipeline_ui writes into it.

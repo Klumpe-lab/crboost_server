@@ -760,6 +760,12 @@ class RosterWidget:
                 ui.element("div").style("height: 1px;")
                 self._sb_svg_btn(_JOURNEY_SVG, "Tilt Series Journey", toggle_journey, ref_key="journey_btn")
 
+            # Candidate previews: lives in the navigation cluster (not the
+            # run-pipeline cluster) since it's an inspection tool, not an action.
+            # Visible whenever the project has at least one candidate-extract job.
+            ui.element("div").style("height: 1px;")
+            self._build_candidate_preview_btn()
+
             # SLURM defaults / resource profiles live inside the project overview popup now.
 
             ui.element("div").style("height: 10px;")
@@ -770,6 +776,11 @@ class RosterWidget:
                 "width: 100%; display: flex; flex-direction: column; align-items: center; padding: 2px 6px; gap: 3px;"
             )
             self._refs["run_slot"] = run_slot
+
+            # Aggregation projects: open the merge-sources dialog from the
+            # sidebar instead of taking up half the workspace inline.
+            if getattr(state, "is_aggregation", False):
+                self._build_aggregation_merge_btn()
 
             self._sb_svg_btn("cross.svg", "Close project", lambda: ui.navigate.to("/"))
 
@@ -1346,6 +1357,73 @@ class RosterWidget:
             return p.read_text()
         except FileNotFoundError:
             return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>'
+
+    def _build_aggregation_merge_btn(self):
+        """Sidebar button that opens the merge-sources dialog. Shows a small
+        green dot when MergedSources/optimisation_set.star already exists so
+        you can see at a glance whether the merge has been done."""
+        from ui.aggregation_merge_card import has_merged_outputs, open_aggregation_merge_dialog
+
+        merged = has_merged_outputs()
+        container = (
+            ui.element("div")
+            .style(
+                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                "background: transparent; "
+                "display: flex; align-items: center; justify-content: center; "
+                "cursor: pointer; flex-shrink: 0; position: relative;"
+            )
+            .on("click", lambda: open_aggregation_merge_dialog())
+            .tooltip("Merge sources" + (" (merged)" if merged else ""))
+        )
+        with container:
+            ui.icon("merge_type", size="18px").style(
+                "color: #9333ea; pointer-events: none;"  # purple-600
+            )
+            if merged:
+                ui.element("div").style(
+                    "position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; "
+                    "border-radius: 50%; background: #16a34a; pointer-events: none;"  # green-600
+                )
+        self._refs["aggregation_merge_btn"] = container
+        return container
+
+    def _build_candidate_preview_btn(self):
+        """Sidebar button that opens the candidate-preview dialog. Shown only when
+        the project has at least one candidate-extract job. Green dot when at
+        least one preview manifest has been written."""
+        from ui.candidate_preview_dialog import (
+            has_any_extract_jobs,
+            has_any_previews_rendered,
+            open_candidate_preview_dialog,
+        )
+
+        if not has_any_extract_jobs():
+            return None
+
+        rendered = has_any_previews_rendered()
+        container = (
+            ui.element("div")
+            .style(
+                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                "background: transparent; "
+                "display: flex; align-items: center; justify-content: center; "
+                "cursor: pointer; flex-shrink: 0; position: relative;"
+            )
+            .on("click", lambda: open_candidate_preview_dialog())
+            .tooltip("Candidate previews" + (" (rendered)" if rendered else ""))
+        )
+        with container:
+            ui.icon("scatter_plot", size="18px").style(
+                "color: #2563eb; pointer-events: none;"  # blue-600
+            )
+            if rendered:
+                ui.element("div").style(
+                    "position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; "
+                    "border-radius: 50%; background: #16a34a; pointer-events: none;"
+                )
+        self._refs["candidate_preview_btn"] = container
+        return container
 
     def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None):
         bg = SB_ABG if active else "transparent"

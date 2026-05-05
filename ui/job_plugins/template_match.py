@@ -11,7 +11,7 @@ from nicegui import ui
 
 from services.models_base import JobType
 from ui.job_plugins import register_params_renderer
-from ui.job_plugins.default_renderer import render_default_params_card, render_species_badge, _render_group_label
+from ui.job_plugins.default_renderer import render_default_params_card, render_species_badge
 
 
 @register_params_renderer(JobType.TEMPLATE_MATCH_PYTOM)

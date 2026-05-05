@@ -164,3 +164,188 @@ body {
     0% { transform: scale(0.8); opacity: 0; }
     100% { transform: scale(1); opacity: 1; }
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Job-page parameter / SLURM / I/O field styling.
+   Used by ui/job_plugins/_field_styles.py and the renderers that consume it.
+   Goals: high density, inline labels, no underline-only inputs, and a
+   typographic hierarchy congruent with the toolbar + pipeline roster.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.cb-section-header {
+    font-family   : 'IBM Plex Sans', sans-serif;
+    font-size     : 10px;
+    font-weight   : 700;
+    color         : #475569;          /* slate-600 */
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    line-height   : 1;
+    margin        : 4px 0 4px 0;
+}
+
+.cb-section-rule {
+    width        : 100%;
+    height       : 1px;
+    background   : #e2e8f0;
+    margin       : 2px 0 6px 0;
+}
+
+/* Container that auto-packs label/input pairs into evenly-sized columns. */
+.cb-field-grid {
+    display              : grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    column-gap           : 16px;
+    row-gap              : 6px;
+    width                : 100%;
+    align-items          : baseline;
+}
+
+/* One inline label/input pair. */
+.cb-field {
+    display    : flex;
+    align-items: baseline;
+    gap        : 8px;
+    min-width  : 0;
+}
+
+.cb-field-label {
+    font-family : 'IBM Plex Sans', sans-serif;
+    font-size   : 10px;
+    font-weight : 500;
+    color       : #64748b;            /* slate-500 */
+    flex-shrink : 0;
+    white-space : nowrap;
+    line-height : 1.4;
+}
+
+/* Path-style row: label on the left fixed-width, value flowing right. */
+.cb-field-path {
+    display    : flex;
+    align-items: baseline;
+    gap        : 8px;
+    width      : 100%;
+}
+.cb-field-path > .cb-field-label {
+    width      : 96px;
+    text-align : right;
+}
+
+/* Quasar input wrapper -- strip underline, add subtle hover/focus chrome. */
+.cb-field-input {
+    flex      : 1 1 0;
+    min-width : 0;
+}
+.cb-field-input .q-field__control {
+    background   : transparent;
+    border       : 1px solid transparent;
+    border-radius: 3px;
+    min-height   : 22px !important;
+    padding      : 0 4px !important;
+    transition   : background 0.08s ease, border-color 0.08s ease;
+}
+.cb-field-input .q-field__control::before,
+.cb-field-input .q-field__control::after {
+    display: none !important;         /* kill Quasar's underline + ripple bar */
+}
+.cb-field-input:hover .q-field__control {
+    background  : #f8fafc;            /* slate-50 */
+    border-color: #e2e8f0;            /* slate-200 */
+}
+.cb-field-input.q-field--focused .q-field__control {
+    background  : #ffffff;
+    border-color: #94a3b8;            /* slate-400 */
+}
+.cb-field-input .q-field__native,
+.cb-field-input .q-field__input,
+.cb-field-input input {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size  : 11px !important;
+    color      : #1e293b !important;  /* slate-800 */
+    padding    : 1px 0 !important;
+    line-height: 1.4 !important;
+    min-height : 0 !important;
+}
+.cb-field-input--frozen .q-field__native,
+.cb-field-input--frozen .q-field__input,
+.cb-field-input--frozen input {
+    color: #94a3b8 !important;
+}
+.cb-field-input--narrow {
+    flex      : 0 0 auto;
+    max-width : 88px;
+}
+
+.cb-field-suffix {
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size  : 9px;
+    color      : #94a3b8;
+    flex-shrink: 0;
+}
+
+/* Toggles -- kept compact, congruent with field labels. */
+.cb-toggle-row {
+    display    : flex;
+    flex-wrap  : wrap;
+    column-gap : 18px;
+    row-gap    : 4px;
+    width      : 100%;
+    align-items: center;
+    margin-top : 4px;
+}
+.cb-toggle .q-checkbox__label {
+    font-family: 'IBM Plex Sans', sans-serif !important;
+    font-size  : 10px !important;
+    color      : #475569 !important;
+}
+.cb-toggle .q-checkbox__inner {
+    font-size: 18px !important;
+}
+
+/* Group box (e.g. Per-Task Resources, Supervisor). Thin rule, no card chrome. */
+.cb-field-group {
+    width        : 100%;
+    border       : 1px solid #eef2f6;
+    border-radius: 4px;
+    padding      : 6px 8px 8px;
+    margin-top   : 6px;
+}
+.cb-field-group--muted {
+    background: #fafbfc;
+}
+
+/* Read-only path/key-value rows in the I/O collapsible. */
+.cb-kv-row {
+    display      : grid;
+    grid-template-columns: 96px 1fr auto;
+    column-gap   : 8px;
+    align-items  : baseline;
+    width        : 100%;
+    min-height   : 18px;
+}
+.cb-kv-row > .cb-field-label {
+    text-align: right;
+}
+.cb-kv-row > .cb-kv-value {
+    font-family   : 'IBM Plex Mono', monospace;
+    font-size     : 10px;
+    color         : #475569;
+    overflow      : hidden;
+    text-overflow : ellipsis;
+    white-space   : nowrap;
+    min-width     : 0;
+}
+
+/* Top-level expansion-item header (SLURM / I/O / Parameters). */
+.cb-collapsible-header {
+    font-family   : 'IBM Plex Sans', sans-serif !important;
+    font-size     : 11px !important;
+    font-weight   : 600 !important;
+    color         : #334155 !important;   /* slate-700 */
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding       : 0 !important;
+    min-height    : 22px !important;
+}
+.cb-collapsible-header .q-item__section {
+    padding: 0 !important;
+}

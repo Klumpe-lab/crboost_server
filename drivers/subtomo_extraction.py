@@ -87,11 +87,22 @@ def run_merge(params, job_dir):
         print("[DRIVER] No additional_sources specified, nothing to merge.", flush=True)
         return
 
-    print(f"[DRIVER] Merging {len(additional_sources)} additional source(s)...", flush=True)
+    # Aggregation projects have no primary extraction in job_dir; the merge
+    # driver detects that and writes the merged STARs straight from the
+    # sources without backing anything up.
+    has_primary = (job_dir / "optimisation_set.star").exists()
+
+    print(
+        f"[DRIVER] Merging {len(additional_sources)} additional source(s) "
+        f"({'with' if has_primary else 'without'} primary)...",
+        flush=True,
+    )
     for i, src in enumerate(additional_sources):
         print(f"  [{i + 1}] {src}", flush=True)
 
-    summary = merge_optimisation_sets_into_jobdir(job_dir=job_dir, additional_sources=additional_sources)
+    summary = merge_optimisation_sets_into_jobdir(
+        job_dir=job_dir, additional_sources=additional_sources, allow_no_primary=not has_primary
+    )
 
     print(
         f"[DRIVER] Merge complete: {summary['totals']['n_particles']} particles, "
@@ -115,9 +126,10 @@ def main():
     try:
         if params.merge_only:
             print("[DRIVER] merge_only=True, skipping extraction.", flush=True)
-            # In merge_only mode, job_dir must already have outputs from a prior extraction run.
-            if not (job_dir / "optimisation_set.star").exists():
-                raise RuntimeError("merge_only=True but no optimisation_set.star in job dir. Run extraction first.")
+            # Aggregation projects legitimately have no primary; run_merge
+            # detects that and writes the merged STARs from the sources alone.
+            if not params.additional_sources:
+                raise RuntimeError("merge_only=True but no additional_sources to merge.")
             run_merge(params, job_dir)
         else:
             run_extraction(params, context, job_dir)

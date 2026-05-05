@@ -372,6 +372,7 @@ class ProjectService:
         selected_mdoc_paths: Optional[List[str]] = None,
         import_summary: Optional[Dict[str, Any]] = None,
         detected_params: Optional[Dict[str, Any]] = None,
+        is_aggregation: bool = False,
     ):
         try:
             project_dir = Path(project_base_path).expanduser() / project_name
@@ -388,11 +389,19 @@ class ProjectService:
             state.project_path = project_dir
             state.movies_glob = movies_glob
             state.mdocs_glob = mdocs_glob
+            state.is_aggregation = is_aggregation
             state.created_by = getpass.getuser()
             set_project_state_for(project_dir, state)
 
+            # Aggregation projects have no pipeline jobs at creation time.
+            # The merge step lives in a standalone workspace card (not in the
+            # pipeline DAG), and downstream jobs (Reconstruct/Class3D/Refine3D)
+            # are added by the user via the regular job-roster UI; they pick
+            # up MergedSources/optimisation_set.star via a manual: override.
+
             # Apply microscope/acquisition params from the already-parsed dataset
-            # overview (avoids re-parsing all mdocs from scratch).
+            # overview (avoids re-parsing all mdocs from scratch). Aggregation
+            # projects have no source mdocs, so skip the fallback re-parse.
             if detected_params:
                 if "pixel_size_angstrom" in detected_params:
                     state.microscope.pixel_size_angstrom = detected_params["pixel_size_angstrom"]
@@ -403,7 +412,7 @@ class ProjectService:
                 if "tilt_axis_degrees" in detected_params:
                     state.acquisition.tilt_axis_degrees = detected_params["tilt_axis_degrees"]
                 state.update_modified()
-            else:
+            elif not is_aggregation:
                 # Fallback: re-parse mdocs (legacy path / no overview available)
                 await self.backend.state_service.update_from_mdoc(mdocs_glob, project_path=project_dir)
 
@@ -451,11 +460,13 @@ class ProjectService:
             # 3. Build the TiltSeries registry from the imported mdocs, persist to
             # sidecar JSON under {project}/registry/. Stage-1 addition: failure
             # here is logged but non-fatal while we harden the registry; the
-            # STAR pipeline continues to work.
-            try:
-                self._build_and_persist_registry(project_dir, mdocs_glob)
-            except Exception as e:
-                logger.warning("Registry construction failed for %s: %s", project_dir, e)
+            # STAR pipeline continues to work. Aggregation projects have no
+            # mdocs of their own to register.
+            if not is_aggregation:
+                try:
+                    self._build_and_persist_registry(project_dir, mdocs_glob)
+                except Exception as e:
+                    logger.warning("Registry construction failed for %s: %s", project_dir, e)
 
             # 4. Save Project State (project_params.json) — includes import summary
             params_json_path = project_dir / "project_params.json"
@@ -467,11 +478,13 @@ class ProjectService:
             logger.info("Initializing Relion project...")
 
             init_command = "unset DISPLAY && relion --tomo --do_projdir ."
-            binds = [
-                str(project_dir.resolve()),
-                str(Path(movies_glob).parent.resolve()),
-                str(Path(mdocs_glob).parent.resolve()),
-            ]
+            # Aggregation projects have no raw-data parents to bind. Path("").parent
+            # would resolve to the cwd, which is wrong and would clutter the binds.
+            binds = [str(project_dir.resolve())]
+            if movies_glob:
+                binds.append(str(Path(movies_glob).parent.resolve()))
+            if mdocs_glob:
+                binds.append(str(Path(mdocs_glob).parent.resolve()))
 
             container_cmd = self.backend.container_service.wrap_command_for_tool(
                 command=init_command, cwd=project_dir, tool_name="relion", additional_binds=binds
