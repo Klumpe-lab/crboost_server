@@ -76,6 +76,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         "mdocs_separate_container": None,
         "parsing_spinner": None,
         "data_history_container": None,
+        "raw_data_section": None,  # whole frames+mdocs+overview block; hidden in aggregation mode
+        "aggregation_hint": None,  # inline hint shown when aggregation mode is on
     }
 
     # =========================================================================
@@ -222,6 +224,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             missing.append("Project Name")
         if not (di.project_base_path and di.project_base_path.strip()):
             missing.append("Project Path")
+        # Aggregation projects skip raw frames + mdocs entirely.
+        if di.is_aggregation:
+            return missing
         if not di.movies_glob:
             missing.append("Data Path")
         elif not di.movies_valid:
@@ -609,12 +614,15 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
     async def handle_create_project():
         sync_state_from_inputs()
-        update_movies_validation()
-        update_mdocs_validation()
+        di = ui_mgr.data_import
+        # In aggregation mode the raw-data validators don't apply; skip them
+        # so we don't flash an "invalid pattern" error against blank inputs.
+        if not di.is_aggregation:
+            update_movies_validation()
+            update_mdocs_validation()
         if not can_create_project():
             ui.notify(f"Cannot create: Missing {get_missing_requirements()}", type="warning")
             return
-        di = ui_mgr.data_import
         btn = ui_mgr.panel_refs.create_button
         overview = local_refs.get("current_dataset_overview")
 
@@ -628,7 +636,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         selected_mdoc_paths = None
         import_summary = None
         detected_params = None
-        if overview:
+        if overview and not di.is_aggregation:
             selected_ts = overview.get_selected_tilt_series()
             selected_mdoc_paths = [str(ts.mdoc_path) for ts in selected_ts]
             import_summary = {
@@ -696,16 +704,27 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 project_name=di.project_name,
                 project_base_path=di.project_base_path,
                 selected_jobs=[j.value for j in ui_mgr.selected_jobs],
-                movies_glob=di.movies_glob,
-                mdocs_glob=di.mdocs_glob,
+                movies_glob="" if di.is_aggregation else di.movies_glob,
+                mdocs_glob="" if di.is_aggregation else di.mdocs_glob,
                 selected_mdoc_paths=selected_mdoc_paths,
                 import_summary=import_summary,
                 detected_params=detected_params,
+                is_aggregation=di.is_aggregation,
             )
             if result.get("success"):
                 project_path = Path(result["project_path"])
                 scheme_name = f"scheme_{di.project_name}"
                 ui_mgr.set_project_created(project_path, scheme_name)
+                # Aggregation projects pre-initialize SubtomoExtraction in
+                # state.jobs; mirror it into ui_mgr.selected_jobs so the
+                # workspace renders the tab on first arrival.
+                if di.is_aggregation:
+                    state = backend.state_service.state_for(project_path)
+                    ui_mgr.load_from_project(
+                        project_path=state.project_path,
+                        scheme_name=scheme_name,
+                        jobs=list(state.jobs.keys()),
+                    )
 
                 # Show success state before navigating
                 if progress_container:
@@ -1046,7 +1065,46 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                                     f"{FONT} font-size: 10px;"
                                 )
 
-                with ui.column().classes("w-full gap-2").style(section_style):
+                # Aggregation mode toggle: when on, this project skips raw
+                # frames/mdocs and starts at SubtomoExtraction (used to merge
+                # particles across multiple upstream projects).
+                def on_aggregation_toggle(e):
+                    enabled = bool(e.value)
+                    ui_mgr.update_data_import(is_aggregation=enabled)
+                    section = local_refs.get("raw_data_section")
+                    if section:
+                        section.set_visibility(not enabled)
+                    hint = local_refs.get("aggregation_hint")
+                    if hint:
+                        hint.set_visibility(enabled)
+                    update_create_button_state()
+
+                with ui.row().classes("w-full items-center justify-between mb-2"):
+                    with ui.row().classes("items-center gap-1"):
+                        ui.label("Aggregation project").style(field_label_style)
+                        with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
+                            ui.tooltip(
+                                "Skip raw-data import. Project starts at SubtomoExtraction "
+                                "and merges optimisation_set.star files from existing projects."
+                            ).style(f"{FONT} font-size: 10px;")
+                    ui.switch(
+                        value=ui_mgr.data_import.is_aggregation, on_change=on_aggregation_toggle
+                    ).props("dense").style("transform: scale(0.75);")
+
+                aggregation_hint = ui.label(
+                    "Aggregation mode: this project will start at SubtomoExtraction. "
+                    "Add upstream optimisation_set.star sources from the merge panel after creation."
+                ).style(
+                    f"{FONT} font-size: 10px; color: {CLR_ACCENT_TEXT}; "
+                    f"background: {CLR_ACCENT_LIGHT}; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px;"
+                )
+                aggregation_hint.set_visibility(ui_mgr.data_import.is_aggregation)
+                local_refs["aggregation_hint"] = aggregation_hint
+
+                raw_data_section = ui.column().classes("w-full gap-1")
+                local_refs["raw_data_section"] = raw_data_section
+                raw_data_section.set_visibility(not ui_mgr.data_import.is_aggregation)
+                with raw_data_section, ui.column().classes("w-full gap-2").style(section_style):
                     # Raw Frames & Mdocs (combined input)
                     with ui.column().classes("w-full gap-0"):
                         with ui.row().classes("w-full items-center justify-between"):
@@ -1111,9 +1169,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                         )
                         ui_mgr.panel_refs.mdocs_hint_label = mdocs_hint
 
-                # Dataset overview (populated when mdocs are validated)
-                dataset_overview_container = ui.column().classes("w-full gap-0 mt-1")
-                local_refs["dataset_overview_container"] = dataset_overview_container
+                # Dataset overview (populated when mdocs are validated). Lives
+                # inside raw_data_section so the aggregation toggle hides it too.
+                with raw_data_section:
+                    dataset_overview_container = ui.column().classes("w-full gap-0 mt-1")
+                    local_refs["dataset_overview_container"] = dataset_overview_container
 
                 with ui.row().classes("w-full items-center justify-between mt-3"):
                     status_indicator = ui.label("Enter details to begin...").style(

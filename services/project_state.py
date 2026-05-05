@@ -105,6 +105,13 @@ class ProjectState(BaseModel):
     movies_glob: str = ""
     mdocs_glob: str = ""
 
+    # Aggregation projects skip raw-data import. Particles arrive via merging
+    # optimisation_set.star files from existing projects; the merge step is a
+    # standalone workspace card (not a pipeline job). Sources persist here so
+    # the user can re-merge after adding more datasets.
+    is_aggregation: bool = False
+    aggregation_sources: List[str] = Field(default_factory=list)
+
     microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
     acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
     slurm_defaults: SlurmConfig = Field(default_factory=SlurmConfig.from_config_defaults)

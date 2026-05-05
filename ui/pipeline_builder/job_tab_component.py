@@ -75,37 +75,33 @@ def _render_tab_content(
             "[&_.q-expansion-item__content]:p-0 "
             "[&_.q-item]:min-h-0 [&_.q-item]:py-0 [&_.q-item]:px-0"
         )
+        section_style = "border: none; box-shadow: none; background: transparent; margin-bottom: 4px;"
+        section_pad = "padding: 4px 0 10px;"
+        # Tailwind utilities applied to the q-item header. Inline-style tokens
+        # are not supported by Quasar's header-class prop -- it only takes
+        # class names -- so we use Tailwind atoms that are guaranteed to be in
+        # NiceGUI's bundled CSS.
+        header_cls = "text-[11px] font-semibold uppercase tracking-wider text-slate-700 q-px-none"
         with ui.scroll_area().classes("w-full h-full"):
-            with ui.column().classes(f"w-full gap-0 {exp_content_reset}").style("padding: 2px 4px 4px;"):
+            with ui.column().classes(f"w-full gap-0 {exp_content_reset}").style("padding: 4px 8px 8px;"):
                 # ── SLURM (collapsible) ──
                 with (
-                    ui.expansion("SLURM / Requested Resources", value=True)
-                    .props("dense")
-                    .classes("w-full")
-                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 0;") as slurm_exp
-                ):
-                    slurm_exp.props('header-class="text-xs font-semibold text-gray-700 q-px-none"')
-                    with ui.column().classes("w-full gap-0").style("padding: 1px 0 0;"):
+                    ui.expansion("SLURM Resources", value=True).props("dense").classes("w-full").style(section_style)
+                ) as slurm_exp:
+                    slurm_exp.props(f'header-class="{header_cls}"')
+                    with ui.column().classes("w-full gap-0").style(section_pad):
                         render_slurm_tab(job_model, is_frozen, save_handler)
                 # ── I/O (collapsible) ──
-                with (
-                    ui.expansion("I/O", value=True)
-                    .props("dense")
-                    .classes("w-full")
-                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 0;") as io_exp
-                ):
-                    io_exp.props('header-class="text-xs font-semibold text-gray-700 q-px-none"')
-                    with ui.column().classes("w-full gap-0").style("padding: 1px 0 0;"):
+                with ui.expansion("I/O", value=True).props("dense").classes("w-full").style(section_style) as io_exp:
+                    io_exp.props(f'header-class="{header_cls}"')
+                    with ui.column().classes("w-full gap-0").style(section_pad):
                         render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, save_handler)
                 # ── Parameters (collapsible) ──
                 with (
-                    ui.expansion("Parameters", value=True)
-                    .props("dense")
-                    .classes("w-full")
-                    .style("border: none; box-shadow: none; background: transparent; margin-bottom: 0;") as params_exp
-                ):
-                    params_exp.props('header-class="text-xs font-semibold text-gray-700 q-px-none"')
-                    with ui.column().classes("w-full gap-0").style("padding: 1px 0 0;"):
+                    ui.expansion("Parameters", value=True).props("dense").classes("w-full").style(section_style)
+                ) as params_exp:
+                    params_exp.props(f'header-class="{header_cls}"')
+                    with ui.column().classes("w-full gap-0").style(section_pad):
                         render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend, save_handler)
     elif tab_key == MonitorTab.LOGS.value:
         render_logs_tab(job_type, instance_id, job_model, backend, ui_mgr)

@@ -52,6 +52,12 @@ class JobType(str, Enum):
 
     CLASS3D = "class3d"
 
+    # Synthetic source: not a real pipeline job. Used by PathResolutionService to
+    # surface <project>/MergedSources/optimisation_set.star as a producer candidate
+    # for input_optimisation slots in aggregation projects. Never appears in
+    # state.jobs, jobtype_paramclass, or PIPELINE_ORDER.
+    MERGED_SOURCES = "mergedSources"
+
     @classmethod
     def from_string(cls, value: str) -> "JobType":
         try:

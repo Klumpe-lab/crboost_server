@@ -38,6 +38,9 @@ class DataImportFormState(BaseModel):
     movies_valid: bool = False
     mdocs_valid: bool = False
 
+    # Aggregation mode: skip raw frames/mdocs, start at SubtomoExtraction.
+    is_aggregation: bool = False
+
     detected_pixel_size: Optional[float] = None
     detected_voltage: Optional[float] = None
     detected_dose_per_tilt: Optional[float] = None
@@ -162,6 +165,7 @@ JOB_DISPLAY_NAMES: Dict[JobType, str] = {
     JobType.SUBTOMO_EXTRACTION: "Subtomo Extraction",
     JobType.RECONSTRUCT_PARTICLE: "Reconstruct Particle",
     JobType.CLASS3D: "Class 3D",
+    JobType.MERGED_SOURCES: "Merged Sources",
 }
 
 
@@ -503,6 +507,7 @@ class UIStateManager:
         import_prefix: Optional[str] = None,
         movies_valid: Optional[bool] = None,
         mdocs_valid: Optional[bool] = None,
+        is_aggregation: Optional[bool] = None,
     ):
         di = self._state.data_import
         if project_name is not None:
@@ -519,6 +524,8 @@ class UIStateManager:
             di.movies_valid = movies_valid
         if mdocs_valid is not None:
             di.mdocs_valid = mdocs_valid
+        if is_aggregation is not None:
+            di.is_aggregation = is_aggregation
 
     def update_detected_params(
         self,

@@ -69,6 +69,36 @@ def main():
         if params.no_ctf:
             cmd_parts.append("--no_ctf")
 
+        # SNR override (0 = let RELION auto-determine).
+        if getattr(params, "snr", 0.0) and params.snr > 0:
+            cmd_parts.extend(["--snr", str(params.snr)])
+
+        # Backend theme: RELION 5 default vs. legacy RELION 4 ("classic").
+        theme_val = getattr(params, "theme", None)
+        if theme_val is not None:
+            theme_str = theme_val.value if hasattr(theme_val, "value") else str(theme_val)
+            if theme_str and theme_str != "default":
+                cmd_parts.extend(["--theme", theme_str])
+
+        # Helical params: only emitted when explicitly enabled.
+        if getattr(params, "do_helix", False):
+            cmd_parts.append("--helix")
+            if params.helical_twist != -1.0:
+                cmd_parts.extend(["--helical_twist", str(params.helical_twist)])
+            if params.helical_rise:
+                cmd_parts.extend(["--helical_rise", str(params.helical_rise)])
+            if params.helical_z_percentage:
+                cmd_parts.extend(["--helical_z_percentage", str(params.helical_z_percentage)])
+            if params.helical_tube_outer_diameter > 0:
+                cmd_parts.extend(["--helical_tube_outer_diameter", str(params.helical_tube_outer_diameter)])
+            if params.helical_nr_asu and params.helical_nr_asu > 1:
+                cmd_parts.extend(["--helical_nr_asu", str(params.helical_nr_asu)])
+
+        # Free-form passthrough (appended verbatim, not shell-escaped).
+        extra = (getattr(params, "other_args", "") or "").strip()
+        if extra:
+            cmd_parts.append(extra)
+
         cmd_str = " ".join(cmd_parts)
         print(f"[DRIVER] Command: {cmd_str}", flush=True)
 

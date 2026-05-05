@@ -433,6 +433,7 @@ class CryoBoostBackend:
         selected_mdoc_paths: Optional[List[str]] = None,
         import_summary: Optional[Dict[str, Any]] = None,
         detected_params: Optional[Dict[str, Any]] = None,
+        is_aggregation: bool = False,
     ):
         return await self.project_service.initialize_new_project(
             project_name=project_name,
@@ -443,6 +444,7 @@ class CryoBoostBackend:
             selected_mdoc_paths=selected_mdoc_paths,
             import_summary=import_summary,
             detected_params=detected_params,
+            is_aggregation=is_aggregation,
         )
 
     async def get_initial_parameters(self) -> Dict[str, Any]:

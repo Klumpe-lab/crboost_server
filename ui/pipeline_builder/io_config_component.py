@@ -271,8 +271,12 @@ class IOConfigComponent:
                     placeholder="/path/to/file",
                     on_change=lambda e, s=slot: self._handle_manual_path_change(s, e.value),
                 )
-                inp.props("dense borderless hide-bottom-space")
-                inp.style(f"{MONO} font-size: 10px; flex: 1; border-bottom: 1px solid #cbd5e1; padding: 1px 2px;")
+                inp.props(
+                    "dense borderless hide-bottom-space "
+                    'input-style="font-family: \'IBM Plex Mono\', monospace; font-size: 11px; '
+                    "color: #1e293b; padding: 1px 2px; min-height: 0;\""
+                )
+                inp.style("flex: 1 1 0; min-width: 0;")
                 ui.button(icon="folder_open", on_click=lambda s=slot: self._open_file_picker(s)).props(
                     "flat dense round size=xs"
                 ).style("color: #64748b;").tooltip("Browse…")

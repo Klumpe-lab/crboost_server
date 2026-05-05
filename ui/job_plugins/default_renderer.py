@@ -1,28 +1,27 @@
 """
 Generic (default) parameter renderer.
 
-Auto-groups fields by type, renders with compact data-import-panel style:
-borderless inputs, bottom-border only, small labels in normal case.
+Auto-groups fields by their underlying type, then renders each group with
+the shared `cb-field*` visual language: inline label/value pairs in an
+auto-packing CSS grid, no underline-only inputs, font sizes congruent with
+the toolbar / pipeline roster.
 """
 
-from enum import Enum
 from typing import Callable, Dict, List, Optional, Set
 
 from nicegui import ui
 
-from ui.utils import snake_to_title
-
-MONO = "font-family: 'IBM Plex Mono', monospace;"
-FONT = "font-family: 'IBM Plex Sans', sans-serif;"
-
-_CLR_LABEL = "#475569"  # slate-600
-_CLR_SUBLABEL = "#94a3b8"  # slate-400
-_CLR_BORDER = "#cbd5e1"  # slate-300
-_CLR_VALUE = "#1e293b"  # slate-800
-
-_INPUT_STYLE = (
-    f"{MONO} font-size: 11px; border-bottom: 1px solid {_CLR_BORDER}; "
-    "border-radius: 0; padding: 1px 2px; line-height: 1.4;"
+from ui.job_plugins._field_styles import (
+    field_grid,
+    toggle_row,
+    text_field,
+    numeric_field,
+    enum_field,
+    toggle_field,
+    path_row,
+    is_enum_type,
+    SANS,
+    CLR_SUBLABEL,
 )
 
 BASE_FIELDS: Set[str] = {
@@ -69,8 +68,7 @@ def _classify_fields(job_model, field_names: Set[str]) -> Dict[str, List[str]]:
         elif isinstance(value, (int, float)) or value is None:
             groups["numeric"].append(name)
         elif isinstance(value, str):
-            is_enum = field_type is not None and isinstance(field_type, type) and issubclass(field_type, Enum)
-            if is_enum:
+            if is_enum_type(field_type):
                 groups["enum"].append(name)
             else:
                 groups["text"].append(name)
@@ -78,16 +76,13 @@ def _classify_fields(job_model, field_names: Set[str]) -> Dict[str, List[str]]:
     return groups
 
 
-# ------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────
 # Species badge -- shared by default renderer and custom plugins
-# ------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────
 
 
 def render_species_badge(job_model, project_path: Optional[str]):
-    """
-    Read-only species pill shown at the top of any particle-phase job config.
-    No-ops silently if job has no species_id or the registry lookup fails.
-    """
+    """Read-only species pill shown at the top of any particle-phase job config."""
     species_id = getattr(job_model, "species_id", None)
     if not species_id or not project_path:
         return
@@ -103,8 +98,9 @@ def render_species_badge(job_model, project_path: Optional[str]):
     if species is None:
         return
 
-    with ui.row().classes("items-center gap-2 mb-2"):
-        ui.label("Particle").style(f"{FONT} font-size: 10px; font-weight: 600; color: {_CLR_SUBLABEL};")
+    with ui.row().classes("items-center gap-2").style("margin-bottom: 6px;"):
+        ui.label("Particle").style(f"{SANS} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
+                                   "letter-spacing: 0.06em; text-transform: uppercase;")
         with ui.element("div").style(
             f"display: inline-flex; align-items: center; "
             f"background: {species.color}18; border: 1px solid {species.color}55; "
@@ -113,9 +109,9 @@ def render_species_badge(job_model, project_path: Optional[str]):
             ui.label(species.name).style(f"font-size: 10px; color: {species.color}; font-weight: 600;")
 
 
-# ------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────
 # Public API
-# ------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────
 
 
 def render_default_params(
@@ -129,42 +125,55 @@ def render_default_params(
         job_specific = job_specific - exclude
 
     if not job_specific:
-        ui.label("No configurable parameters.").style(f"{FONT} font-size: 10px; color: {_CLR_SUBLABEL};")
+        ui.label("No configurable parameters.").style(f"{SANS} font-size: 10px; color: {CLR_SUBLABEL};")
         return
 
     groups = _classify_fields(job_model, job_specific)
 
+    # Path-like fields each get their own full-width row (label left, input right).
     if groups["paths"]:
-        with ui.column().classes("w-full gap-1 mb-2"):
+        with ui.column().classes("w-full gap-1").style("margin-bottom: 8px;"):
             for name in groups["paths"]:
-                _render_path_field(name, job_model, is_frozen, save_handler)
+                path_row(
+                    _label_for(name), job_model, name,
+                    is_frozen=is_frozen, save_handler=save_handler,
+                    hint=_get_description(job_model, name),
+                )
 
+    # Numeric / enum / text fields share an auto-packing grid.
     param_fields = groups["numeric"] + groups["enum"] + groups["text"]
     if param_fields:
-        with ui.row().classes("w-full flex-wrap gap-x-3 gap-y-1 items-end mb-2"):
+        with field_grid():
             for name in param_fields:
                 value = getattr(job_model, name)
                 field_info = job_model.model_fields.get(name)
                 field_type = field_info.annotation if field_info else None
-                is_enum = field_type is not None and isinstance(field_type, type) and issubclass(field_type, Enum)
+                hint = _get_description(job_model, name)
 
-                if is_enum:
-                    _render_enum_field(name, job_model, field_type, is_frozen, save_handler)
+                if is_enum_type(field_type):
+                    enum_field(_label_for(name), job_model, name, field_type,
+                               is_frozen=is_frozen, save_handler=save_handler, hint=hint)
                 elif isinstance(value, (int, float)) or value is None:
-                    _render_numeric_field(name, job_model, is_frozen, save_handler)
+                    numeric_field(_label_for(name), job_model, name,
+                                  is_frozen=is_frozen, save_handler=save_handler, hint=hint)
                 else:
-                    _render_text_field(name, job_model, is_frozen, save_handler)
+                    text_field(_label_for(name), job_model, name,
+                               is_frozen=is_frozen, save_handler=save_handler, hint=hint)
 
+    # Toggles wrap into their own row beneath.
     if groups["toggle"]:
-        with ui.row().classes("w-full flex-wrap gap-x-4 gap-y-1 items-center"):
-            for name in groups["toggle"]:
-                _render_toggle_field(name, job_model, is_frozen, save_handler)
+        with ui.element("div").style("margin-top: 6px; width: 100%;"):
+            with toggle_row():
+                for name in groups["toggle"]:
+                    toggle_field(_label_for(name), job_model, name,
+                                 is_frozen=is_frozen, save_handler=save_handler,
+                                 hint=_get_description(job_model, name))
 
 
 def render_default_params_card(
     job_type, job_model, is_frozen: bool, save_handler: Callable, exclude: Optional[Set[str]] = None, **_ctx
 ):
-    """render_default_params with optional species badge. No card wrapper."""
+    """render_default_params with an optional species badge prefix."""
     ui_mgr = _ctx.get("ui_mgr")
     project_path = str(ui_mgr.project_path) if ui_mgr and ui_mgr.project_path else None
 
@@ -172,111 +181,7 @@ def render_default_params_card(
     render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
 
 
-# ------------------------------------------------------------------
-# Shared tooltip helper
-# ------------------------------------------------------------------
+def _label_for(name: str) -> str:
+    from ui.utils import snake_to_title
 
-
-def _with_tooltip(element, job_model, param_name: str):
-    desc = _get_description(job_model, param_name)
-    if desc:
-        element.tooltip(desc)
-    return element
-
-
-# ------------------------------------------------------------------
-# Field renderers
-# ------------------------------------------------------------------
-
-
-def _render_path_field(param_name, job_model, is_frozen, save_handler):
-    label = snake_to_title(param_name)
-    desc = _get_description(job_model, param_name)
-
-    with ui.row().classes("w-full items-baseline gap-2"):
-        lbl = ui.label(label).style(
-            f"{FONT} font-size: 9px; font-weight: 400; color: {_CLR_LABEL}; flex-shrink: 0; width: 80px;"
-        )
-        if desc:
-            lbl.tooltip(desc)
-
-        inp = ui.input().bind_value(job_model, param_name)
-        inp.props("dense borderless hide-bottom-space")
-        inp.style(f"{_INPUT_STYLE} flex: 1;")
-
-        if is_frozen:
-            inp.props("readonly").style(f"color: {_CLR_SUBLABEL};")
-        else:
-            inp.on_value_change(save_handler)
-
-
-def _render_numeric_field(param_name, job_model, is_frozen, save_handler):
-    label = snake_to_title(param_name)
-    value = getattr(job_model, param_name)
-
-    with ui.column().classes("gap-0"):
-        lbl = ui.label(label).style(f"{FONT} font-size: 9px; font-weight: 400; color: {_CLR_LABEL}; line-height: 1;")
-        _with_tooltip(lbl, job_model, param_name)
-
-        inp = ui.number(value=value, format="%.4g").bind_value(job_model, param_name)
-        inp.props("dense borderless hide-bottom-space")
-        inp.style(f"{_INPUT_STYLE} width: 9ch;")
-
-        if is_frozen:
-            inp.props("readonly").style(f"color: {_CLR_SUBLABEL};")
-        else:
-            inp.on_value_change(save_handler)
-
-
-def _render_text_field(param_name, job_model, is_frozen, save_handler):
-    label = snake_to_title(param_name)
-    value = getattr(job_model, param_name)
-    width = "18ch" if len(str(value or "")) > 12 else "12ch"
-
-    with ui.column().classes("gap-0"):
-        lbl = ui.label(label).style(f"{FONT} font-size: 9px; font-weight: 400; color: {_CLR_LABEL}; line-height: 1;")
-        _with_tooltip(lbl, job_model, param_name)
-
-        inp = ui.input().bind_value(job_model, param_name)
-        inp.props("dense borderless hide-bottom-space")
-        inp.style(f"{_INPUT_STYLE} width: {width};")
-
-        if is_frozen:
-            inp.props("readonly").style(f"color: {_CLR_SUBLABEL};")
-        else:
-            inp.on_value_change(save_handler)
-
-
-def _render_enum_field(param_name, job_model, field_type, is_frozen, save_handler):
-    label = snake_to_title(param_name)
-    value = getattr(job_model, param_name)
-
-    with ui.column().classes("gap-0"):
-        lbl = ui.label(label).style(f"{FONT} font-size: 9px; font-weight: 400; color: {_CLR_LABEL}; line-height: 1;")
-        _with_tooltip(lbl, job_model, param_name)
-
-        options = [e.value for e in field_type]
-        sel = ui.select(options=options, value=value).bind_value(job_model, param_name)
-        sel.props("dense borderless hide-bottom-space")
-        sel.style(f"{MONO} font-size: 11px; width: 16ch; color: {_CLR_VALUE};")
-
-        if is_frozen:
-            sel.style(f"color: {_CLR_SUBLABEL};").disable()
-        else:
-            sel.on_value_change(save_handler)
-
-
-def _render_toggle_field(param_name, job_model, is_frozen, save_handler):
-    label = snake_to_title(param_name)
-    desc = _get_description(job_model, param_name)
-
-    cb = ui.checkbox(label).bind_value(job_model, param_name).props("dense size=xs")
-    cb.style(f"{FONT} font-size: 9px; color: {_CLR_LABEL};")
-
-    if desc:
-        cb.tooltip(desc)
-
-    if is_frozen:
-        cb.disable()
-    else:
-        cb.on_value_change(save_handler)
+    return snake_to_title(name)

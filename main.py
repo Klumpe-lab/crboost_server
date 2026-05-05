@@ -41,6 +41,14 @@ def setup_logging(debug: bool = False):
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+def _is_under(child: Path, parent: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def setup_app():
     """Configures and returns the FastAPI app."""
     app = FastAPI()
@@ -52,12 +60,38 @@ def setup_app():
             return FileResponse(p, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
         return {"error": "not found"}
 
+    @app.get("/api/candidate-preview")
+    def serve_candidate_preview(path: str):
+        # Path-traversal guard: resolve and require the file to live under a
+        # currently-loaded project root. The project-state registry is the
+        # authoritative list of roots a user has opened in this session.
+        from services.project_state import _project_states
+
+        try:
+            resolved = Path(path).resolve(strict=True)
+        except (FileNotFoundError, RuntimeError):
+            return {"error": "not found"}
+        if resolved.suffix != ".png":
+            return {"error": "not a png"}
+        roots = [pr for pr in _project_states.keys() if pr is not None]
+        if not any(_is_under(resolved, root) for root in roots):
+            return {"error": "outside project roots"}
+        return FileResponse(
+            resolved,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     app.mount("/static", StaticFiles(directory="static"), name="static")
-    ui.add_head_html('''
+    # mtime-based cache-buster: the browser refetches main.css whenever we edit it,
+    # so dev iteration doesn't require Cmd-Shift-R after every CSS change.
+    css_path = Path("static/main.css")
+    css_version = int(css_path.stat().st_mtime) if css_path.exists() else 0
+    ui.add_head_html(f'''
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-        <link rel="stylesheet" href="/static/main.css">
+        <link rel="stylesheet" href="/static/main.css?v={css_version}">
     ''')
     
     backend = CryoBoostBackend(Path.cwd())
