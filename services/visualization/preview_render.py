@@ -1,211 +1,339 @@
 """
-Render a single tomogram MIP with candidate-circle overlays as a PNG.
+Per-tomogram pick data writer for the candidate-preview UI.
 
-Pure function module: takes paths and arrays in, writes one PNG, returns metadata.
-No state, no project knowledge — that lives in preview_orchestrator.
+The actual plotting now happens client-side in Plotly (responsive layout, hover
+tooltips, image overlays) — this module just emits the per-tomogram JSON that
+the UI fetches when a tomogram is selected. Pure metadata, no volume reads,
+no matplotlib.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Optional
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
-def _autocontrast(img: np.ndarray, lo_pct: float = 2.0, hi_pct: float = 99.5) -> np.ndarray:
-    """Percentile clip + linear stretch to [0, 1]. Robust against outlier voxels."""
-    finite = img[np.isfinite(img)]
-    if finite.size == 0:
-        return np.zeros_like(img, dtype=np.float32)
-    lo, hi = np.percentile(finite, [lo_pct, hi_pct])
-    if hi <= lo:
-        hi = lo + 1.0
-    out = (img.astype(np.float32) - lo) / (hi - lo)
-    return np.clip(out, 0.0, 1.0)
-
-
-def _downscale(img: np.ndarray, max_edge: int) -> Tuple[np.ndarray, float]:
-    """Decimate (block-mean) to fit max_edge. Returns (img, scale) where scale = out / in."""
-    h, w = img.shape
-    longest = max(h, w)
-    if longest <= max_edge:
-        return img, 1.0
-    factor = int(np.ceil(longest / max_edge))
-    new_h = (h // factor) * factor
-    new_w = (w // factor) * factor
-    cropped = img[:new_h, :new_w]
-    block = cropped.reshape(new_h // factor, factor, new_w // factor, factor).mean(axis=(1, 3))
-    return block, 1.0 / factor
-
-
-def _slab_indices(z_dim: int, mode: str) -> Tuple[int, int]:
-    """Return (z_lo, z_hi) for the requested slab mode (half-open).
-
-    Defaults are tuned for thick cryo-ET tomograms where a full Z-MIP washes
-    out particles in noise. A central slab keeps SNR high while still letting
-    you see most picks.
-    """
-    if mode == "mip":
-        return 0, z_dim
-    if mode == "central":
-        # Middle 1/3 of Z. For a 512-slice tomo this is the central ~170 slices.
-        third = max(z_dim // 3, 1)
-        lo = (z_dim - third) // 2
-        return lo, lo + third
-    if mode == "thin":
-        # ±15 slices around center, capped to volume bounds.
-        half = min(15, z_dim // 2)
-        mid = z_dim // 2
-        return max(mid - half, 0), min(mid + half, z_dim)
-    raise ValueError(f"unknown slab mode: {mode!r}")
-
-
-def _project_slab(vol: np.ndarray, z_lo: int, z_hi: int) -> np.ndarray:
-    """MIP across [z_lo, z_hi). mrcfile delivers volumes as (Z, Y, X)."""
-    return np.max(vol[z_lo:z_hi], axis=0)
-
-
-def render_candidate_preview(
-    tomo_path: Path,
-    coords_xyz_px: np.ndarray,
-    radius_px: float,
-    out_png: Path,
-    scores: Optional[Sequence[float]] = None,
-    max_edge_px: int = 1400,
-    title: Optional[str] = None,
-    slab_mode: str = "central",
+def write_picks_data(
+    pick_coords_xyz: np.ndarray,
+    scores: Optional[np.ndarray],
+    score_field: Optional[str],
+    tomo_dims_xyz: tuple,
+    out_path: Path,
 ) -> dict:
-    """Render a Z-projection of the tomogram with viridis-colored candidate circles.
+    """Write per-tomogram picks.json: [{i, x, y, z, score?, z_pct?, nn_px?}, ...].
 
-    Args:
-        tomo_path: Path to a tomogram MRC. Memory-mapped — full volume not loaded.
-        coords_xyz_px: (N, 3) candidate coords in tomogram pixel space (XYZ order,
-            origin at top-left, matching IMOD coords as produced by imod_vis).
-        radius_px: Circle radius in tomogram pixels (unscaled — preview-side scaling
-            is applied internally to match the downscaled image).
-        out_png: Destination PNG path. Parent dir is created.
-        scores: Optional (N,) per-candidate score. If given, circles are colored by
-            viridis(score normalized 0–1). If None, all circles are uniform yellow.
-        max_edge_px: Longest output edge in pixels.
-        title: Optional caption rendered in the corner.
-        slab_mode: "central" (middle third of Z, default — best SNR/visibility),
-            "thin" (±15 slices around center) or "mip" (full Z, washes particles).
-
-    Returns:
-        dict with keys: png_path (str), n_candidates (int), score_range (tuple|None),
-        dims (tuple of int, the rendered image dims as (h, w)), slab_mode (str),
-        slab_z_range (tuple of int).
+    Sorted score-descending so the UI can take "best K" / "worst K" slices
+    without re-sorting client-side. Per-pick z-percentile and nearest-neighbor
+    distance are precomputed here so the hover-details panel can read them
+    cheaply on every mouse-move.
     """
-    # Thread-safe OO API: avoid pyplot's global figure registry so concurrent
-    # renders from run.io_bound's thread pool don't trample each other.
-    import mrcfile
-    import matplotlib
-    matplotlib.use("Agg")
-    from matplotlib.figure import Figure
-    from matplotlib.patches import Circle
-    from matplotlib import cm
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    tomo_path = Path(tomo_path)
-    out_png = Path(out_png)
-    out_png.parent.mkdir(parents=True, exist_ok=True)
+    if pick_coords_xyz.size and scores is not None and len(scores):
+        order = np.argsort(-np.asarray(scores, dtype=float))
+        pick_coords_xyz = pick_coords_xyz[order]
+        scores = np.asarray(scores, dtype=float)[order]
 
-    with mrcfile.mmap(str(tomo_path), mode="r", permissive=True) as m:
-        # mrcfile orders axes (z, y, x). Coerce to that — most cryo-ET tomograms
-        # come out this way but some legacy IMOD files have permuted headers.
-        vol = m.data
-        if vol.ndim != 3:
-            raise ValueError(f"{tomo_path} is not a 3D volume (ndim={vol.ndim})")
-        z, y, x = vol.shape
-        z_lo, z_hi = _slab_indices(z, slab_mode)
-        mip = _project_slab(np.asarray(vol), z_lo, z_hi)
+    n = len(pick_coords_xyz)
+    z_pct = _z_percentile(pick_coords_xyz)
+    nn_px = _nearest_neighbor_distances(pick_coords_xyz.astype(float))
 
-    img = _autocontrast(mip)
-    img_small, scale = _downscale(img, max_edge_px)
-    h_out, w_out = img_small.shape
+    picks = []
+    for i in range(n):
+        pt = pick_coords_xyz[i]
+        entry = {"i": int(i), "x": int(pt[0]), "y": int(pt[1]), "z": int(pt[2])}
+        if scores is not None and i < len(scores):
+            entry["score"] = float(scores[i])
+        if z_pct is not None:
+            entry["z_pct"] = float(z_pct[i])
+        if nn_px is not None and np.isfinite(nn_px[i]):
+            entry["nn_px"] = float(nn_px[i])
+        picks.append(entry)
 
-    if coords_xyz_px.size:
-        xs = coords_xyz_px[:, 0].astype(float) * scale
-        ys = coords_xyz_px[:, 1].astype(float) * scale
-        rad_out = max(radius_px * scale, 1.5)
-    else:
-        xs = ys = np.array([])
-        rad_out = max(radius_px * scale, 1.5)
-
-    if scores is not None and len(scores) > 0:
-        s = np.asarray(scores, dtype=float)
-        s_min, s_max = float(np.nanmin(s)), float(np.nanmax(s))
-        if s_max > s_min:
-            s_norm = (s - s_min) / (s_max - s_min)
-        else:
-            s_norm = np.full_like(s, 0.5)
-        score_range: Optional[tuple] = (s_min, s_max)
-        colors = cm.viridis(s_norm)
-    else:
-        score_range = None
-        colors = [(1.0, 0.85, 0.0, 0.9)] * len(xs)
-
-    dpi = 100
-    fig_w = w_out / dpi
-    fig_h = h_out / dpi
-    fig = Figure(figsize=(fig_w, fig_h), dpi=dpi)
-    ax = fig.add_subplot(1, 1, 1)
-    ax.imshow(img_small, cmap="gray", origin="upper", interpolation="nearest")
-    for cx, cy, color in zip(xs, ys, colors):
-        if not (0 <= cx < w_out and 0 <= cy < h_out):
-            continue
-        ax.add_patch(Circle((cx, cy), rad_out, fill=False, edgecolor=color, linewidth=1.0))
-
-    ax.set_xlim(0, w_out)
-    ax.set_ylim(h_out, 0)
-    ax.set_axis_off()
-
-    if title:
-        ax.text(
-            0.01, 0.99, title, transform=ax.transAxes, ha="left", va="top",
-            fontsize=9, color="white",
-            bbox=dict(facecolor="black", alpha=0.6, pad=3, edgecolor="none"),
-        )
-
-    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
-    fig.savefig(out_png, dpi=dpi, bbox_inches=None, pad_inches=0)
-
-    return {
-        "png_path": str(out_png),
-        "n_candidates": int(coords_xyz_px.shape[0]) if coords_xyz_px.size else 0,
-        "score_range": score_range,
-        "dims": (h_out, w_out),
-        "slab_mode": slab_mode,
-        "slab_z_range": (z_lo, z_hi),
+    payload = {
+        "score_field": score_field,
+        "tomo_dims_xyz_px": [int(v) for v in tomo_dims_xyz],
+        "n": len(picks),
+        "picks": picks,
     }
+    out_path.write_text(json.dumps(payload))
+    return {"json_path": str(out_path), "n": len(picks)}
 
 
-def is_preview_stale(png: Path, sources: Sequence[Path]) -> bool:
-    """True if PNG missing or older than any source file."""
-    if not png.exists():
+def _z_percentile(coords: np.ndarray) -> Optional[np.ndarray]:
+    n = len(coords)
+    if n <= 1:
+        return None
+    zs = coords[:, 2].astype(float)
+    ranks = np.argsort(np.argsort(zs))
+    return (ranks.astype(float) / (n - 1)) * 100.0
+
+
+def _nearest_neighbor_distances(coords: np.ndarray, chunk: int = 256) -> Optional[np.ndarray]:
+    """Per-pick distance to nearest other pick (3D, in pixels).
+
+    O(N^2) but chunked so peak memory stays bounded — for typical hundreds of
+    picks per tomo this is sub-millisecond; handles ten-thousand-pick edge
+    cases without blowing memory.
+    """
+    n = len(coords)
+    if n <= 1:
+        return None
+    out = np.empty(n, dtype=float)
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        block = coords[start:end]
+        diff = block[:, None, :] - coords[None, :, :]
+        d = np.sqrt(np.einsum("ijk,ijk->ij", diff, diff))
+        for j, i in enumerate(range(start, end)):
+            d[j, i] = np.inf  # mask self-pair
+        out[start:end] = d.min(axis=1)
+    return out
+
+
+def is_output_stale(target: Path, sources) -> bool:
+    """True if `target` is missing or older than any source file."""
+    if not target.exists():
         return True
-    png_mtime = png.stat().st_mtime
+    t_mtime = target.stat().st_mtime
     for src in sources:
-        if src.exists() and src.stat().st_mtime > png_mtime:
+        if src.exists() and src.stat().st_mtime > t_mtime:
             return True
     return False
 
 
-# Allow `python -m services.visualization.preview_render <tomo> <out.png>` for ad-hoc test
-if __name__ == "__main__":
-    import sys
+# ---------------------------------------------------------------------------
+# X/Z slab preview — server-side rendered once per tomogram, cached as PNG.
+# This is NOT a Z-MIP / per-pick rendering (which §3.1 forbids); it's the
+# X/Z analogue of the WarpTools-emitted top-down PNG, generated once with a
+# bounded read budget. Volume bytes touched per tomogram are capped so we
+# don't read 2 GB MRCs end-to-end on Lustre.
+# ---------------------------------------------------------------------------
 
-    if len(sys.argv) < 3:
-        print("usage: preview_render.py <tomo.mrc> <out.png> [radius_px]", file=sys.stderr)
-        sys.exit(2)
-    radius = float(sys.argv[3]) if len(sys.argv) > 3 else 20.0
-    info = render_candidate_preview(
-        tomo_path=Path(sys.argv[1]),
-        coords_xyz_px=np.empty((0, 3)),
-        radius_px=radius,
-        out_png=Path(sys.argv[2]),
-    )
-    print(info)
+
+def render_xz_slab_preview(
+    mrc_path: Path, out_path: Path, *, max_dim: int = 1024, slab_byte_budget: int = 50 * 1024 * 1024
+) -> Optional[Path]:
+    """Render an X/Z preview PNG by averaging a central Y-slab of the tomogram.
+
+    Reads only the central few Y-slices via mmap so the byte cost is bounded
+    regardless of tomogram size. Slab thickness adapts: ~2% of Y, capped so
+    that the (slices * Z * X) byte read stays under `slab_byte_budget`.
+    Robust-percentile normalized for visibility. Returns the written path,
+    or None if the read fails.
+    """
+    try:
+        import mrcfile
+        from PIL import Image
+    except ImportError as e:
+        logger.warning("X/Z preview deps unavailable: %s", e)
+        return None
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with mrcfile.mmap(str(mrc_path), mode="r") as m:
+            data = m.data
+            if data.ndim != 3:
+                logger.warning("Skipping X/Z preview, MRC is not 3D: %s", mrc_path)
+                return None
+            nz, ny, nx = data.shape
+            slab_per_slice_bytes = nz * nx * data.dtype.itemsize
+            if slab_per_slice_bytes <= 0:
+                return None
+            max_slices_by_budget = max(1, slab_byte_budget // slab_per_slice_bytes)
+            target_slices = max(3, ny // 50)
+            n_slices = int(min(max_slices_by_budget, target_slices, ny))
+            half = n_slices // 2
+            y_lo = max(0, (ny // 2) - half)
+            y_hi = min(ny, y_lo + n_slices)
+            # Always copy out — see §3.5 mmap view trap. Cast to float32 inside
+            # the with-block so the mmap is still valid when np.array is called.
+            slab = np.array(data[:, y_lo:y_hi, :], dtype=np.float32, copy=True)
+    except Exception as e:
+        logger.warning("X/Z slab read failed for %s: %s", mrc_path, e)
+        return None
+
+    img2d = slab.mean(axis=1)  # shape (Z, X)
+    # Tomograms have a tiny dynamic range with rare extreme outliers — fixed
+    # min/max gives a flat washed-out result. 1-99 percentile clip mimics the
+    # WarpTools preview's contrast.
+    lo = float(np.percentile(img2d, 1.0))
+    hi = float(np.percentile(img2d, 99.0))
+    if hi <= lo:
+        hi = lo + 1.0
+    norm = np.clip((img2d - lo) / (hi - lo), 0.0, 1.0)
+    u8 = (norm * 255.0).astype(np.uint8)
+
+    # Output orientation: image row 0 is at the *top* of the plot when the UI
+    # anchors at y=z_dim. With shape (Z, X), row 0 == z=0; we want z=0 at the
+    # bottom of the X/Z scatter (matches the IMOD-up convention). Flip.
+    u8 = np.flipud(u8)
+
+    img = Image.fromarray(u8, mode="L")
+    h, w = u8.shape
+    if max(h, w) > max_dim:
+        scale = max_dim / float(max(h, w))
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+    img.save(str(out_path), format="PNG", optimize=True)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Subtomo cutout sprite-atlas — turns each pick's per-particle .mrcs (the
+# 2D tilt-stack from `relion_tomo_subtomo`) into a small thumbnail; packs
+# all thumbnails for one tomogram into a single sprite-sheet PNG that the
+# UI displays as a CSS-background-image grid. Atlas-as-sprite-sheet is the
+# correct application of the v2 stamp pattern (see ROADMAP §5.2): the
+# cutouts come from already-2D extracted data, not from re-projecting the
+# tomogram volume — so missing-wedge streaks aren't an issue at this scale.
+# ---------------------------------------------------------------------------
+
+
+def render_pick_cutouts_atlas(
+    pick_to_mrcs: list, out_atlas_path: Path, out_index_path: Path, *, tile_px: int = 192, cols: int = 8
+) -> Optional[dict]:
+    """Build a sprite-atlas PNG of per-pick subtomo thumbnails plus an index JSON.
+
+    `pick_to_mrcs` is a list aligned to the pick order in picks.json; each
+    element is either None (no matching subtomo) or a dict with keys
+      - mrcs: Path to the per-particle .mrcs
+      - visible_frames: list[int] | None  (1 = use that frame for thumbnail)
+
+    Each thumbnail is the per-frame mean (across visible frames only) of the
+    .mrcs, percentile-normalized to 8-bit greyscale and resized to `tile_px`.
+    Returns a metadata dict on success or None if every pick failed. The
+    `failures` list inside the metadata names exactly which picks failed and
+    why, so the UI can surface "92/96 — 4 failures: <reasons>" instead of
+    silently dropping tiles.
+    """
+    try:
+        from PIL import Image
+    except ImportError as e:
+        logger.warning("Subtomo atlas deps unavailable: %s", e)
+        return None
+
+    out_atlas_path = Path(out_atlas_path)
+    out_index_path = Path(out_index_path)
+    out_atlas_path.parent.mkdir(parents=True, exist_ok=True)
+
+    n = len(pick_to_mrcs)
+    if n == 0:
+        return None
+
+    rows = (n + cols - 1) // cols
+    atlas_w = cols * tile_px
+    atlas_h = rows * tile_px
+    atlas = np.zeros((atlas_h, atlas_w), dtype=np.uint8)
+    index_entries: dict[str, list[int]] = {}
+    failures: list[dict] = []
+    n_ok = 0
+
+    for i, info in enumerate(pick_to_mrcs):
+        if info is None:
+            failures.append({"i": i, "reason": "no subtomo match"})
+            continue
+        thumb, err = _render_one_subtomo_thumb(info["mrcs"], info.get("visible_frames"), tile_px)
+        if thumb is None:
+            failures.append({"i": i, "reason": err or "render failed", "mrcs": str(info["mrcs"])})
+            continue
+        r, c = divmod(i, cols)
+        y0 = r * tile_px
+        x0 = c * tile_px
+        atlas[y0 : y0 + tile_px, x0 : x0 + tile_px] = thumb
+        index_entries[str(i)] = [r, c]
+        n_ok += 1
+
+    if n_ok == 0:
+        # Still emit the index JSON so the caller can see why every pick failed.
+        out_index_path.write_text(
+            json.dumps({"tile_px": tile_px, "cols": cols, "rows": rows, "n_picks": n, "n_ok": 0, "failures": failures})
+        )
+        return None
+
+    Image.fromarray(atlas, mode="L").save(str(out_atlas_path), format="PNG", optimize=True)
+
+    payload = {
+        "tile_px": tile_px,
+        "cols": cols,
+        "rows": rows,
+        "n_picks": n,
+        "n_ok": n_ok,
+        "atlas_w": atlas_w,
+        "atlas_h": atlas_h,
+        "index": index_entries,
+        "failures": failures,
+    }
+    out_index_path.write_text(json.dumps(payload))
+    return {
+        "atlas_path": str(out_atlas_path),
+        "index_path": str(out_index_path),
+        "n_ok": n_ok,
+        "n_total": n,
+        "failures": failures,
+    }
+
+
+def _render_one_subtomo_thumb(
+    mrcs_path: Path, visible_frames: Optional[list], tile_px: int
+) -> tuple[Optional[np.ndarray], Optional[str]]:
+    """Mean across visible frames of one .mrcs, normalized + resized to tile_px×tile_px.
+
+    Returns (thumbnail, None) on success or (None, reason) on failure. Reasons
+    we surface up to the manifest so the dialog can explain why a tile is
+    missing rather than silently dropping it.
+    """
+    try:
+        import mrcfile
+        from PIL import Image
+    except ImportError as e:
+        return None, f"deps unavailable: {e}"
+    if not Path(mrcs_path).exists():
+        return None, "mrcs not on disk"
+    try:
+        with mrcfile.mmap(str(mrcs_path), mode="r") as m:
+            data = m.data
+            if data.ndim == 2:
+                arr = np.array(data, dtype=np.float32, copy=True)
+            elif data.ndim == 3:
+                n_frames = data.shape[0]
+                if visible_frames and len(visible_frames) >= n_frames:
+                    mask = np.array(visible_frames[:n_frames], dtype=bool)
+                else:
+                    mask = np.ones(n_frames, dtype=bool)
+                if not mask.any():
+                    # All-zero visible-frames means RELION decided this pick has
+                    # no usable tilts. Falling back to all-frames average gives
+                    # the user *something* — better than a blank tile.
+                    mask = np.ones(n_frames, dtype=bool)
+                stack = np.array(data, dtype=np.float32, copy=True)
+                arr = stack[mask].mean(axis=0)
+            else:
+                return None, f"unexpected ndim {data.ndim}"
+    except Exception as e:
+        logger.warning("Subtomo .mrcs read failed for %s: %s", mrcs_path, e)
+        return None, f"mrc read error: {e}"
+
+    if not np.isfinite(arr).any():
+        return None, "all-NaN frame mean"
+
+    lo = float(np.percentile(arr, 1.0))
+    hi = float(np.percentile(arr, 99.0))
+    if hi <= lo:
+        hi = lo + 1.0
+    norm = np.clip((arr - lo) / (hi - lo), 0.0, 1.0)
+    u8 = (norm * 255.0).astype(np.uint8)
+
+    img = Image.fromarray(u8, mode="L")
+    img = img.resize((tile_px, tile_px), Image.LANCZOS)
+    return np.array(img, dtype=np.uint8), None
