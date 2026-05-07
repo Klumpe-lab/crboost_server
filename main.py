@@ -41,11 +41,14 @@ def setup_logging(debug: bool = False):
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-def _is_under(child: Path, parent: Path) -> bool:
+def _is_under(child: Path, parent) -> bool:
+    """True if `child` resolves to a path under `parent`. Tolerates parent
+    being either a Path or a string — _project_states keys are sometimes one,
+    sometimes the other depending on how the project was opened."""
     try:
-        child.resolve().relative_to(parent.resolve())
+        child.resolve().relative_to(Path(parent).resolve())
         return True
-    except ValueError:
+    except (ValueError, TypeError, OSError):
         return False
 
 
@@ -60,27 +63,34 @@ def setup_app():
             return FileResponse(p, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
         return {"error": "not found"}
 
-    @app.get("/api/candidate-preview")
-    def serve_candidate_preview(path: str):
+    @app.get("/api/vis-asset")
+    def serve_vis_asset(path: str):
         # Path-traversal guard: resolve and require the file to live under a
         # currently-loaded project root. The project-state registry is the
         # authoritative list of roots a user has opened in this session.
+        # Serves both PNG (panel/atlas images) and JSON (stamps_index, manifests)
+        # from the same endpoint, since the candidate-preview UI needs both.
         from services.project_state import _project_states
 
         try:
             resolved = Path(path).resolve(strict=True)
         except (FileNotFoundError, RuntimeError):
             return {"error": "not found"}
-        if resolved.suffix != ".png":
-            return {"error": "not a png"}
+        media_by_suffix = {".png": "image/png", ".json": "application/json"}
+        media = media_by_suffix.get(resolved.suffix)
+        if media is None:
+            return {"error": "unsupported asset type"}
         roots = [pr for pr in _project_states.keys() if pr is not None]
         if not any(_is_under(resolved, root) for root in roots):
             return {"error": "outside project roots"}
-        return FileResponse(
-            resolved,
-            media_type="image/png",
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
+        # JSON manifests change on every regen — never cache them. PNGs (atlas,
+        # tomo previews) are addressed by mtime-keyed URLs from the UI, so a
+        # short TTL is fine and keeps unbusted accesses self-correcting.
+        if resolved.suffix == ".json":
+            cache_header = "no-cache"
+        else:
+            cache_header = "public, max-age=300"
+        return FileResponse(resolved, media_type=media, headers={"Cache-Control": cache_header})
 
     app.mount("/static", StaticFiles(directory="static"), name="static")
     # mtime-based cache-buster: the browser refetches main.css whenever we edit it,

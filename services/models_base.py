@@ -6,12 +6,13 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class JobStatus(str, Enum):
+
     SUCCEEDED = "Succeeded"
-    FAILED = "Failed"
-    RUNNING = "Running"
-    QUEUED = "Queued"
+    FAILED    = "Failed"
+    RUNNING   = "Running"
+    QUEUED    = "Queued"
     SCHEDULED = "Scheduled"
-    UNKNOWN = "Unknown"
+    UNKNOWN   = "Unknown"
 
 
 class MicroscopeType(str, Enum):
@@ -23,9 +24,10 @@ class MicroscopeType(str, Enum):
 
 
 class AlignmentMethod(str, Enum):
+
     ARETOMO = "AreTomo"
-    IMOD = "IMOD"
-    RELION = "Relion"
+    IMOD    = "IMOD"
+    RELION  = "Relion"
 
 
 class JobCategory(str, Enum):
@@ -36,19 +38,19 @@ class JobCategory(str, Enum):
 
 
 class JobType(str, Enum):
-    IMPORT_MOVIES = "importmovies"
-    FS_MOTION_CTF = "fsMotionAndCtf"
-    TS_ALIGNMENT = "aligntiltsWarp"
-    TS_IMPORT = "tsImport"
-    TS_CTF = "tsCtf"
-    TILT_FILTER = "tiltFilter"
-    TS_RECONSTRUCT = "tsReconstruct"
-    DENOISE_TRAIN = "denoisetrain"
-    DENOISE_PREDICT = "denoisepredict"
-    TEMPLATE_MATCH_PYTOM = "templatematching"
+    IMPORT_MOVIES          = "importmovies"
+    FS_MOTION_CTF          = "fsMotionAndCtf"
+    TS_ALIGNMENT           = "aligntiltsWarp"
+    TS_IMPORT              = "tsImport"
+    TS_CTF                 = "tsCtf"
+    TILT_FILTER            = "tiltFilter"
+    TS_RECONSTRUCT         = "tsReconstruct"
+    DENOISE_TRAIN          = "denoisetrain"
+    DENOISE_PREDICT        = "denoisepredict"
+    TEMPLATE_MATCH_PYTOM   = "templatematching"
     TEMPLATE_EXTRACT_PYTOM = "tmextractcand"
-    SUBTOMO_EXTRACTION = "subtomoExtraction"
-    RECONSTRUCT_PARTICLE = "reconstructParticle"
+    SUBTOMO_EXTRACTION     = "subtomoExtraction"
+    RECONSTRUCT_PARTICLE   = "reconstructParticle"
 
     CLASS3D = "class3d"
 
