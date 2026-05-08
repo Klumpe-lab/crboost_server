@@ -111,8 +111,11 @@ analytics are a follow-up.
 ### 3.1 Dataset / Import
 - Source: `project_state.dataset_overview`, `MicroscopeParams`, `AcquisitionParams`
 - Metric strip: `10.0 Å/px · 300 kV · 3 e/Å²/tilt · ±60° / 41 tilts`
-- Outputs (current): just the strip
-- Outputs (planned): tilt-scheme bar viz, dose accumulation plot
+- Outputs (current): 2-column key/val grid + primitive binning-flow chip strip
+- Outputs (planned): consolidated **Pixel / binning sanity panel** (see §11) —
+  unifies pixel size, tomo dims (px + Å), and template/extract/subtomo box +
+  padding into one table with sanity-check warnings. Replaces the current
+  blocky chip+arrow flow.
 
 ### 3.2 FS Motion / CTF — `JobType.FS_MOTION_CTF`
 - Source: `job_model.*` + per-tilt motion star
@@ -388,6 +391,174 @@ Manifest version: `MANIFEST_VERSION = 9` in
 
 ---
 
-*Last updated by the session that consolidated three widgets into this
-plan. Update this doc in any PR that overrides anything in §4 or changes
-the section catalog.*
+## 10. Implementation log
+
+### Slice A — done
+- `ui/tomo_dashboard_dialog.py` created. Public entry
+  `open_tomo_dashboard(ts_name=None, focus_section=None)`. Sidebar with
+  6-pill journey strip (FS/CTF · Align · CTF · Recon · Pick · Subtomo);
+  main pane re-anchored on the selected TS; Candidate Extract carries
+  forward as one stacked card per matching candidate-extract instance
+  (multi-species → multiple cards).
+- `pipeline_roster.py`: three sidebar buttons (Tomogram Previews, Tilt
+  Series Journey, Candidate Previews) collapsed into a single **Tomogram
+  Dashboard** entry point with green-dot indicator when previews exist.
+- `workspace_page.py`: stripped journey-mode wiring; only pipeline /
+  workbench modes remain.
+- `ui/candidate_preview_dialog.py` and `ui/components/ts_journey_view.py`
+  deleted (their content rolled into the new file).
+- **Journey-pill bug fix.** Legacy projects without `.task_manifest.json`
+  per array job now fall back to the stage's primary output star
+  (`fs_motion_and_ctf.star`, `aligned_tilt_series.star`,
+  `ts_ctf_tilt_series.star`, `tomograms.star`) plus the job's
+  `execution_status` to populate the pills. So pre-array-tracker projects
+  show real ok/fail status across all 4 array stages.
+
+### Slice C — partial
+Done:
+- **Dataset section** — 2-column key/val grid + binning-flow chip strip.
+  *To be reworked per §11.*
+- **FS Motion / CTF** — scatter plots for Defocus U/V + astigmatism with
+  frame-name hover and tooltip explainers. Motion / CTF max-res / FOM are
+  gated on `_is_meaningful_series` (skipped with a note when WarpTools
+  wrote `1e-6` placeholders — see `project_warp_relion_star_placeholders`
+  memory).
+- **Tilt Filter** — kept/dropped stat strip + drop list (frame name + nominal
+  angle). Auto-detects standalone-tool output at `<project>/TiltFilter/` vs
+  pipeline-job output at `<job_dir>/filtered/`.
+- **TS Alignment** — refined-shift plot (lines+markers, since shifts vary
+  smoothly across tilt order) + refined alignment angles, with hover
+  identity and validation.
+- **TS CTF (post-alignment)** — same defocus / astig scatter as FS Motion /
+  CTF, post-alignment refit values.
+
+Carried-over plot principles (see `feedback_dashboard_plot_principles.md`):
+- Discrete per-tilt CTF estimates → markers only, never lines.
+- Validate every column with `_is_meaningful_series` before plotting
+  (~1e-3 magnitude threshold filters WarpTools placeholder writes).
+- Hover always carries `[tilt_index, frame_basename]` customdata so the
+  user can identify the specific tilt — angle alone is ambiguous.
+- Tooltip-explain non-obvious metrics on the plot title (`info_outline`
+  icon + Quasar tooltip).
+
+Not yet done (Slice C original scope):
+- §3.7 Template Workbench / Match section card (datadump only).
+- §3.9 Subtomo Extract dedicated section (currently surfaces only via the
+  Candidate Extract gallery cross-link).
+
+---
+
+## 11. Next session priority — Pixel/binning sanity panel
+
+**Why this is urgent.** The user's most common pipeline failure is
+pixel-arithmetic mistakes — under/overestimating template box size or
+extraction padding because the binning math at each stage is hard to track
+in your head. Concretely the user said: *"this is a crucial point of failure
+for me so far i.e. that i sometimes over/underestimate my templates size
+and paddings etc. and the picks are shit (sometimes because im genuinely
+not sure, but often just because i do the binning/pixel arithmetic
+incorrectly...)."*
+
+The current Dataset binning-flow chip strip is *directionally right* but
+too primitive: blocky chip + arrow chrome eats vertical space, only carries
+pixel size, and isn't co-located with the box/padding params for template
+matching, candidate extract, and subtomo extract — which is precisely
+where the arithmetic matters.
+
+### What to build
+
+A **Pixel / binning sanity panel** that lives where the chip-flow lives now
+(inside the Dataset card, right column). One compact monospace table with
+columns:
+
+| Stage | px size (Å) | Tomo dim (px) | Tomo dim (Å) | Box / pad | Box (Å) | Notes |
+|---|---|---|---|---|---|---|
+| Camera | 1.55 | 4096 × 4096 | 6349 × 6349 | — | — | |
+| FS-CTF | 1.55 | (frame avg) | — | — | — | |
+| Filter | 1.55 | — | — | — | — | |
+| Align | 12.0 | (rescaled) | — | — | — | rescale ÷7.7 |
+| TS CTF | 12.0 | — | — | — | — | |
+| Recon | 12.0 | 512×512×256 | 6144×6144×3072 | — | — | |
+| Template Match | 12.0 | — | — | box=64 · pad=128 | 768 · 1536 | θ=15° symm=C1 |
+| Candidate Extract | 12.0 | — | — | NMS=160 Å · diam=200 Å · thresh=0.45 | — | particle 200 Å ≈ 17 px |
+| Subtomo Extract | 6.0 | — | — | box=96 · pad=2 | 576 · 12 | re-extracted at bin 4 |
+
+Sanity-check rules to flag inline (with colored icon next to the offending
+cell):
+- **Box-size vs particle diameter.** Template / extract box should be
+  ~1.5–3× particle diameter in Å. Smaller → particle won't fit; larger →
+  wasted compute.
+- **Padding vs box.** Padding < 0 is impossible; padding > box is unusual.
+- **Particle diameter consistency.** Particle diameter (Å) declared at
+  template-match, candidate-extract, subtomo-extract should agree. If they
+  diverge, the user almost certainly made a binning mistake.
+- **Pixel-size match across template ↔ recon.** Template-match operates on
+  the reconstructed tomogram; if `template_match.pixel_size != recon.pixel_size`
+  silently, picks are garbage.
+- **Subtomo box vs candidate diameter.** Subtomo box should encompass the
+  particle with reasonable margin.
+
+### Implementation sketch
+
+1. Build `_compute_pixel_chain(project_state)` returning a list of
+   `{stage, px_size_ang, tomo_px, tomo_ang, box_px, box_ang, pad_px, pad_ang,
+   particle_diameter_ang, warnings: [...]}` dicts. Pull from job param
+   classes:
+   - `FsMotionCtfParams`, `TiltFilterParams` — no own px change
+   - `TsAlignmentParams.rescale_angpixs` + `tomo_dimensions`
+   - `TsReconstructParams.rescale_angpixs`
+   - `TemplateMatchPytomParams` — verify field names (`box_px`, `padding`,
+     `angle_step`, `particle_diameter_ang`, `symmetry`)
+   - `CandidateExtractPytomParams.threshold`, `nms_distance_ang`,
+     `particle_diameter_ang`
+   - `SubtomoExtractionParams.box_px`, `padding`, `normalize`
+2. Replace `_render_binning_chain` with `_render_pixel_sanity_table` —
+   monospace table, dense, no chip/arrow chrome. Use the existing
+   `cb-datadump-grid` styling extended to N columns.
+3. Sanity rules as small functions returning warning strings; render as
+   inline `info_outline` (green) / `warning_amber` / `error` icons next to
+   the offending cell with a tooltip explaining the violation.
+4. Per-instance variants: when there are multiple template-match /
+   candidate-extract / subtomo-extract instances (multi-species), the table
+   gets one row per instance for those stages. Group visually by species.
+
+This subsumes the "Template Match params datadump" and "Candidate Extract
+metric strip" content from §3.7 / §3.8 — the param info moves to the
+pixel-chain table at the top of the dashboard, and the per-instance
+section cards focus on outputs (picks, atlas, score volumes).
+
+---
+
+## 12. Other items deferred from this session
+
+- **WarpTools XML metadata.** Real per-tilt motion + CTF max-res + FOM
+  values live in WarpTools' own XML files (`warp_frameseries/*.xml`,
+  `warp_tiltseries/*.xml`), not in the RELION star export. User pointed
+  at the container directory:
+  `/groups/klumpe/software/containers_and_definitions/`
+  with `ais.sif`, `easymode.sif`, `pom_cryoet.sif` — likely relevant
+  for parsing those XMLs (or for finding the WarpTools binary that emits
+  them). Worth exploring: parse `warp_frameseries/*.xml` directly to
+  surface real motion + CTF curves. If yes, the FS Motion / CTF and TS
+  CTF sections grow back the plots they currently skip.
+- **Slice B (Reconstruction card).** Hoist WarpTools PNG + X/Z slab +
+  ghost overlay + "show all picks" toggle + 3dmod block out of Candidate
+  Extract into its own Reconstruct section card. Still useful when the
+  user has a reconstruct job but no candidate-extract yet.
+- **Slice D analytics.** Once the pixel-sanity panel and WarpTools-XML
+  story are settled: per-Z slice strip for Reconstruct, defocus-vs-tilt
+  theoretical-fit overlay, alignment residual heatmap, score-volume MIP
+  for Template Match.
+- **Slice E per-section regen.** Currently regen buttons in Candidate
+  Extract scope to the whole job. Add a per-TS regen that just rebuilds
+  that one tomo entry in the manifest.
+- **Project-level rollups in the sidebar.** Mark sidebar TS rows red when
+  their median CTF-res is in the project's worst 10%, or their max
+  alignment shift exceeds project median + 2σ — outlier-detection at the
+  list level so the user finds bad TS without scrolling each one.
+
+---
+
+*Last updated 2026-05-08 — Slice A complete, Slice C partial. Next session
+opens with the §11 pixel/binning sanity panel rework. Update this doc in
+any PR that overrides anything in §4 or changes the section catalog.*

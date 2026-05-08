@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class JobStatus(str, Enum):
-
     SUCCEEDED = "Succeeded"
     FAILED    = "Failed"
     RUNNING   = "Running"
@@ -18,23 +17,22 @@ class JobStatus(str, Enum):
 class MicroscopeType(str, Enum):
     KRIOS_G3 = "Krios_G3"
     KRIOS_G4 = "Krios_G4"
-    GLACIOS = "Glacios"
-    TALOS = "Talos"
-    CUSTOM = "Custom"
+    GLACIOS  = "Glacios"
+    TALOS    = "Talos"
+    CUSTOM   = "Custom"
 
 
 class AlignmentMethod(str, Enum):
-
     ARETOMO = "AreTomo"
     IMOD    = "IMOD"
     RELION  = "Relion"
 
 
 class JobCategory(str, Enum):
-    IMPORT = "Import"
-    EXTERNAL = "External"
+    IMPORT     = "Import"
+    EXTERNAL   = "External"
     MOTIONCORR = "MotionCorr"
-    CTFFIND = "CtfFind"
+    CTFFIND    = "CtfFind"
 
 
 class JobType(str, Enum):
