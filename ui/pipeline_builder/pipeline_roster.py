@@ -40,22 +40,13 @@ def _profile_row_fields(gres: str, mem: str, cpus: str, time_val: str):
             ui.label(f"{lbl}: {val}").style("font-size: 9px; font-family: 'IBM Plex Mono', monospace; color: #64748b;")
 
 
-_TOMO_PREVIEW_SVG = (
+_TOMO_DASHBOARD_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
     'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
     '<circle cx="12" cy="12" r="8"/>'
     '<line x1="4.5" y1="9" x2="19.5" y2="9"/>'
     '<line x1="4" y1="12" x2="20" y2="12"/>'
     '<line x1="4.5" y1="15" x2="19.5" y2="15"/>'
-    "</svg>"
-)
-_JOURNEY_SVG = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
-    'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
-    '<rect x="3" y="3" width="7" height="7" rx="1"/>'
-    '<rect x="14" y="3" width="7" height="7" rx="1"/>'
-    '<rect x="3" y="14" width="7" height="7" rx="1"/>'
-    '<rect x="14" y="14" width="7" height="7" rx="1"/>'
     "</svg>"
 )
 _SB_INFO = "#c0cad4"
@@ -751,20 +742,12 @@ class RosterWidget:
                 wb_btn = self._sb_svg_btn("vial.svg", "Template Workbench", panel.toggle_workbench, ref_key="wb_btn")
                 panel.callbacks["wb_btn"] = wb_btn
 
+            # Tomogram Dashboard — unified per-TS inspection surface that replaces
+            # the old "Tomogram Previews" grid, "Tilt Series Journey" matrix, and
+            # standalone "Candidate Previews" dialog. See services/visualization/
+            # ROADMAP.md for the consolidation plan.
             ui.element("div").style("height: 1px;")
-            self._sb_svg_btn(_TOMO_PREVIEW_SVG, "Tomogram Previews", self._open_tomo_previews, ref_key="preview_btn")
-
-            # Journey view — per-TS status across all stages
-            toggle_journey = panel.callbacks.get("toggle_journey")
-            if toggle_journey is not None:
-                ui.element("div").style("height: 1px;")
-                self._sb_svg_btn(_JOURNEY_SVG, "Tilt Series Journey", toggle_journey, ref_key="journey_btn")
-
-            # Candidate previews: lives in the navigation cluster (not the
-            # run-pipeline cluster) since it's an inspection tool, not an action.
-            # Visible whenever the project has at least one candidate-extract job.
-            ui.element("div").style("height: 1px;")
-            self._build_candidate_preview_btn()
+            self._build_dashboard_btn()
 
             # SLURM defaults / resource profiles live inside the project overview popup now.
 
@@ -1388,20 +1371,19 @@ class RosterWidget:
         self._refs["aggregation_merge_btn"] = container
         return container
 
-    def _build_candidate_preview_btn(self):
-        """Sidebar button that opens the candidate-preview dialog. Shown only when
-        the project has at least one candidate-extract job. Green dot when at
-        least one preview manifest has been written."""
-        from ui.candidate_preview_dialog import (
-            has_any_extract_jobs,
-            has_any_previews_rendered,
-            open_candidate_preview_dialog,
-        )
+    def _build_dashboard_btn(self):
+        """Sidebar button that opens the unified per-TS Tomogram Dashboard.
 
-        if not has_any_extract_jobs():
-            return None
+        Always visible — the dashboard itself shows an empty-state notification
+        when the project has no array-job data yet, so this is a stable
+        anchor in the sidebar instead of a button that pops in and out as
+        jobs run.
+        """
+        from ui.tomo_dashboard_dialog import has_any_previews_rendered, open_tomo_dashboard
 
         rendered = has_any_previews_rendered()
+        svg = self._load_svg(_TOMO_DASHBOARD_SVG).replace("currentColor", SB_MUTE)
+
         container = (
             ui.element("div")
             .style(
@@ -1410,19 +1392,17 @@ class RosterWidget:
                 "display: flex; align-items: center; justify-content: center; "
                 "cursor: pointer; flex-shrink: 0; position: relative;"
             )
-            .on("click", lambda: open_candidate_preview_dialog())
-            .tooltip("Candidate previews" + (" (rendered)" if rendered else ""))
+            .on("click", lambda: open_tomo_dashboard())
+            .tooltip("Tomogram dashboard" + (" · previews rendered" if rendered else ""))
         )
         with container:
-            ui.icon("scatter_plot", size="18px").style(
-                "color: #2563eb; pointer-events: none;"  # blue-600
-            )
+            ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
             if rendered:
                 ui.element("div").style(
                     "position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; "
                     "border-radius: 50%; background: #16a34a; pointer-events: none;"
                 )
-        self._refs["candidate_preview_btn"] = container
+        self._refs["dashboard_btn"] = container
         return container
 
     def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None):
@@ -1487,156 +1467,3 @@ class RosterWidget:
                 ui.element("div").style("height: 4px;")
         return btn
 
-    # In RosterWidget -- add these two methods alongside the other helpers at the bottom
-
-    def _find_reconstruct_pngs(self) -> list:
-        """Return sorted PNG paths from the most recent TS_RECONSTRUCT job that has any.
-
-        PNGs are produced by WarpTools alongside each reconstructed tomogram during
-        the per-TS array task, so they appear incrementally while a job is still
-        running and are worth surfacing even if the job overall is Failed or was
-        cancelled — the user wants to see whatever partial output exists.
-        """
-        project_path = self.panel.ui_mgr.project_path
-        if not project_path:
-            return []
-
-        state = get_project_state()
-        candidates = []
-        for iid, job_model in state.jobs.items():
-            try:
-                if instance_id_to_job_type(iid) != JobType.TS_RECONSTRUCT:
-                    continue
-            except ValueError:
-                continue
-            relion_name = getattr(job_model, "relion_job_name", None)
-            if relion_name:
-                candidates.append(relion_name.rstrip("/"))
-
-        if not candidates:
-            return []
-
-        # Walk newest-first (lexicographic) and return PNGs from the first job that has any.
-        for relion_name in sorted(candidates, reverse=True):
-            recon_dir = project_path / relion_name / "warp_tiltseries" / "reconstruction"
-            if not recon_dir.exists():
-                continue
-            pngs = sorted(recon_dir.glob("*.png"))
-            if pngs:
-                return pngs
-
-        return []
-
-    async def _open_tomo_previews(self):
-        import base64
-        import shlex
-
-        pngs = self._find_reconstruct_pngs()
-
-        items = []
-        for png_path in pngs:
-            try:
-                data = base64.b64encode(png_path.read_bytes()).decode()
-                recon_dir = png_path.parent
-                f32_path = recon_dir / f"{png_path.stem}_f32.mrc"
-                mrc_path = recon_dir / f"{png_path.stem}.mrc"
-                resolved = f32_path if f32_path.exists() else mrc_path
-                items.append({"stem": png_path.stem, "src": f"data:image/png;base64,{data}", "mrc": str(resolved)})
-            except Exception as e:
-                logger.info("Could not read %s: %s", png_path, e)
-
-        def _copy_cmd(cmd: str):
-            ui.clipboard.write(cmd)
-            ui.notify("Copied to clipboard", timeout=1500)
-
-        refs = {}
-
-        with (
-            ui.dialog() as dialog,
-            ui.card().style(
-                "width: 90vw; max-width: 1400px; height: 85vh; max-height: 85vh; padding: 0; "
-                "overflow: hidden; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.12); "
-                "display: flex; flex-direction: column;"
-            ),
-        ):
-            with ui.element("div").style(
-                "display: flex; align-items: center; gap: 10px; flex-shrink: 0; "
-                "padding: 10px 14px; border-bottom: 1px solid #e5e7eb; background: #f8fafc;"
-            ):
-                ui.label("Tomogram Previews").style(
-                    f"{FONT} font-size: 12px; font-weight: 600; color: #1e293b; flex-shrink: 0;"
-                )
-                if items:
-                    filter_input = (
-                        ui.input(placeholder="filter by name...")
-                        .props("dense borderless clearable")
-                        .style(
-                            f"{MONO} font-size: 10px; color: #1e293b; "
-                            "background: white; border: 1px solid #e2e8f0; border-radius: 4px; "
-                            "padding: 0 8px; width: 260px;"
-                        )
-                    )
-                    refs["filter"] = filter_input
-                ui.element("div").style("flex: 1;")
-                (
-                    ui.button(icon="close", on_click=dialog.close)
-                    .props("flat dense round size=xs")
-                    .style("color: #94a3b8;")
-                )
-
-            if not items:
-                with ui.element("div").style("flex: 1; display: flex; align-items: center; justify-content: center;"):
-                    ui.label("No previews available -- run Reconstruct first.").style(
-                        f"{FONT} font-size: 11px; color: #94a3b8; font-style: italic;"
-                    )
-            else:
-                with ui.scroll_area().style("flex: 1; min-height: 0; width: 100%; height: calc(85vh - 52px);"):
-                    grid_container = ui.element("div").style("width: 100%;")
-                    refs["grid"] = grid_container
-
-                def render_grid(ft: str = ""):
-                    c = refs.get("grid")
-                    if c is None:
-                        return
-                    c.clear()
-                    visible = [it for it in items if ft.lower() in it["stem"].lower()]
-                    with c:
-                        if not visible:
-                            with ui.element("div").style("padding: 32px; text-align: center;"):
-                                ui.label("No tomograms match the filter.").style(
-                                    f"{FONT} font-size: 11px; color: #94a3b8; font-style: italic;"
-                                )
-                            return
-                        with ui.element("div").style(
-                            "display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 16px;"
-                        ):
-                            for item in visible:
-                                cmd = f"3dmod {shlex.quote(item['mrc'])}"
-                                with ui.element("div").style(
-                                    "display: flex; flex-direction: column; "
-                                    "border-radius: 4px; overflow: hidden; "
-                                    "border: 1px solid #1e293b; background: #0f172a;"
-                                ):
-                                    ui.image(item["src"]).style("width: 100%; display: block;")
-                                    with ui.element("div").style(
-                                        "display: flex; align-items: center; gap: 4px; "
-                                        "padding: 5px 8px; background: #1e293b;"
-                                    ):
-                                        ui.label(item["stem"]).style(
-                                            f"{MONO} font-size: 9px; color: #94a3b8; flex: 1; "
-                                            "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                                        )
-                                        (
-                                            ui.button(icon="content_copy", on_click=lambda c=cmd: _copy_cmd(c))
-                                            .props("flat dense round size=xs")
-                                            .style("color: #475569; flex-shrink: 0;")
-                                            .tooltip(cmd)
-                                        )
-
-                render_grid()
-
-                fi = refs.get("filter")
-                if fi:
-                    fi.on_value_change(lambda e: render_grid(e.value or ""))
-
-        dialog.open()

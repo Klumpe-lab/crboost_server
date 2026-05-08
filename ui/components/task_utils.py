@@ -1,7 +1,8 @@
 # ui/components/task_utils.py
 """
 Shared utilities for per-tilt-series task tracking across array jobs.
-Used by both array_task_tracker.py and ts_journey_view.py.
+Used by array_task_tracker.py and the Tomogram Dashboard's journey collector
+(ui/tomo_dashboard_dialog.py).
 """
 
 import json

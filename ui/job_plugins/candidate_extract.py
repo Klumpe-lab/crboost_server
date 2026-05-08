@@ -1,9 +1,10 @@
 """Candidate Extraction plugin -- default params only.
 
-IMOD model generation, MIP previews, and 3dmod copy commands now live in the
-sidebar's candidate-previews widget (ui/candidate_preview_dialog.py), since they
-operate across all extract instances and want to be inspectable without first
-navigating to a specific job tab.
+IMOD model generation, MIP previews, and 3dmod copy commands now live inside
+the unified Tomogram Dashboard's Candidate Extract section card
+(ui/tomo_dashboard_dialog.py), since they operate across all extract
+instances and want to be inspectable without first navigating to a specific
+job tab.
 """
 
 from services.models_base import JobType
