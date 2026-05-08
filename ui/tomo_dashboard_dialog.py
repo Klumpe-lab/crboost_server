@@ -723,6 +723,7 @@ def _build_per_tilt_chart(
     h_lines: Optional[list[dict]] = None,
     customdata: Optional[list[list]] = None,
     y_unit: str = "",
+    y_range: Optional[tuple[float, float]] = None,
 ) -> dict:
     """Compact chart: x = tilt angle, y = one or more per-tilt metrics.
 
@@ -734,6 +735,9 @@ def _build_per_tilt_chart(
     surfaced in hover so users can identify which tilt a point belongs to.
     `y_unit`: short suffix appended to the y value in the hover string
     (e.g. " µm", " Å").
+    `y_range`: fixed y-axis [min, max] — locks the axis across tilt-series
+    so the same metric is visually comparable. Auto-extends if observed
+    data exceeds the bounds (so we never clip outliers).
     """
     traces = []
     for s in series:
@@ -743,11 +747,7 @@ def _build_per_tilt_chart(
             "mode": s.get("mode", "markers"),
             "x": x_tilts,
             "y": s["y"],
-            "line": {
-                "color": s.get("color", "#4338ca"),
-                "width": s.get("width", 1.4),
-                "dash": s.get("dash", "solid"),
-            },
+            "line": {"color": s.get("color", "#4338ca"), "width": s.get("width", 1.4), "dash": s.get("dash", "solid")},
             "marker": {
                 "size": marker_size,
                 "color": s.get("color", "#4338ca"),
@@ -771,13 +771,31 @@ def _build_per_tilt_chart(
     layout: dict = {
         "xaxis": {"title": {"text": x_label, "font": {"size": 9}}, "tickfont": {"size": 8}, "zeroline": False},
         "yaxis": {"title": {"text": y_label, "font": {"size": 9}}, "tickfont": {"size": 8}, "zeroline": False},
-        "margin": {"t": 6, "b": 30, "l": 46, "r": 10},
+        "margin": {"t": 6, "b": 32, "l": 50, "r": 12},
         "paper_bgcolor": "white",
         "plot_bgcolor": "#fafafa",
         "showlegend": len(series) > 1,
-        "legend": {"orientation": "h", "x": 0, "y": 1.18, "font": {"size": 9}},
+        "legend": {"orientation": "h", "x": 0, "y": 1.14, "font": {"size": 9}},
         "hovermode": "x unified",
     }
+    if y_range:
+        # Auto-extend the fixed range if observed data exceeds it — never
+        # clip outliers; lock the axis only when data fits.
+        ymin, ymax = float(y_range[0]), float(y_range[1])
+        for s in series:
+            for v in s.get("y") or []:
+                if v is None:
+                    continue
+                try:
+                    fv = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if fv < ymin:
+                    ymin = fv
+                if fv > ymax:
+                    ymax = fv
+        layout["yaxis"]["range"] = [ymin, ymax]
+        layout["yaxis"]["autorange"] = False
     if h_lines:
         shapes = []
         annotations = []
@@ -1053,32 +1071,76 @@ _CB_CSS = """
     gap: 2px 12px; font-family: ui-monospace, monospace;
     font-size: 11px; padding: 2px 0;
 }
-.cb-binning-chain {
-    display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
-    padding: 6px 8px; background: #f8fafc;
-    border: 1px solid #e2e8f0; border-radius: 4px;
+.cb-pixel-section-title {
+    display: flex; align-items: center; gap: 5px; padding: 8px 0 2px 0;
+    font-size: 11px; color: #475569; font-weight: 600;
+    border-top: 1px solid #f1f5f9; margin-top: 6px;
 }
-.cb-binning-stage {
-    display: flex; flex-direction: column; align-items: center;
-    padding: 4px 8px; background: white;
-    border: 1px solid #cbd5e1; border-radius: 3px;
+/* Wrapper allows horizontal scroll on narrow viewports without breaking
+ * column alignment. The table itself is one CSS Grid so universal +
+ * per-species rows share column widths automatically. */
+.cb-pixel-table-wrapper {
+    overflow-x: auto;
+    padding-bottom: 4px;
+}
+.cb-pixel-table {
+    display: grid;
+    grid-template-columns:
+        minmax(170px, max-content)
+        minmax(60px, max-content)
+        minmax(120px, max-content)
+        minmax(160px, max-content)
+        minmax(150px, max-content)
+        minmax(120px, max-content)
+        minmax(90px, max-content)
+        minmax(180px, 1fr);
+    column-gap: 28px;
     font-family: ui-monospace, monospace;
-    min-width: 64px;
+    font-size: 11px;
+    padding: 2px 0;
+    min-width: max-content;  /* lets the grid grow past the wrapper for x-scroll */
 }
-.cb-binning-stage-label {
-    font-size: 9px; color: #64748b; text-transform: uppercase; letter-spacing: 0.3px;
+.cb-pixel-cell {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 2px;
+    color: #1f2937;
+    border-bottom: 1px dashed #f1f5f9;
+    white-space: nowrap;
 }
-.cb-binning-stage-val {
-    font-size: 11px; color: #1e293b; font-weight: 600; margin-top: 1px;
+.cb-pixel-cell.cb-pixel-header {
+    color: #6b7280; text-transform: uppercase;
+    font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
+    border-bottom: 1px solid #e2e8f0;
 }
-.cb-binning-arrow {
-    color: #94a3b8; font-size: 14px; margin: 0 1px; user-select: none;
+.cb-pixel-cell.cb-pixel-warn-error { background: #fef2f2; color: #b91c1c; }
+.cb-pixel-cell.cb-pixel-warn-warn  { background: #fff7ed; color: #b45309; }
+.cb-pixel-cell.cb-pixel-warn-info  { color: #475569; }
+.cb-pixel-cell.cb-pixel-notes { white-space: normal; color: #475569; font-size: 10px; }
+.cb-pixel-stripe {
+    display: inline-block; width: 3px; height: 12px;
+    border-radius: 1px; background: #cbd5e1; flex-shrink: 0;
 }
-.cb-dataset-row {
-    display: flex; gap: 12px; flex-wrap: wrap; margin-top: 2px;
+.cb-pixel-stage-label    { color: #1e293b; font-weight: 600; }
+.cb-pixel-instance-label { color: #94a3b8; font-size: 9px; }
+.cb-pixel-warn-icon      { cursor: help; }
+/* Species marker = a single full-width row inside the same grid; keeps
+ * column alignment perfect. */
+.cb-pixel-species-row {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 2px 4px 2px; margin-top: 6px;
+    border-top: 1px dashed #cbd5e1;
+    font-family: ui-monospace, monospace;
+    background: #f8fafc;
 }
-.cb-dataset-row > .cb-dataset-left { flex: 1 1 320px; min-width: 280px; }
-.cb-dataset-row > .cb-dataset-right { flex: 1 1 320px; min-width: 260px; }
+.cb-pixel-species-row .cb-pixel-stripe { width: 4px; height: 14px; }
+.cb-pixel-species-name {
+    color: #334155; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.5px; font-size: 11px;
+}
+.cb-pixel-species-id {
+    color: #94a3b8; font-size: 9px; font-weight: 400;
+}
 """
 
 
@@ -1138,14 +1200,9 @@ def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[s
         # Inner flex-row wrapper. Plain <div> instead of ui.row() to avoid
         # Quasar's `.row` flex-wrap rules clashing with our height chain.
         with ui.element("div").style(
-            "flex: 1 1 0; min-height: 0; display: flex; flex-direction: row; "
-            "width: 100%; overflow: hidden;"
+            "flex: 1 1 0; min-height: 0; display: flex; flex-direction: row; width: 100%; overflow: hidden;"
         ):
-            sidebar = (
-                ui.element("div")
-                .classes("cb-sidebar bg-white border-r border-gray-200")
-                .style("height: 100%;")
-            )
+            sidebar = ui.element("div").classes("cb-sidebar bg-white border-r border-gray-200").style("height: 100%;")
             main_area = (
                 ui.element("div")
                 .classes("cb-main")
@@ -1173,8 +1230,10 @@ def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[s
                         ui.label(f"{len(fresh_ts_names)} tilt series").classes("font-mono")
                         # Compact stage legend so users can decode the pill strip
                         # without hovering each pill. Pills also carry tooltips.
-                        with ui.row().classes("items-center gap-1").style(
-                            "margin-top: 4px; flex-wrap: nowrap; font-size: 9px; color: #94a3b8;"
+                        with (
+                            ui.row()
+                            .classes("items-center gap-1")
+                            .style("margin-top: 4px; flex-wrap: nowrap; font-size: 9px; color: #94a3b8;")
                         ):
                             for _key, label, _jt in _PILL_STAGES:
                                 ui.label(label).classes("font-mono").style("flex: 1; text-align: center;")
@@ -1272,9 +1331,9 @@ def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, re
         with ui.element("div").classes("cb-empty"):
             ui.icon("hourglass_empty", size="36px")
             ui.label(f"No section data yet for {ts_name}.").classes("text-xs")
-            ui.label(
-                "Section cards appear once the matching pipeline jobs have run."
-            ).classes("text-[11px] italic text-center").style("max-width: 420px;")
+            ui.label("Section cards appear once the matching pipeline jobs have run.").classes(
+                "text-[11px] italic text-center"
+            ).style("max-width: 420px;")
 
 
 # ---------------------------------------------------------------------------
@@ -1329,55 +1388,663 @@ def _render_datadump_card(
             ui.label(note).classes("cb-section-placeholder")
 
 
-def _build_binning_chain(project_state) -> list[dict]:
-    """Walk the pipeline stages that are actually present and return
-    [{label, value}, ...] showing how pixel size propagates."""
-    ms = project_state.microscope
-    out: list[dict] = [{"label": "Camera", "value": f"{ms.pixel_size_angstrom:g} Å/px"}]
+# ---------------------------------------------------------------------------
+# Pixel / binning sanity panel  (ROADMAP §11)
+#
+# Shows, in one dense monospace table, how pixel size + tomogram dimensions
+# + per-instance box / padding / particle-diameter propagate through the
+# pipeline. Sanity rules flag violations inline (per-cell icon + tooltip):
+#  - box (Å) vs particle diameter (Å) outside 1.5–3×
+#  - subtomo crop > box (impossible padding)
+#  - particle diameter inconsistency across candidate-extract instances
+#  - template volume px ≠ reconstruction px (picks would be garbage)
+# ---------------------------------------------------------------------------
 
+
+def _split_species_id(instance_id: str) -> Optional[str]:
+    """`templatematching__ribosome` → `ribosome`; bare instance_id → None."""
+    parts = instance_id.split("__", 1)
+    return parts[1] if len(parts) > 1 else None
+
+
+def _resolve_species(state, job_model, instance_id: str):
+    """Find the ParticleSpecies a per-particle job is attached to. Tries:
+    1. `instance_id` suffix (`templatematching__ribosome` → `ribosome`).
+    2. `job_model.species_id` field (set even when instance_id is bare).
+    3. Single-species fallback: if exactly one species exists in the
+       project, attribute the job to it.
+    Returns (species or None, species_id or None)."""
+    sid = _split_species_id(instance_id)
+    if sid:
+        sp = state.get_species(sid)
+        if sp:
+            return sp, sid
+    sid2 = getattr(job_model, "species_id", None)
+    if sid2:
+        sp = state.get_species(sid2)
+        if sp:
+            return sp, sid2
+        return None, sid2
+    if len(state.species_registry) == 1:
+        sp = state.species_registry[0]
+        return sp, sp.id
+    return None, None
+
+
+# Cache template-MRC header reads by (path, mtime). Templates are tiny
+# files but we still want to avoid re-opening them on every dashboard
+# render. Key uses mtime so an updated template invalidates the entry.
+_TEMPLATE_HEADER_CACHE: dict[tuple[str, int], tuple[Optional[float], Optional[int]]] = {}
+
+
+def _read_template_apix_box(template_path: str) -> tuple[Optional[float], Optional[int]]:
+    """Open the template MRC's header (no data read) and extract voxel_size
+    and the smallest cube dim. Returns (apix_ang, box_px). Either may be
+    None if the file is missing/unreadable or the header has no voxel_size.
+    """
+    if not template_path:
+        return None, None
+    try:
+        st = Path(template_path).stat()
+    except OSError:
+        return None, None
+    key = (template_path, int(st.st_mtime))
+    if key in _TEMPLATE_HEADER_CACHE:
+        return _TEMPLATE_HEADER_CACHE[key]
+    apix: Optional[float] = None
+    box: Optional[int] = None
+    try:
+        import mrcfile
+
+        with mrcfile.open(template_path, header_only=True, mode="r") as m:
+            vx = float(getattr(m.voxel_size, "x", 0.0) or 0.0)
+            apix = vx if vx > 0 else None
+            dims = (int(m.header.nx), int(m.header.ny), int(m.header.nz))
+            # Templates are typically cube-shaped; report the smallest dim
+            # as the canonical box size (most conservative).
+            d_min = min(d for d in dims if d > 0)
+            box = d_min if d_min > 0 else None
+    except Exception as e:
+        logger.warning("Could not read template header %s: %s", template_path, e)
+    _TEMPLATE_HEADER_CACHE[key] = (apix, box)
+    return apix, box
+
+
+def _template_match_instances(state) -> list[tuple[str, object]]:
+    out: list[tuple[str, object]] = []
+    for iid, jm in state.jobs.items():
+        if getattr(jm, "job_type", None) == JobType.TEMPLATE_MATCH_PYTOM:
+            out.append((iid, jm))
+    return sorted(out, key=lambda kv: kv[0])
+
+
+def _parse_tomo_dimensions(s: str) -> Optional[tuple[int, int, int]]:
+    """`'4096x4096x2048'` → `(4096, 4096, 2048)`. Returns None on parse failure.
+    Native-pixel-size dimensions as written into TsAlignmentParams.tomo_dimensions."""
+    if not s:
+        return None
+    try:
+        parts = s.lower().split("x")
+        if len(parts) != 3:
+            return None
+        return (int(parts[0]), int(parts[1]), int(parts[2]))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _scale_tomo_dims(native_dims: tuple[int, int, int], native_px: float, target_px: float) -> tuple[int, int, int]:
+    if target_px <= 0 or native_px <= 0:
+        return native_dims
+    f = native_px / target_px
+    return (int(round(native_dims[0] * f)), int(round(native_dims[1] * f)), int(round(native_dims[2] * f)))
+
+
+def _compute_pixel_chain(project_state) -> list[dict]:
+    """Walk pipeline stages and return rows for the pixel-sanity table.
+    One row per pipeline stage; multi-instance fan-out for TM / Pick / Subtomo
+    (one row per species). Each row has the columns the table renders, plus
+    an empty `warnings` dict that `_apply_sanity_rules` later populates."""
+    ms = project_state.microscope
+    acq = project_state.acquisition
+    native_px = float(ms.pixel_size_angstrom or 0.0)
+
+    rows: list[dict] = []
+
+    def make_row(stage_key: str, stage_label: str, **kw) -> dict:
+        return {
+            "stage_key": stage_key,
+            "stage_label": stage_label,
+            "px_size_ang": kw.get("px_size_ang"),
+            "tomo_px": kw.get("tomo_px"),
+            "box_px": kw.get("box_px"),
+            "box_ang": kw.get("box_ang"),
+            "particle_diameter_ang": kw.get("particle_diameter_ang"),
+            "notes": kw.get("notes") or [],
+            "warnings": {},
+            "instance_id": kw.get("instance_id"),
+            "species_color": kw.get("species_color"),
+            "species_id": kw.get("species_id"),
+            "species_name": kw.get("species_name"),
+            "_template_workbench_px": kw.get("_template_workbench_px"),
+            "_crop_px": kw.get("_crop_px"),
+        }
+
+    # ---- Camera (always) ----
+    rows.append(
+        make_row(
+            "camera",
+            "Camera",
+            px_size_ang=native_px or None,
+            tomo_px=(acq.detector_dimensions[0], acq.detector_dimensions[1], None),
+            notes=[f"detector frame · {int(ms.acceleration_voltage_kv)} kV"],
+        )
+    )
+
+    # ---- FS Motion / CTF ----
     fs = _find_job_by_type(project_state, JobType.FS_MOTION_CTF)
     if fs:
-        out.append({"label": "FS-CTF", "value": f"{ms.pixel_size_angstrom:g} Å/px"})
+        rows.append(
+            make_row(
+                "fs_ctf",
+                "FS Motion / CTF",
+                px_size_ang=native_px or None,
+                instance_id=fs[0],
+                notes=["per-frame; no rescale"],
+            )
+        )
 
-    tf_in_pipeline = _find_job_by_type(project_state, JobType.TILT_FILTER) is not None
-    tf_standalone = project_state.project_path is not None and (
-        Path(project_state.project_path) / "TiltFilter"
-    ).exists()
+    # ---- Tilt Filter (pipeline job OR standalone) ----
+    tf_in_pipeline = _find_job_by_type(project_state, JobType.TILT_FILTER)
+    tf_standalone = (
+        project_state.project_path is not None and (Path(project_state.project_path) / "TiltFilter").exists()
+    )
     if tf_in_pipeline or tf_standalone:
-        out.append({"label": "Filter", "value": f"{ms.pixel_size_angstrom:g} Å/px"})
+        rows.append(
+            make_row(
+                "tilt_filter",
+                "Tilt Filter",
+                px_size_ang=native_px or None,
+                instance_id=tf_in_pipeline[0] if tf_in_pipeline else None,
+                notes=["row drop only; no rescale"],
+            )
+        )
 
+    # ---- Alignment (rescale + native-px tomo dims) ----
     ali = _find_job_by_type(project_state, JobType.TS_ALIGNMENT)
+    aligned_px: Optional[float] = None
+    aligned_dims_native: Optional[tuple[int, int, int]] = None
+    aligned_dims_at_align_px: Optional[tuple[int, int, int]] = None
     if ali:
-        ali_px = float(getattr(ali[1], "rescale_angpixs", 0.0) or 0.0)
-        out.append({"label": "Align", "value": f"{ali_px:g} Å/px" if ali_px else "—"})
+        ali_iid, ali_jm = ali
+        v = float(getattr(ali_jm, "rescale_angpixs", 0.0) or 0.0)
+        aligned_px = v if v > 0 else None
+        aligned_dims_native = _parse_tomo_dimensions(getattr(ali_jm, "tomo_dimensions", "") or "")
+        if aligned_dims_native and aligned_px and native_px > 0:
+            aligned_dims_at_align_px = _scale_tomo_dims(aligned_dims_native, native_px, aligned_px)
+        notes = []
+        if aligned_px and native_px > 0:
+            notes.append(f"rescale ÷{aligned_px / native_px:.1f}")
+        am = getattr(ali_jm, "alignment_method", None)
+        if am is not None:
+            notes.append(f"method={getattr(am, 'value', am)}")
+        rows.append(
+            make_row(
+                "align",
+                "Align",
+                px_size_ang=aligned_px,
+                tomo_px=aligned_dims_at_align_px,
+                instance_id=ali_iid,
+                notes=notes,
+            )
+        )
 
+    # ---- TS CTF (post-alignment refit; inherits aligned px / dims) ----
     ctf = _find_job_by_type(project_state, JobType.TS_CTF)
     if ctf:
-        ali_px = float(getattr(ali[1], "rescale_angpixs", 0.0) or 0.0) if ali else 0.0
-        out.append({"label": "TS CTF", "value": f"{ali_px:g} Å/px" if ali_px else "(aligned)"})
+        rows.append(
+            make_row(
+                "ts_ctf",
+                "TS CTF",
+                px_size_ang=aligned_px,
+                tomo_px=aligned_dims_at_align_px,
+                instance_id=ctf[0],
+                notes=["inherits align scale"],
+            )
+        )
 
+    # ---- Reconstruct (rescale to recon_px) ----
     rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
+    recon_px: Optional[float] = None
+    recon_dims: Optional[tuple[int, int, int]] = None
     if rec:
-        rec_px = float(getattr(rec[1], "rescale_angpixs", 0.0) or 0.0)
-        out.append({"label": "Recon", "value": f"{rec_px:g} Å/px" if rec_px else "—"})
+        rec_iid, rec_jm = rec
+        v = float(getattr(rec_jm, "rescale_angpixs", 0.0) or 0.0)
+        recon_px = v if v > 0 else None
+        if aligned_dims_native and recon_px and native_px > 0:
+            recon_dims = _scale_tomo_dims(aligned_dims_native, native_px, recon_px)
+        notes = []
+        if recon_px and native_px > 0:
+            notes.append(f"rescale ÷{recon_px / native_px:.1f}")
+        if getattr(rec_jm, "deconv", 0):
+            notes.append("deconv")
+        rows.append(
+            make_row("recon", "Recon", px_size_ang=recon_px, tomo_px=recon_dims, instance_id=rec_iid, notes=notes)
+        )
 
-    return out
+    # ---- Template Match (one row per species) ----
+    for tm_iid, tm_jm in _template_match_instances(project_state):
+        species, species_id = _resolve_species(project_state, tm_jm, tm_iid)
+        wb = getattr(species, "workbench", None) if species else None
+        # Template apix + box come from the workbench widget when set; else
+        # fall back to the MRC header (canonical source of truth in cryo-EM).
+        wb_px = float(getattr(wb, "pixel_size", 0.0) or 0.0) if wb else 0.0
+        wb_box = int(getattr(wb, "box_size", 0) or 0) if wb else 0
+        tmpl_path = getattr(tm_jm, "template_path", "") or (getattr(species, "template_path", "") if species else "")
+        if (not wb_px or not wb_box) and tmpl_path:
+            mrc_apix, mrc_box = _read_template_apix_box(tmpl_path)
+            if not wb_px and mrc_apix:
+                wb_px = mrc_apix
+            if not wb_box and mrc_box:
+                wb_box = mrc_box
+        op_px = recon_px or aligned_px
+        wb_box_ang = (wb_box * wb_px) if (wb_box and wb_px) else None
+        notes = []
+        ang_search = getattr(tm_jm, "angular_search", None)
+        if ang_search:
+            notes.append(f"θ={ang_search}°")
+        sym = getattr(tm_jm, "symmetry", None)
+        if sym:
+            notes.append(f"sym={sym}")
+        if wb_px:
+            notes.append(f"tmpl px={wb_px:g}")
+        if tmpl_path and not (wb_px and wb_box):
+            notes.append("tmpl header unreadable")
+        rows.append(
+            make_row(
+                "tm",
+                "TM",
+                px_size_ang=op_px,
+                tomo_px=recon_dims,
+                box_px=wb_box if wb_box else None,
+                box_ang=wb_box_ang,
+                instance_id=tm_iid,
+                species_color=getattr(species, "color", None),
+                species_id=species_id,
+                species_name=getattr(species, "name", None) or species_id,
+                _template_workbench_px=wb_px or None,
+                notes=notes,
+            )
+        )
+
+    # ---- Candidate Extract (one row per species) ----
+    candidate_diameter_by_species: dict[Optional[str], list[tuple[str, float]]] = {}
+    for ce_iid, ce_jm in _candidate_extract_instances(project_state):
+        species, species_id = _resolve_species(project_state, ce_jm, ce_iid)
+        diameter = float(getattr(ce_jm, "particle_diameter_ang", 0.0) or 0.0)
+        if diameter:
+            candidate_diameter_by_species.setdefault(species_id, []).append((ce_iid, diameter))
+        notes = []
+        method = getattr(ce_jm, "cutoff_method", None)
+        cv = getattr(ce_jm, "cutoff_value", None)
+        if method is not None and cv is not None:
+            mv = getattr(method, "value", str(method))
+            notes.append(f"{mv}={cv:g}")
+        max_n = getattr(ce_jm, "max_num_particles", None)
+        if max_n:
+            notes.append(f"max N={max_n}")
+        score_apix = getattr(ce_jm, "apix_score_map", "auto") or "auto"
+        if score_apix and score_apix != "auto":
+            notes.append(f"score apix={score_apix}")
+        # Particle diameter in voxels at recon px (handy mental check)
+        if diameter and recon_px:
+            notes.append(f"Ø ≈ {diameter / recon_px:.0f} px @ {recon_px:g} Å/px")
+        rows.append(
+            make_row(
+                "pick",
+                "Pick",
+                px_size_ang=recon_px,
+                tomo_px=recon_dims,
+                particle_diameter_ang=diameter or None,
+                instance_id=ce_iid,
+                species_color=getattr(species, "color", None),
+                species_id=species_id,
+                species_name=getattr(species, "name", None) or species_id,
+                notes=notes,
+            )
+        )
+
+    # ---- Subtomo Extract (one row per species) ----
+    for se_iid, se_jm in _subtomo_extract_instances(project_state):
+        species, species_id = _resolve_species(project_state, se_jm, se_iid)
+        binning = float(getattr(se_jm, "binning", 1.0) or 1.0)
+        eff_px = (native_px * binning) if native_px > 0 else None
+        bx = int(getattr(se_jm, "box_size", 0) or 0)
+        cx = int(getattr(se_jm, "crop_size", -1) or -1)
+        box_px = bx if bx > 0 else None
+        box_ang = (box_px * eff_px) if (box_px and eff_px) else None
+        notes = []
+        if binning != 1.0:
+            notes.append(f"bin={binning:g}")
+        # Surface candidate diameter cross-link for sanity rule
+        diameter_for_species: Optional[float] = None
+        items = candidate_diameter_by_species.get(species_id) or []
+        if items:
+            diameter_for_species = items[0][1]
+        rows.append(
+            make_row(
+                "subtomo",
+                "Subtomo",
+                px_size_ang=eff_px,
+                box_px=box_px,
+                box_ang=box_ang,
+                particle_diameter_ang=diameter_for_species,
+                instance_id=se_iid,
+                species_color=getattr(species, "color", None),
+                species_id=species_id,
+                species_name=getattr(species, "name", None) or species_id,
+                _crop_px=cx if cx > 0 else None,
+                notes=notes,
+            )
+        )
+
+    return rows
 
 
-def _render_binning_chain(stages: list[dict]) -> None:
-    with ui.element("div").classes("cb-binning-chain"):
-        for i, s in enumerate(stages):
-            if i > 0:
-                ui.html("→", sanitize=False).classes("cb-binning-arrow")
-            with ui.element("div").classes("cb-binning-stage"):
-                ui.label(s["label"]).classes("cb-binning-stage-label")
-                ui.label(s["value"]).classes("cb-binning-stage-val")
+def _apply_sanity_rules(rows: list[dict]) -> None:
+    """Mutate `rows`: populate per-cell `warnings` for sanity-rule violations.
+
+    Each warning is `(level, message)` where level ∈ {"error", "warn", "info"}
+    and the dict key matches a column id from `_PIXEL_COLUMNS` (so the icon
+    attaches to the offending cell).
+    """
+    recon_px: Optional[float] = None
+    for r in rows:
+        if r["stage_key"] == "recon":
+            recon_px = r["px_size_ang"]
+            break
+
+    # Particle diameter consistency across candidate-extract instances of
+    # the same species
+    by_species: dict[Optional[str], list[dict]] = {}
+    for r in rows:
+        if r["stage_key"] == "pick" and r.get("particle_diameter_ang"):
+            by_species.setdefault(r.get("species_id"), []).append(r)
+    for sid, items in by_species.items():
+        if len(items) <= 1:
+            continue
+        diam_values = [r["particle_diameter_ang"] for r in items]
+        if max(diam_values) - min(diam_values) > 1e-3 * max(diam_values):
+            msg = (
+                f"Particle diameter differs across candidate-extract instances for "
+                f"species '{sid or '—'}' ({min(diam_values):g}–{max(diam_values):g} Å) — "
+                f"likely a binning-arithmetic mistake."
+            )
+            for r in items:
+                r["warnings"]["particle"] = ("warn", msg)
+
+    # Box vs particle diameter  (TM and Subtomo)
+    for r in rows:
+        if r["stage_key"] not in ("tm", "subtomo"):
+            continue
+        b = r.get("box_ang")
+        d = r.get("particle_diameter_ang")
+        if not b or not d:
+            continue
+        ratio = b / d
+        if ratio < 1.5:
+            r["warnings"]["box"] = (
+                "error",
+                f"Box {b:g} Å is {ratio:.2f}× particle diameter {d:g} Å — particle won't fit. Aim for 1.5–3×.",
+            )
+        elif ratio > 3.0:
+            r["warnings"]["box"] = (
+                "warn",
+                f"Box {b:g} Å is {ratio:.2f}× particle diameter {d:g} Å — wasted compute. Aim for 1.5–3×.",
+            )
+
+    # Template volume px vs recon px (silent mismatch ⇒ garbage picks)
+    if recon_px:
+        for r in rows:
+            if r["stage_key"] != "tm":
+                continue
+            wb_px = r.get("_template_workbench_px")
+            if wb_px and abs(wb_px - recon_px) / recon_px > 0.05:
+                r["warnings"]["px"] = (
+                    "error",
+                    f"Template prepared at {wb_px:g} Å/px but reconstruction is at "
+                    f"{recon_px:g} Å/px. Picks will be unreliable from this mismatch. "
+                    f"Re-render the template at {recon_px:g} Å/px (simpler than re-running "
+                    f"the reconstruction; templates are cheap to regenerate).",
+                )
+
+    # Subtomo crop sanity
+    for r in rows:
+        if r["stage_key"] != "subtomo":
+            continue
+        crop = r.get("_crop_px")
+        box = r.get("box_px")
+        eff_px = r.get("px_size_ang")
+        diameter = r.get("particle_diameter_ang")
+        if box and crop is not None and crop > box:
+            r["warnings"]["crop"] = (
+                "error",
+                f"crop ({crop} px) > box ({box} px) — invalid; crop must fit within the box.",
+            )
+        # Cropped volume must contain the particle (≥ 1× diameter is the
+        # absolute floor; below that, the particle doesn't fit in the cropped
+        # output cube and gets clipped).
+        if crop and eff_px and diameter:
+            crop_ang = crop * eff_px
+            if crop_ang < diameter:
+                r["warnings"]["crop"] = (
+                    "error",
+                    f"crop {crop_ang:g} Å ({crop} px) < particle diameter {diameter:g} Å — "
+                    f"particle won't fit in the cropped subtomogram. Increase crop_size.",
+                )
+
+
+# --- Sanity-table renderers --------------------------------------------------
+
+
+def _fmt_px(v: Optional[float]) -> str:
+    return "—" if not v else f"{v:g}"
+
+
+def _fmt_dims_px(d: Optional[tuple]) -> str:
+    if d is None:
+        return "—"
+    parts = [str(x) for x in d if x is not None]
+    return " × ".join(parts) if parts else "—"
+
+
+def _fmt_dims_ang(d: Optional[tuple], px: Optional[float]) -> str:
+    if d is None or not px:
+        return "—"
+    vals = [int(round(x * px)) for x in d if x is not None]
+    return " × ".join(f"{v:,}" for v in vals) if vals else "—"
+
+
+def _fmt_box_combined(r: dict) -> str:
+    """`128 px (794 Å)` or `—`. Single column, both units inline."""
+    bp = r.get("box_px")
+    ba = r.get("box_ang")
+    if bp is None and ba is None:
+        return "—"
+    if bp is None:
+        return f"{ba:g} Å"
+    if ba is None:
+        return f"{bp} px"
+    return f"{bp} px ({ba:g} Å)"
+
+
+def _fmt_crop_combined(r: dict) -> str:
+    cp = r.get("_crop_px")
+    eff_px = r.get("px_size_ang")
+    if not cp:
+        return "—"
+    if eff_px:
+        return f"{cp} px ({cp * eff_px:g} Å)"
+    return f"{cp} px"
+
+
+def _fmt_particle(r: dict) -> str:
+    d = r.get("particle_diameter_ang")
+    if not d:
+        return "—"
+    return f"{d:g} Å"
+
+
+def _pixel_cell(text: str, warning: Optional[tuple[str, str]] = None, *, notes: bool = False) -> None:
+    cls = "cb-pixel-cell"
+    if notes:
+        cls += " cb-pixel-notes"
+    if warning:
+        cls += f" cb-pixel-warn-{warning[0]}"
+    with ui.element("div").classes(cls):
+        ui.label(text)
+        if warning:
+            icon = "error" if warning[0] == "error" else "warning_amber"
+            ui.icon(icon, size="12px").classes("cb-pixel-warn-icon").tooltip(warning[1])
+
+
+_PIXEL_COLUMNS: list[tuple[str, str, str]] = [
+    ("stage", "stage", ""),
+    ("px", "Å/px", "Pixel size at this stage."),
+    ("dim_px", "tomo (px)", "Tomogram (or detector) dimensions in voxels at this stage's pixel size."),
+    (
+        "dim_ang",
+        "tomo (Å)",
+        "Physical size of the imaged volume in Å. Approximately invariant across stages — "
+        "only the px sampling changes with binning.",
+    ),
+    (
+        "box",
+        "box",
+        "Template-volume box (TM) or particle subtomo box (Subtomo). Shown as 'N px (M Å)'. "
+        "Flagged when the Å dimension is outside 1.5–3× of particle diameter.",
+    ),
+    (
+        "crop",
+        "crop",
+        "Cropped subtomogram size — Subtomo Extract only. crop_size = -1 in config means 'no cropping'. "
+        "Shown as 'N px (M Å)'.",
+    ),
+    (
+        "particle",
+        "particle",
+        "Particle diameter (Å) — set on Candidate Extract. Cross-applies to TM and Subtomo rows for "
+        "the box-vs-particle sanity check (since the box must contain the particle plus margin).",
+    ),
+    ("notes", "notes", ""),
+]
+
+_UNIVERSAL_STAGE_KEYS = {"camera", "fs_ctf", "tilt_filter", "align", "ts_ctf", "recon"}
+
+
+def _render_pixel_row_cells(r: dict) -> None:
+    """Emit the row cells for one row inside the surrounding `cb-pixel-table`.
+    Column count must match `_PIXEL_COLUMNS`."""
+    stripe = r.get("species_color")
+    for col_key, _label, _hint in _PIXEL_COLUMNS:
+        warning = r["warnings"].get(col_key)
+        if col_key == "stage":
+            cls = "cb-pixel-cell"
+            if warning:
+                cls += f" cb-pixel-warn-{warning[0]}"
+            with ui.element("div").classes(cls):
+                ui.element("span").classes("cb-pixel-stripe").style(f"background:{stripe};" if stripe else "")
+                ui.label(r["stage_label"]).classes("cb-pixel-stage-label")
+                if r.get("instance_id"):
+                    ui.label(r["instance_id"]).classes("cb-pixel-instance-label")
+        elif col_key == "px":
+            _pixel_cell(_fmt_px(r["px_size_ang"]), warning)
+        elif col_key == "dim_px":
+            _pixel_cell(_fmt_dims_px(r["tomo_px"]), warning)
+        elif col_key == "dim_ang":
+            _pixel_cell(_fmt_dims_ang(r["tomo_px"], r["px_size_ang"]), warning)
+        elif col_key == "box":
+            _pixel_cell(_fmt_box_combined(r), warning)
+        elif col_key == "crop":
+            _pixel_cell(_fmt_crop_combined(r), warning)
+        elif col_key == "particle":
+            _pixel_cell(_fmt_particle(r), warning)
+        elif col_key == "notes":
+            _pixel_cell(" · ".join(r["notes"]) if r["notes"] else "—", warning, notes=True)
+
+
+def _render_pixel_header_cells() -> None:
+    for _, label, hint in _PIXEL_COLUMNS:
+        with ui.element("div").classes("cb-pixel-cell cb-pixel-header"):
+            ui.label(label)
+            if hint:
+                ui.icon("info_outline", size="11px").classes("cb-pixel-warn-icon").tooltip(hint)
+
+
+def _group_rows_by_species(rows: list[dict]) -> tuple[list[dict], list[tuple[Optional[str], list[dict]]]]:
+    """Split into (universal_rows, [(species_id, species_rows), ...]).
+    Universal stages share one table; per-species stages each get their own
+    sub-table so multi-species projects stay readable."""
+    universal: list[dict] = []
+    by_species: dict[Optional[str], list[dict]] = {}
+    species_order: list[Optional[str]] = []
+    for r in rows:
+        if r["stage_key"] in _UNIVERSAL_STAGE_KEYS:
+            universal.append(r)
+            continue
+        sid = r.get("species_id")
+        if sid not in by_species:
+            species_order.append(sid)
+            by_species[sid] = []
+        by_species[sid].append(r)
+    return universal, [(sid, by_species[sid]) for sid in species_order]
+
+
+def _render_pixel_sanity_table(rows: list[dict]) -> None:
+    """Dense monospace table. Universal stages (Camera → Recon) at the top,
+    per-species stages (TM, Pick, Subtomo) underneath, separated by a
+    full-width species marker row. All rows share one CSS Grid so columns
+    line up across species. Wrapper has `overflow-x: auto` for narrow
+    viewports. Sanity-rule violations surface as per-cell icons with
+    tooltips."""
+    if not rows:
+        return
+
+    with ui.element("div").classes("cb-pixel-section-title"):
+        ui.icon("rule", size="13px").classes("text-indigo-600")
+        ui.label("Pixel / binning sanity")
+        ui.icon("info_outline", size="11px").classes("cb-pixel-warn-icon").tooltip(
+            "Per-stage pixel size, tomogram dimensions, and template/extract/subtomo "
+            "box + padding. Inline warnings flag binning-arithmetic mistakes "
+            "(particle won't fit in box, template px ≠ recon px, etc.). "
+            "Per-particle stages (TM, Pick, Subtomo) appear under a species marker; "
+            "the table scrolls horizontally on narrow viewports."
+        )
+
+    universal, species_groups = _group_rows_by_species(rows)
+
+    with ui.element("div").classes("cb-pixel-table-wrapper"):
+        with ui.element("div").classes("cb-pixel-table"):
+            _render_pixel_header_cells()
+            for r in universal:
+                _render_pixel_row_cells(r)
+            for sid, group_rows in species_groups:
+                first = group_rows[0]
+                species_name = first.get("species_name") or sid or "unspecified"
+                species_color = first.get("species_color") or "#94a3b8"
+                with ui.element("div").classes("cb-pixel-species-row"):
+                    ui.element("span").classes("cb-pixel-stripe").style(f"background:{species_color};")
+                    ui.label(str(species_name)).classes("cb-pixel-species-name")
+                    if sid and species_name != sid:
+                        ui.label(f"({sid})").classes("cb-pixel-species-id")
+                for r in group_rows:
+                    _render_pixel_row_cells(r)
 
 
 def _render_dataset_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    """Project-wide acquisition + microscope settings + binning flow.
-    Two-column key/val grid plus a binning-chain flow on the right showing
-    how pixel size propagates through each pipeline stage."""
+    """Project-wide acquisition + microscope settings + pixel/binning sanity table.
+    Two-column key/val grid above; below it, a dense per-stage table showing
+    pixel size, tomo dims, and template/extract/subtomo box + padding with
+    inline sanity-rule warnings (ROADMAP §11)."""
     ms = project_state.microscope
     acq = project_state.acquisition
 
@@ -1387,9 +2054,7 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
     if acq.tilt_axis_degrees is not None:
         metric_parts.append(f"axis {acq.tilt_axis_degrees:g}°")
     if project_state.import_total_tilt_series:
-        metric_parts.append(
-            f"{project_state.import_selected_tilt_series}/{project_state.import_total_tilt_series} TS"
-        )
+        metric_parts.append(f"{project_state.import_selected_tilt_series}/{project_state.import_total_tilt_series} TS")
 
     rows: list[tuple[str, str]] = [
         ("microscope", getattr(ms.microscope_type, "value", str(ms.microscope_type))),
@@ -1410,7 +2075,8 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
     if acq.invert_defocus_hand:
         rows.append(("invert defocus hand", "yes"))
 
-    chain = _build_binning_chain(project_state)
+    pixel_rows = _compute_pixel_chain(project_state)
+    _apply_sanity_rules(pixel_rows)
 
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "dataset"
@@ -1419,20 +2085,12 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
             ui.label("Dataset").classes("cb-section-title")
             ui.space()
             ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
-        with ui.element("div").classes("cb-dataset-row"):
-            with ui.element("div").classes("cb-dataset-left"):
-                # 2-col grid: pairs of (key, val, key, val) per visual row.
-                with ui.element("div").classes("cb-datadump-grid-2col"):
-                    for k, v in rows:
-                        ui.label(k).classes("cb-datadump-key")
-                        ui.label("—" if v is None or v == "" else str(v)).classes("cb-datadump-val")
-            with ui.element("div").classes("cb-dataset-right"):
-                ui.label("Pixel-size flow").classes("cb-section-title").style("margin-bottom: 2px;").tooltip(
-                    "Pixel size at each stage. Alignment + Reconstruct downsample to "
-                    "rescale_angpixs (≈12 Å/px by default). FS-CTF and Filter operate "
-                    "at native camera resolution."
-                )
-                _render_binning_chain(chain)
+        # 2-col grid: pairs of (key, val, key, val) per visual row.
+        with ui.element("div").classes("cb-datadump-grid-2col"):
+            for k, v in rows:
+                ui.label(k).classes("cb-datadump-key")
+                ui.label("—" if v is None or v == "" else str(v)).classes("cb-datadump-val")
+        _render_pixel_sanity_table(pixel_rows)
 
     return True
 
@@ -1461,9 +2119,13 @@ def _stat_strip(rows: list[tuple[str, str]]) -> None:
                 ui.html(f"<span class='cb-stat-key'>{k}</span><span class='cb-stat-val'>{v}</span>", sanitize=False)
 
 
-def _plot_cell(label: str, fig: dict, *, height_px: int = 150, wide: bool = False, hint: Optional[str] = None) -> None:
+def _plot_cell(label: str, fig: dict, *, height_px: int = 220, wide: bool = False, hint: Optional[str] = None) -> None:
     """One plot tile inside a `.cb-plot-row` parent. `hint` is a short tooltip
-    explainer attached to the title (helps newcomers parse the metric)."""
+    explainer attached to the title (helps newcomers parse the metric).
+
+    Default height bumped to 220px (from 150) to give the markers vertical
+    breathing room — at 150 the dots crowd together and small spreads vanish.
+    """
     cls = "cb-plot-cell cb-plot-cell-wide" if wide else "cb-plot-cell"
     with ui.element("div").classes(cls):
         with ui.row().classes("items-center gap-1").style("padding: 1px 4px 0;"):
@@ -1493,7 +2155,9 @@ _HINT_DEFOCUS = (
     "V = short-axis. Mean ≈ (U+V)/2 is the conventionally reported defocus; "
     "spread between U and V is astigmatism."
 )
-_HINT_ASTIG = "Magnitude of CTF astigmatism (|U − V|, Å). Large astig widens CTF zeros and reduces achievable resolution."
+_HINT_ASTIG = (
+    "Magnitude of CTF astigmatism (|U − V|, Å). Large astig widens CTF zeros and reduces achievable resolution."
+)
 _HINT_CTF_RES = "Best resolution (Å) at which CTF zeros could be fit. Lower = better fit / more usable signal."
 _HINT_CTF_FOM = "CTF fit figure-of-merit, dimensionless 0..1. Higher = more confident fit."
 _HINT_MOTION = (
@@ -1539,6 +2203,7 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
                 y_label="defocus (µm)",
                 customdata=cd,
                 y_unit=" µm",
+                y_range=(0.0, 10.0),
             )
             _plot_cell("Defocus U / V per tilt", fig, hint=_HINT_DEFOCUS)
         if has_astig:
@@ -1550,6 +2215,7 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
                     y_label="astigmatism (Å)",
                     customdata=cd,
                     y_unit=" Å",
+                    y_range=(0.0, 1500.0),
                 )
                 _plot_cell("Astigmatism per tilt", fig, hint=_HINT_ASTIG)
 
@@ -1564,6 +2230,7 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
                     y_label="resolution (Å)",
                     customdata=cd,
                     y_unit=" Å",
+                    y_range=(0.0, 30.0),
                 )
                 _plot_cell("CTF fit resolution per tilt", fig, hint=_HINT_CTF_RES)
         else:
@@ -1577,6 +2244,7 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
                     [{"name": "FOM", "y": fom, "color": _CTF_FOM_COLOR, "marker_size": 6}],
                     y_label="FOM",
                     customdata=cd,
+                    y_range=(0.0, 1.0),
                 )
                 _plot_cell("CTF figure of merit per tilt", fig, hint=_HINT_CTF_FOM)
         else:
@@ -1588,9 +2256,7 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
         mt = _safe_floats(df["rlnAccumMotionTotal"])
         if _is_meaningful_series(mt, threshold=0.05):
             with ui.element("div").classes("cb-plot-row"):
-                series = [
-                    {"name": "total", "y": mt, "color": _MOTION_TOTAL_COLOR, "mode": "lines+markers"}
-                ]
+                series = [{"name": "total", "y": mt, "color": _MOTION_TOTAL_COLOR, "mode": "lines+markers"}]
                 if "rlnAccumMotionEarly" in df.columns:
                     series.append(
                         {
@@ -1626,9 +2292,9 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
 def _render_alignment_plots(df: pd.DataFrame) -> None:
     """Per-tilt shift magnitude, X/Y/Z angle deltas relative to nominal.
 
-    Shifts and refined angles vary smoothly across the tilt series for a
-    well-converged alignment, so `lines+markers` works here — outlier tilts
-    show as spikes off the trend.
+    Markers only — even for smoothly-varying metrics, connecting per-tilt
+    estimates with lines turns outliers into zigzag and obscures the actual
+    distribution (see `feedback_dashboard_plot_principles`).
     """
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
     cd = _per_tilt_customdata(df)
@@ -1646,9 +2312,9 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
                 fig = _build_per_tilt_chart(
                     tilts,
                     [
-                        {"name": "|shift|", "y": mag, "color": "#1d4ed8", "width": 1.6, "mode": "lines+markers"},
-                        {"name": "X shift", "y": xs, "color": _X_SHIFT_COLOR, "dash": "dot", "mode": "lines+markers"},
-                        {"name": "Y shift", "y": ys, "color": _Y_SHIFT_COLOR, "dash": "dot", "mode": "lines+markers"},
+                        {"name": "|shift|", "y": mag, "color": "#1d4ed8"},
+                        {"name": "X shift", "y": xs, "color": _X_SHIFT_COLOR},
+                        {"name": "Y shift", "y": ys, "color": _Y_SHIFT_COLOR},
                     ],
                     y_label="shift (Å)",
                     customdata=cd,
@@ -1661,19 +2327,15 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
                 xt = _safe_floats(df["rlnTomoXTilt"])
                 resid = [val - nt if nt is not None and val is not None else None for nt, val in zip(tilts, xt)]
                 if _is_meaningful_series(resid):
-                    series.append(
-                        {"name": "X tilt − nom", "y": resid, "color": "#dc2626", "mode": "lines+markers"}
-                    )
+                    series.append({"name": "X tilt − nom", "y": resid, "color": "#dc2626"})
             if has_ytilt:
                 yt = _safe_floats(df["rlnTomoYTilt"])
                 if _is_meaningful_series(yt):
-                    series.append({"name": "Y tilt", "y": yt, "color": "#f97316", "mode": "lines+markers"})
+                    series.append({"name": "Y tilt", "y": yt, "color": "#f97316"})
             if has_zrot:
                 zr = _safe_floats(df["rlnTomoZRot"])
                 if _is_meaningful_series(zr):
-                    series.append(
-                        {"name": "Z rot", "y": zr, "color": "#0ea5e9", "dash": "dot", "mode": "lines+markers"}
-                    )
+                    series.append({"name": "Z rot", "y": zr, "color": "#0ea5e9"})
             if series:
                 fig = _build_per_tilt_chart(tilts, series, y_label="angle (°)", customdata=cd, y_unit="°")
                 _plot_cell("Refined alignment angles", fig, hint=_HINT_ALIGN_ANGLES)
@@ -1686,12 +2348,7 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
     instance_id, jm = found
     job_dir = _job_dir_for(instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
-    metric_parts = [
-        f"motion {jm.m_grid}",
-        f"bfac {jm.m_bfac}",
-        f"ctf {jm.c_range_min_max} Å",
-        f"win {jm.c_window}",
-    ]
+    metric_parts = [f"motion {jm.m_grid}", f"bfac {jm.m_bfac}", f"ctf {jm.c_range_min_max} Å", f"win {jm.c_window}"]
     param_rows = [
         ("motion range", jm.m_range_min_max),
         ("motion grid", jm.m_grid),
@@ -1748,7 +2405,9 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         m_stats = _stats(motion_total)
         strip_rows: list[tuple[str, str]] = [("tilts", str(int(len(df))))]
         if d_stats["n"]:
-            strip_rows.append(("defocus", f"{d_stats['median']:.2f} µm (Q1 {d_stats['q1']:.2f} · Q3 {d_stats['q3']:.2f})"))
+            strip_rows.append(
+                ("defocus", f"{d_stats['median']:.2f} µm (Q1 {d_stats['q1']:.2f} · Q3 {d_stats['q3']:.2f})")
+            )
         if r_stats["n"]:
             strip_rows.append(("CTF res", f"{r_stats['median']:.1f} Å (worst {r_stats['max']:.1f})"))
         if m_stats["n"]:
@@ -1773,7 +2432,12 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
     job_dir = _job_dir_for(instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
     method = getattr(jm.alignment_method, "value", str(jm.alignment_method))
-    metric_parts = [f"{method}", f"{jm.rescale_angpixs:g} Å/px", jm.tomo_dimensions, f"thick {jm.sample_thickness_nm:g} nm"]
+    metric_parts = [
+        f"{method}",
+        f"{jm.rescale_angpixs:g} Å/px",
+        jm.tomo_dimensions,
+        f"thick {jm.sample_thickness_nm:g} nm",
+    ]
     param_rows = [
         ("method", method),
         ("rescale", f"{jm.rescale_angpixs:g} Å/px"),
@@ -1906,7 +2570,9 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
         r_stats = _stats(ctf_res)
         strip_rows: list[tuple[str, str]] = [("tilts", str(int(len(df))))]
         if d_stats["n"]:
-            strip_rows.append(("defocus", f"{d_stats['median']:.2f} µm (range {d_stats['min']:.2f}–{d_stats['max']:.2f})"))
+            strip_rows.append(
+                ("defocus", f"{d_stats['median']:.2f} µm (range {d_stats['min']:.2f}–{d_stats['max']:.2f})")
+            )
         if r_stats["n"]:
             strip_rows.append(("CTF res", f"{r_stats['median']:.1f} Å (worst {r_stats['max']:.1f})"))
         _stat_strip(strip_rows)
@@ -1998,11 +2664,7 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
 
     metric_parts = []
     if jm is not None:
-        metric_parts = [
-            f"model {jm.model_name}",
-            f"thresh {jm.prob_threshold:g}",
-            f"action {jm.prob_action}",
-        ]
+        metric_parts = [f"model {jm.model_name}", f"thresh {jm.prob_threshold:g}", f"action {jm.prob_action}"]
 
     info = _read_per_tilt_kept_dropped(filter_dir, ts_name)
     with ui.element("div").classes("cb-section-card w-full") as card:
@@ -2028,10 +2690,7 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
         n_kept = info["n_kept"]
         n_dropped = len(info["dropped"])
         kept_pct = (100.0 * n_kept / n_labeled) if n_labeled else 0.0
-        strip_rows = [
-            ("kept", f"{n_kept}/{n_labeled}  ({kept_pct:.0f}%)"),
-            ("dropped", str(n_dropped)),
-        ]
+        strip_rows = [("kept", f"{n_kept}/{n_labeled}  ({kept_pct:.0f}%)"), ("dropped", str(n_dropped))]
         if jm is not None:
             strip_rows.append(("manual labels", str(len(jm.tilt_labels))))
         _stat_strip(strip_rows)
@@ -2069,9 +2728,7 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
 # ---------------------------------------------------------------------------
 
 
-def _render_candidate_extract_section(
-    ts_name: str, instance_id: str, job_model, project_path: Path, refresh
-) -> bool:
+def _render_candidate_extract_section(ts_name: str, instance_id: str, job_model, project_path: Path, refresh) -> bool:
     """One Candidate Extract card for this TS within this candidate-extract
     instance. Returns True if a card was rendered."""
     job_dir = _job_dir_for(instance_id, job_model, project_path)
@@ -2230,9 +2887,7 @@ def _render_preview_and_gallery_section(row: dict, entry: dict, manifest: dict) 
 
     picks_json_path = entry.get("picks_json")
     picks_data = (
-        _read_picks_json(Path(picks_json_path))
-        if picks_json_path
-        else {"picks": [], "tomo_dims_xyz_px": [1, 1, 1]}
+        _read_picks_json(Path(picks_json_path)) if picks_json_path else {"picks": [], "tomo_dims_xyz_px": [1, 1, 1]}
     )
     picks = picks_data.get("picks", [])
     tomo_dims = picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1]
@@ -2283,8 +2938,8 @@ def _render_preview_and_gallery_section(row: dict, entry: dict, manifest: dict) 
         col_max_w = max(360, min(720, col_max_w_calc))
 
         with ui.row().classes("w-full gap-3 items-start flex-wrap"):
-            left_col = ui.column().classes("gap-1").style(
-                f"flex: 1 1 360px; min-width: 320px; max-width: {col_max_w}px;"
+            left_col = (
+                ui.column().classes("gap-1").style(f"flex: 1 1 360px; min-width: 320px; max-width: {col_max_w}px;")
             )
             with left_col:
                 with ui.row().classes("cb-preview-toolbar"):
