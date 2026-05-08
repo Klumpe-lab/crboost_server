@@ -426,14 +426,18 @@ Done:
 - **Tilt Filter** — kept/dropped stat strip + drop list (frame name + nominal
   angle). Auto-detects standalone-tool output at `<project>/TiltFilter/` vs
   pipeline-job output at `<job_dir>/filtered/`.
-- **TS Alignment** — refined-shift plot (lines+markers, since shifts vary
-  smoothly across tilt order) + refined alignment angles, with hover
-  identity and validation.
+- **TS Alignment** — refined-shift plot (markers only — even smoothly-
+  varying per-tilt metrics get zigzag from outliers; user corrected this
+  preference) + refined alignment angles, with hover identity and
+  validation.
 - **TS CTF (post-alignment)** — same defocus / astig scatter as FS Motion /
   CTF, post-alignment refit values.
 
 Carried-over plot principles (see `feedback_dashboard_plot_principles.md`):
-- Discrete per-tilt CTF estimates → markers only, never lines.
+- All per-tilt scatter → markers only, never lines (including alignment
+  shifts/angles — user corrected the earlier "smooth so lines are fine"
+  exception). Only cumulative/accumulated quantities are even candidates
+  for lines, and even then default to markers.
 - Validate every column with `_is_meaningful_series` before plotting
   (~1e-3 magnitude threshold filters WarpTools placeholder writes).
 - Hover always carries `[tilt_index, frame_basename]` customdata so the
@@ -445,6 +449,53 @@ Not yet done (Slice C original scope):
 - §3.7 Template Workbench / Match section card (datadump only).
 - §3.9 Subtomo Extract dedicated section (currently surfaces only via the
   Candidate Extract gallery cross-link).
+
+### §11 Pixel / binning sanity panel — done
+
+- `_compute_pixel_chain(project_state)` walks Camera → FS-CTF → Filter →
+  Align → TS CTF → Recon → TM → Pick → Subtomo. Multi-instance fan-out for
+  TM / Pick / Subtomo: one row per species with a colored stripe in the
+  stage column.
+- `_apply_sanity_rules(rows)` flags violations as per-cell warnings:
+  - **Box vs particle Ø** outside 1.5–3× (error if < 1.5×, warn if > 3×)
+    on TM and Subtomo rows. Uses each species' candidate-extract
+    `particle_diameter_ang` (joined by species_id) as the reference.
+  - **Particle Ø consistency** across multiple candidate-extract instances
+    for the same species — flags both rows.
+  - **Template px ≠ recon px** (>5% mismatch) — error on the TM row;
+    silently mismatched template px is exactly the failure mode the user
+    flagged in the §11 brief.
+  - **Subtomo crop > box** — invalid padding, error on the Subtomo row.
+  - **Subtomo crop (Å) < particle Ø (Å)** — particle clipped out of the
+    cropped output cube; error on the Subtomo row.
+- `_render_pixel_sanity_table(rows)` renders a 7-column CSS Grid (stage ·
+  Å/px · tomo (px) · tomo (Å) · box/pad/Ø · box (Å) · notes). Warnings
+  inline as info-icons next to the offending cell with a tooltip
+  explaining the violation.
+
+#### Deviations from §11 spec
+
+These are recorded so the spec table in §11 doesn't get cargo-culted in a
+later refactor:
+
+- **TemplateMatchPytomParams has no `box_px` / `padding` / `angle_step`
+  fields.** PyTOM's template box is implicit in the template volume; we
+  read it from `ParticleSpecies.workbench.box_size` (px) and `pixel_size`
+  (Å) instead. `angular_search` is a string-typed field used for the
+  notes column. The §11 spec's "box=64 · pad=128" example doesn't map to
+  any real field — TM rows show `box=<workbench.box_size>` only.
+- **CandidateExtractPytomParams has no `nms_distance_ang`.** NMS distance
+  isn't a user param; it's derived inside PyTOM. The Pick rows show
+  `Ø=<particle_diameter_ang>`, `<cutoff_method>=<cutoff_value>`, and
+  `max N=<max_num_particles>` instead of the §11-spec NMS field.
+- **SubtomoExtractionParams has no `padding` field.** It has `box_size`
+  and `crop_size`; the per-side pad rim is derived as `(box-crop)/2`. The
+  Subtomo row's `pad_px` reflects this rim, not a separate user param.
+- **Layout: full-width below the keyval grid, not in the right column.**
+  The 7-column table doesn't fit at the dataset card's prior 320px
+  right-column width. Replaced the `cb-dataset-row` flex split: the
+  microscope/acquisition keyval grid runs above, the sanity table runs
+  full-width below.
 
 ---
 
@@ -559,6 +610,9 @@ section cards focus on outputs (picks, atlas, score volumes).
 
 ---
 
-*Last updated 2026-05-08 — Slice A complete, Slice C partial. Next session
-opens with the §11 pixel/binning sanity panel rework. Update this doc in
-any PR that overrides anything in §4 or changes the section catalog.*
+*Last updated 2026-05-08 — Slice A complete, Slice C partial, §11 Pixel /
+binning sanity panel done (deviations from spec captured at the bottom of
+§10). Next session opens with the remaining Slice C scope (§3.7 Template
+Match section card, §3.9 Subtomo Extract section card) and §12 — WarpTools
+XML metadata parsing for real motion + CTF curves. Update this doc in any
+PR that overrides anything in §4 or changes the section catalog.*
