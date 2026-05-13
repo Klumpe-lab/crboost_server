@@ -8,6 +8,7 @@ import textwrap
 from typing import Dict, Any, Optional
 from Bio.PDB import MMCIFParser, MMCIFIO
 from services.computing.container_service import get_container_service
+from services.templating.template_service import normalize_white_and_negate_to_black
 
 logger = logging.getLogger(__name__)
 
@@ -588,15 +589,13 @@ except Exception as e:
             if not result_white.get("success"):
                 return {"success": False, "error": f"Relion (white) failed: {result_white.get('error')}"}
 
-            # BLACK template
-            cmd_black = f"relion_image_handler --i {path_white} --o {path_black} --multiply_constant -1"
-
-            result_black = await self.backend.run_shell_command(
-                cmd_black, tool_name="relion", additional_binds=[output_folder]
-            )
-
-            if not result_black.get("success"):
-                return {"success": False, "error": f"Relion (black) failed: {result_black.get('error')}"}
+            # σ-normalize the resampled+lowpassed white volume and emit
+            # black as its negation. Shared with process_volume_async to
+            # keep all template outputs at mean=0, std=1 regardless of
+            # source (RELION class / EMDB / PDB simulate / ellipsoid).
+            err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_white, path_black)
+            if err:
+                return {"success": False, "error": f"Normalization failed: {err}"}
 
             return {"success": True, "path": path_black, "path_white": path_white, "path_black": path_black}
 

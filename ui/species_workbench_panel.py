@@ -83,6 +83,28 @@ def build_species_workbench_panel(backend) -> None:
 
     # ── Species rendering ─────────────────────────────────────────────────────
 
+    def _handle_species_deleted(species_id: str):
+        """Workbench just confirmed deletion. Drop its container and
+        switch to whatever remains (or fall back to the empty state)."""
+        container = _workbench_containers.pop(species_id, None)
+        if container is not None:
+            content = _refs.get("content")
+            if content:
+                try:
+                    content.remove(container)
+                except Exception:
+                    container.set_visibility(False)
+        # State already mutated by the workbench — re-read to find remainder.
+        state = get_project_state_for(project_path)
+        if state.species_registry:
+            _switch_species(state.species_registry[0].id)
+        else:
+            _active["species_id"] = None
+            empty = _refs.get("empty")
+            if empty:
+                empty.set_visibility(True)
+            _refresh_tab_strip()
+
     def _ensure_species_rendered(species_id: str):
         if species_id in _workbench_containers:
             return
@@ -106,7 +128,12 @@ def build_species_workbench_panel(backend) -> None:
             _workbench_containers[species_id] = container
             with container:
                 from ui.template_workbench import TemplateWorkbench
-                TemplateWorkbench(backend, str(project_path), species_id=species_id)
+                TemplateWorkbench(
+                    backend,
+                    str(project_path),
+                    species_id=species_id,
+                    on_species_deleted=_handle_species_deleted,
+                )
 
     def _switch_species(species_id: str):
         _active["species_id"] = species_id

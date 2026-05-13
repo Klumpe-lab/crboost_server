@@ -16,6 +16,46 @@ from services.computing.container_service import get_container_service
 logger = logging.getLogger(__name__)
 
 
+def normalize_white_and_negate_to_black(path_white: str, path_black: str) -> Optional[str]:
+    """Read `path_white`, σ-normalize (subtract mean, divide by std),
+    write back to `path_white`, and write the negation to `path_black`.
+
+    Why: cross-correlation template matching is scale-invariant, so this
+    is a no-op for TM picks — but it pins the value range so mask
+    thresholds and molstar ISO defaults are comparable across templates
+    from different sources (RELION class, PDB simulate, EMDB resample,
+    basic shape). Without this, RELION class outputs sit at ±0.02 while
+    the ellipsoid generator produces ±2.5; user-typed mask thresholds
+    and the molstar ISO default (1.5) break for the former.
+
+    Order matters: relion_image_handler must resample + lowpass *first*;
+    normalize is the final step so σ reflects the actual output volume.
+
+    Returns None on success, an error string on failure. Constant
+    volumes (std=0) are mean-centered but not divided, since division
+    would produce NaN; the caller's pipeline will see an empty volume
+    rather than NaN propagation."""
+    try:
+        with mrcfile.open(path_white, permissive=True) as mrc:
+            vol = mrc.data.copy()
+            vsize = float(mrc.voxel_size.x)
+        mean = float(np.mean(vol))
+        std = float(np.std(vol))
+        if std > 0:
+            vol = (vol - mean) / std
+        else:
+            logger.warning("normalize_white_and_negate_to_black: std=0 for %s — centering only", path_white)
+            vol = vol - mean
+        with mrcfile.new(path_white, overwrite=True) as mrc:
+            mrc.set_data(vol.astype(np.float32))
+            mrc.voxel_size = vsize
+        with mrcfile.new(path_black, overwrite=True) as mrc:
+            mrc.set_data((-vol).astype(np.float32))
+            mrc.voxel_size = vsize
+        return None
+    except Exception as e:
+        return str(e)
+
 
 class TemplateService:
     def __init__(self, backend):
@@ -53,16 +93,18 @@ class TemplateService:
         target_box: int,
         resolution: float = None,
         tag: str = "",
-        normalize: bool = False,
+        normalize: bool = True,
     ) -> Dict[str, Any]:
         """
         Processes volume using relion_image_handler.
         Replaces legacy scipy zoom with Fourier-space resampling.
         Creates paired white/black contrast templates.
-        If normalize=True, zero-means and unit-variance normalizes the white
-        template after relion processing, then derives black by negation.
-        This matches the behaviour of the old gaussian_lowpass_mrc which the
-        GT pipeline depended on.
+        If normalize=True (default), zero-means and unit-variance normalizes
+        the white template after relion's resample+lowpass, then derives black
+        by negation. Cross-correlation TM (PyTOM, Warp) is scale-invariant so
+        this does not affect picks, but it makes mask thresholds and molstar
+        ISO defaults stable across templates from different sources. Pass
+        normalize=False only when you specifically need raw RELION output.
         """
         try:
             if not os.path.exists(input_path):
@@ -94,17 +136,9 @@ class TemplateService:
                 return res_w
 
             if normalize:
-                with mrcfile.open(path_w, permissive=True) as mrc:
-                    vol = mrc.data.copy()
-                    vsize = float(mrc.voxel_size.x)
-                vol = vol - np.mean(vol)
-                vol = vol / np.std(vol)
-                with mrcfile.new(path_w, overwrite=True) as mrc:
-                    mrc.set_data(vol.astype(np.float32))
-                    mrc.voxel_size = vsize
-                with mrcfile.new(path_b, overwrite=True) as mrc:
-                    mrc.set_data((-vol).astype(np.float32))
-                    mrc.voxel_size = vsize
+                err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_w, path_b)
+                if err:
+                    return {"success": False, "error": f"Normalization failed: {err}"}
             else:
                 cmd_b = f"relion_image_handler --i {path_w} --o {path_b} --multiply_constant -1"
                 res_b = await self.backend.run_shell_command(
@@ -169,6 +203,87 @@ class TemplateService:
             return res
 
         except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    # =========================================================
+    # SPHERICAL MASK
+    # =========================================================
+
+    async def create_spherical_mask_async(
+        self,
+        output_path: str,
+        apix_ang: float,
+        box_px: int,
+        diameter_ang: float,
+        soft_edge_pixels: float = 5.0,
+    ) -> Dict[str, Any]:
+        """Write a soft-edged spherical mask MRC at the given apix + box.
+
+        Values are 1 inside `diameter/2`, 0 outside, with a cosine soft
+        transition over `soft_edge_pixels`. This is the standard mask
+        for TM on globular particles (viral capsids, ribosomes) where
+        the relion threshold-then-dilate path produces a hollow shell.
+
+        Returns {success, path, ...} like the other generators."""
+        return await asyncio.to_thread(
+            self._create_spherical_mask_sync,
+            output_path, apix_ang, box_px, diameter_ang, soft_edge_pixels,
+        )
+
+    def _create_spherical_mask_sync(
+        self,
+        output_path: str,
+        apix_ang: float,
+        box_px: int,
+        diameter_ang: float,
+        soft_edge_pixels: float,
+    ) -> Dict[str, Any]:
+        try:
+            if apix_ang <= 0 or box_px <= 0 or diameter_ang <= 0:
+                return {"success": False, "error": "apix, box, and diameter must be positive"}
+            if soft_edge_pixels < 0:
+                soft_edge_pixels = 0.0
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+            inner_r_px = (diameter_ang / apix_ang) / 2.0
+            soft_r_px = float(soft_edge_pixels)
+            outer_r_px = inner_r_px + soft_r_px
+
+            # Sanity: warn but don't fail if the sphere doesn't fit.
+            half_box = box_px / 2.0
+            if outer_r_px > half_box:
+                logger.warning(
+                    "Spherical mask radius %.1fpx + soft %.1fpx exceeds half-box %.1fpx; "
+                    "mask will be clipped at the box edge", inner_r_px, soft_r_px, half_box,
+                )
+
+            n = int(box_px)
+            cz = cy = cx = (n - 1) / 2.0
+            zz, yy, xx = np.ogrid[0:n, 0:n, 0:n]
+            r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2 + (zz - cz) ** 2).astype(np.float32)
+
+            mask = np.zeros((n, n, n), dtype=np.float32)
+            # Hard interior:
+            mask[r <= inner_r_px] = 1.0
+            # Cosine soft edge in [inner, outer):
+            if soft_r_px > 0:
+                in_band = (r > inner_r_px) & (r < outer_r_px)
+                # Cosine half-period from 1 → 0 across the band.
+                t = (r[in_band] - inner_r_px) / soft_r_px
+                mask[in_band] = 0.5 * (1.0 + np.cos(np.pi * t))
+
+            with mrcfile.new(output_path, overwrite=True) as m:
+                m.set_data(mask)
+                m.voxel_size = apix_ang
+
+            return {
+                "success": True,
+                "path": output_path,
+                "diameter_ang": diameter_ang,
+                "soft_edge_pixels": soft_r_px,
+            }
+        except Exception as e:
+            logger.exception("spherical mask creation failed")
             return {"success": False, "error": str(e)}
 
     # =========================================================

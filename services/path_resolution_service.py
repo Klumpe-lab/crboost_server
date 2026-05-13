@@ -636,9 +636,39 @@ def get_context_paths(job_type: JobType, job_model: "AbstractJobParams", job_dir
 
     if job_type == JobType.TEMPLATE_MATCH_PYTOM:
         tm_model = job_model
-        if hasattr(tm_model, "template_path") and tm_model.template_path:
-            paths["template_path"] = str(Path(tm_model.template_path))
-        if hasattr(tm_model, "mask_path") and tm_model.mask_path:
-            paths["mask_path"] = str(Path(tm_model.mask_path))
+        # v3 resolution:
+        #   1. Job-level template_path / mask_path acts as a per-job
+        #      override when explicitly set. The TM plugin's dropdowns
+        #      write a specific entry's path into these fields, so the
+        #      job carries a resolved snapshot for the driver.
+        #   2. If the job-level fields are empty, fall back to the
+        #      species's selected template / mask (looked up via UUID
+        #      from species.templates / species.masks).
+        template_p = getattr(tm_model, "template_path", "") or ""
+        mask_p = getattr(tm_model, "mask_path", "") or ""
+
+        if not template_p or not mask_p:
+            species = None
+            species_id = getattr(tm_model, "species_id", None)
+            project_state = getattr(tm_model, "_project_state", None)
+            if species_id and project_state is not None:
+                get_species = getattr(project_state, "get_species", None)
+                if callable(get_species):
+                    species = get_species(species_id)
+
+            if species is not None:
+                if not template_p:
+                    sel_t = species.get_selected_template() if hasattr(species, "get_selected_template") else None
+                    if sel_t is not None:
+                        template_p = sel_t.template_path or ""
+                if not mask_p:
+                    sel_m = species.get_selected_mask() if hasattr(species, "get_selected_mask") else None
+                    if sel_m is not None:
+                        mask_p = sel_m.mask_path or ""
+
+        if template_p:
+            paths["template_path"] = str(Path(template_p))
+        if mask_p:
+            paths["mask_path"] = str(Path(mask_p))
 
     return paths

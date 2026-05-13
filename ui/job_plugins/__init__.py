@@ -121,8 +121,14 @@ def _load_plugins():
     for mod in _modules:
         try:
             importlib.import_module(mod)
-        except ImportError as e:
-            logger.info("Skipped %s: %s", mod, e)
+        except Exception as e:
+            # Loud (warning + traceback). The previous behaviour was to log
+            # ImportError at INFO and swallow other exceptions silently — that
+            # turned a typo or missing dependency in a plugin file into a mute
+            # fallback to the default renderer, which is a real debugging
+            # nightmare. Any failure here means the user sees the wrong UI.
+            logger.warning("Plugin module %s failed to load: %s: %s", mod, type(e).__name__, e)
+            logger.exception("Plugin load traceback:")
 
 
 _load_plugins()
