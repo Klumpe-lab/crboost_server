@@ -258,14 +258,30 @@ class PipelineBuilderPanel:
             job_model = state.jobs.get(instance_id)
             if job_model is not None:
                 job_model.species_id = species_id
-                if job_type == JobType.TEMPLATE_MATCH_PYTOM and self.ui_mgr.project_path:
+                if self.ui_mgr.project_path:
                     from services.project_state import get_project_state_for
+                    from services.templating.template_metadata import (
+                        get_effective_mask_path,
+                        get_effective_template_path,
+                    )
 
                     p_state = get_project_state_for(self.ui_mgr.project_path)
                     sp = p_state.get_species(species_id)
                     if sp:
-                        job_model.template_path = sp.template_path or ""
-                        job_model.mask_path = sp.mask_path or ""
+                        # Default new TM jobs to the species's currently
+                        # selected template + mask + symmetry. The v3
+                        # helpers resolve via species.selected_*_id.
+                        if job_type == JobType.TEMPLATE_MATCH_PYTOM:
+                            job_model.template_path = get_effective_template_path(sp)
+                            job_model.mask_path = get_effective_mask_path(sp)
+                            if getattr(sp, "symmetry", None):
+                                job_model.symmetry = sp.symmetry
+                        # Default new candidate-extract jobs to the species's
+                        # particle diameter. Job param defaults to 200 Å so
+                        # this only overrides when species.diameter_ang is set.
+                        elif job_type == JobType.TEMPLATE_EXTRACT_PYTOM:
+                            if getattr(sp, "diameter_ang", None):
+                                job_model.particle_diameter_ang = float(sp.diameter_ang)
 
         # Aggregation projects: if the merge has been done, point any new
         # consumer's input_optimisation slot at MergedSources/optimisation_set.star

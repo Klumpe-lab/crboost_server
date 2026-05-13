@@ -67,7 +67,8 @@ class JobType(str, Enum):
             raise ValueError(f"Unknown job type '{value}'. Valid types: {valid}")
 
 
-class MicroscopeParams(BaseModel):
+class MicroscopeParams(BaseModel): 
+
     model_config = ConfigDict(validate_assignment=True)
     microscope_type: MicroscopeType = MicroscopeType.CUSTOM
     pixel_size_angstrom: float = Field(default=1.35, ge=0.5, le=10.0)

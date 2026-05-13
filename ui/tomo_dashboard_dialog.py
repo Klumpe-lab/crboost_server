@@ -28,6 +28,10 @@ from nicegui import ui, run
 
 from services.models_base import JobStatus, JobType
 from services.project_state import get_project_state
+from services.templating.template_metadata import (
+    get_effective_template_path,
+    read_template_header,
+)
 from services.tilt_series.build import _infer_position
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import generate_candidate_previews, read_preview_manifest
@@ -1431,43 +1435,14 @@ def _resolve_species(state, job_model, instance_id: str):
     return None, None
 
 
-# Cache template-MRC header reads by (path, mtime). Templates are tiny
-# files but we still want to avoid re-opening them on every dashboard
-# render. Key uses mtime so an updated template invalidates the entry.
-_TEMPLATE_HEADER_CACHE: dict[tuple[str, int], tuple[Optional[float], Optional[int]]] = {}
+# Template-header reads are cached centrally in
+# services.templating.template_metadata (mtime-keyed); use the shared
+# helper here as a thin tuple shim so existing callsites don't change.
 
 
 def _read_template_apix_box(template_path: str) -> tuple[Optional[float], Optional[int]]:
-    """Open the template MRC's header (no data read) and extract voxel_size
-    and the smallest cube dim. Returns (apix_ang, box_px). Either may be
-    None if the file is missing/unreadable or the header has no voxel_size.
-    """
-    if not template_path:
-        return None, None
-    try:
-        st = Path(template_path).stat()
-    except OSError:
-        return None, None
-    key = (template_path, int(st.st_mtime))
-    if key in _TEMPLATE_HEADER_CACHE:
-        return _TEMPLATE_HEADER_CACHE[key]
-    apix: Optional[float] = None
-    box: Optional[int] = None
-    try:
-        import mrcfile
-
-        with mrcfile.open(template_path, header_only=True, mode="r") as m:
-            vx = float(getattr(m.voxel_size, "x", 0.0) or 0.0)
-            apix = vx if vx > 0 else None
-            dims = (int(m.header.nx), int(m.header.ny), int(m.header.nz))
-            # Templates are typically cube-shaped; report the smallest dim
-            # as the canonical box size (most conservative).
-            d_min = min(d for d in dims if d > 0)
-            box = d_min if d_min > 0 else None
-    except Exception as e:
-        logger.warning("Could not read template header %s: %s", template_path, e)
-    _TEMPLATE_HEADER_CACHE[key] = (apix, box)
-    return apix, box
+    info = read_template_header(template_path)
+    return info.apix_ang, info.box_px
 
 
 def _template_match_instances(state) -> list[tuple[str, object]]:
@@ -1634,30 +1609,31 @@ def _compute_pixel_chain(project_state) -> list[dict]:
     # ---- Template Match (one row per species) ----
     for tm_iid, tm_jm in _template_match_instances(project_state):
         species, species_id = _resolve_species(project_state, tm_jm, tm_iid)
-        wb = getattr(species, "workbench", None) if species else None
-        # Template apix + box come from the workbench widget when set; else
-        # fall back to the MRC header (canonical source of truth in cryo-EM).
-        wb_px = float(getattr(wb, "pixel_size", 0.0) or 0.0) if wb else 0.0
-        wb_box = int(getattr(wb, "box_size", 0) or 0) if wb else 0
-        tmpl_path = getattr(tm_jm, "template_path", "") or (getattr(species, "template_path", "") if species else "")
-        if (not wb_px or not wb_box) and tmpl_path:
+        # Template path: per-job override (v1) wins when set, otherwise the
+        # species's v2 template (or v1 fallback). MRC header is the
+        # authoritative source for apix and box.
+        tmpl_path = getattr(tm_jm, "template_path", "") or (
+            get_effective_template_path(species) if species else ""
+        )
+        tmpl_px = 0.0
+        tmpl_box = 0
+        if tmpl_path:
             mrc_apix, mrc_box = _read_template_apix_box(tmpl_path)
-            if not wb_px and mrc_apix:
-                wb_px = mrc_apix
-            if not wb_box and mrc_box:
-                wb_box = mrc_box
+            tmpl_px = float(mrc_apix or 0.0)
+            tmpl_box = int(mrc_box or 0)
         op_px = recon_px or aligned_px
-        wb_box_ang = (wb_box * wb_px) if (wb_box and wb_px) else None
+        tmpl_box_ang = (tmpl_box * tmpl_px) if (tmpl_box and tmpl_px) else None
         notes = []
         ang_search = getattr(tm_jm, "angular_search", None)
         if ang_search:
             notes.append(f"θ={ang_search}°")
-        sym = getattr(tm_jm, "symmetry", None)
+        # Symmetry: prefer species (v2 source of truth); fall back to job (v1).
+        sym = (getattr(species, "symmetry", None) if species else None) or getattr(tm_jm, "symmetry", None)
         if sym:
             notes.append(f"sym={sym}")
-        if wb_px:
-            notes.append(f"tmpl px={wb_px:g}")
-        if tmpl_path and not (wb_px and wb_box):
+        if tmpl_px:
+            notes.append(f"tmpl px={tmpl_px:g}")
+        if tmpl_path and not (tmpl_px and tmpl_box):
             notes.append("tmpl header unreadable")
         rows.append(
             make_row(
@@ -1665,13 +1641,13 @@ def _compute_pixel_chain(project_state) -> list[dict]:
                 "TM",
                 px_size_ang=op_px,
                 tomo_px=recon_dims,
-                box_px=wb_box if wb_box else None,
-                box_ang=wb_box_ang,
+                box_px=tmpl_box if tmpl_box else None,
+                box_ang=tmpl_box_ang,
                 instance_id=tm_iid,
                 species_color=getattr(species, "color", None),
                 species_id=species_id,
                 species_name=getattr(species, "name", None) or species_id,
-                _template_workbench_px=wb_px or None,
+                _template_workbench_px=tmpl_px or None,
                 notes=notes,
             )
         )
@@ -1680,7 +1656,11 @@ def _compute_pixel_chain(project_state) -> list[dict]:
     candidate_diameter_by_species: dict[Optional[str], list[tuple[str, float]]] = {}
     for ce_iid, ce_jm in _candidate_extract_instances(project_state):
         species, species_id = _resolve_species(project_state, ce_jm, ce_iid)
-        diameter = float(getattr(ce_jm, "particle_diameter_ang", 0.0) or 0.0)
+        # Particle diameter: prefer species.diameter_ang (v2 source of truth);
+        # fall back to the per-Pick-job value (v1) so projects pre-migration
+        # still surface a number.
+        species_diameter = float(getattr(species, "diameter_ang", 0.0) or 0.0) if species else 0.0
+        diameter = species_diameter or float(getattr(ce_jm, "particle_diameter_ang", 0.0) or 0.0)
         if diameter:
             candidate_diameter_by_species.setdefault(species_id, []).append((ce_iid, diameter))
         notes = []

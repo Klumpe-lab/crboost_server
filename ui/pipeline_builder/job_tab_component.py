@@ -102,7 +102,9 @@ def _render_tab_content(
                 ) as params_exp:
                     params_exp.props(f'header-class="{header_cls}"')
                     with ui.column().classes("w-full gap-0").style(section_pad):
-                        render_config_tab(job_type, job_model, is_frozen, ui_mgr, backend, save_handler)
+                        render_config_tab(
+                            job_type, job_model, is_frozen, ui_mgr, backend, save_handler, instance_id=instance_id
+                        )
     elif tab_key == MonitorTab.LOGS.value:
         render_logs_tab(job_type, instance_id, job_model, backend, ui_mgr)
     elif tab_key == MonitorTab.FILES.value:

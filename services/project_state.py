@@ -5,10 +5,12 @@ import json
 import logging
 import os
 import re
+import shutil
 import tempfile
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple, Type, List
+from typing import Dict, Any, Literal, Optional, Tuple, Type, List
 
 from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny
 
@@ -33,7 +35,6 @@ from services.job_models import (
     ReconstructParticleParams,
     SubtomoExtractionParams,
     TemplateMatchPytomParams,
-    TemplateWorkbenchState,
     TsAlignmentParams,
     TsCtfParams,
     TsReconstructParams,
@@ -52,7 +53,53 @@ logger = logging.getLogger(__name__)
 # load.  A major mismatch emits a loud warning; a missing version (pre-versioning
 # files) is treated as (0, 0).
 
-SCHEMA_VERSION: Tuple[int, int] = (1, 0)
+SCHEMA_VERSION: Tuple[int, int] = (3, 0)
+
+
+# ─── Sidecar helpers ────────────────────────────────────────────────────
+# Each registered template / mask file has a `<file>.meta.json` sidecar
+# that pins its UUID, so file renames within the project keep the
+# registration intact when sidecars travel with the file. Sidecar
+# contents are minimal: `{"id": <uuid>, "kind": "template" | "mask"}`.
+# All other metadata lives on the species model (the source of truth).
+
+
+def _sidecar_path_for(file_path: str) -> Path:
+    p = Path(file_path)
+    return p.with_name(p.name + ".meta.json")
+
+
+def _sidecar_read_id(file_path: str) -> Optional[str]:
+    sp = _sidecar_path_for(file_path)
+    if not sp.exists():
+        return None
+    try:
+        data = json.loads(sp.read_text())
+        return data.get("id") or None
+    except Exception as e:
+        logger.warning("Could not read sidecar %s: %s", sp, e)
+        return None
+
+
+def _sidecar_write(file_path: str, entry_id: str, kind: str) -> None:
+    sp = _sidecar_path_for(file_path)
+    try:
+        sp.write_text(json.dumps({"id": entry_id, "kind": kind}, indent=2))
+    except OSError as e:
+        logger.warning("Could not write sidecar %s: %s", sp, e)
+
+
+def sidecar_ensure(file_path: str, kind: str) -> str:
+    """Return the UUID for `file_path`; read existing sidecar or create
+    a new one. Public — called by the workbench whenever it registers
+    a template or mask so future migrations / discovery can recognise
+    the file."""
+    existing = _sidecar_read_id(file_path)
+    if existing:
+        return existing
+    new_id = uuid.uuid4().hex
+    _sidecar_write(file_path, new_id, kind)
+    return new_id
 
 
 def slugify(name: str) -> str:
@@ -63,13 +110,102 @@ def slugify(name: str) -> str:
     return s.strip("_") or "species"
 
 
+class TemplateMask(BaseModel):
+    """A mask volume registered to a species. v3 makes masks a sibling
+    of templates (not owned by any one template). The `relion_mask_create`
+    knobs and the `derived_from_template_id` provenance let the user
+    later answer "how did I make this mask and from what?". Box/apix are
+    read from the MRC header on demand — never persisted on the model.
+    """
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    mask_path: str
+    method: Optional[Literal["spherical", "cylindrical", "relion", "manual", "imported"]] = None
+
+    threshold: Optional[float] = None
+    extend_pixels: Optional[float] = None  # --extend_inimask
+    soft_edge_pixels: Optional[float] = None  # --width_soft_edge
+    lowpass_ang: Optional[float] = None  # --lowpass
+
+    # Soft link back to the template the mask was derived from (UUID).
+    # Optional — imported masks don't have a known source.
+    derived_from_template_id: Optional[str] = None
+
+    created_at: Optional[datetime] = None
+    notes: str = ""
+
+
+class ParticleTemplate(BaseModel):
+    """A specific template volume + its metadata. v3 allows a species to
+    register many templates (the user selects which one is "current"
+    via species.selected_template_id). Masks are NOT nested here in v3 —
+    they live on species.masks as sibling first-class objects.
+
+    `lowpass_resolution_ang` records the resolution this template was
+    filtered to (None = unfiltered) — purely metadata, doesn't re-apply
+    the filter. pixel_size_ang and box_px are read from the MRC header
+    on demand.
+    """
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    template_path: str
+    polarity: Literal["white", "black"] = "black"
+    lowpass_resolution_ang: Optional[float] = None
+
+    # Provenance (all optional — populated as known, never required).
+    source: Optional[str] = None  # "PDB:6Z6J" / "EMDB-1234" / "imported" / "basic_shape:550:550:550"
+    imported_from: Optional[str] = None
+    created_at: Optional[datetime] = None
+    notes: str = ""
+
+
+class TemplateWorkbenchUIState(BaseModel):
+    """Pure UI widget state for the template workbench. Used to remember
+    layout preferences between sessions. Deliberately small."""
+
+    auto_box: bool = True
+    apply_lowpass: bool = False
+    basic_shape_def: str = "550:550:550"
+
+
 class ParticleSpecies(BaseModel):
     id: str  # slug, used as folder name and instance suffix
     name: str  # display label
     color: str = "#3b82f6"
-    template_path: str = ""
-    mask_path: str = ""
-    workbench: TemplateWorkbenchState = Field(default_factory=TemplateWorkbenchState)
+
+    # Particle-intrinsic properties; species-level (not per-job).
+    diameter_ang: Optional[float] = None
+    symmetry: str = "C1"
+    notes: str = ""
+
+    # ── v3 decoupled collections ─────────────────────────────────────────
+    # Templates and masks are independent registers; the workbench manages
+    # both, the user selects which is "active" per category. New
+    # generations APPEND (not replace) so prior work isn't lost.
+    templates: List[ParticleTemplate] = Field(default_factory=list)
+    masks: List[TemplateMask] = Field(default_factory=list)
+    selected_template_id: str = ""
+    selected_mask_id: str = ""
+
+    workbench_ui: TemplateWorkbenchUIState = Field(default_factory=TemplateWorkbenchUIState)
+
+    # ── Convenience accessors ────────────────────────────────────────────
+
+    def get_selected_template(self) -> Optional[ParticleTemplate]:
+        if not self.selected_template_id:
+            return None
+        return next((t for t in self.templates if t.id == self.selected_template_id), None)
+
+    def get_selected_mask(self) -> Optional[TemplateMask]:
+        if not self.selected_mask_id:
+            return None
+        return next((m for m in self.masks if m.id == self.selected_mask_id), None)
+
+    def get_template_by_id(self, template_id: str) -> Optional[ParticleTemplate]:
+        return next((t for t in self.templates if t.id == template_id), None)
+
+    def get_mask_by_id(self, mask_id: str) -> Optional[TemplateMask]:
+        return next((m for m in self.masks if m.id == mask_id), None)
 
 
 class ImportPositionSummary(BaseModel):
@@ -89,6 +225,208 @@ class ImportTiltSeriesSummary(BaseModel):
     tilt_count: int = 0
     selected: bool = True
     mdoc_filename: str = ""
+
+
+def _migrate_v1_to_v2(data: Dict[str, Any]) -> None:
+    """Idempotent v1→v2 migration. Mutates `data` in place.
+
+    PR 1 of the template-first-class refactor is additive: old fields
+    (species.template_path, species.mask_path, species.workbench, the
+    particle_diameter_ang on the candidate-extract job, symmetry on the
+    TM job) stay on disk so code paths not yet ported keep working. New
+    mirrors land on species.template, species.diameter_ang,
+    species.symmetry, species.workbench_ui. Old fields are removed in
+    PR 3 once all readers have flipped.
+    """
+    if tuple(data.get("schema_version", (0, 0)))[:2] >= (2, 0):
+        return
+
+    species_by_id: Dict[str, Dict[str, Any]] = {
+        s["id"]: s for s in data.get("species_registry", []) if isinstance(s, dict) and "id" in s
+    }
+
+    for sp in species_by_id.values():
+        wb = sp.get("workbench") or {}
+
+        # Template object: build from v1 template_path/mask_path. setdefault
+        # keeps a partially-migrated species's existing template intact on
+        # re-run (idempotency).
+        if not sp.get("template") and sp.get("template_path"):
+            tpath = sp["template_path"]
+            polarity = "white" if "_white" in tpath else "black"
+            mask_obj: Optional[Dict[str, Any]] = None
+            if sp.get("mask_path"):
+                mask_obj = {"mask_path": sp["mask_path"]}
+            sp["template"] = {
+                "template_path": tpath,
+                "polarity": polarity,
+                "lowpass_resolution_ang": wb.get("template_resolution"),
+                "mask": mask_obj,
+            }
+
+        # Workbench UI subset (drops pixel_size, box_size, template_resolution
+        # — those move to MRC-header reads / ParticleTemplate respectively).
+        if not sp.get("workbench_ui"):
+            sp["workbench_ui"] = {
+                k: wb[k]
+                for k in ("auto_box", "apply_lowpass", "basic_shape_def", "auto_infer_seed")
+                if k in wb
+            }
+
+    # Lift particle-intrinsic fields off job models onto the species. Old
+    # fields stay on the job model for now (PR 1 is additive); PR 3 removes
+    # them once readers have flipped.
+    for jm in data.get("jobs", {}).values():
+        if not isinstance(jm, dict):
+            continue
+        sid = jm.get("species_id")
+        if not sid or sid not in species_by_id:
+            continue
+        sp = species_by_id[sid]
+
+        if jm.get("job_type") == JobType.TEMPLATE_EXTRACT_PYTOM.value and "particle_diameter_ang" in jm:
+            sp.setdefault("diameter_ang", jm["particle_diameter_ang"])
+
+        if jm.get("job_type") == JobType.TEMPLATE_MATCH_PYTOM.value and "symmetry" in jm:
+            sp.setdefault("symmetry", jm["symmetry"])
+
+    data["schema_version"] = [2, 0]
+
+
+def _migrate_v2_to_v3(data: Dict[str, Any], project_root: Optional[Path]) -> None:
+    """v2 → v3 migration: decouple masks from templates; promote both to
+    sibling collections on the species (`species.templates` /
+    `species.masks`) with UUID identity. Drop the seed concept entirely
+    (mask-creation uses the white template + thresholding; seeds were a
+    fidelity optimization we don't need). Hard cut — v2 fields are
+    removed at migration time. The filesystem `templates/<sid>/` folder
+    is walked to register any orphan .mrc files left behind by prior
+    workbench sessions.
+
+    Idempotent and version-guarded.
+    """
+    if tuple(data.get("schema_version", (0, 0)))[:2] >= (3, 0):
+        return
+
+    for sp in data.get("species_registry", []):
+        if not isinstance(sp, dict) or "id" not in sp:
+            continue
+        sid = sp["id"]
+
+        # Existing collections (might already be partially populated on
+        # idempotent re-run).
+        templates = sp.setdefault("templates", [])
+        masks = sp.setdefault("masks", [])
+        template_paths_in_collection = {
+            t.get("template_path") for t in templates if isinstance(t, dict) and t.get("template_path")
+        }
+        mask_paths_in_collection = {
+            m.get("mask_path") for m in masks if isinstance(m, dict) and m.get("mask_path")
+        }
+
+        # ── Pull v2 species.template into species.templates ────────────
+        selected_template_id: Optional[str] = sp.get("selected_template_id") or None
+        v2tpl = sp.get("template")
+        v2_template_id: Optional[str] = None
+        if isinstance(v2tpl, dict) and v2tpl.get("template_path"):
+            tpath = v2tpl["template_path"]
+            v2_template_id = sidecar_ensure(tpath, "template")
+            if tpath not in template_paths_in_collection:
+                templates.append({
+                    "id": v2_template_id,
+                    "template_path": tpath,
+                    "polarity": v2tpl.get("polarity", "black"),
+                    "lowpass_resolution_ang": v2tpl.get("lowpass_resolution_ang"),
+                    "source": v2tpl.get("source"),
+                    "imported_from": v2tpl.get("imported_from"),
+                    "created_at": v2tpl.get("created_at"),
+                    "notes": v2tpl.get("notes", ""),
+                })
+                template_paths_in_collection.add(tpath)
+            if not selected_template_id:
+                selected_template_id = v2_template_id
+
+            # ── v2 nested mask → species.masks ─────────────────────────
+            v2mask = v2tpl.get("mask")
+            if isinstance(v2mask, dict) and v2mask.get("mask_path"):
+                mpath = v2mask["mask_path"]
+                mid = sidecar_ensure(mpath, "mask")
+                if mpath not in mask_paths_in_collection:
+                    masks.append({
+                        "id": mid,
+                        "mask_path": mpath,
+                        "method": v2mask.get("method"),
+                        "threshold": v2mask.get("threshold"),
+                        "extend_pixels": v2mask.get("extend_pixels"),
+                        "soft_edge_pixels": v2mask.get("soft_edge_pixels"),
+                        "lowpass_ang": v2mask.get("lowpass_ang"),
+                        "derived_from_template_id": v2_template_id,
+                        "created_at": v2mask.get("created_at"),
+                        "notes": v2mask.get("notes", ""),
+                    })
+                    mask_paths_in_collection.add(mpath)
+                if not sp.get("selected_mask_id"):
+                    sp["selected_mask_id"] = mid
+
+        # ── Walk templates/<sid>/ for orphans ──────────────────────────
+        if project_root is not None:
+            species_dir = project_root / "templates" / sid
+            if species_dir.exists():
+                try:
+                    files = sorted(species_dir.glob("*.mrc"))
+                except OSError as e:
+                    logger.warning("Could not list templates dir %s: %s", species_dir, e)
+                    files = []
+                for f in files:
+                    fname = f.name
+                    fpath = str(f)
+                    # Seeds are no longer first-class — skip the binary
+                    # ellipsoid precursors left by basic-shape generation.
+                    if fname.endswith("_seed.mrc"):
+                        continue
+                    is_mask = fname.endswith("_mask.mrc")
+                    if is_mask:
+                        if fpath in mask_paths_in_collection:
+                            continue
+                        mid = sidecar_ensure(fpath, "mask")
+                        masks.append({
+                            "id": mid,
+                            "mask_path": fpath,
+                            "method": "imported",  # unknown provenance
+                        })
+                        mask_paths_in_collection.add(fpath)
+                    else:
+                        if fpath in template_paths_in_collection:
+                            continue
+                        if "_white" in fname:
+                            polarity = "white"
+                        elif "_black" in fname:
+                            polarity = "black"
+                        else:
+                            polarity = "black"
+                        entry_id = sidecar_ensure(fpath, "template")
+                        templates.append({
+                            "id": entry_id,
+                            "template_path": fpath,
+                            "polarity": polarity,
+                        })
+                        template_paths_in_collection.add(fpath)
+
+        # Default selected_template_id to first template entry if not set
+        if not selected_template_id and templates:
+            selected_template_id = templates[0].get("id")
+        sp["selected_template_id"] = selected_template_id or ""
+        sp.setdefault("selected_mask_id", "")
+
+        # ── Hard cut: drop v2 fields ───────────────────────────────────
+        for legacy in ("template", "template_path", "mask_path", "workbench"):
+            sp.pop(legacy, None)
+        # workbench_ui loses the obsolete auto_infer_seed knob.
+        wb_ui = sp.get("workbench_ui")
+        if isinstance(wb_ui, dict):
+            wb_ui.pop("auto_infer_seed", None)
+
+    data["schema_version"] = [3, 0]
 
 
 class ProjectState(BaseModel):
@@ -168,6 +506,17 @@ class ProjectState(BaseModel):
         self.species_registry.append(species)
         self.update_modified()
         return species
+
+    def remove_species(self, species_id: str) -> bool:
+        """Drop a species from the registry. Returns True if removed.
+        File cleanup (templates/<sid>/) is the caller's responsibility —
+        this method only mutates the in-memory registry."""
+        before = len(self.species_registry)
+        self.species_registry = [s for s in self.species_registry if s.id != species_id]
+        removed = len(self.species_registry) < before
+        if removed:
+            self.update_modified()
+        return removed
 
     def ensure_job_initialized(
         self, job_type: JobType, instance_id: Optional[str] = None, template_path: Optional[Path] = None
@@ -261,6 +610,30 @@ class ProjectState(BaseModel):
                 code_major,
                 code_minor,
             )
+
+        # Snapshot before each major migration so a user can recover if
+        # something downstream is wrong. Backups are written once
+        # (no overwrite) so successive opens after a real save don't keep
+        # mutating them.
+        if file_major < 2:
+            backup_path = path.parent / f"{path.name}.v1.bak"
+            if not backup_path.exists():
+                try:
+                    shutil.copy2(path, backup_path)
+                    logger.info("Saved v1 schema backup to %s", backup_path)
+                except OSError as e:
+                    logger.warning("Could not write v1 schema backup: %s", e)
+            _migrate_v1_to_v2(data)
+
+        if file_major < 3 and tuple(data.get("schema_version", (0, 0)))[:2] < (3, 0):
+            backup_path = path.parent / f"{path.name}.v2.bak"
+            if not backup_path.exists():
+                try:
+                    shutil.copy2(path, backup_path)
+                    logger.info("Saved v2 schema backup to %s", backup_path)
+                except OSError as e:
+                    logger.warning("Could not write v2 schema backup: %s", e)
+            _migrate_v2_to_v3(data, project_root=path.parent)
 
         project_state = cls(
             schema_version=SCHEMA_VERSION,
