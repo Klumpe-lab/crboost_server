@@ -67,36 +67,30 @@ def _render_tab_content(
     ui_mgr: UIStateManager,
 ):
     if tab_key == MonitorTab.CONFIG.value:
-        # Tight padding so the three inner sections (SLURM / I/O / Params) sit
-        # close to the container edge. The q-expansion-item content area also
-        # gets its default horizontal padding zeroed via :deep on our column.
+        # q-expansion content padding zeroed so we control inner spacing
+        # ourselves with `section_pad`. q-item header keeps a small
+        # vertical pad so the title doesn't bump the card outline.
         exp_content_reset = (
             "[&_.q-expansion-item__container]:p-0 "
             "[&_.q-expansion-item__content]:p-0 "
-            "[&_.q-item]:min-h-0 [&_.q-item]:py-0 [&_.q-item]:px-0"
+            "[&_.q-item]:min-h-0 [&_.q-item]:py-1 [&_.q-item]:px-3"
         )
-        section_style = "border: none; box-shadow: none; background: transparent; margin-bottom: 4px;"
-        section_pad = "padding: 4px 0 10px;"
-        # Tailwind utilities applied to the q-item header. Inline-style tokens
-        # are not supported by Quasar's header-class prop -- it only takes
-        # class names -- so we use Tailwind atoms that are guaranteed to be in
-        # NiceGUI's bundled CSS.
-        header_cls = "text-[11px] font-semibold uppercase tracking-wider text-slate-700 q-px-none"
+        section_style = (
+            "border: 1px solid #e2e8f0; border-radius: 5px; "
+            "background: #ffffff; box-shadow: none; margin-bottom: 6px;"
+        )
+        # Inner padding: 14px left/right matches the q-item header padding
+        # so labels in the form below line up under the section title.
+        # Vertical padding generous enough to not feel cramped.
+        section_pad = "padding: 8px 14px 10px;"
+        # Header style: mixed case, slightly larger, no uppercase/tracking
+        # treatment. The expansion chevron + the border provide the visual
+        # hierarchy; the header text is just a label, not a heading shout.
+        header_cls = "text-[12px] font-semibold text-slate-700"
         with ui.scroll_area().classes("w-full h-full"):
-            with ui.column().classes(f"w-full gap-0 {exp_content_reset}").style("padding: 4px 8px 8px;"):
-                # ── SLURM (collapsible) ──
-                with (
-                    ui.expansion("SLURM Resources", value=True).props("dense").classes("w-full").style(section_style)
-                ) as slurm_exp:
-                    slurm_exp.props(f'header-class="{header_cls}"')
-                    with ui.column().classes("w-full gap-0").style(section_pad):
-                        render_slurm_tab(job_model, is_frozen, save_handler)
-                # ── I/O (collapsible) ──
-                with ui.expansion("I/O", value=True).props("dense").classes("w-full").style(section_style) as io_exp:
-                    io_exp.props(f'header-class="{header_cls}"')
-                    with ui.column().classes("w-full gap-0").style(section_pad):
-                        render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, save_handler)
-                # ── Parameters (collapsible) ──
+            with ui.column().classes(f"w-full gap-0 {exp_content_reset}").style("padding: 4px 6px 8px;"):
+                # ── Parameters (open by default — this is the primary
+                # surface the user looks at when configuring a job) ──
                 with (
                     ui.expansion("Parameters", value=True).props("dense").classes("w-full").style(section_style)
                 ) as params_exp:
@@ -105,6 +99,18 @@ def _render_tab_content(
                         render_config_tab(
                             job_type, job_model, is_frozen, ui_mgr, backend, save_handler, instance_id=instance_id
                         )
+                # ── I/O (collapsed by default) ──
+                with ui.expansion("I/O", value=False).props("dense").classes("w-full").style(section_style) as io_exp:
+                    io_exp.props(f'header-class="{header_cls}"')
+                    with ui.column().classes("w-full gap-0").style(section_pad):
+                        render_io_tab(job_type, instance_id, job_model, is_frozen, ui_mgr, save_handler)
+                # ── SLURM Resources (collapsed by default) ──
+                with (
+                    ui.expansion("SLURM Resources", value=False).props("dense").classes("w-full").style(section_style)
+                ) as slurm_exp:
+                    slurm_exp.props(f'header-class="{header_cls}"')
+                    with ui.column().classes("w-full gap-0").style(section_pad):
+                        render_slurm_tab(job_model, is_frozen, save_handler)
     elif tab_key == MonitorTab.LOGS.value:
         render_logs_tab(job_type, instance_id, job_model, backend, ui_mgr)
     elif tab_key == MonitorTab.FILES.value:
@@ -138,10 +144,6 @@ def render_job_tab(
 
     frozen = is_job_frozen(instance_id)
     active_tab = job_ui_state.active_monitor_tab
-
-    if frozen and active_tab == MonitorTab.CONFIG.value and not job_ui_state.user_switched_tab:
-        active_tab = MonitorTab.LOGS.value
-        job_ui_state.active_monitor_tab = MonitorTab.LOGS.value
 
     is_running = job_model.execution_status == JobStatus.RUNNING
 

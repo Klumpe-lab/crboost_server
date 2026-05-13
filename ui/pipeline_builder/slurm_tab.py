@@ -159,7 +159,7 @@ def _render_resource_fields(effective_config, job_model, is_frozen, save_handler
             # effective value, then route blur into slurm_overrides.
             current = getattr(effective_config, fname)
             with ui.element("div").style(ROW_STYLE):
-                lbl = ui.label(label).style(LABEL_STYLE + " width: 92px;")
+                lbl = ui.label(label).style(LABEL_STYLE)
                 lbl.tooltip(f"SLURM --{fname.replace('_', '-')}")
                 inp = ui.input(value=str(current))
                 inp.props(
@@ -234,7 +234,7 @@ def _render_supervisor_summary():
                 ("CPUs/task", str(sup.cpus_per_task)),
             ]:
                 with ui.element("div").style(ROW_STYLE):
-                    ui.label(label).style(LABEL_STYLE + " width: 92px;")
+                    ui.label(label).style(LABEL_STYLE)
                     ui.label(str(val)).style(
                         f"{MONO} font-size: 11px; color: {CLR_SUBLABEL}; "
                         "font-style: italic; flex: 1 1 0;"

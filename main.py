@@ -105,7 +105,21 @@ def setup_app():
     ''')
     
     backend = CryoBoostBackend(Path.cwd())
-    create_ui_router(backend) 
+    create_ui_router(backend)
+
+    # Single server-side pipeline observer: runs sync_all_jobs centrally
+    # on a 3-s tick for every project with pipeline_active=True, and on
+    # startup scans the configured project base for projects that were
+    # mid-pipeline when uvicorn last died — re-deploys their remaining
+    # jobs from a fresh scheme. See docs/architecture.md.
+    @app.on_event("startup")
+    async def _start_pipeline_monitor():
+        await backend.pipeline_monitor.start()
+
+    @app.on_event("shutdown")
+    async def _stop_pipeline_monitor():
+        await backend.pipeline_monitor.stop()
+
     storage_secret = os.environ.get("CRBOOST_STORAGE_SECRET", "crboost-change-me")
     # Default reconnect_timeout is 3s, which sets ping_interval=4s / ping_timeout=2s
     # (nicegui/nicegui.py:129-130). Over an SSH tunnel any latency blip trips the

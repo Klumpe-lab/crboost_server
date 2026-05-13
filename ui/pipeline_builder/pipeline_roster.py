@@ -432,6 +432,24 @@ class RosterWidget:
                 self._render_ts_sub_rows(
                     instance_id, items, statuses, display_names, indent + 8, expanded=expanded, job_dir=job_dir
                 )
+        elif (
+            job_model is not None
+            and not getattr(job_model, "IS_INTERACTIVE", False)
+            and getattr(job_model, "relion_job_name", None)
+        ):
+            # Non-array jobs that have already been deployed: surface a
+            # small "single-shot" hint so users don't think a per-TS
+            # collapsible row is missing/broken. e.g. SUBTOMO_EXTRACTION
+            # is one `relion_tomo_subtomo` invocation across all TS at
+            # once — there is no per-TS subtask to expand into.
+            with ui.element("div").style(
+                f"display: flex; align-items: center; gap: 5px; "
+                f"padding: 0 4px 0 {indent + 12}px; height: 12px; background: transparent;"
+            ):
+                ui.icon("horizontal_rule", size="9px").style("color: #cbd5e1; flex-shrink: 0;")
+                ui.label("single-shot job (no per-TS tasks)").style(
+                    f"{MONO} font-size: 8px; color: #94a3b8; font-style: italic;"
+                )
 
     def _render_ts_sub_rows(
         self,
@@ -1170,7 +1188,7 @@ class RosterWidget:
         with (
             ui.dialog() as dialog,
             ui.card().style(
-                "width: 720px; max-width: 720px; padding: 0; overflow: hidden; "
+                "width: 920px; max-width: 92vw; padding: 0; overflow: hidden; "
                 "border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);"
             ),
         ):
@@ -1224,14 +1242,18 @@ class RosterWidget:
                 auto_refresh_sec=15.0,
                 current_path=current_path_str,
                 show_filter=True,
-                height_px=460,
+                height_px=760,
                 title="Projects Overview",
             )
             overview_ref["comp"] = overview
             overview.build()
 
-        # Cancel auto-refresh when the user dismisses the dialog
+        # Cancel auto-refresh on any dismissal path. `hide` covers backdrop
+        # click / escape / programmatic close; `before-hide` is a Quasar
+        # safety net. _switch_project also calls stop() before navigate.to
+        # so closures don't outlive the dialog.
         dialog.on("hide", lambda: overview.stop())
+        dialog.on("before-hide", lambda: overview.stop())
         dialog.open()
 
     # ── Run slot ──────────────────────────────────────────────────────────────
@@ -1372,7 +1394,7 @@ class RosterWidget:
         return container
 
     def _build_dashboard_btn(self):
-        """Sidebar button that opens the unified per-TS Tomogram Dashboard.
+        """Sidebar button that opens the per-TS Journey dashboard.
 
         Always visible — the dashboard itself shows an empty-state notification
         when the project has no array-job data yet, so this is a stable
@@ -1393,7 +1415,7 @@ class RosterWidget:
                 "cursor: pointer; flex-shrink: 0; position: relative;"
             )
             .on("click", lambda: open_tomo_dashboard())
-            .tooltip("Tomogram dashboard" + (" · previews rendered" if rendered else ""))
+            .tooltip("Journey" + (" · previews rendered" if rendered else ""))
         )
         with container:
             ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")

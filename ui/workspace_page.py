@@ -1,5 +1,6 @@
 from nicegui import ui
 from backend import CryoBoostBackend
+from ui.background_task_tray import mount_background_task_tray
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
 from ui.species_workbench_panel import build_species_workbench_panel
 from ui.ui_state import get_ui_state_manager
@@ -111,3 +112,11 @@ def build_workspace_page(backend: CryoBoostBackend):
             _refs["workbench_container"] = workbench_container
             with workbench_container:
                 build_species_workbench_panel(backend)
+
+    # Floating background-tasks tray at workspace scope so spun-off
+    # renders/builds remain visible across dialog open/close and view
+    # toggles. Survives the entire workspace session; teardown happens
+    # when the page rebuilds.
+    mount_background_task_tray(
+        project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None
+    )

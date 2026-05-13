@@ -1019,7 +1019,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         # =================================================================
         # LEFT COLUMN: Project Setup (wider)
         # =================================================================
-        with ui.column().classes("gap-2").style("flex: 3; min-width: 0;"):
+        with ui.column().classes("gap-2").style("flex: 2; min-width: 0;"):
             with ui.column().classes("w-full gap-0 px-5 py-4").style(card_style):
                 ui.label("Project Setup").style(
                     f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING}; "
@@ -1202,7 +1202,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         # =================================================================
         # RIGHT COLUMN: Projects Overview + History sidebar
         # =================================================================
-        with ui.column().classes("gap-2").style("flex: 1; min-width: 480px; max-width: 580px;"):
+        with ui.column().classes("gap-2").style("flex: 2; min-width: 640px; max-width: 820px;"):
             # ----- Projects Overview -----
             async def _open_from_overview(p: Path):
                 await handle_load_project(p)
@@ -1214,7 +1214,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 base_path_provider=lambda: ui_mgr.data_import.project_base_path or "",
                 auto_refresh_sec=15.0,
                 show_filter=True,
-                height_px=400,
+                height_px=460,
                 title="Projects Overview",
             )
             local_refs["projects_overview"] = overview

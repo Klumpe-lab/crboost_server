@@ -311,12 +311,19 @@ def run_supervisor_mode():
         try:
             from services.visualization.preview_orchestrator import generate_candidate_previews
             print("[SUPERVISOR] Rendering candidate preview PNGs...", flush=True)
+            # Pass `project_state` so the orchestrator can walk this
+            # project's SUBTOMO_EXTRACTION jobs and build a per-pick
+            # cutout atlas. Without it the orchestrator silently sets
+            # cutout_atlas=None on every entry — the dashboard then
+            # complains "Subtomo cutout atlas not built" even when the
+            # subtomo extraction completed and coords match exactly.
             preview_summary = generate_candidate_previews(
                 candidates_star=candidates_star,
                 tomograms_star=output_tomograms,
                 particle_diameter_ang=float(params.particle_diameter_ang),
                 output_dir=job_dir,
                 project_root=project_path,
+                project_state=state,
             )
             print(
                 "[SUPERVISOR] Previews: "

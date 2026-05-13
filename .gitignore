@@ -40,3 +40,6 @@ source_me
 promptbuilder.py
 CLAUDE.md
 .claude/
+
+/*.md
+!README.md

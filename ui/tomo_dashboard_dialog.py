@@ -1,30 +1,37 @@
 """
-Unified per-tilt-series dashboard.
+Journey — per-tilt-series dashboard.
 
-This dialog is anchored on a tilt-series. The sidebar lists every TS in the
+The dialog is anchored on a tilt-series. The sidebar lists every TS in the
 project (union across all array-job manifests) with a 6-pill journey strip
 showing pipeline-stage status. Selecting a TS loads a stack of section cards
 in the main pane — one per pipeline stage that has data for the selected TS.
 
-Slice A scope: re-anchor on TS, build the sidebar with journey pills, and
-carry forward the existing Candidate Extract content as one stacked card
-per matching candidate-extract instance. Section cards for Reconstruct,
-Tilt Filter, Alignment, CTF, Template Match, Subtomo Extract, etc. are
-deferred to subsequent slices (see services/visualization/ROADMAP.md).
+Pill states per stage:
+  ok        — stage produced expected output for this TS
+  fail      — stage errored on this TS
+  running   — stage is in flight (job RUNNING/QUEUED)
+  zero      — stage processed this TS but produced no output (e.g. PyTOM
+              returned zero picks above cutoff). Distinguishable from
+              "pending" so users can tell "ran but yielded nothing" from
+              "never ran".
+  pending   — stage hasn't reached this TS yet
+
+The surface used to be called "Tomogram Dashboard"; it's been renamed
+"Journey" because it carries per-TS analytics across the whole pipeline,
+not just the candidate-extract preview pair.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import traceback
 import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from nicegui import ui, run
+from nicegui import ui
 
 from services.models_base import JobStatus, JobType
 from services.project_state import get_project_state
@@ -258,19 +265,75 @@ def _job_running_or_failed(jm) -> Optional[str]:
     return None
 
 
+def _zero_pick_tomos_from_tmresults(job_dir: Path) -> set[str]:
+    """Walk `<job_dir>/tmResults/*_particles.star` and return the set of
+    tomograms whose per-TS particles file exists but contains zero data
+    rows. This is the on-disk signal that PyTOM ran on that TS and produced
+    no candidates above cutoff — the supervisor's `pd.concat` merge silently
+    drops these, so they vanish from `candidates.star` and the preview
+    manifest. We surface them here so the journey pill can read "zero"
+    instead of the misleading "pending".
+
+    Fast: each file is header-only (~600 bytes); a 24-TS project takes a
+    few ms. Returns an empty set if `tmResults/` doesn't exist (older
+    project layouts).
+    """
+    tm_dir = job_dir / "tmResults"
+    if not tm_dir.is_dir():
+        return set()
+    out: set[str] = set()
+    for p in tm_dir.glob("*_particles.star"):
+        try:
+            import starfile
+
+            data = starfile.read(p, always_dict=True)
+        except Exception:
+            continue
+        # Find the particles dataframe (first DataFrame in the file).
+        df = None
+        for v in data.values():
+            if isinstance(v, pd.DataFrame):
+                df = v
+                break
+        if df is None or len(df) > 0:
+            continue
+        # Strip the "_particles" suffix to recover the tomo name.
+        stem = p.stem
+        if stem.endswith("_particles"):
+            tomo_name = stem[: -len("_particles")]
+            out.add(tomo_name)
+    return out
+
+
 def _candidate_extract_status_per_ts(job_dir: Path, jm) -> dict[str, str]:
     """Read the candidate-extract job's preview manifest to bucket TS statuses.
 
-    A TS is "ok" when the manifest entry has picks_json, "fail" when listed in
-    summary.errored, "running" if the job is still running, otherwise "pending".
+    Buckets:
+      - "ok": manifest entry has picks_json
+      - "fail": tomo listed in summary.errored
+      - "zero": tomo was processed but produced 0 picks above cutoff. Fast
+        path reads summary.zero_picks if present (manifest v10+); otherwise
+        falls back to scanning `tmResults/*_particles.star` for header-only
+        files.
+      - "running" / "pending": defaults based on job state, applied for any
+        TS that's expected (per the staged tomograms.star) but not yet
+        covered by any of the buckets above.
     """
     manifest = read_preview_manifest(job_dir) or {}
     entries = manifest.get("tomograms") or {}
     summary = manifest.get("summary") or {}
     errored = {e.get("tomo") for e in (summary.get("errored") or []) if e.get("tomo")}
 
+    # Fast path: orchestrator-recorded zero_picks (v10+). Fallback: scan
+    # tmResults for legacy manifests. The scan is cheap (header-only files)
+    # so we run it unconditionally on miss to recover from old projects.
+    zero_picks: set[str] = set(summary.get("zero_picks") or [])
+    if not zero_picks:
+        zero_picks = _zero_pick_tomos_from_tmresults(job_dir)
+
     coarse = _job_running_or_failed(jm)
     out: dict[str, str] = {}
+
     for tomo_name, entry in entries.items():
         if tomo_name in errored:
             out[tomo_name] = "fail"
@@ -280,22 +343,24 @@ def _candidate_extract_status_per_ts(job_dir: Path, jm) -> dict[str, str]:
             out[tomo_name] = "running"
         else:
             out[tomo_name] = "pending"
+
+    # Promote zero-pick tomos. These don't appear in `entries` (the
+    # orchestrator only emitted entries for tomos with at least one pick),
+    # so they're additive to the dict.
+    for tomo_name in zero_picks:
+        if tomo_name not in out:
+            out[tomo_name] = "zero"
+
     return out
 
 
-def _subtomo_extract_status_per_ts(job_dir: Path, jm) -> dict[str, str]:
-    """Read the subtomo-extraction job's particles.star and bucket TS statuses.
-
-    A TS is "ok" when at least one particle was extracted for it. We don't
-    distinguish per-pick failures here (those are surfaced inside the section
-    card itself); the pill is just a stage-level OK/pending signal. TS the
-    job hasn't reached yet stay at the caller's default ("pending" / "running"
-    based on job state) since particles.star only records what's already
-    extracted.
-    """
+def _read_subtomo_extracted_ts(job_dir: Path) -> set[str]:
+    """Read job_dir/particles.star and return the set of TS that had at
+    least one row of extracted particles. Tolerant of missing files /
+    parse errors."""
     particles_star = job_dir / "particles.star"
     if not particles_star.exists():
-        return {}
+        return set()
     try:
         import starfile
 
@@ -307,11 +372,74 @@ def _subtomo_extract_status_per_ts(job_dir: Path, jm) -> dict[str, str]:
                     df = v
                     break
         if df is None or "rlnTomoName" not in df.columns:
-            return {}
-        return {str(tomo_name): "ok" for tomo_name in df["rlnTomoName"].astype(str).unique()}
+            return set()
+        return {str(t) for t in df["rlnTomoName"].astype(str).unique()}
     except Exception as e:
         logger.warning("Could not parse subtomo particles.star %s: %s", particles_star, e)
-        return {}
+        return set()
+
+
+def _subtomo_extract_status_per_ts(
+    job_dir: Path, jm, expected_ts: Optional[set[str]] = None
+) -> dict[str, str]:
+    """Bucket per-TS status for the subtomo-extraction job.
+
+    Two layouts are supported, in priority order:
+
+      1. **Array layout** (post-conversion): `.task_manifest.json` exists.
+         Per-TS pass/fail from `.task_status/<ts>.{ok,fail}` is the source
+         of truth. An "ok" task that didn't write any row to particles.star
+         is demoted to "zero" (extraction ran but produced 0 particles for
+         that TS — e.g. all picks filtered by max_dose / min_frames).
+
+      2. **Legacy one-shot layout** (no manifest): we don't have per-TS
+         markers. Fall back to particles.star membership crossed with
+         `expected_ts` (typically the union of "ok" picks across upstream
+         candidate-extract instances). A TS in `expected_ts` but absent
+         from particles.star is "zero" iff the job has SUCCEEDED, else
+         "running" / "pending" depending on job state.
+    """
+    from ui.components.task_utils import read_manifest as read_array_manifest
+    from ui.components.task_utils import scan_statuses
+
+    extracted = _read_subtomo_extracted_ts(job_dir)
+    out: dict[str, str] = {}
+
+    # ── Layout 1: array layout ─────────────────────────────────────────
+    array_manifest = read_array_manifest(job_dir)
+    if array_manifest is not None:
+        items = array_manifest.get("items") or []
+        if items:
+            statuses = scan_statuses(job_dir, items)
+            for ts in items:
+                st = statuses.get(ts, "pending")
+                if st == "ok" and ts not in extracted:
+                    # task completed but the TS isn't in particles.star —
+                    # relion_tomo_subtomo ran and produced nothing (all
+                    # candidates filtered out at this stage).
+                    out[ts] = "zero"
+                else:
+                    out[ts] = st
+            return out
+
+    # ── Layout 2: legacy one-shot ──────────────────────────────────────
+    for ts in extracted:
+        out[ts] = "ok"
+
+    if expected_ts:
+        es = getattr(jm, "execution_status", None)
+        job_running = es in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED)
+        job_succeeded = es == JobStatus.SUCCEEDED
+        for ts in expected_ts:
+            if ts in extracted:
+                continue
+            if job_succeeded:
+                out[ts] = "zero"
+            elif job_running:
+                out[ts] = "running"
+            # Else: leave unset; caller defaults to "pending".
+
+    return out
 
 
 def _collect_dashboard_journey(project_state, project_path: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
@@ -345,8 +473,11 @@ def _collect_dashboard_journey(project_state, project_path: Path) -> tuple[dict[
                 journey.setdefault(ts_name, {})[key] = statuses.get(ts_name, "pending")
             break  # one job per array stage
 
-    # Pick stage: combine across all candidate-extract instances, "ok" wins.
+    # Pick stage: combine across all candidate-extract instances. Promotion
+    # order keeps "ok" winning over "zero" (multi-species: if one species
+    # produced picks here and another didn't, the row is genuinely "ok").
     pick_combined: dict[str, str] = {}
+    pick_order = {"ok": 5, "running": 4, "zero": 3, "fail": 2, "pending": 1}
     for iid, jm in _candidate_extract_instances(project_state):
         jd = _job_dir_for(iid, jm, project_path)
         if jd is None:
@@ -354,9 +485,7 @@ def _collect_dashboard_journey(project_state, project_path: Path) -> tuple[dict[
         statuses = _candidate_extract_status_per_ts(jd, jm)
         for ts_name, st in statuses.items():
             cur = pick_combined.get(ts_name)
-            # Promotion order: ok > running > fail > pending.
-            order = {"ok": 4, "running": 3, "fail": 2, "pending": 1}
-            if cur is None or order.get(st, 0) > order.get(cur, 0):
+            if cur is None or pick_order.get(st, 0) > pick_order.get(cur, 0):
                 pick_combined[ts_name] = st
             if ts_name not in seen:
                 ts_order.append(ts_name)
@@ -364,17 +493,21 @@ def _collect_dashboard_journey(project_state, project_path: Path) -> tuple[dict[
     for ts_name, st in pick_combined.items():
         journey.setdefault(ts_name, {})["pick"] = st
 
-    # Subtomo stage: combine across all subtomo-extract instances.
+    # Subtomo stage: combine across all subtomo-extract instances. Pass the
+    # "ok" pick set as `expected_ts` so the predicate can infer zero-state
+    # for TS that should have been extracted but didn't make it into
+    # particles.star (e.g. filtered out by max_dose / min_frames).
+    picked_ok: set[str] = {ts for ts, st in pick_combined.items() if st == "ok"}
     subtomo_combined: dict[str, str] = {}
+    subtomo_order = {"ok": 5, "running": 4, "zero": 3, "fail": 2, "pending": 1}
     for iid, jm in _subtomo_extract_instances(project_state):
         jd = _job_dir_for(iid, jm, project_path)
         if jd is None:
             continue
-        statuses = _subtomo_extract_status_per_ts(jd, jm)
+        statuses = _subtomo_extract_status_per_ts(jd, jm, expected_ts=picked_ok)
         for ts_name, st in statuses.items():
             cur = subtomo_combined.get(ts_name)
-            order = {"ok": 4, "running": 3, "fail": 2, "pending": 1}
-            if cur is None or order.get(st, 0) > order.get(cur, 0):
+            if cur is None or subtomo_order.get(st, 0) > subtomo_order.get(cur, 0):
                 subtomo_combined[ts_name] = st
             if ts_name not in seen:
                 ts_order.append(ts_name)
@@ -893,6 +1026,14 @@ _CB_CSS = """
 .cb-pill.fail { background: #dc2626; }
 .cb-pill.running { background: #f59e0b; }
 .cb-pill.pending { background: #d1d5db; }
+/* zero = stage processed this TS but produced no output (e.g. 0 picks
+   above cutoff). Dimmed amber-into-grey so it reads as "ran, yielded
+   nothing" — distinct from both "ok" green and "pending" grey. */
+.cb-pill.zero {
+    background: repeating-linear-gradient(
+        45deg, #9ca3af, #9ca3af 2px, #d1d5db 2px, #d1d5db 4px
+    );
+}
 .cb-main { padding: 12px; }
 /* (height/flex/overflow set inline at construction time so the dialog viewport
    chain is self-contained; this rule only carries the padding chrome.) */
@@ -1252,6 +1393,47 @@ def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[s
 
             refresh_all()
 
+            # Live refresh while the dialog is open: re-render every 4 s if
+            # any background task is in flight for this project. Keeps the
+            # journey strip / section cards in sync with manifests being
+            # written by an async preview-render or IMOD-gen task. Skip
+            # the rebuild when nothing's running to avoid burning the
+            # event loop on idle dashboards.
+            from services.background_tasks import get_background_task_registry
+
+            _last_signature = {"sig": None}
+
+            def _maybe_refresh() -> None:
+                try:
+                    registry = get_background_task_registry()
+                    active = [
+                        t for t in registry.for_project(str(project_path)) if t.is_running
+                    ]
+                    # Signature picks up "task started", "task finished", and
+                    # per-tick progress so we re-render any time meaningful
+                    # state changed. Cheap to compute; cheap to compare.
+                    sig = tuple(
+                        (t.id, t.progress_current, t.progress_total) for t in active
+                    ) + (tuple(
+                        # Include very-recently-finished tasks so the dashboard
+                        # picks up the final manifest write (which happens at
+                        # the end of the render) within one refresh window.
+                        (t.id, t.status) for t in registry.for_project(str(project_path))
+                        if not t.is_running
+                        and t.finished_at
+                        and (t.finished_at - t.started_at).total_seconds() < 86400
+                    ),)
+                    if sig != _last_signature["sig"]:
+                        _last_signature["sig"] = sig
+                        refresh_all()
+                except RuntimeError:
+                    # Client gone — timer will clean up shortly.
+                    pass
+
+            live_timer = ui.timer(4.0, _maybe_refresh)
+            dlg.on("hide", lambda _e=None: live_timer.cancel())
+            dlg.on("before-hide", lambda _e=None: live_timer.cancel())
+
     dlg.open()
 
 
@@ -1300,7 +1482,20 @@ def _render_ts_row(ts_name: str, journey_row: dict, selected: dict, refresh) -> 
         with ui.element("div").classes("cb-pill-strip"):
             for key, stage_label, _jt in _PILL_STAGES:
                 status = journey_row.get(key, "pending")
-                ui.element("div").classes(f"cb-pill {status}").tooltip(f"{stage_label}: {status}")
+                ui.element("div").classes(f"cb-pill {status}").tooltip(_pill_tooltip(stage_label, status))
+
+
+_PILL_TOOLTIP_LABEL = {
+    "ok": "done",
+    "fail": "failed",
+    "running": "running",
+    "zero": "ran, produced 0 results above cutoff",
+    "pending": "not started",
+}
+
+
+def _pill_tooltip(stage_label: str, status: str) -> str:
+    return f"{stage_label}: {_PILL_TOOLTIP_LABEL.get(status, status)}"
 
 
 # ---------------------------------------------------------------------------
@@ -2747,7 +2942,7 @@ def _render_candidate_extract_section(ts_name: str, instance_id: str, job_model,
         with ui.row().classes("cb-instance-toolbar"):
             gen_missing_btn = (
                 ui.button(
-                    "Render new",
+                    "Render missing",
                     icon="auto_fix_high",
                     on_click=lambda: _handle_generate_for_instance(
                         instance_id, job_model, job_dir, project_path, False, gen_missing_btn, refresh
@@ -2756,11 +2951,14 @@ def _render_candidate_extract_section(ts_name: str, instance_id: str, job_model,
                 .props("dense no-caps unelevated size=sm")
                 .classes("bg-purple-50 text-purple-700 border border-purple-200")
                 .style("padding: 0 8px; min-height: 22px;")
-                .tooltip("Render previews for tomograms without a fresh manifest entry. Uses cache.")
+                .tooltip(
+                    "Generate previews only for tomograms whose manifest entry is missing or stale. "
+                    "Cached entries are skipped. Runs in the background — track in the tray (bottom-right)."
+                )
             )
             regen_btn = (
                 ui.button(
-                    "Force",
+                    "Re-render all",
                     icon="refresh",
                     on_click=lambda: _handle_generate_for_instance(
                         instance_id, job_model, job_dir, project_path, True, regen_btn, refresh
@@ -2769,7 +2967,10 @@ def _render_candidate_extract_section(ts_name: str, instance_id: str, job_model,
                 .props("dense no-caps flat size=sm")
                 .classes("text-gray-500")
                 .style("padding: 0 6px; min-height: 22px;")
-                .tooltip("Re-render every tomogram, bypass cache. Use after renderer changes.")
+                .tooltip(
+                    "Bypass cache and regenerate every tomogram's preview from scratch. "
+                    "Use after renderer changes. Runs in the background — track in the tray."
+                )
             )
             imod_btn = (
                 ui.button(
@@ -3412,62 +3613,146 @@ def _generate_imod_sync(
 async def _handle_generate_imod_for_instance(
     instance_id: str, job_model, job_dir: Path, project_path: Path, btn, refresh
 ) -> None:
+    """Submit IMOD model generation to the background task registry. Same
+    pattern as the preview-render handler: fire-and-forget, user tracks
+    via the workspace tray."""
+    import asyncio as _asyncio
+
+    from services.background_tasks import get_background_task_registry
+
     candidates_star = job_dir / "candidates.star"
     tomograms_star = job_dir / "tomograms.star"
     if not candidates_star.exists() or not tomograms_star.exists():
         ui.notify(
-            "candidates.star or tomograms.star missing — cannot generate IMOD models", type="negative", timeout=4000
+            "candidates.star or tomograms.star missing — cannot generate IMOD models",
+            type="negative", timeout=4000,
         )
         return
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
-    btn.props("loading")
-    try:
-        await run.io_bound(_generate_imod_sync, candidates_star, tomograms_star, diameter, job_dir, project_path)
-        ui.notify("IMOD models generated — 3dmod commands now include the overlay", type="positive", timeout=3000)
-    except Exception as e:
-        traceback.print_exc()
-        ui.notify(f"IMOD generation failed: {e}", type="negative", timeout=5000)
-    finally:
-        btn.props(remove="loading")
-        refresh()
+
+    async def _run(progress_cb) -> str:
+        # IMOD generation has no per-tomogram progress hook today; treat as
+        # indeterminate (total=0).
+        progress_cb(0, 0, "generating IMOD .mod overlays…")
+        await _asyncio.to_thread(
+            _generate_imod_sync, candidates_star, tomograms_star, diameter, job_dir, project_path
+        )
+        return "IMOD overlays ready; 3dmod commands now include them"
+
+    dedup_key = f"imod-models:{job_dir}"
+    registry = get_background_task_registry()
+    already_running = next(
+        (t for t in registry.all() if t.is_running and t.dedup_key == dedup_key), None
+    )
+    registry.submit(
+        _run,
+        title=f"IMOD models · {instance_id}",
+        subtitle="Generate .mod overlays for 3dmod",
+        project_path=str(project_path),
+        dedup_key=dedup_key,
+    )
+    if already_running:
+        ui.notify(
+            "IMOD generation already in flight — see tray (bottom-right)",
+            type="info", timeout=2500,
+        )
+    else:
+        ui.notify(
+            "IMOD generation started — track progress in the tray (bottom-right)",
+            type="info", timeout=2500,
+        )
+    refresh()
 
 
 async def _handle_generate_for_instance(
     instance_id: str, job_model, job_dir: Path, project_path: Path, force: bool, btn, refresh
 ) -> None:
+    """Submit a preview-render to the BackgroundTaskRegistry. Returns
+    immediately; user tracks progress via the workspace tray. Multiple
+    clicks on the same (job_dir, force) combo dedupe to a single task to
+    keep concurrent writes to manifest.json from racing each other."""
+    import asyncio as _asyncio
+
+    from services.background_tasks import get_background_task_registry
+
     candidates_star = job_dir / "candidates.star"
     tomograms_star = job_dir / "tomograms.star"
     if not candidates_star.exists() or not tomograms_star.exists():
-        ui.notify("candidates.star or tomograms.star missing — cannot render previews", type="negative", timeout=4000)
+        ui.notify(
+            "candidates.star or tomograms.star missing — cannot render previews",
+            type="negative", timeout=4000,
+        )
         return
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
     state = get_project_state()
-    btn.props("loading")
-    try:
-        summary = await run.io_bound(
+
+    action = "Re-render all" if force else "Render missing"
+    subtitle = (
+        "Bypass cache; regenerate every tomogram"
+        if force
+        else "Skip tomograms with a fresh manifest entry"
+    )
+
+    async def _run(progress_cb) -> str:
+        # The orchestrator is sync; off-thread it so the event loop stays
+        # responsive. progress_cb signature matches:
+        #   preview_orchestrator.py: progress_cb(i, total, tomo_name)
+        # which lines up with our registry's (current, total, message).
+        summary = await _asyncio.to_thread(
             generate_candidate_previews,
-            candidates_star,
-            tomograms_star,
-            diameter,
-            job_dir,
-            project_path,
-            None,
-            force,
-            state,
+            candidates_star, tomograms_star, diameter, job_dir,
+            project_path, progress_cb, force, state,
         )
         n_new = len(summary["ok"])
         n_cached = len(summary["skipped_cached"])
         n_missing = len(summary["missing_volume"])
         n_err = len(summary["errored"])
-        msg = f"Previews: {n_new} rendered, {n_cached} cached"
+        # Pull zero-pick count from the manifest summary if the orchestrator
+        # recorded it (manifest v10+).
+        try:
+            from services.visualization.preview_orchestrator import read_preview_manifest
+
+            manifest = read_preview_manifest(job_dir) or {}
+            n_zero = len((manifest.get("summary") or {}).get("zero_picks") or [])
+        except Exception:
+            n_zero = 0
+
+        parts = [f"{n_new} rendered", f"{n_cached} cached"]
+        if n_zero:
+            parts.append(f"{n_zero} zero-picks")
         if n_missing:
-            msg += f", {n_missing} missing volume"
+            parts.append(f"{n_missing} missing volume")
         if n_err:
-            msg += f", {n_err} errored"
-        ui.notify(msg, type="positive" if not n_err else "warning", timeout=4000)
-    except Exception as e:
-        traceback.print_exc()
-        ui.notify(f"Preview generation failed: {e}", type="negative", timeout=5000)
-    finally:
-        btn.props(remove="loading")
-        refresh()
+            parts.append(f"{n_err} errored")
+        return ", ".join(parts)
+
+    # dedup_key keyed by job_dir + force flag so the user can't accidentally
+    # queue duplicate writers against the same manifest.
+    dedup_key = f"preview-render:{job_dir}:force={force}"
+    registry = get_background_task_registry()
+
+    # Detect dedup BEFORE submitting so we can give the right notice. A
+    # running task with the same key indicates an in-flight render the
+    # registry will return verbatim.
+    already_running = next(
+        (t for t in registry.all() if t.is_running and t.dedup_key == dedup_key), None
+    )
+
+    registry.submit(
+        _run,
+        title=f"Journey previews · {instance_id}",
+        subtitle=f"{action} — {subtitle}",
+        project_path=str(project_path),
+        dedup_key=dedup_key,
+    )
+    if already_running:
+        ui.notify(
+            f"{action} already in flight — see tray (bottom-right)",
+            type="info", timeout=2500,
+        )
+    else:
+        ui.notify(
+            f"{action} started — track progress in the tray (bottom-right)",
+            type="info", timeout=2500,
+        )
+    refresh()
