@@ -434,6 +434,11 @@ class ProjectState(BaseModel):
 
     schema_version: Tuple[int, int] = Field(default=SCHEMA_VERSION)
     project_name: str = "Untitled"
+    # Cosmetic three-word nickname (e.g. "amber-vagrant-fermi"). Set at
+    # project creation so future loads see the same mnemonic; legacy
+    # projects without one get a deterministic fallback derived from the
+    # project path at display time.
+    mnemonic: str = ""
     project_path: Optional[Path] = None
     created_at: datetime = Field(default_factory=datetime.now)
     modified_at: datetime = Field(default_factory=datetime.now)
@@ -638,6 +643,7 @@ class ProjectState(BaseModel):
         project_state = cls(
             schema_version=SCHEMA_VERSION,
             project_name=data.get("project_name", "Untitled"),
+            mnemonic=data.get("mnemonic", ""),
             project_path=Path(data["project_path"]) if data.get("project_path") else None,
             created_at=datetime.fromisoformat(data.get("created_at", datetime.now().isoformat())),
             modified_at=datetime.fromisoformat(data.get("modified_at", datetime.now().isoformat())),

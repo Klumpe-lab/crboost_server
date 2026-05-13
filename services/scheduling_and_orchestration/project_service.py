@@ -382,10 +382,15 @@ class ProjectService:
                 return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
 
             import getpass
+            from services.project_nickname import nickname_for
             from services.project_state import ProjectState, ImportPositionSummary, ImportTiltSeriesSummary
 
             state = ProjectState()
             state.project_name = project_name
+            # Persist a deterministic 3-word nickname so future loads keep the
+            # same one. Seed on project_dir so it's stable across renames of
+            # project_name (the dir is the durable identity).
+            state.mnemonic = nickname_for(str(project_dir))
             state.project_path = project_dir
             state.movies_glob = movies_glob
             state.mdocs_glob = mdocs_glob

@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 PREVIEW_SUBDIR = Path("vis") / "preview"
 MANIFEST_NAME = "manifest.json"
-MANIFEST_VERSION = 9  # v9: 192px sprites + per-pick failure reasons; drop imodup-flipped Warp PNG
+MANIFEST_VERSION = 10  # v10: record zero-pick tomograms in summary.zero_picks
 # v5: per-pick z_pct + nn_px; entry.pixel_size_ang
 # v6: fixes v4-v5 bug where glob "<tomo_name>.png" never matched real WarpTools
 #     filenames "<tomo_name>_<res>Apx.png" — entry.warp_tomo_preview was always
@@ -57,6 +57,14 @@ MANIFEST_VERSION = 9  # v9: 192px sprites + per-pick failure reasons; drop imodu
 #     sprite tile size 96→192 so the gallery is actually readable. Cutout
 #     failures (no subtomo match, mrcs missing, etc.) are now surfaced in
 #     entry.cutout_failures so the UI can explain "why is tile X missing?"
+# v10: records `summary.zero_picks` — tomograms that were processed but
+#     produced no candidates above cutoff. The supervisor's `pd.concat`
+#     merge silently drops their empty per-TS `*_particles.star` files
+#     from `candidates.star`, so they otherwise vanish from the manifest
+#     and the dashboard journey strip can't tell "ran but yielded nothing"
+#     from "never ran". The dashboard reads this list to render a "zero"
+#     pill state. Derived by scanning the upstream `tomograms.star` for
+#     tomos missing from `particles.star`'s `rlnTomoName` column.
 
 SCORE_COL_PRIORITY = ("rlnLCCmax", "rlnAutopickFigureOfMerit", "rlnMaxValueProbDistribution")
 
@@ -184,6 +192,11 @@ def generate_candidate_previews(
             logger.info("Subtomo index built: %d (tomo, coord) entries", len(subtomo_index))
         except Exception as e:
             logger.warning("Subtomo index build failed: %s", e)
+    # Per-tomo "subtomo data exists" lookup — drives cache invalidation
+    # when a SUBTOMO_EXTRACTION job lands after this candidate-extract job
+    # already cached an empty-cutout manifest. Built once so the per-tomo
+    # loop is O(1) per entry.
+    tomos_with_subtomo: set[str] = {k[0] for k in subtomo_index.keys()}
 
     ok: list[str] = []
     skipped_cached: list[str] = []
@@ -216,7 +229,19 @@ def generate_candidate_previews(
         prior_entry = prior_entries.get(tomo_name)
         if not force and prior_entry is not None:
             prior_outputs = _entry_outputs(prior_entry)
-            if prior_outputs and not any(is_output_stale(o, sources) for o in prior_outputs):
+            # Recover from stale-empty-cutout caches: if a SUBTOMO_EXTRACTION
+            # job exists for this tomogram now but the cached entry has no
+            # cutout atlas, treat the entry as stale and rebuild it. This
+            # covers two real scenarios: (1) the candidate-extract driver
+            # historically called the orchestrator without `project_state`
+            # so cutouts silently never built; (2) the subtomo job ran AFTER
+            # the candidate-extract job, so the original cache predates it.
+            cache_missing_cutout = tomo_name in tomos_with_subtomo and not prior_entry.get("cutout_atlas")
+            if (
+                not cache_missing_cutout
+                and prior_outputs
+                and not any(is_output_stale(o, sources) for o in prior_outputs)
+            ):
                 skipped_cached.append(tomo_name)
                 tomo_entries[tomo_name] = prior_entry
                 continue
@@ -292,13 +317,28 @@ def generate_candidate_previews(
         except Exception:
             pass
 
+    # Zero-pick tomos: present in upstream tomograms.star but absent from
+    # candidates.star. PyTOM ran on them, found no candidates above cutoff,
+    # so the supervisor's per-TS particles file was header-only — concat
+    # silently drops them. The Journey dashboard reads this set to surface
+    # a "zero" pill state instead of the misleading "pending".
+    expected_tomos = set(tomo_lookup.keys())
+    extracted_tomos = set(tomo_names)
+    zero_picks = sorted(expected_tomos - extracted_tomos)
+
     manifest_path = preview_dir / MANIFEST_NAME
     manifest = {
         "version": MANIFEST_VERSION,
         "score_field": score_col,
         "particle_diameter_ang": float(particle_diameter_ang),
         "tomograms": tomo_entries,
-        "summary": {"ok": ok, "skipped_cached": skipped_cached, "missing_volume": missing_volume, "errored": errored},
+        "summary": {
+            "ok": ok,
+            "skipped_cached": skipped_cached,
+            "missing_volume": missing_volume,
+            "errored": errored,
+            "zero_picks": zero_picks,
+        },
     }
     manifest_path.write_text(json.dumps(manifest, indent=2))
 

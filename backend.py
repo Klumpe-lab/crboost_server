@@ -15,6 +15,7 @@ from services.scheduling_and_orchestration.project_service import ProjectService
 from services.scheduling_and_orchestration.pipeline_orchestrator_service import PipelineOrchestratorService
 from services.computing.container_service import get_container_service
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
+from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
 from services.project_state import JobType, get_state_service
 from services.computing.slurm_service import SlurmService
 from services.configs.config_service import get_config_service
@@ -36,6 +37,11 @@ class CryoBoostBackend:
         self.state_service = get_state_service()
         self.template_service = TemplateService(self)
         self.pdb_service = PDBService(self)
+        # PipelineMonitor is the single server-side observer of pipeline
+        # status across all projects. Started in main.py's FastAPI startup
+        # hook; not auto-started here so unit-test / one-shot driver paths
+        # that construct a backend don't spawn a background task.
+        self.pipeline_monitor = PipelineMonitor(self)
 
     def registry_for(self, project_path: Path) -> TiltSeriesRegistry:
         """TiltSeriesRegistry for a project. Lazily loaded from sidecar JSON
@@ -211,6 +217,7 @@ class CryoBoostBackend:
                     pipeline_active = False
                     total_jobs_planned = 0
                     ts_count = 0
+                    mnemonic = ""
                     try:
                         with open(params_file) as f:
                             data = json.load(f)
@@ -230,8 +237,21 @@ class CryoBoostBackend:
                             or data.get("import_total_tilt_series")
                             or 0
                         )
+                        mnemonic = data.get("mnemonic") or ""
                     except Exception:
                         pass
+
+                    # Legacy projects (no `mnemonic` persisted) get a
+                    # deterministic fallback so the UI always has something
+                    # to show. Seed is the resolved project dir — stable
+                    # across reloads, independent of project_name renames.
+                    if not mnemonic:
+                        try:
+                            from services.project_nickname import nickname_for
+
+                            mnemonic = nickname_for(str(item.resolve()))
+                        except Exception:
+                            mnemonic = ""
 
                     if creator is None:
                         try:
@@ -255,6 +275,7 @@ class CryoBoostBackend:
                         {
                             "name": item.name,
                             "path": str(item),
+                            "mnemonic": mnemonic,
                             "modified": mod_time.strftime("%Y-%m-%d %H:%M"),
                             "modified_timestamp": stats.st_mtime,
                             "created_at": created_at,

@@ -163,8 +163,11 @@ class ProjectsOverview:
         return outer
 
     async def refresh(self):
-        """Re-scan the base path and re-render. Re-entrant-safe via lock."""
+        """Re-scan the base path and re-render. Re-entrant-safe via lock.
+        Self-cancels if the underlying container has been destroyed —
+        guards against a stale tick firing after the dialog/page is gone."""
         if self._list_container is None:
+            self.stop()
             return
         if self._pause_refresh:
             return
@@ -177,6 +180,10 @@ class ProjectsOverview:
                     self._projects = await self.backend.scan_for_projects(base)
                 self._last_scanned_base = base
                 self._render_list()
+            except RuntimeError as e:
+                # Client gone (tab closed / navigation race) — stop ticking.
+                logger.info("ProjectsOverview: client gone, stopping (%s)", e)
+                self.stop()
             except Exception as e:
                 logger.info("ProjectsOverview refresh failed: %s", e)
 
@@ -294,9 +301,28 @@ class ProjectsOverview:
     # ROW
     # =====================================================================
 
+    # Fixed-width columns so per-project info (creator / TS / jobs / date)
+    # lines up vertically across the whole list — reads like a thin table
+    # rather than a stack of free-form cards. Widths sized so the panel
+    # fits an ~860 px viewport with a flex name column that still affords
+    # ~220 px for long folder names before truncation kicks in.
+    _COL_W = {
+        "idx": 56,        # "#04" stacked above the status pill (pill ≈ 50 px wide)
+        "avatar": 28,
+        "creator": 100,
+        "ts": 58,
+        "jobs": 130,
+        "date": 100,
+        "progress": 84,
+        "actions": 24,
+    }
+    # Inter-column gap (px). Adds breathing room without bloating any one column.
+    _COL_GAP = 14
+
     def _render_row(self, proj: Dict):
         path_str = proj["path"]
         name = proj["name"]
+        mnemonic = proj.get("mnemonic") or ""
         creator = proj.get("creator") or ""
         proj_color = avatar_color(name)
         creator_color = avatar_color(creator) if creator else CLR_META
@@ -311,10 +337,6 @@ class ProjectsOverview:
         live_status = proj.get("live_status") or "idle"
         last_activity = proj.get("last_activity") or proj.get("modified") or ""
 
-        # Is this the project the caller is currently in? If so we render
-        # it inert with a "current" highlight so the switcher keeps
-        # numbering continuity but doesn't let the user reload the same
-        # project on top of itself.
         is_current = False
         if self._current_resolved:
             try:
@@ -329,104 +351,130 @@ class ProjectsOverview:
                 logger.info("Open project failed: %s", e)
                 ui.notify(f"Failed to open project: {e}", type="negative")
 
-        # Current row: highlighted bg + cursor:default, no click handler.
-        # Other rows: hover effect + cursor:pointer + click opens.
+        base_style = (
+            f"min-height: 42px; padding: 6px 14px; gap: {self._COL_GAP}px; "
+            f"border-bottom: 1px solid {CLR_BORDER}; "
+            "flex-wrap: nowrap;"
+        )
         if is_current:
-            row = (
-                ui.row()
-                .classes("w-full items-center group")
-                .style(
-                    f"min-height: 56px; padding: 10px 14px; gap: 10px; "
-                    f"border-bottom: 1px solid {CLR_BORDER}; "
-                    "background: #eff6ff; cursor: default; "
-                    "border-left: 3px solid #3b82f6; padding-left: 11px;"
-                )
-            )
+            row_classes = "w-full items-center group"
+            row_style = base_style + " background: #eff6ff; cursor: default; border-left: 3px solid #3b82f6; padding-left: 9px;"
+            row_click = None
         else:
-            row = (
-                ui.row()
-                .classes(
-                    "w-full items-center hover:bg-slate-50 transition-colors cursor-pointer group"
-                )
-                .style(
-                    f"min-height: 56px; padding: 10px 14px; gap: 10px; "
-                    f"border-bottom: 1px solid {CLR_BORDER};"
-                )
-                .on("click", _open)
-            )
-        with row as row_el:
+            row_classes = "w-full items-center hover:bg-slate-50 transition-colors cursor-pointer group"
+            row_style = base_style
+            row_click = _open
 
-            # Index + status pill, stacked in a fixed-width left column so the
-            # pill stays in a consistent position no matter how long the
-            # project name is.
+        row = ui.row().classes(row_classes).style(row_style)
+        if row_click is not None:
+            row.on("click", row_click)
+
+        cw = self._COL_W
+        with row as row_el:
+            # Index + status pill column.
             with ui.column().classes("items-center").style(
-                "gap: 4px; flex-shrink: 0; width: 56px;"
+                f"gap: 2px; flex-shrink: 0; width: {cw['idx']}px;"
             ):
                 ui.label(f"#{stable_index:02d}").style(
-                    f"{MONO} font-size: 10px; font-weight: 600; color: {CLR_GHOST}; "
+                    f"{MONO} font-size: 9px; font-weight: 600; color: {CLR_GHOST}; "
                     "letter-spacing: 0.04em; line-height: 1;"
                 )
                 self._render_status_pill(live_status)
 
-            # Avatar
+            # Avatar (tighter).
             with ui.element("div").style(
-                f"width: 36px; height: 36px; border-radius: 50%; flex-shrink: 0; "
-                f"background: {proj_color}1a; border: 1px solid {proj_color}55; "
+                f"width: {cw['avatar']}px; height: {cw['avatar']}px; border-radius: 50%; "
+                f"flex-shrink: 0; background: {proj_color}1a; border: 1px solid {proj_color}55; "
                 "display: flex; align-items: center; justify-content: center;"
             ):
                 ui.label(initials).style(
-                    f"font-size: 10px; font-weight: 700; color: {proj_color}; "
+                    f"font-size: 8px; font-weight: 700; color: {proj_color}; "
                     "letter-spacing: 0.05em; line-height: 1; pointer-events: none;"
                 )
 
-            # Main info column (name + creator + meta)
-            with ui.column().classes("flex-1 gap-0 min-w-0"):
-                # Row 1: name (+ "current" marker if this is the loaded project)
-                with ui.row().classes("items-center min-w-0").style("gap: 8px;"):
+            # Name + nickname stacked. Both `min-width: 0` (in CSS, not just
+            # Tailwind) so the column actually shrinks under flex pressure —
+            # otherwise a long folder name pushes into the creator column.
+            with ui.element("div").style(
+                "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; "
+                "gap: 1px; overflow: hidden;"
+            ):
+                with ui.element("div").style(
+                    "display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%;"
+                ):
                     ui.label(name).style(
-                        f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING}; "
+                        f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
                         "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; "
-                        "letter-spacing: -0.01em;"
+                        "letter-spacing: -0.01em; line-height: 1.25; "
+                        "min-width: 0; flex: 1 1 auto;"
                     )
                     if is_current:
                         ui.label("current").style(
-                            f"{FONT} font-size: 9px; color: #1e40af; font-weight: 700; "
+                            f"{FONT} font-size: 8px; color: #1e40af; font-weight: 700; "
                             "background: #dbeafe; border: 1px solid #93c5fd; "
-                            "border-radius: 3px; padding: 1px 6px; flex-shrink: 0; "
+                            "border-radius: 3px; padding: 0 5px; flex-shrink: 0; "
                             "letter-spacing: 0.05em; text-transform: uppercase;"
                         )
+                if mnemonic:
+                    ui.label(mnemonic).style(
+                        f"{MONO} font-size: 9px; color: {CLR_GHOST}; "
+                        "font-style: italic; line-height: 1.25; "
+                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; "
+                        "min-width: 0;"
+                    )
 
-                # Row 2: creator · ts count · job progress · last activity
-                with ui.row().classes("items-center").style("gap: 10px; margin-top: 3px;"):
-                    if creator:
-                        ui.label(creator).style(
-                            f"{MONO} font-size: 10px; font-weight: 600; color: {creator_color};"
-                        )
-                    if ts_count:
-                        with ui.row().classes("items-center").style("gap: 3px;"):
-                            ui.icon("layers", size="11px").style(f"color: {CLR_SUBLABEL};")
-                            ui.label(f"{ts_count} TS").style(
-                                f"{MONO} font-size: 10px; color: {CLR_LABEL};"
-                            )
-                    if total_planned:
-                        progress_text = f"job {succeeded}/{total_planned}"
-                        if running_live:
-                            progress_text += f"  ▸ {running_live} running"
-                        elif failed:
-                            progress_text += f"  ▸ {failed} failed"
-                        ui.label(progress_text).style(
-                            f"{MONO} font-size: 10px; color: {CLR_LABEL};"
-                        )
-                    if last_activity:
-                        ui.label(last_activity).style(
-                            f"{MONO} font-size: 10px; color: {CLR_GHOST};"
-                        )
+            # Creator column (fixed width — left-aligned text).
+            with ui.element("div").style(
+                f"width: {cw['creator']}px; flex-shrink: 0; overflow: hidden;"
+            ):
+                if creator:
+                    ui.label(creator).style(
+                        f"{MONO} font-size: 10px; font-weight: 600; color: {creator_color}; "
+                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                    )
 
-            # Right-side: progress bar + delete (no arrow -- whole row is the
-            # click target now). Delete is suppressed on the current row so
-            # the user can't nuke the project they have loaded.
-            with ui.column().classes("items-end").style("gap: 4px; flex-shrink: 0;"):
+            # TS count column.
+            with ui.element("div").style(
+                f"width: {cw['ts']}px; flex-shrink: 0; display: flex; align-items: center; gap: 3px;"
+            ):
+                if ts_count:
+                    ui.icon("layers", size="10px").style(f"color: {CLR_SUBLABEL};")
+                    ui.label(f"{ts_count} TS").style(
+                        f"{MONO} font-size: 10px; color: {CLR_LABEL};"
+                    )
+
+            # Jobs progress column.
+            with ui.element("div").style(
+                f"width: {cw['jobs']}px; flex-shrink: 0; overflow: hidden;"
+            ):
+                if total_planned:
+                    progress_text = f"job {succeeded}/{total_planned}"
+                    if running_live:
+                        progress_text += f" · {running_live} run"
+                    elif failed:
+                        progress_text += f" · {failed} fail"
+                    ui.label(progress_text).style(
+                        f"{MONO} font-size: 10px; color: {CLR_LABEL}; "
+                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                    )
+
+            # Date column.
+            with ui.element("div").style(
+                f"width: {cw['date']}px; flex-shrink: 0;"
+            ):
+                if last_activity:
+                    ui.label(last_activity).style(f"{MONO} font-size: 10px; color: {CLR_GHOST};")
+
+            # Progress bar column.
+            with ui.element("div").style(
+                f"width: {cw['progress']}px; flex-shrink: 0; display: flex; justify-content: flex-end;"
+            ):
                 self._render_progress_bar(succeeded, failed, running_live, executed, total_planned)
+
+            # Actions column (delete on hover; current row suppresses it).
+            with ui.element("div").style(
+                f"width: {cw['actions']}px; flex-shrink: 0; display: flex; justify-content: flex-end;"
+            ):
                 if self.on_delete is not None and not is_current:
                     async def _del(p=path_str, n=name, r=row_el):
                         await self._handle_delete(Path(p), n, r)
@@ -442,14 +490,20 @@ class ProjectsOverview:
 
     def _render_status_pill(self, status: str):
         s = _STATUS_STYLES.get(status, _STATUS_STYLES["idle"])
-        with ui.row().classes("items-center").style("gap: 4px; flex-shrink: 0;"):
-            if status == "running":
-                ui.spinner("dots", size="10px").style(f"color: {s['color']};")
+        # Compact dot+label so the pill stays under ~46 px wide and doesn't
+        # bleed past the idx column. The "running" spinner is replaced by a
+        # smaller animated dot via CSS-driven opacity to save horizontal real
+        # estate; falls back to a solid dot for non-running states.
+        with ui.element("div").style(
+            "display: flex; align-items: center; gap: 3px; flex-shrink: 0;"
+        ):
+            ui.element("div").style(
+                f"width: 5px; height: 5px; border-radius: 50%; background: {s['color']}; "
+                "flex-shrink: 0;"
+            )
             ui.label(s["label"]).style(
-                f"{FONT} font-size: 9px; color: {s['color']}; font-weight: 700; "
-                f"background: {s['bg']}; border: 1px solid {s['border']}; "
-                "border-radius: 3px; padding: 1px 6px; letter-spacing: 0.05em; "
-                "text-transform: uppercase;"
+                f"{FONT} font-size: 8px; color: {s['color']}; font-weight: 700; "
+                "letter-spacing: 0.04em; line-height: 1; text-transform: uppercase;"
             )
 
     def _render_progress_bar(
@@ -466,7 +520,7 @@ class ProjectsOverview:
         rest_pct = max(0.0, 100.0 - used)
 
         with ui.element("div").style(
-            "width: 100px; height: 6px; border-radius: 3px; overflow: hidden; "
+            "width: 70px; height: 5px; border-radius: 3px; overflow: hidden; "
             "display: flex; background: #f1f5f9;"
         ):
             if succ_pct > 0:

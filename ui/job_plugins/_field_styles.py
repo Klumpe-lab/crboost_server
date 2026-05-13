@@ -23,9 +23,17 @@ CLR_HEADER = "#475569"     # slate-600
 CLR_SUBLABEL = "#94a3b8"   # slate-400
 CLR_BORDER = "#e2e8f0"     # slate-200
 
+# Single label column width applied across Parameters / I/O / SLURM so
+# labels line up vertically when the user scans down a section card. Was
+# previously per-section (params: no width / slurm: 92px / io: 96px),
+# which made the three sections feel like three different forms stacked
+# on top of each other.
+LABEL_W = 110
+
 LABEL_STYLE = (
     f"{SANS} font-size: 10px; font-weight: 500; color: {CLR_LABEL}; "
-    "line-height: 1.4; flex-shrink: 0; white-space: nowrap;"
+    "line-height: 1.4; flex-shrink: 0; white-space: nowrap; "
+    f"width: {LABEL_W}px;"
 )
 VALUE_WRAP_STYLE = (
     f"{MONO} font-size: 11px; color: {CLR_VALUE}; "
@@ -40,15 +48,20 @@ SUFFIX_STYLE = f"{SANS} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;"
 
 ROW_STYLE = (
     "display: flex; align-items: baseline; gap: 8px; width: 100%; "
-    "min-width: 0; min-height: 20px; padding: 1px 0;"
+    "min-width: 0; min-height: 22px; padding: 1px 0;"
 )
 
-PATH_LABEL_W = 96   # px
+# Legacy alias kept for any callers that still reference it directly.
+PATH_LABEL_W = LABEL_W
 
+# Sub-section headers (rendered INSIDE a card's content area, e.g.
+# "Per-Task Resources" / "Supervisor" inside SLURM). The user explicitly
+# pushed back on the uppercase + letter-spacing treatment — use mixed
+# case at a slightly larger size instead, so the visual hierarchy is
+# bold-vs-regular rather than caps-vs-lowercase.
 SECTION_HEADER_STYLE = (
-    f"{SANS} font-size: 10px; font-weight: 700; color: {CLR_HEADER}; "
-    "letter-spacing: 0.06em; text-transform: uppercase; line-height: 1; "
-    "margin: 8px 0 4px 0; display: block;"
+    f"{SANS} font-size: 11px; font-weight: 600; color: {CLR_HEADER}; "
+    "line-height: 1; margin: 8px 0 4px 0; display: block;"
 )
 SECTION_HEADER_FIRST_STYLE = SECTION_HEADER_STYLE.replace("margin: 8px 0 4px 0", "margin: 0 0 4px 0")
 
@@ -58,7 +71,7 @@ GROUP_STYLE = (
 )
 GROUP_MUTED_STYLE = GROUP_STYLE + " background: #fafbfc;"
 
-LABEL_PATH_STYLE = LABEL_STYLE + f" width: {PATH_LABEL_W}px; text-align: right;"
+LABEL_PATH_STYLE = LABEL_STYLE  # path labels share the same column width now
 
 
 # ── Section heads ───────────────────────────────────────────────────────────
@@ -77,7 +90,7 @@ def field_grid():
     """Vertical stack of field rows. Name kept for backwards compat with callers
     that pre-date the layout pivot."""
     el = ui.element("div").style(
-        "display: flex; flex-direction: column; gap: 4px; width: 100%;"
+        "display: flex; flex-direction: column; gap: 2px; width: 100%;"
     )
     with el:
         yield el
