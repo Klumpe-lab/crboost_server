@@ -841,10 +841,17 @@ class StateService:
 
     async def load_project(self, project_json_path: Path):
         try:
-            new_state = ProjectState.load(project_json_path)
-            project_path = new_state.project_path or project_json_path.parent
-            new_state.project_path = project_path  # <-- fix
-            set_project_state_for(project_path, new_state)
+            project_path = project_json_path.parent.resolve()
+            # In-memory state is authoritative — it may be ahead of disk
+            # while a pipeline is running (sync_all_jobs updates job
+            # execution_status/relion_job_name on every tick). Re-reading
+            # from disk here would clobber those in-flight updates, which
+            # was the root cause of jobs appearing stuck at the deploy-time
+            # Scheduled state after a pipeline run. get_project_state_for
+            # already loads from disk only when no instance is registered.
+            state = get_project_state_for(project_path)
+            if state.project_path is None:
+                state.project_path = project_path
             return True
         except Exception:
             return False

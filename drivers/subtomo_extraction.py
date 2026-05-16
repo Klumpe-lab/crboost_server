@@ -40,7 +40,7 @@ import shutil
 import sys
 import traceback
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import pandas as pd
 
@@ -55,11 +55,13 @@ from drivers.array_job_base import (
     read_manifest,
     submit_array_job,
     wait_for_array_completion,
+    write_skip_status,
     write_status_atomic,
 )
 from drivers.driver_base import get_driver_context, run_command
 from drivers.subtomo_merge import (
     _parse_optimisation_set,
+    _read_input_particles_lenient,
     _read_particles_star,
     _read_tomograms_star,
     _write_particles_star,
@@ -132,25 +134,60 @@ def run_supervisor_mode():
             flush=True,
         )
 
-        optics_df, particles_df, general_kv = _read_particles_star(upstream_particles_star)
+        # Lenient read: upstream may be a TM `candidates.star` (particles-
+        # only, no optics) or a real RELION particles.star (optics +
+        # particles). relion_tomo_subtomo sources optics from
+        # tomograms.star, so missing optics in the input is fine.
+        particles_df, optics_df, general_kv = _read_input_particles_lenient(upstream_particles_star)
         tomograms_df = _read_tomograms_star(upstream_tomograms_star)
 
-        # Enumerate TS from the particles file — these are the TS that have
-        # picks to extract. Tomograms.star can list more (e.g. tomos with
-        # zero picks); we don't dispatch tasks for those.
-        ts_names = sorted(particles_df["rlnTomoName"].astype(str).unique().tolist())
-        if not ts_names:
+        # The manifest covers EVERY upstream tilt-series — the ones with
+        # picks get extracted, the empty ones get a .skip marker so the
+        # per-TS UI tracker shows them as deliberately blank rather than
+        # silently dropping the rows. Without this the user sees N reconstructions
+        # but suddenly fewer subtomo rows and can't tell whether the gap is
+        # intentional or a bug.
+        ts_with_picks = sorted(particles_df["rlnTomoName"].astype(str).unique().tolist())
+        if not ts_with_picks:
             raise RuntimeError("Upstream particles.star contained no tomograms (rlnTomoName column empty)")
-        print(f"[SUPERVISOR] {len(ts_names)} TS with picks to extract", flush=True)
+        all_upstream_ts = sorted(tomograms_df["rlnTomoName"].astype(str).unique().tolist())
+        # Manifest order: keep upstream tomograms.star order as authoritative.
+        # Fall back to including any extra TS that show up only in particles
+        # (defensive — shouldn't happen, but don't drop them silently).
+        extra_pick_only = sorted(set(ts_with_picks) - set(all_upstream_ts))
+        ts_names = all_upstream_ts + extra_pick_only
+        with_picks_set = set(ts_with_picks)
+        empty_ts = [t for t in ts_names if t not in with_picks_set]
 
-        # Stage per-TS optimisation sets under .staging/task_<ts>/.
+        print(
+            f"[SUPERVISOR] {len(ts_with_picks)} TS with picks to extract; "
+            f"{len(empty_ts)} empty TS will be marked SKIP (no upstream candidates)",
+            flush=True,
+        )
+        if empty_ts:
+            print(f"[SUPERVISOR] Empty TS (skipped): {empty_ts}", flush=True)
+
+        # Clear stale .skip markers, then pre-write fresh ones for the
+        # currently-empty TS. submit_array_job's sparse-array logic treats
+        # .skip the same as .ok — those indices never get dispatched, but
+        # they remain in the manifest so the UI renders 1 row per upstream TS.
+        status_dir = job_dir / STATUS_DIR_NAME
+        if status_dir.is_dir():
+            for f in status_dir.glob("*.skip"):
+                f.unlink()
+        for ts in empty_ts:
+            write_skip_status(status_dir, ts, reason="no candidates above template-matching threshold")
+
+        # Stage per-TS optimisation sets ONLY for the TS that have picks.
+        # Skipped TS never get a staging dir — no task will run for them.
         staging_root = job_dir / ".staging"
         staging_root.mkdir(parents=True, exist_ok=True)
-        for ts_name in ts_names:
+        for ts_name in ts_with_picks:
             _stage_per_ts(staging_root, ts_name, optics_df, particles_df, tomograms_df, general_kv)
-        print(f"[SUPERVISOR] Staged per-TS inputs under {staging_root}", flush=True)
+        print(f"[SUPERVISOR] Staged per-TS inputs for {len(ts_with_picks)} TS under {staging_root}", flush=True)
 
-        preflight_registry(project_path, ts_names, job_name="subtomo_extraction")
+        # Preflight only the TS we'll actually dispatch.
+        preflight_registry(project_path, ts_with_picks, job_name="subtomo_extraction")
 
         manifest_extra = {
             "input_optimisation_star": str(input_optimisation),
@@ -190,8 +227,9 @@ def run_supervisor_mode():
             sys.exit(1)
 
         # Merge per-TS outputs into job_dir's canonical particles.star /
-        # Subtomograms/ tree.
-        _merge_per_ts_outputs(job_dir, ts_names, general_kv, upstream_tomograms_star)
+        # Subtomograms/ tree. Only the TS with picks produced outputs;
+        # skipped TS never staged or wrote anything.
+        _merge_per_ts_outputs(job_dir, ts_with_picks, general_kv, upstream_tomograms_star)
 
         # Aggregation merge (additional_sources) — opt-in, runs only if the
         # job model has sources configured.
@@ -221,14 +259,18 @@ def run_supervisor_mode():
 def _stage_per_ts(
     staging_root: Path,
     ts_name: str,
-    optics_df: pd.DataFrame,
+    optics_df: Optional[pd.DataFrame],
     particles_df: pd.DataFrame,
     tomograms_df: pd.DataFrame,
     general_kv: dict,
 ) -> None:
     """Write per-TS particles.star, tomograms.star, and a key-value
     optimisation_set.star into `.staging/task_<ts>/`. Idempotent — overwrites
-    on every supervisor run."""
+    on every supervisor run.
+
+    `optics_df=None` for TM-candidate-style inputs: in that case the staged
+    particles.star has no optics block (matches the input shape;
+    relion_tomo_subtomo sources optics from tomograms.star)."""
     task_dir = staging_root / f"task_{ts_name}"
     task_dir.mkdir(parents=True, exist_ok=True)
 
@@ -248,13 +290,15 @@ def _stage_per_ts(
     # Preserve only the optics groups actually referenced by this TS's
     # particles. Multi-optics-group projects (rare today, possible after
     # merge of multiple datasets) would otherwise carry the union into
-    # every task.
-    optics_groups = set(ts_particles["rlnOpticsGroup"].astype(str).unique())
-    ts_optics = optics_df[optics_df["rlnOpticsGroup"].astype(str).isin(optics_groups)].reset_index(drop=True)
-    if len(ts_optics) == 0:
-        raise RuntimeError(
-            f"No optics rows match this TS's particles (referenced groups: {sorted(optics_groups)})."
-        )
+    # every task. Skipped entirely when the input has no optics block.
+    ts_optics: Optional[pd.DataFrame] = None
+    if optics_df is not None and "rlnOpticsGroup" in ts_particles.columns:
+        optics_groups = set(ts_particles["rlnOpticsGroup"].astype(str).unique())
+        ts_optics = optics_df[optics_df["rlnOpticsGroup"].astype(str).isin(optics_groups)].reset_index(drop=True)
+        if len(ts_optics) == 0:
+            raise RuntimeError(
+                f"No optics rows match this TS's particles (referenced groups: {sorted(optics_groups)})."
+            )
 
     particles_out = task_dir / "particles.star"
     tomograms_out = task_dir / "tomograms.star"

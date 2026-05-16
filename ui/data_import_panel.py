@@ -75,6 +75,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         "mdocs_separate": False,
         "mdocs_separate_container": None,
         "parsing_spinner": None,
+        "parse_progress_timer": None,
         "data_history_container": None,
         "raw_data_section": None,  # whole frames+mdocs+overview block; hidden in aggregation mode
         "aggregation_hint": None,  # inline hint shown when aggregation mode is on
@@ -162,6 +163,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             return
 
         _set_hint(ui_mgr.panel_refs.movies_hint_label, quick_msg, CLR_SUBLABEL)
+        _show_validating_progress()
         # Cancel previous check for this field
         prev = _glob_tasks.get("movies")
         if prev and not prev.done():
@@ -196,6 +198,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             return
 
         _set_hint(ui_mgr.panel_refs.mdocs_hint_label, quick_msg, CLR_SUBLABEL)
+        _show_validating_progress()
         prev = _glob_tasks.get("mdocs")
         if prev and not prev.done():
             prev.cancel()
@@ -209,10 +212,13 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 update_input_validation(ui_mgr.panel_refs.mdocs_input, is_valid, msg)
             _set_hint(ui_mgr.panel_refs.mdocs_hint_label, msg, CLR_SUCCESS if is_valid else CLR_ERROR)
             update_create_button_state()
-            # Trigger autodetect + dataset parsing now that validation is confirmed
+            # Trigger autodetect now that validation is confirmed. Always run
+            # parse_and_display_dataset -- it clears the (now-stale) progress
+            # overlay when the pattern is invalid, and renders the panel when
+            # it's valid.
             if is_valid:
                 await _auto_detect_if_ready()
-                await parse_and_display_dataset()
+            await parse_and_display_dataset()
 
         _glob_tasks["mdocs"] = asyncio.create_task(_finish())
 
@@ -615,15 +621,23 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
     async def handle_create_project():
         sync_state_from_inputs()
         di = ui_mgr.data_import
-        # In aggregation mode the raw-data validators don't apply; skip them
-        # so we don't flash an "invalid pattern" error against blank inputs.
-        if not di.is_aggregation:
-            update_movies_validation()
-            update_mdocs_validation()
         if not can_create_project():
             ui.notify(f"Cannot create: Missing {get_missing_requirements()}", type="warning")
             return
         btn = ui_mgr.panel_refs.create_button
+        # mdocs_valid is set True the instant the glob count passes, but the
+        # async _finish() task continues to run parse_and_display_dataset()
+        # afterwards — which is what populates current_dataset_overview. If
+        # the user clicks Create during that window, we'd see overview=None
+        # and silently fall back to importing every mdoc the glob matches.
+        # Wait the in-flight tasks out before reading the overview.
+        for task_key in ("mdocs", "movies"):
+            t = _glob_tasks.get(task_key)
+            if t is not None and not t.done():
+                try:
+                    await t
+                except Exception:
+                    pass
         overview = local_refs.get("current_dataset_overview")
 
         # Auto-save selections before attempting creation (survives failures)
@@ -918,11 +932,42 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
     # DATASET OVERVIEW
     # =========================================================================
 
+    _PROGRESS_BOX = f"border: 1px solid {CLR_BORDER}; border-radius: 6px; padding: 8px 10px; background: #f8fafc;"
+
+    def _show_validating_progress():
+        """Immediate, indeterminate feedback shown the moment a data path is
+        entered -- covers the otherwise-silent glob-validation window before
+        the dataset scan even starts."""
+        container = local_refs["dataset_overview_container"]
+        if not container:
+            return
+        # A scan is already in flight / rendering -- don't stomp its bar.
+        if local_refs["parse_progress_timer"] is not None:
+            return
+        local_refs["current_dataset_overview"] = None
+        container.clear()
+        with container:
+            with ui.column().classes("w-full gap-1 mt-1").style(_PROGRESS_BOX):
+                with ui.row().classes("items-center gap-2"):
+                    ui.spinner("dots", size="sm").style(f"color: {CLR_ACCENT};")
+                    ui.label("Validating data path…").style(f"{FONT} font-size: 10px; color: {CLR_LABEL};")
+                ui.linear_progress(show_value=False, size="4px").props("indeterminate rounded").style(
+                    f"color: {CLR_ACCENT};"
+                )
+
     async def parse_and_display_dataset():
         """Parse dataset structure from mdocs and display the overview panel."""
         container = local_refs["dataset_overview_container"]
         if not container:
             return
+
+        # Tear down any in-flight progress timer from a previous scan.
+        if local_refs["parse_progress_timer"] is not None:
+            try:
+                local_refs["parse_progress_timer"].cancel()
+            except Exception:
+                pass
+            local_refs["parse_progress_timer"] = None
 
         mdocs_glob = ui_mgr.data_import.mdocs_glob
         if not mdocs_glob or not ui_mgr.data_import.mdocs_valid:
@@ -933,23 +978,54 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         movies_glob = ui_mgr.data_import.movies_glob
         frames_dir = str(Path(movies_glob).parent) if movies_glob and "*" in movies_glob else None
 
-        # Show spinner while parsing
+        # Determinate progress bar driven by a worker-thread callback. The
+        # callback only mutates a plain dict (cheap int writes); a ui.timer
+        # polls it and repaints the bar on the UI thread.
+        progress = {"cur": 0, "total": 0, "det": False}
+
+        def _on_progress(cur, total):
+            progress["cur"] = cur
+            progress["total"] = total
+
+        def _tick():
+            total = progress["total"]
+            if total > 0:
+                if not progress["det"]:
+                    progress_bar.props(remove="indeterminate")
+                    progress["det"] = True
+                progress_bar.set_value(min(1.0, progress["cur"] / total))
+                count_lbl.set_text(f"{progress['cur']}/{total} tilt-series")
+
+        # NOTE: this coroutine runs as a detached task (asyncio.create_task in
+        # update_mdocs_validation), so it has no ambient NiceGUI slot. Every
+        # element -- including ui.timer -- must be created inside an explicit
+        # `with container:` block or NiceGUI raises "slot stack is empty".
         container.clear()
         with container:
-            with ui.row().classes("w-full justify-center py-3"):
-                ui.spinner("dots", size="sm").style(f"color: {CLR_ACCENT};")
-                ui.label("Scanning dataset...").style(
-                    f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; margin-left: 6px;"
-                )
+            with ui.column().classes("w-full gap-1 mt-1").style(_PROGRESS_BOX):
+                with ui.row().classes("w-full items-center justify-between"):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.spinner("dots", size="sm").style(f"color: {CLR_ACCENT};")
+                        ui.label("Scanning dataset — parsing mdocs & locating frames…").style(
+                            f"{FONT} font-size: 10px; color: {CLR_LABEL};"
+                        )
+                    count_lbl = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL};")
+                progress_bar = ui.linear_progress(value=0, show_value=False, size="4px").props(
+                    "indeterminate rounded"
+                ).style(f"color: {CLR_ACCENT};")
+            local_refs["parse_progress_timer"] = ui.timer(0.15, _tick)
 
         try:
             from services.configs.dataset_selection_cache import apply_selections, save_selections
 
-            overview = await backend.parse_dataset_overview(mdocs_glob, frames_dir)
+            overview = await backend.parse_dataset_overview(mdocs_glob, frames_dir, progress_cb=_on_progress)
             # Restore previously saved selections for this dataset
             restored = apply_selections(mdocs_glob, overview)
 
             local_refs["current_dataset_overview"] = overview
+            if local_refs["parse_progress_timer"] is not None:
+                local_refs["parse_progress_timer"].cancel()
+                local_refs["parse_progress_timer"] = None
             container.clear()
             with container:
                 # "Save Selection" button row
@@ -975,6 +1051,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 build_dataset_overview_panel(overview, on_change=update_create_button_state)
         except Exception as e:
             logger.info("Dataset parsing failed: %s", e)
+            if local_refs["parse_progress_timer"] is not None:
+                try:
+                    local_refs["parse_progress_timer"].cancel()
+                except Exception:
+                    pass
+                local_refs["parse_progress_timer"] = None
             container.clear()
             local_refs["current_dataset_overview"] = None
 
@@ -1202,7 +1284,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         # =================================================================
         # RIGHT COLUMN: Projects Overview + History sidebar
         # =================================================================
-        with ui.column().classes("gap-2").style("flex: 2; min-width: 640px; max-width: 820px;"):
+        with ui.column().classes("gap-2").style("flex: 2; min-width: 460px; max-width: 820px;"):
             # ----- Projects Overview -----
             async def _open_from_overview(p: Path):
                 await handle_load_project(p)

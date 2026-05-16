@@ -130,6 +130,34 @@ def _read_particles_star(particles_star: Path) -> Tuple[pd.DataFrame, pd.DataFra
     return optics_df.copy(), particles_df.copy(), general_kv
 
 
+def _read_input_particles_lenient(
+    particles_star: Path,
+) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Dict[str, Any]]:
+    """Read an upstream particles file used as input to subtomo extraction.
+
+    Accepts both TM-style candidate stars (single `data_particles` block,
+    no optics) and full RELION extraction outputs (optics + particles).
+    Only `rlnTomoName` is required — that's what the per-TS slicer needs.
+
+    Returns (particles_df, optics_df_or_None, general_kv).
+    """
+    d = starfile.read(particles_star, always_dict=True)
+
+    particles_df = _find_df_block(d, required_cols=["rlnTomoName"])
+
+    try:
+        optics_df = _find_df_block(d, required_cols=["rlnVoltage", "rlnSphericalAberration", "rlnAmplitudeContrast"])
+    except KeyError:
+        optics_df = None
+
+    general_kv: Dict[str, Any] = {}
+    for v in d.values():
+        if isinstance(v, dict) and "rlnTomoSubTomosAre2DStacks" in v:
+            general_kv["rlnTomoSubTomosAre2DStacks"] = v["rlnTomoSubTomosAre2DStacks"]
+
+    return particles_df.copy(), (optics_df.copy() if optics_df is not None else None), general_kv
+
+
 def _read_tomograms_star(tomograms_star: Path) -> pd.DataFrame:
     d = starfile.read(tomograms_star, always_dict=True)
     df = _find_df_block(d, required_cols=["rlnTomoName", "rlnTomoReconstructedTomogram"])
@@ -176,18 +204,28 @@ def _write_loop_block(f, block_name: str, df: pd.DataFrame) -> None:
 
 
 def _write_particles_star(
-    out_path: Path, *, optics_df: pd.DataFrame, particles_df: pd.DataFrame, general_kv: Optional[Dict[str, Any]] = None
+    out_path: Path,
+    *,
+    optics_df: Optional[pd.DataFrame],
+    particles_df: pd.DataFrame,
+    general_kv: Optional[Dict[str, Any]] = None,
 ) -> None:
-    general_kv = dict(general_kv or {})
-    general_kv.setdefault("rlnTomoSubTomosAre2DStacks", 1)
+    # `optics_df=None` (or empty) is valid: TM-candidate-style inputs have
+    # no optics block and relion_tomo_subtomo sources optics from
+    # tomograms.star instead. In that case we also omit the data_general
+    # block — keeping the staged file shape-equivalent to the input.
+    has_optics = optics_df is not None and not optics_df.empty
 
     with open(out_path, "w") as f:
-        f.write("# version 50001\n\n")
-        f.write("data_general\n\n")
-        for k, v in general_kv.items():
-            f.write(f"_{k}                       {v}\n")
-        f.write("\n\n")
-        _write_loop_block(f, "optics", optics_df)
+        if has_optics:
+            general_kv = dict(general_kv or {})
+            general_kv.setdefault("rlnTomoSubTomosAre2DStacks", 1)
+            f.write("# version 50001\n\n")
+            f.write("data_general\n\n")
+            for k, v in general_kv.items():
+                f.write(f"_{k}                       {v}\n")
+            f.write("\n\n")
+            _write_loop_block(f, "optics", optics_df)
         _write_loop_block(f, "particles", particles_df)
 
 

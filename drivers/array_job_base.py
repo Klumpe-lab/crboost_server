@@ -35,6 +35,7 @@ server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 from services.computing.slurm_service import SlurmConfig
+from services.configs.starfile_service import StarfileService
 
 
 # ----------------------------------------------------------------------
@@ -94,12 +95,41 @@ def write_status_atomic(status_dir: Path, item_name: str, ok: bool) -> None:
     os.replace(tmp, target)
 
 
+def write_skip_status(status_dir: Path, item_name: str, reason: str = "") -> None:
+    """Mark a manifest item as INTENTIONALLY skipped (no work to do).
+
+    Used when upstream produced nothing for this item (e.g. template
+    matching yielded zero candidates for a tilt-series) — the supervisor
+    pre-writes a .skip marker so the array dispatch never spawns a task,
+    the per-TS UI tracker shows the item as deliberately blank rather than
+    silently absent, and the job's final status doesn't treat it as a
+    failure or missing entry.
+    """
+    status_dir.mkdir(parents=True, exist_ok=True)
+    target = status_dir / f"{item_name}.skip"
+    tmp = status_dir / f".{item_name}.skip.tmp"
+    tmp.write_text(reason)
+    os.replace(tmp, target)
+
+
 def get_previously_succeeded(job_dir: Path) -> set:
     """Return the set of item names that have .ok status from a previous run."""
     status_dir = job_dir / STATUS_DIR_NAME
     if not status_dir.is_dir():
         return set()
     return {p.stem for p in status_dir.glob("*.ok")}
+
+
+def get_previously_done(job_dir: Path) -> set:
+    """Return the set of item names whose work is settled (`.ok` OR `.skip`).
+
+    Used by submit_array_job's sparse-array logic: skipped items are
+    intentionally not dispatched, same as succeeded items aren't re-run.
+    """
+    status_dir = job_dir / STATUS_DIR_NAME
+    if not status_dir.is_dir():
+        return set()
+    return {p.stem for p in status_dir.glob("*.ok")} | {p.stem for p in status_dir.glob("*.skip")}
 
 
 def clean_status_dir(job_dir: Path, keep_ok: bool = False) -> Path:
@@ -128,21 +158,52 @@ class ArrayResults:
     ok: List[str]
     failed: List[str]
     missing: List[str]
+    skipped: List[str]
     all_succeeded: bool
 
     @property
     def summary(self) -> str:
-        return f"{len(self.ok)} ok, {len(self.failed)} fail, {len(self.missing)} missing"
+        parts = [f"{len(self.ok)} ok"]
+        if self.skipped:
+            parts.append(f"{len(self.skipped)} skip")
+        parts.append(f"{len(self.failed)} fail")
+        parts.append(f"{len(self.missing)} missing")
+        return ", ".join(parts)
+
+
+def read_tilt_series_names_from_input_star(input_star: Path) -> List[str]:
+    """Sorted TS names from the input STAR's `global` block.
+
+    This is the authoritative TS list for any per-TS job downstream of
+    alignment: WarpTools writes a `{ts}.xml` even for tilt-series that
+    failed alignment (it just flags them "unselected"), so a `*.xml`-glob
+    enumeration would silently pull excluded TS back into scope and the
+    job would waste compute on (and confusingly green-tick) them. The
+    input STAR is the data contract between jobs — use it.
+    """
+    star_data = StarfileService().read(input_star)
+    df = star_data.get("global")
+    if df is None or len(df) == 0:
+        return []
+    return sorted(df["rlnTomoName"].astype(str).tolist())
 
 
 def collect_task_results(job_dir: Path, ts_names: List[str]) -> ArrayResults:
-    """Read .task_status/ directory to tally per-TS outcomes."""
+    """Read .task_status/ directory to tally per-TS outcomes.
+
+    `.skip` files (intentional non-runs) are NOT failures and NOT missing —
+    they count toward `all_succeeded` together with `.ok` files.
+    """
     status_dir = job_dir / STATUS_DIR_NAME
     ok_files = sorted(p.stem for p in status_dir.glob("*.ok"))
     fail_files = sorted(p.stem for p in status_dir.glob("*.fail"))
-    missing = sorted(set(ts_names) - set(ok_files) - set(fail_files))
-    all_ok = len(ok_files) == len(ts_names) and not fail_files and not missing
-    return ArrayResults(ok=ok_files, failed=fail_files, missing=missing, all_succeeded=all_ok)
+    skip_files = sorted(p.stem for p in status_dir.glob("*.skip"))
+    accounted = set(ok_files) | set(fail_files) | set(skip_files)
+    missing = sorted(set(ts_names) - accounted)
+    all_ok = (len(ok_files) + len(skip_files)) == len(ts_names) and not fail_files and not missing
+    return ArrayResults(
+        ok=ok_files, failed=fail_files, missing=missing, skipped=skip_files, all_succeeded=all_ok
+    )
 
 
 # ----------------------------------------------------------------------
@@ -437,19 +498,23 @@ def submit_array_job(
 
     Returns the SLURM array job ID, or None if all items already succeeded.
     """
-    # 1. Check which items already succeeded from a previous run
-    previously_ok = get_previously_succeeded(job_dir)
-    indices_to_run = [i for i, ts in enumerate(ts_names) if ts not in previously_ok]
+    # 1. Skip items already settled — both `.ok` (succeeded earlier) and
+    # `.skip` (intentionally not run for this dispatch, e.g. supervisor
+    # pre-marked an item with no upstream work to do).
+    previously_done = get_previously_done(job_dir)
+    indices_to_run = [i for i, ts in enumerate(ts_names) if ts not in previously_done]
 
-    if previously_ok:
-        print(
-            f"[SUPERVISOR] {len(previously_ok)} tilt-series already succeeded, "
-            f"{len(indices_to_run)} to (re)run",
-            flush=True,
-        )
+    if previously_done:
+        n_ok = len(get_previously_succeeded(job_dir))
+        n_skip = len(previously_done) - n_ok
+        msg = f"[SUPERVISOR] {n_ok} tilt-series already succeeded"
+        if n_skip:
+            msg += f", {n_skip} pre-marked skip"
+        msg += f"; {len(indices_to_run)} to (re)run"
+        print(msg, flush=True)
 
     if not indices_to_run:
-        print("[SUPERVISOR] All tilt-series already succeeded — nothing to submit", flush=True)
+        print("[SUPERVISOR] All tilt-series already settled — nothing to submit", flush=True)
         return None
 
     # 2. Write manifest with ALL items (keeps index→name mapping stable)

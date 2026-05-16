@@ -94,20 +94,24 @@ def scan_statuses(job_dir: Path, items: List[str]) -> Dict[str, str]:
     """Scan .task_status/ dir and return {item_name: status_string}.
 
     Uses task_{idx}.out existence to distinguish running vs pending:
-      - .task_status/{name}.ok  → "ok"
+      - .task_status/{name}.ok   → "ok"
       - .task_status/{name}.fail → "fail"
+      - .task_status/{name}.skip → "skip" (supervisor pre-marked; never dispatched)
       - task_{idx}.out exists (no status file) → "running" (SLURM started it)
       - task_{idx}.out missing (no status file) → "pending" (still queued)
     """
     status_dir = job_dir / ".task_status"
     ok_set: set = set()
     fail_set: set = set()
+    skip_set: set = set()
     if status_dir.is_dir():
         for p in status_dir.iterdir():
             if p.suffix == ".ok":
                 ok_set.add(p.stem)
             elif p.suffix == ".fail":
                 fail_set.add(p.stem)
+            elif p.suffix == ".skip":
+                skip_set.add(p.stem)
 
     statuses: Dict[str, str] = {}
     for idx, name in enumerate(items):
@@ -115,6 +119,8 @@ def scan_statuses(job_dir: Path, items: List[str]) -> Dict[str, str]:
             statuses[name] = "ok"
         elif name in fail_set:
             statuses[name] = "fail"
+        elif name in skip_set:
+            statuses[name] = "skip"
         elif (job_dir / f"task_{idx}.out").exists():
             statuses[name] = "running"
         else:

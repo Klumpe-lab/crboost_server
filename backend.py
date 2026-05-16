@@ -218,6 +218,7 @@ class CryoBoostBackend:
                     total_jobs_planned = 0
                     ts_count = 0
                     mnemonic = ""
+                    source_directory = ""
                     try:
                         with open(params_file) as f:
                             data = json.load(f)
@@ -238,6 +239,13 @@ class CryoBoostBackend:
                             or 0
                         )
                         mnemonic = data.get("mnemonic") or ""
+                        # Where the raw data came from. Prefer the resolved
+                        # frames dir; fall back to the movies glob's parent.
+                        source_directory = data.get("import_source_directory") or ""
+                        if not source_directory:
+                            mg = data.get("movies_glob") or ""
+                            if mg:
+                                source_directory = str(Path(mg).parent) if "*" in mg else mg
                     except Exception:
                         pass
 
@@ -284,6 +292,7 @@ class CryoBoostBackend:
                             "pipeline_active": pipeline_active,
                             "total_jobs_planned": total_jobs_planned,
                             "ts_count": ts_count,
+                            "source_directory": source_directory,
                             "last_activity_ts": last_activity_ts,
                             "last_activity": datetime.fromtimestamp(last_activity_ts).strftime("%Y-%m-%d %H:%M"),
                             **derived,
@@ -488,11 +497,11 @@ class CryoBoostBackend:
             },
         }
 
-    async def parse_dataset_overview(self, mdocs_glob: str, frames_dir: Optional[str] = None):
+    async def parse_dataset_overview(self, mdocs_glob: str, frames_dir: Optional[str] = None, progress_cb=None):
         from services.configs.dataset_parsing_service import get_dataset_parsing_service
 
         service = get_dataset_parsing_service()
-        overview = await asyncio.to_thread(service.parse_dataset, mdocs_glob, frames_dir)
+        overview = await asyncio.to_thread(service.parse_dataset, mdocs_glob, frames_dir, progress_cb)
         return overview
 
     async def run_shell_command(
