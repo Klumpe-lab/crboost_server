@@ -29,6 +29,7 @@ from drivers.array_job_base import (
     install_cancel_handler,
     preflight_registry,
     read_manifest,
+    read_tilt_series_names_from_input_star,
     submit_array_job,
     wait_for_array_completion,
     write_status_atomic,
@@ -195,15 +196,39 @@ def run_supervisor_mode():
         input_processing = paths["input_processing"]
         settings_file = paths["warp_tiltseries_settings"]
         output_processing = paths.get("output_processing", job_dir / "warp_tiltseries")
+        input_star = paths.get("input_star")
 
         if not input_processing.exists():
             raise FileNotFoundError(f"Input processing dir not found: {input_processing}")
+        if not input_star or not Path(input_star).exists():
+            raise FileNotFoundError(f"Input STAR not found: {input_star}")
 
-        # Step 1: Copy alignment XMLs into our output dir
+        # Authoritative TS list = input STAR (alignment output). Globbing
+        # *.xml in input_processing is unsafe: WarpTools writes a {ts}.xml
+        # even for tilt-series alignment failed on (they're flagged
+        # "unselected" inside the XML), so an XML-glob would silently
+        # resurrect excluded TS and ts_ctf would waste compute on them.
+        ts_names = read_tilt_series_names_from_input_star(Path(input_star))
+        if not ts_names:
+            raise ValueError(f"No tilt-series found in input STAR: {input_star}")
+        in_scope = set(ts_names)
+
+        # Step 1: Copy alignment XMLs into our output dir — but only for the
+        # in-scope TS. Excluded XMLs would also poison run_defocus_hand_globally
+        # (it operates on every XML in output_processing).
         output_processing.mkdir(parents=True, exist_ok=True)
-        print(f"[SUPERVISOR] Copying XMLs from {input_processing} to {output_processing}", flush=True)
+        copied = 0
+        skipped = 0
         for xml_file in input_processing.glob("*.xml"):
-            shutil.copy2(str(xml_file), str(output_processing / xml_file.name))
+            if xml_file.stem in in_scope:
+                shutil.copy2(str(xml_file), str(output_processing / xml_file.name))
+                copied += 1
+            else:
+                skipped += 1
+        msg = f"[SUPERVISOR] Copied {copied} alignment XMLs to {output_processing}"
+        if skipped:
+            msg += f" (skipped {skipped} excluded by alignment output STAR)"
+        print(msg, flush=True)
 
         # Copy settings into job dir for staging
         local_settings = job_dir / settings_file.name
@@ -215,11 +240,6 @@ def run_supervisor_mode():
         local_tomostar = job_dir / "tomostar"
         if not local_tomostar.exists() and tomostar_dir.exists():
             shutil.copytree(str(tomostar_dir), str(local_tomostar))
-
-        # Enumerate TS from the XMLs we just copied
-        ts_names = sorted(p.stem for p in output_processing.glob("*.xml"))
-        if not ts_names:
-            raise ValueError(f"No XML files found in {output_processing}")
 
         n_tasks = len(ts_names)
         print(f"[SUPERVISOR] Found {n_tasks} tilt-series for CTF estimation", flush=True)

@@ -79,12 +79,18 @@ class TsAlignmentIngestAdapter:
         alignment_method: AlignmentMethod,
         *,
         alignment_angpix: float = 0.0,
-    ) -> None:
+    ) -> List[str]:
         """Populate the registry with per-TS alignment outputs.
 
         `alignment_angpix` is the binned-stack pixel size used for shift
         conversion. If 0, auto-infer from the first `.st` MRC header — same
         behavior as the pre-refactor code.
+
+        Tilt-series whose alignment output can't be parsed are *dropped*, not
+        fatal: AreTomo legitimately fails to solve some tilt-series, and one
+        bad TS must not sink the whole job (and with it the pipeline). Only a
+        total wipeout — nothing parseable — raises. Returns the list of TS ids
+        that were successfully ingested.
         """
         expected = sorted(set(expected_ts_ids))
         if not expected:
@@ -106,6 +112,7 @@ class TsAlignmentIngestAdapter:
             )
 
         problems: Dict[str, str] = {}
+        ingested: List[str] = []
         for ts_id in expected:
             ts = self.registry.get_tilt_series(ts_id)
             try:
@@ -114,16 +121,25 @@ class TsAlignmentIngestAdapter:
                 problems[ts_id] = str(e)
                 continue
             self.registry.attach_ts_output(ts_id, output)
+            ingested.append(ts_id)
             logger.info(
                 "tsAlignment: ingested %s (%d/%d frames aligned)",
                 ts_id, len(output.per_frame), ts.frame_count,
             )
 
+        # Per-TS failure is tolerated (drop + warn); only a total wipeout is fatal.
         if problems:
             detail = "\n  - ".join(f"{tid}: {reason}" for tid, reason in sorted(problems.items()))
-            raise RuntimeError(
-                f"tsAlignment ingest failed for {len(problems)} tilt-series:\n  - {detail}"
+            logger.warning(
+                "tsAlignment: %d/%d tilt-series excluded from alignment output:\n  - %s",
+                len(problems), len(expected), detail,
             )
+        if not ingested:
+            detail = "\n  - ".join(f"{tid}: {reason}" for tid, reason in sorted(problems.items()))
+            raise RuntimeError(
+                f"tsAlignment ingest failed for ALL {len(expected)} tilt-series:\n  - {detail}"
+            )
+        return ingested
 
     def emit_star(
         self,
@@ -162,6 +178,7 @@ class TsAlignmentIngestAdapter:
 
         all_tilts_list: List[pd.DataFrame] = []
         problems: Dict[str, str] = {}
+        emitted: List[str] = []
         for _, ts_row in in_ts_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
             # Strict identity: rlnTomoName MUST equal the tilt_series STAR stem
@@ -194,6 +211,7 @@ class TsAlignmentIngestAdapter:
                 continue
 
             self.starfile_service.write({ts_id: updated}, tilt_dir / f"{ts_id}.star")
+            emitted.append(ts_id)
 
             # Build the {ts-row-expanded + per-tilt} wide DataFrame that the
             # legacy writer dumped into all_tilts.star for downstream jobs.
@@ -201,9 +219,22 @@ class TsAlignmentIngestAdapter:
             ts_row_df.index = updated.index
             all_tilts_list.append(pd.concat([ts_row_df, updated], axis=1))
 
+        # Tolerate per-TS failure: drop the unusable tilt-series (typically the
+        # ones ingest already excluded) and emit a STAR with the rest. Only a
+        # total wipeout is fatal — see the matching policy in ingest().
         if problems:
             detail = "\n  - ".join(f"{tid}: {reason}" for tid, reason in sorted(problems.items()))
-            raise RuntimeError(f"tsAlignment emit_star failed for {len(problems)} tilt-series:\n  - {detail}")
+            logger.warning(
+                "tsAlignment emit_star: %d tilt-series excluded from output STAR:\n  - %s",
+                len(problems), detail,
+            )
+        if not emitted:
+            detail = "\n  - ".join(f"{tid}: {reason}" for tid, reason in sorted(problems.items()))
+            raise RuntimeError(f"tsAlignment emit_star produced no usable tilt-series:\n  - {detail}")
+
+        # Drop excluded TS from the global block — a row whose per-TS STAR was
+        # never written must not leave a dangling rlnTomoTiltSeriesStarFile.
+        out_ts_df = out_ts_df[out_ts_df["rlnTomoName"].isin(emitted)].reset_index(drop=True)
 
         # Rewrite global-block columns.
         out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(

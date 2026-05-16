@@ -55,9 +55,16 @@ class PipelineRunnerService:
 
         star_patched = False
         failed_job_paths: List[str] = []
+        already_failed_in_star = False
         if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
             for idx, row in processes.iterrows():
-                if row["rlnPipeLineProcessStatusLabel"] == "Running":
+                label = row["rlnPipeLineProcessStatusLabel"]
+                if label == "Failed":
+                    # The relion schemer recorded this failure itself before
+                    # halting the scheme — there's no Running->Failed transition
+                    # left for the branch below to catch.
+                    already_failed_in_star = True
+                elif label == "Running":
                     job_dir = Path(project_path) / row["rlnPipeLineProcessName"].rstrip("/")
                     if (job_dir / "RELION_JOB_EXIT_SUCCESS").exists():
                         processes.at[idx, "rlnPipeLineProcessStatusLabel"] = "Succeeded"
@@ -78,6 +85,10 @@ class PipelineRunnerService:
                 data["pipeline_processes"] = processes
                 star_handler.write(data, pipeline_star)
 
+        changes: Dict[str, bool] = {}
+        state = self.backend.state_service.state_for(Path(project_path))
+        project_root = Path(project_path)
+
         # Stop the pipeline on any job failure. Using stop_and_cleanup (not just
         # stop_pipeline) so that any Scheduled/Pending downstream jobs are
         # patched to Failed too — otherwise the UI's all_done check in
@@ -85,11 +96,33 @@ class PipelineRunnerService:
         # resolves. Also scancels any live array tasks collected from job
         # manifests. The failed job's own supervisor already exited, so this
         # is idempotent on that side.
-        if failed_job_paths:
+        #
+        # Two triggers:
+        #   - failed_job_paths: a Running->Failed transition we just reconciled
+        #     from an exit marker above.
+        #   - already_failed_in_star: the relion schemer recorded the failure
+        #     itself and exited. That path never populates failed_job_paths, so
+        #     without this branch the downstream jobs it blocked (often never
+        #     even dispatched into default_pipeline.star — e.g. a pending tsCtf)
+        #     stay Scheduled forever and the UI hangs on a phantom "done". The
+        #     guard makes it fire once and no-op on every subsequent poll.
+        needs_stop_on_fail = bool(failed_job_paths)
+        if already_failed_in_star and not needs_stop_on_fail:
+            star_has_live_row = bool(
+                processes["rlnPipeLineProcessStatusLabel"].isin(["Running", "Pending"]).any()
+            )
+            mem_has_live_job = any(
+                j.execution_status in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED)
+                and not getattr(j, "IS_INTERACTIVE", False)
+                for j in state.jobs.values()
+            )
+            needs_stop_on_fail = star_has_live_row or mem_has_live_job
+
+        if needs_stop_on_fail:
             active = self.is_active(Path(project_path))
             logger.info(
-                "STOP-ON-FAIL: failure(s) detected in %s — %s; is_active=%s",
-                project_path, failed_job_paths, active,
+                "STOP-ON-FAIL: failure in %s — markers=%s already_in_star=%s; is_active=%s",
+                project_path, failed_job_paths, already_failed_in_star, active,
             )
             try:
                 result = await self.stop_and_cleanup(Path(project_path), slurm_job_ids=[])
@@ -124,10 +157,6 @@ class PipelineRunnerService:
                                 logger.info("Could not resolve stdout path for SLURM job %s: %s", sj.job_id, e)
                 except Exception as e:
                     logger.info("Could not fetch squeue for QUEUED cross-reference: %s", e)
-
-        changes: Dict[str, bool] = {}
-        state = self.backend.state_service.state_for(Path(project_path))
-        project_root = Path(project_path)
 
         if state.pipeline_active and not self.is_active(Path(project_path)):
             logger.info("Clearing stale pipeline_active flag (no active schemer process)")
@@ -244,7 +273,12 @@ class PipelineRunnerService:
                 state.job_path_mapping.pop(instance_id, None)
                 if old_status != JobStatus.SCHEDULED:
                     changes[instance_id] = True
-            elif job_model.execution_status not in (JobStatus.SCHEDULED, JobStatus.UNKNOWN):
+            elif job_model.execution_status not in (JobStatus.SCHEDULED, JobStatus.UNKNOWN, JobStatus.FAILED):
+                # FAILED is excluded on purpose: a job with no relion_job_name
+                # that is FAILED was deliberately marked so by stop_and_cleanup
+                # (upstream failed, this one never got to run). Resetting it to
+                # SCHEDULED here would resurrect it as "pending" under a
+                # phantom-done pipeline — the exact stuck state this guards.
                 job_model.execution_status = JobStatus.SCHEDULED
                 job_model.relion_job_name = None
                 job_model.relion_job_number = None
@@ -438,10 +472,6 @@ class PipelineRunnerService:
                     await init_process.wait()
                     return {"success": False, "error": "Relion project initialization timed out"}
 
-            state.pipeline_active = True
-            await self.backend.state_service.save_project(project_path=project_dir, force=True)
-            logger.info("Pipeline marked active, state protected from resets")
-
             scheme_log_dir = project_dir / "Schemes" / scheme_name
             scheme_log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -475,6 +505,18 @@ class PipelineRunnerService:
                 stderr_handle.close()
                 raise
             self._active_processes[resolved] = process
+
+            # pipeline_active is flipped AFTER the process is registered in
+            # _active_processes. Setting it earlier creates a race: the
+            # PipelineMonitor's 3-s tick can fire during the apptainer/
+            # subprocess-spawn await window and observe (pipeline_active=True
+            # && is_active=False), which triggers the sync_all_jobs self-heal
+            # at line 161 — clearing pipeline_active back to False and
+            # orphaning the schemer (jobs run, but no one updates their
+            # execution_status, so the orchestrator cards stay yellow).
+            state.pipeline_active = True
+            await self.backend.state_service.save_project(project_path=project_dir, force=True)
+            logger.info("Pipeline marked active, state protected from resets")
 
             asyncio.create_task(
                 self._monitor_schemer(
@@ -569,9 +611,6 @@ class PipelineRunnerService:
             job_model.execution_status = JobStatus.RUNNING
             logger.info("Retry sbatched: instance=%s dir=%s slurm=%s", iid, job_dir, slurm_id)
 
-        state.pipeline_active = True
-        await self.backend.state_service.save_project(project_path=project_dir, force=True)
-
         resolved = project_dir.resolve()
         monitor_task = asyncio.create_task(
             self._monitor_retries_and_handoff(
@@ -581,6 +620,13 @@ class PipelineRunnerService:
             )
         )
         self._retry_monitors[resolved] = monitor_task
+
+        # Flip pipeline_active AFTER _retry_monitors registration so the
+        # monitor's tick can't observe (pipeline_active=True && is_active=False)
+        # during the save's await window and self-heal it back to False. Same
+        # race as run_generated_scheme; same fix.
+        state.pipeline_active = True
+        await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
         message = (
             f"Retrying {len(prepared)} job(s) in place; "
@@ -667,7 +713,11 @@ class PipelineRunnerService:
 
         status_dir = job_dir / ".task_status"
         status_dir.mkdir(parents=True, exist_ok=True)
-        existing = {p.stem for p in status_dir.glob("*.ok")} | {p.stem for p in status_dir.glob("*.fail")}
+        existing = (
+            {p.stem for p in status_dir.glob("*.ok")}
+            | {p.stem for p in status_dir.glob("*.fail")}
+            | {p.stem for p in status_dir.glob("*.skip")}
+        )
 
         marked = 0
         for idx, name in enumerate(items):
@@ -786,10 +836,28 @@ class PipelineRunnerService:
                 self._active_processes.pop(resolved, None)
                 self._stdout_log_paths.pop(resolved, None)
                 self._stderr_log_paths.pop(resolved, None)
+                # Reconcile job statuses against the schemer's final
+                # default_pipeline.star BEFORE pipeline_active goes false.
+                # The schemer patches the star (e.g. a job -> Failed) and
+                # exits; once pipeline_active is false the PipelineMonitor
+                # stops ticking this project, so if we don't reconcile here
+                # the failed job freezes at Running and the downstream jobs
+                # freeze at Scheduled forever. sync_all_jobs does the
+                # reconcile + stop-on-fail cleanup, and its self-heal branch
+                # clears pipeline_active for us. _active_processes is already
+                # popped above, so is_active() reports false and there's no
+                # recursion back into a monitor.
+                try:
+                    await self.sync_all_jobs(str(project_dir))
+                except Exception as e:
+                    logger.warning("Post-schemer sync_all_jobs failed: %s", e)
+                # Belt-and-braces: guarantee the flag is down even on a clean
+                # finish that sync left untouched, or if sync raised above.
                 try:
                     current_state = self.backend.state_service.state_for(project_dir)
-                    current_state.pipeline_active = False
-                    await self.backend.state_service.save_project(project_path=project_dir, force=True)
+                    if current_state.pipeline_active:
+                        current_state.pipeline_active = False
+                        await self.backend.state_service.save_project(project_path=project_dir, force=True)
                     logger.info("Pipeline marked inactive, state saved")
                 except Exception as e:
                     logger.warning("Failed to persist pipeline_active=False: %s", e)

@@ -12,7 +12,7 @@ import os
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from services.configs.mdoc_service import get_mdoc_service
 from services.dataset_models import AcquisitionSummary, DatasetOverview, StagePositionInfo, TiltInfo, TiltSeriesInfo
@@ -28,7 +28,12 @@ class DatasetParsingService:
     def __init__(self):
         self.mdoc_service = get_mdoc_service()
 
-    def parse_dataset(self, mdocs_glob: str, frames_dir: Optional[str] = None) -> DatasetOverview:
+    def parse_dataset(
+        self,
+        mdocs_glob: str,
+        frames_dir: Optional[str] = None,
+        progress_cb: Optional[Callable[[int, int], None]] = None,
+    ) -> DatasetOverview:
         """
         Parse all mdoc files matching the glob and associate with frame files.
 
@@ -36,6 +41,8 @@ class DatasetParsingService:
             mdocs_glob: Glob pattern for mdoc files (e.g., "/data/frames/*.mdoc")
             frames_dir: Directory containing frame files. If None, inferred from
                         mdoc SubFramePath entries or from the mdoc directory itself.
+            progress_cb: Optional (current, total) callback invoked as each mdoc
+                        is parsed. Runs on the calling (worker) thread.
         """
         mdoc_files = sorted(glob.glob(mdocs_glob))
         mdoc_paths = [Path(p) for p in mdoc_files if os.path.isfile(p) and p.endswith(".mdoc")]
@@ -51,7 +58,11 @@ class DatasetParsingService:
         warnings: List[str] = []
         tilt_series_list: List[TiltSeriesInfo] = []
 
-        for mdoc_path in mdoc_paths:
+        total_mdocs = len(mdoc_paths)
+        if progress_cb:
+            progress_cb(0, total_mdocs)
+
+        for mdoc_idx, mdoc_path in enumerate(mdoc_paths):
             parsed = self._parse_mdoc_filename(mdoc_path.name)
             if parsed is None:
                 warnings.append(f"Skipped mdoc with unrecognized name: {mdoc_path.name}")
@@ -89,6 +100,9 @@ class DatasetParsingService:
             missing = ts.missing_frames
             if missing > 0:
                 warnings.append(f"{ts.ts_label}: {missing}/{ts.tilt_count} frames not found")
+
+            if progress_cb:
+                progress_cb(mdoc_idx + 1, total_mdocs)
 
         positions = self._aggregate_to_positions(tilt_series_list)
         acq_summary = self._build_acquisition_summary(tilt_series_list)

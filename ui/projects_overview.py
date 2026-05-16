@@ -294,38 +294,69 @@ class ProjectsOverview:
                 )
                 return
 
+            # Group by owner -- the creator lives in a section header rather
+            # than on every row (it used to crowd the name/mnemonic). Current
+            # user's section floats to the top, the rest are alphabetical.
+            groups: Dict[str, List[Dict]] = {}
             for proj in visible:
-                self._render_row(proj)
+                groups.setdefault(proj.get("creator") or "unknown", []).append(proj)
+
+            def _section_order(k: str):
+                return (0, "") if k == CURRENT_USER else (1, k.lower())
+
+            for creator in sorted(groups, key=_section_order):
+                self._render_section_header(creator, groups[creator])
+                for proj in groups[creator]:
+                    self._render_row(proj)
+
+    def _render_section_header(self, creator: str, projects: List[Dict]):
+        is_me = creator == CURRENT_USER
+        known = creator and creator != "unknown"
+        dot = avatar_color(creator) if known else CLR_GHOST
+        live = sum(1 for p in projects if p.get("live_status") == "running")
+        with ui.row().classes("w-full items-center").style(
+            f"gap: 6px; padding: 5px 12px; background: #f1f5f9; "
+            f"border-bottom: 1px solid {CLR_BORDER};"
+        ):
+            ui.element("div").style(
+                f"width: 6px; height: 6px; border-radius: 50%; background: {dot}; flex-shrink: 0;"
+            )
+            ui.label(creator if known else "unknown owner").style(
+                f"{MONO} font-size: 10px; font-weight: 700; color: {CLR_LABEL}; letter-spacing: 0.02em;"
+            )
+            if is_me:
+                ui.label("you").style(
+                    f"{FONT} font-size: 8px; color: #1e40af; font-weight: 700; "
+                    "background: #dbeafe; border-radius: 3px; padding: 0 5px;"
+                )
+            ui.label(f"{len(projects)} project{'s' if len(projects) != 1 else ''}").style(
+                f"{MONO} font-size: 9px; color: {CLR_SUBLABEL};"
+            )
+            if live:
+                ui.label(f"· {live} live").style(f"{MONO} font-size: 9px; color: {CLR_RUNNING};")
 
     # =====================================================================
     # ROW
     # =====================================================================
 
-    # Fixed-width columns so per-project info (creator / TS / jobs / date)
-    # lines up vertically across the whole list — reads like a thin table
-    # rather than a stack of free-form cards. Widths sized so the panel
-    # fits an ~860 px viewport with a flex name column that still affords
-    # ~220 px for long folder names before truncation kicks in.
-    _COL_W = {
-        "idx": 56,        # "#04" stacked above the status pill (pill ≈ 50 px wide)
-        "avatar": 28,
-        "creator": 100,
-        "ts": 58,
-        "jobs": 130,
-        "date": 100,
-        "progress": 84,
-        "actions": 24,
-    }
-    # Inter-column gap (px). Adds breathing room without bloating any one column.
-    _COL_GAP = 14
+    # Fixed column widths (px). Every row uses the same template so items
+    # land at identical x-offsets regardless of name/path length -- the
+    # name (line 1) and source path (line 2) are the only flexible cells
+    # and absorb all slack, so nothing else ever shifts.
+    _W_IDX = 20
+    _W_AVATAR = 20
+    _W_PILL = 50
+    _W_DATE = 76
+    _W_DELETE = 18
+    _W_TS = 48
+    _W_JOBS = 44
+    _W_RUNFAIL = 44
 
     def _render_row(self, proj: Dict):
         path_str = proj["path"]
         name = proj["name"]
         mnemonic = proj.get("mnemonic") or ""
-        creator = proj.get("creator") or ""
         proj_color = avatar_color(name)
-        creator_color = avatar_color(creator) if creator else CLR_META
         initials = name[:3].upper()
         stable_index = proj.get("stable_index", 0)
         ts_count = proj.get("ts_count") or 0
@@ -336,6 +367,7 @@ class ProjectsOverview:
         executed = proj.get("executed_jobs") or 0
         live_status = proj.get("live_status") or "idle"
         last_activity = proj.get("last_activity") or proj.get("modified") or ""
+        source_dir = proj.get("source_directory") or ""
 
         is_current = False
         if self._current_resolved:
@@ -351,142 +383,139 @@ class ProjectsOverview:
                 logger.info("Open project failed: %s", e)
                 ui.notify(f"Failed to open project: {e}", type="negative")
 
-        base_style = (
-            f"min-height: 42px; padding: 6px 14px; gap: {self._COL_GAP}px; "
-            f"border-bottom: 1px solid {CLR_BORDER}; "
-            "flex-wrap: nowrap;"
-        )
+        # Two stacked lines: identity (left) + status (right) on line 1,
+        # source path (left) + counts (right) on line 2.
+        base_style = "padding: 6px 12px 7px; gap: 4px; " f"border-bottom: 1px solid {CLR_BORDER};"
         if is_current:
-            row_classes = "w-full items-center group"
-            row_style = base_style + " background: #eff6ff; cursor: default; border-left: 3px solid #3b82f6; padding-left: 9px;"
+            row_classes = "w-full group"
+            row_style = (
+                base_style + " background: #eff6ff; cursor: default; "
+                "border-left: 3px solid #3b82f6; padding-left: 9px;"
+            )
             row_click = None
         else:
-            row_classes = "w-full items-center hover:bg-slate-50 transition-colors cursor-pointer group"
+            row_classes = "w-full hover:bg-slate-50 transition-colors cursor-pointer group"
             row_style = base_style
             row_click = _open
 
-        row = ui.row().classes(row_classes).style(row_style)
+        row = ui.column().classes(row_classes).style(row_style)
         if row_click is not None:
             row.on("click", row_click)
 
-        cw = self._COL_W
+        fixed = "flex-shrink: 0; white-space: nowrap;"
         with row as row_el:
-            # Index + status pill column.
-            with ui.column().classes("items-center").style(
-                f"gap: 2px; flex-shrink: 0; width: {cw['idx']}px;"
-            ):
-                ui.label(f"#{stable_index:02d}").style(
-                    f"{MONO} font-size: 9px; font-weight: 600; color: {CLR_GHOST}; "
-                    "letter-spacing: 0.04em; line-height: 1;"
-                )
-                self._render_status_pill(live_status)
-
-            # Avatar (tighter).
-            with ui.element("div").style(
-                f"width: {cw['avatar']}px; height: {cw['avatar']}px; border-radius: 50%; "
-                f"flex-shrink: 0; background: {proj_color}1a; border: 1px solid {proj_color}55; "
-                "display: flex; align-items: center; justify-content: center;"
-            ):
-                ui.label(initials).style(
-                    f"font-size: 8px; font-weight: 700; color: {proj_color}; "
-                    "letter-spacing: 0.05em; line-height: 1; pointer-events: none;"
+            # ---- Line 1: idx + avatar + name/mnemonic | status + date + delete ----
+            with ui.row().classes("w-full items-center").style("gap: 8px; flex-wrap: nowrap;"):
+                ui.label(f"{stable_index:02d}").style(
+                    f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; "
+                    f"width: {self._W_IDX}px; text-align: right; {fixed}"
                 )
 
-            # Name + nickname stacked. Both `min-width: 0` (in CSS, not just
-            # Tailwind) so the column actually shrinks under flex pressure —
-            # otherwise a long folder name pushes into the creator column.
-            with ui.element("div").style(
-                "flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; "
-                "gap: 1px; overflow: hidden;"
-            ):
                 with ui.element("div").style(
-                    "display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%;"
+                    f"width: {self._W_AVATAR}px; height: {self._W_AVATAR}px; border-radius: 50%; "
+                    f"flex-shrink: 0; background: {proj_color}1a; border: 1px solid {proj_color}55; "
+                    "display: flex; align-items: center; justify-content: center;"
+                ):
+                    ui.label(initials).style(
+                        f"font-size: 7px; font-weight: 600; color: {proj_color}; "
+                        "letter-spacing: 0.03em; line-height: 1; pointer-events: none;"
+                    )
+
+                # Name + mnemonic -- the flexible cell. Only the name truncates
+                # under pressure; the (short) mnemonic never shrinks, so a long
+                # name can't push it around.
+                with ui.element("div").style(
+                    "flex: 1 1 0; min-width: 0; display: flex; align-items: baseline; "
+                    "gap: 6px; overflow: hidden;"
                 ):
                     ui.label(name).style(
-                        f"{FONT} font-size: 12px; font-weight: 600; color: {CLR_HEADING}; "
+                        f"{FONT} font-size: 11px; font-weight: 500; color: {CLR_HEADING}; "
                         "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; "
-                        "letter-spacing: -0.01em; line-height: 1.25; "
-                        "min-width: 0; flex: 1 1 auto;"
+                        "min-width: 0; flex: 0 1 auto;"
                     )
+                    if mnemonic:
+                        ui.label(mnemonic).style(
+                            f"{MONO} font-size: 9px; color: {CLR_META}; font-style: italic; {fixed}"
+                        )
                     if is_current:
-                        ui.label("current").style(
+                        ui.label("CURRENT").style(
                             f"{FONT} font-size: 8px; color: #1e40af; font-weight: 700; "
                             "background: #dbeafe; border: 1px solid #93c5fd; "
                             "border-radius: 3px; padding: 0 5px; flex-shrink: 0; "
-                            "letter-spacing: 0.05em; text-transform: uppercase;"
+                            "letter-spacing: 0.05em;"
                         )
-                if mnemonic:
-                    ui.label(mnemonic).style(
-                        f"{MONO} font-size: 9px; color: {CLR_GHOST}; "
-                        "font-style: italic; line-height: 1.25; "
-                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap; "
-                        "min-width: 0;"
-                    )
 
-            # Creator column (fixed width — left-aligned text).
-            with ui.element("div").style(
-                f"width: {cw['creator']}px; flex-shrink: 0; overflow: hidden;"
-            ):
-                if creator:
-                    ui.label(creator).style(
-                        f"{MONO} font-size: 10px; font-weight: 600; color: {creator_color}; "
-                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                    )
+                with ui.element("div").style(f"width: {self._W_PILL}px; {fixed} display: flex;"):
+                    self._render_status_pill(live_status)
 
-            # TS count column.
-            with ui.element("div").style(
-                f"width: {cw['ts']}px; flex-shrink: 0; display: flex; align-items: center; gap: 3px;"
-            ):
-                if ts_count:
-                    ui.icon("layers", size="10px").style(f"color: {CLR_SUBLABEL};")
-                    ui.label(f"{ts_count} TS").style(
-                        f"{MONO} font-size: 10px; color: {CLR_LABEL};"
-                    )
+                ui.label(last_activity).style(
+                    f"{MONO} font-size: 9px; color: {CLR_GHOST}; "
+                    f"width: {self._W_DATE}px; text-align: right; {fixed}"
+                )
 
-            # Jobs progress column.
-            with ui.element("div").style(
-                f"width: {cw['jobs']}px; flex-shrink: 0; overflow: hidden;"
+                with ui.element("div").style(
+                    f"width: {self._W_DELETE}px; {fixed} display: flex; justify-content: flex-end;"
+                ):
+                    if self.on_delete is not None and not is_current:
+                        async def _del(p=path_str, n=name, r=row_el):
+                            await self._handle_delete(Path(p), n, r)
+                        (
+                            ui.button(icon="delete_outline", on_click=_del)
+                            .props("flat dense round size=xs")
+                            .classes(
+                                "text-slate-200 hover:text-red-400 opacity-0 "
+                                "group-hover:opacity-100 transition-opacity"
+                            )
+                            .on("click.stop", lambda: None)
+                        )
+
+            # ---- Line 2: source path | TS count + jobs + run/fail + bar ----
+            # Indented past the idx + avatar gutter (two 8px gaps between) so
+            # the folder icon lines up under the name, not under the idx.
+            with ui.row().classes("w-full items-center").style(
+                f"gap: 8px; flex-wrap: nowrap; padding-left: {self._W_IDX + self._W_AVATAR + 16}px;"
             ):
-                if total_planned:
-                    progress_text = f"job {succeeded}/{total_planned}"
+                # Source data directory -- the flexible cell; left-aligned so
+                # the absolute leading slash stays visible, truncates at the
+                # tail. Tooltip carries the full path.
+                with ui.element("div").style(
+                    "flex: 1 1 0; min-width: 0; display: flex; align-items: center; "
+                    "gap: 4px; overflow: hidden;"
+                ):
+                    ui.icon("folder_open", size="11px").style(f"color: {CLR_GHOST}; flex-shrink: 0;")
+                    if source_dir:
+                        ui.label(source_dir).style(
+                            f"{MONO} font-size: 9px; color: {CLR_LABEL}; min-width: 0; "
+                            "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                        ).tooltip(source_dir)
+                    else:
+                        ui.label("no source recorded").style(
+                            f"{MONO} font-size: 9px; color: {CLR_GHOST}; font-style: italic;"
+                        )
+
+                ui.label(f"{ts_count} TS" if ts_count else "—").style(
+                    f"{MONO} font-size: 9px; color: {CLR_LABEL if ts_count else CLR_GHOST}; "
+                    f"width: {self._W_TS}px; text-align: right; {fixed}"
+                )
+
+                ui.label(f"{succeeded}/{total_planned}" if total_planned else "—").style(
+                    f"{MONO} font-size: 9px; color: {CLR_LABEL if total_planned else CLR_GHOST}; "
+                    f"width: {self._W_JOBS}px; text-align: right; {fixed}"
+                )
+
+                with ui.element("div").style(
+                    f"width: {self._W_RUNFAIL}px; {fixed} display: flex; justify-content: flex-end;"
+                ):
                     if running_live:
-                        progress_text += f" · {running_live} run"
-                    elif failed:
-                        progress_text += f" · {failed} fail"
-                    ui.label(progress_text).style(
-                        f"{MONO} font-size: 10px; color: {CLR_LABEL}; "
-                        "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                    )
-
-            # Date column.
-            with ui.element("div").style(
-                f"width: {cw['date']}px; flex-shrink: 0;"
-            ):
-                if last_activity:
-                    ui.label(last_activity).style(f"{MONO} font-size: 10px; color: {CLR_GHOST};")
-
-            # Progress bar column.
-            with ui.element("div").style(
-                f"width: {cw['progress']}px; flex-shrink: 0; display: flex; justify-content: flex-end;"
-            ):
-                self._render_progress_bar(succeeded, failed, running_live, executed, total_planned)
-
-            # Actions column (delete on hover; current row suppresses it).
-            with ui.element("div").style(
-                f"width: {cw['actions']}px; flex-shrink: 0; display: flex; justify-content: flex-end;"
-            ):
-                if self.on_delete is not None and not is_current:
-                    async def _del(p=path_str, n=name, r=row_el):
-                        await self._handle_delete(Path(p), n, r)
-                    (
-                        ui.button(icon="delete_outline", on_click=_del)
-                        .props("flat dense round size=xs")
-                        .classes(
-                            "text-slate-200 hover:text-red-400 opacity-0 "
-                            "group-hover:opacity-100 transition-opacity"
+                        ui.label(f"{running_live} run").style(
+                            f"{FONT} font-size: 8px; font-weight: 600; color: {CLR_RUNNING};"
                         )
-                        .on("click.stop", lambda: None)
-                    )
+                    elif failed:
+                        ui.label(f"{failed} fail").style(
+                            f"{FONT} font-size: 8px; font-weight: 600; color: {CLR_FAILED};"
+                        )
+
+                self._render_progress_bar(succeeded, failed, running_live, executed, total_planned)
 
     def _render_status_pill(self, status: str):
         s = _STATUS_STYLES.get(status, _STATUS_STYLES["idle"])
@@ -521,7 +550,7 @@ class ProjectsOverview:
 
         with ui.element("div").style(
             "width: 70px; height: 5px; border-radius: 3px; overflow: hidden; "
-            "display: flex; background: #f1f5f9;"
+            "display: flex; background: #f1f5f9; flex-shrink: 0;"
         ):
             if succ_pct > 0:
                 ui.element("div").style(f"width: {succ_pct:.1f}%; background: {CLR_DONE};")

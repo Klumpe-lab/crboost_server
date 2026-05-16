@@ -43,12 +43,17 @@ _OK = "ok"
 _FAIL = "fail"
 _RUNNING = "running"
 _PENDING = "pending"
+_SKIP = "skip"
 
 _CHIP = {
     _OK: ("check_circle", "#16a34a", "#f0fdf4"),
     _FAIL: ("error", "#dc2626", "#fef2f2"),
     _RUNNING: ("sync", "#2563eb", "#eff6ff"),
     _PENDING: ("schedule", "#9ca3af", "#f9fafb"),
+    # Deliberate non-run: upstream produced nothing for this item, supervisor
+    # pre-marked it. Distinguished from "fail" (red) and "pending" (waiting)
+    # so the user can tell "skipped by design" from "didn't make it yet".
+    _SKIP: ("remove_circle_outline", "#94a3b8", "#f8fafc"),
 }
 
 
@@ -143,6 +148,7 @@ def _update_summary(container: ui.row, statuses: Dict[str, str], item_label: str
     n_fail = sum(1 for s in statuses.values() if s == _FAIL)
     n_running = sum(1 for s in statuses.values() if s == _RUNNING)
     n_pending = sum(1 for s in statuses.values() if s == _PENDING)
+    n_skip = sum(1 for s in statuses.values() if s == _SKIP)
     total = len(statuses)
 
     parts = []
@@ -152,6 +158,8 @@ def _update_summary(container: ui.row, statuses: Dict[str, str], item_label: str
         parts.append(f'<span style="color: #2563eb; font-weight: 600;">{n_running} running</span>')
     if n_fail:
         parts.append(f'<span style="color: #dc2626; font-weight: 600;">{n_fail} failed</span>')
+    if n_skip:
+        parts.append(f'<span style="color: #94a3b8;">{n_skip} skipped</span>')
     if n_pending:
         parts.append(f'<span style="color: #9ca3af;">{n_pending} pending</span>')
 
@@ -166,7 +174,9 @@ def _update_progress(bar: ui.linear_progress, statuses: Dict[str, str]) -> None:
     if total == 0:
         bar.set_value(0)
         return
-    n_done = sum(1 for s in statuses.values() if s in (_OK, _FAIL))
+    # Skipped items are settled (won't ever run) — count them as "done" so
+    # the bar reaches 100% when only skips + oks remain.
+    n_done = sum(1 for s in statuses.values() if s in (_OK, _FAIL, _SKIP))
     bar.set_value(n_done / total)
     bar.props(f"color={'negative' if any(s == _FAIL for s in statuses.values()) else 'positive'}")
 

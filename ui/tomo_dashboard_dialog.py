@@ -1034,6 +1034,14 @@ _CB_CSS = """
         45deg, #9ca3af, #9ca3af 2px, #d1d5db 2px, #d1d5db 4px
     );
 }
+/* skip = supervisor deliberately did not dispatch a task for this TS
+   (upstream produced nothing actionable). Soft hatched grey reads as
+   "intentionally blank", distinct from "pending" flat grey. */
+.cb-pill.skip {
+    background: repeating-linear-gradient(
+        45deg, #cbd5e1, #cbd5e1 2px, #e5e7eb 2px, #e5e7eb 4px
+    );
+}
 .cb-main { padding: 12px; }
 /* (height/flex/overflow set inline at construction time so the dialog viewport
    chain is self-contained; this rule only carries the padding chrome.) */

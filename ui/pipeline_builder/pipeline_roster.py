@@ -875,6 +875,14 @@ class RosterWidget:
                         "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
                     )
                 ) as menu:
+                    ts_sel = state.import_selected_tilt_series or 0
+                    ts_tot = state.import_total_tilt_series or 0
+                    if ts_tot:
+                        ts_display = f"{ts_sel} of {ts_tot} selected"
+                    elif ts_sel:
+                        ts_display = str(ts_sel)
+                    else:
+                        ts_display = "---"
                     self._render_overview_section(
                         "Project",
                         [
@@ -882,6 +890,7 @@ class RosterWidget:
                             ("Root", str(state.project_path) if state.project_path else "---"),
                             ("Movies", state.movies_glob or "---"),
                             ("MDOC", state.mdocs_glob or "---"),
+                            ("Tilt-series", ts_display),
                         ],
                     )
                     self._render_overview_section(

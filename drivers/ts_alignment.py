@@ -158,6 +158,25 @@ def collect_per_ts_outputs(job_dir: Path, ts_name: str) -> None:
         shutil.copytree(str(src_tiltstack), str(dst_tiltstack))
 
 
+def has_alignment_output(job_dir: Path, ts_name: str, method: AlignmentMethod) -> bool:
+    """True if the per-TS tiltstack dir holds real alignment output.
+
+    WarpTools `ts_aretomo` / `ts_etomo_patches` exit 0 even when AreTomo or
+    etomo fail to align an individual tilt-series — they just flag the item
+    "unselected" and still write `{ts}.xml`. So the XML is NOT a success
+    signal; the alignment matrices are: `.st.aln` for AreTomo, `.xf` + `.tlt`
+    for IMOD.
+    """
+    tiltstack = job_dir / "warp_tiltseries" / "tiltstack" / ts_name
+    if not tiltstack.is_dir():
+        return False
+    if method == AlignmentMethod.ARETOMO:
+        return any(tiltstack.glob("*.st.aln"))
+    if method == AlignmentMethod.IMOD:
+        return any(tiltstack.glob("*.xf")) and any(tiltstack.glob("*.tlt"))
+    return False
+
+
 # ----------------------------------------------------------------------
 # Mode dispatch
 # ----------------------------------------------------------------------
@@ -248,15 +267,28 @@ def run_supervisor_mode():
         if results.missing:
             print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
 
-        if not results.all_succeeded:
+        # Per-TS alignment failure is normal in cryo-ET — AreTomo simply can't
+        # solve every tilt-series. One bad TS must NOT abort the whole job and
+        # halt the pipeline: drop the failed/missing tilt-series and carry the
+        # rest forward. Only a total wipeout (nothing aligned) is fatal.
+        aligned_ts = results.ok
+        excluded_ts = sorted(results.failed + results.missing)
+        if not aligned_ts:
             (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
+            print("[SUPERVISOR] Marking job as FAILED — no tilt-series aligned successfully", flush=True)
             sys.exit(1)
+        if excluded_ts:
+            print(
+                f"[SUPERVISOR] WARNING: excluding {len(excluded_ts)}/{len(ts_names)} tilt-series "
+                f"that failed to align: {excluded_ts}",
+                file=sys.stderr, flush=True,
+            )
+            print(f"[SUPERVISOR] Continuing with {len(aligned_ts)} aligned tilt-series.", flush=True)
 
         # Aggregate metadata via the TiltSeries registry. Fail loud on an
         # empty registry rather than fall back to the legacy string-keyed
         # merge — that's the silent-corruption path this refactor retires.
-        print("[SUPERVISOR] All tasks succeeded; aggregating metadata via registry...", flush=True)
+        print(f"[SUPERVISOR] Aggregating alignment metadata for {len(aligned_ts)} tilt-series...", flush=True)
 
         input_star_path = paths.get("input_star")
         output_star_path = paths.get("output_star", job_dir / "aligned_tilt_series.star")
@@ -277,7 +309,7 @@ def run_supervisor_mode():
             registry=registry, job_dir=job_dir, job_instance_id=instance_id,
         )
         adapter.ingest(
-            ts_names,
+            aligned_ts,
             alignment_method=params.alignment_method,
             alignment_angpix=params.rescale_angpixs,
         )
@@ -331,10 +363,13 @@ def run_task_mode(array_idx: int):
         local_tomostar_dir = job_dir / "tomostar"
         local_settings = job_dir / "warp_tiltseries.settings"
 
-        # Idempotency: skip if this TS's XML already exists in the shared output
+        # Idempotency: skip only if a PREVIOUS run left REAL alignment output
+        # for this TS. The {ts}.xml alone is not proof — WarpTools writes it
+        # even for tilt-series AreTomo failed on (see has_alignment_output),
+        # so a bare-XML check would let a failed TS masquerade as done on retry.
         shared_xml = job_dir / "warp_tiltseries" / f"{ts_name}.xml"
-        if shared_xml.exists():
-            print(f"[TASK {array_idx}] Alignment output already exists, skipping: {shared_xml}", flush=True)
+        if shared_xml.exists() and has_alignment_output(job_dir, ts_name, params.alignment_method):
+            print(f"[TASK {array_idx}] Alignment output already exists, skipping: {ts_name}", flush=True)
             write_status_atomic(status_dir, ts_name, ok=True)
             sys.exit(0)
 
@@ -355,9 +390,17 @@ def run_task_mode(array_idx: int):
         # Collect outputs into shared job dir
         collect_per_ts_outputs(job_dir, ts_name)
 
-        # Verify XML was produced
+        # Verify REAL alignment output landed. WarpTools exits 0 and still
+        # writes {ts}.xml even when AreTomo fails to align this tilt-series,
+        # so the XML is not a success signal — check the alignment matrices.
         if not shared_xml.exists():
             raise FileNotFoundError(f"Alignment produced no XML for {ts_name} (expected {shared_xml})")
+        if not has_alignment_output(job_dir, ts_name, params.alignment_method):
+            raise RuntimeError(
+                f"No alignment output for {ts_name}: WarpTools produced no .st.aln/.xf in "
+                f"warp_tiltseries/tiltstack/{ts_name}/. AreTomo likely failed to align this "
+                f"tilt-series (see container output above)."
+            )
 
         write_status_atomic(status_dir, ts_name, ok=True)
         print(f"[TASK {array_idx}] {ts_name} done", flush=True)
