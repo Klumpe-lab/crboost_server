@@ -106,8 +106,19 @@ def _find_df_block(star_dict: Dict[str, Any], required_cols: Sequence[str]) -> p
     raise KeyError(f"No DataFrame block with required columns: {sorted(req)}")
 
 
-def _read_particles_star(particles_star: Path) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
-    """Returns (optics_df, particles_df, general_kv)."""
+_PARTICLES_REQUIRED_COLS = ["rlnTomoName", "rlnImageName", "rlnOpticsGroup"]
+
+
+def _read_particles_star(
+    particles_star: Path, *, allow_empty_particles: bool = False
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    """Returns (optics_df, particles_df, general_kv).
+
+    When `allow_empty_particles=True` and the file has no `data_particles`
+    block (RELION emits optics-only stars when extraction yields zero
+    particles), returns an empty particles DataFrame with the required
+    columns instead of raising. Used by the supervisor merge so a per-TS
+    extraction that produced nothing doesn't fail the whole job."""
     d = starfile.read(particles_star, always_dict=True)
 
     try:
@@ -120,7 +131,12 @@ def _read_particles_star(particles_star: Path) -> Tuple[pd.DataFrame, pd.DataFra
             f"This usually means the source path points at a non-extraction particles file (e.g. TM candidates)."
         )
 
-    particles_df = _find_df_block(d, required_cols=["rlnTomoName", "rlnImageName", "rlnOpticsGroup"])
+    try:
+        particles_df = _find_df_block(d, required_cols=_PARTICLES_REQUIRED_COLS)
+    except KeyError:
+        if not allow_empty_particles:
+            raise
+        particles_df = pd.DataFrame(columns=_PARTICLES_REQUIRED_COLS)
 
     general_kv: Dict[str, Any] = {}
     for v in d.values():

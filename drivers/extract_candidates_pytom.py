@@ -110,9 +110,9 @@ def build_extract_base_cmd(params: CandidateExtractPytomParams, apix: float) -> 
         "--log", "debug",
     ]
     if params.cutoff_method == ExtractionCutoffMethod.FALSE_POSITIVES:
-        base_cmd.extend(["--number-of-false-positives", str(params.cutoff_value)])
+        base_cmd.extend(["--number-of-false-positives", str(params.expected_false_positives)])
     elif params.cutoff_method == ExtractionCutoffMethod.MANUAL:
-        base_cmd.extend(["-c", str(params.cutoff_value)])
+        base_cmd.extend(["-c", str(params.cc_threshold)])
 
     if params.score_filter_method == "tophat":
         base_cmd.append("--tophat-filter")
@@ -236,6 +236,23 @@ def run_supervisor_mode():
         }
 
         per_task_cfg = params.get_effective_slurm_config()
+
+        # Tophat morphology inflates per-task memory/runtime substantially:
+        # scipy.ndimage opening on a ~2 GB float32 score volume allocates
+        # 6–10 GB of intermediate buffers on top of PyTOM's ~5 GB baseline
+        # (scores + angles + Python + CUDA). The 8G default that's fine for
+        # non-tophat extraction gets OOM-killed here. Bump only when the
+        # filter is actually enabled so non-tophat runs stay efficient.
+        if params.score_filter_method == "tophat":
+            bumped_mem = "24G"
+            bumped_time = "0:30:00"
+            print(
+                f"[SUPERVISOR] tophat-filter enabled — bumping per-task SLURM "
+                f"(mem {per_task_cfg.mem}→{bumped_mem}, time {per_task_cfg.time}→{bumped_time}) "
+                "to avoid OOM during morphological opening.",
+                flush=True,
+            )
+            per_task_cfg = per_task_cfg.model_copy(update={"mem": bumped_mem, "time": bumped_time})
 
         array_job_id = submit_array_job(
             job_dir=job_dir,

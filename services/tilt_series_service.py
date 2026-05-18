@@ -236,3 +236,32 @@ def get_label_summary(ts_data: TiltSeriesData) -> Dict[str, int]:
     bad = int((df["cryoBoostDlLabel"] == "bad").sum())
     unlabeled = total - good - bad
     return {"total": total, "good": good, "bad": bad, "unlabeled": unlabeled}
+
+
+def generate_tilt_thumbnails(
+    ts_ctf_star: str | Path,
+    project_path: str | Path,
+    png_dir: str | Path,
+    progress_cb=None,
+    target_size: int = 384,
+) -> int:
+    """Synchronously generate PNG thumbnails for every tilt referenced by a
+    ts_ctf star file. Returns the number of source MRC images processed.
+
+    Designed to be wrapped in `asyncio.to_thread`; the CPU-bound work uses
+    a ProcessPoolExecutor internally. `progress_cb` matches the
+    BackgroundTaskRegistry signature `(done, total, message)`.
+    """
+    # Lazy-import the heavy stack (scipy/PIL/mrcfile) to keep
+    # tilt_series_service light when only the star-IO helpers are used.
+    from filterTilts.image_processor import ImageProcessor
+
+    ts_data = load_tilt_series(str(ts_ctf_star), str(project_path))
+    paths = get_tilt_image_paths(ts_data, project_path)
+    n = len(paths)
+    if n == 0:
+        return 0
+    Path(png_dir).mkdir(parents=True, exist_ok=True)
+    proc = ImageProcessor(target_size=target_size, max_workers=min(16, max(1, n)))
+    proc.batch_convert(paths, n, str(png_dir), False, progress_cb)
+    return n

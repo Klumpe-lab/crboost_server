@@ -3,10 +3,11 @@ Template Matching plugin (v3).
 
 Species is locked at job creation time. The species's templates and masks
 are surfaced as two independent dropdowns so the user picks both
-explicitly — defaulting to whichever the species has selected. The
-default-renderer skips template_path / mask_path / symmetry because we
-render those (symmetry lives in the species header at the top of the
-workbench).
+explicitly — defaulting to whichever the species has selected. Search
+symmetry is also rendered here (locked to C1–C6 since PyTOM only honors
+Cn; persisted non-Cn values are coerced to C1 by the param-class
+validator). The default-renderer skips template_path / mask_path /
+symmetry because we render all three in the dedicated card below.
 
 If species.templates is empty the dropdown shows an empty-state hint
 pointing the user to the workbench.
@@ -16,12 +17,10 @@ from pathlib import Path
 
 from nicegui import ui
 
+from services.jobs.template_match import TM_SYMMETRY_CHOICES
 from services.models_base import JobType
 from services.project_state import get_project_state_for
-from services.templating.template_metadata import (
-    read_template_header,
-    resolve_species_from_job,
-)
+from services.templating.template_metadata import read_template_header, resolve_species_from_job
 from ui.components.template_summary_card import render_template_summary_card
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins.default_renderer import render_default_params_card, render_species_badge
@@ -55,29 +54,25 @@ def render_template_match_params(job_type, job_model, is_frozen, save_handler, *
     # Render the regular params with template_path/mask_path/symmetry excluded —
     # we handle these specially below (or via the species header).
     render_default_params_card(
-        job_type,
-        job_model,
-        is_frozen,
-        save_handler,
-        exclude={"template_path", "mask_path", "symmetry"},
-        ui_mgr=ui_mgr,
+        job_type, job_model, is_frozen, save_handler, exclude={"template_path", "mask_path", "symmetry"}, ui_mgr=ui_mgr
     )
 
     if species is None:
         return
 
-    # ── Template + mask dropdowns ────────────────────────────────────────
+    # ── Template + mask + search symmetry ─────────────────────────────────
     with ui.card().classes("w-full border border-gray-200 shadow-sm overflow-hidden bg-white mt-2"):
         with ui.row().classes("w-full items-center px-3 py-2 bg-gray-50 border-b border-gray-100 gap-2"):
             ui.icon("category", size="14px").classes("text-gray-500")
-            ui.label("Template & mask").classes("text-sm font-bold text-gray-800")
-            ui.label("(picks default to species's selected entries; override per-job here)").classes(
-                "text-[11px] text-gray-400 italic ml-2"
-            )
+            ui.label("Template, mask & search symmetry").classes("text-sm font-bold text-gray-800")
+            ui.label(
+                "(template/mask default to species selection; symmetry is TM-only and ignores particle symmetry)"
+            ).classes("text-[11px] text-gray-400 italic ml-2")
 
         with ui.column().classes("w-full p-3 gap-3"):
             _render_template_dropdown(species, job_model, is_frozen, save_handler)
             _render_mask_dropdown(species, job_model, is_frozen, save_handler)
+            _render_symmetry_dropdown(job_model, is_frozen, save_handler)
 
 
 def _render_template_dropdown(species, job_model, is_frozen: bool, save_handler) -> None:
@@ -116,17 +111,40 @@ def _render_template_dropdown(species, job_model, is_frozen: bool, save_handler)
 
     with ui.row().classes("w-full items-center gap-3"):
         ui.label("Template").classes("text-[10px] font-bold text-gray-400 uppercase w-28 shrink-0 text-right")
-        sel = (
-            ui.select(options=options, value=value)
-            .props("outlined dense")
-            .classes("flex-1 text-xs font-mono")
-        )
+        sel = ui.select(options=options, value=value).props("outlined dense").classes("flex-1 text-xs font-mono")
         if is_frozen:
             sel.disable()
         else:
 
             def _on_change(e):
                 job_model.template_path = e.value or ""
+                save_handler()
+
+            sel.on_value_change(_on_change)
+
+
+def _render_symmetry_dropdown(job_model, is_frozen: bool, save_handler) -> None:
+    options = {s: f"{s}{'  ·  no symmetry (default)' if s == 'C1' else ''}" for s in TM_SYMMETRY_CHOICES}
+    value = getattr(job_model, "symmetry", "C1") or "C1"
+    if value not in options:
+        value = "C1"
+    with ui.row().classes("w-full items-center gap-3"):
+        ui.label("Symmetry").classes("text-[10px] font-bold text-gray-400 uppercase w-28 shrink-0 text-right")
+        sel = (
+            ui.select(options=options, value=value)
+            .props("outlined dense")
+            .classes("flex-1 text-xs font-mono")
+            .tooltip(
+                "PyTOM honors only Cn here. Use C1 for asymmetric search (default); "
+                "Cn shrinks the angular search for n-fold particles."
+            )
+        )
+        if is_frozen:
+            sel.disable()
+        else:
+
+            def _on_change(e):
+                job_model.symmetry = e.value or "C1"
                 save_handler()
 
             sel.on_value_change(_on_change)
@@ -149,7 +167,7 @@ def _render_mask_dropdown(species, job_model, is_frozen: bool, save_handler) -> 
     # Include a "(none)" option so the user can explicitly skip a mask.
     options: dict[str, str] = {"": "(none)"}
     for m in masks:
-        method = (m.method or "manual")
+        method = m.method or "manual"
         label = f"{Path(m.mask_path).name}  ·  {method}"
         options[m.mask_path] = label
 
@@ -159,11 +177,7 @@ def _render_mask_dropdown(species, job_model, is_frozen: bool, save_handler) -> 
 
     with ui.row().classes("w-full items-center gap-3"):
         ui.label("Mask").classes("text-[10px] font-bold text-gray-400 uppercase w-28 shrink-0 text-right")
-        sel = (
-            ui.select(options=options, value=value)
-            .props("outlined dense")
-            .classes("flex-1 text-xs font-mono")
-        )
+        sel = ui.select(options=options, value=value).props("outlined dense").classes("flex-1 text-xs font-mono")
         if is_frozen:
             sel.disable()
         else:

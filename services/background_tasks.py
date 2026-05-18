@@ -16,7 +16,7 @@ Design:
   - `submit(coro_factory, ...)` registers a task, kicks off an asyncio
     task wrapping the user's work, and returns a `task_id`.
   - The task_factory receives a `progress_cb(current, total, message)`
-    that updates the registry's per-task `BackgroundTask` record.
+    that updates the registry's per-task `BackgroundTaskRecord`.
   - UI components (the tray at `ui/background_task_tray.py`) poll the
     registry on their own cadence and render whatever's active + recent.
 
@@ -53,7 +53,7 @@ CoroFactory = Callable[[ProgressCallback], Awaitable[Any]]
 
 
 @dataclass
-class BackgroundTask:
+class BackgroundTaskRecord:
     id: str
     title: str
     subtitle: Optional[str] = None
@@ -87,7 +87,7 @@ class BackgroundTask:
 
 class BackgroundTaskRegistry:
     def __init__(self) -> None:
-        self._tasks: dict[str, BackgroundTask] = {}
+        self._tasks: dict[str, BackgroundTaskRecord] = {}
 
     def submit(
         self,
@@ -120,7 +120,7 @@ class BackgroundTaskRegistry:
                     return t.id
 
         task_id = uuid.uuid4().hex
-        record = BackgroundTask(
+        record = BackgroundTaskRecord(
             id=task_id,
             title=title,
             subtitle=subtitle,
@@ -154,25 +154,25 @@ class BackgroundTaskRegistry:
         record._asyncio_task = asyncio.create_task(runner(), name=f"bg-task:{task_id}")
         return task_id
 
-    def get(self, task_id: str) -> Optional[BackgroundTask]:
+    def get(self, task_id: str) -> Optional[BackgroundTaskRecord]:
         return self._tasks.get(task_id)
 
-    def all(self) -> list[BackgroundTask]:
+    def all(self) -> list[BackgroundTaskRecord]:
         return list(self._tasks.values())
 
-    def for_project(self, project_path: Optional[str]) -> list[BackgroundTask]:
+    def for_project(self, project_path: Optional[str]) -> list[BackgroundTaskRecord]:
         if not project_path:
             return self.all()
         return [t for t in self._tasks.values() if t.project_path == project_path]
 
     def snapshot_for_project(
         self, project_path: Optional[str], *, recent_window_sec: float = 30.0
-    ) -> tuple[list[BackgroundTask], list[BackgroundTask]]:
+    ) -> tuple[list[BackgroundTaskRecord], list[BackgroundTaskRecord]]:
         """Return (active, recent_finished) for the given project.
         `recent_finished` includes failed/cancelled within the window."""
         now = datetime.now()
-        active: list[BackgroundTask] = []
-        recent: list[BackgroundTask] = []
+        active: list[BackgroundTaskRecord] = []
+        recent: list[BackgroundTaskRecord] = []
         for t in self.for_project(project_path):
             if t.is_running:
                 active.append(t)

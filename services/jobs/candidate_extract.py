@@ -1,6 +1,6 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Set, Tuple
-from pydantic import Field
+from typing import Any, ClassVar, Dict, List, Set, Tuple
+from pydantic import Field, model_validator
 
 from services.computing.slurm_service import SlurmConfig
 from services.configs.config_service import get_config_service
@@ -18,11 +18,11 @@ class CandidateExtractPytomParams(AbstractJobParams):
         "particle_diameter_ang",
         "max_num_particles",
         "cutoff_method",
-        "cutoff_value",
+        "cc_threshold",
+        "expected_false_positives",
         "apix_score_map",
         "score_filter_method",
         "score_filter_value",
-        "mask_fold_path",
         "array_throttle",
     }
 
@@ -46,9 +46,60 @@ class CandidateExtractPytomParams(AbstractJobParams):
     particle_diameter_ang: float = Field(default=200.0)
     max_num_particles: int = Field(default=1500)
 
-    # Thresholding
+    # Thresholding strategy + per-strategy values.
+    #
+    # The legacy single-field `cutoff_value` was reused for two strategies with
+    # incomparable scales: under FALSE_POSITIVES it's "expected FPs per tomogram"
+    # (e.g. 1.0 = strict), under MANUAL it's "raw LCC threshold" (e.g. 0.1).
+    # Flipping the dropdown without re-entering a sensible scale gave silently
+    # wrong results (e.g. carrying 1.0 over to MANUAL means CC ≥ 1.0 → 0 picks).
+    # Each strategy now has its own backing field; the UI shows only the
+    # relevant one based on `cutoff_method`. Old project JSONs are migrated by
+    # `_migrate_legacy_cutoff_value` below.
     cutoff_method: ExtractionCutoffMethod = Field(default=ExtractionCutoffMethod.FALSE_POSITIVES)
-    cutoff_value: float = Field(default=1.0)
+    cc_threshold: float = Field(
+        default=0.1,
+        description="Manual LCC threshold; peaks with score ≥ this are kept. Typical 0.05–0.20.",
+    )
+    expected_false_positives: float = Field(
+        default=1.0,
+        description="Expected false positives per tomogram (FALSE_POSITIVES strategy). Strict=1, moderate=10, loose=100.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_cutoff_value(cls, data: Any) -> Any:
+        """Migrate the legacy `cutoff_value` field into the appropriate
+        strategy-specific field. Runs before field validation, so the raw
+        dict from JSON load is what we mutate.
+
+        Behavior:
+          - If the JSON has `cutoff_value` and NEITHER `cc_threshold` nor
+            `expected_false_positives` was explicitly set, route the value
+            into the field that matches `cutoff_method`.
+          - If both old + new are present (mid-migration JSONs), prefer the
+            explicit new field — don't clobber what the user has set.
+          - The legacy key is always removed from the dict (Pydantic v2
+            BaseModel defaults to extra='ignore' so this is belt-and-braces).
+        """
+        if not isinstance(data, dict):
+            return data
+        if "cutoff_value" not in data:
+            return data
+        legacy = data.pop("cutoff_value", None)
+        if legacy is None:
+            return data
+        try:
+            legacy_f = float(legacy)
+        except (TypeError, ValueError):
+            return data
+        method_raw = data.get("cutoff_method") or ExtractionCutoffMethod.FALSE_POSITIVES.value
+        method_str = method_raw.value if hasattr(method_raw, "value") else str(method_raw)
+        if method_str == ExtractionCutoffMethod.MANUAL.value:
+            data.setdefault("cc_threshold", legacy_f)
+        else:
+            data.setdefault("expected_false_positives", legacy_f)
+        return data
 
     # Score map pixel size
     apix_score_map: str = Field(default="auto")
@@ -57,12 +108,8 @@ class CandidateExtractPytomParams(AbstractJobParams):
     score_filter_method: str = Field(default="None")
     score_filter_value: str = Field(default="None")
 
-    # Optional mask folder
-    mask_fold_path: str = Field(default="None")
-
     array_throttle: int = Field(
-        default=16, ge=1, le=64,
-        description="Max concurrent SLURM array tasks for per-tomogram candidate extraction",
+        default=16, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram candidate extraction"
     )
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:

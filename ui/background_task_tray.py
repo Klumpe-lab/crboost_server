@@ -1,6 +1,6 @@
 """
 BackgroundTaskTray — floating bottom-right tray showing in-flight and
-recently-completed BackgroundTask records.
+recently-completed BackgroundTaskRecord entries.
 
 Goals:
   - Give every spun-off job (preview renders, IMOD generation, atlas
@@ -25,7 +25,7 @@ from typing import Callable, Optional
 
 from nicegui import ui
 
-from services.background_tasks import BackgroundTask, get_background_task_registry
+from services.background_tasks import BackgroundTaskRecord, get_background_task_registry
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ def mount_background_task_tray(project_path_provider: Callable[[], Optional[str]
     ui.timer(_TRAY_REFRESH_SEC, refresh)
 
 
-def _render_task_card(task: BackgroundTask, refresh_tray: Callable[[], None]) -> None:
+def _render_task_card(task: BackgroundTaskRecord, refresh_tray: Callable[[], None]) -> None:
     color, icon = _status_glyph(task.status)
     card_bg = "#ffffff"
     card_border = "#e2e8f0"
@@ -161,7 +161,7 @@ def _status_glyph(status: str) -> tuple[str, str]:
     return "#3b82f6", "sync"  # running
 
 
-def _outcome_text(task: BackgroundTask) -> str:
+def _outcome_text(task: BackgroundTaskRecord) -> str:
     secs = task.duration_sec
     duration = f"{secs:.0f}s" if secs >= 1 else f"{secs*1000:.0f}ms"
     if task.status == "succeeded":
@@ -175,7 +175,7 @@ def _outcome_text(task: BackgroundTask) -> str:
     return ""
 
 
-def _cancel(task: BackgroundTask, refresh_tray: Callable[[], None]) -> None:
+def _cancel(task: BackgroundTaskRecord, refresh_tray: Callable[[], None]) -> None:
     if get_background_task_registry().cancel(task.id):
         try:
             ui.notify(f"Cancelled: {task.title}", type="warning", timeout=2000)
@@ -184,6 +184,6 @@ def _cancel(task: BackgroundTask, refresh_tray: Callable[[], None]) -> None:
     refresh_tray()
 
 
-def _dismiss(task: BackgroundTask, refresh_tray: Callable[[], None]) -> None:
+def _dismiss(task: BackgroundTaskRecord, refresh_tray: Callable[[], None]) -> None:
     get_background_task_registry().dismiss(task.id)
     refresh_tray()

@@ -277,6 +277,8 @@ def _render_merge_controls(
 async def _execute_merge(
     job_model, job_dir: Optional[Path], save_handler: Callable, is_aggregation: bool = False
 ) -> None:
+    from ui.background_task import BackgroundTask
+
     # Aggregation projects: if the schemer hasn't allocated a job dir yet,
     # synthesize one under External/aggregator/ (won't collide with the
     # schemer's jobNNN numbering) and persist relion_job_name so subsequent
@@ -302,17 +304,35 @@ async def _execute_merge(
         # Existing dir (e.g. from a prior synthesized merge) — ensure it exists.
         job_dir.mkdir(parents=True, exist_ok=True)
 
-    ui.notify("Merging...", type="info", timeout=2000)
-    summary = await run.io_bound(
-        _run_merge_sync, job_dir, list(job_model.additional_sources), is_aggregation
-    )
-    ui.notify("Merge complete", type="positive", timeout=4000)
-    # Pass job_dir explicitly: ui.refreshable re-uses the args from the prior
-    # call by default, but for fresh aggregation projects job_dir was None
-    # at initial panel render and only got synthesized above.
-    _render_merge_summary.refresh(job_dir)
-    _render_merge_controls.refresh(job_model, job_dir, False, save_handler, is_aggregation)
-    _render_source_list.refresh(job_model, False, save_handler, is_aggregation)
+    sources = list(job_model.additional_sources)
+    state = get_project_state()
+    project_path = state.project_path if state is not None else None
+
+    async def _run(progress_cb):
+        progress_cb(0, 0, "Merging optset sources…")
+        await run.io_bound(_run_merge_sync, job_dir, sources, is_aggregation)
+        return f"merged {len(sources)} source(s)"
+
+    def _on_complete(task):
+        if task.status != "succeeded":
+            ui.notify(
+                f"Merge {task.status}: {task.error or 'see tray for details'}",
+                type="negative", timeout=4000,
+            )
+            return
+        # Pass job_dir explicitly: ui.refreshable re-uses the args from the
+        # prior call by default, but for fresh aggregation projects job_dir
+        # was None at initial panel render and only got synthesized above.
+        _render_merge_summary.refresh(job_dir)
+        _render_merge_controls.refresh(job_model, job_dir, False, save_handler, is_aggregation)
+        _render_source_list.refresh(job_model, False, save_handler, is_aggregation)
+
+    BackgroundTask(
+        title=f"Merge · {job_dir.name}",
+        subtitle=f"{len(sources)} source(s){' (aggregation)' if is_aggregation else ''}",
+        dedup_key=f"merge:{job_dir}",
+        project_path=str(project_path) if project_path else None,
+    ).submit(_run, on_complete=_on_complete)
 
 
 

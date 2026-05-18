@@ -2,7 +2,7 @@ import numpy as np
 import mrcfile
 from pathlib import Path
 from PIL import Image
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.fft import fft2, ifft2, fftshift, ifftshift
 try:
     from tqdm import tqdm
@@ -114,21 +114,24 @@ class ImageProcessor:
             
         return self.mrc_to_pil(mrc_path, png_path)
 
-    def batch_convert(self, mrc_paths, nr_images, png_output_folder=None, show_progress=True):
+    def batch_convert(self, mrc_paths, nr_images, png_output_folder=None, show_progress=True, progress_cb=None):
         """
         Convert multiple MRC files to PIL images in parallel.
-        
+
         Parameters:
         - mrc_paths: List of paths to MRC files
         - png_output_folder: Optional folder to save PNGs
-        - show_progress: Whether to show progress bar
-        
+        - show_progress: Whether to show tqdm progress bar (ignored if progress_cb supplied)
+        - progress_cb: Optional callable(done:int, total:int, message:str) invoked
+          per finished image. When supplied, results are yielded in completion
+          order rather than input order, and tqdm is disabled.
+
         Returns:
         - List of PIL Image objects
         """
         if png_output_folder:
             Path(png_output_folder).mkdir(parents=True, exist_ok=True)
-        
+
         import time
         start_time = time.time()
 
@@ -138,20 +141,36 @@ class ImageProcessor:
         if nr_images % self.max_workers > 0:
             print(f"Extra images: {nr_images % self.max_workers} workers get 1 additional image")
         args_list = [(path, png_output_folder) for path in mrc_paths]
-        
+        total = len(args_list)
+
         with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-            if show_progress and tqdm is not None:
+            if progress_cb is not None:
+                future_to_name = {
+                    executor.submit(self._convert_single_parallel, args): Path(args[0]).name
+                    for args in args_list
+                }
+                pil_images = []
+                done = 0
+                for fut in as_completed(future_to_name):
+                    name = future_to_name[fut]
+                    pil_images.append(fut.result())
+                    done += 1
+                    try:
+                        progress_cb(done, total, name)
+                    except Exception:
+                        pass
+            elif show_progress and tqdm is not None:
                 pil_images = list(tqdm(
                     executor.map(self._convert_single_parallel, args_list),
-                    total=len(args_list),
+                    total=total,
                     desc="Converting MRC to PIL"
                 ))
             else:
                 pil_images = list(executor.map(self._convert_single_parallel, args_list))
-        
+
         # Filter out None values (skipped images)
         pil_images = [img for img in pil_images if img is not None]
-        
+
         end_time = time.time()
         print(f"Batch conversion completed in {end_time - start_time:.2f} seconds")
 

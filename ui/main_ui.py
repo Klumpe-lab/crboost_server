@@ -103,6 +103,18 @@ def create_ui_router(backend: CryoBoostBackend):
         ):
             build_data_import_panel(backend, callbacks)
 
+        # Mount the background-task tray here too so tasks still in flight
+        # when the user returns to the landing page (or are started from
+        # actions on this page) remain visible. project_path may be None
+        # before a project is loaded; the registry's snapshot then shows
+        # all tasks across projects, which matches user expectation on
+        # a project-selector screen.
+        from ui.background_task_tray import mount_background_task_tray
+
+        mount_background_task_tray(
+            project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None
+        )
+
     # --- PAGE 2: WORKSPACE ---
     @ui.page("/workspace")
     async def workspace_page(client: Client):
