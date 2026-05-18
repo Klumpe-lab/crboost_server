@@ -246,6 +246,146 @@ _TOOL_KEYWORDS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Mask intrinsic-shape inspection
+#
+# A mask's *measured* diameter and isotropy often disagree with the filename
+# (the user's "_d575" mask measured 606 Å due to soft edge). The Journey
+# panel surfaces these so the user can validate what TM actually sees.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MaskIntrinsics:
+    """What a TM mask actually looks like — measured, not assumed."""
+
+    nx: int
+    ny: int
+    nz: int
+    apix_ang: Optional[float]
+
+    # Equivalent-sphere diameter (Å) from the count of voxels > 0.5*dmax.
+    # The "0.5 contour" is what PyTOM treats as the effective mask boundary
+    # — independent of any soft edge in the mask file.
+    diameter_ang_at_half_max: Optional[float]
+
+    # Per-axis spatial std of the binarized (>0.5*max) volume. Isotropy is
+    # min/max of these stds — 1.0 = perfectly spherical, <0.95 = clearly
+    # elongated.
+    sigma_x_vox: Optional[float]
+    sigma_y_vox: Optional[float]
+    sigma_z_vox: Optional[float]
+    isotropy_ratio: Optional[float]
+
+    # Center-of-mass offset (voxels) from the geometric box center.
+    # >0.5 voxel = template not centered (TM uses the box center as the
+    # search origin, so an off-center mask shifts where matches register).
+    com_offset_x_vox: float
+    com_offset_y_vox: float
+    com_offset_z_vox: float
+    com_offset_magnitude_vox: float
+
+    # Did the binarized region pass the spherical-isotropy test (>=0.95)?
+    looks_spherical: bool
+
+
+_MASK_INTRINSICS_CACHE: dict[tuple[str, int], MaskIntrinsics] = {}
+
+
+def inspect_mask_intrinsics(mask_path: str) -> Optional[MaskIntrinsics]:
+    """One-pass mask measurement. Mtime-keyed cache so repeated dashboard
+    renders don't re-open the file. Returns None on missing/unreadable file."""
+    if not mask_path:
+        return None
+    p = Path(mask_path)
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    key = (mask_path, int(st.st_mtime))
+    cached = _MASK_INTRINSICS_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        import mrcfile
+        import numpy as np
+
+        with mrcfile.open(str(p), permissive=True) as m:
+            nx = int(m.header.nx)
+            ny = int(m.header.ny)
+            nz = int(m.header.nz)
+            vx = float(getattr(m.voxel_size, "x", 0.0) or 0.0)
+            apix = vx if vx > 0 else None
+            data = np.asarray(m.data, dtype=np.float32, copy=True)
+
+        if data.size == 0 or float(data.max()) <= 0:
+            result = MaskIntrinsics(
+                nx=nx, ny=ny, nz=nz, apix_ang=apix,
+                diameter_ang_at_half_max=None,
+                sigma_x_vox=None, sigma_y_vox=None, sigma_z_vox=None,
+                isotropy_ratio=None,
+                com_offset_x_vox=0.0, com_offset_y_vox=0.0, com_offset_z_vox=0.0,
+                com_offset_magnitude_vox=0.0,
+                looks_spherical=False,
+            )
+            _MASK_INTRINSICS_CACHE[key] = result
+            return result
+
+        # Binarize at half-max; this is what PyTOM's mask consumers also
+        # treat as the effective boundary.
+        thresh = 0.5 * float(data.max())
+        binary = data > thresh
+        n_vox = int(binary.sum())
+
+        # Equivalent-sphere diameter from voxel count. V = (4/3)πr³ → r = (3V/4π)^(1/3).
+        diameter_ang = None
+        if n_vox > 0 and apix:
+            radius_vox = (3.0 * n_vox / (4.0 * np.pi)) ** (1.0 / 3.0)
+            diameter_ang = float(2.0 * radius_vox * apix)
+
+        # Per-axis std + COM from the binarized volume coordinates.
+        # binary.shape is (nz, ny, nx) in mrcfile convention.
+        if n_vox > 0:
+            coords = np.argwhere(binary)  # shape (n_vox, 3): [z, y, x]
+            com = coords.mean(axis=0)  # [cz, cy, cx]
+            sigma = coords.std(axis=0)  # [sz, sy, sx]
+            sigma_z, sigma_y, sigma_x = float(sigma[0]), float(sigma[1]), float(sigma[2])
+
+            # Center of the volume box (also in [z,y,x] order to match coords).
+            center = np.array([nz, ny, nx], dtype=np.float64) / 2.0 - 0.5
+            offset = com - center  # [Δz, Δy, Δx]
+            off_z, off_y, off_x = float(offset[0]), float(offset[1]), float(offset[2])
+            off_mag = float(np.sqrt(off_x * off_x + off_y * off_y + off_z * off_z))
+
+            sigmas = [s for s in (sigma_x, sigma_y, sigma_z) if s > 0]
+            iso = (min(sigmas) / max(sigmas)) if sigmas else None
+            looks_spherical = iso is not None and iso >= 0.95
+        else:
+            sigma_x = sigma_y = sigma_z = None
+            iso = None
+            off_x = off_y = off_z = off_mag = 0.0
+            looks_spherical = False
+
+        result = MaskIntrinsics(
+            nx=nx, ny=ny, nz=nz, apix_ang=apix,
+            diameter_ang_at_half_max=diameter_ang,
+            sigma_x_vox=sigma_x,
+            sigma_y_vox=sigma_y,
+            sigma_z_vox=sigma_z,
+            isotropy_ratio=iso,
+            com_offset_x_vox=off_x,
+            com_offset_y_vox=off_y,
+            com_offset_z_vox=off_z,
+            com_offset_magnitude_vox=off_mag,
+            looks_spherical=looks_spherical,
+        )
+        _MASK_INTRINSICS_CACHE[key] = result
+        return result
+    except Exception as e:
+        logger.warning("Could not inspect mask MRC %s: %s", mask_path, e)
+        return None
+
+
 def _infer_provenance(labels: List[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Best-effort regex over concatenated header labels. Looks for PDB id,
     EMDB id, and a tool name. Each is independently optional."""

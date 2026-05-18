@@ -41,7 +41,11 @@ from services.templating.template_metadata import (
 )
 from services.tilt_series.build import _infer_position
 from services.visualization.imod_vis import generate_candidate_vis
-from services.visualization.preview_orchestrator import generate_candidate_previews, read_preview_manifest
+from services.visualization.preview_orchestrator import (
+    _find_warp_tomo_preview,
+    generate_candidate_previews,
+    read_preview_manifest,
+)
 from ui.components.task_utils import read_manifest, resolve_job_dir, scan_statuses
 
 logger = logging.getLogger(__name__)
@@ -773,6 +777,8 @@ def _read_picks_json(path: Path) -> dict:
         return {"picks": [], "tomo_dims_xyz_px": [0, 0, 0], "score_field": None, "n": 0}
 
 
+
+
 # ---------------------------------------------------------------------------
 # Per-tilt star helpers (for FS Motion/CTF, TS Align, TS CTF, Tilt Filter)
 # ---------------------------------------------------------------------------
@@ -1294,6 +1300,53 @@ _CB_CSS = """
 .cb-pixel-species-id {
     color: #94a3b8; font-size: 9px; font-weight: 400;
 }
+/* Inline status chips used in section-card headers and chip strips. */
+.cb-chip-strip {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    padding: 4px 0 6px 0;
+}
+.cb-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px; border-radius: 999px;
+    font-family: ui-monospace, monospace; font-size: 10px;
+    border: 1px solid #e5e7eb; background: #f8fafc;
+    color: #475569; cursor: help; line-height: 1.4;
+    white-space: nowrap;
+}
+.cb-chip .cb-chip-label {
+    color: #94a3b8; text-transform: uppercase;
+    font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
+}
+.cb-chip .cb-chip-value { color: #1e293b; font-weight: 600; }
+.cb-chip-ok      { background: #ecfdf5; border-color: #a7f3d0; }
+.cb-chip-ok      .cb-chip-value { color: #047857; }
+.cb-chip-warn    { background: #fffbeb; border-color: #fcd34d; }
+.cb-chip-warn    .cb-chip-value { color: #b45309; }
+.cb-chip-error   { background: #fef2f2; border-color: #fecaca; }
+.cb-chip-error   .cb-chip-value { color: #b91c1c; }
+.cb-chip-info    { background: #eff6ff; border-color: #bfdbfe; }
+.cb-chip-info    .cb-chip-value { color: #1d4ed8; }
+.cb-chip-neutral { background: #f1f5f9; }
+.cb-chip-icon    { font-size: 11px !important; }
+/* Recon-section large canvas: viewport-filling WarpTools PNG preview. */
+.cb-recon-preview {
+    width: 100%;
+    background: #0f172a;
+    border-radius: 6px;
+    overflow: hidden;
+    margin: 8px 0 4px 0;
+    display: flex; justify-content: center; align-items: center;
+}
+.cb-recon-preview img {
+    width: 100%;
+    max-height: 75vh;
+    object-fit: contain;
+    display: block;
+}
+.cb-recon-preview-caption {
+    font-family: ui-monospace, monospace; font-size: 10px;
+    color: #6b7280; padding: 2px 4px 6px 4px;
+}
 """
 
 
@@ -1326,6 +1379,9 @@ def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[s
     initial_ts = ts_name if (ts_name and ts_name in ts_names) else (ts_names[0] if ts_names else None)
     selected = {"ts": initial_ts}
 
+    # Per-mount auto-kick dedup. Cleared on each fresh dashboard open so a
+    # reload after the user fixed a stuck job re-triggers generation.
+    reset_auto_kick_state()
     _ensure_assets_loaded()
 
     with (
@@ -1524,8 +1580,16 @@ def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, re
         _render_tilt_filter_section,
         _render_ts_alignment_section,
         _render_ts_ctf_section,
+        _render_reconstruct_section,
     ):
         if emit(ts_name, project_state, project_path, refresh):
+            rendered_any = True
+
+    # Template Match — one card per TM instance for this TS. Surfaces
+    # declared-vs-applied symmetry parity + template/mask intrinsic-shape
+    # chips. Lives between Reconstruct and Candidate Extract in pipeline order.
+    for instance_id, job_model in _template_match_instances(project_state):
+        if _render_template_match_section(ts_name, instance_id, job_model, project_path, refresh):
             rendered_any = True
 
     # Candidate Extract — flagship card carries the preview pair, gallery, and
@@ -1654,6 +1718,25 @@ def _template_match_instances(state) -> list[tuple[str, object]]:
         if getattr(jm, "job_type", None) == JobType.TEMPLATE_MATCH_PYTOM:
             out.append((iid, jm))
     return sorted(out, key=lambda kv: kv[0])
+
+
+# ---------------------------------------------------------------------------
+# tmResults *_job.json reader — surfaces what PyTOM actually applied per TS
+# (vs. what the user declared in project_params.json)
+# ---------------------------------------------------------------------------
+
+
+def _read_tm_job_json(job_dir: Path, ts_name: str) -> Optional[dict]:
+    """PyTOM writes `tmResults/{tomo_name}_job.json` per TS. Returns the
+    parsed dict or None if missing/unreadable."""
+    p = job_dir / "tmResults" / f"{ts_name}_job.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text())
+    except Exception as e:
+        logger.warning("Could not read TM job json %s: %s", p, e)
+        return None
 
 
 def _parse_tomo_dimensions(s: str) -> Optional[tuple[int, int, int]]:
@@ -1966,6 +2049,12 @@ def _apply_sanity_rules(rows: list[dict]) -> None:
                 r["warnings"]["particle"] = ("warn", msg)
 
     # Box vs particle diameter  (TM and Subtomo)
+    # Box vs particle Ø — tighter zones than the older 1.5–3.0× window
+    # (per JOURNEY_CANDIDATE_METRICS.md §"Box and crop sizing rationality"):
+    #   red  < 1.5×  (particle won't fit; tight Refine3D shifts will clip)
+    #   amber 1.5–2.0× (acceptable but no margin for refinement)
+    #   green 2.0–3.0×
+    #   amber > 3.0× (wasted compute)
     for r in rows:
         if r["stage_key"] not in ("tm", "subtomo"):
             continue
@@ -1977,12 +2066,19 @@ def _apply_sanity_rules(rows: list[dict]) -> None:
         if ratio < 1.5:
             r["warnings"]["box"] = (
                 "error",
-                f"Box {b:g} Å is {ratio:.2f}× particle diameter {d:g} Å — particle won't fit. Aim for 1.5–3×.",
+                f"Box {b:g} Å is {ratio:.2f}× particle diameter {d:g} Å — particle won't fit. "
+                f"Aim for ≥ 2.0× (≥ 1.5× absolute floor).",
+            )
+        elif ratio < 2.0:
+            r["warnings"]["box"] = (
+                "warn",
+                f"Box {b:g} Å is {ratio:.2f}× particle diameter {d:g} Å — tight; no margin for "
+                f"Refine3D shifts. Aim for ≥ 2.0×.",
             )
         elif ratio > 3.0:
             r["warnings"]["box"] = (
                 "warn",
-                f"Box {b:g} Å is {ratio:.2f}× particle diameter {d:g} Å — wasted compute. Aim for 1.5–3×.",
+                f"Box {b:g} Å is {ratio:.2f}× particle diameter {d:g} Å — wasted compute. Aim for 2.0–3.0×.",
             )
 
     # Template volume px vs recon px (silent mismatch ⇒ garbage picks)
@@ -2001,6 +2097,12 @@ def _apply_sanity_rules(rows: list[dict]) -> None:
                 )
 
     # Subtomo crop sanity
+    #
+    # Crop ratio thresholds (per JOURNEY_CANDIDATE_METRICS.md):
+    #   red    crop < diameter  (particle clipped — absolute floor)
+    #   red    crop > box       (invalid; crop must fit inside box)
+    #   amber  crop / diameter  < 1.2× (tight; no margin for shifts)
+    #   green  crop / diameter ≥ 1.5×
     for r in rows:
         if r["stage_key"] != "subtomo":
             continue
@@ -2013,16 +2115,26 @@ def _apply_sanity_rules(rows: list[dict]) -> None:
                 "error",
                 f"crop ({crop} px) > box ({box} px) — invalid; crop must fit within the box.",
             )
+            continue
         # Cropped volume must contain the particle (≥ 1× diameter is the
         # absolute floor; below that, the particle doesn't fit in the cropped
-        # output cube and gets clipped).
+        # output cube and gets clipped). Between 1.0–1.2× is the "tight,
+        # no margin" warn zone; ≥ 1.5× is the comfortable target.
         if crop and eff_px and diameter:
             crop_ang = crop * eff_px
-            if crop_ang < diameter:
+            ratio = crop_ang / diameter
+            if ratio < 1.0:
                 r["warnings"]["crop"] = (
                     "error",
                     f"crop {crop_ang:g} Å ({crop} px) < particle diameter {diameter:g} Å — "
                     f"particle won't fit in the cropped subtomogram. Increase crop_size.",
+                )
+            elif ratio < 1.2:
+                r["warnings"]["crop"] = (
+                    "warn",
+                    f"crop {crop_ang:g} Å is {ratio:.2f}× particle diameter {diameter:g} Å — "
+                    f"tight; only {(ratio - 1) * 50:.0f}% margin per side around the particle. "
+                    f"Refine3D shifts may clip. Aim for ≥ 1.5×.",
                 )
 
 
@@ -2223,11 +2335,142 @@ def _render_pixel_sanity_table(rows: list[dict]) -> None:
                     _render_pixel_row_cells(r)
 
 
+# ---------------------------------------------------------------------------
+# Generic chip renderer + stage-0 chips
+# ---------------------------------------------------------------------------
+
+
+def _render_chip(
+    label: str,
+    value: str,
+    *,
+    status: str = "neutral",
+    tooltip: Optional[str] = None,
+    icon: Optional[str] = None,
+) -> None:
+    """One status chip. `status` ∈ {ok, warn, error, info, neutral}."""
+    cls = f"cb-chip cb-chip-{status}"
+    with ui.element("span").classes(cls) as chip:
+        if icon:
+            ui.icon(icon, size="11px").classes("cb-chip-icon")
+        ui.label(label).classes("cb-chip-label")
+        ui.label(value).classes("cb-chip-value")
+        if tooltip:
+            chip.tooltip(tooltip)
+
+
+def _read_tomohand_from_import_star(star_path: Path) -> Optional[int]:
+    """Return `_rlnTomoHand` from an Import-job tilt_series.star, sampling the
+    first data table that carries it. Returns ±1 or None on absence."""
+    if not star_path.exists():
+        return None
+    try:
+        import starfile
+
+        data = starfile.read(star_path, always_dict=True)
+    except Exception as e:
+        logger.warning("Could not read TomoHand from %s: %s", star_path, e)
+        return None
+    for v in data.values():
+        if isinstance(v, pd.DataFrame) and "rlnTomoHand" in v.columns:
+            vals = pd.to_numeric(v["rlnTomoHand"], errors="coerce").dropna().unique().tolist()
+            if not vals:
+                continue
+            # Mixed values across TS are unusual but possible — surface +1/-1
+            # as a magnitude (sign of the first) when uniform, else 0 sentinel.
+            uniq = sorted({int(round(x)) for x in vals})
+            if len(uniq) == 1:
+                return int(uniq[0])
+            return 0  # mixed
+    return None
+
+
+def _find_import_job(project_state) -> Optional[tuple[str, object]]:
+    """Locate the Import (relion.importtomo) job. The dataset chip needs it
+    to cross-check the in-memory `invert_defocus_hand` against the actual
+    `_rlnTomoHand` Import wrote into `tilt_series.star`."""
+    return _find_job_by_type(project_state, JobType.IMPORT_MOVIES)
+
+
+def _render_stage0_chips(project_state, project_path: Path) -> None:
+    """Per-project chips that summarize import-time/microscope choices that
+    silently change downstream science. Currently: TomoHand (chirality /
+    depth-dependent defocus sign). Empty container if nothing to show."""
+    from services.models_base import AcquisitionParams
+
+    acq = project_state.acquisition
+    # In-memory intention. invert_defocus_hand=True → flip_tiltseries_hand=Yes
+    # → TomoHand=-1; False → TomoHand=+1. Source: ImportMoviesParams._get_job_specific_options.
+    config_hand = -1 if bool(acq.invert_defocus_hand) else 1
+
+    # On-disk: read tilt_series.star from the Import job, if it exists.
+    disk_hand: Optional[int] = None
+    imp = _find_import_job(project_state)
+    if imp:
+        imp_dir = _job_dir_for(imp[0], imp[1], project_path)
+        if imp_dir:
+            disk_hand = _read_tomohand_from_import_star(imp_dir / "tilt_series.star")
+
+    # Stale-default: compare to the AcquisitionParams field default. Catches
+    # projects created before the 2026-05-16 invert_defocus_hand=True flip.
+    default_hand = -1 if bool(AcquisitionParams.model_fields["invert_defocus_hand"].default) else 1
+
+    # Status logic:
+    #   error  — disk_hand exists and disagrees with config_hand (Import was run
+    #            with one setting, the project then edited it; downstream jobs
+    #            will use the disk value but the user thinks otherwise)
+    #   warn   — config differs from the current code default (drift candidate)
+    #   warn   — disk_hand == 0 (mixed across tilt-series; rare, usually
+    #            indicates a double-imported project)
+    #   ok     — everything aligned
+    if disk_hand == 0:
+        status = "warn"
+        value = "mixed"
+        tooltip = (
+            "Different `_rlnTomoHand` values across tilt-series in this project's "
+            "Import output. Usually means the project was double-imported with "
+            "different invert_defocus_hand settings. Verify by re-importing."
+        )
+    elif disk_hand is not None and disk_hand != config_hand:
+        status = "error"
+        value = f"{disk_hand:+d}"
+        tooltip = (
+            f"Import wrote _rlnTomoHand={disk_hand:+d} into tilt_series.star "
+            f"(this is what downstream jobs will use), but project_params.json now "
+            f"declares invert_defocus_hand={acq.invert_defocus_hand} → expected "
+            f"{config_hand:+d}. Re-run Import to align the two, or revert the config."
+        )
+    elif config_hand != default_hand:
+        status = "warn"
+        value = f"{config_hand:+d}"
+        tooltip = (
+            f"_rlnTomoHand={config_hand:+d} (from invert_defocus_hand="
+            f"{acq.invert_defocus_hand}). Current code default would give "
+            f"{default_hand:+d} — verify this project's value is intentional. "
+            f"_rlnTomoHand is the sign convention for depth-dependent defocus in "
+            f"RELION's CTF correction (see HANDOFF_412_DEBUG.md)."
+        )
+    else:
+        status = "ok"
+        value = f"{config_hand:+d}"
+        src = "from Import output" if disk_hand is not None else "from acquisition config"
+        tooltip = (
+            f"_rlnTomoHand={config_hand:+d} ({src}). Sign convention for "
+            f"depth-dependent defocus in CTF correction. The Klumpe-lab Titan "
+            f"convention is -1 (invert_defocus_hand=True)."
+        )
+
+    with ui.element("div").classes("cb-chip-strip"):
+        _render_chip("TomoHand", value, status=status, tooltip=tooltip, icon="compare_arrows")
+
+
 def _render_dataset_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
     """Project-wide acquisition + microscope settings + pixel/binning sanity table.
     Two-column key/val grid above; below it, a dense per-stage table showing
     pixel size, tomo dims, and template/extract/subtomo box + padding with
-    inline sanity-rule warnings (ROADMAP §11)."""
+    inline sanity-rule warnings (ROADMAP §11). A chip strip at the top
+    surfaces import-time choices that silently change downstream science
+    (TomoHand, etc.)."""
     ms = project_state.microscope
     acq = project_state.acquisition
 
@@ -2268,6 +2511,7 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
             ui.label("Dataset").classes("cb-section-title")
             ui.space()
             ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
+        _render_stage0_chips(project_state, project_path)
         # 2-col grid: pairs of (key, val, key, val) per visual row.
         with ui.element("div").classes("cb-datadump-grid-2col"):
             for k, v in rows:
@@ -2905,6 +3149,525 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
 
 
 # ---------------------------------------------------------------------------
+# Reconstruct section: surfaces per-TS reconstructed-tomogram polarity.
+#
+# The template/mask polarity (BLACK vs WHITE) must match the tomogram
+# polarity. If the WarpTools `TomoFullReconstructInvert` setting changes
+# between runs or projects, the polarity chip flags the mismatch before
+# TM produces meaningless CC scores. Reads a center 1024×1024 Z slice
+# only — full-volume reads are forbidden per ROADMAP §4.1.
+# ---------------------------------------------------------------------------
+
+
+_TOMO_POLARITY_CACHE: dict[tuple[str, int], dict] = {}
+
+
+def _compute_tomogram_polarity(mrc_path: Path) -> Optional[dict]:
+    """Sample a center 1024×1024 Z slice from a reconstructed tomogram,
+    compute %bright / %dark voxel fractions, classify polarity. Cached by
+    (path, mtime). Returns None on read failure or non-3D volumes."""
+    try:
+        st = mrc_path.stat()
+    except OSError:
+        return None
+    key = (str(mrc_path), int(st.st_mtime))
+    cached = _TOMO_POLARITY_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        import mrcfile
+        import numpy as np
+
+        with mrcfile.mmap(str(mrc_path), mode="r") as m:
+            data = m.data
+            if data.ndim != 3:
+                return None
+            nz, ny, nx = data.shape
+            cz, cy, cx = nz // 2, ny // 2, nx // 2
+            half = 512
+            y0, y1 = max(0, cy - half), min(ny, cy + half)
+            x0, x1 = max(0, cx - half), min(nx, cx + half)
+            # Materialize a copy so the array survives the mmap close
+            # (ROADMAP §4.5 mmap view trap).
+            slab = np.array(data[cz, y0:y1, x0:x1], dtype=np.float32, copy=True)
+    except Exception as e:
+        logger.warning("Could not read tomogram %s for polarity: %s", mrc_path, e)
+        return None
+
+    if slab.size == 0:
+        return None
+    mean = float(slab.mean())
+    std = float(slab.std()) or 1.0
+    upper = mean + 1.5 * std
+    lower = mean - 1.5 * std
+    n = float(slab.size)
+    pct_bright = 100.0 * float((slab > upper).sum()) / n
+    pct_dark = 100.0 * float((slab < lower).sum()) / n
+
+    # Classify. Margins picked from the doc example: GT had 6.6%/6.8% =
+    # essentially symmetric. >1.5x ratio + >8% absolute = clear skew.
+    if pct_bright > 1.5 * pct_dark and pct_bright > 8.0:
+        polarity = "bright"
+    elif pct_dark > 1.5 * pct_bright and pct_dark > 8.0:
+        polarity = "dark"
+    else:
+        polarity = "symmetric"
+
+    result = {
+        "pct_bright": pct_bright,
+        "pct_dark": pct_dark,
+        "polarity": polarity,
+        "slab_shape": list(slab.shape),
+    }
+    _TOMO_POLARITY_CACHE[key] = result
+    return result
+
+
+def _expected_polarity_from_templates(project_state) -> Optional[str]:
+    """Return the consensus selected-template polarity across species
+    ("white" or "black") if every species agrees, else None."""
+    seen: set[str] = set()
+    for sp in project_state.species_registry or []:
+        tpl = sp.get_selected_template() if hasattr(sp, "get_selected_template") else None
+        pol = getattr(tpl, "polarity", None) if tpl else None
+        if pol:
+            seen.add(str(pol).lower())
+    if len(seen) == 1:
+        return next(iter(seen))
+    return None
+
+
+def _tomo_polarity_chip_status(polarity: str, expected: Optional[str]) -> tuple[str, str]:
+    """Return (status, hint) for the polarity chip."""
+    if expected is None:
+        if polarity == "symmetric":
+            return "neutral", "Roughly symmetric distribution — typical reconstruction."
+        return (
+            "info",
+            f"{polarity.capitalize()}-skewed reconstruction. Make sure your template polarity "
+            f"({polarity}) matches this tomogram.",
+        )
+    if expected == "white" and polarity == "dark":
+        return "error", (
+            "Template polarity is WHITE (expects bright particles) but the reconstructed "
+            "tomogram is DARK-skewed. PyTOM is matching inverted contrast — invert the "
+            "template, the tomogram, or both, and re-run TM."
+        )
+    if expected == "black" and polarity == "bright":
+        return "error", (
+            "Template polarity is BLACK (expects dark particles) but the reconstructed "
+            "tomogram is BRIGHT-skewed. PyTOM is matching inverted contrast — invert the "
+            "template, the tomogram, or both, and re-run TM."
+        )
+    return "ok", f"Tomogram polarity ({polarity}) matches template polarity ({expected})."
+
+
+def _render_reconstruct_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
+    """Per-TS Reconstruct card. Currently surfaces tomogram polarity; the
+    WarpTools PNG + X/Z slab + 3dmod copy command are still hosted in the
+    Candidate Extract section (Slice B refactor pending)."""
+    rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
+    if not rec:
+        return False
+    rec_iid, rec_jm = rec
+    job_dir = _job_dir_for(rec_iid, rec_jm, project_path)
+    if not job_dir:
+        return False
+    tomo_df = _read_tomograms_table(job_dir / "tomograms.star")
+    if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
+        return False
+    row = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
+    if row.empty:
+        return False
+    tomo_row = row.iloc[0]
+    mrc_path = _resolve_volume_for_3dmod(tomo_row, project_path)
+
+    metric_parts: list[str] = []
+    rescale = float(getattr(rec_jm, "rescale_angpixs", 0.0) or 0.0)
+    if rescale:
+        metric_parts.append(f"{rescale:g} Å/px")
+    if "rlnTomoTomogramBinning" in tomo_row.index:
+        try:
+            metric_parts.append(f"bin {float(tomo_row['rlnTomoTomogramBinning']):g}")
+        except (TypeError, ValueError):
+            pass
+
+    with ui.element("div").classes("cb-section-card w-full") as card:
+        card._props["data-section"] = "reconstruct"
+        card._props["data-instance"] = rec_iid
+        with ui.element("div").classes("cb-section-card-header"):
+            ui.icon("view_in_ar", size="14px").classes("text-indigo-600")
+            ui.label("Reconstruct").classes("cb-section-title")
+            ui.label(rec_iid).classes("text-[10px] font-mono text-gray-500")
+            ui.space()
+            if metric_parts:
+                ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
+            status_label = getattr(rec_jm.execution_status, "value", str(rec_jm.execution_status))
+            if status_label.lower() != "succeeded":
+                ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
+
+        if mrc_path is None or not Path(mrc_path).exists():
+            with ui.element("div").classes("cb-chip-strip"):
+                _render_chip(
+                    "polarity",
+                    "no MRC",
+                    status="neutral",
+                    tooltip="Reconstructed tomogram MRC not on disk for this TS — can't sample for polarity.",
+                    icon="brightness_medium",
+                )
+            _render_recon_big_preview(ts_name, project_path, None)
+            return True
+
+        polarity = _compute_tomogram_polarity(Path(mrc_path))
+        with ui.element("div").classes("cb-chip-strip"):
+            if polarity is None:
+                _render_chip(
+                    "polarity",
+                    "read error",
+                    status="warn",
+                    tooltip=f"Could not sample center Z slice of {mrc_path} (see server logs).",
+                    icon="brightness_medium",
+                )
+            else:
+                expected = _expected_polarity_from_templates(project_state)
+                status, hint = _tomo_polarity_chip_status(polarity["polarity"], expected)
+                _render_chip(
+                    "polarity",
+                    polarity["polarity"],
+                    status=status,
+                    tooltip=(
+                        f"Reconstructed tomogram polarity: {polarity['polarity'].upper()} "
+                        f"({polarity['pct_bright']:.1f}% bright vs {polarity['pct_dark']:.1f}% "
+                        f"dark voxels in a center {polarity['slab_shape'][0]}×{polarity['slab_shape'][1]} "
+                        f"Z slice). {hint}"
+                    ),
+                    icon="brightness_medium",
+                )
+                _render_chip(
+                    "bright %",
+                    f"{polarity['pct_bright']:.1f}",
+                    status="neutral",
+                    tooltip="Fraction of voxels above mean + 1.5σ in the sampled Z slice.",
+                )
+                _render_chip(
+                    "dark %",
+                    f"{polarity['pct_dark']:.1f}",
+                    status="neutral",
+                    tooltip="Fraction of voxels below mean − 1.5σ in the sampled Z slice.",
+                )
+        _render_recon_big_preview(ts_name, project_path, Path(mrc_path))
+    return True
+
+
+def _render_recon_big_preview(ts_name: str, project_path: Path, mrc_path: Optional[Path]) -> None:
+    """Viewport-filling WarpTools tomogram PNG. The PNG sits next to the
+    .mrc as `<tomo>_<res>Apx.png`, written by ts_reconstruct as a side
+    effect. Rendered with `object-fit: contain` so the natural aspect
+    ratio (typically wide XY top-down) survives a tall viewport."""
+    png_path = _find_warp_tomo_preview(project_path, ts_name, mrc_path)
+    if not png_path or not png_path.exists():
+        ui.label("No WarpTools preview PNG on disk for this tomogram.").classes("cb-section-placeholder")
+        return
+    url = _vis_asset_url(str(png_path))
+    with ui.element("div").classes("cb-recon-preview"):
+        ui.html(
+            f"<img src='{url}' alt='{ts_name} WarpTools tomogram preview' />",
+            sanitize=False,
+        )
+    ui.label(f"WarpTools preview · {png_path.name}").classes("cb-recon-preview-caption")
+
+
+# ---------------------------------------------------------------------------
+# Template Match section: declared-vs-applied symmetry parity (and, when
+# combined with Slice 5, template + mask intrinsic-shape chips). One card
+# per (TS, TM instance) so multi-species projects get a card per species
+# under each TS — matching the candidate-extract layout.
+# ---------------------------------------------------------------------------
+
+
+def _fmt_dims_combined(dims: Optional[tuple], px: Optional[float]) -> Optional[str]:
+    """`(1024, 1024, 512), 6.2` → "1024×1024×512 px (6350×6350×3174 Å)"."""
+    if not dims:
+        return None
+    parts_px = "×".join(str(d) for d in dims if d is not None)
+    if not parts_px:
+        return None
+    if px and px > 0:
+        parts_ang = "×".join(f"{int(round(d * px)):,}" for d in dims if d is not None)
+        return f"{parts_px} px ({parts_ang} Å)"
+    return f"{parts_px} px"
+
+
+def _render_template_match_section(ts_name: str, instance_id: str, job_model, project_path: Path, refresh) -> bool:
+    """Per-TS Template Match card. One card per (TS, TM instance); multi-
+    species projects get one card per species under each TS. Surfaces the
+    full size context (tomo, template, mask, particle, extraction) plus
+    mask geometry diagnostics so the user can reason about picks at a
+    glance."""
+    job_dir = _job_dir_for(instance_id, job_model, project_path)
+    if not job_dir:
+        return False
+    state = get_project_state()
+    species, species_id = _resolve_species(state, job_model, instance_id)
+    applied_job_json = _read_tm_job_json(job_dir, ts_name)
+
+    # Walk the pixel chain once and pull the rows this card cares about
+    # (tomo dims at TM apix, particle diameter, subtomo box/crop).
+    pixel_rows = _compute_pixel_chain(state)
+    recon_row = next((r for r in pixel_rows if r["stage_key"] == "recon"), None)
+    pick_row = next(
+        (r for r in pixel_rows if r["stage_key"] == "pick" and r.get("species_id") == species_id), None
+    )
+    subtomo_row = next(
+        (r for r in pixel_rows if r["stage_key"] == "subtomo" and r.get("species_id") == species_id), None
+    )
+
+    metric_parts: list[str] = []
+    if species:
+        metric_parts.append(species.name or species_id or "species")
+    if getattr(job_model, "angular_search", None):
+        metric_parts.append(f"θ={job_model.angular_search}°")
+    sym = getattr(species, "symmetry", None) if species else None
+    if not sym:
+        sym = getattr(job_model, "symmetry", None)
+    if sym:
+        metric_parts.append(f"sym {sym}")
+
+    with ui.element("div").classes("cb-section-card w-full") as card:
+        card._props["data-section"] = "template_match"
+        card._props["data-instance"] = instance_id
+        with ui.element("div").classes("cb-section-card-header"):
+            ui.icon("auto_graph", size="14px").classes("text-indigo-600")
+            ui.label("Template match").classes("cb-section-title")
+            ui.label(instance_id).classes("text-[10px] font-mono text-gray-500")
+            ui.space()
+            if metric_parts:
+                ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
+            status_label = getattr(job_model.execution_status, "value", str(job_model.execution_status))
+            if status_label.lower() != "succeeded":
+                ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
+
+        with ui.element("div").classes("cb-chip-strip"):
+            _render_tm_size_chips(
+                job_model=job_model,
+                species=species,
+                applied_job_json=applied_job_json,
+                recon_row=recon_row,
+                pick_row=pick_row,
+                subtomo_row=subtomo_row,
+            )
+
+        if applied_job_json is None:
+            ui.label(f"No tmResults/{ts_name}_job.json yet — TM hasn't produced output for this TS.").classes(
+                "cb-section-placeholder"
+            )
+
+    return True
+
+
+def _render_tm_size_chips(
+    *,
+    job_model,
+    species,
+    applied_job_json: Optional[dict],
+    recon_row: Optional[dict],
+    pick_row: Optional[dict],
+    subtomo_row: Optional[dict],
+) -> None:
+    """All the sizes (tomo / template / mask / particle / extraction) plus
+    mask geometry diagnostics, in one chip strip. Each chip skips silently
+    when its source isn't available so the strip degrades gracefully on
+    partially-configured projects.
+    """
+    from services.templating.mrc_inspection import inspect_mask_intrinsics
+
+    # Reference apix — PyTOM's applied voxel_size wins if the json is on
+    # disk; otherwise fall back to the recon row's px size.
+    tm_apix: Optional[float] = None
+    if applied_job_json and isinstance(applied_job_json.get("voxel_size"), (int, float)):
+        v = float(applied_job_json["voxel_size"])
+        tm_apix = v if v > 0 else None
+    if tm_apix is None and recon_row:
+        tm_apix = recon_row.get("px_size_ang")
+
+    # ── Tomo ─────────────────────────────────────────────────────────────
+    if recon_row:
+        tomo_text = _fmt_dims_combined(recon_row.get("tomo_px"), recon_row.get("px_size_ang"))
+        if tomo_text:
+            _render_chip(
+                "tomo",
+                tomo_text,
+                status="neutral",
+                tooltip=(
+                    f"Reconstructed tomogram dimensions at "
+                    f"{(recon_row.get('px_size_ang') or 0):g} Å/voxel. From TsAlignmentParams.tomo_dimensions × "
+                    f"rescale ratio (TsReconstructParams.rescale_angpixs)."
+                ),
+                icon="view_in_ar",
+            )
+
+    # ── Template ─────────────────────────────────────────────────────────
+    tpl_path = getattr(job_model, "template_path", "") or (
+        get_effective_template_path(species) if species else ""
+    )
+    tpl_header = read_template_header(tpl_path) if tpl_path else None
+    if tpl_header and tpl_header.box_px:
+        if tpl_header.apix_ang:
+            tpl_text = (
+                f"{tpl_header.box_px}px ({tpl_header.box_px * tpl_header.apix_ang:g} Å)"
+                f" @ {tpl_header.apix_ang:g} Å/px"
+            )
+        else:
+            tpl_text = f"{tpl_header.box_px}px"
+        # Apix mismatch with TM = error; otherwise neutral.
+        status = "neutral"
+        warn = ""
+        if tm_apix and tpl_header.apix_ang and abs(tm_apix - tpl_header.apix_ang) / tm_apix > 0.05:
+            status = "error"
+            warn = f" — DIFFERENT from TM voxel_size {tm_apix:g} Å. Re-render template at {tm_apix:g} Å/px."
+        _render_chip(
+            "tmpl",
+            tpl_text,
+            status=status,
+            tooltip=(
+                f"Template volume: {tpl_header.nx}×{tpl_header.ny}×{tpl_header.nz} px "
+                f"@ {tpl_header.apix_ang:g} Å/voxel.{warn}"
+            ),
+            icon="hexagon",
+        )
+
+    # ── Mask ─────────────────────────────────────────────────────────────
+    mask_path = getattr(job_model, "mask_path", "") or ""
+    if not mask_path and species:
+        sel = species.get_selected_mask() if hasattr(species, "get_selected_mask") else None
+        mask_path = (getattr(sel, "mask_path", "") or "") if sel else ""
+
+    mask_intrinsics = inspect_mask_intrinsics(mask_path) if mask_path else None
+    if mask_intrinsics:
+        # Mask box (size text follows the template format).
+        mask_box = max(mask_intrinsics.nx, mask_intrinsics.ny, mask_intrinsics.nz)
+        if mask_intrinsics.apix_ang:
+            mask_text = (
+                f"{mask_box}px ({mask_box * mask_intrinsics.apix_ang:g} Å)"
+                f" @ {mask_intrinsics.apix_ang:g} Å/px"
+            )
+        else:
+            mask_text = f"{mask_box}px"
+        mask_status = "neutral"
+        mask_warn = ""
+        if tm_apix and mask_intrinsics.apix_ang and abs(tm_apix - mask_intrinsics.apix_ang) / tm_apix > 0.05:
+            mask_status = "error"
+            mask_warn = f" — DIFFERENT from TM voxel_size {tm_apix:g} Å."
+        _render_chip(
+            "mask",
+            mask_text,
+            status=mask_status,
+            tooltip=(
+                f"Mask volume: {mask_intrinsics.nx}×{mask_intrinsics.ny}×{mask_intrinsics.nz} px "
+                f"@ {mask_intrinsics.apix_ang:g} Å/voxel.{mask_warn}"
+            ),
+            icon="filter_tilt_shift",
+        )
+
+        if mask_intrinsics.diameter_ang_at_half_max:
+            diam_text = f"{mask_intrinsics.diameter_ang_at_half_max:.0f} Å"
+            if mask_intrinsics.apix_ang:
+                diam_text += f" ({mask_intrinsics.diameter_ang_at_half_max / mask_intrinsics.apix_ang:.0f} px)"
+            _render_chip(
+                "mask Ø",
+                diam_text,
+                status="neutral",
+                tooltip=(
+                    "Equivalent-sphere diameter from voxels > 0.5*max in the mask volume — "
+                    "what PyTOM treats as the effective mask radius, independent of soft edges "
+                    "or filename labels."
+                ),
+                icon="circle",
+            )
+
+        if mask_intrinsics.isotropy_ratio is not None:
+            if mask_intrinsics.looks_spherical:
+                iso_status, iso_extra = "ok", "≥0.95 → spherical (mask_is_spherical fast path appropriate)."
+            elif mask_intrinsics.isotropy_ratio < 0.85:
+                iso_status, iso_extra = (
+                    "warn",
+                    "<0.85 → elongated. mask_is_spherical=True would apply incorrect shortcuts.",
+                )
+            else:
+                iso_status, iso_extra = "info", "0.85–0.95 → mildly anisotropic."
+            _render_chip(
+                "iso",
+                f"{mask_intrinsics.isotropy_ratio:.2f}",
+                status=iso_status,
+                tooltip=(
+                    f"Isotropy = min(σx,σy,σz)/max(σx,σy,σz) = {mask_intrinsics.isotropy_ratio:.3f}. "
+                    + iso_extra
+                ),
+                icon="all_inclusive",
+            )
+
+        if mask_intrinsics.com_offset_magnitude_vox > 0.5:
+            _render_chip(
+                "COM off",
+                f"{mask_intrinsics.com_offset_magnitude_vox:.2f} vox",
+                status="warn",
+                tooltip=(
+                    f"Mask center-of-mass is {mask_intrinsics.com_offset_magnitude_vox:.2f} voxels "
+                    f"from box center (Δx={mask_intrinsics.com_offset_x_vox:+.2f}, "
+                    f"Δy={mask_intrinsics.com_offset_y_vox:+.2f}, "
+                    f"Δz={mask_intrinsics.com_offset_z_vox:+.2f}). Picks land relative to box "
+                    f"center — re-center the mask or accept a constant offset."
+                ),
+                icon="adjust",
+            )
+
+    # ── Particle ─────────────────────────────────────────────────────────
+    diameter = (pick_row or {}).get("particle_diameter_ang")
+    if diameter:
+        diam_text = f"{diameter:g} Å"
+        if tm_apix:
+            diam_text += f" (~{diameter / tm_apix:.0f} px @ {tm_apix:g})"
+        _render_chip(
+            "particle Ø",
+            diam_text,
+            status="info",
+            tooltip=(
+                "Particle diameter declared on the candidate-extract job (or species). "
+                "Drives box/crop sanity checks downstream."
+            ),
+            icon="adjust",
+        )
+
+    # ── Extraction (subtomo) ─────────────────────────────────────────────
+    if subtomo_row:
+        box_px = subtomo_row.get("box_px")
+        eff_px = subtomo_row.get("px_size_ang")
+        if box_px:
+            box_ang = box_px * eff_px if eff_px else None
+            box_text = f"{box_px}px ({box_ang:g} Å)" if box_ang else f"{box_px}px"
+            _render_chip(
+                "extract box",
+                box_text,
+                status="neutral",
+                tooltip=(
+                    f"Subtomogram extraction box at {eff_px:g} Å/voxel. Should be 2–3× particle "
+                    f"diameter; see the pixel-sanity table for the rule check."
+                ),
+                icon="crop_square",
+            )
+        crop_px = subtomo_row.get("_crop_px")
+        if crop_px:
+            crop_text = f"{crop_px}px ({crop_px * eff_px:g} Å)" if eff_px else f"{crop_px}px"
+            _render_chip(
+                "extract crop",
+                crop_text,
+                status="neutral",
+                tooltip="Cropped subtomogram output size (crop_size). Must fit inside the box and ≥ particle Ø.",
+                icon="crop",
+            )
+
+
+# ---------------------------------------------------------------------------
 # Candidate Extract section: carries forward the entire flagship preview +
 # gallery + scatter fallback content from the old per-job dialog, re-keyed on
 # (ts_name, instance_id).
@@ -2922,6 +3685,12 @@ def _render_candidate_extract_section(ts_name: str, instance_id: str, job_model,
     row = next((r for r in rows if r["tomo_name"] == ts_name), None)
     if row is None:
         return False
+
+    # Lazy auto-generate previews + IMOD overlays on first view of this job
+    # in the current dashboard mount. Both helpers are idempotent (per-mount
+    # set + BackgroundTask dedup_key) and skip when nothing's to do.
+    _auto_kick_preview_generation(instance_id, job_model, job_dir, project_path, refresh)
+    _auto_kick_imod_generation(instance_id, job_model, job_dir, project_path, refresh)
 
     manifest = read_preview_manifest(job_dir) or {}
 
@@ -3001,9 +3770,11 @@ def _render_candidate_extract_section(ts_name: str, instance_id: str, job_model,
             return True
         if row["status"] not in ("ok", "missing-volume"):
             with ui.element("div").classes("cb-empty"):
-                ui.icon("hourglass_empty", size="28px")
-                ui.label("Preview not generated yet for this TS.").classes("text-xs")
-                ui.label("Use Render new above.").classes("text-[11px] italic")
+                ui.spinner(size="28px", color="indigo-500")
+                ui.label("Generating preview for this tilt-series…").classes("text-xs")
+                ui.label("Auto-kicked in the background — the page refreshes when the manifest lands.").classes(
+                    "text-[11px] italic text-gray-500"
+                )
             return True
 
         entry = (manifest.get("tomograms") or {}).get(row["tomo_name"]) or {}
@@ -3043,19 +3814,34 @@ def _render_tomo_header_section(row: dict, manifest: dict) -> None:
 
 
 def _render_3dmod_section(row: dict) -> None:
+    """Render the 3dmod copy-command. Always shows the full `3dmod <vol>
+    <mod>` form so the user can copy a ready-to-paste invocation; status
+    indicator next to the field reports whether the .mod overlay is
+    on disk yet (green) or still being generated (amber)."""
     if not row.get("vol_path"):
         return
     mod = row.get("mod_path")
-    cmd = f"3dmod {row['vol_path']} {mod}" if mod else f"3dmod {row['vol_path']}"
+    mod_exists = bool(row.get("mod_exists"))
+    if mod:
+        cmd = f"3dmod {row['vol_path']} {mod}"
+        if mod_exists:
+            status_icon, status_color, status_tip = "check_circle", "text-emerald-600", "IMOD overlay ready."
+        else:
+            status_icon, status_color = "hourglass_top", "text-amber-600"
+            status_tip = (
+                "IMOD overlay being generated in the background. The command above is "
+                "copyable already — by the time you paste, the .mod file should be in place. "
+                "Picks will appear as circles over the tomogram."
+            )
+    else:
+        cmd = f"3dmod {row['vol_path']}"
+        status_icon, status_color, status_tip = "info", "text-gray-400", "Open volume only."
     with ui.row().classes("w-full items-center gap-1"):
         ui.label("3dmod").classes("text-[9px] uppercase font-bold text-gray-400 w-12")
         ui.input(value=cmd).props("dense outlined readonly hide-bottom-space").classes(
             "text-xs font-mono flex-1"
         ).style("min-width: 0;")
-        if not mod:
-            ui.icon("info", size="14px").classes("text-gray-400").tooltip(
-                "No IMOD model overlay — use IMOD button above"
-            )
+        ui.icon(status_icon, size="14px").classes(status_color).tooltip(status_tip)
         ui.button(
             icon="content_copy",
             on_click=lambda c=cmd: (ui.clipboard.write(c), ui.notify("Copied", type="positive", timeout=800)),
@@ -3535,6 +4321,7 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
     if tomo_df is None:
         for tomo_name, entry in tomo_entries.items():
             label, (stage, beam) = _position_label(tomo_name)
+            mod_path = job_dir / "vis" / "imodPartRad" / f"coords_{tomo_name}.mod"
             rows.append(
                 {
                     "tomo_name": tomo_name,
@@ -3542,7 +4329,8 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
                     "stage": stage,
                     "beam": beam,
                     "vol_path": entry.get("tomo_mrc"),
-                    "mod_path": str(job_dir / "vis" / "imodPartRad" / f"coords_{tomo_name}.mod"),
+                    "mod_path": str(mod_path),
+                    "mod_exists": mod_path.exists(),
                     "n_picks": entry.get("n_picks"),
                     "score_range": entry.get("score_range"),
                     "status": "ok" if entry.get("picks_json") else "no-preview",
@@ -3571,7 +4359,8 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
                     "stage": stage,
                     "beam": beam,
                     "vol_path": str(vol_path) if vol_path else None,
-                    "mod_path": str(mod_path) if mod_path.exists() else None,
+                    "mod_path": str(mod_path),
+                    "mod_exists": mod_path.exists(),
                     "n_picks": entry.get("n_picks"),
                     "score_range": entry.get("score_range"),
                     "status": status,
@@ -3616,6 +4405,107 @@ def _generate_imod_sync(
         command_runner=_make_imod_command_runner(),
         project_root=project_path,
     )
+
+
+# Per-mount dedup so the auto-kick helpers don't pile up completion timers
+# when the user clicks between tilt-series in the sidebar. BackgroundTask's
+# own dedup_key prevents redundant *work*, but we still want to avoid
+# installing multiple ui.timer pollers per (job_dir).
+_AUTO_KICKED_PREVIEWS: set[str] = set()
+_AUTO_KICKED_IMOD: set[str] = set()
+
+
+def reset_auto_kick_state() -> None:
+    """Clear the auto-kick dedup sets — used by `open_tomo_dashboard` so each
+    fresh dashboard mount can re-trigger generation if the page is reloaded."""
+    _AUTO_KICKED_PREVIEWS.clear()
+    _AUTO_KICKED_IMOD.clear()
+
+
+def _auto_kick_preview_generation(
+    instance_id: str, job_model, job_dir: Path, project_path: Path, refresh
+) -> bool:
+    """If the candidate-extract job has succeeded but some tomograms are
+    missing from the preview manifest, kick off a background 'Render
+    missing' with completion handler that refreshes the page when done.
+    Returns True iff a kickoff was submitted (or one was already in
+    flight). Safe to call on every render — both module-level set and
+    BackgroundTask dedup_key prevent re-submission."""
+    key = str(job_dir)
+    if key in _AUTO_KICKED_PREVIEWS:
+        return False
+    if getattr(job_model, "execution_status", None) != JobStatus.SUCCEEDED:
+        return False
+    candidates_star = job_dir / "candidates.star"
+    tomograms_star = job_dir / "tomograms.star"
+    if not candidates_star.exists() or not tomograms_star.exists():
+        return False
+    _AUTO_KICKED_PREVIEWS.add(key)
+
+    diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
+    state = get_project_state()
+
+    async def _run(progress_cb):
+        import asyncio as _asyncio
+
+        return await _asyncio.to_thread(
+            generate_candidate_previews,
+            candidates_star, tomograms_star, diameter, job_dir,
+            project_path, progress_cb, False, state,
+        )
+
+    from ui.background_task import BackgroundTask
+
+    BackgroundTask(
+        title=f"Auto-render previews · {instance_id}",
+        subtitle="Filling missing tomogram entries",
+        project_path=str(project_path),
+        dedup_key=f"render-previews:{job_dir}:no-force",
+    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
+    return True
+
+
+def _auto_kick_imod_generation(
+    instance_id: str, job_model, job_dir: Path, project_path: Path, refresh
+) -> bool:
+    """If candidates.star exists for a succeeded extract but the IMOD .mod
+    overlays aren't on disk, kick off background generation that auto-
+    refreshes the 3dmod command lines on completion. Same dedup semantics
+    as the preview kickoff above."""
+    key = str(job_dir)
+    if key in _AUTO_KICKED_IMOD:
+        return False
+    if getattr(job_model, "execution_status", None) != JobStatus.SUCCEEDED:
+        return False
+    candidates_star = job_dir / "candidates.star"
+    tomograms_star = job_dir / "tomograms.star"
+    if not candidates_star.exists() or not tomograms_star.exists():
+        return False
+    imod_dir = job_dir / "vis" / "imodPartRad"
+    if imod_dir.exists() and any(imod_dir.glob("*.mod")):
+        return False  # already have overlays
+    _AUTO_KICKED_IMOD.add(key)
+
+    diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
+
+    async def _run(progress_cb):
+        import asyncio as _asyncio
+
+        progress_cb(0, 0, "generating IMOD .mod overlays…")
+        await _asyncio.to_thread(
+            _generate_imod_sync, candidates_star, tomograms_star, diameter, job_dir, project_path
+        )
+        return "IMOD overlays ready; 3dmod commands now include them"
+
+    from ui.background_task import BackgroundTask
+
+    BackgroundTask(
+        title=f"Auto-generate IMOD overlays · {instance_id}",
+        subtitle="Per-tomogram .mod files for 3dmod",
+        project_path=str(project_path),
+        dedup_key=f"imod-models:{job_dir}",
+    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
+    return True
 
 
 async def _handle_generate_imod_for_instance(

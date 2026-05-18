@@ -99,24 +99,29 @@ class PipelineRunnerService:
         #
         # Two triggers:
         #   - failed_job_paths: a Running->Failed transition we just reconciled
-        #     from an exit marker above.
+        #     from an exit marker above. Always actionable.
         #   - already_failed_in_star: the relion schemer recorded the failure
         #     itself and exited. That path never populates failed_job_paths, so
         #     without this branch the downstream jobs it blocked (often never
         #     even dispatched into default_pipeline.star — e.g. a pending tsCtf)
-        #     stay Scheduled forever and the UI hangs on a phantom "done". The
-        #     guard makes it fire once and no-op on every subsequent poll.
+        #     stay Scheduled forever and the UI hangs on a phantom "done".
+        #
+        # Critical guard on the second trigger: only fire when the schemer is
+        # NOT active. With a live schemer, stale Failed rows from previous runs
+        # (jobs the user is now re-attempting) would otherwise trigger stop on
+        # every tick — `mem_has_live_job` is True for any fresh attempt and
+        # the OR with `star_has_live_row` made the branch indistinguishable
+        # from a genuine schemer-halt. See 2026-05-18 incident: subtomo retries
+        # kept getting scancel'd within seconds because old job011/014/015
+        # Failed rows sat in default_pipeline.star.
         needs_stop_on_fail = bool(failed_job_paths)
-        if already_failed_in_star and not needs_stop_on_fail:
-            star_has_live_row = bool(
-                processes["rlnPipeLineProcessStatusLabel"].isin(["Running", "Pending"]).any()
-            )
+        if already_failed_in_star and not needs_stop_on_fail and not self.is_active(Path(project_path)):
             mem_has_live_job = any(
                 j.execution_status in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED)
                 and not getattr(j, "IS_INTERACTIVE", False)
                 for j in state.jobs.values()
             )
-            needs_stop_on_fail = star_has_live_row or mem_has_live_job
+            needs_stop_on_fail = mem_has_live_job
 
         if needs_stop_on_fail:
             active = self.is_active(Path(project_path))

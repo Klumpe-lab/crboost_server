@@ -610,9 +610,39 @@ section cards focus on outputs (picks, atlas, score volumes).
 
 ---
 
-*Last updated 2026-05-08 — Slice A complete, Slice C partial, §11 Pixel /
-binning sanity panel done (deviations from spec captured at the bottom of
-§10). Next session opens with the remaining Slice C scope (§3.7 Template
-Match section card, §3.9 Subtomo Extract section card) and §12 — WarpTools
-XML metadata parsing for real motion + CTF curves. Update this doc in any
-PR that overrides anything in §4 or changes the section catalog.*
+### Journey-chip pass 2026-05-18
+
+JOURNEY_CANDIDATE_METRICS.md's priority list shipped end-to-end. New section
+cards + chips:
+
+- **New `_render_reconstruct_section`** (per-TS): tomogram polarity chip
+  (mean ± 1.5σ classifier on center 1024² Z slice), bright/dark % chips.
+  WarpTools PNG + 3dmod handoff remain in Candidate Extract for now —
+  full Slice B reorganization is still pending.
+- **New `_render_template_match_section`** (per-TS, per-instance):
+  declared-vs-applied symmetry parity chip, template box/apix/style chips,
+  mask measured-diameter / isotropy / COM-offset chips, mask-apix-vs-
+  applied parity chip. Reads `tmResults/<TS>_job.json` + the mask MRC.
+- **`_render_stage0_chips`** on Dataset card: TomoHand chip (compares the
+  in-memory `invert_defocus_hand` against the actual `_rlnTomoHand` in
+  `Import/jobNNN/tilt_series.star`) + config-drift chip + expansion (lists
+  every field whose persisted value differs from the current code default).
+- **Per-TS CC distribution panel** in Candidate Extract: 6-bucket fixed-edge
+  bar (color-coded noise band vs high-CC tail), shape diagnosis chip
+  (healthy / noise-band / mixed) + max/mean/n_low/n_high chips. Reads
+  scores from the existing `picks.json` — no new manifest work.
+- **Tightened box/crop ratio zones** in `_apply_sanity_rules`: box warn at
+  1.5–2.0× (was previously fine), crop warn at 1.0–1.2× (was only flagged
+  when crop < diameter).
+- New helper `services/templating/mrc_inspection.inspect_mask_intrinsics`
+  computes diameter / isotropy / COM offset from a mask MRC in one pass
+  with mtime-keyed cache.
+- New shared CSS family `cb-chip*` + `_render_chip(...)` helper for
+  reusable per-section diagnostic chips.
+
+*Last updated 2026-05-18 — Slice A complete, Slice C partial, §11 Pixel /
+binning sanity panel done, JOURNEY_CANDIDATE_METRICS.md 7-item priority
+list landed (Reconstruct + Template Match section cards now exist; Slice
+B's preview-pair hoist out of Candidate Extract is still pending).
+Update this doc in any PR that overrides anything in §4 or changes the
+section catalog.*

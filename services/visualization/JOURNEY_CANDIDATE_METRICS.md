@@ -173,3 +173,18 @@ The rest are either "nice to have for routine monitoring" (heatmaps) or "needs m
 ## TODO — promote one of these to Journey
 
 (Updated as the stage walk progresses. As of 2026-05-16: nothing promoted yet; awaiting first re-run of 412 to validate the fix before investing in UI work.)
+
+### Shipped 2026-05-18 — all 7 priority items landed
+
+1. **TomoHand chip (Stage 0)** — Dataset card chip strip. Reads `_rlnTomoHand` from `Import/jobNNN/tilt_series.star` when available; cross-checks against the in-memory `invert_defocus_hand`. Error when disk and config disagree, warn when config drifts from current code default, ok otherwise.
+2. **CC distribution histogram (Stages 5/6)** — Candidate Extract section. 6-bucket fixed-edge bar chart (<0.05 / 0.05-0.06 / 0.06-0.07 / 0.07-0.08 / 0.08-0.10 / ≥0.10) with color encoding (red/amber = noise band, green = high-CC tail). One-line health diagnosis chip ("healthy" / "noise-band" / "mixed"). Reads scores from the per-TS `picks.json` already on disk.
+3. **Declared-vs-applied symmetry parity** — new Template Match section card. Compares `species.symmetry` (or per-job `symmetry`) against `tmResults/<TS>_job.json rotational_symmetry`. Error on hard mismatch; warn when a non-Cn declared value was silently coerced to C1; ok when aligned.
+4. **Stale-default detector** — Dataset card chip strip + expansion. Walks `AcquisitionParams` boolean flags and every job's `USER_PARAMS`, comparing each persisted value to the in-code default. Curated allowlist excludes inherently per-microscope fields (paths, pixel size, voltage, etc.) so the signal stays meaningful.
+5. **Template + mask intrinsic-shape chip** — TM section card. Surfaces template box + apix (MRC header), template style (DETAIL/SHAPE/FLAT from `rms`), mask measured diameter at 0.5 contour, isotropy ratio, COM offset, and mask-apix-vs-applied parity. Mask intrinsics computed via new `services/templating/mrc_inspection.inspect_mask_intrinsics()` with mtime-keyed cache.
+6. **Tomogram polarity chip per TS** — new Reconstruct section card. Samples a center 1024×1024 Z slice from the reconstructed tomogram, computes %bright / %dark at ±1.5σ, classifies as DARK / BRIGHT / symmetric. Cross-checks against the consensus selected-template polarity across species; flags polarity inversion as error.
+7. **Box/crop sizing rationality** — tightened thresholds in the existing pixel sanity panel (`_apply_sanity_rules`). Box ratio: green ≥ 2.0×, amber 1.5–2.0× (no margin), red < 1.5×, amber > 3.0× (wasted compute). Crop ratio: amber 1.0–1.2× added (was previously only flagged when crop < diameter).
+
+### Architectural additions
+
+- Generic `_render_chip(label, value, status, tooltip, icon)` helper + `cb-chip*` CSS family. Reusable across all future per-section diagnostic chips.
+- New section card emitters wired into `_render_main_pane_for_ts`: `_render_reconstruct_section`, `_render_template_match_section`. Both follow the per-TS contract from ROADMAP §2.1.

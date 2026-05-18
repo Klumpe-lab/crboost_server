@@ -93,7 +93,6 @@ class StatusPoller:
 
     def stop_all_timers(self):
         self.panel.ui_mgr.cleanup_all_timers()
-        self.panel.roster.stop_spinner_timer()
 
     async def startup_sync(self):
         """Fires when a workspace tab mounts. Records the initial

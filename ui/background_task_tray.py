@@ -21,16 +21,56 @@ per active task — negligible.
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Any, Callable, Hashable, Optional
 
 from nicegui import ui
 
 from services.background_tasks import BackgroundTaskRecord, get_background_task_registry
+from ui.components.reactive import FingerprintedView
 
 logger = logging.getLogger(__name__)
 
 _TRAY_REFRESH_SEC = 1.5
 _RECENT_WINDOW_SEC = 30.0
+
+
+class _BackgroundTaskTray(FingerprintedView):
+    """Tray view that ticks every 1.5 s but only rebuilds when the visible
+    task set or any task's progress fingerprint has changed.
+
+    Without the signature gate this used to `container.clear()` and re-
+    render on every tick — cheap when empty but still a constant tick of
+    DOM churn on every workspace tab.
+    """
+
+    def __init__(self, container: Any, project_path_provider: Callable[[], Optional[str]]) -> None:
+        super().__init__(container)
+        self._project_path_provider = project_path_provider
+        # Cached for render() — populated by signature() each tick.
+        self._visible: list[BackgroundTaskRecord] = []
+
+    def signature(self) -> Hashable:
+        project_path = (self._project_path_provider() or "") or None
+        registry = get_background_task_registry()
+        active, recent = registry.snapshot_for_project(project_path, recent_window_sec=_RECENT_WINDOW_SEC)
+        self._visible = list(active) + list(recent)
+        return tuple(
+            (
+                t.id,
+                t.status,
+                t.progress_current,
+                t.progress_total,
+                t.progress_message,
+                t.is_running,
+                t.result_message,
+                t.error,
+            )
+            for t in self._visible
+        )
+
+    def render(self) -> None:
+        for task in self._visible:
+            _render_task_card(task, self.refresh)
 
 
 def mount_background_task_tray(project_path_provider: Callable[[], Optional[str]]) -> None:
@@ -46,27 +86,9 @@ def mount_background_task_tray(project_path_provider: Callable[[], Optional[str]
         "pointer-events: none;"
     )
 
-    def refresh() -> None:
-        try:
-            project_path = (project_path_provider() or "") or None
-            registry = get_background_task_registry()
-            active, recent = registry.snapshot_for_project(
-                project_path, recent_window_sec=_RECENT_WINDOW_SEC
-            )
-            visible = list(active) + list(recent)
-            container.clear()
-            if not visible:
-                return
-            with container:
-                for task in visible:
-                    _render_task_card(task, refresh)
-        except RuntimeError as e:
-            # Client gone (tab close / navigation race). The timer will be
-            # cleaned up by NiceGUI shortly; just bail quietly.
-            logger.info("BackgroundTaskTray: client gone, skipping refresh (%s)", e)
-
-    refresh()
-    ui.timer(_TRAY_REFRESH_SEC, refresh)
+    view = _BackgroundTaskTray(container, project_path_provider)
+    view.refresh()
+    ui.timer(_TRAY_REFRESH_SEC, view.refresh)
 
 
 def _render_task_card(task: BackgroundTaskRecord, refresh_tray: Callable[[], None]) -> None:
