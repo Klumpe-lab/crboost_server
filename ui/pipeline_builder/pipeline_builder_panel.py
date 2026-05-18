@@ -269,13 +269,24 @@ class PipelineBuilderPanel:
                     sp = p_state.get_species(species_id)
                     if sp:
                         # Default new TM jobs to the species's currently
-                        # selected template + mask + symmetry. The v3
-                        # helpers resolve via species.selected_*_id.
+                        # selected template + mask. The v3 helpers resolve
+                        # via species.selected_*_id.
+                        #
+                        # NOTE: species.symmetry is deliberately NOT propagated
+                        # to job_model.symmetry. Species symmetry describes the
+                        # particle's intrinsic point group (an immutable
+                        # property of the molecule); job.symmetry is "what
+                        # PyTOM should rotate the search over", which is a
+                        # search-strategy choice independent of the particle's
+                        # true symmetry. Coupling them caused silent surprises
+                        # (declared I1 on the species → I1 on the job →
+                        # PyTOM driver silently drops non-Cn → effectively
+                        # ran C1 anyway, with the JSON lying about it). The
+                        # TM job's own dropdown is the only source of truth
+                        # for what PyTOM actually receives.
                         if job_type == JobType.TEMPLATE_MATCH_PYTOM:
                             job_model.template_path = get_effective_template_path(sp)
                             job_model.mask_path = get_effective_mask_path(sp)
-                            if getattr(sp, "symmetry", None):
-                                job_model.symmetry = sp.symmetry
                         # Default new candidate-extract jobs to the species's
                         # particle diameter. Job param defaults to 200 Å so
                         # this only overrides when species.diameter_ang is set.

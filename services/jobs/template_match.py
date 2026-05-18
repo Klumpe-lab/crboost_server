@@ -1,12 +1,17 @@
 from __future__ import annotations
 from typing import ClassVar, Dict, List, Set, Tuple
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from services.computing.slurm_service import SlurmConfig
 from services.configs.config_service import get_config_service
 from services.jobs._base import AbstractJobParams
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
+
+# PyTOM's --z-axis-rotational-symmetry only accepts Cn. Other point groups
+# (D, T, O, I) are silently dropped by the driver — surface only Cn in the
+# UI and normalize any persisted non-Cn value to C1 on load.
+TM_SYMMETRY_CHOICES: List[str] = ["C1", "C2", "C3", "C4", "C5", "C6"]
 
 
 class TemplateMatchPytomParams(AbstractJobParams):
@@ -59,6 +64,13 @@ class TemplateMatchPytomParams(AbstractJobParams):
     # Algorithm Params
     angular_search: str = Field(default="12.0")
     symmetry: str = Field(default="C1")
+
+    @field_validator("symmetry", mode="before")
+    @classmethod
+    def _coerce_symmetry(cls, v):
+        # Snap persisted non-Cn values (e.g. legacy "I1" from the species)
+        # to C1 so what the user sees in the UI matches what the driver applies.
+        return v if v in TM_SYMMETRY_CHOICES else "C1"
 
     # Flags
     defocus_weight: bool = True

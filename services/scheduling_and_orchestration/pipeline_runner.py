@@ -252,6 +252,12 @@ class PipelineRunnerService:
 
             if old_status != new_status:
                 changes[instance_id] = True
+                if (
+                    new_status == JobStatus.SUCCEEDED
+                    and job_model.job_type is not None
+                    and job_model.job_type.value == "tsCtf"
+                ):
+                    self._kickoff_tilt_thumbnails(project_path, state, job_model)
 
             found_instances.add(instance_id)
 
@@ -300,6 +306,67 @@ class PipelineRunnerService:
             return int(job_path.rstrip("/").split("job")[-1])
         except Exception:
             return 0
+
+    def _kickoff_tilt_thumbnails(self, project_path: str, state, job_model) -> None:
+        """When tsCtf flips to SUCCEEDED, render PNG previews for the
+        tilt-filter panel in the background so the user doesn't have to
+        click 'Generate Thumbnails' on first visit. No-op if PNGs already
+        exist on disk. dedup_key matches ui/tilt_filter_panel.py so a
+        manual click cannot double up with this auto-trigger."""
+        try:
+            from services.background_tasks import get_background_task_registry
+            from services.tilt_series_service import generate_tilt_thumbnails
+
+            proj_path = Path(project_path)
+            pd_str = getattr(state, "tilt_filter_png_dir", None) if state is not None else None
+            png_dir = Path(pd_str) if pd_str else proj_path / "TiltFilter" / "png"
+
+            if png_dir.exists() and any(png_dir.glob("*.png")):
+                return
+
+            star_rel = (getattr(job_model, "paths", {}) or {}).get("output_star")
+            ts_ctf_star: Optional[Path] = None
+            if star_rel:
+                p = Path(star_rel) if Path(star_rel).is_absolute() else proj_path / star_rel
+                if p.exists():
+                    ts_ctf_star = p
+            if ts_ctf_star is None and getattr(job_model, "relion_job_name", None):
+                p = proj_path / job_model.relion_job_name / "ts_ctf_tilt_series.star"
+                if p.exists():
+                    ts_ctf_star = p
+            if ts_ctf_star is None:
+                logger.info("tsCtf auto-thumbnail: no output star found, skipping")
+                return
+
+            dedup_key = f"tilt-filter-thumbnails:{proj_path}:{png_dir}"
+            registry = get_background_task_registry()
+            backend = self.backend
+
+            async def _run(progress_cb):
+                n = await asyncio.to_thread(
+                    generate_tilt_thumbnails, ts_ctf_star, proj_path, png_dir, progress_cb
+                )
+                st = backend.state_service.state_for(proj_path)
+                if st is not None:
+                    st.tilt_filter_png_dir = str(png_dir)
+                    st.mark_dirty()
+                    try:
+                        await backend.state_service.save_project(project_path=proj_path)
+                    except Exception as e:
+                        logger.info("tsCtf auto-thumbnail: save_project failed: %s", e)
+                return f"{n} thumbnails generated"
+
+            registry.submit(
+                _run,
+                title="Tilt thumbnails (auto)",
+                subtitle=f"Triggered by tsCtf completion · {png_dir.name}",
+                project_path=str(proj_path),
+                dedup_key=dedup_key,
+            )
+            logger.info("tsCtf auto-thumbnail: kicked off for %s", proj_path)
+        except Exception:
+            # Auto-trigger failures must never break the status-sync loop.
+            logger.exception("tsCtf auto-thumbnail kickoff failed")
 
     # -------------------------------------------------------------------------
     # Pipeline overview / logs

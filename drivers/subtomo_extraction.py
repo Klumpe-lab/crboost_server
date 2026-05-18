@@ -35,6 +35,7 @@ Output layout after the supervisor merge:
     .task_status/{ts}.{ok,fail}
 """
 
+import json
 import os
 import shutil
 import sys
@@ -148,9 +149,44 @@ def run_supervisor_mode():
         # but suddenly fewer subtomo rows and can't tell whether the gap is
         # intentional or a bug.
         ts_with_picks = sorted(particles_df["rlnTomoName"].astype(str).unique().tolist())
-        if not ts_with_picks:
-            raise RuntimeError("Upstream particles.star contained no tomograms (rlnTomoName column empty)")
         all_upstream_ts = sorted(tomograms_df["rlnTomoName"].astype(str).unique().tolist())
+        if not ts_with_picks:
+            # Whole-job equivalent of the per-TS .skip path: upstream picking
+            # produced 0 candidates across every tomogram, so there is nothing
+            # to extract. Mark every TS as .skip and a sidecar so the UI can
+            # render a clear "no picks anywhere — skipped" banner. We exit
+            # SUCCESS rather than fail because (a) the schemer would otherwise
+            # halt the whole pipeline on an upstream-data condition that's
+            # diagnostic, not a job bug, and (b) it mirrors the existing per-TS
+            # SKIP semantics which are also "succeeded but did no work".
+            status_dir = job_dir / STATUS_DIR_NAME
+            status_dir.mkdir(parents=True, exist_ok=True)
+            if status_dir.is_dir():
+                for f in status_dir.glob("*.skip"):
+                    f.unlink()
+            for ts in all_upstream_ts:
+                write_skip_status(status_dir, ts, reason="no candidates anywhere (upstream picks=0)")
+            sentinel = job_dir / ".skipped_no_candidates.json"
+            sentinel.write_text(json.dumps({
+                "reason": "upstream_particles_empty",
+                "upstream_particles_star": str(upstream_particles_star),
+                "upstream_tomograms_star": str(upstream_tomograms_star),
+                "n_upstream_tomograms": len(all_upstream_ts),
+                "n_with_picks": 0,
+                "message": (
+                    "Upstream candidate extraction produced 0 picks across all tomograms. "
+                    "Subtomo extraction has nothing to extract; this job is a no-op skip."
+                ),
+            }, indent=2))
+            print(
+                "[SUPERVISOR] Upstream produced 0 picks across all "
+                f"{len(all_upstream_ts)} tomograms. Marking job as skipped (no work); "
+                f"wrote sentinel {sentinel.name}.",
+                flush=True,
+            )
+            (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
+            print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
+            return
         # Manifest order: keep upstream tomograms.star order as authoritative.
         # Fall back to including any extra TS that show up only in particles
         # (defensive — shouldn't happen, but don't drop them silently).
@@ -442,6 +478,7 @@ def _merge_per_ts_outputs(
 
     all_optics_dfs: List[pd.DataFrame] = []
     all_particles_dfs: List[pd.DataFrame] = []
+    empty_extracts: List[str] = []
 
     for ts_name in ts_names:
         task_out = job_dir / ".staging" / f"task_{ts_name}" / "out"
@@ -449,7 +486,14 @@ def _merge_per_ts_outputs(
         if not ts_particles_star.exists():
             raise RuntimeError(f"Expected per-TS particles missing: {ts_particles_star}")
 
-        optics_df, particles_df, _ = _read_particles_star(ts_particles_star)
+        # RELION writes optics-only stars (no data_particles block) when
+        # extraction yields zero particles — e.g. all candidates fell out
+        # of bounds during 2D-stack assembly. Tolerate it: skip the TS in
+        # the merge so the rest of the job still produces a valid output.
+        optics_df, particles_df, _ = _read_particles_star(ts_particles_star, allow_empty_particles=True)
+        if particles_df.empty:
+            empty_extracts.append(ts_name)
+            continue
 
         # Move per-TS Subtomograms/<TS>/ subdir up to job_dir/Subtomograms/<TS>/.
         # On re-run, if the target already exists (e.g. previous successful
@@ -476,9 +520,15 @@ def _merge_per_ts_outputs(
         all_particles_dfs.append(particles_df)
 
     # Concat + dedup optics (multi-optics-group projects with shared imaging
-    # params end up with a single row after drop_duplicates).
-    optics_merged = pd.concat(all_optics_dfs, ignore_index=True).drop_duplicates().reset_index(drop=True)
-    particles_merged = pd.concat(all_particles_dfs, ignore_index=True)
+    # params end up with a single row after drop_duplicates). If every per-TS
+    # extract was empty we still want to write a valid particles.star so the
+    # journey browser sees the job as completed-with-zero rather than failed.
+    if all_optics_dfs:
+        optics_merged = pd.concat(all_optics_dfs, ignore_index=True).drop_duplicates().reset_index(drop=True)
+        particles_merged = pd.concat(all_particles_dfs, ignore_index=True)
+    else:
+        optics_merged = pd.DataFrame()
+        particles_merged = pd.DataFrame(columns=["rlnTomoName", "rlnImageName", "rlnOpticsGroup"])
 
     _write_particles_star(
         job_dir / "particles.star",
@@ -499,11 +549,18 @@ def _merge_per_ts_outputs(
         tomograms_star=target_tomograms,
     )
 
+    extracted_ts = len(ts_names) - len(empty_extracts)
     print(
         f"[SUPERVISOR] Merged: {len(particles_merged)} particles across "
-        f"{len(ts_names)} TS → {job_dir / 'particles.star'}",
+        f"{extracted_ts}/{len(ts_names)} TS → {job_dir / 'particles.star'}",
         flush=True,
     )
+    if empty_extracts:
+        print(
+            f"[SUPERVISOR] {len(empty_extracts)} TS had picks but extracted 0 particles "
+            f"(out-of-bounds during 2D-stack assembly or similar): {empty_extracts}",
+            flush=True,
+        )
 
 
 def _run_additional_sources_merge(params, job_dir: Path) -> None:

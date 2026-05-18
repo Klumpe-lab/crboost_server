@@ -86,7 +86,7 @@ class AcquisitionParams(BaseModel):
     sample_thickness_nm: float = Field(default=300.0, ge=50.0, le=2000.0)
     gain_reference_path: Optional[str] = None
     invert_tilt_angles: bool = False
-    invert_defocus_hand: bool = False
+    invert_defocus_hand: bool = True
     acquisition_software: str = Field(default="SerialEM")
     nominal_magnification: Optional[int] = None
     spot_size: Optional[int] = None

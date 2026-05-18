@@ -23,8 +23,8 @@ from services.project_state import get_project_state, get_state_service
 from services.tilt_series_service import (
     apply_labels,
     filter_good_tilts,
+    generate_tilt_thumbnails,
     get_label_summary,
-    get_tilt_image_paths,
     load_tilt_series,
     write_tilt_series,
 )
@@ -427,43 +427,59 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
 
 
 def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=None):
+    from ui.background_task import BackgroundTask
+
+    dedup_key = f"tilt-filter-thumbnails:{project_path}:{png_dir}"
+
+    def _swap_to_gallery():
+        gallery_c.clear()
+        with gallery_c:
+            _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+
     with ui.column().classes("w-full items-center justify-center gap-3 py-10"):
         ui.icon("collections", size="48px").style(f"color: {CLR_GHOST};")
         ui.label("Generate tilt thumbnails to begin inspection.").style(f"{FONT} font-size: 11px; color: {CLR_LABEL};")
-        spinner = ui.spinner(size="lg").style("display: none;")
         status_lbl = ui.label("").style(f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};")
 
-        async def go():
-            spinner.style("display: block;")
-            status_lbl.text = "Loading tilt series..."
-            try:
-                td = await asyncio.to_thread(load_tilt_series, str(ts_ctf_star), str(project_path))
-                paths = get_tilt_image_paths(td, project_path)
-                n = len(paths)
-                status_lbl.text = f"Converting {n} MRC images..."
-                png_dir.mkdir(parents=True, exist_ok=True)
-                from filterTilts.image_processor import ImageProcessor
+        def _on_progress(task):
+            if task.progress_total > 0:
+                status_lbl.text = f"Converting {task.progress_current} / {task.progress_total}…"
 
-                proc = ImageProcessor(target_size=384, max_workers=min(16, max(1, n)))
-                await asyncio.to_thread(proc.batch_convert, paths, n, str(png_dir), True)
+        def _on_complete(task):
+            if task.status == "succeeded":
+                ui.notify(task.result_message or "Thumbnails ready", type="positive")
+                _swap_to_gallery()
+            else:
+                status_lbl.text = f"{task.status.capitalize()}: {task.error or ''}"
+                ui.notify(f"Thumbnail generation {task.status}: {task.error or ''}", type="negative")
+
+        def _start():
+            async def _run(progress_cb):
+                n = await asyncio.to_thread(
+                    generate_tilt_thumbnails, ts_ctf_star, project_path, png_dir, progress_cb
+                )
                 st = get_project_state()
                 if st:
                     st.tilt_filter_png_dir = str(png_dir)
                     st.mark_dirty()
                     await get_state_service().save_project()
-                spinner.style("display: none;")
-                status_lbl.text = ""
-                ui.notify(f"{n} thumbnails generated", type="positive")
-                gallery_c.clear()
-                with gallery_c:
-                    _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
-            except Exception as e:
-                logger.exception("Thumbnail generation failed")
-                spinner.style("display: none;")
-                status_lbl.text = f"Error: {e}"
-                ui.notify(f"Failed: {e}", type="negative")
+                return f"{n} thumbnails generated"
 
-        _btn_primary("Generate Thumbnails", "auto_fix_high", go)
+            status_lbl.text = "Running — gallery will appear here when complete."
+            BackgroundTask(
+                title=f"Tilt thumbnails · {png_dir.name}",
+                subtitle="Converting MRC tilts to PNG previews",
+                project_path=str(project_path),
+                dedup_key=dedup_key,
+            ).submit(_run, on_complete=_on_complete, on_progress=_on_progress)
+
+        existing = BackgroundTask.existing(dedup_key)
+        if existing is not None:
+            status_lbl.text = "Generation in flight — see tray (bottom-right)."
+            _btn_primary("Generation Running…", "hourglass_top", lambda: None)
+            BackgroundTask.attach(existing.id, on_complete=_on_complete, on_progress=_on_progress)
+        else:
+            _btn_primary("Generate Thumbnails", "auto_fix_high", _start)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

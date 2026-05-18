@@ -1706,81 +1706,153 @@ class TemplateWorkbench:
     # ==================================================================
 
     async def _gen_shape(self) -> None:
+        from ui.background_task import BackgroundTask
+
         if self.auto_box:
             self._recalculate_auto_box_for_shape()
         self._save_workbench_ui()
         lp = self.shape_lowpass if (self.shape_lowpass and self.shape_lowpass > 0) else None
         self._log(f"Ellipsoid {self.basic_shape_def} @ {self.shape_pixel_size}Å/px lp={lp}")
-        res = await self.backend.template_service.generate_basic_shape_async(
-            self.basic_shape_def,
-            self.shape_pixel_size,
-            self.output_folder,
-            int(self.shape_box_size),
-            lp,
-        )
-        if not res.get("success"):
-            self._log(f"Generation failed: {res.get('error')}")
-            ui.notify(f"Generation failed: {res.get('error')}", type="negative")
-            return
-        self._register_polarity_pair(res, source=f"basic_shape:{self.basic_shape_def}", lowpass=lp)
+        shape_def = self.basic_shape_def
+        pixel_size = self.shape_pixel_size
+        box = int(self.shape_box_size)
+        out_folder = self.output_folder
+
+        result_holder: dict = {}
+
+        async def _run(progress_cb):
+            progress_cb(0, 0, f"Building ellipsoid {shape_def}…")
+            res = await self.backend.template_service.generate_basic_shape_async(
+                shape_def, pixel_size, out_folder, box, lp,
+            )
+            result_holder["res"] = res
+            if not res.get("success"):
+                return f"failed: {res.get('error')}"
+            return "shape ready"
+
+        def _on_complete(task):
+            res = result_holder.get("res") or {}
+            if not res.get("success"):
+                err = res.get("error") or task.error or "unknown"
+                self._log(f"Generation failed: {err}")
+                ui.notify(f"Generation failed: {err}", type="negative")
+                return
+            self._register_polarity_pair(res, source=f"basic_shape:{shape_def}", lowpass=lp)
+
+        BackgroundTask(
+            title=f"Generate shape · {shape_def}",
+            subtitle=f"box {box}px @ {pixel_size}Å/px",
+            dedup_key=f"gen-shape:{out_folder}:{shape_def}:{pixel_size}:{box}:{lp}",
+            project_path=str(self.project_path),
+        ).submit(_run, on_complete=_on_complete)
 
     async def _fetch_and_simulate_pdb(self) -> None:
+        from ui.background_task import BackgroundTask
+
         if not self.pdb_input_val:
             ui.notify("Enter a PDB ID first", type="warning")
             return
         pdb_id = self.pdb_input_val.strip().lower()
-        self._log(f"Fetching PDB: {pdb_id}")
-        fetch = await self.backend.template_service.fetch_pdb_async(pdb_id, self.output_folder)
-        if not fetch.get("success"):
-            self._log(f"Fetch failed: {fetch.get('error')}")
-            ui.notify(f"PDB fetch failed: {fetch.get('error')}", type="negative")
-            return
-        pdb_path = fetch.get("path", "")
-        self._log(f"Simulating from {os.path.basename(pdb_path)}…")
         lp = self.pdb_lowpass if (self.pdb_lowpass and self.pdb_lowpass > 0) else 10.0
-        n = ui.notification("Simulating density…", type="ongoing", spinner=True, timeout=None)
-        try:
+        apix = self.pdb_pixel_size
+        box = int(self.pdb_box_size)
+        out_folder = self.output_folder
+        self._log(f"Fetching PDB: {pdb_id}")
+
+        result_holder: dict = {}
+
+        async def _run(progress_cb):
+            progress_cb(0, 0, f"Fetching PDB {pdb_id}…")
+            fetch = await self.backend.template_service.fetch_pdb_async(pdb_id, out_folder)
+            if not fetch.get("success"):
+                result_holder["fetch_err"] = fetch.get("error")
+                return f"PDB fetch failed: {fetch.get('error')}"
+            pdb_path = fetch.get("path", "")
+            progress_cb(0, 0, f"Simulating density from {os.path.basename(pdb_path)}…")
             sim = await self.backend.pdb_service.simulate_map_from_pdb(
                 pdb_path=pdb_path,
-                output_folder=self.output_folder,
-                target_apix=self.pdb_pixel_size,
-                target_box=int(self.pdb_box_size),
+                output_folder=out_folder,
+                target_apix=apix,
+                target_box=box,
                 resolution=lp,
             )
-        finally:
-            n.dismiss()
-        if not sim.get("success"):
-            self._log(f"Simulation failed: {sim.get('error')}")
-            ui.notify("Simulation failed (see log)", type="negative", timeout=8000)
-            return
-        self._register_polarity_pair(sim, source=f"PDB:{pdb_id}", lowpass=lp)
+            result_holder["sim"] = sim
+            if not sim.get("success"):
+                return f"simulation failed: {sim.get('error')}"
+            return "density ready"
+
+        def _on_complete(task):
+            if "fetch_err" in result_holder:
+                err = result_holder["fetch_err"]
+                self._log(f"Fetch failed: {err}")
+                ui.notify(f"PDB fetch failed: {err}", type="negative")
+                return
+            sim = result_holder.get("sim") or {}
+            if not sim.get("success"):
+                err = sim.get("error") or task.error or "unknown"
+                self._log(f"Simulation failed: {err}")
+                ui.notify("Simulation failed (see log)", type="negative", timeout=8000)
+                return
+            self._register_polarity_pair(sim, source=f"PDB:{pdb_id}", lowpass=lp)
+
+        BackgroundTask(
+            title=f"PDB → density · {pdb_id}",
+            subtitle=f"box {box}px @ {apix}Å/px lp={lp}Å",
+            dedup_key=f"pdb-sim:{pdb_id}:{apix}:{box}:{lp}",
+            project_path=str(self.project_path),
+        ).submit(_run, on_complete=_on_complete)
 
     async def _fetch_and_resample_emdb(self) -> None:
+        from ui.background_task import BackgroundTask
+
         if not self.emdb_input_val:
             ui.notify("Enter an EMDB ID first", type="warning")
             return
         emdb_id = self.emdb_input_val.strip()
-        self._log(f"Fetching EMDB: {emdb_id}")
-        fetch = await self.backend.template_service.fetch_emdb_map_async(emdb_id, self.output_folder)
-        if not fetch.get("success"):
-            self._log(f"Fetch failed: {fetch.get('error')}")
-            ui.notify(f"EMDB fetch failed: {fetch.get('error')}", type="negative")
-            return
-        map_path = fetch.get("path", "")
-        self._log(f"Resampling {os.path.basename(map_path)}…")
         lp = self.emdb_lowpass if (self.emdb_lowpass and self.emdb_lowpass > 0) else None
-        res = await self.backend.template_service.process_volume_async(
-            map_path,
-            self.output_folder,
-            self.emdb_pixel_size,
-            int(self.emdb_box_size),
-            lp,
-        )
-        if not res.get("success"):
-            self._log(f"Resample failed: {res.get('error')}")
-            ui.notify("Resample failed (see log)", type="negative")
-            return
-        self._register_polarity_pair(res, source=f"EMDB-{emdb_id}", lowpass=lp)
+        apix = self.emdb_pixel_size
+        box = int(self.emdb_box_size)
+        out_folder = self.output_folder
+        self._log(f"Fetching EMDB: {emdb_id}")
+
+        result_holder: dict = {}
+
+        async def _run(progress_cb):
+            progress_cb(0, 0, f"Fetching EMDB {emdb_id}…")
+            fetch = await self.backend.template_service.fetch_emdb_map_async(emdb_id, out_folder)
+            if not fetch.get("success"):
+                result_holder["fetch_err"] = fetch.get("error")
+                return f"EMDB fetch failed: {fetch.get('error')}"
+            map_path = fetch.get("path", "")
+            progress_cb(0, 0, f"Resampling {os.path.basename(map_path)}…")
+            res = await self.backend.template_service.process_volume_async(
+                map_path, out_folder, apix, box, lp,
+            )
+            result_holder["res"] = res
+            if not res.get("success"):
+                return f"resample failed: {res.get('error')}"
+            return "volume ready"
+
+        def _on_complete(task):
+            if "fetch_err" in result_holder:
+                err = result_holder["fetch_err"]
+                self._log(f"Fetch failed: {err}")
+                ui.notify(f"EMDB fetch failed: {err}", type="negative")
+                return
+            res = result_holder.get("res") or {}
+            if not res.get("success"):
+                err = res.get("error") or task.error or "unknown"
+                self._log(f"Resample failed: {err}")
+                ui.notify("Resample failed (see log)", type="negative")
+                return
+            self._register_polarity_pair(res, source=f"EMDB-{emdb_id}", lowpass=lp)
+
+        BackgroundTask(
+            title=f"EMDB → resampled · {emdb_id}",
+            subtitle=f"box {box}px @ {apix}Å/px lp={lp}Å",
+            dedup_key=f"emdb-resample:{emdb_id}:{apix}:{box}:{lp}",
+            project_path=str(self.project_path),
+        ).submit(_run, on_complete=_on_complete)
 
     def _register_polarity_pair(
         self, res: dict, *, source: str, lowpass: Optional[float], select_new_white: bool = True
@@ -1836,6 +1908,8 @@ class TemplateWorkbench:
     # ── Edit-Current actions (idempotent) ─────────────────────────────
 
     async def _resample_current(self) -> None:
+        from ui.background_task import BackgroundTask
+
         sp = self._get_species()
         sel = sp.get_selected_template() if sp else None
         if sel is None:
@@ -1844,25 +1918,43 @@ class TemplateWorkbench:
         target_apix = self.resample_target_apix
         target_box = int(self.resample_target_box)
         lp = self.resample_lowpass if (self.resample_lowpass and self.resample_lowpass > 0) else None
-        self._log(f"Resampling {os.path.basename(sel.template_path)} → apix {target_apix}Å box {target_box}…")
-        n = ui.notification("Resampling template…", type="ongoing", spinner=True, timeout=None)
-        try:
+        out_folder = self.output_folder
+        src_path = sel.template_path
+        src_name = os.path.basename(src_path)
+        sel_id = sel.id
+        self._log(f"Resampling {src_name} → apix {target_apix}Å box {target_box}…")
+
+        result_holder: dict = {}
+
+        async def _run(progress_cb):
+            progress_cb(0, 0, f"Resampling {src_name}…")
             res = await self.backend.template_service.process_volume_async(
-                sel.template_path,
-                self.output_folder,
-                target_apix,
-                target_box,
-                lp,
+                src_path, out_folder, target_apix, target_box, lp,
             )
-        finally:
-            n.dismiss()
-        if not res.get("success"):
-            self._log(f"Resample failed: {res.get('error')}")
-            ui.notify("Resample failed (see log)", type="negative")
-            return
-        self._register_polarity_pair(res, source=f"resampled from {os.path.basename(sel.template_path)}", lowpass=lp)
+            result_holder["res"] = res
+            if not res.get("success"):
+                return f"resample failed: {res.get('error')}"
+            return "resampled volume ready"
+
+        def _on_complete(task):
+            res = result_holder.get("res") or {}
+            if not res.get("success"):
+                err = res.get("error") or task.error or "unknown"
+                self._log(f"Resample failed: {err}")
+                ui.notify("Resample failed (see log)", type="negative")
+                return
+            self._register_polarity_pair(res, source=f"resampled from {src_name}", lowpass=lp)
+
+        BackgroundTask(
+            title=f"Resample · {src_name}",
+            subtitle=f"box → {target_box}px @ {target_apix}Å/px lp={lp}",
+            dedup_key=f"resample:{sel_id}:{target_apix}:{target_box}:{lp}",
+            project_path=str(self.project_path),
+        ).submit(_run, on_complete=_on_complete)
 
     async def _apply_lowpass_to_current(self) -> None:
+        from ui.background_task import BackgroundTask
+
         sp = self._get_species()
         sel = sp.get_selected_template() if sp else None
         if sel is None:
@@ -1876,27 +1968,45 @@ class TemplateWorkbench:
         target_apix = h.apix_ang or self.shape_pixel_size
         target_box = h.box_px or int(self.shape_box_size)
         target_lp = float(self.lowpass_target)
-        self._log(f"Applying lowpass {target_lp}Å to {os.path.basename(sel.template_path)}…")
-        n = ui.notification("Applying lowpass…", type="ongoing", spinner=True, timeout=None)
-        try:
+        src_path = sel.template_path
+        src_name = os.path.basename(src_path)
+        sel_id = sel.id
+        out_folder = self.output_folder
+        self._log(f"Applying lowpass {target_lp}Å to {src_name}…")
+
+        result_holder: dict = {}
+
+        async def _run(progress_cb):
+            progress_cb(0, 0, f"Lowpass {target_lp}Å on {src_name}…")
             res = await self.backend.template_service.process_volume_async(
-                sel.template_path,
-                self.output_folder,
-                target_apix,
-                target_box,
-                target_lp,
+                src_path, out_folder, target_apix, target_box, target_lp,
             )
-        finally:
-            n.dismiss()
-        if not res.get("success"):
-            self._log(f"Lowpass failed: {res.get('error')}")
-            ui.notify("Lowpass failed (see log)", type="negative")
-            return
-        self._register_polarity_pair(
-            res, source=f"lowpass({target_lp:g}Å) from {os.path.basename(sel.template_path)}", lowpass=target_lp
-        )
+            result_holder["res"] = res
+            if not res.get("success"):
+                return f"lowpass failed: {res.get('error')}"
+            return "filtered volume ready"
+
+        def _on_complete(task):
+            res = result_holder.get("res") or {}
+            if not res.get("success"):
+                err = res.get("error") or task.error or "unknown"
+                self._log(f"Lowpass failed: {err}")
+                ui.notify("Lowpass failed (see log)", type="negative")
+                return
+            self._register_polarity_pair(
+                res, source=f"lowpass({target_lp:g}Å) from {src_name}", lowpass=target_lp,
+            )
+
+        BackgroundTask(
+            title=f"Lowpass · {src_name}",
+            subtitle=f"target {target_lp:g}Å (keep box {target_box}px @ {target_apix:g}Å/px)",
+            dedup_key=f"lowpass:{sel_id}:{target_apix}:{target_box}:{target_lp}",
+            project_path=str(self.project_path),
+        ).submit(_run, on_complete=_on_complete)
 
     async def _flip_polarity(self) -> None:
+        from ui.background_task import BackgroundTask
+
         sp = self._get_species()
         sel = sp.get_selected_template() if sp else None
         if sel is None:
@@ -1924,18 +2034,34 @@ class TemplateWorkbench:
             self._log(f"Registered existing sibling {os.path.basename(target_path)}")
             return
 
-        success = await asyncio.to_thread(self._negate_volume_to_disk_at, sel.template_path, target_path)
-        if not success:
-            ui.notify("Polarity flip failed (see log)", type="negative")
-            return
-        new_id = self._append_template(
-            target_path,
-            target_polarity,
-            f"flipped from {os.path.basename(sel.template_path)}",
-            lowpass=sel.lowpass_resolution_ang,
-        )
-        self._select_template(new_id)
-        self._log(f"Flipped → {os.path.basename(target_path)}")
+        src_path = sel.template_path
+        src_name = os.path.basename(src_path)
+        lp_ang = sel.lowpass_resolution_ang
+        result_holder: dict = {}
+
+        async def _run(progress_cb):
+            progress_cb(0, 0, f"Negating {src_name}…")
+            success = await asyncio.to_thread(self._negate_volume_to_disk_at, src_path, target_path)
+            result_holder["success"] = success
+            return "flipped" if success else "flip failed"
+
+        def _on_complete(task):
+            if not result_holder.get("success"):
+                ui.notify("Polarity flip failed (see log)", type="negative")
+                return
+            new_id = self._append_template(
+                target_path, target_polarity,
+                f"flipped from {src_name}", lowpass=lp_ang,
+            )
+            self._select_template(new_id)
+            self._log(f"Flipped → {os.path.basename(target_path)}")
+
+        BackgroundTask(
+            title=f"Flip polarity · {src_name}",
+            subtitle=f"{sel.polarity} → {target_polarity}",
+            dedup_key=f"flip:{src_path}:{target_path}",
+            project_path=str(self.project_path),
+        ).submit(_run, on_complete=_on_complete)
 
     def _canonical_flipped_path(self, src_path: str, cur: str, target: str) -> str:
         """Return the canonical path for the flipped sibling. If the source
@@ -1994,64 +2120,80 @@ class TemplateWorkbench:
             self.mask_threshold = round(thresholds[e.value], 4)
 
     async def _create_relion_mask(self) -> None:
+        from ui.background_task import BackgroundTask
+
         sp = self._get_species()
         sel = sp.get_selected_template() if sp else None
         if sel is None or not sel.template_path:
             ui.notify("Select a template first", type="warning")
             return
 
+        input_vol = sel.template_path
+        if sel.template_path.endswith("_black.mrc"):
+            cand = sel.template_path[: -len("_black.mrc")] + "_white.mrc"
+            if os.path.exists(cand):
+                input_vol = cand
+        threshold = float(self.mask_threshold)
+        extend = float(self.mask_extend)
+        soft = float(self.mask_soft_edge)
+        lp = float(self.mask_lowpass)
+        sel_id = sel.id
+        out_folder = self.output_folder
+        base = Path(sel.template_path).stem.replace("_white", "").replace("_black", "")
+        # Canonical mask path encodes the threshold knobs so identical-knob
+        # runs are idempotent on disk (same path, gets overwritten).
+        output_path = os.path.join(
+            out_folder, f"{base}_mask_t{threshold:.3f}_e{int(extend)}_s{int(soft)}.mrc",
+        )
+        self._log(f"Mask from {os.path.basename(input_vol)} threshold={threshold}")
         self.masking_active = True
-        n = ui.notification("Creating mask…", type="ongoing", spinner=True, timeout=None)
-        try:
-            input_vol = sel.template_path
-            if sel.template_path.endswith("_black.mrc"):
-                cand = sel.template_path[: -len("_black.mrc")] + "_white.mrc"
-                if os.path.exists(cand):
-                    input_vol = cand
-            threshold = float(self.mask_threshold)
-            self._log(f"Mask from {os.path.basename(input_vol)} threshold={threshold}")
 
-            base = Path(sel.template_path).stem.replace("_white", "").replace("_black", "")
-            # Canonical mask path includes threshold knobs so identical-knob
-            # runs are idempotent on disk (same path, gets overwritten).
-            output_path = os.path.join(
-                self.output_folder,
-                f"{base}_mask_t{threshold:.3f}_e{int(self.mask_extend)}_s{int(self.mask_soft_edge)}.mrc",
-            )
+        result_holder: dict = {}
 
+        async def _run(progress_cb):
+            progress_cb(0, 0, "Thresholding + soft-edge extend…")
             res = await self.backend.template_service.create_mask_relion(
-                input_vol,
-                output_path,
-                threshold,
-                float(self.mask_extend),
-                float(self.mask_soft_edge),
-                float(self.mask_lowpass),
+                input_vol, output_path, threshold, extend, soft, lp,
             )
+            result_holder["res"] = res
             if not res.get("success"):
-                self._log(f"Mask failed: {res.get('error')}")
-                ui.notify(f"Mask failed: {res.get('error')}", type="negative")
-                return
+                return f"mask failed: {res.get('error')}"
+            return f"mask: {os.path.basename(output_path)}"
 
+        def _on_complete(task):
+            self.masking_active = False
+            res = result_holder.get("res") or {}
+            if not res.get("success"):
+                err = res.get("error") or task.error or "unknown"
+                self._log(f"Mask failed: {err}")
+                ui.notify(f"Mask failed: {err}", type="negative")
+                return
             self._log(f"Mask: {os.path.basename(output_path)}")
             self._append_mask(
                 TemplateMask(
                     mask_path=output_path,
                     method="relion",
                     threshold=threshold,
-                    extend_pixels=float(self.mask_extend),
-                    soft_edge_pixels=float(self.mask_soft_edge),
-                    lowpass_ang=float(self.mask_lowpass),
-                    derived_from_template_id=sel.id,
+                    extend_pixels=extend,
+                    soft_edge_pixels=soft,
+                    lowpass_ang=lp,
+                    derived_from_template_id=sel_id,
                 )
             )
-        finally:
-            n.dismiss()
-            self.masking_active = False
+
+        BackgroundTask(
+            title=f"RELION mask · {os.path.basename(input_vol)}",
+            subtitle=f"t={threshold:.3f} ext={int(extend)}px soft={int(soft)}px lp={lp:g}Å",
+            dedup_key=f"mask-relion:{sel_id}:{threshold}:{extend}:{soft}:{lp}",
+            project_path=str(self.project_path),
+        ).submit(_run, on_complete=_on_complete)
 
     async def _create_spherical_mask(self) -> None:
         """Write a soft-edged sphere matching the selected template's
         grid (apix + box). Diameter from the species field (or the form
         if user overrode). The mask is then registered as method='spherical'."""
+        from ui.background_task import BackgroundTask
+
         sp = self._get_species()
         sel = sp.get_selected_template() if sp else None
         if sel is None or not sel.template_path or not os.path.exists(sel.template_path):
@@ -2072,27 +2214,41 @@ class TemplateWorkbench:
             ui.notify("Selected template has no apix/box in header", type="warning")
             return
         soft = float(self.sphere_soft_edge or 0.0)
+        sel_id = sel.id
+        apix_ang = float(header.apix_ang)
+        box_px = int(header.box_px)
 
         # Canonical mask path: <stem>_sphere_d<diameter>_s<soft>.mrc. Idempotent
         # for identical inputs (overwritten by template_service).
         base = Path(sel.template_path).stem.replace("_white", "").replace("_black", "")
         out_name = f"{base}_sphere_d{int(round(diameter))}_s{int(round(soft))}.mrc"
         output_path = os.path.join(self.output_folder, out_name)
-
+        self._log(f"Sphere d={diameter:g}Å soft={soft:g}px apix={apix_ang:.3g} box={box_px}")
         self.masking_active = True
-        n = ui.notification("Creating spherical mask…", type="ongoing", spinner=True, timeout=None)
-        try:
-            self._log(f"Sphere d={diameter:g}Å soft={soft:g}px apix={header.apix_ang:.3g} box={header.box_px}")
+
+        result_holder: dict = {}
+
+        async def _run(progress_cb):
+            progress_cb(0, 0, "Building soft-edged sphere…")
             res = await self.backend.template_service.create_spherical_mask_async(
                 output_path=output_path,
-                apix_ang=float(header.apix_ang),
-                box_px=int(header.box_px),
+                apix_ang=apix_ang,
+                box_px=box_px,
                 diameter_ang=diameter,
                 soft_edge_pixels=soft,
             )
+            result_holder["res"] = res
             if not res.get("success"):
-                self._log(f"Sphere failed: {res.get('error')}")
-                ui.notify(f"Sphere failed: {res.get('error')}", type="negative")
+                return f"sphere failed: {res.get('error')}"
+            return f"sphere: {os.path.basename(output_path)}"
+
+        def _on_complete(task):
+            self.masking_active = False
+            res = result_holder.get("res") or {}
+            if not res.get("success"):
+                err = res.get("error") or task.error or "unknown"
+                self._log(f"Sphere failed: {err}")
+                ui.notify(f"Sphere failed: {err}", type="negative")
                 return
             self._log(f"Sphere: {os.path.basename(output_path)}")
             self._append_mask(
@@ -2100,12 +2256,16 @@ class TemplateWorkbench:
                     mask_path=output_path,
                     method="spherical",
                     soft_edge_pixels=soft,
-                    derived_from_template_id=sel.id,
+                    derived_from_template_id=sel_id,
                 )
             )
-        finally:
-            n.dismiss()
-            self.masking_active = False
+
+        BackgroundTask(
+            title=f"Spherical mask · {os.path.basename(sel.template_path)}",
+            subtitle=f"d={diameter:g}Å soft={soft:g}px",
+            dedup_key=f"mask-sphere:{sel_id}:{diameter}:{soft}",
+            project_path=str(self.project_path),
+        ).submit(_run, on_complete=_on_complete)
 
     async def _import_mask(self) -> None:
         picker = local_file_picker("/", upper_limit=None, mode="file")

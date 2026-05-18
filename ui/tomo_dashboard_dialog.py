@@ -3626,7 +3626,7 @@ async def _handle_generate_imod_for_instance(
     via the workspace tray."""
     import asyncio as _asyncio
 
-    from services.background_tasks import get_background_task_registry
+    from ui.background_task import BackgroundTask
 
     candidates_star = job_dir / "candidates.star"
     tomograms_star = job_dir / "tomograms.star"
@@ -3647,28 +3647,12 @@ async def _handle_generate_imod_for_instance(
         )
         return "IMOD overlays ready; 3dmod commands now include them"
 
-    dedup_key = f"imod-models:{job_dir}"
-    registry = get_background_task_registry()
-    already_running = next(
-        (t for t in registry.all() if t.is_running and t.dedup_key == dedup_key), None
-    )
-    registry.submit(
-        _run,
+    BackgroundTask(
         title=f"IMOD models · {instance_id}",
         subtitle="Generate .mod overlays for 3dmod",
         project_path=str(project_path),
-        dedup_key=dedup_key,
-    )
-    if already_running:
-        ui.notify(
-            "IMOD generation already in flight — see tray (bottom-right)",
-            type="info", timeout=2500,
-        )
-    else:
-        ui.notify(
-            "IMOD generation started — track progress in the tray (bottom-right)",
-            type="info", timeout=2500,
-        )
+        dedup_key=f"imod-models:{job_dir}",
+    ).submit(_run)
     refresh()
 
 
@@ -3681,7 +3665,7 @@ async def _handle_generate_for_instance(
     keep concurrent writes to manifest.json from racing each other."""
     import asyncio as _asyncio
 
-    from services.background_tasks import get_background_task_registry
+    from ui.background_task import BackgroundTask
 
     candidates_star = job_dir / "candidates.star"
     tomograms_star = job_dir / "tomograms.star"
@@ -3734,33 +3718,12 @@ async def _handle_generate_for_instance(
             parts.append(f"{n_err} errored")
         return ", ".join(parts)
 
-    # dedup_key keyed by job_dir + force flag so the user can't accidentally
-    # queue duplicate writers against the same manifest.
-    dedup_key = f"preview-render:{job_dir}:force={force}"
-    registry = get_background_task_registry()
-
-    # Detect dedup BEFORE submitting so we can give the right notice. A
-    # running task with the same key indicates an in-flight render the
-    # registry will return verbatim.
-    already_running = next(
-        (t for t in registry.all() if t.is_running and t.dedup_key == dedup_key), None
-    )
-
-    registry.submit(
-        _run,
+    BackgroundTask(
         title=f"Journey previews · {instance_id}",
         subtitle=f"{action} — {subtitle}",
         project_path=str(project_path),
-        dedup_key=dedup_key,
-    )
-    if already_running:
-        ui.notify(
-            f"{action} already in flight — see tray (bottom-right)",
-            type="info", timeout=2500,
-        )
-    else:
-        ui.notify(
-            f"{action} started — track progress in the tray (bottom-right)",
-            type="info", timeout=2500,
-        )
+        # Dedup keyed by job_dir + force flag so concurrent clicks coalesce
+        # rather than racing on writes to the same manifest.json.
+        dedup_key=f"preview-render:{job_dir}:force={force}",
+    ).submit(_run)
     refresh()
