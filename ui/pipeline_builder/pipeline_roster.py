@@ -2,11 +2,12 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from nicegui import ui
 from services.models_base import JobStatus
 from services.project_state import JobType, get_project_state
 
+from ui.components.reactive import FingerprintedView
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot
 from ui.ui_state import get_job_display_name, get_instance_display_name, instance_id_to_job_type
@@ -142,20 +143,38 @@ def _get_array_ts_statuses(
     return items, statuses, display_names
 
 
-class RosterWidget:
+class RosterWidget(FingerprintedView):
+    """The pipeline sidebar (job roster).
+
+    Inherits FingerprintedView: `refresh()` is a no-op when nothing the
+    sidebar would render has changed since last paint. This matters because
+    the status poller calls refresh() every 3 s — without the gate, every
+    click target in the sidebar would be torn down and rebuilt on each
+    tick, dropping in-flight clicks and resetting hover state.
+
+    Row spinners (the braille glyph that shows up for RUNNING jobs) are
+    pure CSS now — `.cb-braille-spin` defined in ui/main_ui.py. There is
+    no server-side spinner tick anymore.
+    """
+
     def __init__(self, panel: "PipelineBuilderPanel"):
+        super().__init__()
         self.panel = panel
         self._flash_phase: Optional[str] = None
         self._roster_visible: bool = True
         self._roster_phase: Optional[str] = None
         self._refs: Dict = {}
-        self._spinner_frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-        self._spinner_idx: int = 0
-        self._live_spinners: List = []
         # Per-instance expansion state for per-TS sub-rows, persisted across
         # roster refreshes (status_poller refreshes the roster every few seconds
         # and would otherwise collapse rows the user had opened).
         self._expanded_instances: Dict[str, bool] = {}
+        # Per-tick cache of array job state. Populated by signature(), read by
+        # render(). Keyed by instance_id. Avoids redundant disk reads per tick.
+        self._array_progress_cache: Dict[str, Optional[Tuple[int, int, int]]] = {}
+        self._array_ts_cache: Dict[str, Optional[Tuple[List[str], Dict[str, str], Dict[str, str]]]] = {}
+
+    def _get_container(self) -> Any:
+        return self.panel.roster_panel
 
     def _status_widget(self, instance_id: str):
         from services.project_state import get_project_state
@@ -168,11 +187,17 @@ class RosterWidget:
 
         def _content(status, jm=job_model):
             if status == JobStatus.RUNNING:
-                frame = self._spinner_frames[self._spinner_idx]
+                # CSS-driven spinner. @keyframes cb-braille-rotate is defined
+                # in ui/main_ui.py; the animation property is INLINE here so
+                # specificity / cache issues with the .cb-braille-spin class
+                # can't disable the rotation. The class is kept for any
+                # selector that wants to find these elements (e.g. devtools).
                 return (
-                    f'<span class="cb-row-spinner" '
-                    f"style=\"font-family:'IBM Plex Mono',monospace;font-size:13px;"
-                    f'color:#3b82f6;line-height:1;flex-shrink:0;">{frame}</span>'
+                    '<span class="cb-row-spinner cb-braille-spin" '
+                    "style=\"display:inline-block;font-family:'IBM Plex Mono',monospace;"
+                    "font-size:13px;color:#3b82f6;line-height:1;flex-shrink:0;"
+                    'transform-origin:50% 50%;animation:cb-braille-rotate 1.1s linear infinite;">'
+                    "⠋</span>"
                 )
             return _dot_html(status, is_orphaned=jm.is_orphaned)
 
@@ -180,101 +205,166 @@ class RosterWidget:
 
     # ── Roster ────────────────────────────────────────────────────────────────
 
-    def refresh(self):
+    def signature(self) -> Any:
+        """Fingerprint of every input the roster's render() reads.
+
+        Cheap in-memory reads dominate. Per-array-job disk reads (~25 file
+        existence checks per array job) match what render() does today, so
+        the signature path is not adding new I/O — it lets us skip the
+        more expensive DOM rebuild downstream.
+        """
         panel = self.panel
-        if panel.roster_panel is None:
-            return
-        panel.roster_panel.clear()
+        ui_mgr = panel.ui_mgr
+        jobs = panel.state_service.state.jobs
 
-        with panel.roster_panel:
-            for phase_id, jobs in PHASE_JOBS.items():
-                icon_or_svg, phase_label, _ = PHASE_META[phase_id]
-                is_flashing = self._flash_phase == phase_id
+        # Populate caches that render() will re-read so the two stay in lockstep.
+        # (No memoization across signature+render; they touch the same files,
+        # but file-system caching makes the second read cheap.)
+        self._array_progress_cache = {}
+        self._array_ts_cache = {}
+        for iid, jm in jobs.items():
+            if "array_throttle" not in getattr(jm, "USER_PARAMS", set()):
+                continue
+            self._array_progress_cache[iid] = _get_array_progress(jm, ui_mgr.project_path)
+            if self._expanded_instances.get(iid):
+                self._array_ts_cache[iid] = _get_array_ts_statuses(jm, ui_mgr.project_path)
 
-                with (
-                    ui.element("div")
-                    .props(f'id="{ROSTER_ANCHOR[phase_id]}"')
-                    .style(
-                        "display: flex; align-items: center; gap: 5px; "
-                        "padding: 4px 8px 3px 10px; "
-                        "background: #f1f5f9; border-bottom: 1px solid #e5e7eb; "
-                        "position: sticky; top: 0; z-index: 2;"
+        per_job = tuple(
+            (
+                iid,
+                getattr(jm, "execution_status", None),
+                getattr(jm, "species_id", None),
+                getattr(jm, "relion_job_name", None),
+                bool(getattr(jm, "is_orphaned", False)),
+                bool(getattr(jm, "IS_INTERACTIVE", False)),
+            )
+            for iid, jm in sorted(jobs.items())
+        )
+
+        # For expanded array jobs, fold in the per-TS status detail so toggling
+        # individual TS task outcomes (ok ↔ fail) re-renders even when summary
+        # counts are unchanged. For collapsed jobs, summary is enough.
+        array_state = tuple(
+            (
+                iid,
+                self._expanded_instances.get(iid, False),
+                self._array_progress_cache.get(iid),
+                tuple(sorted((self._array_ts_cache.get(iid) or (None, {}, None))[1].items()))
+                if self._expanded_instances.get(iid)
+                else None,
+            )
+            for iid in sorted(self._array_progress_cache.keys())
+        )
+
+        return (
+            self._flash_phase,
+            self._roster_visible,
+            tuple(ui_mgr.selected_jobs),
+            ui_mgr.active_instance_id,
+            ui_mgr.is_running,
+            per_job,
+            array_state,
+        )
+
+    def refresh(self):
+        """Render the roster if its signature changed since last paint.
+
+        Same call site as before — but inherits FingerprintedView's gate so
+        the 3 s status poll no longer rebuilds the sidebar on every tick
+        when nothing has actually changed.
+        """
+        super().refresh()
+
+    def render(self):
+        panel = self.panel
+        for phase_id, jobs in PHASE_JOBS.items():
+            icon_or_svg, phase_label, _ = PHASE_META[phase_id]
+            is_flashing = self._flash_phase == phase_id
+
+            with (
+                ui.element("div")
+                .props(f'id="{ROSTER_ANCHOR[phase_id]}"')
+                .style(
+                    "display: flex; align-items: center; gap: 5px; "
+                    "padding: 4px 8px 3px 10px; "
+                    "background: #f1f5f9; border-bottom: 1px solid #e5e7eb; "
+                    "position: sticky; top: 0; z-index: 2;"
+                )
+            ):
+                if icon_or_svg.startswith("<svg"):
+                    ui.html(self._load_svg(icon_or_svg).replace("currentColor", "#94a3b8"), sanitize=False).style(
+                        "width: 12px; height: 12px; flex-shrink: 0; display: flex;"
                     )
-                ):
-                    if icon_or_svg.startswith("<svg"):
-                        ui.html(self._load_svg(icon_or_svg).replace("currentColor", "#94a3b8"), sanitize=False).style(
-                            "width: 12px; height: 12px; flex-shrink: 0; display: flex;"
-                        )
+                else:
+                    ui.icon(icon_or_svg, size="12px").style("color: #94a3b8; flex-shrink: 0;")
+
+                ui.label(phase_label.upper()).style(
+                    "font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.07em; line-height: 1;"
+                )
+
+            for job_type in jobs:
+                instances = panel.ui_mgr.get_instances_for_type(job_type)
+
+                if not instances:
+                    # Unselected job type — single clickable row
+                    if is_flashing:
+                        row_bg, l_border, name_color = "#fefce8", "#fde68a", "#78716c"
                     else:
-                        ui.icon(icon_or_svg, size="12px").style("color: #94a3b8; flex-shrink: 0;")
+                        row_bg, l_border, name_color = "transparent", "transparent", "#9ca3af"
 
-                    ui.label(phase_label.upper()).style(
-                        "font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.07em; line-height: 1;"
-                    )
-
-                for job_type in jobs:
-                    instances = panel.ui_mgr.get_instances_for_type(job_type)
-
-                    if not instances:
-                        # Unselected job type — single clickable row
-                        if is_flashing:
-                            row_bg, l_border, name_color = "#fefce8", "#fde68a", "#78716c"
-                        else:
-                            row_bg, l_border, name_color = "transparent", "transparent", "#9ca3af"
-
-                        with (
-                            ui.element("div")
-                            .style(
-                                f"display: flex; align-items: center; gap: 6px; "
-                                f"padding: 4px 8px 4px 10px; cursor: pointer; "
-                                f"background: {row_bg}; border-left: 2px solid {l_border};"
-                            )
-                            .on("click", lambda j=job_type: self._on_unselected_click(j))
-                        ):
-                            ui.icon("check_box_outline_blank", size="13px").style("color: #d1d5db; flex-shrink: 0;")
-                            ui.label(get_job_display_name(job_type)).style(
-                                f"{MONO} font-size: 11px; font-weight: 400; color: {name_color}; "
-                                "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                            )
-
-                    elif len(instances) == 1:
-                        # Single instance — flat row, no header/instance split
-                        instance_id = instances[0]
-                        self._render_instance_row(panel, job_type, instance_id, indent=10, show_add=True)
-
-                    else:
-                        # Multiple instances — header + instance rows
-                        missing = missing_deps(job_type, set(panel.ui_mgr.selected_jobs))
-                        any_active = any(panel.ui_mgr.active_instance_id == iid for iid in instances)
-                        header_border = "#3b82f6" if any_active else "#e5e7eb"
-
-                        with ui.element("div").style(
+                    with (
+                        ui.element("div")
+                        .style(
                             f"display: flex; align-items: center; gap: 6px; "
-                            f"padding: 4px 8px 4px 10px; "
-                            f"background: #f8fafc; border-left: 2px solid {header_border};"
-                        ):
-                            ui.label(get_job_display_name(job_type)).style(
-                                f"{MONO} font-size: 11px; font-weight: 600; color: #374151; "
-                                "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
-                            )
-                            ui.label(str(len(instances))).style(
-                                "font-size: 9px; font-weight: 700; color: #6b7280; "
-                                "background: #e5e7eb; border-radius: 999px; "
-                                "padding: 1px 5px; flex-shrink: 0;"
-                            )
-                            if missing:
-                                ui.icon("warning", size="11px").style("color: #f59e0b; flex-shrink: 0;").tooltip(
-                                    "Missing: " + ", ".join(get_job_display_name(d) for d in missing)
-                                )
-                            (
-                                ui.button(icon="add", on_click=lambda j=job_type: panel.prompt_species_and_add(j))
-                                .props("flat dense round size=xs")
-                                .style("color: #6b7280; flex-shrink: 0;")
-                                .tooltip(f"Add another {get_job_display_name(job_type)}")
-                            )
+                            f"padding: 4px 8px 4px 10px; cursor: pointer; "
+                            f"background: {row_bg}; border-left: 2px solid {l_border};"
+                        )
+                        .on("click", lambda j=job_type: self._on_unselected_click(j))
+                    ):
+                        ui.icon("check_box_outline_blank", size="13px").style("color: #d1d5db; flex-shrink: 0;")
+                        ui.label(get_job_display_name(job_type)).style(
+                            f"{MONO} font-size: 11px; font-weight: 400; color: {name_color}; "
+                            "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                        )
 
-                        for instance_id in instances:
-                            self._render_instance_row(panel, job_type, instance_id, indent=18)
+                elif len(instances) == 1:
+                    # Single instance — flat row, no header/instance split
+                    instance_id = instances[0]
+                    self._render_instance_row(panel, job_type, instance_id, indent=10, show_add=True)
+
+                else:
+                    # Multiple instances — header + instance rows
+                    missing = missing_deps(job_type, set(panel.ui_mgr.selected_jobs))
+                    any_active = any(panel.ui_mgr.active_instance_id == iid for iid in instances)
+                    header_border = "#3b82f6" if any_active else "#e5e7eb"
+
+                    with ui.element("div").style(
+                        f"display: flex; align-items: center; gap: 6px; "
+                        f"padding: 4px 8px 4px 10px; "
+                        f"background: #f8fafc; border-left: 2px solid {header_border};"
+                    ):
+                        ui.label(get_job_display_name(job_type)).style(
+                            f"{MONO} font-size: 11px; font-weight: 600; color: #374151; "
+                            "flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                        )
+                        ui.label(str(len(instances))).style(
+                            "font-size: 9px; font-weight: 700; color: #6b7280; "
+                            "background: #e5e7eb; border-radius: 999px; "
+                            "padding: 1px 5px; flex-shrink: 0;"
+                        )
+                        if missing:
+                            ui.icon("warning", size="11px").style("color: #f59e0b; flex-shrink: 0;").tooltip(
+                                "Missing: " + ", ".join(get_job_display_name(d) for d in missing)
+                            )
+                        (
+                            ui.button(icon="add", on_click=lambda j=job_type: panel.prompt_species_and_add(j))
+                            .props("flat dense round size=xs")
+                            .style("color: #6b7280; flex-shrink: 0;")
+                            .tooltip(f"Add another {get_job_display_name(job_type)}")
+                        )
+
+                    for instance_id in instances:
+                        self._render_instance_row(panel, job_type, instance_id, indent=18)
 
     def _render_instance_row(self, panel, job_type, instance_id, indent=18, show_add=False):
         """Render a single job instance row — single line with icons at end."""
@@ -338,8 +428,10 @@ class RosterWidget:
                     ui.label(species.name).style(
                         f"font-size: 8px; color: {species.color}; font-weight: 600; white-space: nowrap;"
                     )
-            # Inline array progress (e.g., "17/18" green, or "17/18 1!" red)
-            progress = _get_array_progress(job_model, panel.ui_mgr.project_path)
+            # Inline array progress (e.g., "17/18" green, or "17/18 1!" red).
+            # Read from the per-tick cache populated by signature() so render and
+            # signature can't disagree on what's being painted.
+            progress = self._array_progress_cache.get(instance_id)
             if progress is not None:
                 n_done, n_fail, n_total = progress
                 n_ok = n_done - n_fail
@@ -422,16 +514,21 @@ class RosterWidget:
         # ── Per-TS sub-rows (collapsible, for array jobs) ──
         is_array = "array_throttle" in getattr(job_model, "USER_PARAMS", set()) if job_model else False
         if is_array:
-            ts_data = _get_array_ts_statuses(job_model, panel.ui_mgr.project_path)
+            is_running = job_model.execution_status == JobStatus.RUNNING
+            # Default to expanded while running; persist any user toggle across refreshes.
+            expanded = self._expanded_instances.setdefault(instance_id, is_running)
+            # signature() populated this cache for expanded array jobs only.
+            # When collapsed we render just the arrow (so the user can expand);
+            # the per-TS detail loads on the next tick after expansion.
+            ts_data = self._array_ts_cache.get(instance_id) if expanded else None
             if ts_data is not None:
                 items, statuses, display_names = ts_data
-                is_running = job_model.execution_status == JobStatus.RUNNING
-                # Default to expanded while running; persist any user toggle across refreshes.
-                expanded = self._expanded_instances.setdefault(instance_id, is_running)
-                job_dir = _resolve_array_job_dir(job_model, panel.ui_mgr.project_path)
-                self._render_ts_sub_rows(
-                    instance_id, items, statuses, display_names, indent + 8, expanded=expanded, job_dir=job_dir
-                )
+            else:
+                items, statuses, display_names = [], {}, {}
+            job_dir = _resolve_array_job_dir(job_model, panel.ui_mgr.project_path)
+            self._render_ts_sub_rows(
+                instance_id, items, statuses, display_names, indent + 8, expanded=expanded, job_dir=job_dir
+            )
         elif (
             job_model is not None
             and not getattr(job_model, "IS_INTERACTIVE", False)
@@ -1290,12 +1387,19 @@ class RosterWidget:
                         "width: 16px; height: 16px; display: flex; pointer-events: none;"
                     )
 
-                spinner = ui.label("⠋").style(
-                    "font-family: 'IBM Plex Mono', monospace; font-size: 18px; "
-                    "color: #3b82f6; text-align: center; line-height: 1; "
-                    "display: block; width: 100%; margin-top: 2px;"
+                # CSS-driven braille spinner. @keyframes cb-braille-rotate is
+                # defined in ui/main_ui.py; the animation is inline so it
+                # can't be silently disabled by cached/conflicting CSS.
+                ui.html(
+                    '<div style="width:100%;margin-top:2px;text-align:center;">'
+                    '<span class="cb-sidebar-spinner cb-braille-spin" '
+                    "style=\"display:inline-block;font-family:'IBM Plex Mono',monospace;"
+                    "font-size:18px;color:#3b82f6;line-height:1;"
+                    'transform-origin:50% 50%;animation:cb-braille-rotate 1.1s linear infinite;">'
+                    "⠋</span>"
+                    "</div>",
+                    sanitize=False,
                 )
-                self._refs["spinner"] = spinner
 
                 status_lbl = ui.label("").style(
                     f"font-size: 8px; color: {SB_MUTE}; "
@@ -1320,30 +1424,11 @@ class RosterWidget:
                         "width: 16px; height: 16px; display: flex; pointer-events: none;"
                     )
 
-    # ── Spinner / status label ────────────────────────────────────────────────
+    # ── Status label ──────────────────────────────────────────────────────────
 
-    def advance_spinner(self):
-        self._spinner_idx = (self._spinner_idx + 1) % len(self._spinner_frames)
-        frame = self._spinner_frames[self._spinner_idx]
-
-        el = self._refs.get("spinner")
-        if el:
-            el.set_text(frame)
-
-        ui.run_javascript(f"document.querySelectorAll('.cb-row-spinner').forEach(e => e.textContent = {repr(frame)});")
-
-    def start_spinner_timer(self):
-        if self._refs.get("spinner_timer"):
-            return
-        self._refs["spinner_timer"] = ui.timer(0.17, self.advance_spinner)
-
-    def stop_spinner_timer(self):
-        t = self._refs.pop("spinner_timer", None)
-        if t:
-            try:
-                t.cancel()
-            except Exception:
-                pass
+    # Row + sidebar spinners are CSS animations (.cb-braille-spin in main_ui.py);
+    # there is no server-driven advance() loop. The previous 0.17 s ui.timer +
+    # ui.run_javascript broadcast lived here.
 
     def update_status_label(self, overview: Dict):
         el = self._refs.get("status_label")

@@ -10,6 +10,7 @@ from backend import CryoBoostBackend
 from services.models_base import JobStatus
 from services.project_state import JobType, get_state_service
 
+from ui.components.reactive import SingleFlight
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, next_instance_id
 from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
@@ -55,6 +56,9 @@ class PipelineBuilderPanel:
 
         self.roster = RosterWidget(self)
         self.poller = StatusPoller(self)
+        # Guards async handlers that own a dialog (and other re-entrant work)
+        # against rapid/double clicks. See ui/components/reactive.py.
+        self.flight = SingleFlight()
 
     def build(self):
         self.ui_mgr.cleanup_all_timers()
@@ -81,53 +85,64 @@ class PipelineBuilderPanel:
     # ── Species gate ──────────────────────────────────────────────────────────
 
     async def prompt_species_and_add(self, job_type: JobType):
-        if self.ui_mgr.is_running:
-            return
+        # SingleFlight: if a dialog for this job_type is already open, a
+        # second click drops silently instead of stacking another dialog.
+        # Required because the trigger button can be destroyed and rebuilt
+        # mid-click by an unrelated refresh, so the user may click "add"
+        # several times before one click lands.
+        async with self.flight(f"species_dialog:{job_type.value}") as acquired:
+            if not acquired:
+                return
 
-        if job_type not in PHASE_JOBS[PHASE_PARTICLES]:
-            self.add_instance_to_pipeline(job_type)
-            return
+            if self.ui_mgr.is_running:
+                return
 
-        project_path = self.ui_mgr.project_path
-        if not project_path:
-            return
+            if job_type not in PHASE_JOBS[PHASE_PARTICLES]:
+                self.add_instance_to_pipeline(job_type)
+                return
 
-        from services.project_state import get_project_state_for
+            project_path = self.ui_mgr.project_path
+            if not project_path:
+                return
 
-        state = get_project_state_for(project_path)
+            from services.project_state import get_project_state_for
 
-        if not state.species_registry:
-            ui.notify(
-                "Register at least one particle species in the Template Workbench first.", type="warning", timeout=4000
-            )
-            return
+            state = get_project_state_for(project_path)
 
-        chosen = {"id": state.species_registry[0].id}
+            if not state.species_registry:
+                ui.notify(
+                    "Register at least one particle species in the Template Workbench first.",
+                    type="warning",
+                    timeout=4000,
+                )
+                return
 
-        with ui.dialog() as dialog, ui.card().style("min-width: 300px; padding: 16px;"):
-            ui.label(f"Add {get_job_display_name(job_type)}").classes("text-base font-bold text-gray-800 mb-3")
-            options = {s.id: s.name for s in state.species_registry}
-            sel = (
-                ui.select(options=options, value=chosen["id"], label="Particle species")
-                .props("outlined dense")
-                .classes("w-full")
-            )
+            chosen = {"id": state.species_registry[0].id}
 
-            def _on_change(e):
-                chosen["id"] = e.value
-
-            sel.on_value_change(_on_change)
-
-            with ui.row().classes("w-full justify-end gap-2 mt-4"):
-                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
-                ui.button("Add", on_click=lambda: dialog.submit(True)).props("dense no-caps").style(
-                    "background: #3b82f6; color: white; padding: 4px 16px; border-radius: 3px;"
+            with ui.dialog() as dialog, ui.card().style("min-width: 300px; padding: 16px;"):
+                ui.label(f"Add {get_job_display_name(job_type)}").classes("text-base font-bold text-gray-800 mb-3")
+                options = {s.id: s.name for s in state.species_registry}
+                sel = (
+                    ui.select(options=options, value=chosen["id"], label="Particle species")
+                    .props("outlined dense")
+                    .classes("w-full")
                 )
 
-        confirmed = await dialog
-        if not confirmed:
-            return
-        self.add_instance_to_pipeline(job_type, species_id=chosen["id"])
+                def _on_change(e):
+                    chosen["id"] = e.value
+
+                sel.on_value_change(_on_change)
+
+                with ui.row().classes("w-full justify-end gap-2 mt-4"):
+                    ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
+                    ui.button("Add", on_click=lambda: dialog.submit(True)).props("dense no-caps").style(
+                        "background: #3b82f6; color: white; padding: 4px 16px; border-radius: 3px;"
+                    )
+
+            confirmed = await dialog
+            if not confirmed:
+                return
+            self.add_instance_to_pipeline(job_type, species_id=chosen["id"])
 
     # ── Tab management ────────────────────────────────────────────────────────
 
@@ -440,7 +455,6 @@ class PipelineBuilderPanel:
             self._job_content_containers[active].set_visibility(True)
 
         if self.ui_mgr.is_running:
-            self.roster.start_spinner_timer()
             try:
                 self.ui_mgr.status_timer = ui.timer(3.0, self.poller.safe_status_check)
             except RuntimeError:

@@ -71,6 +71,19 @@ def create_ui_router(backend: CryoBoostBackend):
             .pulse-success   { animation: cb-pulse 2.0s ease-in-out infinite; }
             .pulse-failed    { animation: cb-pulse 1.4s ease-in-out infinite; }
             .pulse-orphaned  { animation: cb-pulse 1.6s ease-in-out infinite; }
+
+            /* Braille-glyph spinner, server-tick-free. The braille glyph is
+               emitted as the element's text content (so it shows even on the
+               oldest browsers); CSS rotates the glyph in place. The
+               `animation` property is also set inline on the elements
+               themselves (see pipeline_roster._status_widget) so CSS-class
+               specificity issues or cached stylesheets can't disable the
+               spin. Replaces the prior 0.17 s ui.timer + ui.run_javascript
+               broadcast — see ui/components/reactive.py. */
+            @keyframes cb-braille-rotate {
+                from { transform: rotate(0deg); }
+                to   { transform: rotate(360deg); }
+            }
         </style>
     """)
 
