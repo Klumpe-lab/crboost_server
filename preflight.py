@@ -37,10 +37,8 @@ class C:
 def ok(text: str):
     print(f"  {C.G}[OK]{C.E} {text}")
 
-
 def warn(text: str):
     print(f"  {C.Y}[WARN]{C.E} {text}")
-
 
 def fail(text: str):
     print(f"  {C.R}[FAIL]{C.E} {text}")

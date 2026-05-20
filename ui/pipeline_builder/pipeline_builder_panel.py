@@ -284,24 +284,28 @@ class PipelineBuilderPanel:
                     sp = p_state.get_species(species_id)
                     if sp:
                         # Default new TM jobs to the species's currently
-                        # selected template + mask. The v3 helpers resolve
-                        # via species.selected_*_id.
+                        # selected template + mask + symmetry. The v3
+                        # helpers resolve template/mask via
+                        # species.selected_*_id; symmetry is a top-level
+                        # field on Species (defaults "C1").
                         #
-                        # NOTE: species.symmetry is deliberately NOT propagated
-                        # to job_model.symmetry. Species symmetry describes the
-                        # particle's intrinsic point group (an immutable
-                        # property of the molecule); job.symmetry is "what
-                        # PyTOM should rotate the search over", which is a
-                        # search-strategy choice independent of the particle's
-                        # true symmetry. Coupling them caused silent surprises
-                        # (declared I1 on the species → I1 on the job →
-                        # PyTOM driver silently drops non-Cn → effectively
-                        # ran C1 anyway, with the JSON lying about it). The
-                        # TM job's own dropdown is the only source of truth
-                        # for what PyTOM actually receives.
+                        # Previously this excluded symmetry — the rationale
+                        # was that PyTOM's driver silently dropped non-Cn
+                        # values, so a species declared as I1 would have
+                        # silently run C1 anyway. That's no longer true:
+                        # drivers/template_match_pytom.py now generates an
+                        # asymmetric-unit angle list for D/T/O/I via
+                        # services.templating.angle_lists and passes it as
+                        # --angular-search <file>. With the driver honoring
+                        # the value, inheriting from the species is the
+                        # principle-of-least-surprise default; the user can
+                        # still override in the TM-job dropdown.
                         if job_type == JobType.TEMPLATE_MATCH_PYTOM:
                             job_model.template_path = get_effective_template_path(sp)
                             job_model.mask_path = get_effective_mask_path(sp)
+                            sp_sym = getattr(sp, "symmetry", None)
+                            if sp_sym:
+                                job_model.symmetry = sp_sym
                         # Default new candidate-extract jobs to the species's
                         # particle diameter. Job param defaults to 200 Å so
                         # this only overrides when species.diameter_ang is set.

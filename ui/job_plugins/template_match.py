@@ -4,10 +4,14 @@ Template Matching plugin (v3).
 Species is locked at job creation time. The species's templates and masks
 are surfaced as two independent dropdowns so the user picks both
 explicitly — defaulting to whichever the species has selected. Search
-symmetry is also rendered here (locked to C1–C6 since PyTOM only honors
-Cn; persisted non-Cn values are coerced to C1 by the param-class
-validator). The default-renderer skips template_path / mask_path /
-symmetry because we render all three in the dedicated card below.
+symmetry is also rendered here. The full SymmetryGroup enum is offered:
+Cn (n=1..6) is honored by PyTOM's --z-axis-rotational-symmetry flag;
+D/T/O/I are honored via a custom angle list (auto-generated at submission
+by services.templating.angle_lists and passed to PyTOM as
+--angular-search <file>). Default is inherited from species.symmetry at
+job-creation time but the user can override here. The default-renderer
+skips template_path / mask_path / symmetry because we render all three
+in the dedicated card below.
 
 If species.templates is empty the dropdown shows an empty-state hint
 pointing the user to the workbench.
@@ -66,7 +70,7 @@ def render_template_match_params(job_type, job_model, is_frozen, save_handler, *
             ui.icon("category", size="14px").classes("text-gray-500")
             ui.label("Template, mask & search symmetry").classes("text-sm font-bold text-gray-800")
             ui.label(
-                "(template/mask default to species selection; symmetry is TM-only and ignores particle symmetry)"
+                "(all three default to the species; you can override here for a one-off run)"
             ).classes("text-[11px] text-gray-400 italic ml-2")
 
         with ui.column().classes("w-full p-3 gap-3"):
@@ -124,7 +128,19 @@ def _render_template_dropdown(species, job_model, is_frozen: bool, save_handler)
 
 
 def _render_symmetry_dropdown(job_model, is_frozen: bool, save_handler) -> None:
-    options = {s: f"{s}{'  ·  no symmetry (default)' if s == 'C1' else ''}" for s in TM_SYMMETRY_CHOICES}
+    # Annotate each option with how PyTOM is going to honor it so the user
+    # knows what they're picking. Cn (n=1..6) goes through the dedicated
+    # --z-axis-rotational-symmetry flag; D/T/O/I are translated by the
+    # driver into a custom asymmetric-unit angle list, which gives the same
+    # |group|× speedup for a template already symmetric under that group.
+    def _suffix(s: str) -> str:
+        if s == "C1":
+            return "  ·  no symmetry (full SO(3) search)"
+        if s.startswith("C"):
+            return f"  ·  {s[1:]}-fold rotational symmetry (PyTOM --z-axis flag)"
+        return f"  ·  point group {s} (angle list, ~{_group_order(s)}× speedup)"
+
+    options = {s: f"{s}{_suffix(s)}" for s in TM_SYMMETRY_CHOICES}
     value = getattr(job_model, "symmetry", "C1") or "C1"
     if value not in options:
         value = "C1"
@@ -135,8 +151,10 @@ def _render_symmetry_dropdown(job_model, is_frozen: bool, save_handler) -> None:
             .props("outlined dense")
             .classes("flex-1 text-xs font-mono")
             .tooltip(
-                "PyTOM honors only Cn here. Use C1 for asymmetric search (default); "
-                "Cn shrinks the angular search for n-fold particles."
+                "Cn uses PyTOM's --z-axis-rotational-symmetry flag (n-fold around z). "
+                "D/T/O/I generate a custom asymmetric-unit angle list at submission and "
+                "pass --angular-search <file>. The template must be symmetric under the "
+                "chosen group — RELION reconstructions made with --sym <group> are."
             )
         )
         if is_frozen:
@@ -148,6 +166,16 @@ def _render_symmetry_dropdown(job_model, is_frozen: bool, save_handler) -> None:
                 save_handler()
 
             sel.on_value_change(_on_change)
+
+
+def _group_order(point_group: str) -> int:
+    """Order of the point group (|G|) for the suffix label. Mirrors the table
+    in services.templating.angle_lists.POINT_GROUP_ORDER but kept inline here
+    to avoid importing scipy-dependent modules at UI render time."""
+    return {
+        "D2": 4, "D3": 6, "D4": 8, "D5": 10, "D6": 12,
+        "T": 12, "O": 24, "I1": 60, "I2": 60,
+    }.get(point_group, 1)
 
 
 def _render_mask_dropdown(species, job_model, is_frozen: bool, save_handler) -> None:

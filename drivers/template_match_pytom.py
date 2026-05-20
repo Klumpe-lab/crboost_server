@@ -28,7 +28,7 @@ import shutil
 import sys
 import traceback
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import starfile
@@ -185,15 +185,31 @@ def scores_mrc_path(job_dir: Path, tomo_name: str) -> Path:
     return job_dir / "tmResults" / f"{tomo_name}_scores.mrc"
 
 
-def build_pytom_base_cmd(params: TemplateMatchPytomParams, state, template_file: Path, mask_file: Path,
-                         tm_results_dir: Path, gpu_ids: List[str]) -> List[str]:
-    """The per-task base command before per-tomogram args are appended."""
+def build_pytom_base_cmd(
+    params: TemplateMatchPytomParams,
+    state,
+    template_file: Path,
+    mask_file: Path,
+    tm_results_dir: Path,
+    gpu_ids: List[str],
+    angle_list_file: Optional[Path] = None,
+) -> List[str]:
+    """The per-task base command before per-tomogram args are appended.
+
+    Symmetry routing:
+      - `angle_list_file` provided → `--angular-search <file>` (used for D/T/O/I
+        point groups; the file contains one ZXZ Euler triple per line in
+        radians and was generated at supervisor start by services.templating
+        .angle_lists.generate_asymmetric_unit_angles).
+      - Cn (n>=2) → `--angular-search <float>` plus `--z-axis-rotational-symmetry N`
+        (PyTOM's dedicated flag, simpler than rolling our own angle list).
+      - C1 → `--angular-search <float>` only.
+    """
     base_cmd = [
         "pytom_match_template.py",
         "-t", str(template_file),
         "-d", str(tm_results_dir),
         "-m", str(mask_file),
-        "--angular-search", str(params.angular_search),
         "--voltage", str(state.microscope.acceleration_voltage_kv),
         "--spherical-aberration", str(state.microscope.spherical_aberration_mm),
         "--amplitude-contrast", str(state.microscope.amplitude_contrast),
@@ -201,6 +217,14 @@ def build_pytom_base_cmd(params: TemplateMatchPytomParams, state, template_file:
         "--log", "debug",
         "-g",
     ] + gpu_ids
+
+    sym = str(params.symmetry) if params.symmetry else "C1"
+    if angle_list_file is not None:
+        base_cmd.extend(["--angular-search", str(angle_list_file)])
+    else:
+        base_cmd.extend(["--angular-search", str(params.angular_search)])
+        if sym != "C1" and sym.startswith("C"):
+            base_cmd.extend(["--z-axis-rotational-symmetry", sym[1:]])
 
     if params.gpu_split != "None":
         base_cmd.extend(["-s"] + get_gpu_split(params.gpu_split))
@@ -213,8 +237,6 @@ def build_pytom_base_cmd(params: TemplateMatchPytomParams, state, template_file:
     if params.bandpass_filter != "None" and ":" in params.bandpass_filter:
         low, high = params.bandpass_filter.split(":")
         base_cmd.extend(["--low-pass", low, "--high-pass", high])
-    if params.symmetry != "C1" and str(params.symmetry).startswith("C"):
-        base_cmd.extend(["--z-axis-rotational-symmetry", str(params.symmetry)[1:]])
 
     return base_cmd
 
@@ -325,6 +347,34 @@ def run_supervisor_mode():
             name = str(row["rlnTomoName"])
             raw_tomo_paths[name] = str(row["rlnTomoReconstructedTomogram"])
 
+        # Non-Cn symmetries need a custom angle list — PyTOM has no flag for
+        # D/T/O/I, only the dedicated --z-axis-rotational-symmetry for Cn.
+        # Generate once at supervisor start so all array tasks reuse the same
+        # file; tasks rebuild build_pytom_base_cmd per-tomo but the angle file
+        # is shared.
+        angle_list_path: Optional[Path] = None
+        sym = str(params.symmetry) if params.symmetry else "C1"
+        from services.templating.angle_lists import (
+            needs_angle_list,
+            generate_asymmetric_unit_angles,
+            write_angle_list_file,
+            expected_angle_count,
+        )
+
+        if needs_angle_list(sym):
+            try:
+                inc_deg = float(params.angular_search)
+            except (TypeError, ValueError):
+                inc_deg = 12.0
+            angles = generate_asymmetric_unit_angles(sym, inc_deg)
+            angle_list_path = job_dir / f"angles_{sym}.txt"
+            write_angle_list_file(angles, angle_list_path)
+            est = expected_angle_count(sym, inc_deg)
+            print(
+                f"[SUPERVISOR] symmetry={sym}: wrote {len(angles)} angles (estimate {est}) → {angle_list_path}",
+                flush=True,
+            )
+
         manifest_extra = {
             "input_tomograms_star": str(input_star_tomos),
             "raw_tomo_paths": raw_tomo_paths,
@@ -332,6 +382,7 @@ def run_supervisor_mode():
             "patched_tomograms_star": None if LEGACY_TEXT_INPUT else str(job_dir / "tomograms_for_pytom.star"),
             "template_path": str(template_file),
             "mask_path": str(mask_file),
+            "angle_list_path": str(angle_list_path) if angle_list_path else None,
         }
 
         per_task_cfg = params.get_effective_slurm_config()
@@ -446,9 +497,12 @@ def run_task_mode(array_idx: int):
             os.symlink(tomo_path.resolve(), local_tomo)
 
         gpu_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")
+        angle_list_str = manifest.get("angle_list_path")
+        angle_list_file = Path(angle_list_str) if angle_list_str else None
         base_cmd = build_pytom_base_cmd(
             params=params, state=state, template_file=template_file,
             mask_file=mask_file, tm_results_dir=tm_results_dir, gpu_ids=gpu_ids,
+            angle_list_file=angle_list_file,
         )
 
         cmd = base_cmd.copy()

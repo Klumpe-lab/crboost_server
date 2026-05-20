@@ -16,19 +16,19 @@ class JobFileType(str, Enum):
     TILT_SERIES_STAR = "tilt_series_star"  # Import/jobXXX/tilt_series.star
 
     WARP_FRAMESERIES_SETTINGS = "warp_frameseries_settings"
-                                                           # Warp frameseries
-    FS_MOTION_CTF_STAR       = "fs_motion_and_ctf_star"    # External/jobXXX/fs_motion_and_ctf.star
-    WARP_FRAMESERIES_DIR     = "warp_frameseries_dir"      # External/jobXXX/warp_frameseries/
+    # Warp frameseries
+    FS_MOTION_CTF_STAR = "fs_motion_and_ctf_star"  # External/jobXXX/fs_motion_and_ctf.star
+    WARP_FRAMESERIES_DIR = "warp_frameseries_dir"  # External/jobXXX/warp_frameseries/
     WARP_TILTSERIES_SETTINGS = "warp_tiltseries_settings"  # External/jobXXX/warp_tiltseries.settings
 
     # ts_import outputs
     TOMOSTAR_DIR = "tomostar_dir"  # External/jobXXX/tomostar/
 
-                                                             # Warp tiltseries
-    ALIGNED_TILT_SERIES_STAR  = "aligned_tilt_series_star"   # External/jobXXX/aligned_tilt_series.star
-    TS_CTF_TILT_SERIES_STAR   = "ts_ctf_tilt_series_star"    # External/jobXXX/ts_ctf_tilt_series.star
+    # Warp tiltseries
+    ALIGNED_TILT_SERIES_STAR = "aligned_tilt_series_star"  # External/jobXXX/aligned_tilt_series.star
+    TS_CTF_TILT_SERIES_STAR = "ts_ctf_tilt_series_star"  # External/jobXXX/ts_ctf_tilt_series.star
     FILTERED_TILT_SERIES_STAR = "filtered_tilt_series_star"  # External/jobXXX/filtered/tiltseries_filtered.star
-    WARP_TILTSERIES_DIR       = "warp_tiltseries_dir"        # External/jobXXX/warp_tiltseries/
+    WARP_TILTSERIES_DIR = "warp_tiltseries_dir"  # External/jobXXX/warp_tiltseries/
 
     # Tomograms
     TOMOGRAMS_STAR = "tomograms_star"  # External/jobXXX/tomograms.star
@@ -71,6 +71,14 @@ class OutputSlot(BaseModel):
     )
     is_dir: bool = Field(default=False, description="If true, output is a directory-like artifact")
     description: str = Field(default="")
+
+    # Resolver hint for siblings of the same JobFileType. When True, the
+    # candidate is admitted to the producer pool *only* if the file exists on
+    # disk at resolution time, and ranks above a same-producer sibling of the
+    # same JobFileType. Used for opt-in artifacts produced post-hoc by the UI
+    # (e.g. a user-curated `optimisation_set_filtered.star`) that should
+    # transparently supersede the original whenever the user has saved one.
+    prefer_if_exists: bool = Field(default=False)
 
     @field_validator("key")
     @classmethod

@@ -341,6 +341,8 @@ def run_supervisor_mode():
                 output_dir=job_dir,
                 project_root=project_path,
                 project_state=state,
+                instance_id=instance_id,
+                job_model=params,
             )
             print(
                 "[SUPERVISOR] Previews: "

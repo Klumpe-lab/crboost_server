@@ -31,6 +31,11 @@ class OutputCandidate:
 
     species_id: Optional[str] = None  # propagated from producing job model
 
+    # OutputSlot.prefer_if_exists — carried through so the scorer can tier-boost
+    # opt-in artifacts (e.g. user-curated filtered files) over same-producer
+    # siblings of the same JobFileType.
+    prefer_if_exists: bool = False
+
     @property
     def source_key(self) -> str:
         """Key format for source_overrides: 'jobtype:instance_path'"""
@@ -116,10 +121,7 @@ class PathResolutionService:
         return resolved
 
     def resolve_inputs(
-        self,
-        job_type: JobType,
-        job_model: "AbstractJobParams",
-        consumer_instance_id: Optional[str] = None,
+        self, job_type: JobType, job_model: "AbstractJobParams", consumer_instance_id: Optional[str] = None
     ) -> List[ResolvedInput]:
         """
         Resolve inputs for target job. Checks source_overrides first, then falls
@@ -148,7 +150,7 @@ class PathResolutionService:
                 # the producer index. Materialize them directly into a
                 # ResolvedInput so they actually populate job_model.paths.
                 if chosen is None and override_key.startswith("manual:"):
-                    manual_path = override_key[len("manual:"):]
+                    manual_path = override_key[len("manual:") :]
                     resolved_inputs.append(
                         ResolvedInput(
                             input_key=slot.key,
@@ -419,6 +421,13 @@ class PathResolutionService:
                 if not path:
                     continue
 
+                # prefer_if_exists slots are opt-in: don't pollute the candidate
+                # pool with a phantom path the resolver might otherwise pick up.
+                # The file is only created post-hoc by the UI (curated filters)
+                # so its existence is the entire signal.
+                if slot.prefer_if_exists and not Path(path).exists():
+                    continue
+
                 index[slot.produces].append(
                     OutputCandidate(
                         produces=slot.produces,
@@ -430,6 +439,7 @@ class PathResolutionService:
                         execution_status=status,
                         relion_job_number=relion_job_number,
                         species_id=species_id,
+                        prefer_if_exists=slot.prefer_if_exists,
                     )
                 )
 
@@ -563,7 +573,7 @@ class PathResolutionService:
 
         preferred_job_type = self._parse_preferred_source(slot.preferred_source)
 
-        def score(c: OutputCandidate) -> Tuple[int, int, int, int]:
+        def score(c: OutputCandidate) -> Tuple[int, int, int, int, int]:
             succeeded = 1 if c.execution_status == JobStatus.SUCCEEDED else 0
             # Species match only counts if the candidate has actually run.
             # This prevents a job's own pending output from circularly winning
@@ -571,7 +581,13 @@ class PathResolutionService:
             # outranking tsReconstruct's TOMOGRAMS_STAR as TM's own input).
             species_match = 1 if (consumer_species_id and c.species_id == consumer_species_id and succeeded) else 0
             pref = 1 if (preferred_job_type and c.producer_job_type == preferred_job_type) else 0
-            return (species_match, pref, c.relion_job_number, succeeded)
+            # prefer_if_exists ranks below cross-producer signals (species/pref)
+            # but above relion_job_number, so a curated filtered file from
+            # producer X beats producer X's original output even when X has the
+            # latest job number for its sibling. Build-index already gated on
+            # file existence, so a prefer_if_exists=True candidate here is real.
+            filtered_pref = 1 if c.prefer_if_exists else 0
+            return (species_match, pref, filtered_pref, c.relion_job_number, succeeded)
 
         return max(candidates, key=lambda c: (score(c), c.producer_job_type.value, c.producer_output_key, c.path))
 

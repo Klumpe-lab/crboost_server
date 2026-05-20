@@ -30,6 +30,8 @@ from services.visualization.imod_vis import (
 from services.visualization.preview_render import (
     is_output_stale,
     render_pick_cutouts_atlas,
+    render_template_thumb,
+    render_xy_slab_preview,
     render_xz_slab_preview,
     write_picks_data,
 )
@@ -39,7 +41,13 @@ logger = logging.getLogger(__name__)
 
 PREVIEW_SUBDIR = Path("vis") / "preview"
 MANIFEST_NAME = "manifest.json"
-MANIFEST_VERSION = 10  # v10: record zero-pick tomograms in summary.zero_picks
+MANIFEST_VERSION = 12  # v12: server-rendered X/Y top-down slab (entry.xy_slab_preview) using the
+# same percentile pipeline as the X/Z slab, template thumb, and cutout atlas — so polarity is
+# consistent across all four render types and the dashboard's invert toggle flips them as a
+# unit. WarpTools PNG remains in entry.warp_tomo_preview for non-dashboard callers.
+# v11: top-level `template` block (thumb_path + apix) for gallery reference tile;
+# tomogram-wide percentile normalization for cutout tiles (lo/hi in cutout_index.norm_*).
+# v10: record zero-pick tomograms in summary.zero_picks
 # v5: per-pick z_pct + nn_px; entry.pixel_size_ang
 # v6: fixes v4-v5 bug where glob "<tomo_name>.png" never matched real WarpTools
 #     filenames "<tomo_name>_<res>Apx.png" — entry.warp_tomo_preview was always
@@ -67,6 +75,56 @@ MANIFEST_VERSION = 10  # v10: record zero-pick tomograms in summary.zero_picks
 #     tomos missing from `particles.star`'s `rlnTomoName` column.
 
 SCORE_COL_PRIORITY = ("rlnLCCmax", "rlnAutopickFigureOfMerit", "rlnMaxValueProbDistribution")
+
+
+def _resolve_and_render_template(
+    preview_dir: Path, project_state, job_model, instance_id: Optional[str], force: bool
+) -> Optional[dict]:
+    """Resolve the species's selected template and render a thumbnail.
+
+    Renders once per job (templates are per-species, not per-tomogram) into
+    `preview_dir/template_thumb.png`. Returns the block to embed in manifest
+    top-level: {path, pixel_size_ang, name, species_id, box_px}. Returns None
+    when the species can't be resolved (no project_state, no instance_id +
+    no job_model.species_id, missing template file). Non-fatal — gallery
+    just skips the reference tile.
+    """
+    if project_state is None or (instance_id is None and job_model is None):
+        return None
+    try:
+        from services.templating.template_metadata import (
+            get_effective_template_path,
+            read_template_header,
+            resolve_species_from_job,
+        )
+    except Exception as e:
+        logger.warning("Template metadata import failed: %s", e)
+        return None
+    try:
+        species, species_id = resolve_species_from_job(project_state, job_model, instance_id)
+    except Exception as e:
+        logger.warning("Species resolution failed: %s", e)
+        return None
+    if species is None:
+        return None
+    template_path = get_effective_template_path(species)
+    if not template_path or not Path(template_path).exists():
+        logger.info("Template path missing for species %s: %r", species_id, template_path)
+        return None
+    header = read_template_header(template_path)
+    thumb_out = preview_dir / "template_thumb.png"
+    if force or is_output_stale(thumb_out, [Path(template_path)]):
+        rendered = render_template_thumb(Path(template_path), thumb_out)
+        if rendered is None:
+            return None
+    return {
+        "thumb_path": str(thumb_out),
+        "source_path": str(template_path),
+        "pixel_size_ang": header.apix_ang,
+        "box_px": header.box_px,
+        "species_id": species_id,
+        "species_name": getattr(species, "name", None) or species_id,
+    }
 
 
 def _resolve_tomo_mrc(tomo_row, project_root: Optional[Path]) -> Optional[Path]:
@@ -149,6 +207,8 @@ def _entry_outputs(entry: dict) -> list:
         out.append(Path(entry["picks_json"]))
     if entry.get("xz_preview"):
         out.append(Path(entry["xz_preview"]))
+    if entry.get("xy_slab_preview"):
+        out.append(Path(entry["xy_slab_preview"]))
     if entry.get("cutout_atlas"):
         out.append(Path(entry["cutout_atlas"]))
     return out
@@ -163,18 +223,28 @@ def generate_candidate_previews(
     progress_cb: Optional[Callable[[int, int, str], None]] = None,
     force: bool = False,
     project_state=None,
+    instance_id: Optional[str] = None,
+    job_model=None,
 ) -> dict:
     """Build per-tomo picks.json + sprite-atlas + manifest for one extract job.
 
     `project_state` (optional) lets us walk the project's SUBTOMO_EXTRACTION
     jobs to build per-pick cutout atlases. Drivers that haven't been updated
     just don't get atlases — the manifest still produces correctly without it.
+
+    `instance_id` + `job_model` (optional) let us resolve the species this
+    extract job is attached to so we can render a template reference tile in
+    the gallery. The species linkage chain (instance_id suffix →
+    job_model.species_id → single-species fallback) lives in
+    services.templating.template_metadata.resolve_species_from_job.
     """
     candidates_star = Path(candidates_star)
     tomograms_star = Path(tomograms_star)
     output_dir = Path(output_dir)
     preview_dir = output_dir / PREVIEW_SUBDIR
     preview_dir.mkdir(parents=True, exist_ok=True)
+
+    template_block = _resolve_and_render_template(preview_dir, project_state, job_model, instance_id, force)
 
     particles_df = _read_particles(candidates_star)
     tomo_df = _read_tomogram_info(tomograms_star)
@@ -281,10 +351,14 @@ def generate_candidate_previews(
             warp_png = _find_warp_tomo_preview(project_root, tomo_name, mrc_path)
             entry["warp_tomo_preview"] = str(warp_png) if warp_png else None
             entry["xz_preview"] = None
+            entry["xy_slab_preview"] = None
             if mrc_path is not None:
                 xz_png = render_xz_slab_preview(mrc_path, tomo_out_dir / "xz_preview.png")
                 if xz_png is not None:
                     entry["xz_preview"] = str(xz_png)
+                xy_png = render_xy_slab_preview(mrc_path, tomo_out_dir / "xy_slab_preview.png")
+                if xy_png is not None:
+                    entry["xy_slab_preview"] = str(xy_png)
 
             # Per-pick cutout sprite atlas (joined to subtomo .mrcs via Å coords).
             entry["cutout_atlas"] = None
@@ -331,6 +405,7 @@ def generate_candidate_previews(
         "version": MANIFEST_VERSION,
         "score_field": score_col,
         "particle_diameter_ang": float(particle_diameter_ang),
+        "template": template_block,
         "tomograms": tomo_entries,
         "summary": {
             "ok": ok,
