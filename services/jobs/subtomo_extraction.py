@@ -21,11 +21,11 @@ class SubtomoExtractionParams(AbstractJobParams):
     by templatematching and candidate-extract.
     """
 
-    job_type        : JobType               = Field(default=JobType.SUBTOMO_EXTRACTION)
-    JOB_CATEGORY    : ClassVar[JobCategory] = JobCategory.EXTERNAL
-    RELION_JOB_TYPE: ClassVar[str]          = "relion.external"
+    job_type: JobType = Field(default=JobType.SUBTOMO_EXTRACTION)
+    JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
+    RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS    : ClassVar[Set[str]]     = {
+    USER_PARAMS: ClassVar[Set[str]] = {
         "binning",
         "box_size",
         "crop_size",
@@ -56,6 +56,24 @@ class SubtomoExtractionParams(AbstractJobParams):
         OutputSlot(
             key="output_optimisation", produces=JobFileType.OPTIMISATION_SET_STAR, path_template="optimisation_set.star"
         ),
+        # Curator-saved subset of the picks above. Written post-hoc by the
+        # dashboard's "Save picks" action (services/visualization/picks_filter.py);
+        # the driver itself never touches this file. prefer_if_exists=True makes
+        # the resolver admit this candidate only when the file is on disk and,
+        # when admitted, rank it above the original within the same producer —
+        # so downstream reconstruct_particle silently picks it up.
+        OutputSlot(
+            key="output_optimisation_filtered",
+            produces=JobFileType.OPTIMISATION_SET_STAR,
+            path_template="optimisation_set_filtered.star",
+            prefer_if_exists=True,
+        ),
+        OutputSlot(
+            key="output_particles_filtered",
+            produces=JobFileType.PARTICLES_STAR,
+            path_template="particles_filtered.star",
+            prefer_if_exists=True,
+        ),
     ]
 
     additional_sources: List[str] = Field(
@@ -64,9 +82,9 @@ class SubtomoExtractionParams(AbstractJobParams):
     merge_only: bool = Field(default=False, description="If true, skip relion_tomo_subtomo and only merge")
 
     # Extraction parameters
-    binning  : float = Field(default=1.0, description="Binning factor relative to unbinned data")
-    box_size : int   = Field(default=384, description="Box size in binned pixels")
-    crop_size: int   = Field(default=224, description="Cropped box size (-1 = no cropping)")
+    binning: float = Field(default=1.0, description="Binning factor relative to unbinned data")
+    box_size: int = Field(default=384, description="Box size in binned pixels")
+    crop_size: int = Field(default=224, description="Cropped box size (-1 = no cropping)")
     # Output format
     do_float16: bool = Field(default=True, description="Write output in float16 to save space")
     do_stack2d: bool = Field(default=True, description="Write as 2D stacks (preferred for RELION 4.1+)")
@@ -76,8 +94,7 @@ class SubtomoExtractionParams(AbstractJobParams):
     min_frames: int = Field(default=1, description="Min frames per tilt to include")
 
     array_throttle: int = Field(
-        default=16, ge=1, le=64,
-        description="Max concurrent SLURM array tasks for per-tilt-series subtomo extraction",
+        default=16, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series subtomo extraction"
     )
 
     def _get_job_specific_options(self) -> List[Tuple[str, str]]:

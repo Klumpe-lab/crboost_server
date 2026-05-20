@@ -8,10 +8,16 @@ from services.jobs._base import AbstractJobParams
 from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 
-# PyTOM's --z-axis-rotational-symmetry only accepts Cn. Other point groups
-# (D, T, O, I) are silently dropped by the driver — surface only Cn in the
-# UI and normalize any persisted non-Cn value to C1 on load.
-TM_SYMMETRY_CHOICES: List[str] = ["C1", "C2", "C3", "C4", "C5", "C6"]
+# Cn (n=1..6) routes through PyTOM's --z-axis-rotational-symmetry flag.
+# D/T/O/I have no built-in PyTOM flag — the driver generates an asymmetric-
+# unit angle list via services.templating.angle_lists and passes it as
+# `--angular-search <file>`. Either way, the symmetry is honored during the
+# search. C1 means full SO(3) search (no symmetry exploitation).
+TM_SYMMETRY_CHOICES: List[str] = [
+    "C1", "C2", "C3", "C4", "C5", "C6",
+    "D2", "D3", "D4", "D5", "D6",
+    "T", "O", "I1", "I2",
+]
 
 
 class TemplateMatchPytomParams(AbstractJobParams):
@@ -68,8 +74,11 @@ class TemplateMatchPytomParams(AbstractJobParams):
     @field_validator("symmetry", mode="before")
     @classmethod
     def _coerce_symmetry(cls, v):
-        # Snap persisted non-Cn values (e.g. legacy "I1" from the species)
-        # to C1 so what the user sees in the UI matches what the driver applies.
+        # Coerce SymmetryGroup enum values to their string form so on-disk
+        # serialization is uniform. Unknown strings (typo, unsupported group)
+        # fall back to C1 — at worst the user runs a full SO(3) search.
+        if hasattr(v, "value"):  # SymmetryGroup enum
+            v = v.value
         return v if v in TM_SYMMETRY_CHOICES else "C1"
 
     # Flags

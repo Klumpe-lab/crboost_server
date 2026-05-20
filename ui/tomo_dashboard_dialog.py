@@ -35,10 +35,7 @@ from nicegui import ui
 
 from services.models_base import JobStatus, JobType
 from services.project_state import get_project_state
-from services.templating.template_metadata import (
-    get_effective_template_path,
-    read_template_header,
-)
+from services.templating.template_metadata import get_effective_template_path, read_template_header
 from services.tilt_series.build import _infer_position
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import (
@@ -383,9 +380,7 @@ def _read_subtomo_extracted_ts(job_dir: Path) -> set[str]:
         return set()
 
 
-def _subtomo_extract_status_per_ts(
-    job_dir: Path, jm, expected_ts: Optional[set[str]] = None
-) -> dict[str, str]:
+def _subtomo_extract_status_per_ts(job_dir: Path, jm, expected_ts: Optional[set[str]] = None) -> dict[str, str]:
     """Bucket per-TS status for the subtomo-extraction job.
 
     Two layouts are supported, in priority order:
@@ -777,8 +772,6 @@ def _read_picks_json(path: Path) -> dict:
         return {"picks": [], "tomo_dims_xyz_px": [0, 0, 0], "score_field": None, "n": 0}
 
 
-
-
 # ---------------------------------------------------------------------------
 # Per-tilt star helpers (for FS Motion/CTF, TS Align, TS CTF, Tilt Filter)
 # ---------------------------------------------------------------------------
@@ -1128,6 +1121,59 @@ _CB_CSS = """
     padding: 18px; text-align: center; font-size: 11px; color: #6b7280;
     background: #f8fafc; border-radius: 4px; border: 1px dashed #cbd5e1;
 }
+.cb-reference-strip {
+    display: flex; gap: 8px; align-items: stretch;
+    padding: 6px 2px; border-bottom: 1px dashed #e5e7eb;
+    margin-bottom: 4px;
+}
+.cb-reference-strip .cb-ref-group {
+    display: flex; flex-direction: column; gap: 2px;
+}
+.cb-reference-strip .cb-ref-label {
+    font-size: 9px; color: #6b7280; text-transform: uppercase;
+    font-weight: 700; letter-spacing: 0.4px; padding: 0 2px;
+}
+.cb-reference-strip .cb-ref-tiles {
+    display: flex; gap: 4px;
+}
+.cb-reference-strip .cb-ref-divider {
+    width: 1px; background: #e5e7eb; margin: 0 2px;
+}
+.cb-template-tile {
+    position: relative; width: 96px; height: 96px;
+    background-color: #0f172a; background-repeat: no-repeat;
+    background-size: 96px 96px;
+    border-radius: 3px; overflow: hidden;
+    border: 2px solid #10b981;
+    box-shadow: 0 0 0 1px #10b981;
+}
+.cb-template-tile .cb-tile-rank {
+    position: absolute; top: 0; left: 0;
+    padding: 0 4px; background: rgba(16,185,129,0.92);
+    font-family: ui-monospace, monospace; font-size: 9px; color: white;
+    border-bottom-right-radius: 3px;
+}
+.cb-noise-tile {
+    position: relative; width: 96px; height: 96px;
+    background-color: #0f172a; background-repeat: no-repeat;
+    border-radius: 3px; overflow: hidden; cursor: pointer;
+    border: 2px solid #fb923c;
+    box-shadow: 0 0 0 1px #fb923c;
+    transition: transform 0.06s ease;
+}
+.cb-noise-tile:hover { transform: scale(1.04); }
+.cb-noise-tile .cb-tile-rank {
+    position: absolute; top: 0; left: 0;
+    padding: 0 4px; background: rgba(251,146,60,0.92);
+    font-family: ui-monospace, monospace; font-size: 9px; color: white;
+    border-bottom-right-radius: 3px;
+}
+.cb-noise-tile .cb-tile-score {
+    position: absolute; bottom: 0; right: 0;
+    padding: 1px 4px; background: rgba(15,23,42,0.72);
+    font-family: ui-monospace, monospace; font-size: 9px; color: #f8fafc;
+    border-top-left-radius: 3px;
+}
 .cb-tomo-preview {
     width: 100%; background: #0f172a; border-radius: 4px;
     overflow: hidden; position: relative;
@@ -1347,6 +1393,89 @@ _CB_CSS = """
     font-family: ui-monospace, monospace; font-size: 10px;
     color: #6b7280; padding: 2px 4px 6px 4px;
 }
+/* ----------------------------------------------------------------------
+ * Polarity invert: a runtime toggle in the section header flips the
+ * apparent intensity of template, X/Y slab, X/Z slab, and cutout tiles
+ * together — same density convention across all four. Double-invert
+ * trick on tile children keeps overlay labels readable.
+ * ---------------------------------------------------------------------- */
+.cb-invert-polarity .cb-tomo-preview > img,
+.cb-invert-polarity .cb-template-tile,
+.cb-invert-polarity .cb-noise-tile,
+.cb-invert-polarity .cb-gallery-tile {
+    filter: invert(1) hue-rotate(180deg);
+}
+.cb-invert-polarity .cb-template-tile > *,
+.cb-invert-polarity .cb-noise-tile > *,
+.cb-invert-polarity .cb-gallery-tile > * {
+    filter: invert(1) hue-rotate(180deg);
+}
+/* Ghost dots and the pick marker overlay sit on top of the X/Y / X/Z
+ * preview img. They aren't part of the inverted set — keep them at
+ * their declared color so they don't flicker between hues when toggled. */
+
+/* ----------------------------------------------------------------------
+ * Ghost dot restyle: smaller, brighter (cyan), white ring; pointer-events
+ * enabled so they're individually hoverable (drives reverse highlight of
+ * the matching gallery tile via the JS bridge in _render_gallery_body).
+ * ---------------------------------------------------------------------- */
+.cb-pick-ghost {
+    pointer-events: auto !important;
+    cursor: crosshair;
+    width: 4px !important; height: 4px !important;
+    background: #22d3ee !important;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.85), 0 0 4px rgba(34,211,238,0.55) !important;
+    transition: width 0.05s ease, height 0.05s ease, background 0.05s ease;
+}
+.cb-pick-ghost:hover,
+.cb-pick-ghost.cb-ghost-active {
+    width: 9px !important; height: 9px !important;
+    background: #f97316 !important;
+    box-shadow: 0 0 0 1px #fff, 0 0 6px rgba(249,115,22,0.85) !important;
+    z-index: 7;
+}
+
+/* ----------------------------------------------------------------------
+ * Filter UX: per-tile keep/drop state. Default is keep (no extra class);
+ * dropped tiles dim + show diagonal strikethrough so the user can scan a
+ * sorted grid and see which were vetoed without losing their position.
+ * ---------------------------------------------------------------------- */
+.cb-gallery-tile.cb-tile-dropped {
+    opacity: 0.32;
+    border-color: #ef4444 !important;
+    box-shadow: 0 0 0 1px #ef4444 !important;
+}
+.cb-gallery-tile.cb-tile-dropped::after {
+    content: '';
+    position: absolute; inset: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+        135deg,
+        rgba(239,68,68,0.0) 0 6px,
+        rgba(239,68,68,0.55) 6px 7px
+    );
+}
+/* Reverse-hover highlight: when the user mouses a ghost dot in the preview,
+ * the matching gallery tile gets this transient ring (distinct from the
+ * persistent .selected state so the two don't collide visually). */
+.cb-gallery-tile.cb-tile-highlight {
+    outline: 2px solid #22d3ee;
+    outline-offset: 1px;
+    box-shadow: 0 0 0 1px #22d3ee, 0 0 8px rgba(34,211,238,0.6);
+}
+.cb-filter-toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 4px 0; flex-wrap: wrap;
+}
+.cb-filter-counter {
+    font-family: ui-monospace, monospace; font-size: 10px;
+    color: #475569;
+    padding: 1px 6px; border-radius: 3px;
+    background: #f1f5f9; border: 1px solid #e2e8f0;
+}
+.cb-filter-counter.cb-filter-dirty {
+    color: #b45309; background: #fef3c7; border-color: #fde68a;
+}
 """
 
 
@@ -1470,23 +1599,22 @@ def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[s
             def _maybe_refresh() -> None:
                 try:
                     registry = get_background_task_registry()
-                    active = [
-                        t for t in registry.for_project(str(project_path)) if t.is_running
-                    ]
+                    active = [t for t in registry.for_project(str(project_path)) if t.is_running]
                     # Signature picks up "task started", "task finished", and
                     # per-tick progress so we re-render any time meaningful
                     # state changed. Cheap to compute; cheap to compare.
-                    sig = tuple(
-                        (t.id, t.progress_current, t.progress_total) for t in active
-                    ) + (tuple(
-                        # Include very-recently-finished tasks so the dashboard
-                        # picks up the final manifest write (which happens at
-                        # the end of the render) within one refresh window.
-                        (t.id, t.status) for t in registry.for_project(str(project_path))
-                        if not t.is_running
-                        and t.finished_at
-                        and (t.finished_at - t.started_at).total_seconds() < 86400
-                    ),)
+                    sig = tuple((t.id, t.progress_current, t.progress_total) for t in active) + (
+                        tuple(
+                            # Include very-recently-finished tasks so the dashboard
+                            # picks up the final manifest write (which happens at
+                            # the end of the render) within one refresh window.
+                            (t.id, t.status)
+                            for t in registry.for_project(str(project_path))
+                            if not t.is_running
+                            and t.finished_at
+                            and (t.finished_at - t.started_at).total_seconds() < 86400
+                        ),
+                    )
                     if sig != _last_signature["sig"]:
                         _last_signature["sig"] = sig
                         refresh_all()
@@ -1898,9 +2026,7 @@ def _compute_pixel_chain(project_state) -> list[dict]:
         # Template path: per-job override (v1) wins when set, otherwise the
         # species's v2 template (or v1 fallback). MRC header is the
         # authoritative source for apix and box.
-        tmpl_path = getattr(tm_jm, "template_path", "") or (
-            get_effective_template_path(species) if species else ""
-        )
+        tmpl_path = getattr(tm_jm, "template_path", "") or (get_effective_template_path(species) if species else "")
         tmpl_px = 0.0
         tmpl_box = 0
         if tmpl_path:
@@ -2341,12 +2467,7 @@ def _render_pixel_sanity_table(rows: list[dict]) -> None:
 
 
 def _render_chip(
-    label: str,
-    value: str,
-    *,
-    status: str = "neutral",
-    tooltip: Optional[str] = None,
-    icon: Optional[str] = None,
+    label: str, value: str, *, status: str = "neutral", tooltip: Optional[str] = None, icon: Optional[str] = None
 ) -> None:
     """One status chip. `status` ∈ {ok, warn, error, info, neutral}."""
     cls = f"cb-chip cb-chip-{status}"
@@ -3213,12 +3334,7 @@ def _compute_tomogram_polarity(mrc_path: Path) -> Optional[dict]:
     else:
         polarity = "symmetric"
 
-    result = {
-        "pct_bright": pct_bright,
-        "pct_dark": pct_dark,
-        "polarity": polarity,
-        "slab_shape": list(slab.shape),
-    }
+    result = {"pct_bright": pct_bright, "pct_dark": pct_dark, "polarity": polarity, "slab_shape": list(slab.shape)}
     _TOMO_POLARITY_CACHE[key] = result
     return result
 
@@ -3370,10 +3486,7 @@ def _render_recon_big_preview(ts_name: str, project_path: Path, mrc_path: Option
         return
     url = _vis_asset_url(str(png_path))
     with ui.element("div").classes("cb-recon-preview"):
-        ui.html(
-            f"<img src='{url}' alt='{ts_name} WarpTools tomogram preview' />",
-            sanitize=False,
-        )
+        ui.html(f"<img src='{url}' alt='{ts_name} WarpTools tomogram preview' />", sanitize=False)
     ui.label(f"WarpTools preview · {png_path.name}").classes("cb-recon-preview-caption")
 
 
@@ -3415,9 +3528,7 @@ def _render_template_match_section(ts_name: str, instance_id: str, job_model, pr
     # (tomo dims at TM apix, particle diameter, subtomo box/crop).
     pixel_rows = _compute_pixel_chain(state)
     recon_row = next((r for r in pixel_rows if r["stage_key"] == "recon"), None)
-    pick_row = next(
-        (r for r in pixel_rows if r["stage_key"] == "pick" and r.get("species_id") == species_id), None
-    )
+    pick_row = next((r for r in pixel_rows if r["stage_key"] == "pick" and r.get("species_id") == species_id), None)
     subtomo_row = next(
         (r for r in pixel_rows if r["stage_key"] == "subtomo" and r.get("species_id") == species_id), None
     )
@@ -3507,15 +3618,12 @@ def _render_tm_size_chips(
             )
 
     # ── Template ─────────────────────────────────────────────────────────
-    tpl_path = getattr(job_model, "template_path", "") or (
-        get_effective_template_path(species) if species else ""
-    )
+    tpl_path = getattr(job_model, "template_path", "") or (get_effective_template_path(species) if species else "")
     tpl_header = read_template_header(tpl_path) if tpl_path else None
     if tpl_header and tpl_header.box_px:
         if tpl_header.apix_ang:
             tpl_text = (
-                f"{tpl_header.box_px}px ({tpl_header.box_px * tpl_header.apix_ang:g} Å)"
-                f" @ {tpl_header.apix_ang:g} Å/px"
+                f"{tpl_header.box_px}px ({tpl_header.box_px * tpl_header.apix_ang:g} Å) @ {tpl_header.apix_ang:g} Å/px"
             )
         else:
             tpl_text = f"{tpl_header.box_px}px"
@@ -3547,10 +3655,7 @@ def _render_tm_size_chips(
         # Mask box (size text follows the template format).
         mask_box = max(mask_intrinsics.nx, mask_intrinsics.ny, mask_intrinsics.nz)
         if mask_intrinsics.apix_ang:
-            mask_text = (
-                f"{mask_box}px ({mask_box * mask_intrinsics.apix_ang:g} Å)"
-                f" @ {mask_intrinsics.apix_ang:g} Å/px"
-            )
+            mask_text = f"{mask_box}px ({mask_box * mask_intrinsics.apix_ang:g} Å) @ {mask_intrinsics.apix_ang:g} Å/px"
         else:
             mask_text = f"{mask_box}px"
         mask_status = "neutral"
@@ -3600,8 +3705,7 @@ def _render_tm_size_chips(
                 f"{mask_intrinsics.isotropy_ratio:.2f}",
                 status=iso_status,
                 tooltip=(
-                    f"Isotropy = min(σx,σy,σz)/max(σx,σy,σz) = {mask_intrinsics.isotropy_ratio:.3f}. "
-                    + iso_extra
+                    f"Isotropy = min(σx,σy,σz)/max(σx,σy,σz) = {mask_intrinsics.isotropy_ratio:.3f}. " + iso_extra
                 ),
                 icon="all_inclusive",
             )
@@ -3698,9 +3802,14 @@ def _render_candidate_extract_section(ts_name: str, instance_id: str, job_model,
         card._props["data-section"] = "candidate_extract"
         card._props["data-instance"] = instance_id
 
+        species_name = (manifest.get("template") or {}).get("species_name") or _split_species_id(instance_id)
         with ui.element("div").classes("cb-section-card-header"):
             ui.icon("auto_awesome", size="14px").classes("text-indigo-600")
             ui.label("Candidate extract").classes("cb-section-title")
+            if species_name:
+                ui.label(species_name).classes(
+                    "text-[11px] font-semibold text-indigo-700 px-1.5 rounded bg-indigo-50"
+                )
             ui.label(instance_id).classes("text-[10px] font-mono text-gray-500")
             ui.space()
             diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
@@ -3768,6 +3877,9 @@ def _render_candidate_extract_section(ts_name: str, instance_id: str, job_model,
                 ui.icon("error_outline", size="28px").classes("text-red-500")
                 ui.label("Render error: " + (row.get("error") or "unknown")).classes("text-xs text-red-600")
             return True
+        if row["status"] == "zero-picks":
+            _render_zero_picks_empty_state(manifest, species_name)
+            return True
         if row["status"] not in ("ok", "missing-volume"):
             with ui.element("div").classes("cb-empty"):
                 ui.spinner(size="28px", color="indigo-500")
@@ -3789,6 +3901,41 @@ def _render_candidate_extract_section(ts_name: str, instance_id: str, job_model,
     return True
 
 
+def _render_zero_picks_empty_state(manifest: dict, species_name: Optional[str]) -> None:
+    """Empty state for tomograms PyTOM processed but where no candidate
+    exceeded the cutoff. Shows the species template + score field so users
+    can tell at a glance "this species got nothing here" — distinct from the
+    generic "still generating" spinner the no-preview branch falls through to.
+    """
+    template_block = manifest.get("template") or {}
+    thumb_path = template_block.get("thumb_path")
+    species_label = species_name or template_block.get("species_name") or "this species"
+    score_field = manifest.get("score_field") or "rlnLCCmax"
+    summary = manifest.get("summary") or {}
+    zero_n = len(summary.get("zero_picks") or [])
+    ok_n = len(summary.get("ok") or [])
+    total = zero_n + ok_n
+    with ui.element("div").classes("cb-empty"):
+        with ui.row().classes("items-center gap-4 justify-center w-full flex-wrap"):
+            if thumb_path:
+                ui.image(_vis_asset_url(thumb_path)).style("width: 96px; height: 96px;").classes(
+                    "rounded border border-gray-200 bg-gray-50 object-contain"
+                )
+            with ui.column().classes("gap-1 items-start"):
+                ui.label(f"0 picks above cutoff for {species_label}").classes("text-sm font-semibold text-amber-700")
+                ui.label(
+                    f"PyTOM processed this tilt-series but no {score_field} value cleared the cutoff."
+                ).classes("text-[11px] text-gray-700")
+                if total:
+                    ui.label(f"{zero_n} of {total} TS in this job came back empty.").classes(
+                        "text-[11px] italic text-gray-500"
+                    )
+                ui.label(
+                    "Check the picking cutoff, template chirality (TomoHand), "
+                    "or template appropriateness for this species."
+                ).classes("text-[10px] italic text-gray-500").style("max-width: 480px;")
+
+
 def _render_tomo_header_section(row: dict, manifest: dict) -> None:
     entry = (manifest.get("tomograms") or {}).get(row["tomo_name"]) or {}
     score_field = manifest.get("score_field")
@@ -3805,8 +3952,8 @@ def _render_tomo_header_section(row: dict, manifest: dict) -> None:
         ui.label(f"N={row['n_picks']}").classes("text-[11px] font-mono")
         if score_field:
             ui.label(f"colored by {score_field}").classes("text-[10px] text-gray-500 italic")
-        if entry.get("warp_tomo_preview"):
-            ui.label("· Warp tomogram backdrop").classes("text-[10px] text-emerald-600 italic")
+        if entry.get("xy_slab_preview") or entry.get("warp_tomo_preview"):
+            ui.label("· tomogram backdrop").classes("text-[10px] text-emerald-600 italic")
     if row["status"] == "missing-volume":
         ui.label("No reconstructed tomogram on disk for 3dmod — picks plot still works.").classes(
             "text-[11px] text-amber-700 italic"
@@ -3853,8 +4000,13 @@ def _render_preview_and_gallery_section(row: dict, entry: dict, manifest: dict) 
     Slice B will hoist the preview half into a separate Reconstruction
     section card; for now both halves live inside the Candidate Extract
     section card per Slice A's "carry forward all current sections" rule."""
-    warp_path = entry.get("warp_tomo_preview")
-    warp_url = _vis_asset_url(warp_path) if warp_path else None
+    # Prefer our own X/Y slab (same percentile + flip pipeline as the X/Z slab,
+    # template thumb, and cutout atlas — so the invert toggle flips all four
+    # consistently). Fall back to the WarpTools PNG for older manifest caches
+    # where xy_slab_preview wasn't generated; those will get regenerated next
+    # time the orchestrator runs (MANIFEST_VERSION bump invalidates them).
+    xy_path = entry.get("xy_slab_preview") or entry.get("warp_tomo_preview")
+    xy_url = _vis_asset_url(xy_path) if xy_path else None
     xz_path = entry.get("xz_preview")
     xz_url = _vis_asset_url(xz_path) if xz_path else None
     index_path = entry.get("cutout_index")
@@ -3894,7 +4046,12 @@ def _render_preview_and_gallery_section(row: dict, entry: dict, manifest: dict) 
         pick_xy_frac.append((i, fx, 1.0 - fy))
         pick_xz_frac.append((i, fx, 1.0 - fz))
 
-    with ui.element("div").classes("cb-section-card w-full"):
+    # The section root carries the polarity-invert class; toggling it flips
+    # template + X/Y + X/Z + cutout tiles together (the four density renders).
+    # Ghost-dot overlays and labels are double-inverted in CSS so they stay
+    # at their declared colors regardless of state.
+    section_root = ui.element("div").classes("cb-section-card w-full")
+    with section_root:
         with ui.element("div").classes("cb-section-card-header"):
             ui.icon("photo_library", size="14px").classes("text-indigo-600")
             ui.label("Tomogram & picks").classes("cb-section-title")
@@ -3907,6 +4064,23 @@ def _render_preview_and_gallery_section(row: dict, entry: dict, manifest: dict) 
                 if n_fail:
                     badge += f" · {n_fail} failures"
                 ui.label(badge).classes("text-[10px] text-gray-500 font-mono")
+
+            def _on_invert(e, root=section_root):
+                if e.value:
+                    root.classes(add="cb-invert-polarity")
+                else:
+                    root.classes(remove="cb-invert-polarity")
+
+            (
+                ui.switch("Invert", value=False, on_change=_on_invert)
+                .props("dense color=indigo-6 left-label")
+                .classes("text-[10px]")
+                .tooltip(
+                    "Flip the apparent intensity of template, X/Y, X/Z, and cutout tiles together. "
+                    "Use when the data convention has protein bright and you'd rather see it dark "
+                    "(or vice-versa) — the picker uses raw densities, so this is viewer-only."
+                )
+            )
 
         preview_target_total_h = 540
         col_max_w_calc = int(preview_target_total_h / max(0.05, (1.0 / xy_aspect + 1.0 / xz_aspect)))
@@ -3937,8 +4111,8 @@ def _render_preview_and_gallery_section(row: dict, entry: dict, manifest: dict) 
                     xy_host._props["id"] = xy_host_id
                     xy_host.style(f"aspect-ratio: {x_dim}/{y_dim};")
                     with xy_host:
-                        if warp_url:
-                            ui.image(warp_url)
+                        if xy_url:
+                            ui.image(xy_url)
                             for i, fx, fy in pick_xy_frac:
                                 g = ui.element("div").classes("cb-pick-ghost")
                                 g._props["data-pick-idx"] = str(i)
@@ -3947,8 +4121,10 @@ def _render_preview_and_gallery_section(row: dict, entry: dict, manifest: dict) 
                         else:
                             with ui.column().classes("absolute inset-0 items-center justify-center text-center"):
                                 ui.icon("photo", size="36px").classes("text-gray-500")
-                                ui.label("No WarpTools preview yet").classes("text-[11px] text-gray-400")
-                                ui.label("(run ts_reconstruct first)").classes("text-[10px] text-gray-500 italic")
+                                ui.label("No X/Y slab preview").classes("text-[11px] text-gray-400")
+                                ui.label("(needs reconstructed tomogram MRC)").classes(
+                                    "text-[10px] text-gray-500 italic"
+                                )
 
                     xz_host = ui.element("div").classes("cb-tomo-preview")
                     xz_host._props["id"] = xz_host_id
@@ -3971,15 +4147,7 @@ def _render_preview_and_gallery_section(row: dict, entry: dict, manifest: dict) 
                     _render_gallery_placeholder()
                 else:
                     _render_gallery_body(
-                        row,
-                        entry,
-                        manifest,
-                        atlas_meta,
-                        xy_host_id,
-                        xz_host_id,
-                        gallery_id,
-                        bool(warp_url),
-                        bool(xz_url),
+                        row, entry, manifest, atlas_meta, xy_host_id, xz_host_id, gallery_id, bool(xy_url), bool(xz_url)
                     )
 
 
@@ -3992,6 +4160,197 @@ def _render_gallery_placeholder() -> None:
             "job whose particles match these picks by Å coordinates.",
             sanitize=False,
         )
+
+
+def _render_reference_strip(
+    picks: list, cutout_index: dict, atlas_url: str, cols: int, rows: int, manifest: dict
+) -> None:
+    """Calibration row above the main gallery: template tile + lowest-score picks.
+
+    Two pedagogical anchors: on the left, what the picker thinks "particle"
+    looks like (the template's central X/Y slice through the same percentile
+    pipeline); on the right, the worst-scoring picks in this tomogram — the
+    practical noise floor that survived the cutoff. The user evaluates
+    medium-score tiles in between against both extremes.
+    """
+    template_block = (manifest or {}).get("template") if isinstance(manifest, dict) else None
+    template_thumb_path = template_block.get("thumb_path") if template_block else None
+    template_url = _vis_asset_url(template_thumb_path) if template_thumb_path else None
+
+    available = sorted((int(k) for k in cutout_index.keys()), reverse=True)
+    worst_n = min(4, len(available))
+    worst_indices = available[:worst_n]
+
+    if not template_url and not worst_indices:
+        return
+
+    DISPLAY_TILE_PX = 96
+    bg_w = cols * DISPLAY_TILE_PX
+    bg_h = rows * DISPLAY_TILE_PX
+
+    with ui.element("div").classes("cb-reference-strip"):
+        if template_url:
+            with ui.element("div").classes("cb-ref-group"):
+                ui.label("Template").classes("cb-ref-label")
+                with ui.element("div").classes("cb-ref-tiles"):
+                    tile = ui.element("div").classes("cb-template-tile")
+                    tile.style(f"background-image: url({template_url});")
+                    apix = template_block.get("pixel_size_ang") if template_block else None
+                    name = template_block.get("species_name") if template_block else None
+                    tip_parts = [str(name or "template")]
+                    if apix:
+                        tip_parts.append(f"{apix:.2f} Å/px")
+                    box = template_block.get("box_px") if template_block else None
+                    if box:
+                        tip_parts.append(f"box {box}")
+                    tile._props["title"] = " · ".join(tip_parts)
+                    with tile:
+                        ui.html("REF", sanitize=False).classes("cb-tile-rank")
+        if template_url and worst_indices:
+            ui.element("div").classes("cb-ref-divider")
+        if worst_indices:
+            with ui.element("div").classes("cb-ref-group"):
+                ui.label(f"Lowest scores · noise floor ({worst_n})").classes("cb-ref-label")
+                with ui.element("div").classes("cb-ref-tiles"):
+                    for n_from_bottom, pick_idx in enumerate(worst_indices):
+                        pos = cutout_index.get(str(pick_idx))
+                        if not pos:
+                            continue
+                        r, c = pos
+                        bg_x = -c * DISPLAY_TILE_PX
+                        bg_y = -r * DISPLAY_TILE_PX
+                        style = (
+                            f"background-image: url({atlas_url}); "
+                            f"background-size: {bg_w}px {bg_h}px; "
+                            f"background-position: {bg_x}px {bg_y}px;"
+                        )
+                        pick = picks[pick_idx] if 0 <= pick_idx < len(picks) else None
+                        tile = ui.element("div").classes("cb-noise-tile")
+                        tile.style(style)
+                        tip = [f"#{pick_idx} (low score reference)"]
+                        if pick and pick.get("score") is not None:
+                            tip.append(f"score={pick['score']:.4f}")
+                        tile._props["title"] = " · ".join(tip)
+                        with tile:
+                            ui.html(f"L{n_from_bottom + 1}", sanitize=False).classes("cb-tile-rank")
+                            if pick and pick.get("score") is not None:
+                                ui.html(f"{pick['score']:.3f}", sanitize=False).classes("cb-tile-score")
+
+
+def _render_peek_skeleton() -> dict:
+    """3D peek section: copyable `3dmod <peek>` command for the selected pick.
+
+    The peek is a small subvolume extracted from the reconstructed tomogram
+    on click (lazily — most users don't 3dmod every pick). Lives below the
+    hover card; mirrors the per-tomogram 3dmod section's styling so the
+    user sees it as the per-pick analogue.
+    """
+    refs: dict = {"current_pick": None}
+    ui.label("3D peek").classes("cb-section-title mt-2")
+    with ui.row().classes("w-full items-center gap-1"):
+        ui.label("3dmod").classes("text-[9px] uppercase font-bold text-gray-400 w-12")
+        cmd = (
+            ui.input(value="(shift-click a tile to extract a subvolume)")
+            .props("dense outlined readonly hide-bottom-space")
+            .classes("text-xs font-mono flex-1")
+            .style("min-width: 0;")
+        )
+        status = (
+            ui.icon("touch_app", size="14px")
+            .classes("text-gray-400")
+            .tooltip("Click a tile to extract its 3D subvolume; then copy this command and run in a terminal with X11.")
+        )
+        copy_btn = (
+            ui.button(
+                icon="content_copy",
+                on_click=lambda: (
+                    ui.clipboard.write(refs["cmd_input"].value),
+                    ui.notify("Copied", type="positive", timeout=800),
+                ),
+            )
+            .props("flat dense round size=sm")
+            .classes("text-gray-500 hover:text-gray-800")
+            .tooltip("Copy 3dmod command")
+        )
+    ui.label("In 3dmod: open Image → Slicer for the X/Y, X/Z, Y/Z triptych centered on the pick.").classes(
+        "text-[10px] text-gray-500 italic"
+    )
+    refs["cmd_input"] = cmd
+    refs["status_icon"] = status
+    refs["copy_btn"] = copy_btn
+    return refs
+
+
+async def _trigger_peek_for_pick(
+    pick_idx: int,
+    picks: list,
+    tomo_mrc: Optional[str],
+    peek_dir: Optional[Path],
+    pixel_size_ang: Optional[float],
+    particle_diameter_ang: Optional[float],
+    peek_refs: dict,
+    state: dict,
+) -> None:
+    """Extract the subvolume around the clicked pick, populate the 3dmod cmd.
+
+    Stale-result guard: if the user clicks several tiles in quick succession,
+    only the latest selection's extraction populates the UI — we track
+    `state["selected_idx"]` and skip the update if it changed by the time
+    extraction finishes."""
+    cmd = peek_refs.get("cmd_input")
+    status = peek_refs.get("status_icon")
+    if cmd is None or status is None:
+        return
+    if not tomo_mrc or peek_dir is None or not (0 <= pick_idx < len(picks)):
+        cmd.set_value("(no tomogram volume on disk)")
+        status.props("name=error_outline").classes(replace="text-red-500")
+        return
+    pick = picks[pick_idx]
+    try:
+        x = int(pick.get("x"))
+        y = int(pick.get("y"))
+        z = int(pick.get("z"))
+    except (TypeError, ValueError):
+        cmd.set_value("(pick coords missing)")
+        return
+
+    # Box ≈ 3× particle diameter in tomogram px; clamp so user can navigate
+    # context without dragging gigabytes around. Fallback to 48 px half (≈96
+    # cube) when we can't compute — works for most particles at bin 4 / bin 8.
+    if pixel_size_ang and particle_diameter_ang and pixel_size_ang > 0:
+        diameter_px = particle_diameter_ang / pixel_size_ang
+        half_box = int(round(diameter_px * 1.5))
+    else:
+        half_box = 48
+    half_box = max(24, min(128, half_box))
+
+    out_path = peek_dir / f"pick_{pick_idx:05d}.mrc"
+    cmd.set_value(f"extracting subvolume for pick #{pick_idx}…")
+    status.props("name=hourglass_top").classes(replace="text-amber-600")
+
+    import asyncio as _asyncio
+
+    from services.visualization.preview_render import extract_pick_subvolume
+
+    if not out_path.exists():
+        result = await _asyncio.to_thread(extract_pick_subvolume, Path(tomo_mrc), x, y, z, half_box, out_path)
+    else:
+        result = out_path  # cache hit
+
+    if state.get("selected_idx") != pick_idx:
+        return  # user clicked elsewhere — discard stale result
+
+    if result is None:
+        cmd.set_value(f"(extraction failed for pick #{pick_idx})")
+        status.props("name=error_outline").classes(replace="text-red-500")
+        status.tooltip("Subvolume extraction failed; check server logs.")
+        return
+    cmd.set_value(f"3dmod {out_path}")
+    status.props("name=check_circle").classes(replace="text-emerald-600")
+    status.tooltip(
+        f"Subvolume ready: half_box={half_box} px around (x={x}, y={y}, z={z}). "
+        "Copy the command and run in a terminal with X11 forwarding."
+    )
 
 
 def _render_gallery_body(
@@ -4037,7 +4396,49 @@ def _render_gallery_body(
             pick_xy_frac[i] = [fx, fy_top]
             pick_xz_frac[i] = [fx, fz_top]
 
-    state = {"selected_idx": None, "sort_mode": "best"}
+    # Derive the candidate-extract and subtomo job dirs so filter save/load
+    # can write next to the SUBTOMO_EXTRACTION job's particles.star.
+    # picks_json_path lives at <ce_job_dir>/vis/preview/<tomo>/picks.json.
+    ce_job_dir = Path(picks_json_path).parent.parent.parent if picks_json_path else None
+    ts_name = row.get("tomo_name") or ""
+    project_state = get_project_state()
+    from services.visualization import picks_filter
+
+    subtomo_job_dir = (
+        picks_filter.find_subtomo_job_dir_for_cutouts(entry.get("cutout_atlas"), project_state)
+        if project_state is not None
+        else None
+    )
+    n_picks_total = len(picks)
+    all_pick_indices: set[int] = set()
+    for k in cutout_index.keys():
+        try:
+            all_pick_indices.add(int(k))
+        except (TypeError, ValueError):
+            continue
+
+    # Load any existing curation. derive_keep_state_for_ts returns None when
+    # there's no filtered file at all (= "all kept implicitly"); we materialize
+    # that to a None sentinel in state so the user sees an unmarked starting
+    # point, and only mutate to a concrete set once they actually click a tile.
+    initial_keep_set: Optional[set[int]] = None
+    if subtomo_job_dir is not None and ce_job_dir is not None and ts_name:
+        try:
+            initial_keep_set = picks_filter.derive_keep_state_for_ts(
+                subtomo_job_dir, ce_job_dir, ts_name, n_picks_total
+            )
+        except Exception as e:
+            logger.warning("Could not load existing filter for %s: %s", ts_name, e)
+
+    state = {
+        "selected_idx": None,  # used by shift-click peek extraction
+        "sort_mode": "best",
+        # Filter state. keep_set == None means "no curation yet — every pick
+        # implicitly kept". Once the user toggles anything we materialize it
+        # to a concrete set so subsequent toggles can flip membership cleanly.
+        "keep_set": initial_keep_set,
+        "saved_baseline": (set(initial_keep_set) if initial_keep_set is not None else None),
+    }
 
     with ui.row().classes("w-full items-center gap-2"):
         ui.label("Subtomo gallery").classes("cb-section-title")
@@ -4051,11 +4452,129 @@ def _render_gallery_body(
             .style("min-width: 180px;")
         )
 
+    # Filter toolbar: counter on the left, action buttons on the right. Shown
+    # only when we can actually save (subtomo + ce dirs both resolvable). When
+    # the dashboard is viewing a candidate-extract that has no downstream
+    # subtomo job yet, the gallery is also missing — atlas_meta would be None
+    # — so this branch effectively only renders for fully-wired pipelines.
+    counter_label = None
+    save_btn = None
+    discard_btn = None
+    can_filter = subtomo_job_dir is not None and ce_job_dir is not None and ts_name
+
+    def _effective_keep_count() -> int:
+        ks = state["keep_set"]
+        return len(ks) if ks is not None else len(all_pick_indices)
+
+    def _is_dirty() -> bool:
+        return state["keep_set"] != state["saved_baseline"]
+
+    def _refresh_counter():
+        if counter_label is None:
+            return
+        kept = _effective_keep_count()
+        total = len(all_pick_indices)
+        counter_label.set_text(f"kept {kept}/{total} (TS)")
+        if _is_dirty():
+            counter_label.classes(add="cb-filter-dirty")
+        else:
+            counter_label.classes(remove="cb-filter-dirty")
+        if save_btn is not None:
+            save_btn.props(remove="disable" if _is_dirty() else "")
+            if not _is_dirty():
+                save_btn.props("disable")
+            else:
+                save_btn.props(remove="disable")
+        if discard_btn is not None:
+            has_saved = (
+                subtomo_job_dir is not None and (subtomo_job_dir / picks_filter.PARTICLES_FILTERED_NAME).exists()
+            )
+            if has_saved:
+                discard_btn.props(remove="disable")
+            else:
+                discard_btn.props("disable")
+
+    if can_filter:
+        with ui.row().classes("cb-filter-toolbar w-full"):
+            counter_label = ui.label("kept …/…").classes("cb-filter-counter")
+            ui.space()
+
+            def _on_save():
+                try:
+                    keep_set = state["keep_set"]
+                    if keep_set is None:
+                        # User clicked Save without touching any tile —
+                        # interpret as "keep everything", which is a no-op
+                        # vs. having no filter file at all. Skip the write.
+                        ui.notify("No changes to save", type="info", timeout=1500)
+                        return
+                    result = picks_filter.save_filtered_picks_for_ts(subtomo_job_dir, ce_job_dir, ts_name, keep_set)
+                    state["saved_baseline"] = set(keep_set)
+                    ui.notify(
+                        f"Saved: {result['kept_for_ts']} kept for {ts_name} · "
+                        f"{result['total_kept']} total across all TS",
+                        type="positive",
+                        timeout=2500,
+                    )
+                    _refresh_counter()
+                except Exception as e:
+                    logger.exception("Save filter failed for %s", ts_name)
+                    ui.notify(f"Save failed: {e}", type="negative", timeout=4000)
+
+            def _on_discard():
+                try:
+                    removed = picks_filter.discard_filter(subtomo_job_dir)
+                    if removed:
+                        state["keep_set"] = None
+                        state["saved_baseline"] = None
+                        ui.notify("Filter discarded; downstream now uses original picks", type="info", timeout=2500)
+                        _refresh_grid()
+                        _refresh_counter()
+                    else:
+                        ui.notify("No filter file to discard", type="info", timeout=1500)
+                except Exception as e:
+                    logger.exception("Discard filter failed")
+                    ui.notify(f"Discard failed: {e}", type="negative", timeout=4000)
+
+            def _on_reset():
+                # Reset only the in-flight curation for this TS; doesn't touch
+                # the saved file. User can re-edit then Save (or Discard) to
+                # take a different action.
+                state["keep_set"] = set(state["saved_baseline"]) if state["saved_baseline"] is not None else None
+                _refresh_grid()
+                _refresh_counter()
+
+            (
+                ui.button("Reset", icon="restart_alt", on_click=_on_reset)
+                .props("flat dense size=sm color=grey-7")
+                .classes("text-xs")
+                .tooltip("Revert in-flight curation for this TS to the saved state (no file changes)")
+            )
+            discard_btn = (
+                ui.button("Discard filter", icon="delete_outline", on_click=_on_discard)
+                .props("flat dense size=sm color=red-7")
+                .classes("text-xs")
+                .tooltip("Delete the filtered files entirely — downstream jobs use the original picks")
+            )
+            save_btn = (
+                ui.button("Save picks", icon="save", on_click=_on_save)
+                .props("dense size=sm color=indigo-6 unelevated")
+                .classes("text-xs")
+                .tooltip(
+                    "Write optimisation_set_filtered.star + particles_filtered.star next to the subtomo "
+                    "job's outputs. Downstream consumers (reconstruct_particle, class3d) auto-prefer the "
+                    "filtered file via the IO-slot resolver when it exists."
+                )
+            )
+
+    _render_reference_strip(picks, cutout_index, atlas_url, cols, rows, manifest)
+
     grid_container = ui.element("div").classes("cb-gallery-scroll w-full")
     grid_container._props["id"] = gallery_id
 
-    ui.label("Selected pick").classes("cb-section-title mt-2")
+    ui.label("Hovered pick").classes("cb-section-title mt-2")
     hover_labels = _render_hover_card_skeleton()
+    peek_refs = _render_peek_skeleton()
 
     if failures:
         with ui.expansion(f"Why {len(failures)} tile(s) failed").classes("w-full text-[10px]"):
@@ -4080,12 +4599,48 @@ def _render_gallery_body(
             return sorted(available, key=_z, reverse=True)
         return sorted(available)
 
-    def _on_tile_click(pick_idx: int):
-        state["selected_idx"] = pick_idx
-        _update_hover_card(
-            type("E", (), {"args": {"points": [{"customdata": [pick_idx]}]}})(), picks, pixel_size_ang, hover_labels
-        )
+    tomo_mrc = entry.get("tomo_mrc")
+    particle_diameter_ang = (manifest or {}).get("particle_diameter_ang") if isinstance(manifest, dict) else None
+    picks_json_path = entry.get("picks_json")
+    peek_dir = (Path(picks_json_path).parent / "peeks") if picks_json_path else None
+
+    def _is_kept(pick_idx: int) -> bool:
+        ks = state["keep_set"]
+        if ks is None:
+            return True  # implicit keep-all
+        return pick_idx in ks
+
+    def _toggle_keep(pick_idx: int) -> None:
+        ks = state["keep_set"]
+        if ks is None:
+            # First click materializes the keep_set with everything as a
+            # baseline so subsequent toggles can remove individual entries.
+            ks = set(all_pick_indices)
+            state["keep_set"] = ks
+        if pick_idx in ks:
+            ks.discard(pick_idx)
+        else:
+            ks.add(pick_idx)
         _refresh_grid()
+        _refresh_counter()
+
+    def _trigger_peek(pick_idx: int) -> None:
+        state["selected_idx"] = pick_idx
+        import asyncio as _asyncio
+
+        _asyncio.create_task(
+            _trigger_peek_for_pick(
+                pick_idx, picks, tomo_mrc, peek_dir, pixel_size_ang, particle_diameter_ang, peek_refs, state
+            )
+        )
+
+    def _on_tile_click(pick_idx: int, shift: bool) -> None:
+        if shift:
+            # Power-user path: peek-extract the subvolume so the 3dmod cmd
+            # input populates. Doesn't affect keep/drop state.
+            _trigger_peek(pick_idx)
+            return
+        _toggle_keep(pick_idx)
 
     DISPLAY_TILE_PX = 96
     bg_w = cols * DISPLAY_TILE_PX
@@ -4104,8 +4659,8 @@ def _render_gallery_body(
                 bg_y = -r * DISPLAY_TILE_PX
                 pick = picks[pick_idx] if 0 <= pick_idx < len(picks) else None
                 cls = "cb-gallery-tile"
-                if state["selected_idx"] == pick_idx:
-                    cls += " selected"
+                if not _is_kept(pick_idx):
+                    cls += " cb-tile-dropped"
                 style = (
                     f"background-image: url({atlas_url}); "
                     f"background-size: {bg_size_css}; "
@@ -4120,8 +4675,16 @@ def _render_gallery_body(
                     parts.append(f"x={int(pick.get('x', 0))}")
                     parts.append(f"y={int(pick.get('y', 0))}")
                     parts.append(f"z={int(pick.get('z', 0))}")
+                    parts.append("(click: keep/drop · shift-click: extract for 3dmod)")
                     tile._props["title"] = "  ".join(parts)
-                tile.on("click", lambda _e, i=pick_idx: _on_tile_click(i))
+                # JS handler captures the shift modifier so we can route to
+                # toggle vs. peek-extract; emit returns the dict that becomes
+                # e.args on the Python side.
+                tile.on(
+                    "click",
+                    lambda e, i=pick_idx: _on_tile_click(i, bool((e.args or {}).get("shift", False))),
+                    js_handler="(event) => { emit({shift: event.shiftKey}); }",
+                )
                 with tile:
                     ui.html(f"#{rank + 1}", sanitize=False).classes("cb-tile-rank")
                     ui.html(f"{pick_idx}", sanitize=False).classes("cb-tile-idx")
@@ -4132,6 +4695,7 @@ def _render_gallery_body(
 
     sort_select.on_value_change(lambda e: (state.update(sort_mode=e.value or "best"), _refresh_grid()))
     _refresh_grid()
+    _refresh_counter()
 
     if (has_xy and pick_xy_frac) or (has_xz and pick_xz_frac):
         slices = []
@@ -4139,41 +4703,150 @@ def _render_gallery_body(
             slices.append({"id": xy_host_id, "picks": pick_xy_frac})
         if has_xz and pick_xz_frac:
             slices.append({"id": xz_host_id, "picks": pick_xz_frac})
-        ui.run_javascript(
-            "setTimeout(function(){"
-            f"  const grid = document.getElementById({gallery_id!r});"
-            "  if (!grid) return;"
-            f"  const slices = {json.dumps(slices)};"
-            "  const wired = slices.map(function(s){"
-            "    const host = document.getElementById(s.id);"
-            "    if (!host) return null;"
-            "    return {marker: host.querySelector('.cb-pick-marker'), picks: s.picks};"
-            "  }).filter(function(x){ return x && x.marker; });"
-            "  if (!wired.length) return;"
-            "  function place(idx) {"
-            "    wired.forEach(function(w){"
-            "      const xy = w.picks[idx];"
-            "      if (!xy) { w.marker.style.opacity = '0'; return; }"
-            "      w.marker.style.left = (xy[0] * 100).toFixed(3) + '%';"
-            "      w.marker.style.top = (xy[1] * 100).toFixed(3) + '%';"
-            "      w.marker.style.opacity = '1';"
-            "    });"
-            "  }"
-            "  function hideAll() { wired.forEach(function(w){ w.marker.style.opacity = '0'; }); }"
-            "  grid.addEventListener('mouseover', function(e){"
-            "    const t = e.target.closest && e.target.closest('.cb-gallery-tile[data-pick-idx]');"
-            "    if (!t || !grid.contains(t)) return;"
-            "    place(t.getAttribute('data-pick-idx'));"
-            "  });"
-            "  grid.addEventListener('mouseout', function(e){"
-            "    const t = e.target.closest && e.target.closest('.cb-gallery-tile[data-pick-idx]');"
-            "    if (!t) return;"
-            "    const next = e.relatedTarget && e.relatedTarget.closest "
-            "      && e.relatedTarget.closest('.cb-gallery-tile[data-pick-idx]');"
-            "    if (!next) hideAll();"
-            "  });"
-            "}, 80);"
-        )
+        pick_meta = _build_pick_meta_for_js(picks, pixel_size_ang)
+        hover_card_id = hover_labels.get("__card_id") or ""
+        # Bidirectional hover bridge:
+        #   gallery tile mouseover → place marker on each preview, mark
+        #     matching ghost dots active, fill hover card.
+        #   ghost-dot mouseover     → same, plus add .cb-tile-highlight on
+        #     the matching gallery tile and scroll it into view if hidden.
+        # Both directions write the hover card via JS (no Python round-trip)
+        # using pick_meta pre-formatted server-side. The lone Python path
+        # (tile click → persistent .selected) is unchanged.
+        bridge_js = """
+        setTimeout(function() {
+            const grid = document.getElementById(%(gallery_id)s);
+            if (!grid) return;
+            const slices = %(slices)s;
+            const meta = %(meta)s;
+            const hoverCard = document.getElementById(%(card_id)s);
+            const wired = slices.map(function(s) {
+                const host = document.getElementById(s.id);
+                if (!host) return null;
+                return {
+                    host: host,
+                    marker: host.querySelector('.cb-pick-marker'),
+                    picks: s.picks
+                };
+            }).filter(function(x) { return x && x.marker; });
+            if (!wired.length) return;
+
+            function placeMarkers(idx) {
+                wired.forEach(function(w) {
+                    const xy = w.picks[idx];
+                    if (!xy) { w.marker.style.opacity = '0'; return; }
+                    w.marker.style.left = (xy[0] * 100).toFixed(3) + '%%';
+                    w.marker.style.top = (xy[1] * 100).toFixed(3) + '%%';
+                    w.marker.style.opacity = '1';
+                });
+            }
+            function hideMarkers() {
+                wired.forEach(function(w) { w.marker.style.opacity = '0'; });
+            }
+            function setGhostActive(idx, on) {
+                wired.forEach(function(w) {
+                    w.host.querySelectorAll('.cb-pick-ghost[data-pick-idx="' + idx + '"]').forEach(function(g) {
+                        if (on) g.classList.add('cb-ghost-active');
+                        else g.classList.remove('cb-ghost-active');
+                    });
+                });
+            }
+            function setTileHighlight(idx, on, scrollIntoView) {
+                const tile = grid.querySelector('.cb-gallery-tile[data-pick-idx="' + idx + '"]');
+                if (!tile) return;
+                if (on) tile.classList.add('cb-tile-highlight');
+                else tile.classList.remove('cb-tile-highlight');
+                if (on && scrollIntoView) {
+                    const tr = tile.getBoundingClientRect();
+                    const gr = grid.getBoundingClientRect();
+                    if (tr.top < gr.top || tr.bottom > gr.bottom) {
+                        tile.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+                    }
+                }
+            }
+            function fillHover(idx) {
+                if (!hoverCard) return;
+                if (idx == null) {
+                    hoverCard.querySelectorAll('.cb-hover-val').forEach(function(el) {
+                        el.textContent = '—';
+                    });
+                    return;
+                }
+                const m = meta[idx];
+                if (!m) return;
+                ['idx','px','ang','score','z%%-tile','nn'].forEach(function(k) {
+                    const sel = '.cb-hover-val[data-hover-key="' + k.replace('"','\\\\"') + '"]';
+                    const el = hoverCard.querySelector(sel);
+                    if (el) el.textContent = m[k] != null ? m[k] : '—';
+                });
+            }
+            function clearAll() {
+                hideMarkers();
+                grid.querySelectorAll('.cb-tile-highlight').forEach(function(t) {
+                    t.classList.remove('cb-tile-highlight');
+                });
+                wired.forEach(function(w) {
+                    w.host.querySelectorAll('.cb-pick-ghost.cb-ghost-active').forEach(function(g) {
+                        g.classList.remove('cb-ghost-active');
+                    });
+                });
+            }
+
+            // Gallery tile → previews + hover card
+            grid.addEventListener('mouseover', function(e) {
+                const t = e.target.closest && e.target.closest('.cb-gallery-tile[data-pick-idx]');
+                if (!t || !grid.contains(t)) return;
+                const idx = t.getAttribute('data-pick-idx');
+                placeMarkers(idx);
+                setGhostActive(idx, true);
+                fillHover(idx);
+            });
+            grid.addEventListener('mouseout', function(e) {
+                const t = e.target.closest && e.target.closest('.cb-gallery-tile[data-pick-idx]');
+                if (!t) return;
+                const next = e.relatedTarget && e.relatedTarget.closest &&
+                    e.relatedTarget.closest('.cb-gallery-tile[data-pick-idx]');
+                if (!next) {
+                    const idx = t.getAttribute('data-pick-idx');
+                    setGhostActive(idx, false);
+                    clearAll();
+                    fillHover(null);
+                }
+            });
+
+            // Ghost dot → gallery tile + previews + hover card
+            wired.forEach(function(w) {
+                w.host.addEventListener('mouseover', function(e) {
+                    const g = e.target.closest && e.target.closest('.cb-pick-ghost[data-pick-idx]');
+                    if (!g) return;
+                    const idx = g.getAttribute('data-pick-idx');
+                    placeMarkers(idx);
+                    setGhostActive(idx, true);
+                    setTileHighlight(idx, true, true);
+                    fillHover(idx);
+                });
+                w.host.addEventListener('mouseout', function(e) {
+                    const g = e.target.closest && e.target.closest('.cb-pick-ghost[data-pick-idx]');
+                    if (!g) return;
+                    const next = e.relatedTarget && e.relatedTarget.closest &&
+                        e.relatedTarget.closest('.cb-pick-ghost[data-pick-idx]');
+                    if (!next) {
+                        const idx = g.getAttribute('data-pick-idx');
+                        setGhostActive(idx, false);
+                        setTileHighlight(idx, false, false);
+                        hideMarkers();
+                        fillHover(null);
+                    }
+                });
+            });
+        }, 80);
+        """ % {
+            "gallery_id": json.dumps(gallery_id),
+            "slices": json.dumps(slices),
+            "meta": json.dumps(pick_meta),
+            "card_id": json.dumps(hover_card_id),
+        }
+        ui.run_javascript(bridge_js)
 
 
 def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict) -> None:
@@ -4236,12 +4909,57 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict) -> Non
                 xz_plot.on("plotly_hover", on_hover, throttle=0.08)
 
 
+def _build_pick_meta_for_js(picks: list, pixel_size_ang: Optional[float]) -> dict:
+    """Pre-compute per-pick formatted strings for the JS-driven hover card.
+
+    Mirrors `_update_hover_card`'s formatting verbatim so the visual output
+    is identical whether the update came from a Plotly hover (Python) or a
+    ghost-dot hover (JS). Keyed by str(pick_index) — JS reads it directly.
+    """
+    out: dict = {}
+    for pick in picks:
+        i = pick.get("i")
+        if i is None:
+            continue
+        entry: dict = {"idx": f"#{pick.get('i')}", "px": f"{pick.get('x')}, {pick.get('y')}, {pick.get('z')}"}
+        if pixel_size_ang:
+            ax = pick.get("x", 0) * pixel_size_ang
+            ay = pick.get("y", 0) * pixel_size_ang
+            az = pick.get("z", 0) * pixel_size_ang
+            entry["ang"] = f"{ax:.0f}, {ay:.0f}, {az:.0f}"
+        else:
+            entry["ang"] = "(no pixel size)"
+        sc = pick.get("score")
+        entry["score"] = f"{sc:.4f}" if sc is not None else "—"
+        zp = pick.get("z_pct")
+        entry["z%-tile"] = f"{zp:.0f}" if zp is not None else "—"
+        nn_px = pick.get("nn_px")
+        if nn_px is not None:
+            entry["nn"] = f"{nn_px:.1f} px ({nn_px * pixel_size_ang:.0f} Å)" if pixel_size_ang else f"{nn_px:.1f} px"
+        else:
+            entry["nn"] = "—"
+        out[str(i)] = entry
+    return out
+
+
 def _render_hover_card_skeleton() -> dict:
     labels: dict = {}
-    with ui.element("div").classes("cb-hover-card cb-hover-empty") as card:
-        ui.label("idle").classes("cb-hover-key")
-        ui.label("hover any pick to see details").classes("cb-hover-val")
+    # Pre-populate the full field grid up-front (idle dashes) instead of the
+    # old lazy-populate-on-first-hover pattern. The JS bridge needs stable
+    # DOM nodes with data-hover-key attributes to write into when a ghost
+    # dot is hovered (no Python round-trip), and _update_hover_card just
+    # writes set_text on the same labels for the Python-driven paths.
+    card_id = f"cb-hover-card-{uuid.uuid4().hex[:8]}"
+    with ui.element("div").classes("cb-hover-card") as card:
+        card._props["id"] = card_id
+        for key in ("idx", "px", "ang", "score", "z%-tile", "nn"):
+            ui.label(key).classes("cb-hover-key")
+            v_el = ui.label("—").classes("cb-hover-val")
+            v_el._props["data-hover-key"] = key
+            labels[key] = v_el
     labels["__card"] = card
+    labels["__card_id"] = card_id
+    labels["__populated"] = True
     return labels
 
 
@@ -4262,18 +4980,8 @@ def _update_hover_card(e, picks: list, pixel_size_ang, labels: dict) -> None:
         return
     pick = picks[idx]
 
-    card = labels.get("__card")
-    if card is None:
+    if labels.get("__card") is None:
         return
-    if not labels.get("__populated"):
-        card.clear()
-        card.classes(remove="cb-hover-empty")
-        with card:
-            for key in ("idx", "px", "ang", "score", "z%-tile", "nn"):
-                ui.label(key).classes("cb-hover-key")
-                val_label = ui.label("—").classes("cb-hover-val")
-                labels[key] = val_label
-        labels["__populated"] = True
 
     labels["idx"].set_text(f"#{pick['i']}")
     labels["px"].set_text(f"{pick['x']}, {pick['y']}, {pick['z']}")
@@ -4316,6 +5024,11 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
     summary = manifest.get("summary") or {}
     missing_volume = set(summary.get("missing_volume") or [])
     errored_map = {e["tomo"]: e.get("error", "") for e in (summary.get("errored") or [])}
+    # "zero-picks": orchestrator processed this TS but PyTOM produced no
+    # candidates above cutoff. Without this bucket the per-TS card falls into
+    # the generic "no-preview" spinner branch and lies to the user about being
+    # "still generating" indefinitely.
+    zero_picks = set(summary.get("zero_picks") or [])
 
     rows: list[dict] = []
     if tomo_df is None:
@@ -4337,6 +5050,24 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
                     "error": None,
                 }
             )
+        for tomo_name in zero_picks - set(tomo_entries.keys()):
+            label, (stage, beam) = _position_label(tomo_name)
+            mod_path = job_dir / "vis" / "imodPartRad" / f"coords_{tomo_name}.mod"
+            rows.append(
+                {
+                    "tomo_name": tomo_name,
+                    "position_label": label,
+                    "stage": stage,
+                    "beam": beam,
+                    "vol_path": None,
+                    "mod_path": str(mod_path),
+                    "mod_exists": False,
+                    "n_picks": 0,
+                    "score_range": None,
+                    "status": "zero-picks",
+                    "error": None,
+                }
+            )
     else:
         for _, tomo_row in tomo_df.iterrows():
             tomo_name = str(tomo_row["rlnTomoName"])
@@ -4350,6 +5081,8 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
                 status = "errored"
             elif entry.get("picks_json"):
                 status = "ok"
+            elif tomo_name in zero_picks:
+                status = "zero-picks"
             else:
                 status = "no-preview"
             rows.append(
@@ -4422,9 +5155,7 @@ def reset_auto_kick_state() -> None:
     _AUTO_KICKED_IMOD.clear()
 
 
-def _auto_kick_preview_generation(
-    instance_id: str, job_model, job_dir: Path, project_path: Path, refresh
-) -> bool:
+def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> bool:
     """If the candidate-extract job has succeeded but some tomograms are
     missing from the preview manifest, kick off a background 'Render
     missing' with completion handler that refreshes the page when done.
@@ -4450,8 +5181,16 @@ def _auto_kick_preview_generation(
 
         return await _asyncio.to_thread(
             generate_candidate_previews,
-            candidates_star, tomograms_star, diameter, job_dir,
-            project_path, progress_cb, False, state,
+            candidates_star,
+            tomograms_star,
+            diameter,
+            job_dir,
+            project_path,
+            progress_cb,
+            False,
+            state,
+            instance_id,
+            job_model,
         )
 
     from ui.background_task import BackgroundTask
@@ -4465,9 +5204,7 @@ def _auto_kick_preview_generation(
     return True
 
 
-def _auto_kick_imod_generation(
-    instance_id: str, job_model, job_dir: Path, project_path: Path, refresh
-) -> bool:
+def _auto_kick_imod_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> bool:
     """If candidates.star exists for a succeeded extract but the IMOD .mod
     overlays aren't on disk, kick off background generation that auto-
     refreshes the 3dmod command lines on completion. Same dedup semantics
@@ -4492,9 +5229,7 @@ def _auto_kick_imod_generation(
         import asyncio as _asyncio
 
         progress_cb(0, 0, "generating IMOD .mod overlays…")
-        await _asyncio.to_thread(
-            _generate_imod_sync, candidates_star, tomograms_star, diameter, job_dir, project_path
-        )
+        await _asyncio.to_thread(_generate_imod_sync, candidates_star, tomograms_star, diameter, job_dir, project_path)
         return "IMOD overlays ready; 3dmod commands now include them"
 
     from ui.background_task import BackgroundTask
@@ -4522,8 +5257,7 @@ async def _handle_generate_imod_for_instance(
     tomograms_star = job_dir / "tomograms.star"
     if not candidates_star.exists() or not tomograms_star.exists():
         ui.notify(
-            "candidates.star or tomograms.star missing — cannot generate IMOD models",
-            type="negative", timeout=4000,
+            "candidates.star or tomograms.star missing — cannot generate IMOD models", type="negative", timeout=4000
         )
         return
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
@@ -4532,9 +5266,7 @@ async def _handle_generate_imod_for_instance(
         # IMOD generation has no per-tomogram progress hook today; treat as
         # indeterminate (total=0).
         progress_cb(0, 0, "generating IMOD .mod overlays…")
-        await _asyncio.to_thread(
-            _generate_imod_sync, candidates_star, tomograms_star, diameter, job_dir, project_path
-        )
+        await _asyncio.to_thread(_generate_imod_sync, candidates_star, tomograms_star, diameter, job_dir, project_path)
         return "IMOD overlays ready; 3dmod commands now include them"
 
     BackgroundTask(
@@ -4560,20 +5292,13 @@ async def _handle_generate_for_instance(
     candidates_star = job_dir / "candidates.star"
     tomograms_star = job_dir / "tomograms.star"
     if not candidates_star.exists() or not tomograms_star.exists():
-        ui.notify(
-            "candidates.star or tomograms.star missing — cannot render previews",
-            type="negative", timeout=4000,
-        )
+        ui.notify("candidates.star or tomograms.star missing — cannot render previews", type="negative", timeout=4000)
         return
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
     state = get_project_state()
 
     action = "Re-render all" if force else "Render missing"
-    subtitle = (
-        "Bypass cache; regenerate every tomogram"
-        if force
-        else "Skip tomograms with a fresh manifest entry"
-    )
+    subtitle = "Bypass cache; regenerate every tomogram" if force else "Skip tomograms with a fresh manifest entry"
 
     async def _run(progress_cb) -> str:
         # The orchestrator is sync; off-thread it so the event loop stays
@@ -4582,8 +5307,16 @@ async def _handle_generate_for_instance(
         # which lines up with our registry's (current, total, message).
         summary = await _asyncio.to_thread(
             generate_candidate_previews,
-            candidates_star, tomograms_star, diameter, job_dir,
-            project_path, progress_cb, force, state,
+            candidates_star,
+            tomograms_star,
+            diameter,
+            job_dir,
+            project_path,
+            progress_cb,
+            force,
+            state,
+            instance_id,
+            job_model,
         )
         n_new = len(summary["ok"])
         n_cached = len(summary["skipped_cached"])
