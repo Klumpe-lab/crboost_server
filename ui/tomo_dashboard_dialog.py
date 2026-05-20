@@ -43,9 +43,28 @@ from services.visualization.preview_orchestrator import (
     generate_candidate_previews,
     read_preview_manifest,
 )
+from services.visualization.preview_render import is_output_stale, render_xy_slab_preview, render_xz_slab_preview
 from ui.components.task_utils import read_manifest, resolve_job_dir, scan_statuses
 
 logger = logging.getLogger(__name__)
+
+
+# Per-species overlay colors for the shared tomogram canvas. Indexed by the
+# candidate-extract instance's sorted position so a species keeps its color
+# across re-renders (and matches its checkbox). Maximally-saturated hues that
+# are absent from a greyscale tomogram (no mid-grays) so the dots pop; the
+# .cb-pick-ghost dual halo (dark + light ring) keeps them legible on both the
+# bright and dark ends of the backdrop.
+_SPECIES_OVERLAY_COLORS = [
+    "#ff1744",  # vivid red
+    "#00e5ff",  # vivid cyan
+    "#ffea00",  # vivid yellow
+    "#d500f9",  # vivid magenta-purple
+    "#76ff03",  # neon green
+    "#2979ff",  # vivid blue
+    "#ff9100",  # vivid orange
+    "#f50057",  # vivid pink
+]
 
 
 # ---------------------------------------------------------------------------
@@ -1049,14 +1068,14 @@ _CB_CSS = """
     color: #9ca3af; font-size: 13px; padding: 40px; flex-direction: column; gap: 8px;
 }
 .cb-section-title {
-    font-size: 10px; text-transform: uppercase; font-weight: 700;
-    color: #475569; letter-spacing: 0.4px;
+    font-size: 10px; text-transform: uppercase; font-weight: 600;
+    color: #64748b; letter-spacing: 0.3px;
 }
 .cb-section-card {
     background: #ffffff; border: 1px solid #e5e7eb; border-radius: 6px;
-    padding: 10px 12px; margin-bottom: 8px;
+    padding: 6px 9px; margin-bottom: 5px;
 }
-.cb-section-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.cb-section-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .cb-aspect { width: 100%; }
 .cb-picks-right { border-left: 1px solid #eef2f7; padding-left: 14px; }
 @media (max-width: 900px) {
@@ -1198,6 +1217,59 @@ _CB_CSS = """
     pointer-events: none; z-index: 4;
 }
 .cb-overlay-hide .cb-pick-ghost { display: none; }
+/* Per-species overlay layer over the shared recon canvas. Inset to the
+ * host so child ghost-dots anchor to the same box as the slab image; a
+ * single checkbox toggles the whole species layer (X/Y + X/Z together).
+ * The layer carries `--sp-color` (set inline per species); the ghost-dot
+ * restyle rule below reads it via var() so each species' dots are colored. */
+.cb-pick-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
+.cb-pick-layer-hidden { display: none; }
+.cb-recon-canvas { background: #0f172a; border-radius: 6px; }
+/* X/Y + X/Z stack: the wrapper width (capped to keep X/Y ~52vh tall) governs
+ * both views, so the side strip is always the same width as the top-down. */
+.cb-canvas-stack { width: 100%; margin: 0 auto; }
+.cb-species-toggle-row {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 4px 2px 6px 2px;
+}
+.cb-species-swatch {
+    width: 10px; height: 10px; border-radius: 50%;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3); flex: 0 0 auto;
+}
+/* Particles section: slabs LEFT, galleries RIGHT, side by side so the user
+ * can hover a tile and watch its dot light up on the canvas at the same time.
+ * Wraps to stacked on narrow viewports. */
+.cb-particles-split { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.cb-particles-canvas-col { flex: 1 1 360px; min-width: 280px; max-width: 540px; }
+.cb-particles-tabs-col { flex: 2 1 440px; min-width: 340px; }
+/* Per-species tabs beside the canvas. Matched to the journey aesthetic:
+ * small, slate, no-caps, thin indigo indicator, and a per-species color
+ * swatch tying each tab to its overlay color on the shared canvas. */
+.cb-species-tabs { min-height: 28px; border-bottom: 1px solid #e5e7eb; }
+.cb-species-panels .q-tab-panel { padding: 8px 0 0 0; }
+.cb-species-tabs .q-tab { min-height: 28px; padding: 0 10px; text-transform: none; }
+.cb-species-tab .q-tab__label {
+    font-size: 11px; font-weight: 600; color: #64748b; line-height: 1.15; white-space: nowrap;
+}
+.cb-species-tabs .q-tab--active .q-tab__label { color: #4338ca; }
+/* Per-species color dot before the label, tying the tab to its canvas overlay
+ * color (--sp-color set inline per tab). Uses Quasar's stable tab internals. */
+.cb-species-tab .q-tab__content::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--sp-color, #94a3b8); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
+    margin-right: 6px; flex: 0 0 auto; align-self: center;
+}
+/* Per-tab header zone: always-visible essentials + icon controls, with the
+ * bulky size pills + 3dmod tucked into a collapsed details expansion so the
+ * gallery starts high. */
+.cb-tab-header {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 0 0 6px 0; border-bottom: 1px solid #f1f5f9; margin-bottom: 6px;
+}
+.cb-tab-essentials { font-size: 10px; color: #64748b; font-family: ui-monospace, monospace; }
+.cb-tab-details .q-item { min-height: 22px; padding: 0 4px; }
+.cb-tab-details .q-item__label { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.3px; }
+.cb-tab-details .q-expansion-item__content { padding: 4px 0 2px 0; }
 .cb-preview-toolbar {
     display: flex; align-items: center; gap: 10px;
     font-size: 10px; color: #475569;
@@ -1229,7 +1301,7 @@ _CB_CSS = """
 }
 .cb-datadump-key {
     color: #6b7280; text-transform: uppercase;
-    font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
+    font-size: 9px; font-weight: 600; letter-spacing: 0.3px;
     align-self: baseline;
 }
 .cb-datadump-val { color: #1f2937; align-self: baseline; word-break: break-all; }
@@ -1410,6 +1482,14 @@ _CB_CSS = """
 .cb-invert-polarity .cb-gallery-tile > * {
     filter: invert(1) hue-rotate(180deg);
 }
+/* Shared recon canvas: `ui.image` renders a q-img that nests the <img> a
+ * couple levels down, so the `> img` direct-child rule above can miss it.
+ * Use a descendant combinator scoped to the canvas so Invert reliably
+ * flips the slab. Same filter value → no double-inversion where both match.
+ * Pick-dot layers are excluded, so dots keep their species colors. */
+.cb-invert-polarity .cb-recon-canvas img {
+    filter: invert(1) hue-rotate(180deg);
+}
 /* Ghost dots and the pick marker overlay sit on top of the X/Y / X/Z
  * preview img. They aren't part of the inverted set — keep them at
  * their declared color so they don't flicker between hues when toggled. */
@@ -1422,9 +1502,12 @@ _CB_CSS = """
 .cb-pick-ghost {
     pointer-events: auto !important;
     cursor: crosshair;
-    width: 4px !important; height: 4px !important;
-    background: #22d3ee !important;
-    box-shadow: 0 0 0 1px rgba(255,255,255,0.85), 0 0 4px rgba(34,211,238,0.55) !important;
+    width: 3.5px !important; height: 3.5px !important;
+    background: var(--sp-color, #00e5ff) !important;
+    /* Dual halo: a tight dark ring keeps the dot crisp on bright tomogram
+     * regions, the outer light ring makes it pop on dark regions. Together
+     * they give a small saturated dot high contrast at any backdrop value. */
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.92), 0 0 0 1.8px rgba(255,255,255,0.6) !important;
     transition: width 0.05s ease, height 0.05s ease, background 0.05s ease;
 }
 .cb-pick-ghost:hover,
@@ -1713,18 +1796,12 @@ def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, re
         if emit(ts_name, project_state, project_path, refresh):
             rendered_any = True
 
-    # Template Match — one card per TM instance for this TS. Surfaces
-    # declared-vs-applied symmetry parity + template/mask intrinsic-shape
-    # chips. Lives between Reconstruct and Candidate Extract in pipeline order.
-    for instance_id, job_model in _template_match_instances(project_state):
-        if _render_template_match_section(ts_name, instance_id, job_model, project_path, refresh):
-            rendered_any = True
-
-    # Candidate Extract — flagship card carries the preview pair, gallery, and
-    # scatter fallback. Stacked per matching candidate-extract instance.
-    for instance_id, job_model in _candidate_extract_instances(project_state):
-        if _render_candidate_extract_section(ts_name, instance_id, job_model, project_path, refresh):
-            rendered_any = True
+    # Particles — one unified section: a shared tomogram canvas with every
+    # species' picks overlaid (toggleable), plus a per-species tab carrying
+    # that species' TM sanity strip + gallery / scatter. Replaces both the
+    # old per-species Template Match cards and the candidate-extract cards.
+    if _render_particles_section(ts_name, project_state, project_path, refresh):
+        rendered_any = True
 
     if not rendered_any:
         with ui.element("div").classes("cb-empty"):
@@ -3490,11 +3567,126 @@ def _render_recon_big_preview(ts_name: str, project_path: Path, mrc_path: Option
     ui.label(f"WarpTools preview · {png_path.name}").classes("cb-recon-preview-caption")
 
 
+def _render_invert_switch(root) -> None:
+    """Polarity-invert toggle wired to add/remove `cb-invert-polarity` on
+    `root`. The CSS flips every `.cb-tomo-preview > img` (and cutout tiles)
+    under that root together, so density convention stays consistent."""
+
+    def _on_invert(e, _root=root):
+        if e.value:
+            _root.classes(add="cb-invert-polarity")
+        else:
+            _root.classes(remove="cb-invert-polarity")
+
+    (
+        ui.switch("Invert", value=False, on_change=_on_invert)
+        .props("dense color=indigo-6 left-label")
+        .classes("text-[10px]")
+        .tooltip(
+            "Flip the apparent intensity of the tomogram slabs (and cutout tiles). "
+            "The picker uses raw densities — this is viewer-only."
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
-# Template Match section: declared-vs-applied symmetry parity (and, when
-# combined with Slice 5, template + mask intrinsic-shape chips). One card
-# per (TS, TM instance) so multi-species projects get a card per species
-# under each TS — matching the candidate-extract layout.
+# Shared recon-stage tomogram canvas + multi-species pick overlay
+#
+# One X/Y + X/Z slab rendered from the reconstructed MRC (same percentile +
+# flip pipeline as the cutout tiles, so Invert flips everything together),
+# reused as the backdrop for every species' picks. Each candidate-extract
+# instance's picks are drawn as a color-coded ghost-dot layer the user can
+# toggle by species. Progressive: recon-only shows just the slabs; picks
+# appear once candidate-extract has run.
+# ---------------------------------------------------------------------------
+
+
+_AUTO_KICKED_RECON_SLABS: set[str] = set()
+
+
+def _recon_slab_paths(recon_job_dir: Path, ts_name: str) -> tuple[Path, Path]:
+    base = recon_job_dir / "vis" / "slabs"
+    return base / f"{ts_name}_xy.png", base / f"{ts_name}_xz.png"
+
+
+def _render_recon_slabs_sync(mrc_path: Path, xy_png: Path, xz_png: Path) -> str:
+    render_xy_slab_preview(Path(mrc_path), xy_png)
+    render_xz_slab_preview(Path(mrc_path), xz_png)
+    return "recon slabs rendered"
+
+
+def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, project_path: Path, refresh) -> None:
+    """Render the shared X/Y + X/Z slabs in the background if missing/stale.
+    Mirrors the candidate-extract preview auto-kick: module-level dedup set
+    plus BackgroundTask dedup_key, refresh-on-complete so the canvas fills
+    when the PNGs land."""
+    key = f"{recon_job_dir}:{ts_name}"
+    if key in _AUTO_KICKED_RECON_SLABS:
+        return
+    xy_png, xz_png = _recon_slab_paths(recon_job_dir, ts_name)
+    fresh = (
+        xy_png.exists()
+        and xz_png.exists()
+        and not is_output_stale(xy_png, [mrc_path])
+        and not is_output_stale(xz_png, [mrc_path])
+    )
+    if fresh:
+        return
+    _AUTO_KICKED_RECON_SLABS.add(key)
+
+    async def _run(progress_cb):
+        import asyncio as _asyncio
+
+        progress_cb(0, 0, "rendering tomogram slabs…")
+        return await _asyncio.to_thread(_render_recon_slabs_sync, mrc_path, xy_png, xz_png)
+
+    from ui.background_task import BackgroundTask
+
+    BackgroundTask(
+        title=f"Render tomogram slabs · {ts_name}",
+        subtitle="Shared canvas for the pick overlay",
+        project_path=str(project_path),
+        dedup_key=f"recon-slabs:{recon_job_dir}:{ts_name}",
+    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
+
+
+def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id: str):
+    """Render one species' ghost-dot layer over a shared slab canvas.
+
+    Carries a stable DOM `layer_id` and per-dot `data-pick-idx` plus a
+    `.cb-pick-marker` so the gallery↔canvas hover bridge in
+    `_render_gallery_body` can target this exact species' dots (the bridge
+    does `getElementById(layer_id)` then scopes its querySelector to it).
+    Returns the layer element so a checkbox can toggle its visibility."""
+    x_dim = max(int(dims[0]), 1)
+    y_dim = max(int(dims[1]), 1)
+    z_dim = max(int(dims[2]), 1)
+    # `--sp-color` cascades to every child .cb-pick-ghost (the restyle rule
+    # reads it via var()), so the species color survives the !important dot
+    # styling without per-dot inline overrides.
+    layer = ui.element("div").classes("cb-pick-layer").style(f"--sp-color: {color};")
+    layer._props["id"] = layer_id
+    with layer:
+        for p in picks:
+            try:
+                idx = int(p.get("i"))
+                fx = max(0.0, min(1.0, float(p.get("x", 0)) / x_dim))
+                if axis == "xy":
+                    fv = 1.0 - max(0.0, min(1.0, float(p.get("y", 0)) / y_dim))
+                else:
+                    fv = 1.0 - max(0.0, min(1.0, float(p.get("z", 0)) / z_dim))
+            except (TypeError, ValueError):
+                continue
+            dot = ui.element("div").classes("cb-pick-ghost")
+            dot._props["data-pick-idx"] = str(idx)
+            dot.style(f"left: {fx * 100:.3f}%; top: {fv * 100:.3f}%;")
+        # Hover marker the bridge moves to the hovered pick (one per layer).
+        ui.element("div").classes("cb-pick-marker")
+    return layer
+
+
+# ---------------------------------------------------------------------------
+# Template Match size chips — reused by the per-species tab sanity strip.
 # ---------------------------------------------------------------------------
 
 
@@ -3509,71 +3701,6 @@ def _fmt_dims_combined(dims: Optional[tuple], px: Optional[float]) -> Optional[s
         parts_ang = "×".join(f"{int(round(d * px)):,}" for d in dims if d is not None)
         return f"{parts_px} px ({parts_ang} Å)"
     return f"{parts_px} px"
-
-
-def _render_template_match_section(ts_name: str, instance_id: str, job_model, project_path: Path, refresh) -> bool:
-    """Per-TS Template Match card. One card per (TS, TM instance); multi-
-    species projects get one card per species under each TS. Surfaces the
-    full size context (tomo, template, mask, particle, extraction) plus
-    mask geometry diagnostics so the user can reason about picks at a
-    glance."""
-    job_dir = _job_dir_for(instance_id, job_model, project_path)
-    if not job_dir:
-        return False
-    state = get_project_state()
-    species, species_id = _resolve_species(state, job_model, instance_id)
-    applied_job_json = _read_tm_job_json(job_dir, ts_name)
-
-    # Walk the pixel chain once and pull the rows this card cares about
-    # (tomo dims at TM apix, particle diameter, subtomo box/crop).
-    pixel_rows = _compute_pixel_chain(state)
-    recon_row = next((r for r in pixel_rows if r["stage_key"] == "recon"), None)
-    pick_row = next((r for r in pixel_rows if r["stage_key"] == "pick" and r.get("species_id") == species_id), None)
-    subtomo_row = next(
-        (r for r in pixel_rows if r["stage_key"] == "subtomo" and r.get("species_id") == species_id), None
-    )
-
-    metric_parts: list[str] = []
-    if species:
-        metric_parts.append(species.name or species_id or "species")
-    if getattr(job_model, "angular_search", None):
-        metric_parts.append(f"θ={job_model.angular_search}°")
-    sym = getattr(species, "symmetry", None) if species else None
-    if not sym:
-        sym = getattr(job_model, "symmetry", None)
-    if sym:
-        metric_parts.append(f"sym {sym}")
-
-    with ui.element("div").classes("cb-section-card w-full") as card:
-        card._props["data-section"] = "template_match"
-        card._props["data-instance"] = instance_id
-        with ui.element("div").classes("cb-section-card-header"):
-            ui.icon("auto_graph", size="14px").classes("text-indigo-600")
-            ui.label("Template match").classes("cb-section-title")
-            ui.label(instance_id).classes("text-[10px] font-mono text-gray-500")
-            ui.space()
-            if metric_parts:
-                ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
-            status_label = getattr(job_model.execution_status, "value", str(job_model.execution_status))
-            if status_label.lower() != "succeeded":
-                ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
-
-        with ui.element("div").classes("cb-chip-strip"):
-            _render_tm_size_chips(
-                job_model=job_model,
-                species=species,
-                applied_job_json=applied_job_json,
-                recon_row=recon_row,
-                pick_row=pick_row,
-                subtomo_row=subtomo_row,
-            )
-
-        if applied_job_json is None:
-            ui.label(f"No tmResults/{ts_name}_job.json yet — TM hasn't produced output for this TS.").classes(
-                "cb-section-placeholder"
-            )
-
-    return True
 
 
 def _render_tm_size_chips(
@@ -3778,127 +3905,385 @@ def _render_tm_size_chips(
 # ---------------------------------------------------------------------------
 
 
-def _render_candidate_extract_section(ts_name: str, instance_id: str, job_model, project_path: Path, refresh) -> bool:
-    """One Candidate Extract card for this TS within this candidate-extract
-    instance. Returns True if a card was rendered."""
-    job_dir = _job_dir_for(instance_id, job_model, project_path)
-    if not job_dir:
+def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -> tuple[Optional[Path], Optional[Path]]:
+    """(recon_job_dir, reconstructed-tomogram MRC) for this TS, or Nones."""
+    rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
+    if not rec:
+        return None, None
+    recon_job_dir = _job_dir_for(rec[0], rec[1], project_path)
+    if not recon_job_dir:
+        return None, None
+    tomo_df = _read_tomograms_table(recon_job_dir / "tomograms.star")
+    if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
+        return recon_job_dir, None
+    match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
+    if match.empty:
+        return recon_job_dir, None
+    mrc = _resolve_volume_for_3dmod(match.iloc[0], project_path)
+    return recon_job_dir, (Path(mrc) if mrc else None)
+
+
+def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str, refresh) -> list[dict]:
+    """One entry per candidate-extract instance that has a row for this TS,
+    with everything the Particles section needs (row, manifest, entry, picks,
+    color). Drives both the shared canvas overlay and the per-species tabs."""
+    out: list[dict] = []
+    for idx, (iid, jm) in enumerate(_candidate_extract_instances(project_state)):
+        job_dir = _job_dir_for(iid, jm, project_path)
+        if not job_dir:
+            continue
+        ce_rows = _collect_tomo_rows_for_instance(job_dir, project_path)
+        row = next((r for r in ce_rows if r["tomo_name"] == ts_name), None)
+        if row is None:
+            continue
+        # Lazy-generate previews + IMOD overlays for this species (idempotent;
+        # refresh re-renders the dashboard when the background job lands).
+        _auto_kick_preview_generation(iid, jm, job_dir, project_path, refresh)
+        _auto_kick_imod_generation(iid, jm, job_dir, project_path, refresh)
+        manifest = read_preview_manifest(job_dir) or {}
+        entry = (manifest.get("tomograms") or {}).get(ts_name) or {}
+        picks_data = _read_picks_json(Path(entry["picks_json"])) if entry.get("picks_json") else {}
+        label = (manifest.get("template") or {}).get("species_name") or _split_species_id(iid) or iid
+        out.append(
+            {
+                "idx": idx,
+                "iid": iid,
+                "jm": jm,
+                "job_dir": job_dir,
+                "row": row,
+                "manifest": manifest,
+                "entry": entry,
+                "label": str(label),
+                "color": _SPECIES_OVERLAY_COLORS[idx % len(_SPECIES_OVERLAY_COLORS)],
+                "picks": picks_data.get("picks") or [],
+                "dims": picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1],
+            }
+        )
+    return out
+
+
+def _render_particles_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
+    """Unified Particles section: a shared tomogram canvas with every species'
+    picks overlaid (toggleable), plus a per-species tab carrying that species'
+    gallery / scatter. Replaces the old per-species candidate-extract cards."""
+    species_data = _collect_species_data_for_ts(project_state, project_path, ts_name, refresh)
+    if not species_data:
         return False
 
-    rows = _collect_tomo_rows_for_instance(job_dir, project_path)
-    row = next((r for r in rows if r["tomo_name"] == ts_name), None)
-    if row is None:
-        return False
-
-    # Lazy auto-generate previews + IMOD overlays on first view of this job
-    # in the current dashboard mount. Both helpers are idempotent (per-mount
-    # set + BackgroundTask dedup_key) and skip when nothing's to do.
-    _auto_kick_preview_generation(instance_id, job_model, job_dir, project_path, refresh)
-    _auto_kick_imod_generation(instance_id, job_model, job_dir, project_path, refresh)
-
-    manifest = read_preview_manifest(job_dir) or {}
+    recon_job_dir, mrc_path = _resolve_recon_mrc_for_ts(project_state, project_path, ts_name)
 
     with ui.element("div").classes("cb-section-card w-full") as card:
-        card._props["data-section"] = "candidate_extract"
-        card._props["data-instance"] = instance_id
-
-        species_name = (manifest.get("template") or {}).get("species_name") or _split_species_id(instance_id)
+        card._props["data-section"] = "particles"
         with ui.element("div").classes("cb-section-card-header"):
-            ui.icon("auto_awesome", size="14px").classes("text-indigo-600")
-            ui.label("Candidate extract").classes("cb-section-title")
-            if species_name:
-                ui.label(species_name).classes(
-                    "text-[11px] font-semibold text-indigo-700 px-1.5 rounded bg-indigo-50"
-                )
-            ui.label(instance_id).classes("text-[10px] font-mono text-gray-500")
+            ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
+            ui.label("Particles").classes("cb-section-title")
+            ui.label(f"{len(species_data)} species").classes("text-[10px] font-mono text-gray-500")
             ui.space()
-            diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
-            if diameter:
-                ui.label(f"diameter {diameter:.0f} Å").classes("text-[10px] text-gray-500 font-mono")
-            job_succeeded = job_model.execution_status == JobStatus.SUCCEEDED
-            if not job_succeeded:
-                ui.label(str(job_model.execution_status)).classes("text-[10px] text-amber-600 font-mono")
+            if mrc_path is not None:
+                _render_invert_switch(card)
 
-        # Per-card regen toolbar — operates at job scope (not per-TS yet; that's
-        # Slice E). Buttons are scoped to this card so multi-species projects
-        # get their own controls per species.
-        has_imod_models = (job_dir / "vis" / "imodPartRad").exists() and any(
-            (job_dir / "vis" / "imodPartRad").glob("*.mod")
+        # Two columns: slabs LEFT (always visible for inspection), galleries
+        # RIGHT — so the user can hover a tile and watch its dot on the canvas
+        # at the same time. Wraps on narrow viewports.
+        with ui.element("div").classes("cb-particles-split"):
+            with ui.element("div").classes("cb-particles-canvas-col"):
+                # Shared canvas: lazily renders the recon slab and overlays each
+                # species' picks. Returns {iid: {"xy": layer_id, "xz": layer_id}}
+                # so each tab's gallery cross-links to its own dots.
+                canvas_layers = _render_particles_canvas(
+                    species_data, recon_job_dir, mrc_path, ts_name, project_path, refresh
+                )
+
+            with ui.element("div").classes("cb-particles-tabs-col"):
+                tab_objs: list[tuple[dict, object]] = []
+                with ui.tabs().props("dense align=left indicator-color=indigo").classes("cb-species-tabs") as tabs:
+                    for sp in species_data:
+                        # Label carries name + pick count; a CSS ::before dot (driven by
+                        # the inline --sp-color) ties each tab to its canvas overlay color.
+                        tab = ui.tab(sp["iid"], label=f"{sp['label']} · {len(sp['picks'])}").classes("cb-species-tab")
+                        tab.style(f"--sp-color: {sp['color']};")
+                        tab_objs.append((sp, tab))
+                with ui.tab_panels(tabs, value=tab_objs[0][1]).classes("w-full cb-species-panels"):
+                    for sp, tab in tab_objs:
+                        with ui.tab_panel(tab):
+                            _render_species_tab_body(sp, canvas_layers.get(sp["iid"]), project_path, refresh)
+    return True
+
+
+def _render_particles_canvas(
+    species_data: list[dict],
+    recon_job_dir: Optional[Path],
+    mrc_path: Optional[Path],
+    ts_name: str,
+    project_path: Path,
+    refresh,
+) -> dict:
+    """Maximized shared slab canvas with each species' picks overlaid as a
+    color-coded, toggleable layer. Returns {iid: {"xy": layer_id, "xz":
+    layer_id|None}} so each tab's gallery can cross-link to its dots."""
+    layer_ids: dict[str, dict] = {}
+
+    if recon_job_dir is None or mrc_path is None:
+        ui.label("No reconstructed tomogram on disk — canvas unavailable; per-species galleries below.").classes(
+            "cb-section-placeholder"
         )
-        with ui.row().classes("cb-instance-toolbar"):
+        return layer_ids
+
+    _auto_kick_recon_slabs(recon_job_dir, ts_name, mrc_path, project_path, refresh)
+    xy_png, xz_png = _recon_slab_paths(recon_job_dir, ts_name)
+    if not xy_png.exists():
+        with ui.element("div").classes("cb-empty"):
+            ui.spinner(size="26px", color="indigo-500")
+            ui.label("Rendering tomogram slices…").classes("text-xs")
+            ui.label("Auto-kicked in the background — the canvas fills when the slab PNG lands.").classes(
+                "text-[11px] italic text-gray-500"
+            )
+        return layer_ids
+
+    with_picks = [sp for sp in species_data if sp["picks"]]
+    if not with_picks:
+        # Recon slab exists but nothing picked yet — clean slab, no overlay.
+        with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style("max-height: 70vh;"):
+            ui.image(_vis_asset_url(str(xy_png)))
+        return layer_ids
+
+    dims = with_picks[0]["dims"]
+    x_dim = max(int(dims[0]), 1)
+    y_dim = max(int(dims[1]), 1)
+    z_dim = max(int(dims[2]), 1)
+    nonce = uuid.uuid4().hex[:8]
+
+    # Per-species toggle row — checkboxes named after the species, colored to
+    # match their dots; each toggles that species' X/Y + X/Z layers together.
+    with ui.row().classes("cb-species-toggle-row"):
+        ui.label("Show picks").classes("text-[10px] uppercase font-bold text-gray-400")
+        for sp in with_picks:
+
+            def _toggle(e, _entry=sp):
+                for layer in _entry.get("_layer_els", []):
+                    if e.value:
+                        layer.classes(remove="cb-pick-layer-hidden")
+                    else:
+                        layer.classes(add="cb-pick-layer-hidden")
+
+            with ui.row().classes("items-center gap-1"):
+                ui.element("div").classes("cb-species-swatch").style(f"background: {sp['color']};")
+                ui.checkbox(f"{sp['label']} ({len(sp['picks'])})", value=True).props("dense").classes(
+                    "text-[11px]"
+                ).on_value_change(_toggle)
+
+    # X/Y and X/Z share ONE width-constrained stack so the side view sits at
+    # the exact same width as the top-down view (same x-axis scale) — each
+    # child is width:100% of the stack and derives its height from its own
+    # aspect-ratio. The stack max-width caps the X/Y at ~52vh tall while
+    # preserving the tomogram aspect; the X/Z then reads as a proportional
+    # strip below it (height = width · z/x).
+    stack = ui.element("div").classes("cb-canvas-stack")
+    stack.style(f"max-width: calc(52vh * {x_dim} / {y_dim});")
+    with stack:
+        xy_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
+        xy_host.style(f"aspect-ratio: {x_dim}/{y_dim};")
+        with xy_host:
+            ui.image(_vis_asset_url(str(xy_png)))
+            for sp in with_picks:
+                lid = f"cb-pl-{nonce}-{sp['idx']}-xy"
+                sp.setdefault("_layer_els", []).append(
+                    _render_pick_layer(sp["picks"], sp["color"], sp["dims"], "xy", lid)
+                )
+                layer_ids.setdefault(sp["iid"], {})["xy"] = lid
+
+        if xz_png.exists():
+            xz_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
+            xz_host.style(f"aspect-ratio: {x_dim}/{z_dim}; margin-top: 6px;")
+            with xz_host:
+                ui.image(_vis_asset_url(str(xz_png)))
+                for sp in with_picks:
+                    lid = f"cb-pl-{nonce}-{sp['idx']}-xz"
+                    sp.setdefault("_layer_els", []).append(
+                        _render_pick_layer(sp["picks"], sp["color"], sp["dims"], "xz", lid)
+                    )
+                    layer_ids.setdefault(sp["iid"], {})["xz"] = lid
+
+    return layer_ids
+
+
+def _tm_essentials_for_species(sp: dict) -> dict:
+    """Resolve the Template-Match instance matched to this candidate-extract
+    species (by species_id) and pull the interpretive essentials shown in the
+    tab header: matched TM instance id, angular search θ, and symmetry."""
+    state = get_project_state()
+    species, species_id = _resolve_species(state, sp["jm"], sp["iid"])
+    info: dict = {
+        "species": species,
+        "species_id": species_id,
+        "tm_iid": None,
+        "tm_jm": None,
+        "theta": None,
+        "sym": None,
+    }
+    for tm_iid, tm_jm in _template_match_instances(state):
+        _, tm_sid = _resolve_species(state, tm_jm, tm_iid)
+        if tm_sid == species_id:
+            info["tm_iid"], info["tm_jm"] = tm_iid, tm_jm
+            info["theta"] = getattr(tm_jm, "angular_search", None)
+            info["sym"] = (getattr(species, "symmetry", None) if species else None) or getattr(tm_jm, "symmetry", None)
+            break
+    return info
+
+
+def _render_species_size_chips(sp: dict, project_path: Path, ts_name: str, tm_info: dict) -> None:
+    """The matched TM instance's size chips (tomo / template / mask / particle /
+    extraction + subtomo box/crop + mask geometry). Tucked into the tab header's
+    'sizes & 3dmod' details so they don't crowd the gallery. No-op when the
+    species has no matched TM instance."""
+    tm_iid, tm_jm = tm_info.get("tm_iid"), tm_info.get("tm_jm")
+    if tm_jm is None:
+        return
+    species, species_id = tm_info["species"], tm_info["species_id"]
+    state = get_project_state()
+    tm_job_dir = _job_dir_for(tm_iid, tm_jm, project_path)
+    applied_job_json = _read_tm_job_json(tm_job_dir, ts_name) if tm_job_dir else None
+    pixel_rows = _compute_pixel_chain(state)
+    recon_row = next((r for r in pixel_rows if r["stage_key"] == "recon"), None)
+    pick_row = next((r for r in pixel_rows if r["stage_key"] == "pick" and r.get("species_id") == species_id), None)
+    subtomo_row = next(
+        (r for r in pixel_rows if r["stage_key"] == "subtomo" and r.get("species_id") == species_id), None
+    )
+    _render_tm_size_chips(
+        job_model=tm_jm,
+        species=species,
+        applied_job_json=applied_job_json,
+        recon_row=recon_row,
+        pick_row=pick_row,
+        subtomo_row=subtomo_row,
+    )
+
+
+def _render_species_tab_header(sp: dict, tm_info: dict, project_path: Path, refresh) -> None:
+    """Compact per-tab header (Option A): an always-visible essentials line
+    (position · tomo · N · score range · θ · sym · Ø) with the two common
+    generate controls as icon buttons, plus a collapsed 'sizes & 3dmod' details
+    expansion holding the bulky size pills, the cache-bypass re-render, and the
+    3dmod command. Keeps the gallery — the point of the tab — starting high."""
+    iid, jm, job_dir = sp["iid"], sp["jm"], sp["job_dir"]
+    row, manifest = sp["row"], sp["manifest"]
+    entry = (manifest.get("tomograms") or {}).get(row["tomo_name"]) or {}
+    score_field = manifest.get("score_field")
+    imod_dir = job_dir / "vis" / "imodPartRad"
+    has_imod_models = imod_dir.exists() and any(imod_dir.glob("*.mod"))
+
+    with ui.element("div").classes("cb-tab-header"):
+        # Per-tomogram essentials + the two common generate controls (icons).
+        with ui.row().classes("w-full items-center gap-2 flex-wrap"):
+            ui.label(row["position_label"]).classes("text-xs font-semibold text-gray-700")
+            ui.label(row["tomo_name"]).classes("text-[10px] font-mono text-gray-500")
+            ui.label(f"N={row['n_picks']}").classes("text-[11px] font-mono text-gray-700")
+            if row["score_range"]:
+                ui.label(f"{row['score_range'][0]:.3f}–{row['score_range'][1]:.3f}").classes(
+                    "text-[11px] text-gray-500 font-mono"
+                )
+            if entry.get("score_mean") is not None:
+                ui.label(f"mean {entry['score_mean']:.3f}").classes("text-[11px] text-gray-500 font-mono")
+            ui.space()
             gen_missing_btn = (
                 ui.button(
-                    "Render missing",
                     icon="auto_fix_high",
                     on_click=lambda: _handle_generate_for_instance(
-                        instance_id, job_model, job_dir, project_path, False, gen_missing_btn, refresh
+                        iid, jm, job_dir, project_path, False, gen_missing_btn, refresh
                     ),
                 )
-                .props("dense no-caps unelevated size=sm")
-                .classes("bg-purple-50 text-purple-700 border border-purple-200")
-                .style("padding: 0 8px; min-height: 22px;")
-                .tooltip(
-                    "Generate previews only for tomograms whose manifest entry is missing or stale. "
-                    "Cached entries are skipped. Runs in the background — track in the tray (bottom-right)."
-                )
+                .props("flat dense round size=sm")
+                .classes("text-purple-600")
+                .tooltip("Render previews for tomograms whose manifest entry is missing or stale.")
             )
+            imod_btn = (
+                ui.button(
+                    icon="scatter_plot",
+                    on_click=lambda: _handle_generate_imod_for_instance(
+                        iid, jm, job_dir, project_path, imod_btn, refresh
+                    ),
+                )
+                .props("flat dense round size=sm")
+                .classes("text-blue-600")
+                .tooltip("Regenerate IMOD .mod overlays" if has_imod_models else "Generate IMOD .mod overlays")
+            )
+        # TM interpretive essentials (instance · θ · sym · Ø · score field).
+        ess: list[str] = []
+        if tm_info.get("tm_iid"):
+            ess.append(str(tm_info["tm_iid"]))
+        if tm_info.get("theta"):
+            ess.append(f"θ {tm_info['theta']}°")
+        if tm_info.get("sym"):
+            ess.append(f"sym {tm_info['sym']}")
+        diameter = float(getattr(jm, "particle_diameter_ang", 0.0))
+        if diameter:
+            ess.append(f"Ø {diameter:.0f} Å")
+        if score_field:
+            ess.append(f"by {score_field}")
+        if ess:
+            ui.label("  ·  ".join(ess)).classes("cb-tab-essentials")
+        if row["status"] == "missing-volume":
+            ui.label("No reconstructed tomogram on disk for 3dmod — picks plot still works.").classes(
+                "text-[11px] text-amber-700 italic"
+            )
+
+        # Tucked: size pills + cache-bypass re-render + 3dmod command.
+        with ui.expansion("sizes & 3dmod").props("dense").classes("cb-tab-details w-full"):
+            with ui.element("div").classes("cb-chip-strip"):
+                _render_species_size_chips(sp, project_path, row["tomo_name"], tm_info)
             regen_btn = (
                 ui.button(
                     "Re-render all",
                     icon="refresh",
                     on_click=lambda: _handle_generate_for_instance(
-                        instance_id, job_model, job_dir, project_path, True, regen_btn, refresh
+                        iid, jm, job_dir, project_path, True, regen_btn, refresh
                     ),
                 )
-                .props("dense no-caps flat size=sm")
+                .props("flat dense no-caps size=sm")
                 .classes("text-gray-500")
                 .style("padding: 0 6px; min-height: 22px;")
-                .tooltip(
-                    "Bypass cache and regenerate every tomogram's preview from scratch. "
-                    "Use after renderer changes. Runs in the background — track in the tray."
-                )
+                .tooltip("Bypass cache and regenerate every tomogram's preview from scratch.")
             )
-            imod_btn = (
-                ui.button(
-                    "IMOD",
-                    icon="scatter_plot",
-                    on_click=lambda: _handle_generate_imod_for_instance(
-                        instance_id, job_model, job_dir, project_path, imod_btn, refresh
-                    ),
-                )
-                .props("dense no-caps unelevated size=sm")
-                .classes("bg-blue-50 text-blue-700 border border-blue-200")
-                .style("padding: 0 8px; min-height: 22px;")
-                .tooltip("Regenerate IMOD .mod overlays" if has_imod_models else "Generate IMOD .mod overlays")
+            _render_3dmod_section(row)
+
+
+def _render_species_tab_body(sp: dict, layer_ids: Optional[dict], project_path: Path, refresh) -> None:
+    """One species' tab: a compact header (essentials + controls + tucked
+    size-pills / 3dmod) followed by the status-aware gallery body. The gallery
+    cross-links to this species' dots on the shared canvas via `layer_ids`."""
+    row, manifest, entry = sp["row"], sp["manifest"], sp["entry"]
+    tm_info = _tm_essentials_for_species(sp)
+    _render_species_tab_header(sp, tm_info, project_path, refresh)
+
+    status = row["status"]
+    if status == "errored":
+        with ui.element("div").classes("cb-empty"):
+            ui.icon("error_outline", size="28px").classes("text-red-500")
+            ui.label("Render error: " + (row.get("error") or "unknown")).classes("text-xs text-red-600")
+        return
+    if status == "zero-picks":
+        _render_zero_picks_empty_state(manifest, sp["label"])
+        return
+    if status not in ("ok", "missing-volume"):
+        with ui.element("div").classes("cb-empty"):
+            ui.spinner(size="28px", color="indigo-500")
+            ui.label("Generating preview for this tilt-series…").classes("text-xs")
+            ui.label("Auto-kicked in the background — the page refreshes when the manifest lands.").classes(
+                "text-[11px] italic text-gray-500"
             )
+        return
 
-        if row["status"] == "errored":
-            with ui.element("div").classes("cb-empty"):
-                ui.icon("error_outline", size="28px").classes("text-red-500")
-                ui.label("Render error: " + (row.get("error") or "unknown")).classes("text-xs text-red-600")
-            return True
-        if row["status"] == "zero-picks":
-            _render_zero_picks_empty_state(manifest, species_name)
-            return True
-        if row["status"] not in ("ok", "missing-volume"):
-            with ui.element("div").classes("cb-empty"):
-                ui.spinner(size="28px", color="indigo-500")
-                ui.label("Generating preview for this tilt-series…").classes("text-xs")
-                ui.label("Auto-kicked in the background — the page refreshes when the manifest lands.").classes(
-                    "text-[11px] italic text-gray-500"
-                )
-            return True
-
-        entry = (manifest.get("tomograms") or {}).get(row["tomo_name"]) or {}
-        has_atlas = bool(entry.get("cutout_atlas") and entry.get("cutout_index"))
-
-        _render_tomo_header_section(row, manifest)
-        _render_3dmod_section(row)
-        _render_preview_and_gallery_section(row, entry, manifest)
-        if not has_atlas:
-            _render_picks_scatter_section(row, entry, manifest)
-
-    return True
+    has_atlas = bool(entry.get("cutout_atlas") and entry.get("cutout_index"))
+    if has_atlas:
+        atlas_meta = _read_atlas_index(Path(entry["cutout_index"]))
+        if atlas_meta is not None:
+            xy_id = (layer_ids or {}).get("xy") or ""
+            xz_id = (layer_ids or {}).get("xz") or ""
+            gallery_id = f"cb-gallery-{uuid.uuid4().hex[:8]}"
+            _render_gallery_body(row, entry, manifest, atlas_meta, xy_id, xz_id, gallery_id, bool(xy_id), bool(xz_id))
+            return
+    # No subtomo cutouts yet — scatter fallback (its own mini X/Y + X/Z plots).
+    _render_picks_scatter_section(row, entry, manifest)
 
 
 def _render_zero_picks_empty_state(manifest: dict, species_name: Optional[str]) -> None:
@@ -3923,9 +4308,9 @@ def _render_zero_picks_empty_state(manifest: dict, species_name: Optional[str]) 
                 )
             with ui.column().classes("gap-1 items-start"):
                 ui.label(f"0 picks above cutoff for {species_label}").classes("text-sm font-semibold text-amber-700")
-                ui.label(
-                    f"PyTOM processed this tilt-series but no {score_field} value cleared the cutoff."
-                ).classes("text-[11px] text-gray-700")
+                ui.label(f"PyTOM processed this tilt-series but no {score_field} value cleared the cutoff.").classes(
+                    "text-[11px] text-gray-700"
+                )
                 if total:
                     ui.label(f"{zero_n} of {total} TS in this job came back empty.").classes(
                         "text-[11px] italic text-gray-500"
@@ -3934,30 +4319,6 @@ def _render_zero_picks_empty_state(manifest: dict, species_name: Optional[str]) 
                     "Check the picking cutoff, template chirality (TomoHand), "
                     "or template appropriateness for this species."
                 ).classes("text-[10px] italic text-gray-500").style("max-width: 480px;")
-
-
-def _render_tomo_header_section(row: dict, manifest: dict) -> None:
-    entry = (manifest.get("tomograms") or {}).get(row["tomo_name"]) or {}
-    score_field = manifest.get("score_field")
-    with ui.row().classes("w-full items-baseline gap-3 flex-wrap"):
-        ui.label(row["position_label"]).classes("text-sm font-bold text-gray-800")
-        ui.label(row["tomo_name"]).classes("text-[10px] font-mono text-gray-500")
-        ui.space()
-        if row["score_range"]:
-            ui.label(f"score {row['score_range'][0]:.3f}–{row['score_range'][1]:.3f}").classes(
-                "text-[11px] text-gray-500 font-mono"
-            )
-        if entry.get("score_mean") is not None:
-            ui.label(f"mean {entry['score_mean']:.3f}").classes("text-[11px] text-gray-500 font-mono")
-        ui.label(f"N={row['n_picks']}").classes("text-[11px] font-mono")
-        if score_field:
-            ui.label(f"colored by {score_field}").classes("text-[10px] text-gray-500 italic")
-        if entry.get("xy_slab_preview") or entry.get("warp_tomo_preview"):
-            ui.label("· tomogram backdrop").classes("text-[10px] text-emerald-600 italic")
-    if row["status"] == "missing-volume":
-        ui.label("No reconstructed tomogram on disk for 3dmod — picks plot still works.").classes(
-            "text-[11px] text-amber-700 italic"
-        )
 
 
 def _render_3dmod_section(row: dict) -> None:
@@ -3993,173 +4354,6 @@ def _render_3dmod_section(row: dict) -> None:
             icon="content_copy",
             on_click=lambda c=cmd: (ui.clipboard.write(c), ui.notify("Copied", type="positive", timeout=800)),
         ).props("flat dense round size=sm").classes("text-gray-500 hover:text-gray-800").tooltip("Copy 3dmod command")
-
-
-def _render_preview_and_gallery_section(row: dict, entry: dict, manifest: dict) -> None:
-    """Flagship: tomogram preview (left) + subtomo cutout gallery (right).
-    Slice B will hoist the preview half into a separate Reconstruction
-    section card; for now both halves live inside the Candidate Extract
-    section card per Slice A's "carry forward all current sections" rule."""
-    # Prefer our own X/Y slab (same percentile + flip pipeline as the X/Z slab,
-    # template thumb, and cutout atlas — so the invert toggle flips all four
-    # consistently). Fall back to the WarpTools PNG for older manifest caches
-    # where xy_slab_preview wasn't generated; those will get regenerated next
-    # time the orchestrator runs (MANIFEST_VERSION bump invalidates them).
-    xy_path = entry.get("xy_slab_preview") or entry.get("warp_tomo_preview")
-    xy_url = _vis_asset_url(xy_path) if xy_path else None
-    xz_path = entry.get("xz_preview")
-    xz_url = _vis_asset_url(xz_path) if xz_path else None
-    index_path = entry.get("cutout_index")
-    atlas_meta = _read_atlas_index(Path(index_path)) if index_path else None
-
-    picks_json_path = entry.get("picks_json")
-    picks_data = (
-        _read_picks_json(Path(picks_json_path)) if picks_json_path else {"picks": [], "tomo_dims_xyz_px": [1, 1, 1]}
-    )
-    picks = picks_data.get("picks", [])
-    tomo_dims = picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1]
-    x_dim = max(int(tomo_dims[0]), 1)
-    y_dim = max(int(tomo_dims[1]), 1)
-    z_dim = max(int(tomo_dims[2]), 1)
-
-    # Per-render unique ids — let the gallery JS find "its" preview markers
-    # without colliding with sibling cards in a multi-species view.
-    nonce = uuid.uuid4().hex[:8]
-    xy_host_id = f"cb-tomo-xy-{nonce}"
-    xz_host_id = f"cb-tomo-xz-{nonce}"
-    gallery_id = f"cb-gallery-{nonce}"
-
-    xy_aspect = max(0.3, min(3.0, x_dim / y_dim))
-    xz_aspect = max(1.5, min(8.0, x_dim / z_dim))
-
-    pick_xy_frac: list[tuple[int, float, float]] = []
-    pick_xz_frac: list[tuple[int, float, float]] = []
-    for p in picks:
-        try:
-            i = int(p.get("i"))
-        except (TypeError, ValueError):
-            continue
-        fx = max(0.0, min(1.0, float(p.get("x", 0)) / x_dim))
-        fy = max(0.0, min(1.0, float(p.get("y", 0)) / y_dim))
-        fz = max(0.0, min(1.0, float(p.get("z", 0)) / z_dim))
-        # IMOD-up Y/Z convention (ROADMAP §4.8): invert vertical for DOM.
-        pick_xy_frac.append((i, fx, 1.0 - fy))
-        pick_xz_frac.append((i, fx, 1.0 - fz))
-
-    # The section root carries the polarity-invert class; toggling it flips
-    # template + X/Y + X/Z + cutout tiles together (the four density renders).
-    # Ghost-dot overlays and labels are double-inverted in CSS so they stay
-    # at their declared colors regardless of state.
-    section_root = ui.element("div").classes("cb-section-card w-full")
-    with section_root:
-        with ui.element("div").classes("cb-section-card-header"):
-            ui.icon("photo_library", size="14px").classes("text-indigo-600")
-            ui.label("Tomogram & picks").classes("cb-section-title")
-            ui.space()
-            n_ok = entry.get("cutout_n_ok") or 0
-            n_pick = row.get("n_picks") or 0
-            n_fail = len(entry.get("cutout_failures") or [])
-            if atlas_meta is not None:
-                badge = f"{n_ok}/{n_pick} cutouts"
-                if n_fail:
-                    badge += f" · {n_fail} failures"
-                ui.label(badge).classes("text-[10px] text-gray-500 font-mono")
-
-            def _on_invert(e, root=section_root):
-                if e.value:
-                    root.classes(add="cb-invert-polarity")
-                else:
-                    root.classes(remove="cb-invert-polarity")
-
-            (
-                ui.switch("Invert", value=False, on_change=_on_invert)
-                .props("dense color=indigo-6 left-label")
-                .classes("text-[10px]")
-                .tooltip(
-                    "Flip the apparent intensity of template, X/Y, X/Z, and cutout tiles together. "
-                    "Use when the data convention has protein bright and you'd rather see it dark "
-                    "(or vice-versa) — the picker uses raw densities, so this is viewer-only."
-                )
-            )
-
-        preview_target_total_h = 540
-        col_max_w_calc = int(preview_target_total_h / max(0.05, (1.0 / xy_aspect + 1.0 / xz_aspect)))
-        col_max_w = max(360, min(720, col_max_w_calc))
-
-        with ui.row().classes("w-full gap-3 items-start flex-wrap"):
-            left_col = (
-                ui.column().classes("gap-1").style(f"flex: 1 1 360px; min-width: 320px; max-width: {col_max_w}px;")
-            )
-            with left_col:
-                with ui.row().classes("cb-preview-toolbar"):
-                    ui.label("Tomogram slices").classes("cb-section-title")
-                    ui.space()
-                    if pick_xy_frac:
-                        show_all = ui.checkbox("Show all picks", value=True).props("dense").classes("text-[10px]")
-
-                        def _toggle_overlay(e):
-                            cls = "cb-overlay-hide"
-                            if e.value:
-                                left_col.classes(remove=cls)
-                            else:
-                                left_col.classes(add=cls)
-
-                        show_all.on_value_change(_toggle_overlay)
-
-                with ui.element("div").classes("cb-preview-stack"):
-                    xy_host = ui.element("div").classes("cb-tomo-preview")
-                    xy_host._props["id"] = xy_host_id
-                    xy_host.style(f"aspect-ratio: {x_dim}/{y_dim};")
-                    with xy_host:
-                        if xy_url:
-                            ui.image(xy_url)
-                            for i, fx, fy in pick_xy_frac:
-                                g = ui.element("div").classes("cb-pick-ghost")
-                                g._props["data-pick-idx"] = str(i)
-                                g.style(f"left: {fx * 100:.3f}%; top: {fy * 100:.3f}%;")
-                            ui.element("div").classes("cb-pick-marker")
-                        else:
-                            with ui.column().classes("absolute inset-0 items-center justify-center text-center"):
-                                ui.icon("photo", size="36px").classes("text-gray-500")
-                                ui.label("No X/Y slab preview").classes("text-[11px] text-gray-400")
-                                ui.label("(needs reconstructed tomogram MRC)").classes(
-                                    "text-[10px] text-gray-500 italic"
-                                )
-
-                    xz_host = ui.element("div").classes("cb-tomo-preview")
-                    xz_host._props["id"] = xz_host_id
-                    xz_host.style(f"aspect-ratio: {x_dim}/{z_dim};")
-                    with xz_host:
-                        if xz_url:
-                            ui.image(xz_url)
-                            for i, fx, fz_top in pick_xz_frac:
-                                g = ui.element("div").classes("cb-pick-ghost")
-                                g._props["data-pick-idx"] = str(i)
-                                g.style(f"left: {fx * 100:.3f}%; top: {fz_top * 100:.3f}%;")
-                            ui.element("div").classes("cb-pick-marker")
-                        else:
-                            with ui.column().classes("absolute inset-0 items-center justify-center text-center"):
-                                ui.icon("layers", size="28px").classes("text-gray-500")
-                                ui.label("No X/Z slab preview").classes("text-[10px] text-gray-500 italic")
-
-            with ui.column().classes("gap-2 cb-picks-right").style("flex: 1 1 420px; min-width: 320px;"):
-                if atlas_meta is None:
-                    _render_gallery_placeholder()
-                else:
-                    _render_gallery_body(
-                        row, entry, manifest, atlas_meta, xy_host_id, xz_host_id, gallery_id, bool(xy_url), bool(xz_url)
-                    )
-
-
-def _render_gallery_placeholder() -> None:
-    ui.label("Subtomo gallery").classes("cb-section-title")
-    with ui.element("div").classes("cb-gallery-empty"):
-        ui.icon("hourglass_empty", size="20px").classes("text-amber-500 block mx-auto mb-1")
-        ui.html(
-            "Subtomo cutout atlas not built — needs a <code>SUBTOMO_EXTRACTION</code> "
-            "job whose particles match these picks by Å coordinates.",
-            sanitize=False,
-        )
 
 
 def _render_reference_strip(
@@ -4715,21 +4909,39 @@ def _render_gallery_body(
         # (tile click → persistent .selected) is unchanged.
         bridge_js = """
         setTimeout(function() {
-            const grid = document.getElementById(%(gallery_id)s);
-            if (!grid) return;
+            const galleryId = %(gallery_id)s;
             const slices = %(slices)s;
             const meta = %(meta)s;
             const hoverCard = document.getElementById(%(card_id)s);
+            // Layer hosts live in the always-present left canvas column, so they
+            // resolve now and stay valid across tab switches. `s.id` is the
+            // .cb-pick-layer id; the marker + ghost dots are its children.
             const wired = slices.map(function(s) {
                 const host = document.getElementById(s.id);
                 if (!host) return null;
                 return {
                     host: host,
                     marker: host.querySelector('.cb-pick-marker'),
-                    picks: s.picks
+                    picks: s.picks,
+                    layerId: s.id
                 };
             }).filter(function(x) { return x && x.marker; });
             if (!wired.length) return;
+
+            // Delegate on the Particles card — the common ancestor of BOTH the
+            // canvas (left) and every species' gallery (right, in lazily-mounted
+            // tab panels). The gallery grid is resolved LAZILY at event time, so
+            // the cross-link works no matter which tab was active when this ran.
+            // (Fix for the dead-hover bug on non-default tabs: q-tab-panels only
+            // mount the active panel, so the old one-shot getElementById(galleryId)
+            // bailed for inactive tabs and never wired their listeners.)
+            const root = wired[0].host.closest('.cb-section-card') || document.body;
+            const ourLayerIds = wired.map(function(w) { return w.layerId; });
+            function getGrid() { return document.getElementById(galleryId); }
+            function ourGhost(el) {
+                const layer = el.closest && el.closest('.cb-pick-layer');
+                return !!layer && ourLayerIds.indexOf(layer.id) !== -1;
+            }
 
             function placeMarkers(idx) {
                 wired.forEach(function(w) {
@@ -4752,6 +4964,8 @@ def _render_gallery_body(
                 });
             }
             function setTileHighlight(idx, on, scrollIntoView) {
+                const grid = getGrid();
+                if (!grid) return;
                 const tile = grid.querySelector('.cb-gallery-tile[data-pick-idx="' + idx + '"]');
                 if (!tile) return;
                 if (on) tile.classList.add('cb-tile-highlight');
@@ -4782,7 +4996,8 @@ def _render_gallery_body(
             }
             function clearAll() {
                 hideMarkers();
-                grid.querySelectorAll('.cb-tile-highlight').forEach(function(t) {
+                const grid = getGrid();
+                if (grid) grid.querySelectorAll('.cb-tile-highlight').forEach(function(t) {
                     t.classList.remove('cb-tile-highlight');
                 });
                 wired.forEach(function(w) {
@@ -4792,52 +5007,57 @@ def _render_gallery_body(
                 });
             }
 
-            // Gallery tile → previews + hover card
-            grid.addEventListener('mouseover', function(e) {
-                const t = e.target.closest && e.target.closest('.cb-gallery-tile[data-pick-idx]');
-                if (!t || !grid.contains(t)) return;
-                const idx = t.getAttribute('data-pick-idx');
-                placeMarkers(idx);
-                setGhostActive(idx, true);
-                fillHover(idx);
-            });
-            grid.addEventListener('mouseout', function(e) {
-                const t = e.target.closest && e.target.closest('.cb-gallery-tile[data-pick-idx]');
-                if (!t) return;
-                const next = e.relatedTarget && e.relatedTarget.closest &&
-                    e.relatedTarget.closest('.cb-gallery-tile[data-pick-idx]');
-                if (!next) {
-                    const idx = t.getAttribute('data-pick-idx');
-                    setGhostActive(idx, false);
-                    clearAll();
-                    fillHover(null);
+            // Single delegated mouseover/mouseout on the card handles BOTH
+            // directions: a gallery tile (filtered to OUR grid) and a ghost dot
+            // (filtered to OUR species' layers). Filtering keeps the N per-species
+            // bridges on the shared card from cross-firing.
+            root.addEventListener('mouseover', function(e) {
+                if (!e.target.closest) return;
+                const grid = getGrid();
+                const tile = e.target.closest('.cb-gallery-tile[data-pick-idx]');
+                if (tile && grid && grid.contains(tile)) {
+                    const idx = tile.getAttribute('data-pick-idx');
+                    placeMarkers(idx);
+                    setGhostActive(idx, true);
+                    fillHover(idx);
+                    return;
                 }
-            });
-
-            // Ghost dot → gallery tile + previews + hover card
-            wired.forEach(function(w) {
-                w.host.addEventListener('mouseover', function(e) {
-                    const g = e.target.closest && e.target.closest('.cb-pick-ghost[data-pick-idx]');
-                    if (!g) return;
-                    const idx = g.getAttribute('data-pick-idx');
+                const ghost = e.target.closest('.cb-pick-ghost[data-pick-idx]');
+                if (ghost && ourGhost(ghost)) {
+                    const idx = ghost.getAttribute('data-pick-idx');
                     placeMarkers(idx);
                     setGhostActive(idx, true);
                     setTileHighlight(idx, true, true);
                     fillHover(idx);
-                });
-                w.host.addEventListener('mouseout', function(e) {
-                    const g = e.target.closest && e.target.closest('.cb-pick-ghost[data-pick-idx]');
-                    if (!g) return;
+                }
+            });
+            root.addEventListener('mouseout', function(e) {
+                if (!e.target.closest) return;
+                const grid = getGrid();
+                const tile = e.target.closest('.cb-gallery-tile[data-pick-idx]');
+                if (tile && grid && grid.contains(tile)) {
+                    const next = e.relatedTarget && e.relatedTarget.closest &&
+                        e.relatedTarget.closest('.cb-gallery-tile[data-pick-idx]');
+                    if (!next || !grid.contains(next)) {
+                        const idx = tile.getAttribute('data-pick-idx');
+                        setGhostActive(idx, false);
+                        clearAll();
+                        fillHover(null);
+                    }
+                    return;
+                }
+                const ghost = e.target.closest('.cb-pick-ghost[data-pick-idx]');
+                if (ghost && ourGhost(ghost)) {
                     const next = e.relatedTarget && e.relatedTarget.closest &&
                         e.relatedTarget.closest('.cb-pick-ghost[data-pick-idx]');
-                    if (!next) {
-                        const idx = g.getAttribute('data-pick-idx');
+                    if (!next || !ourGhost(next)) {
+                        const idx = ghost.getAttribute('data-pick-idx');
                         setGhostActive(idx, false);
                         setTileHighlight(idx, false, false);
                         hideMarkers();
                         fillHover(null);
                     }
-                });
+                }
             });
         }, 80);
         """ % {
@@ -5153,6 +5373,7 @@ def reset_auto_kick_state() -> None:
     fresh dashboard mount can re-trigger generation if the page is reloaded."""
     _AUTO_KICKED_PREVIEWS.clear()
     _AUTO_KICKED_IMOD.clear()
+    _AUTO_KICKED_RECON_SLABS.clear()
 
 
 def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> bool:
