@@ -1436,7 +1436,8 @@ _CB_CSS = """
     font-size: 10px; color: #475569;
     padding: 2px 0 4px 0;
 }
-.cb-gallery-scroll { overflow-y: auto; max-height: 75vh; padding-right: 4px; position: relative; }
+.cb-gallery-scroll { overflow-y: auto; max-height: 68vh; padding-right: 4px; position: relative; }
+.cb-cutouts-actions { flex-shrink: 0; }
 /* Cutouts on top, controls compacted underneath. */
 .cb-cutouts-head { padding: 0 0 2px 0; }
 .cb-gallery-controls-box {
@@ -4999,10 +5000,16 @@ def _render_gallery_body(
 
     with cutouts_box, ui.row().classes("cb-cutouts-head w-full items-center gap-2"):
         ui.label("Subtomo gallery").classes("cb-section-title")
-        ui.space()
         ui.label("click: keep/drop · drag: box-select (⇧ keeps)").style(
             "font-size: 9px; color: #94a3b8;"
-        ).tooltip("Drag a rectangle over the cutouts to drop the enclosed picks; Shift-drag to keep them.")
+        ).tooltip(
+            "Drag a rectangle over the cutouts to flip the enclosed picks: a mostly-kept box drops "
+            "them, a mostly-dropped box restores them. Shift-drag always keeps."
+        )
+        ui.space()
+        # Save/Reset live in the header so they're always visible; the rest of
+        # the filter chrome (counter, exclude, sort, path) is compacted below.
+        actions_slot = ui.row().classes("cb-cutouts-actions items-center gap-1")
 
     with controls_box:
         # Hovered-pick stats strip (filled by the hover bridge) + sort, compact.
@@ -5079,6 +5086,7 @@ def _render_gallery_body(
                 discard_btn.props("disable")
 
     if can_filter:
+        # Metadata strip (below the cutouts): kept counter + exclude toggle.
         with controls_box, ui.row().classes("cb-filter-toolbar w-full"):
             counter_label = ui.label("kept …/…").classes("cb-filter-counter")
             if degenerate_indices:
@@ -5094,53 +5102,55 @@ def _render_gallery_body(
                 )
             ui.space()
 
-            def _on_save():
-                try:
-                    if not _is_dirty():
-                        ui.notify("No changes to save", type="info", timeout=1500)
-                        return
-                    effective = _effective_keep_set()
-                    result = picks_filter.save_filtered_picks_for_ts(subtomo_job_dir, ce_job_dir, ts_name, effective)
-                    ks = state["keep_set"]
-                    state["saved_baseline"] = set(ks) if ks is not None else None
-                    state["saved_exclude_degen"] = _exclude_degen_on()
-                    ui.notify(f"Saved {result['kept_for_ts']} picks for {ts_name}", type="positive", timeout=2000)
-                    _refresh_counter()
-                    _refresh_path_row()
-                    if refresh_roster:
-                        refresh_roster()  # roster review column updates now, not on next switch
-                except Exception as e:
-                    logger.exception("Save filter failed for %s", ts_name)
-                    ui.notify(f"Save failed: {e}", type="negative", timeout=4000)
+        def _on_save():
+            try:
+                if not _is_dirty():
+                    ui.notify("No changes to save", type="info", timeout=1500)
+                    return
+                effective = _effective_keep_set()
+                result = picks_filter.save_filtered_picks_for_ts(subtomo_job_dir, ce_job_dir, ts_name, effective)
+                ks = state["keep_set"]
+                state["saved_baseline"] = set(ks) if ks is not None else None
+                state["saved_exclude_degen"] = _exclude_degen_on()
+                ui.notify(f"Saved {result['kept_for_ts']} picks for {ts_name}", type="positive", timeout=2000)
+                _refresh_counter()
+                _refresh_path_row()
+                if refresh_roster:
+                    refresh_roster()  # roster review column updates now, not on next switch
+            except Exception as e:
+                logger.exception("Save filter failed for %s", ts_name)
+                ui.notify(f"Save failed: {e}", type="negative", timeout=4000)
 
-            def _on_discard():
-                try:
-                    outcome = picks_filter.discard_ts_filter(subtomo_job_dir, ts_name)
-                    if outcome == "noop":
-                        ui.notify("No filter to reset for this tomogram", type="info", timeout=1500)
-                        return
-                    state["keep_set"] = None
-                    state["saved_baseline"] = None
-                    state["saved_exclude_degen"] = True
-                    if outcome == "removed_all":
-                        ui.notify(
-                            f"Reset {ts_name} — no curation left for this species, downstream uses original picks",
-                            type="info", timeout=2800,
-                        )
-                    else:
-                        ui.notify(
-                            f"Reset {ts_name} to original picks — other tomograms keep their curation",
-                            type="info", timeout=2800,
-                        )
-                    _refresh_grid()
-                    _refresh_counter()
-                    _refresh_path_row()
-                    if refresh_roster:
-                        refresh_roster()
-                except Exception as e:
-                    logger.exception("Discard filter failed")
-                    ui.notify(f"Discard failed: {e}", type="negative", timeout=4000)
+        def _on_discard():
+            try:
+                outcome = picks_filter.discard_ts_filter(subtomo_job_dir, ts_name)
+                if outcome == "noop":
+                    ui.notify("No filter to reset for this tomogram", type="info", timeout=1500)
+                    return
+                state["keep_set"] = None
+                state["saved_baseline"] = None
+                state["saved_exclude_degen"] = True
+                if outcome == "removed_all":
+                    ui.notify(
+                        f"Reset {ts_name} — no curation left for this species, downstream uses original picks",
+                        type="info", timeout=2800,
+                    )
+                else:
+                    ui.notify(
+                        f"Reset {ts_name} to original picks — other tomograms keep their curation",
+                        type="info", timeout=2800,
+                    )
+                _refresh_grid()
+                _refresh_counter()
+                _refresh_path_row()
+                if refresh_roster:
+                    refresh_roster()
+            except Exception as e:
+                logger.exception("Discard filter failed")
+                ui.notify(f"Discard failed: {e}", type="negative", timeout=4000)
 
+        # Action buttons in the always-visible header slot.
+        with actions_slot:
             discard_btn = (
                 ui.button("Reset this tomo", icon="delete_outline", on_click=_on_discard)
                 .props("flat dense size=sm color=red-7")
@@ -5455,19 +5465,24 @@ def _render_gallery_body(
         document.addEventListener('mouseup', function(e) {
             if (!dragging) { pending = false; grid = null; return; }  // plain click — let it through
             var rb = rect.getBoundingClientRect();
-            var idxs = [];
+            var idxs = [], dropped = 0;
             grid.querySelectorAll('.cb-gallery-tile[data-pick-idx]').forEach(function(t) {
                 if (t.classList.contains('cb-tile-degenerate')) return;
                 var tb = t.getBoundingClientRect();
                 var cx = tb.left + tb.width / 2, cy = tb.top + tb.height / 2;
                 if (cx >= rb.left && cx <= rb.right && cy >= rb.top && cy <= rb.bottom) {
                     idxs.push(parseInt(t.getAttribute('data-pick-idx'), 10));
+                    if (t.classList.contains('cb-tile-dropped')) dropped++;
                 }
             });
             rect.remove(); rect = null;
             grid.classList.remove('cb-lasso-dragging');
             if (idxs.length) {
-                grid.dispatchEvent(new CustomEvent('cbpicklasso', {detail: {idxs: idxs, keep: shiftKey}}));
+                // Symmetric: unify the box toward the opposite of its current
+                // majority — mostly-kept → drop, mostly-dropped → restore (keep).
+                // Shift forces keep (explicit restore). Ties drop.
+                var keep = shiftKey ? true : (dropped > (idxs.length - dropped));
+                grid.dispatchEvent(new CustomEvent('cbpicklasso', {detail: {idxs: idxs, keep: keep}}));
             }
             // Swallow the click the browser synthesizes from this drag so it
             // doesn't also toggle the tile under the pointer. Capture-phase, and
