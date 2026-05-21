@@ -32,6 +32,7 @@ to one decimal.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -46,6 +47,10 @@ OPTIMISATION_SET_NAME = "optimisation_set.star"
 OPTIMISATION_SET_FILTERED_NAME = "optimisation_set_filtered.star"
 PARTICLES_NAME = "particles.star"
 PARTICLES_FILTERED_NAME = "particles_filtered.star"
+# {ts_name: kept_count} for TS the user has explicitly curated. The filtered
+# star can't distinguish "reviewed, kept all" from "never reviewed" (both have
+# all rows), so this sidecar records review intent + kept count for the roster.
+REVIEWED_SIDECAR_NAME = "curation_reviewed.json"
 
 
 def _read_candidates_for_ts(candidates_star: Path, ts_name: str) -> Optional[pd.DataFrame]:
@@ -250,6 +255,9 @@ def save_filtered_picks_for_ts(
         )
     out_opt.write_text("\n".join(out_lines) + "\n")
 
+    # Mark this TS reviewed (+ record kept count) for the roster's review column.
+    _update_reviewed_sidecar(subtomo_job_dir, ts_name, int(len(df_this_ts_kept)))
+
     return {
         "kept_for_ts": int(len(df_this_ts_kept)),
         "total_kept": int(len(df_combined)),
@@ -258,11 +266,60 @@ def save_filtered_picks_for_ts(
     }
 
 
+def resolve_canonical_optset(subtomo_job_dir: Path) -> Path:
+    """The optimisation_set a downstream consumer should read: the curated
+    `_filtered` one if it exists, else the original. Single definition of
+    "which star is canonical", shared by the IO-slot resolver's intent and by
+    cross-project aggregation (PICKS_FILTER_AGGREGATION_ROADMAP.md §factor out)."""
+    filtered = subtomo_job_dir / OPTIMISATION_SET_FILTERED_NAME
+    if filtered.exists():
+        return filtered
+    return subtomo_job_dir / OPTIMISATION_SET_NAME
+
+
+def has_filtered_set(subtomo_job_dir: Path) -> bool:
+    """True if a curated particles_filtered.star exists for this subtomo job."""
+    return (subtomo_job_dir / PARTICLES_FILTERED_NAME).exists()
+
+
+def read_reviewed_counts(subtomo_job_dir: Path) -> dict[str, int]:
+    """{ts_name: kept_count} for TS the user has curated in this subtomo job.
+    Empty when nothing has been reviewed (no sidecar)."""
+    p = subtomo_job_dir / REVIEWED_SIDECAR_NAME
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, int] = {}
+    for k, v in data.items():
+        try:
+            out[str(k)] = int(v)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _update_reviewed_sidecar(subtomo_job_dir: Path, ts_name: str, kept_count: int) -> None:
+    data = read_reviewed_counts(subtomo_job_dir)
+    data[ts_name] = kept_count
+    try:
+        (subtomo_job_dir / REVIEWED_SIDECAR_NAME).write_text(json.dumps(data))
+    except OSError as e:
+        logger.warning("Could not write review sidecar in %s: %s", subtomo_job_dir, e)
+
+
 def discard_filter(subtomo_job_dir: Path) -> bool:
     """Delete the filtered file pair, reverting downstream consumers to the
-    original. Returns True if at least one file was removed."""
+    original. Returns True if at least one file was removed.
+
+    This is the WHOLE-species reset (every TS). For reverting a single
+    tilt-series while keeping the rest curated, use `discard_ts_filter`."""
     removed = False
-    for name in (PARTICLES_FILTERED_NAME, OPTIMISATION_SET_FILTERED_NAME):
+    for name in (PARTICLES_FILTERED_NAME, OPTIMISATION_SET_FILTERED_NAME, REVIEWED_SIDECAR_NAME):
         p = subtomo_job_dir / name
         if p.exists():
             try:
@@ -273,37 +330,66 @@ def discard_filter(subtomo_job_dir: Path) -> bool:
     return removed
 
 
-def find_subtomo_job_dir_for_cutouts(cutout_atlas_path: Optional[str], project_state) -> Optional[Path]:
-    """Given a cutout-atlas path (lives under candidate-extract's vis dir, not
-    subtomo's), infer which subtomo_extraction job produced the underlying
-    .mrcs files this atlas pulled from.
+def discard_ts_filter(subtomo_job_dir: Path, ts_name: str) -> str:
+    """Revert ONE tilt-series to its original (all-kept) picks while leaving
+    every other TS's curation intact — the per-tomogram counterpart to
+    `discard_filter`.
 
-    The atlas itself doesn't record the upstream subtomo job dir, so we rely
-    on the same heuristic subtomo_link uses: walk all SUBTOMO_EXTRACTION jobs
-    in the project and pick the lex-greatest (most-recently named) one whose
-    particles.star exists. Matches subtomo_link's "newer wins" tie-breaker.
+    If removing this TS leaves nothing curated, the whole filtered pair is
+    deleted (a clean full revert). Returns:
+      - "noop"        : no filtered set exists, nothing to do
+      - "removed_all" : no curation remained → filtered pair deleted
+      - "reverted_ts" : this TS reset to original, other TSs still curated
     """
-    if project_state is None:
-        return None
-    from services.models_base import JobType
+    filtered = subtomo_job_dir / PARTICLES_FILTERED_NAME
+    if not filtered.exists():
+        return "noop"
 
-    candidates: list[Path] = []
-    project_path = getattr(project_state, "project_path", None)
-    if not project_path:
-        return None
-    project_root = Path(project_path)
-    for instance_id, jm in (getattr(project_state, "jobs", {}) or {}).items():
-        if getattr(jm, "job_type", None) != JobType.SUBTOMO_EXTRACTION:
-            continue
-        relion_name = getattr(jm, "relion_job_name", None) or (
-            (getattr(project_state, "job_path_mapping", {}) or {}).get(instance_id)
-        )
-        if not relion_name:
-            continue
-        d = project_root / relion_name.rstrip("/")
-        if (d / PARTICLES_NAME).exists():
-            candidates.append(d)
-    if not candidates:
-        return None
-    candidates.sort()
-    return candidates[-1]
+    # Drop this TS from the review sidecar. If nothing remains reviewed, the
+    # filtered set no longer represents any curation → remove it wholesale.
+    reviewed = read_reviewed_counts(subtomo_job_dir)
+    reviewed.pop(ts_name, None)
+    if not reviewed:
+        discard_filter(subtomo_job_dir)
+        return "removed_all"
+
+    orig_particles = subtomo_job_dir / PARTICLES_NAME
+    if not orig_particles.exists():
+        raise FileNotFoundError(f"Original subtomo particles.star not found: {orig_particles}")
+
+    df_filt = _read_subtomo_particles(filtered, subtomo_job_dir)
+    df_orig = _read_subtomo_particles(orig_particles, subtomo_job_dir)
+    if df_filt is None or df_orig is None:
+        raise RuntimeError("Could not read particles for per-TS discard")
+
+    # Keep other TSs as-curated; replace this TS's rows with its full original set.
+    df_other = df_filt[df_filt["rlnTomoName"] != ts_name]
+    df_this_orig = df_orig[df_orig["rlnTomoName"] == ts_name]
+    df_combined = pd.concat([df_other, df_this_orig], ignore_index=True)
+
+    import starfile
+
+    orig_data = starfile.read(orig_particles, always_dict=True)
+    if "particles" in orig_data:
+        orig_data["particles"] = df_combined
+    else:
+        for k, v in list(orig_data.items()):
+            if isinstance(v, pd.DataFrame) and "rlnTomoName" in v.columns:
+                orig_data[k] = df_combined
+                break
+    starfile.write(orig_data, filtered, overwrite=True)
+
+    # Persist the trimmed sidecar (optimisation_set_filtered.star already points
+    # at particles_filtered.star and is unchanged).
+    try:
+        (subtomo_job_dir / REVIEWED_SIDECAR_NAME).write_text(json.dumps(reviewed))
+    except OSError as e:
+        logger.warning("Could not write review sidecar in %s: %s", subtomo_job_dir, e)
+    return "reverted_ts"
+
+
+# NOTE: `find_subtomo_job_dir_for_cutouts` (lex-greatest-subtomo-job heuristic)
+# was removed 2026-05-21 — it mis-targeted every species at one subtomo job.
+# The gallery now passes the species-matched subtomo_job_dir directly (resolved
+# via _matching_subtomo_instance in the dashboard). See
+# PICKS_FILTER_AGGREGATION_ROADMAP.md.

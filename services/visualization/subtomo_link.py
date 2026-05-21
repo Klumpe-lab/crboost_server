@@ -88,6 +88,39 @@ def _read_subtomo_particles(particles_star: Path, job_dir: Path) -> Optional[pd.
     return parts
 
 
+def _subtomo_job_dirs(project_state, project_path) -> list[Path]:
+    """On-disk dirs for every SUBTOMO_EXTRACTION job, sorted by relion job name
+    (so newer / lex-greater jobs win on later coord-collision use)."""
+    dirs: list[Path] = []
+    if project_state is None or project_path is None:
+        return dirs
+    for instance_id, job_model in (project_state.jobs or {}).items():
+        if getattr(job_model, "job_type", None) != JobType.SUBTOMO_EXTRACTION:
+            continue
+        relion_name = getattr(job_model, "relion_job_name", None)
+        if not relion_name:
+            relion_name = (project_state.job_path_mapping or {}).get(instance_id)
+            if not relion_name:
+                continue
+        d = Path(project_path) / relion_name.rstrip("/")
+        if d.is_dir():
+            dirs.append(d)
+    dirs.sort()
+    return dirs
+
+
+def subtomo_particles_stars(project_state, project_path) -> list[Path]:
+    """particles.star path for every SUBTOMO_EXTRACTION job on disk.
+
+    The candidate-preview cutout atlas is a JOIN between candidate picks and
+    these files, so the preview orchestrator must include them in its cache
+    staleness sources — otherwise a preview generated while a subtomo job is
+    still running freezes "no subtomo match" failures that never rebuild once
+    the job finishes (the candidates.star it normally watches is unchanged)."""
+    stars = (d / "particles.star" for d in _subtomo_job_dirs(project_state, project_path))
+    return [s for s in stars if s.exists()]
+
+
 def build_pick_to_mrcs_index(
     candidate_extract_job_dir: Path, project_state, project_path: Path
 ) -> dict[tuple[str, tuple[int, int, int]], dict]:
@@ -100,28 +133,7 @@ def build_pick_to_mrcs_index(
     """
     index: dict[tuple[str, tuple[int, int, int]], dict] = {}
 
-    if project_state is None or project_path is None:
-        return index
-
-    subtomo_jobs: list[Path] = []
-    for instance_id, job_model in (project_state.jobs or {}).items():
-        if getattr(job_model, "job_type", None) != JobType.SUBTOMO_EXTRACTION:
-            continue
-        relion_name = getattr(job_model, "relion_job_name", None)
-        if not relion_name:
-            mapped = (project_state.job_path_mapping or {}).get(instance_id)
-            if not mapped:
-                continue
-            relion_name = mapped
-        d = Path(project_path) / relion_name.rstrip("/")
-        if d.is_dir():
-            subtomo_jobs.append(d)
-
-    # Sort by relion-job name so newer (lex-greater) jobs win — gives the
-    # "most recent extraction takes precedence" semantics on coord collision.
-    subtomo_jobs.sort()
-
-    for job_dir in subtomo_jobs:
+    for job_dir in _subtomo_job_dirs(project_state, project_path):
         df = _read_subtomo_particles(job_dir / "particles.star", job_dir)
         if df is None:
             continue

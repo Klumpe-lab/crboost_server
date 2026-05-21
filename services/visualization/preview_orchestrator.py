@@ -35,7 +35,7 @@ from services.visualization.preview_render import (
     render_xz_slab_preview,
     write_picks_data,
 )
-from services.visualization.subtomo_link import build_pick_to_mrcs_index, lookup_for_pick
+from services.visualization.subtomo_link import build_pick_to_mrcs_index, lookup_for_pick, subtomo_particles_stars
 
 logger = logging.getLogger(__name__)
 
@@ -267,6 +267,11 @@ def generate_candidate_previews(
     # already cached an empty-cutout manifest. Built once so the per-tomo
     # loop is O(1) per entry.
     tomos_with_subtomo: set[str] = {k[0] for k in subtomo_index.keys()}
+    # particles.star files behind the cutout join — added to per-tomo staleness
+    # below so a preview cached mid-extraction rebuilds once the subtomo job
+    # finishes (candidates.star, the only thing `sources` otherwise watches, is
+    # unchanged by then).
+    subtomo_stars = subtomo_particles_stars(project_state, project_root) if project_state is not None else []
 
     ok: list[str] = []
     skipped_cached: list[str] = []
@@ -307,8 +312,20 @@ def generate_candidate_previews(
             # so cutouts silently never built; (2) the subtomo job ran AFTER
             # the candidate-extract job, so the original cache predates it.
             cache_missing_cutout = tomo_name in tomos_with_subtomo and not prior_entry.get("cutout_atlas")
+            # A *partial* cached atlas can be a mid-extraction snapshot: the
+            # preview was generated while the SUBTOMO_EXTRACTION job was still
+            # running, so most picks recorded "no subtomo match". candidates.star
+            # is unchanged once the subtomo job finishes, so the `sources` mtime
+            # check never fires. Treat the atlas as stale when the subtomo data
+            # is newer than it, so it self-heals on the next pass.
+            cache_cutout_stale = bool(
+                prior_entry.get("cutout_atlas")
+                and tomo_name in tomos_with_subtomo
+                and is_output_stale(Path(prior_entry["cutout_atlas"]), subtomo_stars)
+            )
             if (
                 not cache_missing_cutout
+                and not cache_cutout_stale
                 and prior_outputs
                 and not any(is_output_stale(o, sources) for o in prior_outputs)
             ):

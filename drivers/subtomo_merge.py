@@ -282,6 +282,20 @@ class SourceResolved:
     tomograms_star: Path
     n_particles: int
     tomo_names: List[str]
+    box_size: Optional[int] = None
+    pixel_size: Optional[float] = None
+    binning: Optional[float] = None
+
+
+def _optics_scalar(optics_df: pd.DataFrame, col: str):
+    """First-row value of an optics column, or None if absent/empty."""
+    if optics_df is None or col not in optics_df.columns or len(optics_df) == 0:
+        return None
+    try:
+        v = optics_df[col].iloc[0]
+        return None if pd.isna(v) else v
+    except Exception:
+        return None
 
 
 def _resolve_source_to_optset(source: str) -> Path:
@@ -292,6 +306,38 @@ def _resolve_source_to_optset(source: str) -> Path:
     if p.is_dir():
         return _find_optimisation_set_in_dir(p)
     return p
+
+
+@dataclass
+class _NormSource:
+    path: str  # curated optimisation_set (filtered-if-exists), or a directory
+    tomos: Optional[List[str]] = None  # included rlnTomoName values; None = all
+    original_path: Optional[str] = None  # original optimisation_set, for overrides
+    original_tomos: Optional[List[str]] = None  # tomos to take from the original
+
+
+def _normalize_source(source) -> _NormSource:
+    """Accept either a bare path string (legacy / in-job merge) or a dict
+    {"path", "tomos", "original_path", "original_tomos"} (aggregation selector).
+
+    `tomos is None` means all tomograms. `original_tomos` lists tomos whose
+    particles should come from `original_path` instead of the curated `path`
+    (the per-tomo curated/original choice)."""
+    if isinstance(source, str):
+        return _NormSource(path=source)
+    if isinstance(source, dict):
+        path = source.get("path") or source.get("optset_path")
+        if not path:
+            raise ValueError(f"Merge source dict missing 'path': {source}")
+        tomos = source.get("tomos")
+        orig_tomos = source.get("original_tomos")
+        return _NormSource(
+            path=str(path),
+            tomos=(list(tomos) if tomos is not None else None),
+            original_path=(str(source["original_path"]) if source.get("original_path") else None),
+            original_tomos=(list(orig_tomos) if orig_tomos else None),
+        )
+    raise TypeError(f"Unsupported merge source type: {type(source)!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -351,11 +397,12 @@ def merge_optimisation_sets_into_jobdir(
                 print(f"[MERGE] Backed up {name} -> {backup.name}")
 
     # ---- Collect all sources (primary + additional) ----
-    all_optsets: List[Path] = []
+    all_sources: List[Tuple[Path, _NormSource]] = []
     if has_primary:
-        all_optsets.append(primary_optset.resolve())
+        all_sources.append((primary_optset.resolve(), _NormSource(path=str(primary_optset))))
     for s in additional_sources:
-        all_optsets.append(_resolve_source_to_optset(s))
+        ns = _normalize_source(s)
+        all_sources.append((_resolve_source_to_optset(ns.path), ns))
 
     resolved_sources: List[SourceResolved] = []
     all_optics: List[pd.DataFrame] = []
@@ -363,7 +410,7 @@ def merge_optimisation_sets_into_jobdir(
     all_tomograms: List[pd.DataFrame] = []
     primary_general_kv: Dict[str, Any] = {}
 
-    for opt in all_optsets:
+    for opt, ns in all_sources:
         p_star, t_star = _parse_optimisation_set(opt)
         print(f"[MERGE DEBUG] opt={opt}  ->  particles={p_star}")    # <-- add this
 
@@ -375,10 +422,34 @@ def merge_optimisation_sets_into_jobdir(
         optics_df, particles_df, general_kv = _read_particles_star(p_star)
         tomos_df = _read_tomograms_star(t_star)
 
+        # Per-tomo curated/original override: for tomos the user pinned to
+        # original picks, swap the curated rows for the original ones. (The
+        # curated/filtered star already holds original rows for un-reviewed
+        # tomos, so this only differs for genuinely curated tomos.)
+        if ns.original_tomos and ns.original_path:
+            orig_opt = _resolve_source_to_optset(ns.original_path)
+            orig_p_star, _ = _parse_optimisation_set(orig_opt)
+            _, orig_particles_df, _ = _read_particles_star(orig_p_star)
+            override = set(ns.original_tomos)
+            kept_curated = particles_df[~particles_df["rlnTomoName"].astype(str).isin(override)]
+            from_original = orig_particles_df[orig_particles_df["rlnTomoName"].astype(str).isin(override)]
+            particles_df = pd.concat([kept_curated, from_original], ignore_index=True)
+
+        # Per-tomogram fine selection: keep only the requested rlnTomoName values
+        # from BOTH particles and tomograms so the merged graph stays consistent.
+        if ns.tomos is not None:
+            keep = set(ns.tomos)
+            particles_df = particles_df[particles_df["rlnTomoName"].astype(str).isin(keep)].reset_index(drop=True)
+            tomos_df = tomos_df[tomos_df["rlnTomoName"].astype(str).isin(keep)].reset_index(drop=True)
+
         if not primary_general_kv and general_kv:
             primary_general_kv = dict(general_kv)
 
         tomo_names = sorted(set(particles_df["rlnTomoName"].astype(str).tolist()))
+
+        box_val = _optics_scalar(optics_df, "rlnImageSize")
+        apix_val = _optics_scalar(optics_df, "rlnImagePixelSize")
+        bin_val = _optics_scalar(optics_df, "rlnTomoSubtomogramBinning")
         resolved_sources.append(
             SourceResolved(
                 source_input=str(opt),
@@ -387,6 +458,9 @@ def merge_optimisation_sets_into_jobdir(
                 tomograms_star=t_star.resolve(),
                 n_particles=len(particles_df),
                 tomo_names=tomo_names,
+                box_size=(int(box_val) if box_val is not None else None),
+                pixel_size=(float(apix_val) if apix_val is not None else None),
+                binning=(float(bin_val) if bin_val is not None else None),
             )
         )
 
@@ -496,6 +570,9 @@ def merge_optimisation_sets_into_jobdir(
                 "tomograms_star": str(s.tomograms_star),
                 "n_particles": s.n_particles,
                 "tomo_names": s.tomo_names,
+                "box_size": s.box_size,
+                "pixel_size": s.pixel_size,
+                "binning": s.binning,
             }
             for s in resolved_sources
         ],

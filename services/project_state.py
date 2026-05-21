@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Literal, Optional, Tuple, Type, List
 
-from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny
+from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny, field_validator
 
 from services.models_base import (
     JobStatus,
@@ -429,6 +429,59 @@ def _migrate_v2_to_v3(data: Dict[str, Any], project_root: Optional[Path]) -> Non
     data["schema_version"] = [3, 0]
 
 
+class AggregationSource(BaseModel):
+    """One selected merge source for an aggregation project.
+
+    Identifies a SubtomoExtraction optimisation_set (one project × one species)
+    plus an optional per-tomogram include-list. `tomo_names is None` means "all
+    tomograms in the set" (the common case); a list narrows the merge to those
+    rlnTomoName values. The remaining fields are a display cache so the merge
+    card can render a source without re-walking the foreign project on disk."""
+
+    optset_path: str
+    tomo_names: Optional[List[str]] = None  # None = all tomos in this set
+    # Tomos (by rlnTomoName) the user forced to ORIGINAL picks instead of the
+    # curated/filtered set. Only meaningful for tomos that have a curated set;
+    # absence => use curated where available. Per-tomo mutually-exclusive
+    # curated/original choice surfaced in the merge selector.
+    original_tomos: List[str] = Field(default_factory=list)
+    project_name: str = ""
+    project_path: str = ""
+    species_id: str = ""
+    species_label: str = ""
+
+
+class AggregationMergeSource(BaseModel):
+    """One contributing source recorded in a completed merge — a flat row for
+    the 'what made the cut' table. Acquisition metadata (box/apix/binning) is
+    captured so the user can spot anything that shouldn't have been co-merged."""
+
+    project_name: str = ""
+    species_label: str = ""
+    n_particles: int = 0
+    n_tomograms: int = 0
+    box_size: Optional[int] = None
+    pixel_size: Optional[float] = None
+    binning: Optional[float] = None
+
+
+class AggregationMerge(BaseModel):
+    """A named, recorded merge output. Each merge writes its own
+    MergedSources/<slug>/ folder so different (species-subset) merges coexist;
+    the registry on ProjectState tracks them and which one is active for
+    downstream consumers."""
+
+    slug: str  # filesystem-safe folder name under MergedSources/
+    name: str = ""
+    description: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+    n_particles: int = 0
+    n_tomograms: int = 0
+    n_sources: int = 0
+    sources: List[AggregationMergeSource] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
@@ -453,7 +506,9 @@ class ProjectState(BaseModel):
     # standalone workspace card (not a pipeline job). Sources persist here so
     # the user can re-merge after adding more datasets.
     is_aggregation: bool = False
-    aggregation_sources: List[str] = Field(default_factory=list)
+    aggregation_sources: List[AggregationSource] = Field(default_factory=list)
+    aggregation_merges: List[AggregationMerge] = Field(default_factory=list)
+    active_merge_slug: str = ""
 
     microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
     acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
@@ -481,6 +536,15 @@ class ProjectState(BaseModel):
     tilt_filter_png_dir: Optional[str] = None
 
     _dirty: bool = PrivateAttr(default=False)
+
+    @field_validator("aggregation_sources", mode="before")
+    @classmethod
+    def _migrate_aggregation_sources(cls, v):
+        """Coerce legacy `List[str]` (bare optset paths) into AggregationSource.
+        Pre-fine-selection projects stored only paths; treat each as all-tomos."""
+        if not isinstance(v, list):
+            return v
+        return [{"optset_path": s} if isinstance(s, str) else s for s in v]
 
     def mark_dirty(self):
         self._dirty = True
