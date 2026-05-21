@@ -35,6 +35,17 @@ def shorten_ts_names(items: List[str]) -> Dict[str, str]:
     return {name: ts_display_name(name) for name in items}
 
 
+def ts_pretty_name(raw_name: str) -> str:
+    """Human-friendly tomogram label: 'agg_..._Position_22_2' -> 'Pos 22 · Beam 2'.
+    Falls back to the raw name when there's no Position_{stage}[_{beam}] suffix."""
+    m = _POSITION_RE.search(raw_name)
+    if not m:
+        return raw_name
+    stage = m.group(1)
+    beam = m.group(2)
+    return f"Pos {stage} · Beam {beam}" if beam else f"Pos {stage}"
+
+
 def ts_position_sort_key(raw_name: str):
     """Numeric (stage, beam) key for sorting TS names ascending.
 
