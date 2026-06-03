@@ -479,10 +479,7 @@ class RosterWidget(FingerprintedView):
                 for et in get_extra_tabs(job_type):
                     if et.key == "tasks":
                         (
-                            ui.button(
-                                icon=et.icon,
-                                on_click=lambda iid=instance_id: self._toggle_ts_expansion(iid),
-                            )
+                            ui.button(icon=et.icon, on_click=lambda iid=instance_id: self._toggle_ts_expansion(iid))
                             .props("flat dense round size=xs color=grey-7")
                             .style("flex-shrink: 0;")
                             .tooltip("Toggle tilt-series list")
@@ -864,6 +861,9 @@ class RosterWidget(FingerprintedView):
             ui.element("div").style("height: 1px;")
             self._build_dashboard_btn()
 
+            ui.element("div").style("height: 1px;")
+            self._build_curation_btn()
+
             # SLURM defaults / resource profiles live inside the project overview popup now.
 
             ui.element("div").style("height: 10px;")
@@ -1058,8 +1058,10 @@ class RosterWidget(FingerprintedView):
         tot = state.import_total_tilt_series
         header_text = f"{sel} of {tot} tilt-series"
 
-        exp = ui.expansion().props("dense header-class=q-px-none").style(
-            "width: 100%; border-bottom: 1px solid #f8fafc; background: transparent;"
+        exp = (
+            ui.expansion()
+            .props("dense header-class=q-px-none")
+            .style("width: 100%; border-bottom: 1px solid #f8fafc; background: transparent;")
         )
 
         with exp.add_slot("header"):
@@ -1088,9 +1090,7 @@ class RosterWidget(FingerprintedView):
                     _ts_cell(str(td.beam_position), "#64748b")
                     _ts_cell(str(td.tilt_count), "#64748b")
                     _ts_cell(
-                        td.mdoc_filename,
-                        "#94a3b8",
-                        extra="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
+                        td.mdoc_filename, "#94a3b8", extra="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                     )
             if excluded_ts:
                 with ui.element("div").style("padding: 4px 11px; border-top: 1px solid #e2e8f0;"):
@@ -1119,9 +1119,7 @@ class RosterWidget(FingerprintedView):
 
         # Global defaults row
         with ui.element("div").style("padding: 3px 11px;"):
-            ui.label("Global").style(
-                "font-size: 9px; font-weight: 600; color: #94a3b8; margin-bottom: 2px;"
-            )
+            ui.label("Global").style("font-size: 9px; font-weight: 600; color: #94a3b8; margin-bottom: 2px;")
             _profile_row_fields(defaults.gres, defaults.mem, str(defaults.cpus_per_task), defaults.time)
 
         if profiles:
@@ -1131,9 +1129,7 @@ class RosterWidget(FingerprintedView):
                 "padding: 3px 11px 2px; border-top: 1px solid #f1f5f9; background: #f8fafc;"
             ):
                 for hdr in ("JOB TYPE", "GRES", "MEM", "CPU", "TIME"):
-                    ui.label(hdr).style(
-                        "font-size: 8px; font-weight: 600; color: #94a3b8; letter-spacing: 0.04em;"
-                    )
+                    ui.label(hdr).style("font-size: 8px; font-weight: 600; color: #94a3b8; letter-spacing: 0.04em;")
 
             job_type_labels = {jt.value: jt.name.replace("_", " ").title() for jt in JobType}
             for key, profile in profiles.items():
@@ -1521,6 +1517,27 @@ class RosterWidget(FingerprintedView):
         self._refs["dashboard_btn"] = container
         return container
 
+    def _build_curation_btn(self):
+        """Sidebar button → launch a ChimeraX+ArtiaX VNC curation session as a
+        SLURM job, then show the user the tunnel/viewer/password to connect.
+        See ui/curation_session_dialog.py and containers/chimerax_artiax/."""
+        panel = self.panel
+        container = (
+            ui.element("div")
+            .style(
+                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                "background: transparent; "
+                "display: flex; align-items: center; justify-content: center; "
+                "cursor: pointer; flex-shrink: 0; position: relative;"
+            )
+            .on("click", lambda: panel.launch_curation_session())
+            .tooltip("Launch ChimeraX + ArtiaX (manual picking)")
+        )
+        with container:
+            ui.icon("view_in_ar", size="18px").style(f"color: {SB_MUTE}; pointer-events: none;")
+        self._refs["curation_btn"] = container
+        return container
+
     def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None):
         bg = SB_ABG if active else "transparent"
         color = color_override or (SB_ACT if active else SB_MUTE)
@@ -1582,4 +1599,3 @@ class RosterWidget(FingerprintedView):
                         )
                 ui.element("div").style("height: 4px;")
         return btn
-

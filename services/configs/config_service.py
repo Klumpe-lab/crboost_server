@@ -105,6 +105,25 @@ class ProcessingDefaultsConfig(BaseModel):
     reconstruction_binning: int = 4
 
 
+class CurationConfig(BaseModel):
+    """ChimeraX+ArtiaX remote manual-picking session (VNC over a SLURM job).
+
+    The SIF location is intentionally NOT hardcoded — every cluster keeps its
+    containers somewhere different, so it is set here (or via the CX_SIF env var,
+    which takes precedence). login_host defaults to the server's own FQDN, i.e.
+    the headnode the user already SSHes into to reach the crboost UI.
+    """
+
+    sif_path: Optional[str] = None
+    partition: str = "c"  # CPU partition; software GL is enough for slice-based picking
+    cpus: int = 4
+    mem: str = "16G"
+    time: str = "08:00:00"  # must be <= the partition QOS MaxWall (0/unlimited is rejected by QOS)
+    geometry: str = "1920x1080"
+    chimerax_bin: str = "chimerax"
+    login_host: Optional[str] = None
+
+
 class Config(BaseModel):
     """Root configuration model"""
 
@@ -117,6 +136,7 @@ class Config(BaseModel):
     tsreconstruct_supervisor_slurm: Optional[SupervisorSlurmConfig] = None
     job_resource_profiles: Dict[str, JobResourceProfile] = Field(default_factory=dict)
     processing_defaults: ProcessingDefaultsConfig = Field(default_factory=ProcessingDefaultsConfig)
+    curation: CurationConfig = Field(default_factory=CurationConfig)
     tools: Dict[str, ToolConfig] = Field(default_factory=dict)
     containers: Optional[Dict[str, str]] = None
 
@@ -159,6 +179,10 @@ class ConfigService:
     @property
     def processing_defaults(self) -> ProcessingDefaultsConfig:
         return self._config.processing_defaults
+
+    @property
+    def curation(self) -> CurationConfig:
+        return self._config.curation
 
     @property
     def venv_path(self) -> Optional[Path]:
