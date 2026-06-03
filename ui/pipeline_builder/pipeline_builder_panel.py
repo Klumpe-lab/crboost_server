@@ -82,6 +82,18 @@ class PipelineBuilderPanel:
         elif self.ui_mgr.is_running:
             ui.timer(0.2, self.poller.safe_status_check, once=True)
 
+    # ── Curation session ──────────────────────────────────────────────────────
+
+    async def launch_curation_session(self):
+        # SingleFlight: guard the submit window so a double-click doesn't queue
+        # two SLURM sessions. The dialog's own poll timer outlives this guard.
+        async with self.flight("curation_session") as acquired:
+            if not acquired:
+                return
+            from ui.curation_session_dialog import open_curation_session_dialog
+
+            await open_curation_session_dialog(self.backend, self.ui_mgr.project_path)
+
     # ── Species gate ──────────────────────────────────────────────────────────
 
     async def prompt_species_and_add(self, job_type: JobType):

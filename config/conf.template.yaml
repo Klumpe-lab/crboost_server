@@ -128,6 +128,20 @@ job_resource_profiles:
 processing_defaults:
   reconstruction_binning: 4
 
+# ChimeraX + ArtiaX remote manual-picking session (launched from the UI as a
+# SLURM job that serves a VNC desktop). sif_path is the only required field;
+# the CX_SIF env var, if set, overrides it. login_host defaults to the
+# headnode's own FQDN (what you SSH into to reach crboost).
+curation:
+  sif_path: "/path/to/chimerax_artiax.sif"
+  partition: "c"
+  cpus: 4
+  mem: "16G"
+  time: "08:00:00"  # must be <= the QOS MaxWall for this partition (0/unlimited is rejected)
+  geometry: "1920x1080"
+  chimerax_bin: "chimerax"
+  login_host: ""
+
 # Tool execution configuration
 # exec_mode: 'container' or 'binary'
 # container_path: path to .sif file (required if exec_mode is container)

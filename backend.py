@@ -3,8 +3,12 @@ import asyncio
 import getpass
 import json
 import logging
+import os
 import pwd
+import shlex
+import socket
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from datetime import datetime
@@ -166,6 +170,130 @@ class CryoBoostBackend:
             await self.state_service.save_project(project_path=project_path, force=True)
             return {"success": False, "error": str(e)}
 
+    # ── ChimeraX + ArtiaX curation session (VNC over a SLURM job) ───────────────
+
+    async def launch_curation_session(self, project_path: Optional[Path] = None) -> Dict[str, Any]:
+        """Submit a ChimeraX+ArtiaX VNC desktop as a SLURM job (partition 'c' by
+        default — software GL is enough for slice-based picking).
+
+        Returns the SLURM job id and the shared-FS session dir that the compute
+        node writes `session.json` into; poll it with get_curation_session_info().
+        See containers/chimerax_artiax/curation_session.sh.
+        """
+        cur = self.config_service.curation
+        sif = os.environ.get("CX_SIF") or cur.sif_path
+        if not sif or not Path(sif).exists():
+            return {
+                "success": False,
+                "error": (
+                    f"ChimeraX SIF not found (curation.sif_path={cur.sif_path!r}, "
+                    f"CX_SIF={os.environ.get('CX_SIF')!r}). Build it under "
+                    "containers/chimerax_artiax/ and set curation.sif_path in conf.yaml."
+                ),
+            }
+
+        worker = self.server_dir / "containers" / "chimerax_artiax" / "curation_session.sh"
+        if not worker.exists():
+            return {"success": False, "error": f"Worker script missing: {worker}"}
+
+        login_host = cur.login_host or socket.getfqdn()
+
+        # Session dir on shared FS visible to BOTH the compute node (writer) and
+        # this headnode (reader). Keep it inside the project when we have one.
+        base = (Path(project_path) / ".curation_sessions") if project_path else (Path.home() / ".crboost" / "curation")
+        session_id = uuid.uuid4().hex[:8]
+        session_dir = base / session_id
+        session_dir.mkdir(parents=True, exist_ok=True)
+
+        sbatch_script = session_dir / "submit.sh"
+        sbatch_script.write_text(
+            "#!/usr/bin/env bash\n"
+            f"#SBATCH -p {cur.partition}\n"
+            f"#SBATCH --cpus-per-task={cur.cpus}\n"
+            f"#SBATCH --mem={cur.mem}\n"
+            f"#SBATCH --time={cur.time}\n"
+            "#SBATCH -J cb-curation\n"
+            f"#SBATCH -o {session_dir / 'slurm.log'}\n"
+            f"#SBATCH -e {session_dir / 'slurm.log'}\n"
+            f"export CX_SIF={shlex.quote(str(sif))}\n"
+            f"export CX_BIN={shlex.quote(cur.chimerax_bin)}\n"
+            f"export CX_GEOMETRY={shlex.quote(cur.geometry)}\n"
+            f"export CX_LOGIN_HOST={shlex.quote(login_host)}\n"
+            f"export CB_SESSION_DIR={shlex.quote(str(session_dir))}\n"
+            f"exec {shlex.quote(str(worker))}\n"
+        )
+        sbatch_script.chmod(0o755)
+
+        # Strip SLURM_*/SBATCH_* so submission doesn't inherit a parent job context.
+        clean_env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_"))}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "sbatch",
+                str(sbatch_script),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(session_dir),
+                env=clean_env,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                return {"success": False, "error": f"sbatch failed: {stderr.decode().strip()}"}
+            out = stdout.decode().strip()
+            slurm_job_id = out.split()[-1] if out else None
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+        logger.info("Curation session submitted: SLURM job %s (session %s)", slurm_job_id, session_id)
+        return {
+            "success": True,
+            "slurm_job_id": slurm_job_id,
+            "session_dir": str(session_dir),
+            "session_id": session_id,
+        }
+
+    async def get_curation_session_info(self, session_dir: str, slurm_job_id: Optional[str] = None) -> Dict[str, Any]:
+        """Poll a launched curation session. Once the job is RUNNING and has
+        published session.json, returns its connection info (node/port/password/
+        tunnel_cmd); otherwise reports pending/starting/ended."""
+        sdir = Path(session_dir)
+        info_file = sdir / "session.json"
+        if info_file.exists():
+            try:
+                data = json.loads(info_file.read_text())
+                data.update({"success": True, "status": "ready"})
+                return data
+            except Exception as e:
+                return {"success": True, "status": "starting", "detail": f"session.json not readable yet: {e}"}
+
+        # No session.json yet — ask SLURM why.
+        state = None
+        if slurm_job_id:
+            jobs = await self.slurm_service.get_user_jobs(force_refresh=True)
+            for j in jobs:
+                if j.job_id == slurm_job_id or j.job_id.split("_", 1)[0] == slurm_job_id:
+                    state = j.state
+                    break
+
+        if state in ("PENDING", "CONFIGURING", "SCHEDULED"):
+            return {"success": True, "status": "pending", "slurm_state": state}
+        if state is not None:
+            # RUNNING (or similar) but session.json not visible yet — just started / NFS lag.
+            return {"success": True, "status": "starting", "slurm_state": state}
+
+        # Not in the queue and no session.json. Only call it "ended" if the job
+        # actually ran (its log exists) — otherwise this is the brief window right
+        # after sbatch before the job registers in squeue, so report pending.
+        log_file = sdir / "slurm.log"
+        if log_file.exists():
+            return {"success": True, "status": "ended", "detail": log_file.read_text()[-1200:]}
+        return {"success": True, "status": "pending", "slurm_state": "submitting"}
+
+    async def stop_curation_session(self, slurm_job_id: Optional[str]) -> Dict[str, Any]:
+        """scancel a curation session's SLURM job."""
+        if not slurm_job_id:
+            return {"success": False, "error": "no SLURM job id"}
+        return await self.slurm_service.scancel_jobs([slurm_job_id])
+
     async def get_default_data_globs(self) -> Dict[str, str]:
         """Get default glob patterns from config."""
         config_service = get_config_service()
@@ -233,11 +361,7 @@ class CryoBoostBackend:
                         pipeline_active = bool(data.get("pipeline_active", False))
                         jobs_dict = data.get("jobs") or {}
                         total_jobs_planned = len(jobs_dict)
-                        ts_count = (
-                            data.get("import_selected_tilt_series")
-                            or data.get("import_total_tilt_series")
-                            or 0
-                        )
+                        ts_count = data.get("import_selected_tilt_series") or data.get("import_total_tilt_series") or 0
                         mnemonic = data.get("mnemonic") or ""
                         # Where the raw data came from. Prefer the resolved
                         # frames dir; fall back to the movies glob's parent.
@@ -356,17 +480,13 @@ class CryoBoostBackend:
                 if success_marker.exists():
                     status = "Succeeded"
                     try:
-                        out["last_activity_ts"] = max(
-                            out["last_activity_ts"], success_marker.stat().st_mtime
-                        )
+                        out["last_activity_ts"] = max(out["last_activity_ts"], success_marker.stat().st_mtime)
                     except Exception:
                         pass
                 elif failure_marker.exists():
                     status = "Failed"
                     try:
-                        out["last_activity_ts"] = max(
-                            out["last_activity_ts"], failure_marker.stat().st_mtime
-                        )
+                        out["last_activity_ts"] = max(out["last_activity_ts"], failure_marker.stat().st_mtime)
                     except Exception:
                         pass
 
