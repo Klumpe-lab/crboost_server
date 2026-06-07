@@ -116,6 +116,8 @@ class CurationConfig(BaseModel):
 
     sif_path: Optional[str] = None
     partition: str = "c"  # CPU partition; software GL is enough for slice-based picking
+    gres: Optional[str] = None  # SLURM --gres, e.g. "gpu:1" on partition 'g'; None on CPU partitions
+    vgl: bool = False  # render ChimeraX via VirtualGL (vglrun -d egl) on the GPU — needs the _GL.sif + gres
     cpus: int = 4
     mem: str = "16G"
     time: str = "08:00:00"  # must be <= the partition QOS MaxWall (0/unlimited is rejected by QOS)
