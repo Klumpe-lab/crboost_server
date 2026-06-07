@@ -20,6 +20,7 @@ from services.models_base import (
     AlignmentMethod,
     JobCategory,
     JobType,
+    PickListType,
     MicroscopeParams,
     AcquisitionParams,
 )
@@ -482,6 +483,29 @@ class AggregationMerge(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+class PickList(BaseModel):
+    """One pick list in the per-(species, tomo) curation workbench.
+
+    Only workbench-AUTHORED lists (manual/imported/merged) are persisted here.
+    The `auto` (PyTOM candidates.star) and `filtered` (particles_filtered.star)
+    lists are disk-backed and synthesized at render time, never stored — so the
+    registry can't go stale against the files the resolver already owns. `slug`
+    is unique within a (species_id, tomo_name)."""
+
+    slug: str  # unique within (species_id, tomo_name); filesystem-safe
+    label: str = ""
+    list_type: PickListType = PickListType.MANUAL
+    species_id: str = ""
+    tomo_name: str = ""
+    path: str = ""  # the .star/.coords file backing this list
+    count: int = 0  # cached pick count, for display
+    color: str = "#3b82f6"  # per-list overlay color
+    visible: bool = True  # persisted so the toggle survives reloads
+    parent_slugs: List[str] = Field(default_factory=list)  # provenance for derived lists
+    created_at: datetime = Field(default_factory=datetime.now)
+    created_by: str = ""
+
+
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
@@ -516,6 +540,12 @@ class ProjectState(BaseModel):
 
     jobs: Dict[str, SerializeAsAny[AbstractJobParams]] = Field(default_factory=dict)
     species_registry: List[ParticleSpecies] = Field(default_factory=list)
+    # Per-(species, tomo) manual-curation workbench. Only workbench-authored
+    # lists (manual/imported/merged) persist here; `auto`/`filtered` are
+    # disk-backed and synthesized at render time so this never goes stale
+    # against the files the resolver owns. See ARTIAX_BRIDGE_PLAN.md
+    # "## Curation workbench — the multi-list model".
+    pick_lists: List[PickList] = Field(default_factory=list)
     pipeline_active: bool = Field(default=False)
 
     # Dataset import summary (set at project creation)
@@ -585,6 +615,38 @@ class ProjectState(BaseModel):
         removed = len(self.species_registry) < before
         if removed:
             self.update_modified()
+        return removed
+
+    # ── Curation workbench: per-(species, tomo) pick-list registry ───────────
+    # Only workbench-authored lists (manual/imported/merged) live here; auto/
+    # filtered are disk-synthesized at render time. See PickList docstring.
+
+    def get_pick_lists(self, species_id: str, tomo_name: str) -> List[PickList]:
+        return [pl for pl in self.pick_lists if pl.species_id == species_id and pl.tomo_name == tomo_name]
+
+    def get_pick_list(self, slug: str, species_id: str, tomo_name: str) -> Optional[PickList]:
+        for pl in self.pick_lists:
+            if pl.slug == slug and pl.species_id == species_id and pl.tomo_name == tomo_name:
+                return pl
+        return None
+
+    def add_pick_list(self, pick_list: PickList) -> PickList:
+        """Register (upsert) a workbench-authored list, replacing any existing
+        entry with the same (slug, species, tomo). Marks dirty; caller persists."""
+        self.remove_pick_list(pick_list.slug, pick_list.species_id, pick_list.tomo_name)
+        self.pick_lists.append(pick_list)
+        self.mark_dirty()
+        return pick_list
+
+    def remove_pick_list(self, slug: str, species_id: str, tomo_name: str) -> bool:
+        def _matches(pl: PickList) -> bool:
+            return pl.slug == slug and pl.species_id == species_id and pl.tomo_name == tomo_name
+
+        before = len(self.pick_lists)
+        self.pick_lists = [pl for pl in self.pick_lists if not _matches(pl)]
+        removed = len(self.pick_lists) != before
+        if removed:
+            self.mark_dirty()
         return removed
 
     def ensure_job_initialized(

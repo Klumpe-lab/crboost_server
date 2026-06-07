@@ -24,12 +24,17 @@ def _copy_js(text: str) -> str:
     return "navigator.clipboard.writeText(" + json.dumps(text) + ")"
 
 
-async def open_curation_session_dialog(backend, project_path: Optional[Path]) -> None:
+async def open_curation_session_dialog(
+    backend, project_path: Optional[Path], cxc_path: Optional[str] = None, existing: Optional[dict] = None
+) -> None:
     # Scrollable card: the connect instructions are tall, and a NiceGUI dialog
     # won't scroll on its own — without max-height + overflow the lower steps
     # (the tunnel + password) get clipped off the bottom of the screen.
-    with ui.dialog() as dialog, ui.card().classes("w-[46rem] max-w-full").style(
-        "max-height: 88vh; display: flex; flex-direction: column; gap: 8px;"
+    with (
+        ui.dialog() as dialog,
+        ui.card()
+        .classes("w-[46rem] max-w-full")
+        .style("max-height: 88vh; display: flex; flex-direction: column; gap: 8px;"),
     ):
         ui.label("ChimeraX + ArtiaX curation session").classes("text-lg font-bold")
         body = ui.column().classes("w-full gap-2").style("overflow-y: auto; flex: 1 1 auto; min-height: 0;")
@@ -73,9 +78,9 @@ async def open_curation_session_dialog(backend, project_path: Optional[Path]) ->
             with ui.row().classes("items-center gap-2"):
                 ui.spinner(size="lg")
                 ui.label(msg)
-            ui.label(
-                "This usually takes a few seconds once a compute node is free. You can leave this open."
-            ).classes("text-xs text-gray-400")
+            ui.label("This usually takes a few seconds once a compute node is free. You can leave this open.").classes(
+                "text-xs text-gray-400"
+            )
 
     def render_error(msg: str):
         _stop_timer()
@@ -134,14 +139,25 @@ async def open_curation_session_dialog(backend, project_path: Optional[Path]) ->
             ui.separator()
 
             _step("✓", "Once it opens — in ChimeraX / ArtiaX")
-            ui.markdown(
-                "- Open your tomogram: **File ▸ Open**, or type `open /path/to/tomogram.mrc` in the ChimeraX "
-                "command line at the bottom of the window.\n"
-                "- Open auto/curated picks the same way: `open picks.coords`.\n"
-                "- Use the **ArtiaX** panel to scrub slices and place/curate particles, then save the list "
-                "as a `.coords` file on the cluster.\n"
-                "- *(crboost will soon pre-load the right tomogram + picks for you — for now open them manually.)*"
-            ).classes("text-sm")
+            if cxc_path:
+                ui.markdown(
+                    "- crboost **pre-loaded the tomogram + your auto/curated picks** for this session — give "
+                    "ChimeraX a few seconds after the desktop appears.\n"
+                    "- In the **ArtiaX** panel, create a **new particle list** and pick into it (don't add to "
+                    "the auto list), then **save that list as a `.coords` file** — crboost ingests it back.\n"
+                    "- If nothing loaded, the startup script is at the path below; re-run it from the ChimeraX "
+                    "command line with `open <that file>`."
+                ).classes("text-sm")
+                _kv_copy("Startup", str(cxc_path))
+            else:
+                ui.markdown(
+                    "- Open your tomogram: **File ▸ Open**, or type `open /path/to/tomogram.mrc` in the ChimeraX "
+                    "command line at the bottom of the window.\n"
+                    "- Open auto/curated picks the same way: `open picks.coords`.\n"
+                    "- Use the **ArtiaX** panel to scrub slices and place/curate particles, then save the list "
+                    "as a `.coords` file on the cluster.\n"
+                    "- *(Launch from a tomogram's **Curate in ArtiaX** button to pre-load it automatically.)*"
+                ).classes("text-sm")
 
             _step("⏹", "When you're done")
             ui.label(
@@ -155,7 +171,7 @@ async def open_curation_session_dialog(backend, project_path: Optional[Path]) ->
                     f"and the address must be exactly `{viewer_addr}`.\n"
                     "- **Black or grey screen for a few seconds:** normal — the desktop and ChimeraX are still "
                     "starting; give it ~5–10 s.\n"
-                    "- **\"Connection refused\":** the tunnel isn't up (step 2 was closed or errored) or the "
+                    '- **"Connection refused":** the tunnel isn\'t up (step 2 was closed or errored) or the '
                     "session ended. Reopen the tunnel, or relaunch from the button.\n"
                     "- **Password rejected:** copy it again above — it's case-sensitive.\n"
                     f"- **Session details:** node `{node}`, rfb port `{port}`, login `{user}@{login_host}`."
@@ -192,7 +208,7 @@ async def open_curation_session_dialog(backend, project_path: Optional[Path]) ->
         state["done"] = False
         _stop_timer()
         render_waiting("Submitting curation session…")
-        result = await backend.launch_curation_session(project_path)
+        result = await backend.launch_curation_session(project_path, cxc_path=cxc_path)
         if not result.get("success"):
             render_error(result.get("error") or "launch failed")
             return
@@ -203,4 +219,105 @@ async def open_curation_session_dialog(backend, project_path: Optional[Path]) ->
         if not state["done"]:
             state["timer"] = ui.timer(3.0, _poll)
 
-    await _start()
+    async def _reconnect():
+        # Reconnect mode: a session is already live (recovered via
+        # find_active_curation_session). Seed its id/dir and go straight to
+        # polling session.json — NO second sbatch.
+        state["done"] = False
+        _stop_timer()
+        state["job_id"] = existing.get("slurm_job_id")
+        state["session_dir"] = existing.get("session_dir")
+        render_waiting("Reconnecting to your running session…")
+        await _poll()
+        if not state["done"]:
+            state["timer"] = ui.timer(3.0, _poll)
+
+    await (_reconnect() if existing else _start())
+
+
+def open_curation_commands_dialog(commands: list, session_info: Optional[dict] = None, manual_coords: str = "") -> None:
+    """Tier-1: a curation session is already live for this project. Rather than
+    launch a second one (new node/port/password = re-tunnel — the friction we
+    avoid), show the ChimeraX command lines that load THIS tomogram + its picks,
+    for the user to paste into their already-open ArtiaX viewer."""
+    info = session_info or {}
+    node = info.get("node")
+    block = "\n".join(commands)
+    with (
+        ui.dialog() as dialog,
+        ui.card()
+        .classes("w-[42rem] max-w-full")
+        .style("max-height: 88vh; display: flex; flex-direction: column; gap: 8px;"),
+    ):
+        ui.label("Load this tomogram in your open ArtiaX session").classes("text-lg font-bold")
+        if node:
+            ui.label(f"A curation session is live on node {node} — switch to that VNC viewer.").classes(
+                "text-sm text-gray-600"
+            )
+        else:
+            ui.label("A curation session is already running — switch to its VNC viewer.").classes(
+                "text-sm text-gray-600"
+            )
+        ui.markdown(
+            "Paste these into the **ChimeraX command line** (bottom of the window) to open this "
+            "tomogram + its auto/curated picks:"
+        ).classes("text-sm")
+        with ui.row().classes("items-start gap-1 w-full"):
+            ui.label(block).classes("font-mono text-xs bg-gray-100 px-2 py-1 rounded flex-grow whitespace-pre")
+            ui.button(icon="content_copy", on_click=lambda: ui.run_javascript(_copy_js(block))).props(
+                "flat dense round"
+            ).tooltip("Copy all commands")
+        ui.markdown(
+            "Then in the **ArtiaX** panel create a **new particle list**, pick into it (don't add to the auto "
+            "list), and **save it as a `.coords`** for crboost to ingest."
+        ).classes("text-sm")
+        if manual_coords:
+            with ui.row().classes("items-center gap-2 w-full"):
+                ui.label("Save to").classes("text-sm text-gray-600").style("width: 64px; min-width: 64px;")
+                ui.label(manual_coords).classes("font-mono text-xs bg-gray-100 px-2 py-1 rounded flex-grow break-all")
+                ui.button(icon="content_copy", on_click=lambda: ui.run_javascript(_copy_js(manual_coords))).props(
+                    "flat dense round"
+                ).tooltip("Copy")
+        with ui.row().classes("w-full justify-end mt-1"):
+            ui.button("Close", on_click=dialog.close).props("flat")
+    dialog.open()
+
+
+async def open_curation_chooser_dialog(backend, project_path: Optional[Path], active: dict) -> None:
+    """Sidebar 'ensure-session' chooser: a session is already live for this
+    project. Don't silently launch a second one (= new node/port/password = a
+    fresh tunnel + viewer for nothing). Offer Reconnect (poll the existing
+    session — no sbatch) or Stop & relaunch (scancel the wedged one, submit fresh)."""
+    node = active.get("node") or "?"
+    job_id = active.get("slurm_job_id") or "?"
+    state_lbl = active.get("slurm_state") or ""
+
+    with (
+        ui.dialog() as dialog,
+        ui.card().classes("w-[34rem] max-w-full").style("display: flex; flex-direction: column; gap: 10px;"),
+    ):
+        with ui.row().classes("items-center gap-2"):
+            ui.icon("desktop_windows", color="indigo").classes("text-2xl")
+            ui.label("A curation session is already running").classes("text-lg font-bold")
+        ui.label(f"Node {node} · SLURM job {job_id}{f' ({state_lbl})' if state_lbl else ''}.").classes(
+            "text-sm text-gray-600"
+        )
+        ui.label(
+            "Reuse it — reconnecting keeps your one tunnel + viewer. Launching another would put you on a "
+            "different node with a new password, so you'd have to re-tunnel."
+        ).classes("text-xs text-gray-500")
+
+        async def _reconnect():
+            dialog.close()
+            await open_curation_session_dialog(backend, project_path, existing=active)
+
+        async def _relaunch():
+            dialog.close()
+            await backend.stop_curation_session(active.get("slurm_job_id"))
+            await open_curation_session_dialog(backend, project_path)
+
+        with ui.row().classes("w-full justify-end items-center gap-2 mt-1"):
+            ui.button("Close", on_click=dialog.close).props("flat")
+            ui.button("Stop & relaunch", icon="restart_alt", color="red", on_click=_relaunch).props("flat")
+            ui.button("Reconnect", icon="cable", color="indigo", on_click=_reconnect)
+    dialog.open()

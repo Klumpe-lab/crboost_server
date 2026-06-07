@@ -22,14 +22,15 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 import pandas as pd
 import starfile
 
-from services.visualization.coords import TomoFrame, picks_centered_angst
+from services.visualization.coords import TomoFrame, centered_angst_dataframe, picks_centered_angst
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,170 @@ def export_tomo_picks_to_coords(
     return len(coords)
 
 
+def import_coords_to_centered_star(
+    coords_path: Path, tomograms_star: Path, tomo_name: str, out_star: Path, project_root: Optional[Path] = None
+) -> int:
+    """Ingest an ArtiaX ``.coords`` (manual picks) → a RELION-5 centered-Å particles
+    star for one tomogram. The inverse of :func:`export_tomo_picks_to_coords`, using
+    the SAME :class:`TomoFrame`, so the ``N/2`` centering cancels and an
+    export→ArtiaX→import round trip is parity-exact. Returns the pick count.
+
+    Minimal schema: ``rlnTomoName`` + the three ``rlnCenteredCoordinate*Angst`` columns
+    (positions only — refinement derives angles). Merge into a `_combined` set adds any
+    further columns. Lands at e.g. ``ManualPicks/<species>/<tomo>.star``.
+    """
+    coords = read_coords_file(Path(coords_path))
+    frame = frame_for_tomo(Path(tomograms_star), tomo_name, project_root=project_root)
+    centered = artiax_to_centered_angst(coords, frame)
+    df = centered_angst_dataframe(centered)
+    df.insert(0, "rlnTomoName", tomo_name)
+    out_star = Path(out_star)
+    out_star.parent.mkdir(parents=True, exist_ok=True)
+    starfile.write({"particles": df}, out_star, overwrite=True)
+    logger.info("Imported %d manual picks for %s -> %s", len(df), tomo_name, out_star)
+    return len(df)
+
+
+# ── ChimeraX/ArtiaX startup-session (.cxc) generation ──────────────────────────
+#
+# crboost knows the tomogram (recon path, pixel size, binned size) and our picks;
+# ChimeraX/ArtiaX know nothing. A startup `.cxc` carries that knowledge into the
+# session so the user never types a path or a pixel size — the worker launches
+# `chimerax open_<tomo>.cxc` (CB_CXC env) and the session comes up preloaded.
+#
+# The command backbone below is the set CONFIRMED to work by hand (see
+# ARTIAX_BRIDGE_PLAN.md "Landed (session 1)"): `artiax start`, `artiax open tomo`,
+# bare `open <f>.coords` (ArtiaX auto-detects the format and the picks land on the
+# density with no flip), `lighting simple`. Steps whose exact ArtiaX subcommand is
+# not yet confirmed (forcing a particle-list pixel size, creating an empty manual
+# list) are left as comments for the user to fill in on the first runtime test,
+# rather than emitted as commands that could error and halt the script.
+
+
+def _cxc_quote(path) -> str:
+    """Quote a path for a ChimeraX command line. ChimeraX accepts a double-quoted
+    string for an argument containing whitespace; embedded quotes are doubled.
+    Cluster paths rarely need it, but be defensive."""
+    s = str(path)
+    if any(c in s for c in ' \t"'):
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
+def _safe_slug(name: str) -> str:
+    """Filesystem-safe slug for a tomogram name (which can contain ``/`` etc.)."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", str(name)).strip("_") or "tomo"
+
+
+def session_chimerax_commands(recon_mrc, auto_coords: Optional[Path] = None) -> list[str]:
+    """The ChimeraX command lines that load a tomogram + our picks into ArtiaX.
+
+    This is the single source of the load backbone: the ``.cxc`` bakes these in for
+    the auto-launch path, and the UI surfaces the same lines verbatim as copyable
+    "paste these into ChimeraX" guidance for an already-running session — so the two
+    never drift.
+    """
+    cmds = ["artiax start", f"artiax open tomo {_cxc_quote(recon_mrc)}"]
+    if auto_coords is not None:
+        cmds.append(f"open {_cxc_quote(auto_coords)}")
+    cmds.append("lighting simple")
+    return cmds
+
+
+def build_session_cxc(
+    recon_mrc,
+    auto_coords: Optional[Path] = None,
+    *,
+    tomo_name: str = "",
+    species: str = "",
+    pixel_size: Optional[float] = None,
+    tomo_size: Optional[Sequence[int]] = None,
+    manual_coords: Optional[Path] = None,
+    window_size: Optional[Sequence[int]] = None,
+) -> str:
+    """Build a ChimeraX startup ``.cxc`` that preloads one tomogram + our picks in ArtiaX.
+
+    Pure string generation (no numpy), so it runs anywhere. ``pixel_size`` / ``tomo_size``
+    are baked into the header for transparency (crboost knows them; ChimeraX reads the
+    binned px from the MRC header). ``manual_coords`` is named in a comment as the save
+    target for the user's manual picks.
+    """
+    lines: list[str] = ["# crboost ChimeraX/ArtiaX curation session — AUTO-GENERATED, safe to tweak."]
+    if tomo_name:
+        lines.append(f"#   tomogram : {tomo_name}")
+    if species:
+        lines.append(f"#   species  : {species}")
+    if pixel_size is not None:
+        lines.append(f"#   pixel    : {float(pixel_size):.4f} A/px (binned recon)")
+    if tomo_size is not None:
+        lines.append(f"#   size     : {' x '.join(str(int(v)) for v in tomo_size)} vox (binned)")
+    lines.append("set bgColor black")
+    if window_size is not None:
+        lines.append(f"windowsize {int(window_size[0])} {int(window_size[1])}")
+    lines.extend(session_chimerax_commands(recon_mrc, auto_coords))
+    lines.append("# Manual picks: in the ArtiaX panel create a NEW particle list and pick into it")
+    lines.append("# (do NOT add to the auto list opened above), then save that list as a .coords file")
+    if manual_coords is not None:
+        lines.append(f"# at:  {manual_coords}")
+    lines.append("# — crboost ingests that .coords back into the pipeline.")
+    return "\n".join(lines) + "\n"
+
+
+def prepare_curation_bundle(
+    candidates_star: Path,
+    tomograms_star: Path,
+    tomo_name: str,
+    out_dir: Path,
+    *,
+    species: str = "",
+    project_root: Optional[Path] = None,
+    window_size: Optional[Sequence[int]] = None,
+) -> dict:
+    """Materialize everything a ChimeraX/ArtiaX session needs for one tomogram.
+
+    Writes ``<tomo>__auto.coords`` (our picks) and ``open_<tomo>.cxc`` into ``out_dir``
+    and returns the resolved paths + the copyable command lines. Launch the session with
+    ``CB_CXC`` pointing at the returned ``cxc_path``.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    frame = frame_for_tomo(Path(tomograms_star), tomo_name, project_root=project_root)
+    recon = frame.recon_path
+    if recon is None or not Path(recon).exists():
+        raise FileNotFoundError(
+            f"No reconstructed tomogram on disk for {tomo_name!r} "
+            "(rlnTomoReconstructedTomogram) — curation needs the binned recon to open in ArtiaX."
+        )
+    slug = _safe_slug(tomo_name)
+    auto_coords = out_dir / f"{slug}__auto.coords"
+    n = export_tomo_picks_to_coords(Path(candidates_star), Path(tomograms_star), tomo_name, auto_coords, project_root)
+    manual_coords = out_dir / f"{slug}__manual.coords"
+    cxc_path = out_dir / f"open_{slug}.cxc"
+    cxc_path.write_text(
+        build_session_cxc(
+            recon,
+            auto_coords,
+            tomo_name=tomo_name,
+            species=species,
+            pixel_size=frame.pixel_size,
+            tomo_size=frame.size,
+            manual_coords=manual_coords,
+            window_size=window_size,
+        )
+    )
+    logger.info("Curation bundle for %s -> %s (%d auto picks)", tomo_name, cxc_path, n)
+    return {
+        "cxc_path": str(cxc_path),
+        "auto_coords": str(auto_coords),
+        "manual_coords": str(manual_coords),
+        "recon": str(recon),
+        "pixel_size": float(frame.pixel_size),
+        "tomo_size": [int(v) for v in frame.size],
+        "auto_count": int(n),
+        "commands": session_chimerax_commands(recon, auto_coords),
+    }
+
+
 def _cli(argv=None) -> int:
     ap = argparse.ArgumentParser(description="crboost <-> ArtiaX .coords bridge")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -109,6 +274,21 @@ def _cli(argv=None) -> int:
     e.add_argument("--tomo", required=True)
     e.add_argument("--out", required=True, type=Path)
     e.add_argument("--project-root", type=Path, default=None)
+
+    i = sub.add_parser("import", help="ingest a manual .coords -> RELION-5 centered-A particles star")
+    i.add_argument("--coords", required=True, type=Path)
+    i.add_argument("--tomograms", required=True, type=Path)
+    i.add_argument("--tomo", required=True)
+    i.add_argument("--out", required=True, type=Path)
+    i.add_argument("--project-root", type=Path, default=None)
+
+    b = sub.add_parser("bundle", help="export picks + write an open_<tomo>.cxc to preload a session")
+    b.add_argument("--candidates", required=True, type=Path)
+    b.add_argument("--tomograms", required=True, type=Path)
+    b.add_argument("--tomo", required=True)
+    b.add_argument("--out-dir", required=True, type=Path)
+    b.add_argument("--species", default="")
+    b.add_argument("--project-root", type=Path, default=None)
 
     r = sub.add_parser("selftest", help="pure round-trip check (no ArtiaX): centered->coords->centered")
     r.add_argument("--candidates", required=True, type=Path)
@@ -121,6 +301,26 @@ def _cli(argv=None) -> int:
     if args.cmd == "export":
         n = export_tomo_picks_to_coords(args.candidates, args.tomograms, args.tomo, args.out, args.project_root)
         print(f"wrote {n} picks -> {args.out}")
+        return 0
+
+    if args.cmd == "import":
+        n = import_coords_to_centered_star(args.coords, args.tomograms, args.tomo, args.out, args.project_root)
+        print(f"imported {n} manual picks -> {args.out}")
+        return 0
+
+    if args.cmd == "bundle":
+        info = prepare_curation_bundle(
+            args.candidates,
+            args.tomograms,
+            args.tomo,
+            args.out_dir,
+            species=args.species,
+            project_root=args.project_root,
+        )
+        print(f"bundle for {args.tomo} ({info['auto_count']} auto picks):")
+        print(f"  cxc:    {info['cxc_path']}")
+        print(f"  recon:  {info['recon']}")
+        print(f"  launch: CB_CXC={info['cxc_path']} containers/chimerax_artiax/launch_curation_vnc.sh")
         return 0
 
     parts = _find_table(Path(args.candidates), "rlnTomoName")
