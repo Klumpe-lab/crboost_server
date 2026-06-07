@@ -1,11 +1,83 @@
 # ArtiaX manual-picking bridge — design plan
 
-Status: **Coordinate bridge VALIDATED; appliance + crboost one-click launch WORKING; GPU/VirtualGL
-acceleration LANDED 2026-06-06 (fluid 3-D on a P100 — see "## GPU/VirtualGL acceleration" below).**
-Remaining: (1) plug the GPU container into the one-click launch + preload (the blank-session fix), and
-(2) the curation *workflow* — a **multi-list pick workbench** on the per-tomo card
-(view/edit/create/import/filter/merge N lists per (species, tomo); one authoritative list forwards
-downstream). Current contract: "## Curation workbench — the multi-list model" below. This doc is the contract.
+Status: **END-TO-END WORKING on GPU (2026-06-07): one-click launch → `.cxc` preloads tomo + auto picks in
+ArtiaX → manual pick → save `.coords` → crboost reads it back in-register (5 real human picks confirmed).**
+The unlock was a scipy/el7 fix, not UX (see "## SESSION 2026-06-07 — END TO END WORKING" below). Curation
+dialogs consolidated into one status-first control center; container relocated to
+`/groups/klumpe/software/containers/{defs,sifs}`. Remaining: ingest UI/registry + auto-watch; the multi-list
+pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the contract.
+
+## NEXT SESSION — start here (prioritized)
+
+The feature WORKS end to end; everything below builds OUT from a working base. In priority order:
+
+1. **Ingest UI + registry — closes the round-trip in the UI.** The converter is done
+   (`artiax_bridge.import_coords_to_centered_star`); wire the UI: an "Import" button that ingests ANY saved
+   `.coords` in the session/bundle dir (NOT just `<tomo>__manual.coords` — the user saved `particles.coords`),
+   runs the converter → `ManualPicks/<species>/<tomo>.star`, and registers a `manual` `PickList`. Spec:
+   "## Curation workbench — the multi-list model → Build order" slice 4 + "## Post-launch curation workflow
+   roadmap → Ingest pipeline".
+2. **The multi-list pick workbench — the big remaining feature.** Slices 3b→6: wire the recon-cutout atlas as
+   the gallery fallback for un-extracted lists → per-list contact sheet → "Open in ArtiaX" loads a CHOSEN list →
+   filter (CC/top-N) → merge selected → `_combined` sibling + the `resolve_canonical_optset` tier (zero driver
+   changes downstream). Slices 1+2+3-enabler already landed. Spec: "## Curation workbench — the multi-list model
+   → Build order / Progress".
+3. **Curation UX polish — overhaul items 2-3.** ONE co-located `Curation/<species>/<tomo>/` dir (auto/manual/
+   imported `.coords` + `.cxc`) replacing the scattered `.curation_sessions/bundles/` + ManualPicks split; a
+   per-(species,tomo) file overview; promote the "Curate in ArtiaX" button to a primary action with an inline
+   live-session status dot. Spec: "## Curation UX overhaul" items 2-3 (item 1 = the control center = DONE).
+4. **Optional / when motivated:** REST one-click load (paste-in → POST to the running ChimeraX,
+   "## Dispatch commands to ChimeraX from crboost (REST)"); VNC fidelity (TurboVNC server swap in the def);
+   Log panel (QtWebEngine on el7 — deprioritized, `slurm.log` covers debugging).
+
+Env + locations: Claude's venv has NO numpy/mrcfile/starfile/pandas → UI/star-IO/cutout work is py_compile+ruff
+only, runtime-test in the user's module-loaded app. The container def is now at
+`/groups/klumpe/software/containers/defs/chimerax_artiax_GL.def` (edit THERE, not the repo); the GL sif at
+`/groups/klumpe/software/containers/sifs/chimerax_artiax_GL.sif` (conf.yaml points at it); worker scripts stay
+in the repo (`containers/chimerax_artiax/curation_session.sh`, launched by `backend` by path).
+
+## SESSION 2026-06-07 — END TO END WORKING (the breakthrough + learnings)
+
+The whole feature works on a live GPU session. The build order that got us here + what we learned:
+
+1. **GPU one-click** — `CurationConfig` gained `gres`/`vgl`; `backend.launch_curation_session` emits
+   `#SBATCH --gres=` + `export CX_VGL=1`; conf.yaml → partition g / gres gpu:1 / vgl true / the `_GL.sif`.
+   The session lands on a P100 and renders fluidly.
+
+2. **THE UNLOCK — scipy on el7 (not a UX bug).** `artiax` commands silently did nothing (while `open 4ug0`
+   worked) because ChimeraX 1.9's bundled scipy fails to load on CBE's el7 kernel:
+   `ImportError: libscipy_openblas-*.so: ELF load command address/offset not page-aligned`. ArtiaX imports
+   scipy lazily on first command → ImportError → vanishes into the broken Log panel → "nothing happens." This
+   is a SIBLING of the ABI-tag trap but a different ELF check (segment alignment), so the objcopy strip never
+   covered it. **Fix = a different wheel, not ELF surgery:** manylinux2014 `scipy==1.11.4` (numpy 1.26.4
+   unchanged), pinned in the def AFTER the objcopy sweep (fresh el7 wheels must NOT be stripped), with a
+   build-time `import scipy.linalg` assertion. Proven headlessly before the rebuild. See
+   `reference_cbe_kernel_abi`. **General rule: prefer manylinux2014 wheels on this cluster.**
+
+3. **UX consolidated.** Three dialogs → one status-first `open_curation_control_center(backend, project_path,
+   *, bundle=None)` (replaces open_curation_session / commands / chooser). Live → the FULL connect block (ssh
+   tunnel + VNC address + password, all copyable — the piece users never saved) + framed "load this tomogram"
+   steps + Stop. Off → Start (preloads the tomo). Stop ≠ relaunch and Start/Stop are busy-guarded → the old
+   double-submit (two GPU sessions) is gone. Both the gallery button and sidebar route here.
+
+4. **PROVEN loop.** Live 412 session: preload → place manual picks → save `particles.coords` → crboost reads
+   5 well-formed corner-Å picks. The coordinate contract holds with real human picks, in-register.
+
+5. **Container relocated** to `/groups/klumpe/software/containers/{defs,sifs}` (def + GL sif); CPU def retired;
+   conf.yaml points at the /groups GL sif. **Edit the def THERE now**, not the repo (the worker scripts stay in
+   the repo — they're crboost code crboost launches by path).
+
+**Open peeves (non-blocking):**
+- **Log panel still gray** — `libgbm1 libasound2 libxshmfence1` were NOT enough for QtWebEngine on el7; it
+  likely also needs `--no-sandbox` / more libs / a real `/dev/shm`. Non-essential (command errors still land
+  in the session `slurm.log` — that's how we found the scipy bug). Deprioritized.
+- **VNC fidelity ("like 480p video"), worst on the tomogram** — the Xvnc is `-depth 24` (correct), so this is
+  CLIENT-side: use a real VNC viewer (TigerVNC/TurboVNC) at **full colour + max/lossless quality + 1:1**, NOT
+  macOS Screen Sharing (adaptive-lossy + scales the desktop). Over the localhost ssh tunnel lossless is free.
+  Durable server-side fix = swap TigerVNC → **TurboVNC** in the container (the canonical VirtualGL pairing).
+- **Ingest UI not wired** — the converter exists (`artiax_bridge.import_coords_to_centered_star`); needs an
+  "Import" button + the `PickList` registry + a watch that ingests ANY saved `.coords` (the user named theirs
+  `particles.coords`, not `<tomo>__manual.coords`). This is the next build, then the multi-list workbench.
 
 ## GPU/VirtualGL acceleration — LANDED (2026-06-06)
 
@@ -34,7 +106,21 @@ in `containers/chimerax_artiax/` (one worker drives both the CPU and GPU sifs):
 
 Goal: the gains above + the existing curation infra (config-driven launch, the connect dialog, the
 `CB_CXC` preload hook) converge so the crboost one-click button opens a **GPU** session **preloaded**
-with the right tomogram + picks, the user curates, and the picks flow back in. Build order:
+with the right tomogram + picks, the user curates, and the picks flow back in.
+
+**✓ Items 1-2 LANDED (session 2026-06-07).** `CurationConfig` gained `gres: Optional[str]=None` + `vgl: bool=False`
+(`config_service.py`); `backend.launch_curation_session` emits `#SBATCH --gres={cur.gres}` when set + `export CX_VGL=1`
+when `vgl` (spliced as precomputed `gres_line`/`vgl_export` so the literal chain stays intact; mirrors
+`launch_curation_vnc.sh g`; `get/stop_curation_session`, `find_active_curation_session`, and the connect dialog are
+unchanged — liveness still keys off `-J cb-curation`). conf.yaml `curation:` now defaults to the GL appliance
+(`partition: g`, `gres: gpu:1`, `vgl: true`, finite `time`). **Caveat:** `sif_path` points at the **repo** copy
+`containers/chimerax_artiax/chimerax_artiax_GL.sif` (on /users, GPU node mounts it) — the GL sif is NOT yet in
+`/groups/klumpe/software/containers/sifs/`; `cp` it there + repoint for the canonical shared home (`CX_SIF` still
+overrides). Verified off-cluster: py_compile + ruff clean, `Config` parses conf.yaml + template, the rendered GPU
+sbatch carries `-p g`/`--gres=gpu:1`/`CX_VGL=1` while the CPU template carries neither. **GATE (unchanged):** the
+actual GPU tomo→pick→save `.coords` loop is still un-run — only `open 4ug0` has rendered on the GL sif.
+
+Build order:
 
 1. **GPU knobs in `CurationConfig`** (`services/configs/config_service.py:108`) — add `gres: Optional[str]
    = None` and `vgl: bool = False` (partition + `time` + `sif_path` already exist; `time` already
@@ -70,6 +156,26 @@ crboost-side) except the optional QtWebEngine libs.
 The per-(species,tomo) **"Curate in ArtiaX"** button now works end to end (export picks → `.cxc`/bundle → live
 session shows paste-in `open` commands, or none launches preloaded). **But the connective tissue is raw**
 (direct user feedback). Concrete gaps + the fixes:
+
+**✓ Item 1 + the connect-info fix + bug-fix LANDED (session 2026-06-07, user-driven).** `ui/curation_session_dialog.py`
+rewritten to ONE status-first **`open_curation_control_center(backend, project_path, *, bundle=None)`** that replaces
+all three old dialogs (`open_curation_session_dialog` / `open_curation_commands_dialog` / `open_curation_chooser_dialog`).
+Both entry points now route to it — the sidebar (`pipeline_builder_panel.launch_curation_session`, no bundle) and the
+gallery (`tomo_dashboard._handle_curate_in_artiax`, bundle=this tomo). It always opens showing **session status**, and:
+**live** → the FULL connection block (ssh tunnel + VNC address + one-time password, all copyable — *the missing piece:
+the per-tomo live path used to show only paste-in commands, so a user who never reconnected via the sidebar had no
+tunnel/password*) **plus** the framed "load this tomogram" steps (① viewer · ② click cmd line · ③ paste) + the
+`.coords` save target; **off** → a **Start** button (preloads the tomo) that polls → transitions into the live view,
+with the load commands available in an expansion even before launch. **Double-submit bug fixed:** the old
+chooser's *Stop & relaunch* had no guard (the logs showed it scancel twice + sbatch two GPU sessions); Stop now just
+scancels → returns to the off state (Start is a separate click), and both Start/Stop are re-entry-guarded
+(`state["busy"]`, set synchronously before the first await). py_compile + ruff clean (no F821); the dialog's runtime
+render/poll/guard behavior is the usual live-session gate. **Still open from this section:** item 2 (per-(species,tomo)
+file overview + ONE co-located `Curation/<species>/<tomo>/` dir — bundle still lands in `.curation_sessions/bundles/<species>/`)
+and item 3 (promote the button to a primary action with inline live-status). The REST dispatch below would turn the
+paste-in "load" step into a true one-click.
+
+Concrete gaps + the fixes:
 
 1. **Make the popup a session-aware control center, not a command dump.** Today the dialog assumes a session is
    already live and just lists commands. It should ALWAYS open showing, top-to-bottom:

@@ -134,7 +134,10 @@ processing_defaults:
 # headnode's own FQDN (what you SSH into to reach crboost).
 curation:
   sif_path: "/path/to/chimerax_artiax.sif"
-  partition: "c"
+  partition: "c"   # CPU partition, software GL. For fluid 3-D: point sif_path at chimerax_artiax_GL.sif,
+                   # set partition: "g", gres: "gpu:1", vgl: true (VirtualGL on the GPU under apptainer --nv).
+  gres: ""         # SLURM --gres for the session; "" = none (CPU). "gpu:1" on a GPU partition.
+  vgl: false       # render ChimeraX via VirtualGL on the GPU (needs the _GL.sif + a GPU gres).
   cpus: 4
   mem: "16G"
   time: "08:00:00"  # must be <= the QOS MaxWall for this partition (0/unlimited is rejected)

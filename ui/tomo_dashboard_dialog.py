@@ -4572,12 +4572,12 @@ def _render_species_size_chips(sp: dict, project_path: Path, ts_name: str, tm_in
 
 async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
     """Per-tomo 'Curate in ArtiaX': export this (species, tomo)'s picks to a
-    `.coords` + `.cxc`, then either pre-load them into a fresh ChimeraX/ArtiaX
-    session (Tier-2) or — if a session is already live for this project — show the
-    copyable `open` commands to paste into it (Tier-1, no second SLURM job =
-    no re-tunnel). SingleFlight-guarded so repeated clicks prep only one bundle."""
+    `.coords` + `.cxc`, then open the curation control center bound to this
+    tomogram. The control center is status-first — it shows the live session's
+    connection info + the load commands, or a Start button that preloads this
+    tomogram. SingleFlight-guarded so repeated clicks prep only one bundle."""
     from backend import get_backend
-    from ui.curation_session_dialog import open_curation_commands_dialog, open_curation_session_dialog
+    from ui.curation_session_dialog import open_curation_control_center
 
     tomo_name = sp["row"]["tomo_name"]
     async with _curation_flight(f"{sp.get('species_id')}:{tomo_name}") as acquired:
@@ -4599,11 +4599,8 @@ async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
         if not bundle.get("success"):
             ui.notify(f"Could not prepare picks for {tomo_name}: {bundle.get('error')}", type="negative")
             return
-        active = await backend.find_active_curation_session(project_path)
-        if active:
-            open_curation_commands_dialog(bundle.get("commands") or [], active, bundle.get("manual_coords") or "")
-        else:
-            await open_curation_session_dialog(backend, project_path, cxc_path=bundle.get("cxc_path"))
+        bundle["tomo_name"] = tomo_name
+        await open_curation_control_center(backend, project_path, bundle=bundle)
 
 
 def _render_species_tab_header(sp: dict, tm_info: dict, project_path: Path, refresh) -> None:

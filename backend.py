@@ -225,9 +225,15 @@ class CryoBoostBackend:
         session_dir.mkdir(parents=True, exist_ok=True)
 
         sbatch_script = session_dir / "submit.sh"
+        # GPU one-click: --gres + the VirtualGL switch mirror what `launch_curation_vnc.sh g`
+        # does on the manual path — `export CX_VGL=1` flips the worker to `vglrun -d egl chimerax`
+        # under apptainer --nv, so the _GL.sif renders on the GPU instead of software-GL llvmpipe.
+        gres_line = f"#SBATCH --gres={cur.gres}\n" if cur.gres else ""
+        vgl_export = "export CX_VGL=1\n" if cur.vgl else ""
         sbatch_script.write_text(
             "#!/usr/bin/env bash\n"
             f"#SBATCH -p {cur.partition}\n"
+            f"{gres_line}"
             f"#SBATCH --cpus-per-task={cur.cpus}\n"
             f"#SBATCH --mem={cur.mem}\n"
             f"#SBATCH --time={cur.time}\n"
@@ -239,6 +245,7 @@ class CryoBoostBackend:
             f"export CX_GEOMETRY={shlex.quote(cur.geometry)}\n"
             f"export CX_LOGIN_HOST={shlex.quote(login_host)}\n"
             f"export CB_SESSION_DIR={shlex.quote(str(session_dir))}\n"
+            f"{vgl_export}"
             + (f"export CB_CXC={shlex.quote(str(cxc_path))}\n" if cxc_path else "")
             + f"exec {shlex.quote(str(worker))}\n"
         )
