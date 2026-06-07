@@ -33,7 +33,7 @@ from typing import Optional
 import pandas as pd
 from nicegui import ui
 
-from services.models_base import JobStatus, JobType
+from services.models_base import JobStatus, JobType, PickListType
 from services.project_state import get_project_state
 from services.templating.template_metadata import get_effective_template_path, read_template_header
 from services.tilt_series.build import _infer_position
@@ -44,9 +44,16 @@ from services.visualization.preview_orchestrator import (
     read_preview_manifest,
 )
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview, render_xz_slab_preview
+from ui.components.reactive import SingleFlight
 from ui.components.task_utils import read_manifest, resolve_job_dir, scan_statuses
 
 logger = logging.getLogger(__name__)
+
+# Guards the per-tomo "Curate in ArtiaX" handler against re-entry: the button can
+# be destroyed + rebuilt mid-click by a dashboard refresh, so several clicks may
+# land before one does — without this each would prep a bundle + open a dialog.
+# See ui/components/reactive.py and CLAUDE.md "UI reactivity patterns".
+_curation_flight = SingleFlight()
 
 
 # Per-species overlay colors for the shared tomogram canvas. Indexed by the
@@ -65,6 +72,23 @@ _SPECIES_OVERLAY_COLORS = [
     "#ff9100",  # vivid orange
     "#f50057",  # vivid pink
 ]
+
+# Overlay glyph per pick-list type. Color (per list) is the primary
+# distinguisher; the glyph is secondary reinforcement so several lists over one
+# tomogram read apart at a glance. Machine picks = circle, ArtiaX/curation
+# products = diamond/triangle, external = square. The CSS lives next to
+# `.cb-pick-ghost` (the `.cb-shape-*` rules). Easy to retune — it's one dict.
+_PICK_LIST_GLYPH = {
+    PickListType.AUTO: "circle",
+    PickListType.FILTERED: "circle",
+    PickListType.MANUAL: "diamond",
+    PickListType.IMPORTED: "square",
+    PickListType.MERGED: "triangle",
+}
+
+
+def _glyph_for(list_type: PickListType) -> str:
+    return _PICK_LIST_GLYPH.get(list_type, "circle")
 
 
 # ---------------------------------------------------------------------------
@@ -1397,6 +1421,11 @@ _CB_CSS = """
     width: 10px; height: 10px; border-radius: 50%;
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3); flex: 0 0 auto;
 }
+/* Toggle-legend swatch shape mirrors the dot glyph (see .cb-shape-*). */
+.cb-swatch-circle { border-radius: 50%; }
+.cb-swatch-square { border-radius: 0; }
+.cb-swatch-diamond { border-radius: 0; transform: rotate(45deg); }
+.cb-swatch-triangle { border-radius: 0; clip-path: polygon(50% 0, 0 100%, 100% 100%); }
 /* Particles section: slabs LEFT, galleries RIGHT, side by side so the user
  * can hover a tile and watch its dot light up on the canvas at the same time.
  * Wraps to stacked on narrow viewports. */
@@ -1709,6 +1738,14 @@ _CB_CSS = """
     box-shadow: 0 0 0 1px rgba(0,0,0,0.55), 0 0 0 2px rgba(255,255,255,0.35) !important;
     opacity: 0.5;
 }
+/* Per-list glyph (set on the layer via .cb-shape-*, cascades to its dots).
+ * Color stays the primary distinguisher; shape is secondary reinforcement.
+ * Dots are 3px and lean on the dual ring for legibility, so shapes stay
+ * simple (triangle trades the ring for a filled glyph — used only by merged). */
+.cb-shape-circle .cb-pick-ghost { border-radius: 50%; }
+.cb-shape-square .cb-pick-ghost { border-radius: 0; }
+.cb-shape-diamond .cb-pick-ghost { border-radius: 0; transform: translate(-50%, -50%) rotate(45deg); }
+.cb-shape-triangle .cb-pick-ghost { border-radius: 0; clip-path: polygon(50% 0, 0 100%, 100% 100%); }
 
 /* ----------------------------------------------------------------------
  * Filter UX: per-tile keep/drop state. Default is keep (no extra class);
@@ -3973,21 +4010,23 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
     ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
 
 
-def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id: str):
-    """Render one species' ghost-dot layer over a shared slab canvas.
+def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id: str, shape: str = "circle"):
+    """Render one pick list's ghost-dot layer over a shared slab canvas.
 
     Carries a stable DOM `layer_id` and per-dot `data-pick-idx` plus a
     `.cb-pick-marker` so the gallery↔canvas hover bridge in
-    `_render_gallery_body` can target this exact species' dots (the bridge
+    `_render_gallery_body` can target this exact list's dots (the bridge
     does `getElementById(layer_id)` then scopes its querySelector to it).
-    Returns the layer element so a checkbox can toggle its visibility."""
+    `shape` (circle/diamond/square/triangle) is the per-list glyph, applied on
+    the layer so it cascades to every child dot. Returns the layer element so a
+    checkbox can toggle its visibility."""
     x_dim = max(int(dims[0]), 1)
     y_dim = max(int(dims[1]), 1)
     z_dim = max(int(dims[2]), 1)
     # `--sp-color` cascades to every child .cb-pick-ghost (the restyle rule
     # reads it via var()), so the species color survives the !important dot
     # styling without per-dot inline overrides.
-    layer = ui.element("div").classes("cb-pick-layer").style(f"--sp-color: {color};")
+    layer = ui.element("div").classes(f"cb-pick-layer cb-shape-{shape}").style(f"--sp-color: {color};")
     layer._props["id"] = layer_id
     with layer:
         for p in picks:
@@ -4246,10 +4285,37 @@ def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -
     return recon_job_dir, (Path(mrc) if mrc else None)
 
 
+def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> list[dict]:
+    """The pick lists overlaid for one species on this TS, each render-ready:
+    {slug, label, list_type, color, shape, picks, dims, visible}.
+
+    Slice 2 returns just the `auto` PyTOM list (from picks.json). The
+    workbench-authored lists (manual/imported/merged) from the ProjectState
+    registry, and the `filtered` subset, are layered in by later slices — the
+    canvas/toggle/cutout machinery already iterates this list, so adding a type
+    is purely a matter of appending an entry here."""
+    lists: list[dict] = []
+    auto_picks = sp.get("picks") or []
+    if auto_picks:
+        lists.append(
+            {
+                "slug": "auto",
+                "label": sp["label"],
+                "list_type": PickListType.AUTO,
+                "color": sp["color"],
+                "shape": _glyph_for(PickListType.AUTO),
+                "picks": auto_picks,
+                "dims": sp["dims"],
+                "visible": True,
+            }
+        )
+    return lists
+
+
 def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str, refresh) -> list[dict]:
     """One entry per candidate-extract instance that has a row for this TS,
     with everything the Particles section needs (row, manifest, entry, picks,
-    color). Drives both the shared canvas overlay and the per-species tabs."""
+    color, lists). Drives both the shared canvas overlay and the per-species tabs."""
     out: list[dict] = []
     for idx, (iid, jm) in enumerate(_candidate_extract_instances(project_state)):
         job_dir = _job_dir_for(iid, jm, project_path)
@@ -4273,23 +4339,23 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
         _, species_id = _resolve_species(project_state, jm, iid)
         sub_match = _matching_subtomo_instance(project_state, species_id)
         subtomo_job_dir = _job_dir_for(sub_match[0], sub_match[1], project_path) if sub_match else None
-        out.append(
-            {
-                "idx": idx,
-                "iid": iid,
-                "jm": jm,
-                "job_dir": job_dir,
-                "species_id": species_id,
-                "subtomo_job_dir": subtomo_job_dir,
-                "row": row,
-                "manifest": manifest,
-                "entry": entry,
-                "label": str(label),
-                "color": _SPECIES_OVERLAY_COLORS[idx % len(_SPECIES_OVERLAY_COLORS)],
-                "picks": picks_data.get("picks") or [],
-                "dims": picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1],
-            }
-        )
+        sp_entry = {
+            "idx": idx,
+            "iid": iid,
+            "jm": jm,
+            "job_dir": job_dir,
+            "species_id": species_id,
+            "subtomo_job_dir": subtomo_job_dir,
+            "row": row,
+            "manifest": manifest,
+            "entry": entry,
+            "label": str(label),
+            "color": _SPECIES_OVERLAY_COLORS[idx % len(_SPECIES_OVERLAY_COLORS)],
+            "picks": picks_data.get("picks") or [],
+            "dims": picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1],
+        }
+        sp_entry["lists"] = _collect_pick_lists_for_species(sp_entry, project_state, ts_name)
+        out.append(sp_entry)
     return out
 
 
@@ -4373,7 +4439,7 @@ def _render_particles_canvas(
             )
         return layer_ids
 
-    with_picks = [sp for sp in species_data if sp["picks"]]
+    with_picks = [sp for sp in species_data if sp.get("lists")]
     if not with_picks:
         # Recon slab exists but nothing picked yet — clean slab, no overlay.
         with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style("max-height: 70vh;"):
@@ -4386,24 +4452,28 @@ def _render_particles_canvas(
     z_dim = max(int(dims[2]), 1)
     nonce = uuid.uuid4().hex[:8]
 
-    # Per-species toggle row — checkboxes named after the species, colored to
-    # match their dots; each toggles that species' X/Y + X/Z layers together.
+    # Per-LIST toggle row — one checkbox per pick list (a species' auto list,
+    # plus any manual/imported/merged lists), colored + glyph-swatched to match
+    # its dots; each toggles that list's X/Y + X/Z layers together.
     with ui.row().classes("cb-species-toggle-row"):
         ui.label("Show picks").classes("text-[10px] uppercase font-bold text-gray-400")
         for sp in with_picks:
+            for lst in sp["lists"]:
 
-            def _toggle(e, _entry=sp):
-                for layer in _entry.get("_layer_els", []):
-                    if e.value:
-                        layer.classes(remove="cb-pick-layer-hidden")
-                    else:
-                        layer.classes(add="cb-pick-layer-hidden")
+                def _toggle(e, _lst=lst):
+                    for layer in _lst.get("_layer_els", []):
+                        if e.value:
+                            layer.classes(remove="cb-pick-layer-hidden")
+                        else:
+                            layer.classes(add="cb-pick-layer-hidden")
 
-            with ui.row().classes("items-center gap-1"):
-                ui.element("div").classes("cb-species-swatch").style(f"background: {sp['color']};")
-                ui.checkbox(f"{sp['label']} ({len(sp['picks'])})", value=True).props("dense").classes(
-                    "text-[11px]"
-                ).on_value_change(_toggle)
+                with ui.row().classes("items-center gap-1"):
+                    ui.element("div").classes(f"cb-species-swatch cb-swatch-{lst['shape']}").style(
+                        f"background: {lst['color']};"
+                    )
+                    ui.checkbox(f"{lst['label']} ({len(lst['picks'])})", value=lst["visible"]).props("dense").classes(
+                        "text-[11px]"
+                    ).on_value_change(_toggle)
 
     # X/Y and X/Z share ONE width-constrained stack so the side view sits at
     # the exact same width as the top-down view (same x-axis scale) — each
@@ -4419,11 +4489,16 @@ def _render_particles_canvas(
         with xy_host:
             ui.image(_vis_asset_url(str(xy_png)))
             for sp in with_picks:
-                lid = f"cb-pl-{nonce}-{sp['idx']}-xy"
-                sp.setdefault("_layer_els", []).append(
-                    _render_pick_layer(sp["picks"], sp["color"], sp["dims"], "xy", lid)
-                )
-                layer_ids.setdefault(sp["iid"], {})["xy"] = lid
+                for lst in sp["lists"]:
+                    lid = f"cb-pl-{nonce}-{sp['idx']}-{lst['slug']}-xy"
+                    lst.setdefault("_layer_els", []).append(
+                        _render_pick_layer(lst["picks"], lst["color"], lst["dims"], "xy", lid, lst["shape"])
+                    )
+                    lst["_lid_xy"] = lid
+                    # Gallery↔canvas bridge targets the species' primary list (auto
+                    # if present, else the first) — what the cutout gallery mirrors.
+                    if lst["slug"] == "auto" or "xy" not in layer_ids.get(sp["iid"], {}):
+                        layer_ids.setdefault(sp["iid"], {})["xy"] = lid
 
         if xz_png.exists():
             xz_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
@@ -4431,11 +4506,14 @@ def _render_particles_canvas(
             with xz_host:
                 ui.image(_vis_asset_url(str(xz_png)))
                 for sp in with_picks:
-                    lid = f"cb-pl-{nonce}-{sp['idx']}-xz"
-                    sp.setdefault("_layer_els", []).append(
-                        _render_pick_layer(sp["picks"], sp["color"], sp["dims"], "xz", lid)
-                    )
-                    layer_ids.setdefault(sp["iid"], {})["xz"] = lid
+                    for lst in sp["lists"]:
+                        lid = f"cb-pl-{nonce}-{sp['idx']}-{lst['slug']}-xz"
+                        lst.setdefault("_layer_els", []).append(
+                            _render_pick_layer(lst["picks"], lst["color"], lst["dims"], "xz", lid, lst["shape"])
+                        )
+                        lst["_lid_xz"] = lid
+                        if lst["slug"] == "auto" or "xz" not in layer_ids.get(sp["iid"], {}):
+                            layer_ids.setdefault(sp["iid"], {})["xz"] = lid
 
     return layer_ids
 
@@ -4492,6 +4570,42 @@ def _render_species_size_chips(sp: dict, project_path: Path, ts_name: str, tm_in
     )
 
 
+async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
+    """Per-tomo 'Curate in ArtiaX': export this (species, tomo)'s picks to a
+    `.coords` + `.cxc`, then either pre-load them into a fresh ChimeraX/ArtiaX
+    session (Tier-2) or — if a session is already live for this project — show the
+    copyable `open` commands to paste into it (Tier-1, no second SLURM job =
+    no re-tunnel). SingleFlight-guarded so repeated clicks prep only one bundle."""
+    from backend import get_backend
+    from ui.curation_session_dialog import open_curation_commands_dialog, open_curation_session_dialog
+
+    tomo_name = sp["row"]["tomo_name"]
+    async with _curation_flight(f"{sp.get('species_id')}:{tomo_name}") as acquired:
+        if not acquired:
+            return
+        backend = get_backend()
+        if backend is None:
+            ui.notify("Backend unavailable.", type="negative")
+            return
+        job_dir = Path(sp["job_dir"])
+        ui.notify(f"Preparing ArtiaX bundle for {tomo_name}…", type="info")
+        bundle = await backend.prepare_curation_bundle(
+            project_path,
+            job_dir / "candidates.star",
+            job_dir / "tomograms.star",
+            tomo_name,
+            sp.get("label") or sp.get("species_id") or "",
+        )
+        if not bundle.get("success"):
+            ui.notify(f"Could not prepare picks for {tomo_name}: {bundle.get('error')}", type="negative")
+            return
+        active = await backend.find_active_curation_session(project_path)
+        if active:
+            open_curation_commands_dialog(bundle.get("commands") or [], active, bundle.get("manual_coords") or "")
+        else:
+            await open_curation_session_dialog(backend, project_path, cxc_path=bundle.get("cxc_path"))
+
+
 def _render_species_tab_header(sp: dict, tm_info: dict, project_path: Path, refresh) -> None:
     """Compact per-tab header (Option A): an always-visible essentials line
     (position · tomo · N · score range · θ · sym · Ø) with the two common
@@ -4518,6 +4632,17 @@ def _render_species_tab_header(sp: dict, tm_info: dict, project_path: Path, refr
             if entry.get("score_mean") is not None:
                 ui.label(f"mean {entry['score_mean']:.3f}").classes("text-[11px] text-gray-500 font-mono")
             ui.space()
+            # One-click curation: export this (species, tomo)'s picks, write a .cxc,
+            # and pre-load a ChimeraX/ArtiaX session (or show paste-in commands for a
+            # live one). Always visible — the handler reports clearly if the recon or
+            # picks are missing rather than us hiding the button on a preview field.
+            (
+                ui.button(
+                    "Curate in ArtiaX", icon="view_in_ar", on_click=lambda: _handle_curate_in_artiax(sp, project_path)
+                )
+                .props("dense no-caps size=sm color=indigo")
+                .tooltip("Open this tomogram + its picks in ChimeraX + ArtiaX for manual curation")
+            )
             gen_missing_btn = (
                 ui.button(
                     icon="auto_fix_high",
@@ -5000,9 +5125,7 @@ def _render_gallery_body(
 
     with cutouts_box, ui.row().classes("cb-cutouts-head w-full items-center gap-2"):
         ui.label("Subtomo gallery").classes("cb-section-title")
-        ui.label("click: keep/drop · drag: box-select (⇧ keeps)").style(
-            "font-size: 9px; color: #94a3b8;"
-        ).tooltip(
+        ui.label("click: keep/drop · drag: box-select (⇧ keeps)").style("font-size: 9px; color: #94a3b8;").tooltip(
             "Drag a rectangle over the cutouts to flip the enclosed picks: a mostly-kept box drops "
             "them, a mostly-dropped box restores them. Shift-drag always keeps."
         )
@@ -5133,12 +5256,14 @@ def _render_gallery_body(
                 if outcome == "removed_all":
                     ui.notify(
                         f"Reset {ts_name} — no curation left for this species, downstream uses original picks",
-                        type="info", timeout=2800,
+                        type="info",
+                        timeout=2800,
                     )
                 else:
                     ui.notify(
                         f"Reset {ts_name} to original picks — other tomograms keep their curation",
-                        type="info", timeout=2800,
+                        type="info",
+                        timeout=2800,
                     )
                 _refresh_grid()
                 _refresh_counter()

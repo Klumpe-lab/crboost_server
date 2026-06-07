@@ -27,9 +27,21 @@ from services.tilt_series import TiltSeriesRegistry, get_registry_for
 
 logger = logging.getLogger(__name__)
 
+# The process-wide backend. main.py constructs one at startup; UI surfaces opened
+# without a threaded-through reference (e.g. the tomo dashboard, which is a function
+# module) reach it via get_backend(). Same idiom as get_config_service()/get_state_service().
+_backend_instance: Optional["CryoBoostBackend"] = None
+
+
+def get_backend() -> Optional["CryoBoostBackend"]:
+    """The process-wide backend instance, or None before one is constructed."""
+    return _backend_instance
+
 
 class CryoBoostBackend:
     def __init__(self, server_dir: Path):
+        global _backend_instance
+        _backend_instance = self
         self.username = getpass.getuser()
         self.server_dir = server_dir
         self.config_service = get_config_service()
@@ -172,9 +184,16 @@ class CryoBoostBackend:
 
     # ── ChimeraX + ArtiaX curation session (VNC over a SLURM job) ───────────────
 
-    async def launch_curation_session(self, project_path: Optional[Path] = None) -> Dict[str, Any]:
+    async def launch_curation_session(
+        self, project_path: Optional[Path] = None, cxc_path: Optional[Path] = None
+    ) -> Dict[str, Any]:
         """Submit a ChimeraX+ArtiaX VNC desktop as a SLURM job (partition 'c' by
         default — software GL is enough for slice-based picking).
+
+        `cxc_path`, when given, is a crboost-generated `.cxc` (see
+        services/visualization/artiax_bridge.prepare_curation_bundle) passed to the
+        worker as CB_CXC so the session opens with the tomogram + picks preloaded
+        instead of blank.
 
         Returns the SLURM job id and the shared-FS session dir that the compute
         node writes `session.json` into; poll it with get_curation_session_info().
@@ -220,7 +239,8 @@ class CryoBoostBackend:
             f"export CX_GEOMETRY={shlex.quote(cur.geometry)}\n"
             f"export CX_LOGIN_HOST={shlex.quote(login_host)}\n"
             f"export CB_SESSION_DIR={shlex.quote(str(session_dir))}\n"
-            f"exec {shlex.quote(str(worker))}\n"
+            + (f"export CB_CXC={shlex.quote(str(cxc_path))}\n" if cxc_path else "")
+            + f"exec {shlex.quote(str(worker))}\n"
         )
         sbatch_script.chmod(0o755)
 
@@ -242,6 +262,19 @@ class CryoBoostBackend:
             slurm_job_id = out.split()[-1] if out else None
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+        # Persist the SLURM id into the session dir so a fresh UI render (or a
+        # different browser tab) can recover + reconnect a session it didn't
+        # launch — the id otherwise lives only in the dialog's local state.
+        # find_active_curation_session() reads these back.
+        try:
+            (session_dir / "job.json").write_text(
+                json.dumps(
+                    {"slurm_job_id": slurm_job_id, "session_id": session_id, "cxc": str(cxc_path) if cxc_path else None}
+                )
+            )
+        except Exception as e:
+            logger.warning("Could not persist job.json for curation session %s: %s", session_id, e)
 
         logger.info("Curation session submitted: SLURM job %s (session %s)", slurm_job_id, session_id)
         return {
@@ -293,6 +326,84 @@ class CryoBoostBackend:
         if not slurm_job_id:
             return {"success": False, "error": "no SLURM job id"}
         return await self.slurm_service.scancel_jobs([slurm_job_id])
+
+    # Curation jobs are submitted with `-J cb-curation`; a session is "live" iff
+    # its SLURM job is in one of these states (squeue is the source of truth — we
+    # never trust a cached is-running flag; see project memory on the stuck-yellow bug).
+    _CURATION_LIVE_STATES = ("RUNNING", "PENDING", "CONFIGURING", "SCHEDULED", "COMPLETING")
+
+    async def find_active_curation_session(self, project_path: Path) -> Optional[Dict[str, Any]]:
+        """Return the project's one live curation session, or None.
+
+        Scans `<project>/.curation_sessions/*/job.json`, then makes a single
+        squeue call and returns the first session whose SLURM job is still live —
+        merged with its `session.json` connection details when already published.
+        Liveness is derived from squeue, never a stored boolean.
+        """
+        base = Path(project_path) / ".curation_sessions"
+        if not base.is_dir():
+            return None
+        recorded = []
+        for job_file in sorted(base.glob("*/job.json")):
+            try:
+                data = json.loads(job_file.read_text())
+            except Exception:
+                continue
+            jid = data.get("slurm_job_id")
+            if jid:
+                recorded.append((jid, job_file.parent))
+        if not recorded:
+            return None
+
+        jobs = await self.slurm_service.get_user_jobs(force_refresh=True)
+        live = {j.job_id: j for j in jobs if j.name == "cb-curation" and j.state in self._CURATION_LIVE_STATES}
+        for jid, sdir in recorded:
+            match = live.get(jid) or next(
+                (j for j in live.values() if j.job_id.split("_", 1)[0] == jid.split("_", 1)[0]), None
+            )
+            if match is None:
+                continue
+            out: Dict[str, Any] = {
+                "session_dir": str(sdir),
+                "slurm_job_id": match.job_id,
+                "slurm_state": match.state,
+                "node": match.nodelist or None,
+            }
+            info_file = sdir / "session.json"
+            if info_file.exists():
+                try:
+                    out.update(json.loads(info_file.read_text()))
+                except Exception:
+                    pass
+            return out
+        return None
+
+    async def prepare_curation_bundle(
+        self, project_path: Path, candidates_star: Path, tomograms_star: Path, tomo_name: str, species_label: str = ""
+    ) -> Dict[str, Any]:
+        """Export one tomogram's picks → `.coords` and write an `open_<tomo>.cxc`
+        that preloads them in ArtiaX. Returns the resolved paths + the copyable
+        ChimeraX command lines (`commands`); pass `cxc_path` to
+        launch_curation_session() for a preloaded session, or surface `commands`
+        for an already-running one. Disk I/O + numpy run off the event loop.
+        """
+        from services.visualization import artiax_bridge
+
+        out_dir = Path(project_path) / ".curation_sessions" / "bundles" / (artiax_bridge._safe_slug(species_label))
+        try:
+            info = await asyncio.to_thread(
+                artiax_bridge.prepare_curation_bundle,
+                Path(candidates_star),
+                Path(tomograms_star),
+                tomo_name,
+                out_dir,
+                species=species_label,
+                project_root=Path(project_path),
+            )
+        except Exception as e:
+            logger.warning("prepare_curation_bundle failed for %s: %s", tomo_name, e)
+            return {"success": False, "error": str(e)}
+        return {"success": True, **info}
 
     async def get_default_data_globs(self) -> Dict[str, str]:
         """Get default glob patterns from config."""

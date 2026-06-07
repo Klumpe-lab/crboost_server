@@ -90,9 +90,17 @@ class PipelineBuilderPanel:
         async with self.flight("curation_session") as acquired:
             if not acquired:
                 return
-            from ui.curation_session_dialog import open_curation_session_dialog
+            from ui.curation_session_dialog import open_curation_chooser_dialog, open_curation_session_dialog
 
-            await open_curation_session_dialog(self.backend, self.ui_mgr.project_path)
+            # Ensure-session: if one is already live for this project, show the
+            # Reconnect / Stop & relaunch chooser instead of silently launching a
+            # second (which would land on a new node = a fresh tunnel for nothing).
+            project_path = self.ui_mgr.project_path
+            active = await self.backend.find_active_curation_session(project_path)
+            if active:
+                await open_curation_chooser_dialog(self.backend, project_path, active)
+            else:
+                await open_curation_session_dialog(self.backend, project_path)
 
     # ── Species gate ──────────────────────────────────────────────────────────
 

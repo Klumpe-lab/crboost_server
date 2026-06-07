@@ -1,9 +1,143 @@
 # ArtiaX manual-picking bridge — design plan
 
-Status: **Coordinate bridge VALIDATED; self-contained appliance + crboost one-click launch
-WORKING — ChimeraX+ArtiaX renders over VNC end-to-end (2026-06-03).** Remaining: the curation
-*workflow* (pre-load tomograms, ingest manual picks, merge) — see "## Post-launch curation
-workflow roadmap" below. This doc is the contract.
+Status: **Coordinate bridge VALIDATED; appliance + crboost one-click launch WORKING; GPU/VirtualGL
+acceleration LANDED 2026-06-06 (fluid 3-D on a P100 — see "## GPU/VirtualGL acceleration" below).**
+Remaining: (1) plug the GPU container into the one-click launch + preload (the blank-session fix), and
+(2) the curation *workflow* — a **multi-list pick workbench** on the per-tomo card
+(view/edit/create/import/filter/merge N lists per (species, tomo); one authoritative list forwards
+downstream). Current contract: "## Curation workbench — the multi-list model" below. This doc is the contract.
+
+## GPU/VirtualGL acceleration — LANDED (2026-06-06)
+
+The software-GL appliance was unusable for 3-D inspection (3-5 s per camera move = Mesa `llvmpipe`
+rasterizing on a CPU node). A GPU + VirtualGL variant now renders **fluidly on a P100** ("perfectly
+usable"). Full hard-won diagnosis + recipe in memory `reference_chimerax_vnc_perf`. What shipped, all
+in `containers/chimerax_artiax/` (one worker drives both the CPU and GPU sifs):
+
+- **`chimerax_artiax_GL.def`** (built → `chimerax_artiax_GL.sif`) — the CPU def minus the software-GL
+  forcing, + VirtualGL 3.1.4 (ABI-tag-stripped like the ChimeraX libs — `libvglfaker` is LD_PRELOAD'd,
+  same el7 trap), + **the keystone:** bakes `/usr/share/glvnd/egl_vendor.d/10_nvidia.json`. apptainer
+  `--nv` injects the NVIDIA EGL *libs* but NOT the GLVND vendor config, so without it libEGL sees only
+  Mesa → probes cgroup-denied `/dev/dri` → falls to llvmpipe. That `/dev/dri ... Permission denied`
+  spam at startup is the tell; its absence = NVIDIA EGL in use.
+- **`curation_session.sh`** — `CX_VGL` set ⇒ `apptainer exec --nv --writable-tmpfs … vglrun -d egl
+  chimerax`, pins `__EGL_VENDOR_LIBRARY_FILENAMES` at the json. `--writable-tmpfs` lets ChimeraX write
+  `preregistration`/history (the baked `/opt/cx` is RO) without erroring. Unset ⇒ software path, unchanged.
+- **`launch_curation_vnc.sh g`** ⇒ `CX_VGL=1` + `--gres=gpu:1` + finite `--time` (GPU QOS rejects
+  `--time=0` with `QOSMaxWallDurationPerJobLimit`).
+- **Residuals (cosmetic, non-fatal, both variants):** the `Log`/`ChimeraXHtmlView` error (QtWebEngine
+  missing `libgbm1`/`libasound2`/`libxshmfence1`; Log panel only, ArtiaX fine) — add those libs in a
+  rebuild if the Log panel is wanted. **Still un-validated:** the actual ArtiaX *tomogram → pick → save
+  `.coords`* loop on the GPU sif (only `open 4ug0`, a PDB model, has been rendered so far).
+
+## Plug the GPU container into the manual-picking infrastructure
+
+Goal: the gains above + the existing curation infra (config-driven launch, the connect dialog, the
+`CB_CXC` preload hook) converge so the crboost one-click button opens a **GPU** session **preloaded**
+with the right tomogram + picks, the user curates, and the picks flow back in. Build order:
+
+1. **GPU knobs in `CurationConfig`** (`services/configs/config_service.py:108`) — add `gres: Optional[str]
+   = None` and `vgl: bool = False` (partition + `time` + `sif_path` already exist; `time` already
+   defaults to the finite `08:00:00` the GPU QOS needs). conf.yaml `curation:` points `sif_path` at the
+   `_GL.sif`, sets `partition: g`, `gres: "gpu:1"`, `vgl: true`.
+2. **Wire them through `backend.launch_curation_session`** (`backend.py:175`) — the sbatch wrapper adds
+   `#SBATCH --gres={cur.gres}` when set, and `export CX_VGL=1` when `cur.vgl`. (The manual
+   `launch_curation_vnc.sh g` already does exactly this; this just mirrors it on the sbatch path.) No
+   change to `get_curation_session_info`/`stop_curation_session`. The connect dialog is unchanged.
+3. **Preload — kill the blank session** (the #1 usability gap). **✓ MECHANISM LANDED (session 2026-06-07).**
+   `.cxc` generator + bundle prep in `artiax_bridge.py` (`build_session_cxc` / `session_chimerax_commands` /
+   `prepare_curation_bundle`); `backend.launch_curation_session(project_path, cxc_path=…)` passes `CB_CXC`;
+   `backend.prepare_curation_bundle(...)` thin wrapper; per-(species,tomo) **"Curate in ArtiaX" button** in the
+   gallery (`_render_species_tab_header` → `_handle_curate_in_artiax`). For a live session it shows the **real**
+   `open …` commands (Tier-1, `open_curation_commands_dialog`); for none it launches preloaded. **The remaining
+   work is the UX overhaul + REST auto-dispatch below — see "## Curation UX overhaul".** GATE: NOT validated in
+   ChimeraX yet (do the auto picks land un-shifted? if not, add a px cmd to `session_chimerax_commands`).
+4. **Single-session reuse** — `ensure-session`. **✓ LANDED (session 2026-06-07):** `find_active_curation_session`
+   (squeue-derived liveness) + persisted `job.json`; sidebar button is two-state (Reconnect / Stop & relaunch).
+   **Remaining:** enqueue-next-tomo into a live session's manifest (the blitz) — not built.
+5. **Ingest + the multi-list workbench** — saved `.coords` → `PickList` (manual/imported) + registry →
+   the per-tomo card (slices 4-6 of "## Curation workbench"). **Converter ✓ LANDED (session 2026-06-07):**
+   `artiax_bridge.import_coords_to_centered_star` (+ `import` CLI). **Remaining:** the UI "Import" button, the
+   `PickList` registry wiring, and the manual-save watch path. This is where the GPU session and the workbench
+   meet: curate in the fast ArtiaX session, the result lands as an authoritative list downstream.
+
+Dependencies: 1→2 are small and unlock GPU one-click; 3's mechanism is done — its **UX + REST dispatch** (below)
+is now the highest-value win; 5 is the existing workbench plan. None require a container rebuild (all
+crboost-side) except the optional QtWebEngine libs.
+
+## Curation UX overhaul — the "Curate in ArtiaX" control center (NEXT SESSION, user-driven 2026-06-07)
+
+The per-(species,tomo) **"Curate in ArtiaX"** button now works end to end (export picks → `.cxc`/bundle → live
+session shows paste-in `open` commands, or none launches preloaded). **But the connective tissue is raw**
+(direct user feedback). Concrete gaps + the fixes:
+
+1. **Make the popup a session-aware control center, not a command dump.** Today the dialog assumes a session is
+   already live and just lists commands. It should ALWAYS open showing, top-to-bottom:
+   - **Session status** (from `find_active_curation_session`): live (node N + a **Reconnect** affordance) /
+     starting / **off**.
+   - If **off** → a **"Start session"** button right in this dialog (launch preloaded with THIS tomo's `.cxc`),
+     so the user never has to go hunt the sidebar button first. (Wire to the same launch path; pass `cxc_path`.)
+   - If **live** → the load action. Until REST dispatch lands (next section) this stays paste-in, but **framed
+     as steps**, because the "these go into ChimeraX" context is currently missing entirely: "① switch to your
+     VNC viewer · ② click the ChimeraX command line at the bottom of its window · ③ paste:" + the copy button.
+   - Always → the **file overview** (item 2) + the manual-save target (already shown).
+2. **Per-(species,tomo) file overview + ONE co-located curation dir.** The user shouldn't reason about scattered
+   paths. Show the files for THIS (species, tomo) — PyTOM auto picks (`candidates.star` / exported `auto.coords`),
+   the recon, any manual/imported lists, the manual-save target — each copyable, each with on-disk status
+   (exists · size · mtime). **Co-locate them:** today the bundle lands in `.curation_sessions/bundles/<species>/`
+   while ManualPicks land elsewhere — converge on ONE dir per (species, tomo) (e.g. `Curation/<species>/<tomo>/`
+   holding `auto.coords`, `manual.coords`, imported lists, the `.cxc`) so "browse what's here" is a single
+   folder. This doubles as the input set for the multi-list workbench (one file ⇒ one `PickList`).
+3. **Button discoverability.** The button is lost in the tab-header essentials row among gray stats + the
+   "sizes & 3dmod" expansion + the render/IMOD admin icons. Promote it to a clearly-separated **primary action**
+   in the species tab (its own row/area), ideally with the live-session status inline (e.g. "Curate in ArtiaX
+   ● live on c2-11" vs "○ no session").
+4. **Gallery panel UX (DEFERRED — user-flagged for a later dedicated pass).** The gallery already carries a lot
+   of interaction (per-list toggles, dot↔cutout brushing, keep/drop). The user explicitly wants this left for
+   later; placeholder here so it's not lost.
+
+## Dispatch commands to ChimeraX from crboost (REST `remotecontrol`) — INVESTIGATE, biggest UX unlock
+
+The paste-in step exists ONLY because crboost can't talk to the running ChimeraX. It very likely CAN, and if so
+"Load this tomogram" becomes a real one-click: crboost POSTs `artiax open tomo <recon>; open <auto.coords>` and
+the tomo appears in the user's open viewer — **no paste-in at all.** ChimeraX ships
+`remotecontrol rest start port <N> json true`: an HTTP endpoint inside ChimeraX that runs arbitrary ChimeraX
+commands (`…/run?command=open+<path>`).
+
+Feasibility — the reachability is the crux and it's promising:
+- **The same network path that makes VNC work makes REST work.** VNC works via `ssh -L rfbport:<node>:rfbport
+  user@login`, i.e. the login/headnode can already reach the compute node's ports; crboost runs there and
+  `session.json` already records `node`. So crboost should hit `http://<node>:<rest_port>/` like VNC does.
+- **Caveat:** ChimeraX `remotecontrol rest` historically binds **127.0.0.1** on the node for safety, so a direct
+  headnode→node:port GET may be refused. Two robust options: **(a)** run the curl ON the node —
+  `ssh <node> "curl -s 'localhost:<rest_port>/run?command=…'"` (the headnode can ssh to a node where the user has
+  a running job); **(b)** check whether this ChimeraX build can bind the REST server to a chosen address/all
+  interfaces, then reach it directly like VNC. Spike both; whichever connects decides the design.
+- **No native auth** on the REST server → use a high random port + the localhost-bind + ssh-hop (a) so it's
+  unreachable off-node; record `rest_port` in `session.json` next to the VNC port.
+- **Wiring:** worker bakes `remotecontrol rest start port <rand> json true` into startup / the `.cxc`;
+  `session.json` gains `rest_port`; `backend.send_chimerax_commands(session, cmds)` POSTs (direct or via
+  `ssh <node> curl`); the per-tomo **"Load in running session"** button calls it; **paste-in stays as the
+  graceful fallback** when the POST fails (session died / unreachable).
+- **Unlocks beyond load:** the same channel drives the Tier-3 blitz (crboost sends `next/prev` to walk a
+  manifest) and can read state back (`info models` JSON) to confirm a save. Cleaner than the baked `crboost`
+  ChimeraX bundle for *gallery-driven* control; the bundle is still better for hands-in-viewer keyboard nav —
+  they compose.
+- **Recommendation:** spike it FIRST next session — start ChimeraX with `remotecontrol rest`, from the headnode
+  try direct `http://<node>:<port>` and `ssh <node> curl localhost:<port>`, POST a trivial `open 4ug0`. If it
+  connects, the paste-in popup collapses into a one-click "Load," the single biggest UX win left.
+
+## Switch the GL container to DEFAULT (it is now the main appliance)
+
+`chimerax_artiax_GL.sif` renders fluidly (LANDED 2026-06-06) and should become the default the one-click button
+uses; the software-GL CPU sif drops to a fallback. Concretely (this IS "## Plug the GPU container" items 1-2):
+- conf.yaml `curation:` → `sif_path: …/chimerax_artiax_GL.sif`, `partition: g`, `gres: "gpu:1"`, `vgl: true`,
+  `time: "08:00:00"`.
+- `CurationConfig` gains `gres`/`vgl`; `backend.launch_curation_session` adds `#SBATCH --gres=` + `export
+  CX_VGL=1` when set (mirror what `launch_curation_vnc.sh g` already does on the manual path).
+- Keep the CPU sif reachable via env/config override (no-GPU nodes / QtWebEngine-free path).
+- **Validate during the spike:** the GPU sif's actual tomogram→pick→save `.coords` loop is still un-confirmed
+  (only `open 4ug0`, a PDB model, has rendered) — this is the same runtime gate as the preload px check.
 
 ## Session log & next-session handoff (2026-06-03)
 
@@ -101,6 +235,178 @@ SLURM job and surface the tunnel.
 - macOS sshfs *writes* to the mount fail / spawn `._` AppleDouble files — another reason the
   remote-GUI route wins (saved picks land on the cluster FS directly).
 
+## Curation workbench — the multi-list model (CURRENT DESIGN, 2026-06-03, grounded in code)
+
+This is the current curation data-model + UI contract. It **supersedes** the "auto read-only reference
++ manual-additions list + combine-policy" framing in the roadmap below; the `_combined` sibling +
+resolver tier still stand. Per (species, tomo) there are **N named pick lists**, each a
+visibility-toggleable layer (shape+color) over the recon slab canvas, each with its cutouts in a linked
+contact sheet. Exactly **one list is authoritative** — the one materialized at the canonical optset
+location the existing resolver already forwards downstream + to cross-project aggregation. The workbench
+manages many lists; merge/commit collapses a chosen subset into that one authoritative list.
+
+**This is largely a generalization of the existing per-species overlay** (`ui/tomo_dashboard_dialog.py`),
+not new machinery: per-species dot layers, the visibility toggle, linked dot↔cutout brushing, and
+keep/drop curation already exist — we widen "per species" → "per list." Two genuinely-new pieces: shape
+encoding, and on-the-fly cutouts from the binned recon.
+
+### List model
+A `PickList` per (species, tomo): `{slug, label, type, path, species_id, tomo_name, count, created_at,
+created_by, color, shape, parent_slugs, visible}`. Types + glyphs:
+- `auto` (circle) — PyTOM `candidates.star` (External job). Always present, read-only; registered virtually.
+- `filtered` (circle, dimmed) — CC/top-N derived from a parent. The existing `particles_filtered.star`
+  keep/drop curation is just this type.
+- `manual` (diamond) — saved in ArtiaX → ingested `.coords` → centered-Å star (`ManualPicks/<species>/<tomo>.star`).
+- `imported` (square) — user-supplied `.coords`/star, ingested like manual.
+- `merged` (triangle) — 2+ lists combined w/ radius dedup; the commit candidate → authoritative `_combined`.
+
+Registry: a `pick_lists` collection on `ProjectState`, mirroring `AggregationMerge`/`AggregationSource`
+(`services/project_state.py:432-511`) — same `mark_dirty()`/`save_if_dirty()` persistence. `created_by`
+is stamped by crboost (OS/login user) at create/import (ArtiaX files carry no author).
+
+### The authoritative list (downstream, unchanged)
+Merge/commit writes `optimisation_set_combined.star` + `particles_combined.star` in the subtomo job dir.
+Extend the single canonical resolver `picks_filter.resolve_canonical_optset` (`picks_filter.py:269-277`)
+to tier `_combined > _filtered > original` — both the IO-slot resolver (`path_resolution_service.py:576-592`,
+`prefer_if_exists`) and cross-project aggregation route through it, so downstream + aggregation pick the
+merged set up with **zero driver changes**. One-line tier add; reuse `subtomo_link._coord_key`
+(`subtomo_link.py:41`, 0.1 Å) for radius dedup on merge.
+
+### Rendering seams (all in `ui/tomo_dashboard_dialog.py`)
+- **Dots:** `_render_pick_layer()` (3976) already emits one toggleable `.cb-pick-layer` per set with a
+  `--sp-color` var; shape is a uniform 3px circle = the seam. Add a per-list **shape class**
+  (circle/diamond/square/triangle via border-radius / rotate / clip-path) + per-list color. Layer id
+  widens `…-{species_idx}-…` → `…-{list_slug}-…`.
+- **Toggle:** the per-species checkbox→`classList` hide (4391-4406) becomes **per-list**, governing dots
+  + that list's cutouts together (your "visibility toggles both dots and cutouts").
+- **Cutouts for any list:** today the atlas is built by subtomo extraction (pre-extracted `.mrc`, `vis/`
+  dir). Manual/imported/merged lists have no extraction → generate the cutout atlas **on the fly from the
+  binned recon MRC** at each pick voxel (reuse `render_pick_cutouts_atlas()` sourced from the recon,
+  central-slab box-crop). Feeds the same `_render_gallery_body()` (4898) tile grid + linked brushing
+  (5554-5681) unchanged.
+- **Linked brushing** (dot↔tile hover/click, 5554-5681) already exists, scoped per layer id — extend the
+  wired-id set to per-list.
+- **Drop stats:** remove the z-pct / nn-dist / CC-histogram panels (`write_picks_data` extras); keep CC
+  only as a per-dot hover value + the filter handle.
+
+### Interactions
+Each list chip: shape+color swatch · label · count · **eye** (visibility) · type icon · created/by
+tooltip · actions [Open in ArtiaX, Filter→derive, Delete]. Chips are **multi-selectable** (distinct from
+the eye toggle) → **Merge selected** → a new `merged` list. **Set authoritative** on any list
+materializes the `_combined` sibling. "Open in ArtiaX" = the two-state ensure-session button loading that
+list; editing in ArtiaX is **non-destructive** → saving yields a new `manual`-type list, source untouched.
+
+### Build order
+1. **Data model** — `PickList` + `ProjectState.pick_lists` registry (mirror `AggregationMerge`); enumerate
+   existing auto/filtered lists into it. [foundation]
+2. **Per-list overlay refactor** — widen `_render_pick_layer` + toggle from per-species to per-list; add
+   shape encoding; per-list eye governs dots. [the visible core]
+3. **On-the-fly recon cutouts** — atlas from the binned recon at arbitrary coords; visibility governs
+   cutouts; per-list linked brushing. [the "meat" — dots↔cutouts for any list]
+4. **Ingest/import** — `.coords`→manual/imported star + registry; "Open in ArtiaX" loads a chosen list
+   (ensure-session). [create lists]
+5. **Filter** — CC/top-N derive → new `filtered` list. [primitive filter]
+6. **Merge + authoritative** — select 2+ → dedup merge → `merged`; "Set authoritative" → `_combined`
+   sibling + the `resolve_canonical_optset` tier. [closes the loop downstream]
+
+**Progress (2026-06-03):**
+- **Slice 1 ✓** (landed, verified to ceiling) — `PickListType` (`services/models_base.py`), `PickList` +
+  `ProjectState.pick_lists` + `get/add/remove_pick_list` accessors (`services/project_state.py`). Only
+  workbench-authored lists persist; auto/filtered stay disk-synthesized. Additive, no schema bump.
+- **Slice 2 ✓** (compile+ruff clean; backward-compatible, needs runtime eyeball) — per-LIST overlay in
+  `ui/tomo_dashboard_dialog.py`: `_collect_pick_lists_for_species` (slice-2 returns just `auto`),
+  `_render_pick_layer(..., shape)` + `.cb-shape-*` glyph CSS + `.cb-swatch-*`, `_render_particles_canvas`
+  toggle row + layer loops widened per-list (layer id `cb-pl-{nonce}-{idx}-{slug}-{axis}`; per-list
+  `_lid_xy/_lid_xz` stored for cutout linking; gallery bridge still targets the `auto` layer). With one
+  auto list per species it renders identically to before — zero visual regression by design.
+- **Slice 3 (enabler) ✓** (compile+ruff clean) — `services/visualization/recon_cutouts.py`:
+  `render_recon_cutouts_atlas()` builds the SAME atlas PNG+index schema as
+  `preview_render.render_pick_cutouts_atlas` but from the binned recon (central-Z-slab box crop per pick,
+  tomogram-wide norm), so ANY list (manual/imported/un-extracted auto) gets cutouts. NOT yet wired.
+- **Blank-session fix — `.cxc` preload MECHANISM ✓** (the reprioritized #1; compile/ruff/bash-n clean,
+  string-gen + worker-composition verified by exec, but NOT ChimeraX-tested). The launch path can now open
+  preloaded instead of blank:
+  - `services/visualization/artiax_bridge.py`: `build_session_cxc()` (pure-stdlib `.cxc` text — header with
+    tomo/species/px/size, `set bgColor black`, optional `windowsize`, then the CONFIRMED load backbone, then
+    a manual-list/save-target comment), `session_chimerax_commands()` (the single source of the load
+    backbone: `artiax start` / `artiax open tomo <recon>` / `open <auto.coords>` / `lighting simple` — reused
+    so the `.cxc` and the future Tier-1 copyable-commands UI never drift), `prepare_curation_bundle()`
+    (exports our picks → `<tomo>__auto.coords` + writes `open_<tomo>.cxc` + returns resolved paths/commands;
+    hard-errors if the recon MRC is absent), and a `bundle` CLI subcommand. Uncertain ArtiaX subcommands
+    (forcing a particle-list px, creating the empty manual list) are emitted as **comments**, not commands,
+    so a wrong guess can't halt the script — the user confirms exact syntax on the first runtime test.
+  - `containers/chimerax_artiax/curation_session.sh`: new `CB_CXC` env → appends the `.cxc` (via `printf %q`)
+    to `CX_LAUNCH`, composing with the existing software-GL **and** `vglrun` paths; missing/blank ⇒ warns +
+    falls back to a blank session (never fails to launch).
+  - `backend.launch_curation_session(project_path, cxc_path=None)` exports `CB_CXC` into the sbatch wrapper.
+  - `launch_curation_vnc.sh` usage documents `CB_CXC` (propagates via `srun --export=ALL`).
+  - **Runtime-test path (no UI yet):** `python -m services.visualization.artiax_bridge bundle
+    --candidates <ce>/candidates.star --tomograms <ce>/tomograms.star --tomo <T> --out-dir <d> --species <s>`
+    (user's module env) → `CX_SIF=… CB_CXC=<d>/open_<T>.cxc launch_curation_vnc.sh`. This proves preload
+    before any UI wiring (the handoff's "runtime-test then build UI" order).
+- **Session-reuse substrate ✓ (landed this session, unit-verified)** — the squeue-derived liveness pieces
+  the ensure-session button needs, all in `backend.py`:
+  - `launch_curation_session` now persists `<session_dir>/job.json` (`slurm_job_id`/`session_id`/`cxc`) at
+    submit, so a fresh render or another tab can recover a session it didn't launch.
+  - `find_active_curation_session(project_path) -> dict|None` scans `.curation_sessions/*/job.json`, makes ONE
+    `get_user_jobs()` call, and returns the first session whose job is a live (`RUNNING/PENDING/CONFIGURING/
+    SCHEDULED/COMPLETING`) `-J cb-curation` job — merged with `session.json` connection fields. Liveness is
+    squeue-derived, never a stored boolean (dodges the stuck-yellow stale-flag trap). Unit-tested off-cluster
+    against fake squeue states: live-found, dead→None, name-filter-rejects, PENDING-live, array-id match,
+    empty-dir/no-json no-crash. **Does NOT yet de-dupe at submit** — `launch_curation_session` still always
+    `sbatch`es; the ensure-session button must call `find_active_curation_session` first and branch.
+  - `prepare_curation_bundle(project_path, candidates_star, tomograms_star, tomo_name, species_label)` — thin
+    async wrapper (`asyncio.to_thread`) over the bridge; writes the bundle under
+    `<project>/.curation_sessions/bundles/<species_slug>/` and returns `{cxc_path, commands, …}`. This is the
+    method the per-tomo button calls (the UI already has `job_dir` → candidates/tomograms star, so no
+    species→job-dir resolver is needed in the backend).
+- **Per-tomo "Curate in ArtiaX" button + Tier-1/Tier-2 routing ✓ (landed this session; compile/ruff clean,
+    SingleFlight logic + backend wired, but NOT runtime-tested — no UI eyeball off-cluster).** The blank
+    session is now reachable preloaded from the gallery:
+  - `backend.get_backend()` — process-wide singleton (set in `CryoBoostBackend.__init__`, same idiom as
+    `get_config_service`), so the tomo dashboard (a function module with no threaded backend) can reach it.
+  - `ui/tomo_dashboard_dialog.py`: a `view_in_ar` button in `_render_species_tab_header` (gated on
+    `row.get("vol_path")` = recon present), → `_handle_curate_in_artiax(sp, project_path)`
+    (module-level `_curation_flight = SingleFlight()`, keyed `species_id:tomo`). It calls
+    `backend.prepare_curation_bundle(project_path, job_dir/candidates.star, job_dir/tomograms.star, tomo,
+    label)` then `find_active_curation_session`: live → `open_curation_commands_dialog(commands, info,
+    manual_coords)` (Tier-1 paste-in, no 2nd sbatch); none → `open_curation_session_dialog(..., cxc_path=…)`
+    (Tier-2 preload).
+  - `ui/curation_session_dialog.py`: `open_curation_session_dialog` gained `cxc_path` (→
+    `launch_curation_session(..., cxc_path=…)`) and a preload-aware "once it opens" step; new
+    `open_curation_commands_dialog(commands, session_info, manual_coords)` for Tier-1.
+  - **Gate runtime check:** if auto picks land shifted in ArtiaX, add a pixel-size cmd to
+    `session_chimerax_commands` (one place) — the buttons need no change.
+- **Ensure-session sidebar button ✓ (landed this session; compile/ruff clean, NOT UI-eyeballed).** The sidebar
+  "Launch ChimeraX + ArtiaX" is no longer one-shot: `PipelineBuilderPanel.launch_curation_session` now calls
+  `find_active_curation_session` first (SingleFlight-guarded). Live → `open_curation_chooser_dialog` ("running
+  on node N · SLURM J" + **Reconnect** / **Stop & relaunch**); none → launch as before. **Reconnect** opens
+  `open_curation_session_dialog(..., existing=active)` — new `existing` param drives a `_reconnect()` path that
+  seeds `job_id`/`session_dir` and polls `session.json` with **NO second sbatch**. **Stop & relaunch** =
+  `stop_curation_session(old)` → fresh launch (escape hatch for a wedged session). This is the click-time
+  chooser the plan's "concrete code shape" specifies (keeps the squeue call OUT of the timer-driven roster
+  render). Idempotent by construction — at most one session. **Still open:** bundle always re-exports (no mtime
+  staleness); the chooser is sidebar-only (the per-tomo button still goes straight to Tier-1 commands /
+  Tier-2 launch, which is correct — it always has a specific tomo to load).
+- **Ingest CONVERTER ✓ (landed this session; compile/ruff clean, math already covered by `selftest`).**
+  `artiax_bridge.import_coords_to_centered_star(coords_path, tomograms_star, tomo, out_star, project_root)` —
+  the inverse of `export_tomo_picks_to_coords`, using the SAME `TomoFrame` so the `N/2` cancels (round trip
+  parity-exact; the existing `selftest` already verifies the `artiax_to_centered_angst` leg to <1e-6). Writes a
+  minimal RELION-5 star (`rlnTomoName` + the three `rlnCenteredCoordinate*Angst`) at e.g.
+  `ManualPicks/<species>/<tomo>.star`. New `import` CLI subcommand. **Full round-trip is now CLI-testable:**
+  `… export --candidates … --out a.coords` → `… import --coords a.coords --tomograms … --out m.star` → compare.
+  **Still converter-only** — NOT wired to a UI "Import" button, the `PickList` registry, or the manual-save
+  watch path (those are the next step, gated on the runtime confirmation that picks save where expected).
+- **NEXT (slice 3b/4 + polish):**
+  - **Ingest UI/registry** — "Import ArtiaX picks" button + watch the session's `manual/` dir →
+    `import_coords_to_centered_star` → register a `manual` `PickList`; raw import kept at
+    `ManualPicks/<species>/imports/<tomo>__<stamp>.coords` for provenance.
+  - wire the recon atlas as the gallery fallback when no subtomo atlas exists
+  (`_render_species_tab_body` ~4682 — mind `_render_gallery_body`'s `subtomo_job_dir` curation-save
+  coupling: degrade to read-only cutouts when None); then per-list contact sheet; then "Open in ArtiaX"
+  loading a chosen list; then filter + merge→`_combined`. All need the module-loaded env (numpy/
+  mrcfile/starfile/pandas absent in Claude's venv) — verify in the running app.
+
 ## Post-launch curation workflow roadmap (2026-06-03)
 
 The appliance now **renders** — ChimeraX+ArtiaX opens over VNC and is interactive. Everything
@@ -155,6 +461,67 @@ types a path or remembers a species↔project↔tomo mapping.
   (`crboost next/prev/save/status`) that read a session-manifest JSON and drive a multi-tomogram
   blitz. This is the elaborate-but-elegant endgame.
 
+**Session model — DECIDED (2026-06-03): one live session per project, reused; never one-per-tomogram.**
+The earlier fork (Tier-2 launches a fresh session per tomogram vs. reconnect-and-swap) collapses.
+A fresh session per tomogram is a non-starter for the 40–80-tomo blitz: every SLURM job lands on a
+new node/port/password, so the user would re-tunnel + re-open the VNC viewer for *every* tomogram —
+exactly the friction the feature exists to remove. The Option-A connection (one `ssh -L` + viewer +
+password) is only cheap when amortized across the whole run. So the rule across all tiers: **crboost
+tracks at most one live curation session per project and routes all curation through it.**
+- *Liveness = ground truth, not a cached flag.* Derive "is a session live?" by scanning the project's
+  `.curation_sessions/*/` dirs and cross-referencing `squeue` (curation jobs are `-J cb-curation`); live
+  iff its SLURM job is RUNNING/PENDING. The dir + `session.json` supply connection details. Persist the
+  `slurm_job_id` into the dir at submit (today it lives ONLY in the dialog's local state in
+  `curation_session_dialog.py`, so a fresh render can't recover a session it didn't launch). Do NOT keep
+  a separate "is-running" boolean in `ProjectState` — that's the stale-flag trap behind the stuck-yellow
+  bug (`feedback_inmemory_state_authoritative` / `project_candidate_preview_subtomo_cache_race`); squeue
+  is the source of truth, the dir is the durable record.
+- *The launch button becomes `ensure-session`, not `launch-session`.* If a session is live, reuse it
+  (no second `sbatch` — which also sidesteps the display-`:1` collision the appliance MVP warned about).
+  If none, submit one. Idempotent by construction — at most one session exists.
+- *Tier-2 "Curate this tomo" = enqueue into the live session.* If live: write the (tomo, recon,
+  auto.coords, manual-save-path) into the session manifest and tell the user "switch to your open
+  viewer" (no new tunnel). If none: launch, with this tomo as manifest entry #1. This **merges Tier-2
+  and Tier-3** — the manifest + baked `crboost next/prev/save` bundle is not a separate endgame tier,
+  it's the in-session mechanism that makes "work out of the one open session" real. Build the manifest
+  as soon as Tier-2 needs to load a *second* tomo into a live session.
+
+**Launch-button states — the two-state `ensure-session` affordance (DECIDED 2026-06-03).** Don't
+silently reuse; *show* the live session and let the user choose. The button (sidebar today; the
+per-tomo Tier-2 button later) renders from the liveness check above into one of two states:
+- *No live session* → **"Launch ChimeraX + ArtiaX"** — current behavior (submit + connect dialog).
+- *A live session for this project* → a compact **"Session running on node N ▸ [Reconnect] · [Stop &
+  relaunch]"**. **Reconnect** opens the existing connect dialog in *reconnect mode* — seed it with the
+  recovered `session_dir`+`slurm_job_id` and go straight to polling `session.json` / `render_ready`
+  (the tunnel/viewer/password are already in `session.json`); **NO second `sbatch`**. **Stop &
+  relaunch** = `stop_curation_session(old)` then submit fresh — the escape hatch for a wedged session.
+  (For the Tier-2 per-tomo button, *Reconnect* first enqueues this tomo into the live session's
+  manifest, i.e. "I loaded it — switch to your open viewer.")
+
+Concrete code shape (build + verify together with the launch-path runtime test — none of it is
+eyeball-able without a real session):
+- `backend.launch_curation_session`: after a successful `sbatch`, write `{"slurm_job_id": …}` into the
+  session dir (e.g. `job.json`) so the id outlives the dialog.
+- `backend.find_active_curation_session(project_path) -> dict|None`: scan `.curation_sessions/*/`, read
+  each `job.json`, one `get_user_jobs()` call to filter to live `cb-curation` jobs, return the live
+  one's `{session_dir, slurm_job_id, status, + session.json fields if present}` (or `None`).
+- `open_curation_session_dialog(backend, project_path, existing=None)`: when `existing` is passed, set
+  `state["job_id"]/["session_dir"]` from it and call `_poll()` + start the timer instead of `_start()`.
+- `PipelineBuilderPanel.launch_curation_session` (SingleFlight): call `find_active_curation_session`
+  first; if live, render the two-action chooser, else open the dialog as today.
+
+Remaining sub-decisions (smaller, not blocking):
+- *Who drives the swap.* Default: hands-stay-in-ChimeraX — the baked bundle's `next/prev/save`
+  (toolbar/keybinding) walks the manifest; the gallery button only seeds/extends the queue.
+  Alternative: drive from the crboost gallery via ChimeraX's `remotecontrol rest` endpoint (POST
+  `open …` to the running session) — lets a gallery click swap the tomo, but adds a second port/tunnel
+  + couples crboost to the live session over HTTP. Recommendation: manifest+bundle (already designed,
+  keeps the user in the viewer); keep REST as the escape hatch if gallery-driven swapping is wanted.
+- *Session scope: per-project.* Recon paths are absolute so one session *could* curate any project,
+  but ManualPicks + ingest + registry are project-scoped → one session per project, tracked in that
+  project's `ProjectState`. Two projects in two tabs ⇒ two independent sessions; the "is one live?"
+  check is project-scoped.
+
 **Tier 1 — per-tomo copyable info panel (cheap, immediate, independently useful).**
 In the gallery (`ui/tomo_dashboard_dialog.py`), each tomo preview gets a compact panel with:
 `rlnTomoName`, species, recon path (binned MRC), auto/curated picks path, pixel size, binned N,
@@ -204,11 +571,16 @@ the cluster FS — no download. Convention: save to `<session_dir>/manual/<tomo>
 ### Suggested build order (next sessions)
 1. **Polish** — fullscreen (fluxbox apps) + viewer-agnostic copy (done). [small]
 2. **Tier-1 info panels** in the gallery (copyable paths/cmds). [small, independently useful]
-3. **`.cxc` generator** in `artiax_bridge.py` + **Tier-2** one-click launch for a specific tomo
-   (worker takes a `.cxc` to open). [the seamless core]
+3. **`.cxc` generator** in `artiax_bridge.py` + **session liveness registry in `ProjectState`** +
+   **`ensure-session` Tier-2** one-click for a specific tomo: reuse the live session (enqueue the tomo
+   into its manifest) else launch one (this tomo = manifest entry #1). The worker takes a `.cxc`/manifest
+   to open. Button is **two-state** (Reconnect / Stop & relaunch) off a squeue-derived liveness check —
+   first code step is persisting `slurm_job_id` to the session dir + `find_active_curation_session`. [the
+   seamless core — see "Session model — DECIDED" + "Launch-button states"]
 4. **Ingest** (`.coords` → `ManualPicks` star + registry) + gallery "Import" button. [closes the loop]
 5. **`_combined` sibling** + resolver tier + staleness. [downstream, zero driver changes]
-6. **Tier-3** `crboost` ChimeraX bundle + session manifest for the blitz. [elaborate endgame]
+6. **Tier-3** baked `crboost` ChimeraX bundle (`next/prev/save` toolbar/keybindings) over the manifest
+   from step 3, for the hands-in-viewer blitz UX. [elaborate endgame — manifest already exists by here]
 7. **Aggregation tie-in** — combined sets as curated sources cross-project.
 
 ## Goal

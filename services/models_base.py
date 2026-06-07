@@ -67,7 +67,19 @@ class JobType(str, Enum):
             raise ValueError(f"Unknown job type '{value}'. Valid types: {valid}")
 
 
-class MicroscopeParams(BaseModel): 
+class PickListType(str, Enum):
+    """Kind of pick list in the per-(species, tomo) curation workbench. The
+    overlay glyph each renders as is fixed by type (color varies per list);
+    that mapping lives in the UI, not here."""
+
+    AUTO     = "auto"      # PyTOM candidates.star — read-only source
+    FILTERED = "filtered"  # CC/top-N derived from a parent list
+    MANUAL   = "manual"    # placed in ArtiaX, ingested from .coords
+    IMPORTED = "imported"  # user-supplied .coords/star, ingested
+    MERGED   = "merged"    # 2+ lists combined with radius dedup
+
+
+class MicroscopeParams(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)
     microscope_type: MicroscopeType = MicroscopeType.CUSTOM
