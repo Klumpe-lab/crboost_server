@@ -54,6 +54,80 @@ detail pane; selected column highlighted + shows `▸filtered`; rows align acros
 labels and the columns; horizontal scroll appears for many TS while the left labels stay; the ⓘ in
 the corner pops the selected TS's file paths.
 
+**C2b — post-feedback polish (landed same session, after user tried C2).** Three asks:
+- **Instant TS-switch.** `select_ts` is now `async`: it moves the column highlight + paints a
+  spinner and flushes to the client, THEN runs the (still-synchronous) detail render — the CSS
+  spinner animates client-side so the click feels instant. Generation-guarded (`_sel_gen`) against
+  rapid clicks (latest wins, no double render). `build_strip` now returns `{ts: col element}` so the
+  highlight can move without a full rebuild; `render_strip` stores it in the `col_els` closure.
+- **Filtered/kept count on ALL cells, always** (was selected-column-only — defeated the overview).
+  Columns widened 52 → 62 px to fit `auto ▸kept`.
+- **De-greened the species cells.** No more success-green fill (picks existing isn't a "success").
+  Only running (amber) / fail (red) / zero (gray) fill; "has picks" is neutral. Green now lives ONLY
+  on the kept-count number (= curated, a real step) and the prep dots (= stage done). `_cell_class`
+  rewritten; `.cb-strip-pickcell.{done,ok}` removed, `.has` added, `.cb-strip-filt` → green/bold.
+
+## Next UX asks (roadmap — user-listed 2026-06-08, after C2)
+
+Recorded for later — do NOT start without re-confirming priority. User's stated order: these come
+BEFORE the big picks-gallery rework (the differentiated manual/auto/merge picking + selection layout,
+which is the ArtiaX-aligned work in `services/visualization/ARTIAX_BRIDGE_PLAN.md`).
+
+**R1 — Bigger tomo preview. ✅ LANDED (pending user runtime verify).** Now the journey reclaimed the
+side, the recon **xy + xz slabs render ≥2× larger** and the gallery/tools cluster is pushed right.
+Three levers (all in `css.py` + the inline cap in `_render_particles_canvas`):
+- **Flipped column proportions** so the slab column dominates and the gallery yields width:
+  `.cb-particles-canvas-col` `flex: 1 1 360px / max-width 540` → `flex: 3 1 600px / max-width 1080`
+  (basis up, grow 1→3, **width cap doubled 540→1080**); `.cb-particles-tabs-col` `flex: 2 1 440` →
+  `flex: 1 1 360` (grow 2→1, yields the width).
+- **Raised the XY height cap** `52vh → 76vh` (inline `stack.style(... calc(76vh * x/y) ...)` in
+  `_render_particles_canvas`, ~line 2506) so near-square tomos grow toward the doubled width before
+  the height cap binds. No-picks preview cap bumped `70vh → 76vh` to match.
+- **R1b — column hugs the slab (no gutter).** First pass left the column growing to its flex share
+  (≤1080px) while the height-capped near-square slab was only ~820px wide → ~200px whitespace before
+  the gallery (user-reported). Fix: the column's max-width is now set **inline per-tomo** in
+  `_render_particles_section` to `min(1080px, calc(76vh * x/y))` — the slab's *actual* height-limited
+  width — so the column hugs the previews; the inner stack's own `max-width` was dropped (it just
+  `width:100%`-fills the column now). The gallery column absorbs all reclaimed space. Fixes the
+  no-picks path for free (same column). Dims taken from the first species with real `dims` (≠[1,1,1]).
+- **Net (1080p display):** landscape tomos hit a clean **2× linear** (column-bound at 1080px);
+  near-square tomos hit **~1.5× linear / ~2.3× area** (height-bound at 76vh ≈ 820px) — the viewport
+  height is the physical limit; full 2×-linear on a square tomo would need ~100vh and break XY/XZ
+  co-visibility. **The dial is the `76vh`** (appears twice now — inline col cap in
+  `_render_particles_section` AND the no-picks preview `max-height`): drop to ~62vh if the user can't
+  see XY+XZ together; the width cap (`1080px`) is the other dial. Pick overlays scale automatically
+  (fractional `inset:0`).
+
+**Persistence layer (R2/R3) — ALREADY EXISTED, no new layer built.** `services/configs/
+user_prefs_service.py`: `UserPreferences` (Pydantic) + `get_prefs_service()` singleton, dual-stored
+in `app.storage.user` AND `~/.crboost/prefs.json`; `storage_secret` is wired in `main.py`; load/save
+used across `main_ui`/`data_import_panel`/`pipeline_roster`/`projects_overview`. R2/R3 just added two
+fields: `dashboard_hidden_panels: List[str]` (absence ⇒ visible) + `dashboard_dataset_collapsed: bool
+= True`. New panels added later default to shown (hidden-list semantics). Backward-compatible (old
+stored prefs lack the fields → Pydantic defaults).
+
+**R2 — Per-panel visibility toggles. ✅ LANDED (pending user runtime verify).** A dense-checkbox row
+(`.cb-panel-toggle-row`, mirrors `.cb-species-toggle-row`) sits between the heatmap strip and the
+detail pane in `build_journey_panel` (`panel_toggle_container`, built once via `_build_panel_toggle_row`
+after `render_main` exists). One checkbox per panel from `_DASHBOARD_PANEL_KEYS` (dataset / fs_ctf /
+tilt_filter / ts_align / ts_ctf / reconstruct / particles). Toggling → `_toggle_panel` updates
+`dashboard_hidden_panels`, persists (`_save_dashboard_prefs` → `app.storage.user`), and calls
+`render_main()` (strip untouched — visibility doesn't affect it). `_render_main_pane_for_ts` gates
+each emitter on `_hidden_dashboard_panels()` (keys match the registry); all-hidden shows a "re-enable
+above" hint instead of the no-data state. Toggle row is chrome — NOT rebuilt by the 4 s live timer.
+
+**R3 — Collapsible Dataset section. ✅ LANDED (pending user runtime verify).** `_render_dataset_section`:
+header is now `.cb-collapsible-header` (clickable) with a rotating `.cb-collapse-caret`; the body
+(stage-0 chips + 2-col key/val grid + `_render_pixel_sanity_table`) is wrapped in
+`.cb-collapsible-body`, hidden via `.cb-collapsed` when collapsed. Collapsed (header + metric strip
+only) is the default (`_dataset_collapsed()` reads the pref, default True). Click toggles CSS classes
+directly + flips/persists `dashboard_dataset_collapsed` — no re-render, instant. Orthogonal to R2
+(R2 hides the whole panel; R3 collapses within it). Compute (`_compute_pixel_chain`) still runs when
+collapsed (cheap, in-memory) so expand is instant.
+
+**Then (the big one):** picks-gallery rework — sane/differentiated manual/auto/merge picking +
+selection layout. See `ARTIAX_BRIDGE_PLAN.md`.
+
 ---
 
 ## Hard constraint: NO runtime test in this venv
@@ -113,7 +187,7 @@ The heatmap strip is a **pure presentation transpose** of this data — no new c
 
 ---
 
-## P1 — the UX rework (DO THIS NEXT)
+## P1 — the UX rework (design rationale — IMPLEMENTED in C1/C2/C2b; see Progress above)
 
 ### Why it's janky today (root causes, all confirmed)
 

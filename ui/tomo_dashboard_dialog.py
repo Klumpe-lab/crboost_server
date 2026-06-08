@@ -23,6 +23,7 @@ not just the candidate-extract preview pair.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
@@ -30,8 +31,9 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from nicegui import ui
+from nicegui import app, ui
 
+from services.configs.user_prefs_service import get_prefs_service
 from services.models_base import JobStatus, JobType, PickListType
 from services.project_state import PickList, get_project_state, get_state_service
 from services.templating.template_metadata import get_effective_template_path, read_template_header
@@ -148,6 +150,74 @@ def _read_atlas_index(index_path: Path) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard panel prefs (R2/R3) — user-level, persisted across projects + TS
+# via the shared user_prefs_service (app.storage.user + ~/.crboost/prefs.json).
+# ---------------------------------------------------------------------------
+
+# (key, label) for every toggleable detail panel, in render order. The label
+# shows in the Panels toggle row; the key is the stable pref id AND the gate key
+# used in _render_main_pane_for_ts.
+_DASHBOARD_PANEL_KEYS: list[tuple[str, str]] = [
+    ("dataset", "Dataset"),
+    ("fs_ctf", "FS·CTF"),
+    ("tilt_filter", "Tilt-filter"),
+    ("ts_align", "TS-align"),
+    ("ts_ctf", "TS-CTF"),
+    ("reconstruct", "Reconstruct"),
+    ("particles", "Particles"),
+]
+
+
+def _hidden_dashboard_panels() -> set[str]:
+    """Panel keys the user toggled OFF. Stored as a list (absence ⇒ visible)."""
+    try:
+        return set(get_prefs_service().prefs.dashboard_hidden_panels)
+    except Exception:
+        return set()
+
+
+def _dataset_collapsed() -> bool:
+    try:
+        return bool(get_prefs_service().prefs.dashboard_dataset_collapsed)
+    except Exception:
+        return True
+
+
+def _save_dashboard_prefs() -> None:
+    """Persist the prefs singleton to app.storage.user (+ the ~/.crboost mirror)."""
+    try:
+        get_prefs_service().save_to_app_storage(app.storage.user)
+    except Exception:
+        pass
+
+
+def _toggle_panel(key: str, visible: bool, on_change) -> None:
+    svc = get_prefs_service()
+    hidden = set(svc.prefs.dashboard_hidden_panels)
+    if visible:
+        hidden.discard(key)
+    else:
+        hidden.add(key)
+    svc.prefs.dashboard_hidden_panels = sorted(hidden)
+    _save_dashboard_prefs()
+    on_change()
+
+
+def _build_panel_toggle_row(host, on_change) -> None:
+    """Dense-checkbox row (one per detail panel) gating which sections render.
+    Built once as journey chrome — toggling updates the user pref, persists it,
+    and re-renders the detail pane via on_change. Mirrors .cb-species-toggle-row."""
+    host.clear()
+    hidden = _hidden_dashboard_panels()
+    with host:
+        ui.label("Panels").classes("cb-panel-toggle-label")
+        for key, label in _DASHBOARD_PANEL_KEYS:
+            ui.checkbox(label, value=(key not in hidden)).props("dense").classes(
+                "text-[11px] cb-panel-cb"
+            ).on_value_change(lambda e, k=key: _toggle_panel(k, e.value, on_change))
+
+
+# ---------------------------------------------------------------------------
 # Public entry
 # ---------------------------------------------------------------------------
 
@@ -184,6 +254,9 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         # Column layout: heatmap status strip (the per-TS nav) on top, the
         # selected TS's detail pane below. Replaces the old 300px left sidebar.
         strip_container = ui.element("div").classes("cb-strip")
+        # R2: per-panel visibility toggle row (which detail sections render).
+        # Populated below once render_main exists; persists across TS + projects.
+        panel_toggle_container = ui.element("div").classes("cb-panel-toggle-row")
         main_area = (
             ui.element("div")
             .classes("cb-main")
@@ -191,6 +264,8 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         )
 
     _strip_sig: dict[str, object] = {"sig": None}
+    col_els: dict[str, object] = {}
+    _sel_gen = {"n": 0}
 
     def render_main() -> None:
         main_area.clear()
@@ -208,31 +283,50 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         journey, ts_names = _collect_dashboard_journey(state, project_path)
         species_journey = _collect_species_journey(state, project_path)
         sig = (_journey_signature(journey, species_journey, ts_names), selected["ts"])
-        if _strip_sig["sig"] is not None and sig == _strip_sig["sig"]:
+        if col_els and sig == _strip_sig["sig"]:
             return
         _strip_sig["sig"] = sig
         recon_mrc = _recon_mrc_map(state, project_path)
-        build_strip(
-            strip_container,
-            journey=journey,
-            species_journey=species_journey,
-            ts_names=ts_names,
-            selected_ts=selected["ts"],
-            recon_mrc_map=recon_mrc,
-            on_select=select_ts,
-            info_popover=_render_ts_info_popover,
+        col_els.clear()
+        col_els.update(
+            build_strip(
+                strip_container,
+                journey=journey,
+                species_journey=species_journey,
+                ts_names=ts_names,
+                selected_ts=selected["ts"],
+                recon_mrc_map=recon_mrc,
+                on_select=select_ts,
+                info_popover=_render_ts_info_popover,
+            )
         )
 
-    def select_ts(ts: str) -> None:
-        # Render the detail pane FIRST (it may run_javascript while the clicked
-        # column is still alive), THEN rebuild the strip — which tears the
-        # clicked column down and surfaces the now-selected column's filtered
-        # count. Reversing it = "parent element this slot belongs to has been
-        # deleted". The strip signature includes `selected`, so this rebuild is
-        # never gated out.
+    async def select_ts(ts: str) -> None:
+        # Instant feedback: move the column highlight + paint a spinner now and
+        # flush to the client, THEN run the heavy per-TS render. The render is
+        # still synchronous (it builds NiceGUI elements), but the CSS spinner
+        # animates client-side while it runs, so the click feels instant. A
+        # generation guard drops a stale render if the user clicks another column
+        # during the flush. The strip rebuild runs LAST so any run_javascript in
+        # the detail render fires while the clicked column is still alive (the
+        # select-ordering pitfall), and it picks up the new selection + filtered.
         if selected["ts"] == ts:
             return
+        prev = selected["ts"]
         selected["ts"] = ts
+        _sel_gen["n"] += 1
+        mine = _sel_gen["n"]
+        if prev in col_els:
+            col_els[prev].classes(remove="selected")
+        if ts in col_els:
+            col_els[ts].classes(add="selected")
+        main_area.clear()
+        with main_area, ui.element("div").classes("cb-empty"):
+            ui.spinner(size="lg", color="indigo")
+            ui.label("Loading…").classes("text-xs")
+        await asyncio.sleep(0.02)
+        if mine != _sel_gen["n"]:
+            return  # superseded by a newer click during the flush
         render_main()
         render_strip()
 
@@ -240,6 +334,7 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         render_strip()
         render_main()
 
+    _build_panel_toggle_row(panel_toggle_container, render_main)
     refresh_all()
 
     # Live refresh while the journey is the active view: re-render every 4 s if
@@ -388,16 +483,22 @@ def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, re
     refresh the gallery calls after save/discard so the roster review column
     updates without rebuilding the main pane (which would reset the active tab)."""
     rendered_any = False
+    hidden = _hidden_dashboard_panels()
 
     # Project-wide / per-TS analytics — primitive datadumps for now (Slice C).
-    for emit in (
-        _render_dataset_section,
-        _render_fs_motion_ctf_section,
-        _render_tilt_filter_section,
-        _render_ts_alignment_section,
-        _render_ts_ctf_section,
-        _render_reconstruct_section,
-    ):
+    # Each panel is gated on the user's visibility pref (R2); keys match
+    # _DASHBOARD_PANEL_KEYS so the Panels toggle row drives what renders here.
+    section_emitters = (
+        ("dataset", _render_dataset_section),
+        ("fs_ctf", _render_fs_motion_ctf_section),
+        ("tilt_filter", _render_tilt_filter_section),
+        ("ts_align", _render_ts_alignment_section),
+        ("ts_ctf", _render_ts_ctf_section),
+        ("reconstruct", _render_reconstruct_section),
+    )
+    for key, emit in section_emitters:
+        if key in hidden:
+            continue
         if emit(ts_name, project_state, project_path, refresh):
             rendered_any = True
 
@@ -405,16 +506,26 @@ def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, re
     # species' picks overlaid (toggleable), plus a per-species tab carrying
     # that species' TM sanity strip + gallery / scatter. Replaces both the
     # old per-species Template Match cards and the candidate-extract cards.
-    if _render_particles_section(ts_name, project_state, project_path, refresh, refresh_roster):
+    if "particles" not in hidden and _render_particles_section(
+        ts_name, project_state, project_path, refresh, refresh_roster
+    ):
         rendered_any = True
 
     if not rendered_any:
-        with ui.element("div").classes("cb-empty"):
-            ui.icon("hourglass_empty", size="36px")
-            ui.label(f"No section data yet for {ts_name}.").classes("text-xs")
-            ui.label("Section cards appear once the matching pipeline jobs have run.").classes(
-                "text-[11px] italic text-center"
-            ).style("max-width: 420px;")
+        if len(hidden) >= len(_DASHBOARD_PANEL_KEYS):
+            with ui.element("div").classes("cb-empty"):
+                ui.icon("visibility_off", size="36px").classes("text-gray-400")
+                ui.label("All panels hidden.").classes("text-xs")
+                ui.label("Re-enable sections in the Panels row above.").classes("text-[11px] italic text-center").style(
+                    "max-width: 420px;"
+                )
+        else:
+            with ui.element("div").classes("cb-empty"):
+                ui.icon("hourglass_empty", size="36px")
+                ui.label(f"No section data yet for {ts_name}.").classes("text-xs")
+                ui.label("Section cards appear once the matching pipeline jobs have run.").classes(
+                    "text-[11px] italic text-center"
+                ).style("max-width: 420px;")
 
 
 # ---------------------------------------------------------------------------
@@ -641,20 +752,46 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
     pixel_rows = _compute_pixel_chain(project_state)
     _apply_sanity_rules(pixel_rows)
 
+    collapsed = _dataset_collapsed()
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "dataset"
-        with ui.element("div").classes("cb-section-card-header"):
+        # R3: clickable header toggles the body. Collapsed (default) = just the
+        # header + metric strip; expanded reveals the chips, key/val grid, and
+        # the pixel/binning sanity table. State persists across projects + TS.
+        header = ui.element("div").classes("cb-section-card-header cb-collapsible-header")
+        with header:
             ui.icon("memory", size="14px").classes("text-indigo-600")
             ui.label("Dataset").classes("cb-section-title")
             ui.space()
             ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
-        _render_stage0_chips(project_state, project_path)
-        # 2-col grid: pairs of (key, val, key, val) per visual row.
-        with ui.element("div").classes("cb-datadump-grid-2col"):
-            for k, v in rows:
-                ui.label(k).classes("cb-datadump-key")
-                ui.label("—" if v is None or v == "" else str(v)).classes("cb-datadump-val")
-        _render_pixel_sanity_table(pixel_rows)
+            caret = ui.icon("expand_less", size="18px").classes("cb-collapse-caret")
+        if collapsed:
+            caret.classes(add="rot")
+        body = ui.element("div").classes("cb-collapsible-body")
+        if collapsed:
+            body.classes(add="cb-collapsed")
+        with body:
+            _render_stage0_chips(project_state, project_path)
+            # 2-col grid: pairs of (key, val, key, val) per visual row.
+            with ui.element("div").classes("cb-datadump-grid-2col"):
+                for k, v in rows:
+                    ui.label(k).classes("cb-datadump-key")
+                    ui.label("—" if v is None or v == "" else str(v)).classes("cb-datadump-val")
+            _render_pixel_sanity_table(pixel_rows)
+
+        def _toggle_dataset(_=None, _body=body, _caret=caret) -> None:
+            svc = get_prefs_service()
+            now_collapsed = not svc.prefs.dashboard_dataset_collapsed
+            svc.prefs.dashboard_dataset_collapsed = now_collapsed
+            _save_dashboard_prefs()
+            if now_collapsed:
+                _body.classes(add="cb-collapsed")
+                _caret.classes(add="rot")
+            else:
+                _body.classes(remove="cb-collapsed")
+                _caret.classes(remove="rot")
+
+        header.on("click", _toggle_dataset)
 
     return True
 
@@ -2379,7 +2516,15 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
         # RIGHT — so the user can hover a tile and watch its dot on the canvas
         # at the same time. Wraps on narrow viewports.
         with ui.element("div").classes("cb-particles-split"):
-            with ui.element("div").classes("cb-particles-canvas-col"):
+            canvas_col = ui.element("div").classes("cb-particles-canvas-col")
+            # Cap the column at the slab's ACTUAL rendered width (the X/Y is
+            # height-capped at 76vh) so it hugs the previews and leaves no
+            # whitespace before the gallery. All species share the TS's
+            # reconstructed tomogram → take the first real dims for the aspect.
+            cdims = next((sp["dims"] for sp in species_data if sp.get("dims") and tuple(sp["dims"]) != (1, 1, 1)), None)
+            cx, cy = (max(int(cdims[0]), 1), max(int(cdims[1]), 1)) if cdims else (1, 1)
+            canvas_col.style(f"max-width: min(1080px, calc(76vh * {cx} / {cy}))")
+            with canvas_col:
                 # Shared canvas: lazily renders the recon slab and overlays each
                 # species' picks. Returns {iid: {"xy": layer_id, "xz": layer_id}}
                 # so each tab's gallery cross-links to its own dots.
@@ -2441,7 +2586,7 @@ def _render_particles_canvas(
     with_picks = [sp for sp in species_data if sp.get("lists")]
     if not with_picks:
         # Recon slab exists but nothing picked yet — clean slab, no overlay.
-        with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style("max-height: 70vh;"):
+        with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style("max-height: 76vh;"):
             ui.image(_vis_asset_url(str(xy_png)))
         return layer_ids
 
@@ -2474,14 +2619,13 @@ def _render_particles_canvas(
                         "text-[11px]"
                     ).on_value_change(_toggle)
 
-    # X/Y and X/Z share ONE width-constrained stack so the side view sits at
-    # the exact same width as the top-down view (same x-axis scale) — each
-    # child is width:100% of the stack and derives its height from its own
-    # aspect-ratio. The stack max-width caps the X/Y at ~52vh tall while
-    # preserving the tomogram aspect; the X/Z then reads as a proportional
-    # strip below it (height = width · z/x).
+    # X/Y and X/Z share ONE stack that fills the (per-tomo width-capped) canvas
+    # column — each child is width:100% of the stack and derives its height from
+    # its own aspect-ratio. The COLUMN's max-width (set in _render_particles_section
+    # to min(1080px, 76vh·x/y), R1) caps the X/Y at ~76vh tall while preserving the
+    # tomogram aspect AND hugging the previews (no whitespace before the gallery);
+    # the X/Z then reads as a proportional strip below it (height = width · z/x).
     stack = ui.element("div").classes("cb-canvas-stack")
-    stack.style(f"max-width: calc(52vh * {x_dim} / {y_dim});")
     with stack:
         xy_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
         xy_host.style(f"aspect-ratio: {x_dim}/{y_dim};")
