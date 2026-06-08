@@ -1491,7 +1491,8 @@ class RosterWidget(FingerprintedView):
         anchor in the sidebar instead of a button that pops in and out as
         jobs run.
         """
-        from ui.tomo_dashboard_dialog import has_any_previews_rendered, open_tomo_dashboard
+        from ui.dashboard.data import has_any_previews_rendered
+        from ui.tomo_dashboard_dialog import open_tomo_dashboard
 
         rendered = has_any_previews_rendered()
         svg = self._load_svg(_TOMO_DASHBOARD_SVG).replace("currentColor", SB_MUTE)
