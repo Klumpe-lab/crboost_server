@@ -21,6 +21,7 @@ from services.models_base import (
     JobCategory,
     JobType,
     PickListType,
+    ListExtractionState,
     MicroscopeParams,
     AcquisitionParams,
 )
@@ -504,6 +505,46 @@ class PickList(BaseModel):
     parent_slugs: List[str] = Field(default_factory=list)  # provenance for derived lists
     created_at: datetime = Field(default_factory=datetime.now)
     created_by: str = ""
+
+    # ── Per-list subtomo extraction tracking ─────────────────────────────────
+    # Manual/imported/merged lists are raw COORDINATES (never extracted), so they
+    # can't go downstream until their picks are subtomo-extracted. Extraction is
+    # scoped PER LIST (each list's particles land in their own output, recorded in
+    # `extracted_path`) and the user triggers it per list — neither fully automatic
+    # (no throwaway re-extractions) nor tedious. We persist the durable facts and
+    # DERIVE the state (extraction_state()) so no stored boolean can drift from disk
+    # truth (cf. the stuck-yellow stale-flag bug). `extracted_path` is the
+    # optimisation_set.star produced by extracting THIS list — the per-list handle
+    # the (future) authoritative-list resolver forwards downstream.
+    extracted_path: str = ""  # optimisation_set.star from extracting THIS list ("" = never extracted)
+    extracted_count: int = 0  # picks covered by that extraction (≠ count ⇒ picks added/removed ⇒ stale)
+    extracted_at: Optional[datetime] = None  # when the extraction ran (vs source mtime ⇒ in-place edits ⇒ stale)
+
+    def extraction_state(self) -> ListExtractionState:
+        """Derived per-list extraction status: NOT_EXTRACTED (coords only) / STALE
+        (picks changed since extraction) / EXTRACTED (current). Computed from the
+        durable facts + cheap disk checks, never a stored flag."""
+        if not self.extracted_path or not Path(self.extracted_path).exists():
+            return ListExtractionState.NOT_EXTRACTED
+        # Picks changed since extraction? Count delta is the cheap add/remove
+        # signal; the source star's mtime (vs when extraction ran) catches in-place
+        # edits that keep the same count (a moved pick).
+        if self.extracted_count != self.count:
+            return ListExtractionState.STALE
+        if self.extracted_at is not None and self.path:
+            try:
+                src = Path(self.path)
+                if src.exists() and src.stat().st_mtime > self.extracted_at.timestamp() + 1.0:
+                    return ListExtractionState.STALE
+            except OSError:
+                pass
+        return ListExtractionState.EXTRACTED
+
+    def mark_extracted(self, optimisation_set_path: str, n: int) -> None:
+        """Record a completed per-list extraction. Caller persists ProjectState."""
+        self.extracted_path = str(optimisation_set_path)
+        self.extracted_count = int(n)
+        self.extracted_at = datetime.now()
 
 
 class ProjectState(BaseModel):

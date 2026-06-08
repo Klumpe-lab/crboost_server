@@ -216,14 +216,22 @@ def prepare_curation_bundle(
     out_dir: Path,
     *,
     species: str = "",
+    coords_label: str = "auto",
     project_root: Optional[Path] = None,
     window_size: Optional[Sequence[int]] = None,
 ) -> dict:
-    """Materialize everything a ChimeraX/ArtiaX session needs for one tomogram.
+    """Materialize everything a ChimeraX/ArtiaX session needs to open one
+    tomogram preloaded with a reference pick list.
 
-    Writes ``<tomo>__auto.coords`` (our picks) and ``open_<tomo>.cxc`` into ``out_dir``
-    and returns the resolved paths + the copyable command lines. Launch the session with
-    ``CB_CXC`` pointing at the returned ``cxc_path``.
+    Exports the picks in ``candidates_star`` (any star with ``rlnTomoName`` +
+    centered-Å coords — the PyTOM auto list, or a workbench manual/merged star)
+    to a ``.coords`` and writes ``open_<tomo>.cxc`` loading it. ``coords_label``
+    names that reference export: ``"auto"`` keeps the historical
+    ``<tomo>__auto.coords`` / ``open_<tomo>.cxc`` names; any other label (a
+    re-curation of a specific list) gets ``<tomo>__<label>_ref.coords`` and
+    ``open_<tomo>__<label>.cxc`` so the import scan can tell crboost's reference
+    export from the user's own save. Launch with ``CB_CXC`` pointing at
+    ``cxc_path``.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -235,14 +243,15 @@ def prepare_curation_bundle(
             "(rlnTomoReconstructedTomogram) — curation needs the binned recon to open in ArtiaX."
         )
     slug = _safe_slug(tomo_name)
-    auto_coords = out_dir / f"{slug}__auto.coords"
-    n = export_tomo_picks_to_coords(Path(candidates_star), Path(tomograms_star), tomo_name, auto_coords, project_root)
+    is_auto = coords_label == "auto"
+    ref_coords = out_dir / (f"{slug}__auto.coords" if is_auto else f"{slug}__{_safe_slug(coords_label)}_ref.coords")
+    n = export_tomo_picks_to_coords(Path(candidates_star), Path(tomograms_star), tomo_name, ref_coords, project_root)
     manual_coords = out_dir / f"{slug}__manual.coords"
-    cxc_path = out_dir / f"open_{slug}.cxc"
+    cxc_path = out_dir / (f"open_{slug}.cxc" if is_auto else f"open_{slug}__{_safe_slug(coords_label)}.cxc")
     cxc_path.write_text(
         build_session_cxc(
             recon,
-            auto_coords,
+            ref_coords,
             tomo_name=tomo_name,
             species=species,
             pixel_size=frame.pixel_size,
@@ -251,16 +260,17 @@ def prepare_curation_bundle(
             window_size=window_size,
         )
     )
-    logger.info("Curation bundle for %s -> %s (%d auto picks)", tomo_name, cxc_path, n)
+    logger.info("Curation bundle for %s [%s] -> %s (%d picks)", tomo_name, coords_label, cxc_path, n)
     return {
         "cxc_path": str(cxc_path),
-        "auto_coords": str(auto_coords),
+        "auto_coords": str(ref_coords),
         "manual_coords": str(manual_coords),
         "recon": str(recon),
         "pixel_size": float(frame.pixel_size),
         "tomo_size": [int(v) for v in frame.size],
         "auto_count": int(n),
-        "commands": session_chimerax_commands(recon, auto_coords),
+        "coords_label": coords_label,
+        "commands": session_chimerax_commands(recon, ref_coords),
     }
 
 

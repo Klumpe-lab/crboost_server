@@ -34,7 +34,7 @@ import pandas as pd
 from nicegui import ui
 
 from services.models_base import JobStatus, JobType, PickListType
-from services.project_state import get_project_state
+from services.project_state import PickList, get_project_state, get_state_service
 from services.templating.template_metadata import get_effective_template_path, read_template_header
 from services.tilt_series.build import _infer_position
 from services.visualization.imod_vis import generate_candidate_vis
@@ -84,6 +84,17 @@ _PICK_LIST_GLYPH = {
     PickListType.MANUAL: "diamond",
     PickListType.IMPORTED: "square",
     PickListType.MERGED: "triangle",
+}
+
+# Default overlay color per workbench-authored list type, chosen to sit apart from
+# the per-species auto palette (_SPECIES_OVERLAY_COLORS) so a manual/imported/merged
+# layer reads as a distinct lane over the same tomogram. Persisted onto the PickList
+# at creation (PickList.color), so this is only the seed — retuning it here doesn't
+# restyle already-registered lists.
+_PICK_LIST_DEFAULT_COLOR = {
+    PickListType.MANUAL: "#00e676",  # emerald — human picks
+    PickListType.IMPORTED: "#ffea00",  # yellow — external
+    PickListType.MERGED: "#ff6d00",  # deep orange — committed merge
 }
 
 
@@ -4010,6 +4021,178 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
     ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
 
 
+# ── Per-list recon cutouts (the workbench contact sheet) ───────────────────────
+# Workbench lists (manual/imported/merged) were never subtomo-extracted, so they
+# have no subtomo atlas. We cut tiles straight from the binned recon at each pick
+# voxel via services.visualization.recon_cutouts (same atlas PNG + index schema as
+# the subtomo gallery), background-built like the recon slabs and shown read-only.
+_AUTO_KICKED_LIST_CUTOUTS: set[str] = set()
+
+
+def _fs_slug(name: str) -> str:
+    """Filesystem-safe slug (no regex dep) for cutout cache filenames."""
+    return "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(name)).strip("_") or "x"
+
+
+def _list_cutout_paths(project_path: Path, species_id: str, tomo_name: str, slug: str) -> tuple[Path, Path]:
+    """(atlas PNG, index JSON) cache paths for one workbench list's recon cutouts."""
+    base = Path(project_path) / ".curation_sessions" / "cutouts" / _fs_slug(species_id)
+    stem = f"{_fs_slug(tomo_name)}__{_fs_slug(slug)}"
+    return base / f"{stem}.png", base / f"{stem}.json"
+
+
+def _list_cutout_box_px(sp: dict) -> int:
+    """Cutout box edge in binned-recon px ≈ 2× particle diameter (context around
+    the pick), clamped. Falls back to 48 when diameter/pixel size is unknown."""
+    diameter = float(getattr(sp.get("jm"), "particle_diameter_ang", 0.0) or 0.0)
+    px = (sp.get("entry") or {}).get("pixel_size_ang")
+    if diameter and px and px > 0:
+        half = max(16, min(96, int(round(diameter / px))))
+        return half * 2
+    return 48
+
+
+def _auto_kick_list_cutouts(
+    recon_mrc: Path,
+    picks: list,
+    star_path: Optional[str],
+    atlas_path: Path,
+    index_path: Path,
+    box_px: int,
+    project_path: Path,
+    refresh,
+    dedup_key: str,
+) -> bool:
+    """True if the list's recon-cutout atlas is on disk + fresh (render now); else
+    kick ONE background build (mirrors `_auto_kick_recon_slabs`) and return False
+    so the caller shows a placeholder. `dedup_key` carries the star mtime, so a
+    re-import (new mtime) rebuilds without needing a dashboard reopen."""
+    sources = [Path(recon_mrc)] + ([Path(star_path)] if star_path else [])
+    if atlas_path.exists() and index_path.exists() and not is_output_stale(atlas_path, sources):
+        return True
+    if dedup_key in _AUTO_KICKED_LIST_CUTOUTS:
+        return False
+    _AUTO_KICKED_LIST_CUTOUTS.add(dedup_key)
+
+    async def _run(progress_cb):
+        import asyncio as _asyncio
+
+        from services.visualization.recon_cutouts import render_recon_cutouts_atlas
+
+        progress_cb(0, 0, "cutting tiles from the recon…")
+        return await _asyncio.to_thread(
+            render_recon_cutouts_atlas, Path(recon_mrc), picks, Path(atlas_path), Path(index_path), box_px=box_px
+        )
+
+    from ui.background_task import BackgroundTask
+
+    BackgroundTask(
+        title="Render list cutouts",
+        subtitle="Recon-sourced tiles for a curation list",
+        project_path=str(project_path),
+        dedup_key=f"list-cutouts:{dedup_key}",
+    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
+    return False
+
+
+def _render_list_header(lst: dict, sp: dict, project_path: Path) -> None:
+    """Swatch + label + 'Open in ArtiaX' for one workbench list, rendered inside a
+    caller-provided row so the contact sheet and the building/empty states share
+    one header. 'Open in ArtiaX' re-opens THIS list for another curation pass —
+    non-destructive: saving in ArtiaX yields a new list, this one is untouched."""
+    ui.element("div").classes(f"cb-species-swatch cb-swatch-{lst['shape']}").style(f"background: {lst['color']};")
+    ui.label(lst["label"]).classes("cb-section-title")
+    (
+        ui.button(
+            "Open in ArtiaX", icon="view_in_ar", on_click=lambda: _handle_open_list_in_artiax(sp, lst, project_path)
+        )
+        .props("flat dense no-caps size=sm color=indigo")
+        .tooltip("Re-open this list in ChimeraX + ArtiaX to refine it — saving yields a new list, this one untouched")
+    )
+
+
+def _render_list_cutouts_status(lst: dict, sp: dict, project_path: Path, *, building: bool) -> None:
+    """Slim header row shown while a list's cutouts build (spinner) or when the
+    build produced nothing (picks outside the recon / recon unreadable)."""
+    with ui.element("div").classes("w-full").style("margin-top: 10px;"), ui.row().classes("items-center gap-2"):
+        _render_list_header(lst, sp, project_path)
+        ui.label(f"· {len(lst.get('picks', []))} picks").style("font-size: 10px; color: #94a3b8;")
+        if building:
+            ui.spinner(size="16px", color="indigo-500")
+            ui.label("rendering cutouts from the recon…").style("font-size: 10px; color: #94a3b8;")
+        else:
+            ui.label("no cutouts (picks outside the recon, or recon unreadable)").style(
+                "font-size: 10px; color: #94a3b8;"
+            )
+
+
+def _render_list_cutout_sheet(lst: dict, sp: dict, project_path: Path, atlas_meta: dict, atlas_path: str) -> None:
+    """Read-only contact sheet of one list's recon cutouts (CSS sprite tiles, no
+    JS bridge). Tiles are keyed by pick index (= the overlay dots' data-pick-idx)."""
+    index = atlas_meta.get("index", {})
+    if not index:
+        return
+    cols = int(atlas_meta.get("cols", 8))
+    rows = int(atlas_meta.get("rows", 1))
+    atlas_url = _vis_asset_url(atlas_path)
+    tile = 96
+    bg_w, bg_h = cols * tile, rows * tile
+    n_ok = int(atlas_meta.get("n_ok", len(index)))
+    with ui.element("div").classes("w-full").style("margin-top: 10px;"):
+        with ui.row().classes("items-center gap-2").style("margin-bottom: 4px;"):
+            _render_list_header(lst, sp, project_path)
+            ui.label(f"{n_ok} tiles · from recon · read-only").style("font-size: 9px; color: #94a3b8;")
+        with ui.element("div").style("display: flex; flex-wrap: wrap; gap: 4px;"):
+            for i in sorted(int(k) for k in index.keys()):
+                pos = index.get(str(i))
+                if not pos:
+                    continue
+                r, c = pos
+                t = ui.element("div").style(
+                    f"width: {tile}px; height: {tile}px; border-radius: 4px; border: 1px solid #e5e7eb; "
+                    f"background-image: url({atlas_url}); background-repeat: no-repeat; "
+                    f"background-size: {bg_w}px {bg_h}px; background-position: {-c * tile}px {-r * tile}px;"
+                )
+                t._props["title"] = f"#{i}"
+
+
+def _render_registry_list_cutouts(sp: dict, project_path: Path, refresh) -> None:
+    """A read-only recon-sourced cutout sheet for each workbench list
+    (manual/imported/merged) on this (species, tomo). Auto picks already have
+    their subtomo gallery; these lists were never extracted, so their tiles are
+    cut from the binned recon at each pick voxel. Renders below the auto section
+    regardless of the auto status (a tomo PyTOM left empty can still carry manual
+    picks). No-op when the recon MRC is absent — the overlay dots still show."""
+    lists = [lst for lst in (sp.get("lists") or []) if lst.get("slug") != "auto"]
+    if not lists:
+        return
+    recon = (sp.get("row") or {}).get("vol_path")
+    if not recon or not Path(recon).exists():
+        return
+    species_id = sp.get("species_id") or ""
+    tomo_name = sp["row"]["tomo_name"]
+    box_px = _list_cutout_box_px(sp)
+    for lst in lists:
+        atlas_path, index_path = _list_cutout_paths(project_path, species_id, tomo_name, lst["slug"])
+        star_path = lst.get("path")
+        try:
+            star_sig = int(Path(star_path).stat().st_mtime) if star_path and Path(star_path).exists() else 0
+        except OSError:
+            star_sig = 0
+        dedup = f"{species_id}:{tomo_name}:{lst['slug']}:{star_sig}"
+        ready = _auto_kick_list_cutouts(
+            Path(recon), lst["picks"], star_path, atlas_path, index_path, box_px, project_path, refresh, dedup
+        )
+        if ready:
+            atlas_meta = _read_atlas_index(index_path)
+            if atlas_meta:
+                _render_list_cutout_sheet(lst, sp, project_path, atlas_meta, str(atlas_path))
+                continue
+        # Not renderable yet: a written index means the build ran (empty result);
+        # no index means it's still in flight.
+        _render_list_cutouts_status(lst, sp, project_path, building=not index_path.exists())
+
+
 def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id: str, shape: str = "circle"):
     """Render one pick list's ghost-dot layer over a shared slab canvas.
 
@@ -4285,15 +4468,45 @@ def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -
     return recon_job_dir, (Path(mrc) if mrc else None)
 
 
+def _read_pick_list_voxels(star_path: Path, dims: list, pixel_size: Optional[float]) -> list[dict]:
+    """Read a centered-Å pick star → voxel-space picks ``[{i, x, y, z}]`` for the
+    canvas overlay, using the binned ``dims`` + ``pixel_size`` already resolved in
+    the render context (no MRC re-read per render). Returns ``[]`` if the file,
+    its deps, or the centered-coord columns are unavailable — so a missing/changed
+    list degrades to 'nothing drawn' rather than breaking the dashboard render."""
+    if not star_path or not Path(star_path).exists() or not pixel_size or pixel_size <= 0:
+        return []
+    try:
+        import starfile
+
+        from services.visualization.coords import CENTERED_COLS, centered_angst_to_voxel
+
+        data = starfile.read(star_path, always_dict=True)
+        df = None
+        for v in data.values():
+            if hasattr(v, "columns") and all(c in v.columns for c in CENTERED_COLS):
+                df = v
+                break
+        if df is None or len(df) == 0:
+            return []
+        coords = df[CENTERED_COLS].to_numpy(dtype=float)
+        vox = centered_angst_to_voxel(coords, [int(dims[0]), int(dims[1]), int(dims[2])], float(pixel_size))
+        return [{"i": i, "x": float(vox[i][0]), "y": float(vox[i][1]), "z": float(vox[i][2])} for i in range(len(vox))]
+    except Exception as e:
+        logger.warning("Could not read pick list %s: %s", star_path, e)
+        return []
+
+
 def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> list[dict]:
     """The pick lists overlaid for one species on this TS, each render-ready:
     {slug, label, list_type, color, shape, picks, dims, visible}.
 
-    Slice 2 returns just the `auto` PyTOM list (from picks.json). The
-    workbench-authored lists (manual/imported/merged) from the ProjectState
-    registry, and the `filtered` subset, are layered in by later slices — the
-    canvas/toggle/cutout machinery already iterates this list, so adding a type
-    is purely a matter of appending an entry here."""
+    The `auto` PyTOM list comes from picks.json (always present when picked).
+    Workbench-authored lists (manual/imported/merged) come from the ProjectState
+    registry — each backed by a centered-Å star whose coords are mapped into the
+    same voxel space as the auto picks so they overlay on the shared canvas. The
+    canvas/toggle/cutout machinery already iterates this list, so a new type is
+    purely another entry here."""
     lists: list[dict] = []
     auto_picks = sp.get("picks") or []
     if auto_picks:
@@ -4309,6 +4522,27 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                 "visible": True,
             }
         )
+    species_id = sp.get("species_id") or ""
+    if species_id:
+        dims = sp.get("dims") or [1, 1, 1]
+        pixel_size = (sp.get("entry") or {}).get("pixel_size_ang")
+        for pl in project_state.get_pick_lists(species_id, ts_name):
+            picks = _read_pick_list_voxels(Path(pl.path), dims, pixel_size)
+            if not picks:
+                continue
+            lists.append(
+                {
+                    "slug": pl.slug,
+                    "label": pl.label or pl.slug,
+                    "list_type": pl.list_type,
+                    "color": pl.color,
+                    "shape": _glyph_for(pl.list_type),
+                    "picks": picks,
+                    "dims": dims,
+                    "visible": pl.visible,
+                    "path": pl.path,
+                }
+            )
     return lists
 
 
@@ -4603,6 +4837,151 @@ async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
         await open_curation_control_center(backend, project_path, bundle=bundle)
 
 
+async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -> None:
+    """Per-list 'Open in ArtiaX': preload a CHOSEN workbench list (its centered-Å
+    star) into a curation session for another pass. Mirrors `_handle_curate_in_artiax`
+    but exports the list's own picks (labelled by slug so its reference `.coords`
+    is named apart from the user's save). Saving in ArtiaX yields a NEW `.coords`
+    → re-import via the tab's 'Import picks'; this list's star is untouched."""
+    from backend import get_backend
+    from ui.curation_session_dialog import open_curation_control_center
+
+    tomo_name = sp["row"]["tomo_name"]
+    species_id = sp.get("species_id") or ""
+    async with _curation_flight(f"openlist:{species_id}:{tomo_name}:{lst['slug']}") as acquired:
+        if not acquired:
+            return
+        backend = get_backend()
+        if backend is None:
+            ui.notify("Backend unavailable.", type="negative")
+            return
+        star = lst.get("path")
+        if not star:
+            ui.notify(f"'{lst.get('label')}' has no backing file to open.", type="warning")
+            return
+        job_dir = Path(sp["job_dir"])
+        ui.notify(f"Preparing {lst.get('label')} for ArtiaX…", type="info")
+        bundle = await backend.prepare_curation_bundle(
+            project_path,
+            job_dir / "candidates.star",
+            job_dir / "tomograms.star",
+            tomo_name,
+            sp.get("label") or species_id or "",
+            source_star=Path(star),
+            coords_label=lst["slug"],
+        )
+        if not bundle.get("success"):
+            ui.notify(f"Could not prepare {lst.get('label')}: {bundle.get('error')}", type="negative")
+            return
+        bundle["tomo_name"] = tomo_name
+        await open_curation_control_center(backend, project_path, bundle=bundle)
+
+
+def _register_manual_pick_list(sp: dict, result: dict, refresh) -> None:
+    """Upsert a `manual` PickList for this (species, tomo) from a successful
+    backend import, persist ProjectState, and refresh so the new diamond layer
+    appears on the canvas. One `manual` list per (species, tomo) — a re-import
+    replaces it (the raw .coords are still archived per-import for provenance)."""
+    import asyncio as _asyncio
+
+    state = get_project_state()
+    species_id = sp.get("species_id") or ""
+    tomo_name = sp["row"]["tomo_name"]
+    state.add_pick_list(
+        PickList(
+            slug="manual",
+            label="Manual (ArtiaX)",
+            list_type=PickListType.MANUAL,
+            species_id=species_id,
+            tomo_name=tomo_name,
+            path=result["out_star"],
+            count=int(result.get("count", 0)),
+            color=_PICK_LIST_DEFAULT_COLOR.get(PickListType.MANUAL, "#00e676"),
+            created_by=result.get("created_by", ""),
+        )
+    )
+    _asyncio.create_task(get_state_service().save_project())
+    src = Path(result.get("coords_source", "")).name
+    ui.notify(
+        f"Imported {int(result.get('count', 0))} manual picks for {tomo_name}" + (f" (from {src})" if src else ""),
+        type="positive",
+        timeout=3000,
+    )
+    refresh()
+
+
+async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -> None:
+    """Per-tomo 'Import picks': find the .coords the user saved in ArtiaX (any
+    filename, newest first), convert → ManualPicks star, register a `manual`
+    PickList. If nothing is found in the curation dirs, prompt for an explicit
+    path (ArtiaX's save dialog may default anywhere). SingleFlight-guarded."""
+    from backend import get_backend
+
+    tomo_name = sp["row"]["tomo_name"]
+    species_id = sp.get("species_id") or ""
+    species_label = sp.get("label") or species_id or ""
+    async with _curation_flight(f"import:{species_id}:{tomo_name}") as acquired:
+        if not acquired:
+            return
+        backend = get_backend()
+        if backend is None:
+            ui.notify("Backend unavailable.", type="negative")
+            return
+        job_dir = Path(sp["job_dir"])
+        result = await backend.import_curation_picks(
+            project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id
+        )
+        if not result.get("success"):
+            if result.get("error") == "no_coords_found":
+                _open_manual_coords_path_dialog(sp, project_path, refresh)
+                return
+            ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
+            return
+        _register_manual_pick_list(sp, result, refresh)
+
+
+def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> None:
+    """Fallback when no saved .coords was auto-found: let the user paste the full
+    path to the file they saved in ArtiaX (we don't control where its save dialog
+    defaults). Imports via the same backend path + registers the manual list."""
+    from backend import get_backend
+
+    tomo_name = sp["row"]["tomo_name"]
+    species_id = sp.get("species_id") or ""
+    species_label = sp.get("label") or species_id or ""
+    job_dir = Path(sp["job_dir"])
+    with ui.dialog() as dialog, ui.card().classes("w-[34rem] max-w-full gap-2"):
+        ui.label(f"Import ArtiaX picks — {tomo_name}").classes("text-base font-bold")
+        ui.label(
+            "No saved .coords was found in this project's curation dirs. Paste the full path to the "
+            ".coords you saved from ArtiaX (any filename)."
+        ).classes("text-xs text-gray-600")
+        path_in = ui.input("path to .coords").props("dense outlined").classes("w-full font-mono text-xs")
+
+        async def _do_import():
+            p = (path_in.value or "").strip()
+            if not p:
+                ui.notify("Enter a path", type="warning")
+                return
+            backend = get_backend()
+            if backend is None:
+                ui.notify("Backend unavailable.", type="negative")
+                return
+            result = await backend.import_curation_picks(
+                project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id, coords_path=Path(p)
+            )
+            if not result.get("success"):
+                ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
+                return
+            dialog.close()
+            _register_manual_pick_list(sp, result, refresh)
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button("Import", icon="download", color="indigo", on_click=_do_import).props("no-caps")
+    dialog.open()
+
+
 def _render_species_tab_header(sp: dict, tm_info: dict, project_path: Path, refresh) -> None:
     """Compact per-tab header (Option A): an always-visible essentials line
     (position · tomo · N · score range · θ · sym · Ø) with the two common
@@ -4639,6 +5018,15 @@ def _render_species_tab_header(sp: dict, tm_info: dict, project_path: Path, refr
                 )
                 .props("dense no-caps size=sm color=indigo")
                 .tooltip("Open this tomogram + its picks in ChimeraX + ArtiaX for manual curation")
+            )
+            (
+                ui.button(
+                    "Import picks",
+                    icon="download",
+                    on_click=lambda: _handle_import_curation_picks(sp, project_path, refresh),
+                )
+                .props("dense no-caps size=sm flat color=indigo")
+                .tooltip("Ingest a .coords you saved in ArtiaX back into the pipeline as a manual pick list")
             )
             gen_missing_btn = (
                 ui.button(
@@ -4706,12 +5094,26 @@ def _render_species_tab_body(
     sp: dict, layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster=None
 ) -> None:
     """One species' tab: a compact header (essentials + controls + tucked
-    size-pills / 3dmod) followed by the status-aware gallery body. The gallery
-    cross-links to this species' dots on the shared canvas via `layer_ids`."""
-    row, manifest, entry = sp["row"], sp["manifest"], sp["entry"]
+    size-pills / 3dmod), the status-aware AUTO (PyTOM) gallery, then a read-only
+    recon-cutout contact sheet per workbench list (manual/imported/merged). The
+    auto gallery cross-links to this species' dots on the shared canvas via
+    `layer_ids`; the workbench lists render below it regardless of the auto
+    status (a tomo PyTOM left empty can still carry manual picks)."""
     tm_info = _tm_essentials_for_species(sp)
     _render_species_tab_header(sp, tm_info, project_path, refresh)
+    _render_species_auto_section(sp, layer_ids, project_path, refresh, refresh_roster)
+    _render_registry_list_cutouts(sp, project_path, refresh)
 
+
+def _render_species_auto_section(
+    sp: dict, layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster=None
+) -> None:
+    """The status-aware AUTO (PyTOM) gallery for a species tab: the subtomo
+    cutout gallery when extracted, else the scatter fallback, or an
+    error/empty/spinner state. Factored out of `_render_species_tab_body` so the
+    workbench lists' cutouts render after it without being skipped by its early
+    returns."""
+    row, manifest, entry = sp["row"], sp["manifest"], sp["entry"]
     status = row["status"]
     if status == "errored":
         with ui.element("div").classes("cb-empty"):
@@ -6126,6 +6528,7 @@ def reset_auto_kick_state() -> None:
     _AUTO_KICKED_PREVIEWS.clear()
     _AUTO_KICKED_IMOD.clear()
     _AUTO_KICKED_RECON_SLABS.clear()
+    _AUTO_KICKED_LIST_CUTOUTS.clear()
 
 
 def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> bool:

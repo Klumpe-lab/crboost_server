@@ -9,6 +9,12 @@ pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the cont
 
 ## NEXT SESSION — start here (prioritized)
 
+**UPDATE 2026-06-08:** items 1–2 substantially landed — CP1 (ingest round-trip), CP2 (per-list recon
+cutouts), CP3a (per-list "Open in ArtiaX") — and the **merge model is DECIDED** (per-list extraction,
+status-flagged, user-triggered). The PickList extraction-state foundation is in. See
+"## SESSION 2026-06-08" below. **Remaining: merge + radius dedup (backend), then the per-list extraction
+UI + co-located lists dir.** Filter (CC/top-N) deferred (lower value).
+
 The feature WORKS end to end; everything below builds OUT from a working base. In priority order:
 
 1. **Ingest UI + registry — closes the round-trip in the UI.** The converter is done
@@ -35,6 +41,56 @@ only, runtime-test in the user's module-loaded app. The container def is now at
 `/groups/klumpe/software/containers/defs/chimerax_artiax_GL.def` (edit THERE, not the repo); the GL sif at
 `/groups/klumpe/software/containers/sifs/chimerax_artiax_GL.sif` (conf.yaml points at it); worker scripts stay
 in the repo (`containers/chimerax_artiax/curation_session.sh`, launched by `backend` by path).
+
+## SESSION 2026-06-08 — round-trip + workbench landed; merge model decided
+
+Built this session (all py_compile + ruff clean; NOT runtime-tested — Claude's venv lacks
+numpy/starfile/pandas/mrcfile, so UI/star/cutout work is compile-only; runtime-test in the module-loaded app):
+
+- **CP1 — ingest round-trip closes in the UI.** `backend.import_curation_picks` (+ `_discover_manual_coords`:
+  finds ANY non-`__auto`/non-`_ref` `.coords` by extension+recency, species bundle dir first then session
+  dirs, so a save named `particles.coords` works) → `artiax_bridge.import_coords_to_centered_star` →
+  `ManualPicks/<species>/<tomo>.star`, raw archived at `ManualPicks/<species>/imports/<tomo>__<stamp>.coords`.
+  Dashboard: per-tab **"Import picks"** button (`_handle_import_curation_picks`, SingleFlight) → registers/
+  upserts a `manual` PickList (slug `manual`, emerald, diamond) → overlays immediately as diamond dots + a
+  toggle. `_collect_pick_lists_for_species` now reads the registry via `_read_pick_list_voxels` (maps a list's
+  centered-Å star → voxel using the render-context dims+px, NO MRC re-read). Explicit-path fallback dialog
+  when nothing auto-found. Verified the imported list shows on the next render: dashboard binds the
+  `get_project_state()` singleton and threads it down, so the in-memory `add_pick_list` + `refresh_all` surfaces
+  it (no disk round-trip, no clobber).
+- **CP2 — per-list recon-cutout contact sheet.** `_render_registry_list_cutouts` + `_auto_kick_list_cutouts`
+  (mirrors `_auto_kick_recon_slabs`; cached `.curation_sessions/cutouts/<species>/`, dedup key carries the star
+  mtime so a re-import rebuilds) cut tiles from the binned recon (`render_recon_cutouts_atlas`) for any non-auto
+  list. CSS sprite tiles (no JS bridge), read-only, rendered BELOW the auto section regardless of auto status
+  (split `_render_species_tab_body` → `_render_species_auto_section` so an empty-PyTOM tomo still shows manual
+  cutouts). Box ≈ 2× particle Ø. Cut from `vol_path` (= `rlnTomoReconstructedTomogram`) at coords scaled by
+  picks.json dims — same recon grid the canvas overlay + 3dmod already assume.
+- **CP3a — per-list "Open in ArtiaX".** Generalized `prepare_curation_bundle` (bridge + backend) with
+  `source_star` + `coords_label`: a list's own centered-Å star exports to `<tomo>__<slug>_ref.coords` (named
+  apart from the user's save — discovery now also excludes `*_ref.coords`) and the `.cxc` loads it.
+  `_render_list_header` puts "Open in ArtiaX" on each list's contact-sheet header → `_handle_open_list_in_artiax`.
+  Auto list still uses the tab-header "Curate in ArtiaX" (no duplication).
+
+**Merge model — DECIDED 2026-06-08 (user): per-list extraction, status-flagged, user-triggered.** Supersedes
+the earlier A/B fork (re-extract-all vs extract-manual-then-merge). NOT fully automatic (no throwaway
+re-extraction on every merge) and NOT manually tedious:
+- Each workbench list carries a DERIVED extraction status — `ListExtractionState` (NOT_EXTRACTED / EXTRACTED /
+  STALE), `PickList.extraction_state()` computed from durable facts (`extracted_path`, `extracted_count`,
+  `extracted_at`) + cheap disk checks, NEVER a stored boolean (stale-flag-trap discipline,
+  cf. `feedback_inmemory_state_authoritative`). `mark_extracted(optset, n)` records a completed extraction.
+- UI surfaces it as a badge ("Extracted" vs "needs (re-)extraction / picks added"); the user triggers
+  (re-)extraction **PER LIST**. That UI is LATER (after merge + radius dedup).
+- **Subtomo extraction is scoped PER LIST** (path/dir/filename TBD — `extracted_path` records wherever a list's
+  extraction lands; intended to co-locate under a per-(species,tomo) `Curation/<species>/<tomo>/<slug>/` lists
+  dir so auto/manual/merged inspect separately without polluting the canvas). The **authoritative** list's
+  `extracted_path` becomes the canonical optimisation_set the downstream resolver forwards (zero driver changes).
+- **State foundation landed (model only — no UI/extraction machinery yet):** `ListExtractionState`
+  (`models_base`); `PickList.extracted_path/extracted_count/extracted_at` + `extraction_state()` +
+  `mark_extracted()` (`project_state`).
+
+**NEXT: merge + radius dedup (backend).** Select 2+ lists → radius-dedup (≈ particle_diameter/2 Å, NOT the
+0.1-Å exact `_coord_key`) → write a `merged` PickList star + register it (starts NOT_EXTRACTED). THEN the
+per-list (re-)extraction wiring (scoped output + `mark_extracted`) + the badge / co-located lists-dir UI.
 
 ## SESSION 2026-06-07 — END TO END WORKING (the breakthrough + learnings)
 
