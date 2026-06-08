@@ -110,6 +110,24 @@ _CB_CSS = """
     padding: 6px 9px; margin-bottom: 5px;
 }
 .cb-section-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+/* R3 — collapsible Dataset section: clickable header + rotating caret; the body
+ * (chips + key/val grid + pixel-sanity table) hides when collapsed. Default
+ * collapsed (pref dashboard_dataset_collapsed). */
+.cb-collapsible-header { cursor: pointer; user-select: none; }
+.cb-collapse-caret { color: #94a3b8; transition: transform 0.15s ease; margin-left: 2px; }
+.cb-collapse-caret.rot { transform: rotate(180deg); }
+.cb-collapsible-body.cb-collapsed { display: none; }
+/* R2 — per-panel visibility toggle row: dense checkboxes picking which detail
+ * sections render. Sits between the heatmap strip and the detail pane; a
+ * user-level pref persisted across projects + TS. */
+.cb-panel-toggle-row {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 2px 8px 3px 10px; border-bottom: 1px solid #eef2f7; background: #fafbfc;
+}
+.cb-panel-toggle-label {
+    font-size: 10px; text-transform: uppercase; font-weight: 700;
+    color: #94a3b8; letter-spacing: 0.03em;
+}
 .cb-aspect { width: 100%; }
 .cb-picks-right { border-left: 1px solid #eef2f7; padding-left: 14px; }
 @media (max-width: 900px) {
@@ -266,9 +284,12 @@ _CB_CSS = """
 .cb-pick-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
 .cb-pick-layer-hidden { display: none; }
 .cb-recon-canvas { background: #0f172a; border-radius: 6px; }
-/* X/Y + X/Z stack: the wrapper width (capped to keep X/Y ~52vh tall) governs
- * both views, so the side strip is always the same width as the top-down. */
-.cb-canvas-stack { width: 100%; margin: 0 auto; }
+/* X/Y + X/Z stack: fills its column (width:100%, left-aligned margin:0). The
+ * column is capped per-tomo to the slab's height-limited width (see
+ * .cb-particles-canvas-col), so the stack — and the side strip below it — match
+ * that width exactly with no trailing whitespace before the gallery. Each child
+ * derives its height from its own aspect-ratio. */
+.cb-canvas-stack { width: 100%; margin: 0; }
 .cb-species-toggle-row {
     display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
     padding: 4px 2px 6px 2px;
@@ -286,8 +307,13 @@ _CB_CSS = """
  * can hover a tile and watch its dot light up on the canvas at the same time.
  * Wraps to stacked on narrow viewports. */
 .cb-particles-split { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
-.cb-particles-canvas-col { flex: 1 1 360px; min-width: 280px; max-width: 540px; }
-.cb-particles-tabs-col { flex: 2 1 440px; min-width: 340px; }
+/* Slab column is the DOMINANT one (R1): flex-grow 3 vs the tabs' 1 so it claims
+ * the width and pushes the gallery/tools cluster right. Its max-width is set
+ * INLINE per-tomo (_render_particles_section) to min(1080px, 76vh·x/y) — the
+ * slab's actual height-capped width — so the column HUGS the previews and leaves
+ * no whitespace before the gallery (R1b). */
+.cb-particles-canvas-col { flex: 3 1 600px; min-width: 440px; }
+.cb-particles-tabs-col { flex: 1 1 360px; min-width: 340px; }
 /* Per-species tabs beside the canvas. Matched to the journey aesthetic:
  * small, slate, no-caps, thin indigo indicator, and a per-species color
  * swatch tying each tab to its overlay color on the shared canvas. */
@@ -691,7 +717,7 @@ _CB_CSS = """
 .cb-strip-scroll { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; }
 .cb-strip-cols { display: flex; flex-direction: row; width: max-content; }
 .cb-strip-col {
-    flex: 0 0 52px; display: flex; flex-direction: column;
+    flex: 0 0 62px; display: flex; flex-direction: column;
     border-right: 1px solid #f1f5f9; cursor: pointer;
 }
 .cb-strip-col:hover { background: #f8fafc; }
@@ -706,17 +732,18 @@ _CB_CSS = """
 .cb-strip-prepcell { height: 20px; gap: 2px; }
 .cb-strip-pickcell { height: 22px; gap: 3px; font-family: ui-monospace, monospace; }
 .cb-strip-n { font-size: 10px; line-height: 1; }
-.cb-strip-filt { font-size: 8px; color: #6366f1; line-height: 1; }
+/* kept-after-curation count — green carries the auto-vs-curated distinction (the
+   one place green means a real completed step), so the cell needs no fill. */
+.cb-strip-filt { font-size: 9px; color: #059669; line-height: 1; font-weight: 700; }
 .cb-strip-dot { width: 6px; height: 6px; border-radius: 50%; background: #d1d5db; }
 .cb-strip-dot.ok { background: #10b981; }
 .cb-strip-dot.fail { background: #dc2626; }
 .cb-strip-dot.running { background: #f59e0b; }
 .cb-strip-dot.zero { background: #9ca3af; }
 .cb-strip-dot.pending { background: #e5e7eb; }
-.cb-strip-pickcell.done { background: rgba(16, 185, 129, 0.22); color: #065f46; }
-.cb-strip-pickcell.ok { background: rgba(16, 185, 129, 0.10); color: #047857; }
+.cb-strip-pickcell.has { color: #334155; }
 .cb-strip-pickcell.running { background: rgba(245, 158, 11, 0.16); color: #92400e; }
-.cb-strip-pickcell.zero { background: rgba(148, 163, 184, 0.14); color: #64748b; }
+.cb-strip-pickcell.zero { background: rgba(148, 163, 184, 0.14); color: #94a3b8; }
 .cb-strip-pickcell.fail { background: rgba(220, 38, 38, 0.12); color: #b91c1c; }
 .cb-strip-pickcell.pending { color: #cbd5e1; }
 """

@@ -64,18 +64,19 @@ def _compact_col_label(ts: str) -> str:
 
 
 def _cell_class(s: dict) -> str:
-    """Shade class for a species cell — how far this TS got for this species:
-    subtomo-extracted (strongest) → picked → running → zero → fail → pending."""
+    """State class for a species cell. Deliberately NOT a success-green gradient
+    (picks merely existing isn't a "success") — only genuinely-stateful conditions
+    get a fill: running (amber), failed (red), ran-but-zero (gray). "has" (picks
+    present) is neutral. The auto-vs-curated distinction is carried by the two
+    numbers — auto count slate, kept count green — not by the background."""
     pk = s.get("pick_status")
     sub = s.get("subtomo_status")
-    if sub == "ok":
-        return "done"
     if pk == "running" or sub == "running":
         return "running"
-    if pk == "ok":
-        return "ok"
     if pk == "fail" or sub == "fail":
         return "fail"
+    if pk == "ok" or sub == "ok":
+        return "has"
     if pk == "zero" or sub == "zero":
         return "zero"
     return "pending"
@@ -99,8 +100,9 @@ def build_strip(
     recon_mrc_map: dict,
     on_select: Callable[[str], object],
     info_popover: Optional[Callable] = None,
-) -> None:
-    """Build the heatmap strip into ``container``.
+) -> dict:
+    """Build the heatmap strip into ``container``; return ``{ts: column element}``
+    so the caller can move the selection highlight without a full rebuild.
 
     ``on_select(ts)`` is the column-click handler; ``info_popover(ts, species,
     recon_mrc)`` (optional) renders the ⓘ file-paths popover for the selected TS
@@ -108,6 +110,7 @@ def build_strip(
     shell.
     """
     species = _aggregate_species(species_journey, ts_names)
+    col_els: dict[str, object] = {}
 
     container.clear()
     with container, ui.element("div").classes("cb-strip-wrap"):
@@ -137,6 +140,7 @@ def build_strip(
                 is_sel = ts == selected_ts
                 col = ui.element("div").classes("cb-strip-col" + (" selected" if is_sel else ""))
                 col.on("click", lambda t=ts: on_select(t))
+                col_els[ts] = col
                 with col:
                     ui.label(_compact_col_label(ts)).classes("cb-strip-colhead").tooltip(ts)
                     jr = journey.get(ts, {})
@@ -165,5 +169,6 @@ def build_strip(
                         ):
                             ui.label(str(n) if n is not None else "·").classes("cb-strip-n")
                             fc = s.get("filtered_count")
-                            if is_sel and fc is not None:
-                                ui.label(f"▸{fc}").classes("cb-strip-filt")
+                            if fc is not None:
+                                ui.label(f"▸{fc}").classes("cb-strip-filt").tooltip(f"{fc} kept after curation")
+    return col_els
