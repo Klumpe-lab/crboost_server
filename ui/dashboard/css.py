@@ -290,15 +290,11 @@ _CB_CSS = """
  * that width exactly with no trailing whitespace before the gallery. Each child
  * derives its height from its own aspect-ratio. */
 .cb-canvas-stack { width: 100%; margin: 0; }
-.cb-species-toggle-row {
-    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-    padding: 4px 2px 6px 2px;
-}
 .cb-species-swatch {
     width: 10px; height: 10px; border-radius: 50%;
     box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3); flex: 0 0 auto;
 }
-/* Toggle-legend swatch shape mirrors the dot glyph (see .cb-shape-*). */
+/* Swatch shape mirrors the dot glyph (see .cb-shape-*). */
 .cb-swatch-circle { border-radius: 50%; }
 .cb-swatch-square { border-radius: 0; }
 .cb-swatch-diamond { border-radius: 0; transform: rotate(45deg); }
@@ -314,12 +310,77 @@ _CB_CSS = """
  * no whitespace before the gallery (R1b). */
 .cb-particles-canvas-col { flex: 3 1 600px; min-width: 440px; }
 .cb-particles-tabs-col { flex: 1 1 360px; min-width: 340px; }
+/* List workbench inside a species tab: a horizontal pick-list chip rail ABOVE
+ * the selected list's detail/gallery — stacked, not side-by-side, so the short
+ * rail doesn't leave dead vertical space beside the tall gallery. */
+.cb-workbench-split { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+.cb-list-rail-host { width: 100%; }
+.cb-list-detail-host { width: 100%; min-width: 0; }
+.cb-list-rail { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
+.cb-rail-title {
+    font-size: 9px; text-transform: uppercase; font-weight: 700; color: #94a3b8;
+    letter-spacing: 0.04em; align-self: center;
+}
+.cb-list-chip {
+    border: 1px solid #e5e7eb; border-radius: 6px; padding: 5px 7px; cursor: pointer; background: #fff;
+    display: flex; flex-direction: column; gap: 2px; transition: border-color 0.12s, background 0.12s;
+    flex: 0 0 auto; min-width: 128px;
+}
+.cb-list-chip:hover { border-color: #c7d2fe; background: #fafbff; }
+.cb-list-chip.selected { border-color: #6366f1; background: #eef2ff; box-shadow: inset 2px 0 0 #6366f1; }
+.cb-list-chip-swatch { width: 9px; height: 9px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25); flex: 0 0 auto; }
+.cb-list-chip-label {
+    font-size: 11px; font-weight: 600; color: #475569;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cb-list-chip-count { font-size: 11px; font-family: ui-monospace, monospace; color: #334155; }
+.cb-list-chip-badge { font-size: 9px; font-weight: 600; }
+.cb-badge-ok { color: #059669; }
+.cb-badge-todo { color: #94a3b8; }
+.cb-badge-stale { color: #d97706; }
+/* Chip second line: a small type tag (pytom / manual / imported / merged); the
+ * pytom tag is an info handle (cursor:help) for the auto-pick stats tooltip. */
+.cb-list-chip-meta { margin-top: 1px; flex-wrap: wrap; row-gap: 2px; }
+.cb-list-chip-tag {
+    font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+    color: #64748b; background: #f1f5f9; border-radius: 4px; padding: 0 4px; line-height: 1.55;
+}
+.cb-list-chip-tag-info { cursor: help; text-decoration: underline dotted #cbd5e1; text-underline-offset: 2px; }
+/* Rich pytom-chip info tooltip: a light card (overrides Quasar's dark default)
+ * with an auto-pick-stats section + a template-match section. */
+.cb-chip-tooltip {
+    background: #ffffff !important; color: #334155 !important; border: 1px solid #e2e8f0;
+    border-radius: 8px; padding: 8px 10px; max-width: 280px;
+    box-shadow: 0 6px 20px rgba(15, 23, 42, 0.16); font-size: 11px; line-height: 1.45;
+}
+.cb-tt-head { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: #6366f1; }
+.cb-tt-line { font-family: ui-monospace, monospace; color: #334155; }
+.cb-tt-sub { font-size: 10px; color: #94a3b8; }
+.cb-tt-sep { margin: 5px 0; background: #e2e8f0; }
+/* Visibility eye — per-list (rail chip) + per-species master (tab); both toggle
+ * that scope's canvas dot layers. Shared base + a tab-placement variant. */
+.cb-eye { color: #94a3b8; cursor: pointer; flex: 0 0 auto; transition: color 0.12s; }
+.cb-eye:hover { color: #4338ca; }
+.cb-tab-eye { margin-left: 4px; align-self: center; }
+.cb-rail-toolbar {
+    display: flex; flex-direction: row; flex-wrap: wrap; gap: 4px;
+    margin-left: auto; align-items: center;
+}
 /* Per-species tabs beside the canvas. Matched to the journey aesthetic:
  * small, slate, no-caps, thin indigo indicator, and a per-species color
  * swatch tying each tab to its overlay color on the shared canvas. */
 .cb-species-tabs { min-height: 28px; border-bottom: 1px solid #e5e7eb; }
 .cb-species-panels .q-tab-panel { padding: 8px 0 0 0; }
-.cb-species-tabs .q-tab { min-height: 28px; padding: 0 10px; text-transform: none; }
+.cb-species-tabs .q-tab {
+    min-height: 28px; padding: 0 10px; text-transform: none;
+    border-radius: 6px 6px 0 0; transition: background 0.12s;
+}
+.cb-species-tabs .q-tab:hover { background: #f8fafc; }
+.cb-species-tabs .q-tab--active { background: #eef2ff; }
+/* Quasar stacks a tab's children in a COLUMN by default — force one inline row
+ * so the color dot, label, and master-eye sit side by side at a consistent
+ * height (was: dot stacked above the label, and the eye would stack below it). */
+.cb-species-tab .q-tab__content { flex-direction: row; align-items: center; flex-wrap: nowrap; }
 .cb-species-tab .q-tab__label {
     font-size: 11px; font-weight: 600; color: #64748b; line-height: 1.15; white-space: nowrap;
 }
@@ -331,17 +392,9 @@ _CB_CSS = """
     background: var(--sp-color, #94a3b8); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
     margin-right: 6px; flex: 0 0 auto; align-self: center;
 }
-/* Per-tab header zone: always-visible essentials + icon controls, with the
- * bulky size pills + 3dmod tucked into a collapsed details expansion so the
- * gallery starts high. */
-.cb-tab-header {
-    display: flex; flex-direction: column; gap: 2px;
-    padding: 0 0 6px 0; border-bottom: 1px solid #f1f5f9; margin-bottom: 6px;
-}
-.cb-tab-essentials { font-size: 10px; color: #64748b; font-family: ui-monospace, monospace; }
-.cb-tab-details .q-item { min-height: 22px; padding: 0 4px; }
-.cb-tab-details .q-item__label { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.3px; }
-.cb-tab-details .q-expansion-item__content { padding: 4px 0 2px 0; }
+/* Per-species admin icons in the Particles panel title bar, following the active
+ * tab; sits left of the canvas-wide Invert switch with a little breathing room. */
+.cb-section-admin { margin-right: 4px; }
 .cb-preview-toolbar {
     display: flex; align-items: center; gap: 10px;
     font-size: 10px; color: #475569;

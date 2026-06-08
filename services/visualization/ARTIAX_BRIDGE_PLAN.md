@@ -9,11 +9,157 @@ pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the cont
 
 ## NEXT SESSION — start here (prioritized)
 
+**UPDATE 2026-06-08 (session 9) — SLICE B items 1–6 + 2 follow-up fixes LANDED (compile+ruff+format clean,
+ALL pending runtime verify in the app).** The species-tab/rail UX is overhauled end to end: (1) two-level
+visibility eyes (per-list chip eye + per-species tab master-eye; the canvas "Show picks" row retired);
+(2) tabs prettified (inline dot·label·eye); (3) header gray-stats + TM line → pytom-chip tooltip + per-list
+type tags; (4) size pills DELETED (~261 lines; diagnostics live in Dataset + `pixel_sanity.py`); (5) 3dmod
+moved to the tab BOTTOM; (6) per-species admin icons → **Particles panel TITLE BAR next to Invert** (follow
+the active tab); + **rail moved ABOVE the gallery** (horizontal chip strip, kills the side-by-side whitespace).
+Details in the "### Slice B" checklist below (items 1–6 each carry a ✓ LANDED note + the follow-up-fixes note).
+**NEXT: user runtime-verifies items 1–6, THEN Slice B item 7** (carve the 599-line `_render_gallery_body`
+tile-grid + hover bridge into a reusable component so manual/imported/merged lists get tile↔dot brushing) →
+**item 8** (global styling pass) → then back to **Slice C** (per-list Extract wiring). Layout rules the user
+was emphatic about are now durable in [[feedback_journey_layout_preferences]].
+
 **UPDATE 2026-06-08:** items 1–2 substantially landed — CP1 (ingest round-trip), CP2 (per-list recon
 cutouts), CP3a (per-list "Open in ArtiaX") — and the **merge model is DECIDED** (per-list extraction,
 status-flagged, user-triggered). The PickList extraction-state foundation is in. See
 "## SESSION 2026-06-08" below. **Remaining: merge + radius dedup (backend), then the per-list extraction
 UI + co-located lists dir.** Filter (CC/top-N) deferred (lower value).
+
+**UPDATE 2026-06-08 (cont.) — GALLERY UX REWORK STARTED · Slice A LANDED (pending runtime verify).**
+The deferred "dedicated gallery pass" ("## Curation UX overhaul" item 4) is in progress. Decided with
+the user: **left list-rail + detail** layout, **layout-first** (extraction wiring after). Slice A: the
+species tab body is now a `[list rail | detail]` workbench (`_render_species_tab_body` →
+`_render_list_rail` + `_render_list_detail`, all in `ui/tomo_dashboard_dialog.py`). The rail shows one
+CHIP per pick list (auto + manual/imported/merged) — swatch · label · count · (non-auto)
+extraction-state BADGE via `PickList.extraction_state()` (**first UI surface of `ListExtractionState`**)
+— plus a curation toolbar (Curate in ArtiaX · Import picks · Merge lists) **moved out of the crammed
+tab header**. Clicking a chip drives the detail pane: `auto` → `_render_species_auto_section` (existing
+subtomo gallery/scatter, still cross-linked to the canvas dots via `layer_ids`); workbench list →
+`_render_single_list_cutouts` (carved from the old `_render_registry_list_cutouts`, now deleted).
+Selection is **sticky per (species, tomo)** (`_SELECTED_LIST_SLUG` module dict) so a background-render
+`refresh()` rebuild doesn't bounce the user back to auto. CSS: `.cb-workbench-split` / `.cb-list-rail` /
+`.cb-list-chip{.selected}` / `.cb-list-chip-badge` + `.cb-badge-{ok,todo,stale}` in `dashboard/css.py`.
+Compile + ruff clean. **Deliberately NOT done in Slice A:** (1) per-list **visibility eye** — ✓ now done in
+Slice B item 1 (master-eye on the tab + per-chip eye; the canvas "Show picks" row retired); (2) the 599-line
+`_render_gallery_body` monolith is reused untouched (carve opportunistically). **NEXT: user verifies the
+rail, then Slice C = per-list Extract wiring onto the chip** (run subtomo extraction scoped to one list →
+`PickList.mark_extracted(optset, n)` → badge flips EXTRACTED → that list's `extracted_path` becomes the
+canonical optset the downstream resolver forwards, zero driver changes) — the roadmap's stated functional
+next-step, now with a home (the chip + badge).
+
+### Slice B — gallery DECLUTTER + interaction parity + styling (NEXT, user-specified 2026-06-08)
+
+User reprioritized after seeing Slice A: do this cleanup batch BEFORE the per-list extraction wiring
+("fix these things for now, then advance to further ArtiaX work"). All in `ui/tomo_dashboard_dialog.py`
++ `ui/dashboard/css.py` unless noted. Compile+ruff only here; user runtime-tests. Checklist (verbatim intent):
+
+1. **Visibility model — RESOLVED (retire the "Show picks" row). ✓ LANDED 2026-06-08 (compile+ruff clean,
+   pending runtime verify).** Retired the canvas per-list checkbox row (`.cb-species-toggle-row` removed from
+   `_render_particles_canvas` + `css.py`). Replaced with a TWO-LEVEL eye model, both levels driving each list's
+   dot layers `lst["_layer_els"]` through the new `_apply_pick_list_visibility` (add/remove `cb-pick-layer-hidden`):
+   (a) a **species master-eye on each species TAB** — `_render_species_master_eye(sp, tab)` in the
+   `_render_particles_section` tab loop, a `ui.icon` child of the `ui.tab` (so it rides the tab strip and stays
+   reachable while another tab is open — preserving the old cross-species toggle), one click toggles ALL that
+   species' overlays; (b) a **per-list eye on each chip** — `_render_list_eye(lst, sp)` in `_render_list_rail`,
+   toggles just that list. Both use `click.stop` (chip eye doesn't select the chip; tab eye doesn't switch tabs)
+   and are gated on the list actually owning canvas layers (`lst.get("_layer_els")`). Glyph swaps
+   `visibility`↔`visibility_off`; the two levels cross-sync (chip→master via `_sync_species_master_eye`,
+   master→chips via `_apply_pick_list_visibility`, both reading element refs stashed on the dicts as `_eye_el` /
+   `_master_eye_el`, mirroring the existing `_layer_els`/`_lid_*` stash pattern). New CSS `.cb-eye` + `.cb-tab-eye`.
+   **Visibility resets to all-on on a background `refresh()` rebuild (parity with the old checkbox row — `visible`
+   defaults True each fresh collect); not persisted (selection stays sticky, visibility is ephemeral).**
+
+2. **Prettify the species tabs. ✓ LANDED 2026-06-08 (compile+ruff clean, pending runtime verify).** Root cause:
+   Quasar's `.q-tab__content` is `flex-direction: column` by default, so the `::before` color dot stacked ABOVE the
+   label (and would have stacked the item-1 master-eye as a third row). Fix in `css.py`: forced
+   `.cb-species-tab .q-tab__content { flex-direction: row; align-items: center; flex-wrap: nowrap; }` so dot · label
+   · master-eye sit inline at a consistent 28px height; plus journey polish (rounded tab tops, slate hover fill,
+   indigo-50 active fill). The master-eye (#1) now reads inline as intended.
+
+3. **Declutter the tab header -> tooltips + type tags (the gray-stats clusterfuck). ✓ LANDED 2026-06-08
+   (compile+ruff clean, pending runtime verify).** Removed the inline gray stats block + the TM essentials line from
+   `_render_species_tab_header` (its `entry`/`score_field`/`manifest` locals went with them; `tm_info` stays for the
+   size pills). They now live in a light **info-card tooltip on the pytom chip's type tag** (`_attach_auto_chip_tooltip`
+   in `_render_list_rail`, threaded `tm_info` from `_render_species_tab_body`): two labeled sections — "Auto pick set
+   (PyTOM)" (position · tomo · N · CC range · mean · score field) and "Template-match run" (instance · θ · sym · Ø).
+   Each chip now carries a **type tag** on a second line (`_LIST_TYPE_TAG`: pytom / manual (ArtiaX) / imported /
+   merged / filtered); the pytom tag is an info handle (`cursor:help` + dotted underline). New CSS:
+   `.cb-list-chip-meta` / `.cb-list-chip-tag{,-info}` / `.cb-chip-tooltip` / `.cb-tt-{head,line,sub,sep}`.
+
+4–6. **Finish the header declutter — size pills deleted · 3dmod to bottom · admin buttons → toolbar. ✓ LANDED
+   2026-06-08 (compile+ruff+format clean, pending runtime verify).** Done together as one coherent header gut.
+   **(4)** Deleted the size pills outright (user: "delete it, I care more about readability than some random metric")
+   — removed `_render_species_size_chips` + `_render_tm_size_chips` + their exclusive helpers `_fmt_dims_combined` /
+   `_read_tm_job_json` + the now-unused `template_metadata` import (~261 lines). Verified first that the critical
+   apix-mismatch/box/crop diagnostics survive in `pixel_sanity.py`; the only loss is the rare mask-geometry chips,
+   accepted. Basic sizes already live in the Dataset section. **(5)** `_render_3dmod_section` now renders at the
+   BOTTOM of `_render_species_tab_body` (below the rail+detail), out of the old expansion. **(6)** Replaced
+   `_render_species_tab_header` with `_render_species_tab_toolbar` — a compact right-aligned icon toolbar at the top
+   of each species tab body (Render previews · Re-render all · (Re)generate IMOD), all three now icon-only with
+   tooltips. Per-species (each tab owns its three); the canvas-wide **Invert stays in the section header** per the
+   plan's recommendation. The "sizes & 3dmod" expansion is gone entirely. Dead CSS removed
+   (`.cb-tab-header` / `.cb-tab-essentials` / `.cb-tab-details`); added `.cb-tab-toolbar`; kept `.cb-chip-strip`
+   (still used by other chip strips). **Net: the species tab header is now just three icons; everything else moved
+   to its right home (tooltip / Dataset / sanity panel / tab bottom).**
+
+   **NEXT in Slice B: item 7** (interaction parity — carve the 599-line `_render_gallery_body` tile-grid + hover
+   bridge into a reusable component so manual/imported/merged lists get tile↔dot brushing, not just the read-only
+   sprite sheet) — the big monolith carve; then **item 8** (global styling pass on the particles panel). Items 1–6
+   are a complete, testable species-tab/rail UX overhaul.
+
+   **Follow-up fixes 2026-06-08 (user feedback on items 4–6; compile+ruff+format clean, pending runtime verify):**
+   **(a)** Item-6 placement was wrong — the per-species admin icons were in the tab body. Moved them to the
+   **Particles panel TITLE BAR next to the Invert switch** (where the user actually asked), following the active
+   tab: `_render_species_tab_toolbar` → `_render_species_admin_buttons` rendered into a header `admin_host`,
+   re-rendered on tab switch via `_show_admin_for` + `tabs.on_value_change`. Invert stays section-level. **(b)** The
+   `[rail | detail]` side-by-side left "long vertical whitespace" beside the tall gallery — flipped to **rail ABOVE
+   the gallery** (`.cb-workbench-split` column; `.cb-list-rail` horizontal chip strip; toolbar `margin-left:auto`;
+   detail full-width). See [[feedback_journey_layout_preferences]] (updated — these two are now durable rules).
+
+ORIGINAL (full spec for items 3–8, kept for reference):
+
+3. **Declutter the tab header -> tooltips + type tags (the gray-stats clusterfuck).** In
+   `_render_species_tab_header` the gray block — `position_label` ("Pos 13 . Beam 1"), `tomo_name`, `N=...`, score
+   range, `mean ...` — AND the TM line (`_tm_essentials_for_species`: "templatematching . theta . sym . diameter .
+   by rlnLCCmax") are AUTO-specific and confusing inline (user: "i don't know what the fuck this refers to"). MOVE
+   both into a nicely-formatted **tooltip on the AUTO (pytom) chip** in the rail. TAG each chip with its type:
+   **"pytom"** (auto) / **"manual (ArtiaX)"** / "imported" / "merged" (from `list_type`). The stats describe the
+   auto pick set; the TM line describes the template-match run — say so in the tooltip.
+
+4. **Remove the size pills.** The "Sizes & 3dmod" expansion's chips (`_render_species_size_chips` ->
+   `_render_tm_size_chips`) duplicate the journey **Dataset** section's pixel/binning info. DELETE the size pills
+   (keep that info only in the Dataset section).
+
+5. **3dmod block -> bottom.** Move `_render_3dmod_section` out of the tab-header expansion to the BOTTOM, below
+   the gallery/detail.
+
+6. **Consolidate scattered admin buttons into a panel toolbar.** "Render previews" (gen-missing), "Re-render all",
+   "Regenerate IMOD overlays" are scattered in the header/expansion. Put them as a compact ICON toolbar in the
+   panel's **title bar, far right, next to the "Invert" switch** (`_render_invert_switch` in
+   `_render_particles_section`) -> a real toolbox. NUANCE: Invert is canvas-wide (section-level, shared across
+   species) while render/imod are per-species-instance (need iid/jm/job_dir) -> likely a per-tab icon-toolbar
+   top-right of the tab body for the species buttons, Invert staying in the section header (or a unified bar
+   that's multi-species-correct). Design for the common single-species case, keep multi correct.
+
+7. **Interaction parity for non-auto lists (the big one — forces the monolith carve).** Auto gets full
+   tile<->canvas-dot brushing (hover tile -> highlight marker, hover marker -> highlight tile) via
+   `_render_gallery_body`'s JS bridge; manual/imported/merged get only the read-only CSS sprite sheet
+   (`_render_list_cutout_sheet`, no JS). REUSE the infra: extract the tile-grid + hover-bridge out of the 599-line
+   `_render_gallery_body` into a reusable component taking (atlas_meta, picks, layer-ids `_lid_xy`/`_lid_xz`) so
+   ANY list gets brushing. Auto = subtomo atlas + keep/drop curation; non-auto = recon atlas
+   (`render_recon_cutouts_atlas`) + brushing (keep/drop is auto-specific -> disable/adapt for non-auto). "Don't be
+   lazy" — this is the planned opportunistic carve of the monolith.
+
+8. **Global styling pass.** Standardize fonts/buttons to the journey aesthetic across the particles panel. The
+   "Curate in ArtiaX" / "Import picks" / "Merge lists" buttons look dated ("ripped out of a 2010 Material-UI app")
+   -> restyle to the compact/light journey chrome (cf. [[feedback_journey_layout_preferences]]). Audit the cb-*
+   particles classes for consistency (sizes, weights, colors).
+
+**Then:** further ArtiaX work — Slice C (per-list Extract wiring, above) + co-located `Curation/<species>/<tomo>/
+<slug>/` dir + whatever the user raises next ("i have a lot more to say").
 
 The feature WORKS end to end; everything below builds OUT from a working base. In priority order:
 
