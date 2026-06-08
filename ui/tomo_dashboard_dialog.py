@@ -34,9 +34,8 @@ import pandas as pd
 from nicegui import app, ui
 
 from services.configs.user_prefs_service import get_prefs_service
-from services.models_base import JobStatus, JobType, PickListType
+from services.models_base import JobStatus, JobType, ListExtractionState, PickListType
 from services.project_state import PickList, get_project_state, get_state_service
-from services.templating.template_metadata import get_effective_template_path, read_template_header
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import (
     _find_warp_tomo_preview,
@@ -96,6 +95,28 @@ _PICK_LIST_DEFAULT_COLOR = {
     PickListType.IMPORTED: "#ffea00",  # yellow — external
     PickListType.MERGED: "#ff6d00",  # deep orange — committed merge
 }
+
+# Extraction-state badge shown on each workbench list chip (Slice A surfaces it;
+# the per-list Extract action that flips it is Slice C). Auto lists show none.
+_EXTRACTION_BADGE = {
+    ListExtractionState.EXTRACTED: ("✓ extracted", "cb-badge-ok"),
+    ListExtractionState.NOT_EXTRACTED: ("○ not extracted", "cb-badge-todo"),
+    ListExtractionState.STALE: ("⚠ stale · re-extract", "cb-badge-stale"),
+}
+
+# Per-chip type tag (Slice B item 3): distinguishes the pytom auto list from the
+# manual/imported/merged workbench lists at a glance.
+_LIST_TYPE_TAG = {
+    PickListType.AUTO: "pytom",
+    PickListType.MANUAL: "manual (ArtiaX)",
+    PickListType.IMPORTED: "imported",
+    PickListType.MERGED: "merged",
+    PickListType.FILTERED: "filtered",
+}
+
+# Sticky per-(species_id, tomo) selected list slug so a background-render refresh
+# (which rebuilds the whole tab body) doesn't bounce the user back to the auto list.
+_SELECTED_LIST_SLUG: dict[tuple[str, str], str] = {}
 
 
 def _read_picks_json(path: Path) -> dict:
@@ -206,7 +227,7 @@ def _toggle_panel(key: str, visible: bool, on_change) -> None:
 def _build_panel_toggle_row(host, on_change) -> None:
     """Dense-checkbox row (one per detail panel) gating which sections render.
     Built once as journey chrome — toggling updates the user pref, persists it,
-    and re-renders the detail pane via on_change. Mirrors .cb-species-toggle-row."""
+    and re-renders the detail pane via on_change."""
     host.clear()
     hidden = _hidden_dashboard_panels()
     with host:
@@ -572,24 +593,6 @@ def _render_datadump_card(
 # ---------------------------------------------------------------------------
 # tmResults *_job.json reader — surfaces what PyTOM actually applied per TS
 # (vs. what the user declared in project_params.json)
-# ---------------------------------------------------------------------------
-
-
-def _read_tm_job_json(job_dir: Path, ts_name: str) -> Optional[dict]:
-    """PyTOM writes `tmResults/{tomo_name}_job.json` per TS. Returns the
-    parsed dict or None if missing/unreadable."""
-    p = job_dir / "tmResults" / f"{ts_name}_job.json"
-    if not p.exists():
-        return None
-    try:
-        return json.loads(p.read_text())
-    except Exception as e:
-        logger.warning("Could not read TM job json %s: %s", p, e)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Generic chip renderer + stage-0 chips
 # ---------------------------------------------------------------------------
 
 
@@ -1861,43 +1864,46 @@ def _render_list_cutout_sheet(lst: dict, sp: dict, project_path: Path, atlas_met
                 t._props["title"] = f"#{i}"
 
 
-def _render_registry_list_cutouts(sp: dict, project_path: Path, refresh) -> None:
-    """A read-only recon-sourced cutout sheet for each workbench list
-    (manual/imported/merged) on this (species, tomo). Auto picks already have
-    their subtomo gallery; these lists were never extracted, so their tiles are
-    cut from the binned recon at each pick voxel. Renders below the auto section
-    regardless of the auto status (a tomo PyTOM left empty can still carry manual
-    picks). No-op when the recon MRC is absent — the overlay dots still show."""
-    lists = [lst for lst in (sp.get("lists") or []) if lst.get("slug") != "auto"]
-    if not lists:
-        return
+def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh) -> None:
+    """Detail pane for ONE workbench list (manual/imported/merged): a read-only
+    recon-sourced cutout sheet (these lists were never subtomo-extracted, so tiles
+    are cut from the binned recon at each pick voxel) + the overlap/dedup panel for
+    a merged list. Carved from the old per-list loop so the rail's detail pane can
+    show a single selected list."""
     recon = (sp.get("row") or {}).get("vol_path")
     if not recon or not Path(recon).exists():
+        with ui.element("div").classes("cb-empty"):
+            ui.icon("image_not_supported", size="24px").classes("text-gray-400")
+            ui.label("No reconstructed tomogram on disk — cutouts unavailable.").classes("text-xs")
+            ui.label("This list's dots still overlay the slab canvas on the left.").classes(
+                "text-[11px] italic text-gray-500"
+            )
+        if lst.get("list_type") == PickListType.MERGED:
+            _render_clash_panel(lst, sp, project_path, refresh)
         return
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
     box_px = _list_cutout_box_px(sp)
-    for lst in lists:
-        atlas_path, index_path = _list_cutout_paths(project_path, species_id, tomo_name, lst["slug"])
-        star_path = lst.get("path")
-        try:
-            star_sig = int(Path(star_path).stat().st_mtime) if star_path and Path(star_path).exists() else 0
-        except OSError:
-            star_sig = 0
-        dedup_key = f"{species_id}:{tomo_name}:{lst['slug']}:{star_sig}"
-        ready = _auto_kick_list_cutouts(
-            Path(recon), lst["picks"], star_path, atlas_path, index_path, box_px, project_path, refresh, dedup_key
-        )
-        atlas_meta = _read_atlas_index(index_path) if ready else None
-        if atlas_meta:
-            _render_list_cutout_sheet(lst, sp, project_path, atlas_meta, str(atlas_path))
-        else:
-            # No tiles yet: a written index means the build ran (empty result);
-            # no index means it's still in flight.
-            _render_list_cutouts_status(lst, sp, project_path, building=not index_path.exists())
-        # Merged lists carry the overlap/dedup panel (the user-driven radius dedup).
-        if lst.get("list_type") == PickListType.MERGED:
-            _render_clash_panel(lst, sp, project_path, refresh)
+    atlas_path, index_path = _list_cutout_paths(project_path, species_id, tomo_name, lst["slug"])
+    star_path = lst.get("path")
+    try:
+        star_sig = int(Path(star_path).stat().st_mtime) if star_path and Path(star_path).exists() else 0
+    except OSError:
+        star_sig = 0
+    dedup_key = f"{species_id}:{tomo_name}:{lst['slug']}:{star_sig}"
+    ready = _auto_kick_list_cutouts(
+        Path(recon), lst["picks"], star_path, atlas_path, index_path, box_px, project_path, refresh, dedup_key
+    )
+    atlas_meta = _read_atlas_index(index_path) if ready else None
+    if atlas_meta:
+        _render_list_cutout_sheet(lst, sp, project_path, atlas_meta, str(atlas_path))
+    else:
+        # No tiles yet: a written index means the build ran (empty result);
+        # no index means it's still in flight.
+        _render_list_cutouts_status(lst, sp, project_path, building=not index_path.exists())
+    # Merged lists carry the overlap/dedup panel (the user-driven radius dedup).
+    if lst.get("list_type") == PickListType.MERGED:
+        _render_clash_panel(lst, sp, project_path, refresh)
 
 
 def _dedup_default_radius(sp: dict) -> float:
@@ -2134,221 +2140,6 @@ def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id:
 # ---------------------------------------------------------------------------
 
 
-def _fmt_dims_combined(dims: Optional[tuple], px: Optional[float]) -> Optional[str]:
-    """`(1024, 1024, 512), 6.2` → "1024×1024×512 px (6350×6350×3174 Å)"."""
-    if not dims:
-        return None
-    parts_px = "×".join(str(d) for d in dims if d is not None)
-    if not parts_px:
-        return None
-    if px and px > 0:
-        parts_ang = "×".join(f"{int(round(d * px)):,}" for d in dims if d is not None)
-        return f"{parts_px} px ({parts_ang} Å)"
-    return f"{parts_px} px"
-
-
-def _render_tm_size_chips(
-    *,
-    job_model,
-    species,
-    applied_job_json: Optional[dict],
-    recon_row: Optional[dict],
-    pick_row: Optional[dict],
-    subtomo_row: Optional[dict],
-) -> None:
-    """All the sizes (tomo / template / mask / particle / extraction) plus
-    mask geometry diagnostics, in one chip strip. Each chip skips silently
-    when its source isn't available so the strip degrades gracefully on
-    partially-configured projects.
-    """
-    from services.templating.mrc_inspection import inspect_mask_intrinsics
-
-    # Reference apix — PyTOM's applied voxel_size wins if the json is on
-    # disk; otherwise fall back to the recon row's px size.
-    tm_apix: Optional[float] = None
-    if applied_job_json and isinstance(applied_job_json.get("voxel_size"), (int, float)):
-        v = float(applied_job_json["voxel_size"])
-        tm_apix = v if v > 0 else None
-    if tm_apix is None and recon_row:
-        tm_apix = recon_row.get("px_size_ang")
-
-    # ── Tomo ─────────────────────────────────────────────────────────────
-    if recon_row:
-        tomo_text = _fmt_dims_combined(recon_row.get("tomo_px"), recon_row.get("px_size_ang"))
-        if tomo_text:
-            _render_chip(
-                "tomo",
-                tomo_text,
-                status="neutral",
-                tooltip=(
-                    f"Reconstructed tomogram dimensions at "
-                    f"{(recon_row.get('px_size_ang') or 0):g} Å/voxel. From TsAlignmentParams.tomo_dimensions × "
-                    f"rescale ratio (TsReconstructParams.rescale_angpixs)."
-                ),
-                icon="view_in_ar",
-            )
-
-    # ── Template ─────────────────────────────────────────────────────────
-    tpl_path = getattr(job_model, "template_path", "") or (get_effective_template_path(species) if species else "")
-    tpl_header = read_template_header(tpl_path) if tpl_path else None
-    if tpl_header and tpl_header.box_px:
-        if tpl_header.apix_ang:
-            tpl_text = (
-                f"{tpl_header.box_px}px ({tpl_header.box_px * tpl_header.apix_ang:g} Å) @ {tpl_header.apix_ang:g} Å/px"
-            )
-        else:
-            tpl_text = f"{tpl_header.box_px}px"
-        # Apix mismatch with TM = error; otherwise neutral.
-        status = "neutral"
-        warn = ""
-        if tm_apix and tpl_header.apix_ang and abs(tm_apix - tpl_header.apix_ang) / tm_apix > 0.05:
-            status = "error"
-            warn = f" — DIFFERENT from TM voxel_size {tm_apix:g} Å. Re-render template at {tm_apix:g} Å/px."
-        _render_chip(
-            "tmpl",
-            tpl_text,
-            status=status,
-            tooltip=(
-                f"Template volume: {tpl_header.nx}×{tpl_header.ny}×{tpl_header.nz} px "
-                f"@ {tpl_header.apix_ang:g} Å/voxel.{warn}"
-            ),
-            icon="hexagon",
-        )
-
-    # ── Mask ─────────────────────────────────────────────────────────────
-    mask_path = getattr(job_model, "mask_path", "") or ""
-    if not mask_path and species:
-        sel = species.get_selected_mask() if hasattr(species, "get_selected_mask") else None
-        mask_path = (getattr(sel, "mask_path", "") or "") if sel else ""
-
-    mask_intrinsics = inspect_mask_intrinsics(mask_path) if mask_path else None
-    if mask_intrinsics:
-        # Mask box (size text follows the template format).
-        mask_box = max(mask_intrinsics.nx, mask_intrinsics.ny, mask_intrinsics.nz)
-        if mask_intrinsics.apix_ang:
-            mask_text = f"{mask_box}px ({mask_box * mask_intrinsics.apix_ang:g} Å) @ {mask_intrinsics.apix_ang:g} Å/px"
-        else:
-            mask_text = f"{mask_box}px"
-        mask_status = "neutral"
-        mask_warn = ""
-        if tm_apix and mask_intrinsics.apix_ang and abs(tm_apix - mask_intrinsics.apix_ang) / tm_apix > 0.05:
-            mask_status = "error"
-            mask_warn = f" — DIFFERENT from TM voxel_size {tm_apix:g} Å."
-        _render_chip(
-            "mask",
-            mask_text,
-            status=mask_status,
-            tooltip=(
-                f"Mask volume: {mask_intrinsics.nx}×{mask_intrinsics.ny}×{mask_intrinsics.nz} px "
-                f"@ {mask_intrinsics.apix_ang:g} Å/voxel.{mask_warn}"
-            ),
-            icon="filter_tilt_shift",
-        )
-
-        if mask_intrinsics.diameter_ang_at_half_max:
-            diam_text = f"{mask_intrinsics.diameter_ang_at_half_max:.0f} Å"
-            if mask_intrinsics.apix_ang:
-                diam_text += f" ({mask_intrinsics.diameter_ang_at_half_max / mask_intrinsics.apix_ang:.0f} px)"
-            _render_chip(
-                "mask Ø",
-                diam_text,
-                status="neutral",
-                tooltip=(
-                    "Equivalent-sphere diameter from voxels > 0.5*max in the mask volume — "
-                    "what PyTOM treats as the effective mask radius, independent of soft edges "
-                    "or filename labels."
-                ),
-                icon="circle",
-            )
-
-        if mask_intrinsics.isotropy_ratio is not None:
-            if mask_intrinsics.looks_spherical:
-                iso_status, iso_extra = "ok", "≥0.95 → spherical (mask_is_spherical fast path appropriate)."
-            elif mask_intrinsics.isotropy_ratio < 0.85:
-                iso_status, iso_extra = (
-                    "warn",
-                    "<0.85 → elongated. mask_is_spherical=True would apply incorrect shortcuts.",
-                )
-            else:
-                iso_status, iso_extra = "info", "0.85–0.95 → mildly anisotropic."
-            _render_chip(
-                "iso",
-                f"{mask_intrinsics.isotropy_ratio:.2f}",
-                status=iso_status,
-                tooltip=(
-                    f"Isotropy = min(σx,σy,σz)/max(σx,σy,σz) = {mask_intrinsics.isotropy_ratio:.3f}. " + iso_extra
-                ),
-                icon="all_inclusive",
-            )
-
-        if mask_intrinsics.com_offset_magnitude_vox > 0.5:
-            _render_chip(
-                "COM off",
-                f"{mask_intrinsics.com_offset_magnitude_vox:.2f} vox",
-                status="warn",
-                tooltip=(
-                    f"Mask center-of-mass is {mask_intrinsics.com_offset_magnitude_vox:.2f} voxels "
-                    f"from box center (Δx={mask_intrinsics.com_offset_x_vox:+.2f}, "
-                    f"Δy={mask_intrinsics.com_offset_y_vox:+.2f}, "
-                    f"Δz={mask_intrinsics.com_offset_z_vox:+.2f}). Picks land relative to box "
-                    f"center — re-center the mask or accept a constant offset."
-                ),
-                icon="adjust",
-            )
-
-    # ── Particle ─────────────────────────────────────────────────────────
-    diameter = (pick_row or {}).get("particle_diameter_ang")
-    if diameter:
-        diam_text = f"{diameter:g} Å"
-        if tm_apix:
-            diam_text += f" (~{diameter / tm_apix:.0f} px @ {tm_apix:g})"
-        _render_chip(
-            "particle Ø",
-            diam_text,
-            status="info",
-            tooltip=(
-                "Particle diameter declared on the candidate-extract job (or species). "
-                "Drives box/crop sanity checks downstream."
-            ),
-            icon="adjust",
-        )
-
-    # ── Extraction (subtomo) ─────────────────────────────────────────────
-    if subtomo_row:
-        box_px = subtomo_row.get("box_px")
-        eff_px = subtomo_row.get("px_size_ang")
-        if box_px:
-            box_ang = box_px * eff_px if eff_px else None
-            box_text = f"{box_px}px ({box_ang:g} Å)" if box_ang else f"{box_px}px"
-            _render_chip(
-                "extract box",
-                box_text,
-                status="neutral",
-                tooltip=(
-                    f"Subtomogram extraction box at {eff_px:g} Å/voxel. Should be 2–3× particle "
-                    f"diameter; see the pixel-sanity table for the rule check."
-                ),
-                icon="crop_square",
-            )
-        crop_px = subtomo_row.get("_crop_px")
-        if crop_px:
-            crop_text = f"{crop_px}px ({crop_px * eff_px:g} Å)" if eff_px else f"{crop_px}px"
-            _render_chip(
-                "extract crop",
-                crop_text,
-                status="neutral",
-                tooltip="Cropped subtomogram output size (crop_size). Must fit inside the box and ≥ particle Ø.",
-                icon="crop",
-            )
-
-
-# ---------------------------------------------------------------------------
-# Candidate Extract section: carries forward the entire flagship preview +
-# gallery + scatter fallback content from the old per-job dialog, re-keyed on
-# (ts_name, instance_id).
-# ---------------------------------------------------------------------------
-
-
 def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -> tuple[Optional[Path], Optional[Path]]:
     """(recon_job_dir, reconstructed-tomogram MRC) for this TS, or Nones."""
     rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
@@ -2492,6 +2283,61 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
     return out
 
 
+def _eye_name(visible: bool) -> str:
+    return "visibility" if visible else "visibility_off"
+
+
+def _apply_pick_list_visibility(lst: dict) -> None:
+    """Show/hide one pick list's canvas dot layers per its ``visible`` flag and
+    keep that list's rail-chip eye glyph in sync. The dot layers (``_layer_els``)
+    and the chip eye (``_eye_el``) are stashed on the list dict by the canvas /
+    rail renderers, so this reaches both from either eye."""
+    vis = lst.get("visible", True)
+    for layer in lst.get("_layer_els") or []:
+        if vis:
+            layer.classes(remove="cb-pick-layer-hidden")
+        else:
+            layer.classes(add="cb-pick-layer-hidden")
+    eye = lst.get("_eye_el")
+    if eye is not None:
+        eye.name = _eye_name(vis)
+
+
+def _sync_species_master_eye(sp: dict) -> None:
+    """Re-point a species' tab master-eye at whether ANY of its lists is visible,
+    so toggling an individual chip eye keeps the master glyph honest."""
+    eye = sp.get("_master_eye_el")
+    if eye is None:
+        return
+    vis = any(lst.get("visible", True) for lst in (sp.get("lists") or []))
+    sp["_master_visible"] = vis
+    eye.name = _eye_name(vis)
+
+
+def _render_species_master_eye(sp: dict, tab) -> None:
+    """A master visibility eye inside a species tab: one click toggles ALL that
+    species' canvas overlay layers. It lives on the tab strip (not the rail) so a
+    species' overlay can be toggled even while another species' tab is open —
+    what the retired cross-species 'Show picks' row gave. ``click.stop`` keeps the
+    click from also switching tabs."""
+    vis0 = any(lst.get("visible", True) for lst in (sp.get("lists") or []))
+    sp["_master_visible"] = vis0
+    with tab:
+        eye = ui.icon(_eye_name(vis0), size="14px").classes("cb-eye cb-tab-eye")
+        eye.tooltip("Show / hide all of this species' picks on the canvas")
+    sp["_master_eye_el"] = eye
+
+    def _toggle(_e, _sp=sp, _eye=eye):
+        vis = not _sp.get("_master_visible", True)
+        _sp["_master_visible"] = vis
+        for lst in _sp.get("lists") or []:
+            lst["visible"] = vis
+            _apply_pick_list_visibility(lst)
+        _eye.name = _eye_name(vis)
+
+    eye.on("click.stop", _toggle)
+
+
 def _render_particles_section(ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None) -> bool:
     """Unified Particles section: a shared tomogram canvas with every species'
     picks overlaid (toggleable), plus a per-species tab carrying that species'
@@ -2509,8 +2355,19 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
             ui.label("Particles").classes("cb-section-title")
             ui.label(f"{len(species_data)} species").classes("text-[10px] font-mono text-gray-500")
             ui.space()
+            # Per-species generate controls (Render previews · Re-render · IMOD)
+            # live in the panel toolbar, following the active tab; the canvas-wide
+            # Invert switch is section-level (shared across species).
+            admin_host = ui.row().classes("items-center gap-0 cb-section-admin")
             if mrc_path is not None:
                 _render_invert_switch(card)
+
+        def _show_admin_for(sp: dict) -> None:
+            admin_host.clear()
+            with admin_host:
+                _render_species_admin_buttons(sp, project_path, refresh)
+
+        _show_admin_for(species_data[0])
 
         # Two columns: slabs LEFT (always visible for inspection), galleries
         # RIGHT — so the user can hover a tile and watch its dot on the canvas
@@ -2534,15 +2391,29 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
 
             with ui.element("div").classes("cb-particles-tabs-col"):
                 tab_objs: list[tuple[dict, object]] = []
-                with ui.tabs().props("dense align=left indicator-color=indigo").classes("cb-species-tabs") as tabs:
+                sp_by_iid = {s["iid"]: s for s in species_data}
+
+                def _on_species_tab(e) -> None:
+                    sp = sp_by_iid.get(e.value)
+                    if sp is not None:
+                        _show_admin_for(sp)
+
+                tabs = (
+                    ui.tabs()
+                    .props("dense align=left indicator-color=indigo")
+                    .classes("cb-species-tabs")
+                    .on_value_change(_on_species_tab)
+                )
+                with tabs:
                     for sp in species_data:
-                        # Name only — the per-TS pick count now lives in the heatmap
-                        # strip's selected column (and the per-list toggle row below),
-                        # so repeating it on the tab was triple-redundant. A CSS ::before
-                        # dot (driven by the inline --sp-color) ties each tab to its
-                        # canvas overlay color.
+                        # Name + a master-eye toggling all of this species' canvas
+                        # overlays at once (replacing the retired cross-species
+                        # "Show picks" row). A CSS ::before dot (driven by the inline
+                        # --sp-color) ties each tab to its canvas overlay color.
                         tab = ui.tab(sp["iid"], label=sp["label"]).classes("cb-species-tab")
                         tab.style(f"--sp-color: {sp['color']};")
+                        if any(lst.get("_layer_els") for lst in sp.get("lists") or []):
+                            _render_species_master_eye(sp, tab)
                         tab_objs.append((sp, tab))
                 with ui.tab_panels(tabs, value=tab_objs[0][1]).classes("w-full cb-species-panels"):
                     for sp, tab in tab_objs:
@@ -2596,28 +2467,10 @@ def _render_particles_canvas(
     z_dim = max(int(dims[2]), 1)
     nonce = uuid.uuid4().hex[:8]
 
-    # Per-LIST toggle row — one checkbox per pick list (a species' auto list,
-    # plus any manual/imported/merged lists), colored + glyph-swatched to match
-    # its dots; each toggles that list's X/Y + X/Z layers together.
-    with ui.row().classes("cb-species-toggle-row"):
-        ui.label("Show picks").classes("text-[10px] uppercase font-bold text-gray-400")
-        for sp in with_picks:
-            for lst in sp["lists"]:
-
-                def _toggle(e, _lst=lst):
-                    for layer in _lst.get("_layer_els", []):
-                        if e.value:
-                            layer.classes(remove="cb-pick-layer-hidden")
-                        else:
-                            layer.classes(add="cb-pick-layer-hidden")
-
-                with ui.row().classes("items-center gap-1"):
-                    ui.element("div").classes(f"cb-species-swatch cb-swatch-{lst['shape']}").style(
-                        f"background: {lst['color']};"
-                    )
-                    ui.checkbox(f"{lst['label']} ({len(lst['picks'])})", value=lst["visible"]).props("dense").classes(
-                        "text-[11px]"
-                    ).on_value_change(_toggle)
+    # Visibility is driven by the per-tab master-eye + per-chip eyes (Slice B
+    # item 1) — the old per-list "Show picks" checkbox row was retired. Both eyes
+    # toggle each list's `_layer_els` (populated just below) through
+    # `_apply_pick_list_visibility`.
 
     # X/Y and X/Z share ONE stack that fills the (per-tomo width-capped) canvas
     # column — each child is width:100% of the stack and derives its height from
@@ -2683,34 +2536,6 @@ def _tm_essentials_for_species(sp: dict) -> dict:
             info["sym"] = (getattr(species, "symmetry", None) if species else None) or getattr(tm_jm, "symmetry", None)
             break
     return info
-
-
-def _render_species_size_chips(sp: dict, project_path: Path, ts_name: str, tm_info: dict) -> None:
-    """The matched TM instance's size chips (tomo / template / mask / particle /
-    extraction + subtomo box/crop + mask geometry). Tucked into the tab header's
-    'sizes & 3dmod' details so they don't crowd the gallery. No-op when the
-    species has no matched TM instance."""
-    tm_iid, tm_jm = tm_info.get("tm_iid"), tm_info.get("tm_jm")
-    if tm_jm is None:
-        return
-    species, species_id = tm_info["species"], tm_info["species_id"]
-    state = get_project_state()
-    tm_job_dir = _job_dir_for(tm_iid, tm_jm, project_path)
-    applied_job_json = _read_tm_job_json(tm_job_dir, ts_name) if tm_job_dir else None
-    pixel_rows = _compute_pixel_chain(state)
-    recon_row = next((r for r in pixel_rows if r["stage_key"] == "recon"), None)
-    pick_row = next((r for r in pixel_rows if r["stage_key"] == "pick" and r.get("species_id") == species_id), None)
-    subtomo_row = next(
-        (r for r in pixel_rows if r["stage_key"] == "subtomo" and r.get("species_id") == species_id), None
-    )
-    _render_tm_size_chips(
-        job_model=tm_jm,
-        species=species,
-        applied_job_json=applied_job_json,
-        recon_row=recon_row,
-        pick_row=pick_row,
-        subtomo_row=subtomo_row,
-    )
 
 
 async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
@@ -2891,36 +2716,227 @@ def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> No
     dialog.open()
 
 
-def _render_species_tab_header(sp: dict, tm_info: dict, project_path: Path, refresh) -> None:
-    """Compact per-tab header (Option A): an always-visible essentials line
-    (position · tomo · N · score range · θ · sym · Ø) with the two common
-    generate controls as icon buttons, plus a collapsed 'sizes & 3dmod' details
-    expansion holding the bulky size pills, the cache-bypass re-render, and the
-    3dmod command. Keeps the gallery — the point of the tab — starting high."""
+def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None:
+    """The three per-species preview/overlay generate controls as icon buttons —
+    Render previews (gen-missing) · Re-render all (cache-bypass) · (Re)generate
+    IMOD overlays. Rendered into the Particles section title bar (next to the
+    canvas-wide Invert switch), following the active species tab — so they sit in
+    the panel toolbar, not crammed into the tab body."""
     iid, jm, job_dir = sp["iid"], sp["jm"], sp["job_dir"]
-    row, manifest = sp["row"], sp["manifest"]
-    entry = (manifest.get("tomograms") or {}).get(row["tomo_name"]) or {}
-    score_field = manifest.get("score_field")
     imod_dir = job_dir / "vis" / "imodPartRad"
     has_imod_models = imod_dir.exists() and any(imod_dir.glob("*.mod"))
+    gen_missing_btn = (
+        ui.button(
+            icon="auto_fix_high",
+            on_click=lambda: _handle_generate_for_instance(
+                iid, jm, job_dir, project_path, False, gen_missing_btn, refresh
+            ),
+        )
+        .props("flat dense round size=sm")
+        .classes("text-purple-600")
+        .tooltip("Render previews for tomograms whose manifest entry is missing or stale.")
+    )
+    regen_btn = (
+        ui.button(
+            icon="refresh",
+            on_click=lambda: _handle_generate_for_instance(iid, jm, job_dir, project_path, True, regen_btn, refresh),
+        )
+        .props("flat dense round size=sm")
+        .classes("text-gray-500")
+        .tooltip("Re-render all: bypass cache and regenerate every tomogram's preview from scratch.")
+    )
+    imod_btn = (
+        ui.button(
+            icon="scatter_plot",
+            on_click=lambda: _handle_generate_imod_for_instance(iid, jm, job_dir, project_path, imod_btn, refresh),
+        )
+        .props("flat dense round size=sm")
+        .classes("text-blue-600")
+        .tooltip("Regenerate IMOD .mod overlays" if has_imod_models else "Generate IMOD .mod overlays")
+    )
 
-    with ui.element("div").classes("cb-tab-header"):
-        # Per-tomogram essentials + the two common generate controls (icons).
-        with ui.row().classes("w-full items-center gap-2 flex-wrap"):
-            ui.label(row["position_label"]).classes("text-xs font-semibold text-gray-700")
-            ui.label(row["tomo_name"]).classes("text-[10px] font-mono text-gray-500")
-            ui.label(f"N={row['n_picks']}").classes("text-[11px] font-mono text-gray-700")
-            if row["score_range"]:
-                ui.label(f"{row['score_range'][0]:.3f}–{row['score_range'][1]:.3f}").classes(
-                    "text-[11px] text-gray-500 font-mono"
-                )
+
+def _render_species_tab_body(
+    sp: dict, layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster=None
+) -> None:
+    """One species' tab: a horizontal pick-list rail ABOVE the gallery/detail (so
+    the short rail doesn't leave dead space beside the tall gallery), with the
+    per-species admin controls hoisted to the panel toolbar. The rail lists every
+    pick list (auto + manual/imported/merged) as a chip — swatch · count · type
+    tag · extraction badge; clicking a chip drives the detail below (auto →
+    subtomo gallery/scatter cross-linked to this species' canvas dots via
+    `layer_ids`; a workbench list → its recon cutout sheet). 3dmod at the bottom."""
+    tm_info = _tm_essentials_for_species(sp)
+    if sp["row"]["status"] == "missing-volume":
+        ui.label("No reconstructed tomogram on disk for 3dmod — picks plot still works.").classes(
+            "text-[11px] text-amber-700 italic"
+        )
+
+    # Always present an `auto` entry so the PyTOM section (incl. its zero-picks /
+    # errored / generating states) stays reachable even when there are no auto
+    # picks (the collector omits a 0-pick auto list to keep the canvas overlay clean).
+    lists = list(sp.get("lists") or [])
+    if not any(lst["slug"] == "auto" for lst in lists):
+        lists.insert(
+            0,
+            {
+                "slug": "auto",
+                "label": sp.get("label") or "auto",
+                "list_type": PickListType.AUTO,
+                "color": sp.get("color") or "#6366f1",
+                "shape": _glyph_for(PickListType.AUTO),
+                "picks": sp.get("picks") or [],
+                "dims": sp.get("dims") or [1, 1, 1],
+                "visible": True,
+            },
+        )
+
+    key = (sp.get("species_id") or "", sp["row"]["tomo_name"])
+    slugs = {lst["slug"] for lst in lists}
+    default_slug = "auto" if "auto" in slugs else (lists[0]["slug"] if lists else None)
+    cur = _SELECTED_LIST_SLUG.get(key, default_slug)
+    if cur not in slugs:
+        cur = default_slug
+    sel = {"slug": cur}
+    chip_els: dict[str, object] = {}
+
+    with ui.element("div").classes("cb-workbench-split"):
+        rail_host = ui.element("div").classes("cb-list-rail-host")
+        detail_host = ui.element("div").classes("cb-list-detail-host")
+
+    def _render_detail() -> None:
+        detail_host.clear()
+        lst = next((x for x in lists if x["slug"] == sel["slug"]), None)
+        with detail_host:
+            _render_list_detail(sp, lst, layer_ids, project_path, refresh, refresh_roster)
+
+    def _select(slug: str) -> None:
+        if slug == sel["slug"] or slug not in slugs:
+            return
+        if sel["slug"] in chip_els:
+            chip_els[sel["slug"]].classes(remove="selected")
+        sel["slug"] = slug
+        _SELECTED_LIST_SLUG[key] = slug
+        if slug in chip_els:
+            chip_els[slug].classes(add="selected")
+        _render_detail()
+
+    with rail_host:
+        _render_list_rail(
+            sp,
+            lists,
+            project_path,
+            refresh,
+            tm_info=tm_info,
+            selected_slug=sel["slug"],
+            on_select=_select,
+            chip_els=chip_els,
+        )
+    _render_detail()
+
+    # 3dmod copy-command at the BOTTOM of the tab (Slice B item 5) — below the
+    # rail + detail, out of the old header expansion.
+    _render_3dmod_section(sp["row"])
+
+
+def _render_list_eye(lst: dict, sp: dict) -> None:
+    """Per-list visibility eye on a rail chip: toggles just this list's canvas dot
+    layers. ``click.stop`` so toggling visibility doesn't also select the chip;
+    the species tab's master-eye is re-synced after each toggle."""
+    vis0 = lst.get("visible", True)
+    eye = ui.icon(_eye_name(vis0), size="14px").classes("cb-eye")
+    eye.tooltip("Show / hide this list on the canvas")
+    lst["_eye_el"] = eye
+
+    def _toggle(_e, _lst=lst, _sp=sp):
+        _lst["visible"] = not _lst.get("visible", True)
+        _apply_pick_list_visibility(_lst)
+        _sync_species_master_eye(_sp)
+
+    eye.on("click.stop", _toggle)
+
+
+def _attach_auto_chip_tooltip(el, sp: dict, tm_info: dict) -> None:
+    """Rich hover tooltip for the pytom (auto) chip's type tag: the per-tomo
+    auto-pick stats + the template-match run params that used to clutter the tab
+    header inline (Slice B item 3). Two labeled sections so it's clear the stats
+    describe the auto pick SET and the TM line the template-match RUN."""
+    row = sp["row"]
+    entry = sp.get("entry") or {}
+    diameter = float(getattr(sp["jm"], "particle_diameter_ang", 0.0) or 0.0)
+    score_field = (sp.get("manifest") or {}).get("score_field")
+    tm_bits: list[str] = []
+    if tm_info.get("tm_iid"):
+        tm_bits.append(str(tm_info["tm_iid"]))
+    if tm_info.get("theta"):
+        tm_bits.append(f"θ {tm_info['theta']}°")
+    if tm_info.get("sym"):
+        tm_bits.append(f"sym {tm_info['sym']}")
+    if diameter:
+        tm_bits.append(f"Ø {diameter:.0f} Å")
+    with el:
+        with ui.tooltip().classes("cb-chip-tooltip"):
+            ui.label("Auto pick set (PyTOM)").classes("cb-tt-head")
+            ui.label(f"{row['position_label']} · {row['tomo_name']}").classes("cb-tt-line")
+            stat = f"N = {row['n_picks']}"
+            if row.get("score_range"):
+                stat += f" · CC {row['score_range'][0]:.3f}–{row['score_range'][1]:.3f}"
             if entry.get("score_mean") is not None:
-                ui.label(f"mean {entry['score_mean']:.3f}").classes("text-[11px] text-gray-500 font-mono")
-            ui.space()
-            # One-click curation: export this (species, tomo)'s picks, write a .cxc,
-            # and pre-load a ChimeraX/ArtiaX session (or show paste-in commands for a
-            # live one). Always visible — the handler reports clearly if the recon or
-            # picks are missing rather than us hiding the button on a preview field.
+                stat += f" · mean {entry['score_mean']:.3f}"
+            ui.label(stat).classes("cb-tt-line")
+            if score_field:
+                ui.label(f"score field: {score_field}").classes("cb-tt-sub")
+            if tm_bits:
+                ui.separator().classes("cb-tt-sep")
+                ui.label("Template-match run").classes("cb-tt-head")
+                ui.label("  ·  ".join(tm_bits)).classes("cb-tt-line")
+
+
+def _render_list_rail(
+    sp: dict, lists: list[dict], project_path: Path, refresh, *, tm_info: dict, selected_slug, on_select, chip_els: dict
+) -> None:
+    """The pick-list chip rail + the species-level curation toolbar. Each chip:
+    shape/color swatch · label · count · a visibility eye; a second line carries a
+    type tag (pytom / manual (ArtiaX) / imported / merged) and, for workbench lists,
+    the extraction-state badge. The pytom tag carries a tooltip with the auto pick
+    stats + template-match essentials (moved off the tab header, Slice B item 3).
+    Clicking a chip selects the list → drives the detail pane; the eye (click.stop)
+    toggles just that list's canvas dots. `chip_els` is filled {slug: element} so
+    selection can re-highlight without rebuilding the rail."""
+    state_obj = get_project_state()
+    species_id = sp.get("species_id") or ""
+    tomo_name = sp["row"]["tomo_name"]
+    with ui.element("div").classes("cb-list-rail"):
+        ui.label("Pick lists").classes("cb-rail-title")
+        for lst in lists:
+            slug = lst["slug"]
+            chip = ui.element("div").classes("cb-list-chip")
+            chip_els[slug] = chip
+            if slug == selected_slug:
+                chip.classes(add="selected")
+            chip.on("click", lambda e, s=slug: on_select(s))
+            with chip:
+                with ui.row().classes("items-center gap-1 w-full no-wrap"):
+                    ui.element("div").classes(f"cb-list-chip-swatch cb-swatch-{lst['shape']}").style(
+                        f"background: {lst['color']};"
+                    )
+                    ui.label(lst["label"]).classes("cb-list-chip-label")
+                    ui.space()
+                    ui.label(str(len(lst.get("picks") or []))).classes("cb-list-chip-count")
+                    if lst.get("_layer_els"):
+                        _render_list_eye(lst, sp)
+                with ui.row().classes("items-center gap-1 no-wrap cb-list-chip-meta"):
+                    tag = ui.label(_LIST_TYPE_TAG.get(lst.get("list_type"), "")).classes("cb-list-chip-tag")
+                    if slug == "auto":
+                        tag.classes(add="cb-list-chip-tag-info")
+                        _attach_auto_chip_tooltip(tag, sp, tm_info)
+                    else:
+                        pl = state_obj.get_pick_list(slug, species_id, tomo_name)
+                        est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
+                        text, cls = _EXTRACTION_BADGE.get(est, ("", ""))
+                        if text:
+                            ui.label(text).classes(f"cb-list-chip-badge {cls}")
+        with ui.element("div").classes("cb-rail-toolbar"):
             (
                 ui.button(
                     "Curate in ArtiaX", icon="view_in_ar", on_click=lambda: _handle_curate_in_artiax(sp, project_path)
@@ -2945,81 +2961,22 @@ def _render_species_tab_header(sp: dict, tm_info: dict, project_path: Path, refr
                     .props("dense no-caps size=sm flat color=indigo")
                     .tooltip("Union 2+ pick lists into a 'merged' list (dedup overlaps after, at your chosen radius)")
                 )
-            gen_missing_btn = (
-                ui.button(
-                    icon="auto_fix_high",
-                    on_click=lambda: _handle_generate_for_instance(
-                        iid, jm, job_dir, project_path, False, gen_missing_btn, refresh
-                    ),
-                )
-                .props("flat dense round size=sm")
-                .classes("text-purple-600")
-                .tooltip("Render previews for tomograms whose manifest entry is missing or stale.")
-            )
-            imod_btn = (
-                ui.button(
-                    icon="scatter_plot",
-                    on_click=lambda: _handle_generate_imod_for_instance(
-                        iid, jm, job_dir, project_path, imod_btn, refresh
-                    ),
-                )
-                .props("flat dense round size=sm")
-                .classes("text-blue-600")
-                .tooltip("Regenerate IMOD .mod overlays" if has_imod_models else "Generate IMOD .mod overlays")
-            )
-        # TM interpretive essentials (instance · θ · sym · Ø · score field).
-        ess: list[str] = []
-        if tm_info.get("tm_iid"):
-            ess.append(str(tm_info["tm_iid"]))
-        if tm_info.get("theta"):
-            ess.append(f"θ {tm_info['theta']}°")
-        if tm_info.get("sym"):
-            ess.append(f"sym {tm_info['sym']}")
-        diameter = float(getattr(jm, "particle_diameter_ang", 0.0))
-        if diameter:
-            ess.append(f"Ø {diameter:.0f} Å")
-        if score_field:
-            ess.append(f"by {score_field}")
-        if ess:
-            ui.label("  ·  ".join(ess)).classes("cb-tab-essentials")
-        if row["status"] == "missing-volume":
-            ui.label("No reconstructed tomogram on disk for 3dmod — picks plot still works.").classes(
-                "text-[11px] text-amber-700 italic"
-            )
-
-        # Tucked: size pills + cache-bypass re-render + 3dmod command.
-        with ui.expansion("sizes & 3dmod").props("dense").classes("cb-tab-details w-full"):
-            with ui.element("div").classes("cb-chip-strip"):
-                _render_species_size_chips(sp, project_path, row["tomo_name"], tm_info)
-            regen_btn = (
-                ui.button(
-                    "Re-render all",
-                    icon="refresh",
-                    on_click=lambda: _handle_generate_for_instance(
-                        iid, jm, job_dir, project_path, True, regen_btn, refresh
-                    ),
-                )
-                .props("flat dense no-caps size=sm")
-                .classes("text-gray-500")
-                .style("padding: 0 6px; min-height: 22px;")
-                .tooltip("Bypass cache and regenerate every tomogram's preview from scratch.")
-            )
-            _render_3dmod_section(row)
 
 
-def _render_species_tab_body(
-    sp: dict, layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster=None
+def _render_list_detail(
+    sp: dict, lst: Optional[dict], layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster
 ) -> None:
-    """One species' tab: a compact header (essentials + controls + tucked
-    size-pills / 3dmod), the status-aware AUTO (PyTOM) gallery, then a read-only
-    recon-cutout contact sheet per workbench list (manual/imported/merged). The
-    auto gallery cross-links to this species' dots on the shared canvas via
-    `layer_ids`; the workbench lists render below it regardless of the auto
-    status (a tomo PyTOM left empty can still carry manual picks)."""
-    tm_info = _tm_essentials_for_species(sp)
-    _render_species_tab_header(sp, tm_info, project_path, refresh)
-    _render_species_auto_section(sp, layer_ids, project_path, refresh, refresh_roster)
-    _render_registry_list_cutouts(sp, project_path, refresh)
+    """Detail pane for the selected rail chip: the auto list shows the status-aware
+    subtomo gallery / scatter; a workbench list shows its recon cutout sheet."""
+    if lst is None:
+        with ui.element("div").classes("cb-empty"):
+            ui.icon("inbox", size="28px").classes("text-gray-400")
+            ui.label("No pick lists yet for this species.").classes("text-xs")
+        return
+    if lst["slug"] == "auto":
+        _render_species_auto_section(sp, layer_ids, project_path, refresh, refresh_roster)
+    else:
+        _render_single_list_cutouts(sp, lst, project_path, refresh)
 
 
 def _render_species_auto_section(
