@@ -13,11 +13,46 @@
 | Phase | What | Status |
 |---|---|---|
 | **R0** | Decompose the 6,930-line `ui/tomo_dashboard_dialog.py` into a `ui/dashboard/` package (behavior-preserving) | ✅ **DONE** — original **6,930 → 4,590**; smoke-tested (opens, doesn't break) |
-| **P1** | **The actual UX rework** — de-dialog Journey into an embedded panel + heatmap top-strip + async load + hide-roster + active-icon highlight | ⬜ **NOT STARTED — this is the next job** |
+| **P1** | **The UX rework** — de-dialog + heatmap top-strip + hide-roster + active-icon highlight | 🔨 **C1 (de-dialog) VERIFIED by user · C2 (heatmap strip) LANDED, pending runtime verify** — see Progress |
 | **P2** | Carve the remaining ~2,900-line particles/gallery/pick-lists/curation region into modules, *as the ArtiaX workbench slices touch them* | ⬜ deferred (do opportunistically) |
 
-R0 was the agreed "safe extractions first" prelude. P1 is the user's real goal
-(the panel/strip rework). **Do P1 next.**
+R0 was the "safe extractions first" prelude; P1 (the real goal) is being done as
+two checkpoints — see **Progress** below. P2 is still untouched.
+
+## Progress (2026-06-08, P1)
+
+**C1 — de-dialog → embedded swappable panel. VERIFIED by user.**
+- `open_tomo_dashboard()` → `build_journey_panel(container, callbacks)` (`tomo_dashboard_dialog.py`):
+  no dialog/card/close-button; mounts into a new `journey_container`. The 4 s live timer is gated by
+  `_active` + `on_journey_active(bool)` so it pauses when the journey is hidden.
+- `workspace_page.py`: `journey_container` (lazy-built on first open behind a spinner; SingleFlight-
+  guarded `_show_journey`); `_switch_to` handles `"journey"`; registers `toggle_journey`.
+- `pipeline_roster.py`: dashboard icon → `panel.toggle_journey`; `set_active_mode` = exactly-one-lit
+  nav highlight (pipeline/workbench/journey) + hide/restore the 300px roster; `_on_pipeline_icon`
+  (layers returns to pipeline when elsewhere, else toggles roster). `pipeline_builder_panel.py`
+  threads `toggle_journey` + registers `set_active_mode`.
+- Behavior notes: nav icons are now mode-driven (one lit); auto-kick dedup resets at build, not
+  per-open (the panel persists now).
+
+**C2 — heatmap top-strip + column layout + dedup. LANDED, pending user runtime verify.**
+- New `ui/dashboard/strip.py` (`build_strip`) — pure presentation over `data.py`; imports ONLY
+  `data.py` (DAG one-way), the ⓘ popover arrives as a callback (no back-import into the shell).
+  Frozen-left prep row + per-species rows (name + Σ pick/filt) × horizontally-scrolling TS columns;
+  prep cell = 4 status dots, species cell = `n_picks` shaded by furthest stage (subtomo>pick),
+  filtered count surfaces in the selected column. CSS added to `css.py` (`.cb-strip-*`).
+- `build_journey_panel` flipped row→column (strip on top, detail pane below); `render_sidebar` →
+  `render_strip`, gated on `(_journey_signature, selected_ts)` so selection forces a rebuild (the
+  select-ordering pitfall is preserved: render main pane first, rebuild strip last).
+- Deleted orphaned `_render_ts_row` / `_pill_tooltip` / `_PILL_TOOLTIP_LABEL`; dropped the redundant
+  per-TS pick count from the particles species tabs (now lives in the strip). `tomo` 4590 → 4501.
+- **Deferred from P1's original step 4:** deep async-on-TS-switch. C1's spinner covers the worst case
+  (first open); TS-switching stays sync, matching the C1 feel the user already validated. Add a
+  switch-spinner later only if the user asks.
+
+**To verify C2:** strip renders as a matrix header; clicking a column selects that TS + drives the
+detail pane; selected column highlighted + shows `▸filtered`; rows align across the frozen-left
+labels and the columns; horizontal scroll appears for many TS while the left labels stay; the ⓘ in
+the corner pops the selected TS's file paths.
 
 ---
 

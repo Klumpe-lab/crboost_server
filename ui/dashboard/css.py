@@ -659,6 +659,66 @@ _CB_CSS = """
 .cb-filter-counter.cb-filter-dirty {
     color: #b45309; background: #fef3c7; border-color: #fde68a;
 }
+
+/* ── Journey heatmap strip (the de-dialoged panel's header) ─────────────────
+   Two-block flex: frozen-left row labels + a horizontally-scrolling matrix of
+   TS columns. Row heights match across both blocks so the rows line up without
+   sticky positioning. box-sizing keeps the 1px row borders out of the height. */
+.cb-strip { flex: 0 0 auto; background: #ffffff; border-bottom: 1px solid #e5e7eb; overflow: hidden; }
+.cb-strip-wrap { display: flex; flex-direction: row; align-items: stretch; }
+.cb-strip-corner, .cb-strip-rowlabel, .cb-strip-colhead, .cb-strip-cell { box-sizing: border-box; }
+.cb-strip-left {
+    flex: 0 0 auto; min-width: 168px; max-width: 220px;
+    display: flex; flex-direction: column; border-right: 1px solid #e5e7eb; background: #fafbfc;
+}
+.cb-strip-corner {
+    height: 26px; display: flex; align-items: center; gap: 4px;
+    padding: 0 6px 0 9px; border-bottom: 1px solid #eef2f7;
+}
+.cb-strip-corner-count { font-size: 10px; font-weight: 700; color: #64748b; font-family: ui-monospace, monospace; }
+.cb-strip-rowlabel {
+    height: 22px; display: flex; align-items: center; gap: 5px;
+    padding: 0 8px 0 9px; border-bottom: 1px solid #f8fafc;
+}
+.cb-strip-prep { height: 20px; }
+.cb-strip-rl-name {
+    font-size: 11px; color: #374151; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cb-strip-rl-sub { font-size: 8px; color: #94a3b8; letter-spacing: 0.3px; margin-left: auto; }
+.cb-strip-rl-sum { font-size: 10px; color: #475569; font-family: ui-monospace, monospace; flex: 0 0 auto; }
+.cb-strip-sp-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.cb-strip-scroll { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+.cb-strip-cols { display: flex; flex-direction: row; width: max-content; }
+.cb-strip-col {
+    flex: 0 0 52px; display: flex; flex-direction: column;
+    border-right: 1px solid #f1f5f9; cursor: pointer;
+}
+.cb-strip-col:hover { background: #f8fafc; }
+.cb-strip-col.selected { background: #eef2ff; box-shadow: inset 0 0 0 1.5px #6366f1; }
+.cb-strip-colhead {
+    height: 26px; display: flex; align-items: center; justify-content: center;
+    font-size: 9px; color: #475569; font-weight: 600; white-space: nowrap; overflow: hidden;
+    padding: 0 2px; border-bottom: 1px solid #eef2f7;
+}
+.cb-strip-col.selected .cb-strip-colhead { color: #4338ca; }
+.cb-strip-cell { display: flex; align-items: center; justify-content: center; border-bottom: 1px solid #f8fafc; }
+.cb-strip-prepcell { height: 20px; gap: 2px; }
+.cb-strip-pickcell { height: 22px; gap: 3px; font-family: ui-monospace, monospace; }
+.cb-strip-n { font-size: 10px; line-height: 1; }
+.cb-strip-filt { font-size: 8px; color: #6366f1; line-height: 1; }
+.cb-strip-dot { width: 6px; height: 6px; border-radius: 50%; background: #d1d5db; }
+.cb-strip-dot.ok { background: #10b981; }
+.cb-strip-dot.fail { background: #dc2626; }
+.cb-strip-dot.running { background: #f59e0b; }
+.cb-strip-dot.zero { background: #9ca3af; }
+.cb-strip-dot.pending { background: #e5e7eb; }
+.cb-strip-pickcell.done { background: rgba(16, 185, 129, 0.22); color: #065f46; }
+.cb-strip-pickcell.ok { background: rgba(16, 185, 129, 0.10); color: #047857; }
+.cb-strip-pickcell.running { background: rgba(245, 158, 11, 0.16); color: #92400e; }
+.cb-strip-pickcell.zero { background: rgba(148, 163, 184, 0.14); color: #64748b; }
+.cb-strip-pickcell.fail { background: rgba(220, 38, 38, 0.12); color: #b91c1c; }
+.cb-strip-pickcell.pending { color: #cbd5e1; }
 """
 
 
