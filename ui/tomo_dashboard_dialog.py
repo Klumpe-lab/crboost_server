@@ -152,57 +152,43 @@ def _read_atlas_index(index_path: Path) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
-def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[str] = None) -> None:
-    """Open the unified per-TS dashboard.
+def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
+    """Build the per-TS Journey dashboard embedded into ``container``.
 
-    Args:
-        ts_name: optional TS to select on open. If absent or unknown, opens at
-                 the first TS in the project's union list.
-        focus_section: optional section key (e.g. "candidate_extract") to
-                       scroll into view once the main pane renders.
+    Formerly ``open_tomo_dashboard`` (a maximized dialog). De-dialoged in P1 so
+    the journey swaps into the workspace ``main_area`` like the pipeline and
+    workbench views, instead of an overlay that covered the 60px icon strip.
+    ``container`` is the workspace's ``journey_container`` (a flex column).
+    ``callbacks``, when given, receives ``on_journey_active(bool)`` so the
+    workspace can pause the live-refresh timer while the journey is hidden.
     """
     state = get_project_state()
     if state.project_path is None:
-        ui.notify("No project loaded.", type="warning")
+        container.clear()
+        with container, ui.element("div").classes("cb-empty"):
+            ui.icon("folder_off", size="40px").classes("text-gray-400")
+            ui.label("No project loaded.").classes("text-sm text-gray-500")
         return
 
     project_path = Path(state.project_path)
     journey, ts_names = _collect_dashboard_journey(state, project_path)
 
-    initial_ts = ts_name if (ts_name and ts_name in ts_names) else (ts_names[0] if ts_names else None)
+    initial_ts = ts_names[0] if ts_names else None
     selected = {"ts": initial_ts}
 
-    # Per-mount auto-kick dedup. Cleared on each fresh dashboard open so a
-    # reload after the user fixed a stuck job re-triggers generation.
+    # Per-mount auto-kick dedup. Cleared on build so a reload after the user
+    # fixed a stuck job re-triggers generation.
     reset_auto_kick_state()
     ensure_assets_loaded()
 
-    with (
-        ui.dialog().props("maximized") as dlg,
-        # Explicit viewport-locked geometry. Quasar's maximized dialog provides
-        # a full-viewport wrapper, but `h-full` on the card was resolving to
-        # the *content* height (so the page grew tall enough to need browser-
-        # zoom-out to see). Pin to 100vh × 100vw and let the inner flex chain
-        # carve out a scrollable main pane.
-        ui.card()
-        .classes("bg-gray-50 p-0")
-        .style(
-            "width: 100vw; height: 100vh; max-width: 100vw; max-height: 100vh; "
-            "overflow: hidden; display: flex; flex-direction: column; border-radius: 0;"
-        ),
-    ):
-        # Floating close button — same convention as the previous dialog.
-        (
-            ui.button(icon="close", on_click=dlg.close)
-            .props("flat dense round size=sm")
-            .classes("text-gray-500 absolute z-10")
-            .style("top: 6px; right: 8px;")
-        )
-
-        # Inner flex-row wrapper. Plain <div> instead of ui.row() to avoid
-        # Quasar's `.row` flex-wrap rules clashing with our height chain.
+    container.clear()
+    with container:
+        # Inner flex-row wrapper: 300px TS sidebar + scrollable main pane.
+        # (Checkpoint 2 swaps the sidebar for a heatmap top-strip and flips
+        # this to a column.) Plain <div> avoids Quasar's `.row` flex-wrap.
         with ui.element("div").style(
-            "flex: 1 1 0; min-height: 0; display: flex; flex-direction: row; width: 100%; overflow: hidden;"
+            "flex: 1 1 0; min-height: 0; display: flex; flex-direction: row; "
+            "width: 100%; height: 100%; overflow: hidden;"
         ):
             sidebar = ui.element("div").classes("cb-sidebar bg-white border-r border-gray-200").style("height: 100%;")
             main_area = (
@@ -221,8 +207,6 @@ def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[s
                         _render_no_data_empty_state()
                     else:
                         _render_main_pane_for_ts(selected["ts"], state, project_path, refresh_all, render_sidebar)
-                if focus_section and selected["ts"] is not None:
-                    _scroll_section_into_view(focus_section)
 
             def select_ts(ts: str) -> None:
                 # Switch TS. Move the .selected class, render the main pane, THEN
@@ -282,8 +266,8 @@ def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[s
 
             refresh_all()
 
-            # Live refresh while the dialog is open: re-render every 4 s if
-            # any background task is in flight for this project. Keeps the
+            # Live refresh while the journey is the active view: re-render every
+            # 4 s if any background task is in flight for this project. Keeps the
             # journey strip / section cards in sync with manifests being
             # written by an async preview-render or IMOD-gen task. Skip
             # the rebuild when nothing's running to avoid burning the
@@ -291,8 +275,11 @@ def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[s
             from services.background_tasks import get_background_task_registry
 
             _last_signature = {"sig": None}
+            _active = {"on": True}
 
             def _maybe_refresh() -> None:
+                if not _active["on"]:
+                    return
                 try:
                     registry = get_background_task_registry()
                     active = [t for t in registry.for_project(str(project_path)) if t.is_running]
@@ -319,10 +306,22 @@ def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[s
                     pass
 
             live_timer = ui.timer(4.0, _maybe_refresh)
-            dlg.on("hide", lambda _e=None: live_timer.cancel())
-            dlg.on("before-hide", lambda _e=None: live_timer.cancel())
 
-    dlg.open()
+            def _set_journey_active(on: bool) -> None:
+                # Pause the 4 s live-refresh (its signature does per-tick disk
+                # I/O in render_sidebar) whenever the journey isn't the visible
+                # view; resume when it is. Driven by the workspace's _switch_to.
+                _active["on"] = on
+                try:
+                    if on:
+                        live_timer.activate()
+                    else:
+                        live_timer.deactivate()
+                except Exception:
+                    pass
+
+            if callbacks is not None:
+                callbacks["on_journey_active"] = _set_journey_active
 
 
 def _render_no_data_empty_state() -> None:
