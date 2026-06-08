@@ -54,7 +54,6 @@ from ui.dashboard.figures import (
     _stats,
 )
 from ui.dashboard.data import (
-    _PREP_STAGES,
     _SPECIES_OVERLAY_COLORS,
     _candidate_extract_instances,
     _collect_dashboard_journey,
@@ -74,6 +73,7 @@ from ui.dashboard.data import (
     _vis_asset_url,
 )
 from ui.dashboard.pixel_sanity import _apply_sanity_rules, _compute_pixel_chain, _render_pixel_sanity_table
+from ui.dashboard.strip import build_strip
 
 logger = logging.getLogger(__name__)
 
@@ -171,10 +171,8 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         return
 
     project_path = Path(state.project_path)
-    journey, ts_names = _collect_dashboard_journey(state, project_path)
-
-    initial_ts = ts_names[0] if ts_names else None
-    selected = {"ts": initial_ts}
+    _, ts_names0 = _collect_dashboard_journey(state, project_path)
+    selected = {"ts": ts_names0[0] if ts_names0 else None}
 
     # Per-mount auto-kick dedup. Cleared on build so a reload after the user
     # fixed a stuck job re-triggers generation.
@@ -183,145 +181,120 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
 
     container.clear()
     with container:
-        # Inner flex-row wrapper: 300px TS sidebar + scrollable main pane.
-        # (Checkpoint 2 swaps the sidebar for a heatmap top-strip and flips
-        # this to a column.) Plain <div> avoids Quasar's `.row` flex-wrap.
-        with ui.element("div").style(
-            "flex: 1 1 0; min-height: 0; display: flex; flex-direction: row; "
-            "width: 100%; height: 100%; overflow: hidden;"
-        ):
-            sidebar = ui.element("div").classes("cb-sidebar bg-white border-r border-gray-200").style("height: 100%;")
-            main_area = (
-                ui.element("div")
-                .classes("cb-main")
-                .style("height: 100%; min-height: 0; flex: 1 1 0; min-width: 0; overflow-y: auto; overflow-x: hidden;")
+        # Column layout: heatmap status strip (the per-TS nav) on top, the
+        # selected TS's detail pane below. Replaces the old 300px left sidebar.
+        strip_container = ui.element("div").classes("cb-strip")
+        main_area = (
+            ui.element("div")
+            .classes("cb-main")
+            .style("flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden;")
+        )
+
+    _strip_sig: dict[str, object] = {"sig": None}
+
+    def render_main() -> None:
+        main_area.clear()
+        with main_area:
+            if selected["ts"] is None:
+                _render_no_data_empty_state()
+            else:
+                _render_main_pane_for_ts(selected["ts"], state, project_path, refresh_all, render_strip)
+
+    def render_strip() -> None:
+        # Signature-gated (FingerprintedView discipline): the 4 s live timer
+        # calls refresh_all on every background-task tick, but we only rebuild
+        # when the journey data OR the selection actually changed — otherwise a
+        # tick mid-click would tear down the column under the click.
+        journey, ts_names = _collect_dashboard_journey(state, project_path)
+        species_journey = _collect_species_journey(state, project_path)
+        sig = (_journey_signature(journey, species_journey, ts_names), selected["ts"])
+        if _strip_sig["sig"] is not None and sig == _strip_sig["sig"]:
+            return
+        _strip_sig["sig"] = sig
+        recon_mrc = _recon_mrc_map(state, project_path)
+        build_strip(
+            strip_container,
+            journey=journey,
+            species_journey=species_journey,
+            ts_names=ts_names,
+            selected_ts=selected["ts"],
+            recon_mrc_map=recon_mrc,
+            on_select=select_ts,
+            info_popover=_render_ts_info_popover,
+        )
+
+    def select_ts(ts: str) -> None:
+        # Render the detail pane FIRST (it may run_javascript while the clicked
+        # column is still alive), THEN rebuild the strip — which tears the
+        # clicked column down and surfaces the now-selected column's filtered
+        # count. Reversing it = "parent element this slot belongs to has been
+        # deleted". The strip signature includes `selected`, so this rebuild is
+        # never gated out.
+        if selected["ts"] == ts:
+            return
+        selected["ts"] = ts
+        render_main()
+        render_strip()
+
+    def refresh_all() -> None:
+        render_strip()
+        render_main()
+
+    refresh_all()
+
+    # Live refresh while the journey is the active view: re-render every 4 s if
+    # any background task is in flight for this project. Keeps the strip /
+    # section cards in sync with manifests being written by an async preview-
+    # render or IMOD-gen task. Skip the rebuild when nothing's running to avoid
+    # burning the event loop on idle dashboards.
+    from services.background_tasks import get_background_task_registry
+
+    _last_signature = {"sig": None}
+    _active = {"on": True}
+
+    def _maybe_refresh() -> None:
+        if not _active["on"]:
+            return
+        try:
+            registry = get_background_task_registry()
+            active = [t for t in registry.for_project(str(project_path)) if t.is_running]
+            # Signature picks up "task started", "task finished", and
+            # per-tick progress so we re-render any time meaningful
+            # state changed. Cheap to compute; cheap to compare.
+            sig = tuple((t.id, t.progress_current, t.progress_total) for t in active) + (
+                tuple(
+                    # Include very-recently-finished tasks so the dashboard
+                    # picks up the final manifest write (which happens at
+                    # the end of the render) within one refresh window.
+                    (t.id, t.status)
+                    for t in registry.for_project(str(project_path))
+                    if not t.is_running and t.finished_at and (t.finished_at - t.started_at).total_seconds() < 86400
+                ),
             )
+            if sig != _last_signature["sig"]:
+                _last_signature["sig"] = sig
+                refresh_all()
+        except RuntimeError:
+            # Client gone — timer will clean up shortly.
+            pass
 
-            row_els: dict[str, object] = {}
-            _sidebar_sig: dict[str, object] = {"sig": None}
+    live_timer = ui.timer(4.0, _maybe_refresh)
 
-            def render_main() -> None:
-                main_area.clear()
-                with main_area:
-                    if selected["ts"] is None:
-                        _render_no_data_empty_state()
-                    else:
-                        _render_main_pane_for_ts(selected["ts"], state, project_path, refresh_all, render_sidebar)
+    def _set_journey_active(on: bool) -> None:
+        # Pause the 4 s live-refresh (its signature does per-tick disk I/O in
+        # render_strip) whenever the journey isn't the visible view; resume when
+        # it is. Driven by the workspace's _switch_to.
+        _active["on"] = on
+        try:
+            if on:
+                live_timer.activate()
+            else:
+                live_timer.deactivate()
+        except Exception:
+            pass
 
-            def select_ts(ts: str) -> None:
-                # Switch TS. Move the .selected class, render the main pane, THEN
-                # refresh the sidebar last. Ordering matters: render_sidebar is
-                # gated but may rebuild — which deletes the clicked row whose
-                # handler we're in — so we run render_main (the only thing here
-                # that can call run_javascript, via _scroll_section_into_view)
-                # while that row is still alive, avoiding the "parent element
-                # this slot belongs to has been deleted" crash. The gated rebuild
-                # also picks up a review count just saved for the TS we're leaving.
-                if selected["ts"] == ts:
-                    return
-                prev = selected["ts"]
-                selected["ts"] = ts
-                if prev in row_els:
-                    row_els[prev].classes(remove="selected")
-                if ts in row_els:
-                    row_els[ts].classes(add="selected")
-                render_main()
-                render_sidebar()
-
-            def render_sidebar() -> None:
-                # Signature-gated (FingerprintedView discipline): the 4 s live
-                # timer calls refresh_all on every background-task tick, but we
-                # only tear down + rebuild rows when the journey data actually
-                # changed — otherwise a tick mid-click would drop the click.
-                fresh_journey, fresh_ts_names = _collect_dashboard_journey(state, project_path)
-                species_journey = _collect_species_journey(state, project_path)
-                sig = _journey_signature(fresh_journey, species_journey, fresh_ts_names)
-                if row_els and sig == _sidebar_sig["sig"]:
-                    return
-                _sidebar_sig["sig"] = sig
-                recon_mrc = _recon_mrc_map(state, project_path)
-                row_els.clear()
-                sidebar.clear()
-                with sidebar:
-                    with ui.element("div").classes("cb-sidebar-header"):
-                        ui.label(f"{len(fresh_ts_names)} tilt series").classes("font-mono")
-                        ui.label("prep: FS/CTF · Align · CTF · Recon").classes("font-mono").style(
-                            "margin-top: 3px; font-size: 9px; color: #94a3b8;"
-                        )
-                    rows_container = ui.element("div").classes("cb-sidebar-rows")
-                    with rows_container:
-                        for ts in fresh_ts_names:
-                            row_els[ts] = _render_ts_row(
-                                ts,
-                                fresh_journey.get(ts, {}),
-                                species_journey.get(ts, []),
-                                selected,
-                                select_ts,
-                                recon_mrc.get(ts),
-                            )
-
-            def refresh_all() -> None:
-                render_sidebar()
-                render_main()
-
-            refresh_all()
-
-            # Live refresh while the journey is the active view: re-render every
-            # 4 s if any background task is in flight for this project. Keeps the
-            # journey strip / section cards in sync with manifests being
-            # written by an async preview-render or IMOD-gen task. Skip
-            # the rebuild when nothing's running to avoid burning the
-            # event loop on idle dashboards.
-            from services.background_tasks import get_background_task_registry
-
-            _last_signature = {"sig": None}
-            _active = {"on": True}
-
-            def _maybe_refresh() -> None:
-                if not _active["on"]:
-                    return
-                try:
-                    registry = get_background_task_registry()
-                    active = [t for t in registry.for_project(str(project_path)) if t.is_running]
-                    # Signature picks up "task started", "task finished", and
-                    # per-tick progress so we re-render any time meaningful
-                    # state changed. Cheap to compute; cheap to compare.
-                    sig = tuple((t.id, t.progress_current, t.progress_total) for t in active) + (
-                        tuple(
-                            # Include very-recently-finished tasks so the dashboard
-                            # picks up the final manifest write (which happens at
-                            # the end of the render) within one refresh window.
-                            (t.id, t.status)
-                            for t in registry.for_project(str(project_path))
-                            if not t.is_running
-                            and t.finished_at
-                            and (t.finished_at - t.started_at).total_seconds() < 86400
-                        ),
-                    )
-                    if sig != _last_signature["sig"]:
-                        _last_signature["sig"] = sig
-                        refresh_all()
-                except RuntimeError:
-                    # Client gone — timer will clean up shortly.
-                    pass
-
-            live_timer = ui.timer(4.0, _maybe_refresh)
-
-            def _set_journey_active(on: bool) -> None:
-                # Pause the 4 s live-refresh (its signature does per-tick disk
-                # I/O in render_sidebar) whenever the journey isn't the visible
-                # view; resume when it is. Driven by the workspace's _switch_to.
-                _active["on"] = on
-                try:
-                    if on:
-                        live_timer.activate()
-                    else:
-                        live_timer.deactivate()
-                except Exception:
-                    pass
-
-            if callbacks is not None:
-                callbacks["on_journey_active"] = _set_journey_active
+    if callbacks is not None:
+        callbacks["on_journey_active"] = _set_journey_active
 
 
 def _render_no_data_empty_state() -> None:
@@ -401,70 +374,6 @@ def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: O
                     _info_copy_row(f"{sp['label']} picks", sp["ce_star"], sp["ce_star"])
                 if sp.get("subtomo_star"):
                     _info_copy_row(f"{sp['label']} subtomo", sp["subtomo_star"], sp["subtomo_star"])
-
-
-def _render_ts_row(
-    ts_name: str, journey_row: dict, species_list: list[dict], selected: dict, on_select, recon_mrc: Optional[str]
-):
-    """One sidebar row: derived title + ⓘ info popover, a 'prep' track (the 4
-    array stages), and one track per species (pick + subtomo segments + pick
-    count). Returns the row element so selection toggles via class, not a full
-    sidebar rebuild."""
-    cls = "cb-ts-row selected" if selected.get("ts") == ts_name else "cb-ts-row"
-    label, _ = _position_label(ts_name)
-
-    row = ui.element("div").classes(cls).on("click", lambda: on_select(ts_name))
-    with row:
-        with ui.element("div").classes("cb-ts-titlebar"):
-            ui.label(label).classes("cb-ts-pos")
-            ui.space()
-            _render_ts_info_popover(ts_name, species_list, recon_mrc)
-        # Prep track: the 4 shared array stages.
-        with ui.element("div").classes("cb-track"):
-            with ui.element("div").classes("cb-track-head"):
-                ui.label("prep").classes("cb-track-name")
-            with ui.element("div").classes("cb-pill-strip"):
-                for key, stage_label, _jt in _PREP_STAGES:
-                    status = journey_row.get(key, "pending")
-                    ui.element("div").classes(f"cb-pill {status}").tooltip(_pill_tooltip(stage_label, status))
-        # Particle track: one line per species, with its pick count.
-        for sp in species_list:
-            with ui.element("div").classes("cb-track cb-sp-track"):
-                with ui.element("div").classes("cb-track-head"):
-                    ui.element("div").classes("cb-roster-sp-dot").style(f"background: {sp['color']};")
-                    ui.label(sp["label"]).classes("cb-sp-name").tooltip(sp["label"])
-                with ui.element("div").classes("cb-pill-strip"):
-                    ui.element("div").classes(f"cb-pill {sp['pick_status']}").tooltip(
-                        _pill_tooltip("Pick", sp["pick_status"])
-                    )
-                    ui.element("div").classes(f"cb-pill {sp['subtomo_status']}").tooltip(
-                        _pill_tooltip("Subtomo", sp["subtomo_status"])
-                    )
-                n = sp.get("n_picks")
-                ui.label(str(n) if n is not None else "·").classes("cb-sp-count").tooltip(
-                    "picks above cutoff" if n is not None else "no pick count yet"
-                )
-                # Review column: kept-count after curation, only when this TS has
-                # been reviewed (else absent). Doubles as a "reviewed?" marker.
-                fc = sp.get("filtered_count")
-                if fc is not None:
-                    with ui.element("div").classes("cb-sp-filtered").tooltip(f"reviewed — {fc} kept after curation"):
-                        ui.icon("filter_alt", size="11px")
-                        ui.label(str(fc))
-    return row
-
-
-_PILL_TOOLTIP_LABEL = {
-    "ok": "done",
-    "fail": "failed",
-    "running": "running",
-    "zero": "ran, produced 0 results above cutoff",
-    "pending": "not started",
-}
-
-
-def _pill_tooltip(stage_label: str, status: str) -> str:
-    return f"{stage_label}: {_PILL_TOOLTIP_LABEL.get(status, status)}"
 
 
 # ---------------------------------------------------------------------------
@@ -2482,9 +2391,12 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
                 tab_objs: list[tuple[dict, object]] = []
                 with ui.tabs().props("dense align=left indicator-color=indigo").classes("cb-species-tabs") as tabs:
                     for sp in species_data:
-                        # Label carries name + pick count; a CSS ::before dot (driven by
-                        # the inline --sp-color) ties each tab to its canvas overlay color.
-                        tab = ui.tab(sp["iid"], label=f"{sp['label']} · {len(sp['picks'])}").classes("cb-species-tab")
+                        # Name only — the per-TS pick count now lives in the heatmap
+                        # strip's selected column (and the per-list toggle row below),
+                        # so repeating it on the tab was triple-redundant. A CSS ::before
+                        # dot (driven by the inline --sp-color) ties each tab to its
+                        # canvas overlay color.
+                        tab = ui.tab(sp["iid"], label=sp["label"]).classes("cb-species-tab")
                         tab.style(f"--sp-color: {sp['color']};")
                         tab_objs.append((sp, tab))
                 with ui.tab_panels(tabs, value=tab_objs[0][1]).classes("w-full cb-species-panels"):
