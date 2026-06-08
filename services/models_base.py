@@ -79,6 +79,20 @@ class PickListType(str, Enum):
     MERGED   = "merged"    # 2+ lists combined with radius dedup
 
 
+class ListExtractionState(str, Enum):
+    """Whether a workbench pick list's COORDINATES have been subtomo-extracted, so
+    downstream refinement can read its particles. Manual/imported/merged lists are
+    raw coordinates and can't go downstream until extracted; auto/filtered map to
+    the existing subtomo job. DERIVED from durable facts on the PickList, never a
+    stored boolean — see PickList.extraction_state() (avoids the stale-flag trap).
+    Extraction is scoped PER LIST and triggered by the user per list (neither
+    fully automatic — no throwaway re-extractions — nor manually tedious)."""
+
+    NOT_EXTRACTED = "not_extracted"  # coordinates only; needs extraction to go downstream
+    EXTRACTED     = "extracted"      # extracted, and current with the list's picks
+    STALE         = "stale"          # extracted earlier, but picks changed since → re-extract
+
+
 class MicroscopeParams(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True)

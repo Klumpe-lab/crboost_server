@@ -386,13 +386,26 @@ class CryoBoostBackend:
         return None
 
     async def prepare_curation_bundle(
-        self, project_path: Path, candidates_star: Path, tomograms_star: Path, tomo_name: str, species_label: str = ""
+        self,
+        project_path: Path,
+        candidates_star: Path,
+        tomograms_star: Path,
+        tomo_name: str,
+        species_label: str = "",
+        *,
+        source_star: Optional[Path] = None,
+        coords_label: str = "auto",
     ) -> Dict[str, Any]:
         """Export one tomogram's picks → `.coords` and write an `open_<tomo>.cxc`
         that preloads them in ArtiaX. Returns the resolved paths + the copyable
         ChimeraX command lines (`commands`); pass `cxc_path` to
         launch_curation_session() for a preloaded session, or surface `commands`
         for an already-running one. Disk I/O + numpy run off the event loop.
+
+        Defaults to the PyTOM auto list (`candidates_star`). Pass `source_star` +
+        `coords_label` to open a SPECIFIC workbench list instead (its centered-Å
+        star as the export source, labelled so its reference `.coords` is named
+        apart from the user's own save) — the per-list "Open in ArtiaX" path.
         """
         from services.visualization import artiax_bridge
 
@@ -400,17 +413,143 @@ class CryoBoostBackend:
         try:
             info = await asyncio.to_thread(
                 artiax_bridge.prepare_curation_bundle,
-                Path(candidates_star),
+                Path(source_star or candidates_star),
                 Path(tomograms_star),
                 tomo_name,
                 out_dir,
                 species=species_label,
+                coords_label=coords_label,
                 project_root=Path(project_path),
             )
         except Exception as e:
             logger.warning("prepare_curation_bundle failed for %s: %s", tomo_name, e)
             return {"success": False, "error": str(e)}
         return {"success": True, **info}
+
+    def _discover_manual_coords(self, project_path: Path, species_slug: str) -> List[Path]:
+        """Saved ArtiaX `.coords` candidates for a species, newest first.
+
+        Prefers the species curation bundle dir (unambiguously this species); only
+        if it holds nothing does it widen to the session dirs (where ArtiaX's
+        default-save may land in the cwd or a `manual/` subdir) — so a save for a
+        different species sitting in a shared session dir doesn't get grabbed when
+        this species has its own. EXCLUDES our own `*__auto.coords` exports and
+        archived provenance copies. Match is by extension + mtime, NOT a fixed
+        name — the user may name the save anything (e.g. `particles.coords`)."""
+        base = Path(project_path) / ".curation_sessions"
+        if not base.is_dir():
+            return []
+
+        def _scan(dirs: List[Path]) -> List[Path]:
+            seen: set = set()
+            found: List[Path] = []
+            for d in dirs:
+                if not d.is_dir():
+                    continue
+                for c in d.glob("*.coords"):
+                    # Skip crboost's own reference exports (auto list + per-list
+                    # *_ref re-curation seeds) and archived provenance copies —
+                    # we want the user's SAVE, not what we handed them to load.
+                    if c.name.endswith("__auto.coords") or c.name.endswith("_ref.coords") or "imports" in c.parts:
+                        continue
+                    rp = c.resolve()
+                    if rp in seen:
+                        continue
+                    seen.add(rp)
+                    found.append(c)
+            found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            return found
+
+        bundle_hits = _scan([base / "bundles" / species_slug])
+        if bundle_hits:
+            return bundle_hits
+        session_dirs: List[Path] = []
+        for sd in base.glob("*"):
+            if sd.is_dir() and sd.name != "bundles":
+                session_dirs.append(sd)
+                session_dirs.append(sd / "manual")
+        return _scan(session_dirs)
+
+    async def import_curation_picks(
+        self,
+        project_path: Path,
+        tomograms_star: Path,
+        tomo_name: str,
+        species_label: str = "",
+        species_id: str = "",
+        *,
+        coords_path: Optional[Path] = None,
+    ) -> Dict[str, Any]:
+        """Ingest a manually-saved ArtiaX `.coords` for one (species, tomo) back
+        into the pipeline.
+
+        Converts the `.coords` (physical Å from the volume corner) → a RELION-5
+        centered-Å particles star at `ManualPicks/<species>/<tomo>.star` (the same
+        `TomoFrame` as export, so the round trip is parity-exact), and archives the
+        raw `.coords` under `ManualPicks/<species>/imports/<tomo>__<stamp>.coords`
+        for provenance. Returns the count + resolved paths; the caller registers a
+        `manual` PickList on ProjectState (this method owns only file I/O, off the
+        event loop). When `coords_path` is None, auto-discovers the newest non-auto
+        `.coords` for this species.
+        """
+        from services.visualization import artiax_bridge
+
+        project_path = Path(project_path)
+        bundle_slug = artiax_bridge._safe_slug(species_label or species_id or tomo_name)
+        store_slug = artiax_bridge._safe_slug(species_id or species_label or tomo_name)
+        tomo_slug = artiax_bridge._safe_slug(tomo_name)
+
+        if coords_path is not None:
+            chosen = Path(coords_path)
+            if not chosen.exists():
+                return {"success": False, "error": f"No such .coords file: {chosen}"}
+            discovered: List[str] = [str(chosen)]
+        else:
+            cands = self._discover_manual_coords(project_path, bundle_slug)
+            discovered = [str(c) for c in cands]
+            if not cands:
+                return {
+                    "success": False,
+                    "error": "no_coords_found",
+                    "searched": str(project_path / ".curation_sessions"),
+                }
+            chosen = cands[0]
+
+        out_star = project_path / "ManualPicks" / store_slug / f"{tomo_slug}.star"
+        try:
+            count = await asyncio.to_thread(
+                artiax_bridge.import_coords_to_centered_star,
+                chosen,
+                Path(tomograms_star),
+                tomo_name,
+                out_star,
+                project_path,
+            )
+        except Exception as e:
+            logger.warning("import_curation_picks failed for %s: %s", tomo_name, e)
+            return {"success": False, "error": str(e)}
+
+        # Archive the raw .coords for provenance (ArtiaX files carry no author).
+        raw_copy = chosen
+        try:
+            raw_dir = project_path / "ManualPicks" / store_slug / "imports"
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dest = raw_dir / f"{tomo_slug}__{stamp}.coords"
+            await asyncio.to_thread(lambda: dest.write_bytes(Path(chosen).read_bytes()))
+            raw_copy = dest
+        except Exception as e:
+            logger.warning("Could not archive raw import %s: %s", chosen, e)
+
+        return {
+            "success": True,
+            "count": int(count),
+            "out_star": str(out_star),
+            "coords_source": str(chosen),
+            "raw_import": str(raw_copy),
+            "discovered": discovered,
+            "created_by": self.username,
+        }
 
     async def get_default_data_globs(self) -> Dict[str, str]:
         """Get default glob patterns from config."""
