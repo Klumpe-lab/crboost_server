@@ -40,6 +40,7 @@ class PipelineBuilderPanel:
         roster_panel=None,
         toggle_workbench: Optional[Callable] = None,
         ensure_pipeline_mode: Optional[Callable] = None,
+        toggle_journey: Optional[Callable] = None,
     ):
         self.backend = backend
         self.callbacks = callbacks
@@ -47,6 +48,7 @@ class PipelineBuilderPanel:
         self.roster_panel = roster_panel
         self.toggle_workbench = toggle_workbench
         self.ensure_pipeline_mode = ensure_pipeline_mode
+        self.toggle_journey = toggle_journey
 
         self.ui_mgr = get_ui_state_manager()
         self.state_service = get_state_service()
@@ -74,6 +76,7 @@ class PipelineBuilderPanel:
         self.callbacks["add_instance_to_pipeline"] = self.add_instance_to_pipeline
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
         self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
+        self.callbacks["set_active_mode"] = self.roster.set_active_mode
 
         self.rebuild_pipeline_ui()
 
@@ -572,6 +575,7 @@ def build_pipeline_builder_panel(
     roster_panel=None,
     toggle_workbench: Optional[Callable] = None,
     ensure_pipeline_mode: Optional[Callable] = None,
+    toggle_journey: Optional[Callable] = None,
 ) -> None:
     panel = PipelineBuilderPanel(
         backend=backend,
@@ -580,6 +584,7 @@ def build_pipeline_builder_panel(
         roster_panel=roster_panel,
         toggle_workbench=toggle_workbench,
         ensure_pipeline_mode=ensure_pipeline_mode,
+        toggle_journey=toggle_journey,
     )
 
     # Idempotent: for aggregation projects with a completed merge, retroactively

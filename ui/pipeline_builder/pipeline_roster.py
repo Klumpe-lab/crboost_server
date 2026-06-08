@@ -163,6 +163,10 @@ class RosterWidget(FingerprintedView):
         self._flash_phase: Optional[str] = None
         self._roster_visible: bool = True
         self._roster_phase: Optional[str] = None
+        # Which workspace view is showing (pipeline / workbench / journey).
+        # Drives the nav-icon highlight; set by workspace _switch_to via
+        # set_active_mode. Starts "pipeline" (the default view at load).
+        self._active_mode: str = "pipeline"
         self._refs: Dict = {}
         # Per-instance expansion state for per-TS sub-rows, persisted across
         # roster refreshes (status_poller refreshes the roster every few seconds
@@ -827,6 +831,47 @@ class RosterWidget(FingerprintedView):
         with container:
             ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
 
+    def set_active_mode(self, mode: str):
+        """Highlight the nav icon for the active view (exactly one lit) and hide
+        the 300px job roster while the journey is up — restoring the user's prior
+        visibility on the way out. Driven by the workspace's _switch_to."""
+        self._active_mode = mode
+        if self.panel.roster_panel is not None:
+            if mode == "journey":
+                self.panel.roster_panel.style("display: none;")
+            else:
+                self.panel.roster_panel.style(f"display: {'flex' if self._roster_visible else 'none'};")
+        # Pipeline icon keeps its roster-aware styling when it's the active view;
+        # otherwise it dims. Workbench/journey are a plain background highlight
+        # (no clear()+rebuild, so the journey "previews rendered" dot survives).
+        if mode == "pipeline":
+            self._update_pipeline_btn_style()
+        else:
+            pc = self._refs.get("pipeline_btn")
+            if pc is not None:
+                pc.style("background: transparent;")
+        for ref_key, m in (("wb_btn", "workbench"), ("dashboard_btn", "journey")):
+            c = self._refs.get(ref_key)
+            if c is not None:
+                c.style(f"background: {SB_ABG if mode == m else 'transparent'};")
+
+    def _on_pipeline_icon(self):
+        """Layers icon: return to the pipeline view if we're elsewhere; if
+        already in pipeline, toggle the job roster (its secondary function)."""
+        if self._active_mode != "pipeline":
+            ensure = self.panel.ensure_pipeline_mode
+            if ensure is not None:
+                ensure()
+        else:
+            self.toggle()
+
+    async def _open_journey(self):
+        """Switch to (or toggle off) the embedded journey view. Async because
+        the first open lazily builds the panel behind a spinner."""
+        tj = self.panel.toggle_journey
+        if tj is not None:
+            await tj()
+
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
     def build_sidebar(self):
@@ -847,7 +892,7 @@ class RosterWidget(FingerprintedView):
             self._sb_sep()
             ui.element("div").style("height: 4px;")
 
-            self._sb_svg_btn("layers.svg", "Pipeline", lambda: self.toggle(), ref_key="pipeline_btn", active=True)
+            self._sb_svg_btn("layers.svg", "Pipeline", self._on_pipeline_icon, ref_key="pipeline_btn", active=True)
 
             if panel.toggle_workbench is not None:
                 ui.element("div").style("height: 1px;")
@@ -1492,7 +1537,6 @@ class RosterWidget(FingerprintedView):
         jobs run.
         """
         from ui.dashboard.data import has_any_previews_rendered
-        from ui.tomo_dashboard_dialog import open_tomo_dashboard
 
         rendered = has_any_previews_rendered()
         svg = self._load_svg(_TOMO_DASHBOARD_SVG).replace("currentColor", SB_MUTE)
@@ -1505,7 +1549,7 @@ class RosterWidget(FingerprintedView):
                 "display: flex; align-items: center; justify-content: center; "
                 "cursor: pointer; flex-shrink: 0; position: relative;"
             )
-            .on("click", lambda: open_tomo_dashboard())
+            .on("click", self._open_journey)
             .tooltip("Journey" + (" · previews rendered" if rendered else ""))
         )
         with container:
