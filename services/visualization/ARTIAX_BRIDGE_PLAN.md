@@ -88,9 +88,25 @@ re-extraction on every merge) and NOT manually tedious:
   (`models_base`); `PickList.extracted_path/extracted_count/extracted_at` + `extraction_state()` +
   `mark_extracted()` (`project_state`).
 
-**NEXT: merge + radius dedup (backend).** Select 2+ lists → radius-dedup (≈ particle_diameter/2 Å, NOT the
-0.1-Å exact `_coord_key`) → write a `merged` PickList star + register it (starts NOT_EXTRACTED). THEN the
-per-list (re-)extraction wiring (scoped output + `mark_extracted`) + the badge / co-located lists-dir UI.
+**Merge + radius dedup — LANDED 2026-06-08 (decomposed per user: merge = union, dedup = separate user action).**
+`services/visualization/pick_merge.py` (pure numpy/starfile; compile-only here): `merge_lists_to_star` unions 2+
+lists' centered-Å coords in TYPE-PRIORITY order (manual/imported/merged before auto — the row order is the ONLY
+thing encoding "manual wins", so greedy dedup keeps it; no merge-time dedup); `clash_stats_*` reports, at a CHOSEN
+radius, how many picks clash + what dedup would remove/keep; `deduplicate_star` greedy keep-first radius dedup in
+place. Backend: `merge_pick_lists` / `list_clash_stats` / `deduplicate_pick_list` (off-loop). UI (minimal trigger;
+rich lists UI still later): a **"Merge lists"** button (tab header, gated ≥2 lists) → `_open_merge_dialog`
+(checkbox select → union → registers a `merged` PickList, orange triangle, starts NOT_EXTRACTED); and on a merged
+list's contact sheet a calm **overlap panel** (`_render_clash_panel`) — a radius input (default
+particle_diameter/2) + a live clash note ("N of M clash at R Å → dedup keeps K") + a **Deduplicate** button (terse
+tooltip; rewrites the merged star, drops count → list goes STALE → re-extract). Nothing dedups automatically; the
+user varies the radius. NB the clash panel currently renders inside the recon-gated cutout block — fine while a
+curated tomo always has a recon; decouple if that bites.
+
+**NEXT: per-list (re-)extraction wiring** — a per-list "Extract"/"Re-extract" action that runs subtomo extraction
+scoped to ONE list's coords → writes a per-list output → `PickList.mark_extracted(optset, n)` → the badge flips to
+EXTRACTED; the authoritative list's `extracted_path` becomes the canonical optset the downstream resolver forwards
+(zero driver changes). THEN the badge + co-located `Curation/<species>/<tomo>/<slug>/` lists-dir UI. Filter
+(CC/top-N) still deferred.
 
 ## SESSION 2026-06-07 — END TO END WORKING (the breakthrough + learnings)
 

@@ -551,6 +551,64 @@ class CryoBoostBackend:
             "created_by": self.username,
         }
 
+    async def merge_pick_lists(
+        self,
+        project_path: Path,
+        species_id: str,
+        species_label: str,
+        tomo_name: str,
+        sources: List[Dict[str, Any]],
+        out_slug: str = "merged",
+    ) -> Dict[str, Any]:
+        """Union 2+ pick lists into one `merged` centered-Å star — NO dedup (that's
+        a separate, user-triggered action). `sources` = ``[{"path", "type"}]``; the
+        rows are ordered by list-type priority (curated/human before machine `auto`)
+        so a later greedy dedup keeps manual over auto. Writes
+        `ManualPicks/<species>/<tomo>__<slug>.star`; the caller registers a `merged`
+        PickList. Disk I/O + numpy off the event loop.
+        """
+        from services.visualization import artiax_bridge, pick_merge
+
+        store_slug = artiax_bridge._safe_slug(species_id or species_label or tomo_name)
+        out_star = (
+            Path(project_path)
+            / "ManualPicks"
+            / store_slug
+            / f"{artiax_bridge._safe_slug(tomo_name)}__{artiax_bridge._safe_slug(out_slug)}.star"
+        )
+        srcs = [{"path": s["path"], "priority": pick_merge.type_priority(s.get("type", ""))} for s in sources]
+        try:
+            info = await asyncio.to_thread(pick_merge.merge_lists_to_star, srcs, tomo_name, out_star)
+        except Exception as e:
+            logger.warning("merge_pick_lists failed for %s: %s", tomo_name, e)
+            return {"success": False, "error": str(e)}
+        return {"success": True, **info}
+
+    async def list_clash_stats(self, star_path: Path, tomo_name: str, radius_ang: float) -> Dict[str, Any]:
+        """Overlap overview for a list at a chosen radius (Å): how many picks clash
+        and how many a dedup would remove/keep. Read-only — never mutates the list."""
+        from services.visualization import pick_merge
+
+        try:
+            stats = await asyncio.to_thread(pick_merge.clash_stats_star, Path(star_path), tomo_name, float(radius_ang))
+        except Exception as e:
+            logger.warning("list_clash_stats failed for %s: %s", star_path, e)
+            return {"success": False, "error": str(e)}
+        return {"success": True, **stats}
+
+    async def deduplicate_pick_list(self, star_path: Path, tomo_name: str, radius_ang: float) -> Dict[str, Any]:
+        """Greedy radius-dedup a list's star in place — drop every pick within
+        `radius_ang` Å of a higher-priority (earlier) pick. Rewrites the star; the
+        caller updates the PickList count + (it becomes stale → re-extract)."""
+        from services.visualization import pick_merge
+
+        try:
+            info = await asyncio.to_thread(pick_merge.deduplicate_star, Path(star_path), tomo_name, float(radius_ang))
+        except Exception as e:
+            logger.warning("deduplicate_pick_list failed for %s: %s", star_path, e)
+            return {"success": False, "error": str(e)}
+        return {"success": True, **info}
+
     async def get_default_data_globs(self) -> Dict[str, str]:
         """Get default glob patterns from config."""
         config_service = get_config_service()

@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 import logging
-import urllib.parse
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -36,7 +35,6 @@ from nicegui import ui
 from services.models_base import JobStatus, JobType, PickListType
 from services.project_state import PickList, get_project_state, get_state_service
 from services.templating.template_metadata import get_effective_template_path, read_template_header
-from services.tilt_series.build import _infer_position
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import (
     _find_warp_tomo_preview,
@@ -45,7 +43,37 @@ from services.visualization.preview_orchestrator import (
 )
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview, render_xz_slab_preview
 from ui.components.reactive import SingleFlight
-from ui.components.task_utils import read_manifest, resolve_job_dir, scan_statuses
+from ui.dashboard.css import ensure_assets_loaded
+from ui.dashboard.figures import (
+    _build_per_tilt_chart,
+    _build_score_hist_fig,
+    _build_xy_scatter_fig,
+    _build_xz_scatter_fig,
+    _is_meaningful_series,
+    _safe_floats,
+    _stats,
+)
+from ui.dashboard.data import (
+    _PREP_STAGES,
+    _SPECIES_OVERLAY_COLORS,
+    _candidate_extract_instances,
+    _collect_dashboard_journey,
+    _collect_species_journey,
+    _find_job_by_type,
+    _glyph_for,
+    _job_dir_for,
+    _journey_signature,
+    _matching_subtomo_instance,
+    _position_label,
+    _read_tomograms_table,
+    _recon_mrc_map,
+    _resolve_species,
+    _resolve_volume_for_3dmod,
+    _split_species_id,
+    _template_match_instances,
+    _vis_asset_url,
+)
+from ui.dashboard.pixel_sanity import _apply_sanity_rules, _compute_pixel_chain, _render_pixel_sanity_table
 
 logger = logging.getLogger(__name__)
 
@@ -55,36 +83,6 @@ logger = logging.getLogger(__name__)
 # See ui/components/reactive.py and CLAUDE.md "UI reactivity patterns".
 _curation_flight = SingleFlight()
 
-
-# Per-species overlay colors for the shared tomogram canvas. Indexed by the
-# candidate-extract instance's sorted position so a species keeps its color
-# across re-renders (and matches its checkbox). Maximally-saturated hues that
-# are absent from a greyscale tomogram (no mid-grays) so the dots pop; the
-# .cb-pick-ghost dual halo (dark + light ring) keeps them legible on both the
-# bright and dark ends of the backdrop.
-_SPECIES_OVERLAY_COLORS = [
-    "#ff1744",  # vivid red
-    "#00e5ff",  # vivid cyan
-    "#ffea00",  # vivid yellow
-    "#d500f9",  # vivid magenta-purple
-    "#76ff03",  # neon green
-    "#2979ff",  # vivid blue
-    "#ff9100",  # vivid orange
-    "#f50057",  # vivid pink
-]
-
-# Overlay glyph per pick-list type. Color (per list) is the primary
-# distinguisher; the glyph is secondary reinforcement so several lists over one
-# tomogram read apart at a glance. Machine picks = circle, ArtiaX/curation
-# products = diamond/triangle, external = square. The CSS lives next to
-# `.cb-pick-ghost` (the `.cb-shape-*` rules). Easy to retune — it's one dict.
-_PICK_LIST_GLYPH = {
-    PickListType.AUTO: "circle",
-    PickListType.FILTERED: "circle",
-    PickListType.MANUAL: "diamond",
-    PickListType.IMPORTED: "square",
-    PickListType.MERGED: "triangle",
-}
 
 # Default overlay color per workbench-authored list type, chosen to sit apart from
 # the per-species auto palette (_SPECIES_OVERLAY_COLORS) so a manual/imported/merged
@@ -96,841 +94,6 @@ _PICK_LIST_DEFAULT_COLOR = {
     PickListType.IMPORTED: "#ffea00",  # yellow — external
     PickListType.MERGED: "#ff6d00",  # deep orange — committed merge
 }
-
-
-def _glyph_for(list_type: PickListType) -> str:
-    return _PICK_LIST_GLYPH.get(list_type, "circle")
-
-
-# ---------------------------------------------------------------------------
-# Discovery helpers
-# ---------------------------------------------------------------------------
-
-
-def _candidate_extract_instances(state) -> list[tuple[str, object]]:
-    out: list[tuple[str, object]] = []
-    for instance_id, job_model in state.jobs.items():
-        if getattr(job_model, "job_type", None) == JobType.TEMPLATE_EXTRACT_PYTOM:
-            out.append((instance_id, job_model))
-    return sorted(out, key=lambda kv: kv[0])
-
-
-def _subtomo_extract_instances(state) -> list[tuple[str, object]]:
-    out: list[tuple[str, object]] = []
-    for instance_id, job_model in state.jobs.items():
-        if getattr(job_model, "job_type", None) == JobType.SUBTOMO_EXTRACTION:
-            out.append((instance_id, job_model))
-    return sorted(out, key=lambda kv: kv[0])
-
-
-def _job_dir_for(instance_id: str, job_model, project_path: Path) -> Optional[Path]:
-    rjn = getattr(job_model, "relion_job_name", None)
-    if rjn:
-        d = project_path / rjn.rstrip("/")
-        if d.is_dir():
-            return d
-    state = get_project_state()
-    mapped = (state.job_path_mapping or {}).get(instance_id)
-    if mapped:
-        d = project_path / mapped.rstrip("/")
-        if d.is_dir():
-            return d
-    return None
-
-
-def _read_tomograms_table(tomograms_star: Path) -> Optional[pd.DataFrame]:
-    if not tomograms_star.exists():
-        return None
-    try:
-        import starfile
-
-        data = starfile.read(tomograms_star, always_dict=True)
-        for v in data.values():
-            if isinstance(v, pd.DataFrame) and "rlnTomoName" in v.columns:
-                return v
-    except Exception as e:
-        logger.warning("Could not read %s: %s", tomograms_star, e)
-    return None
-
-
-def _resolve_volume_for_3dmod(tomo_row: pd.Series, project_path: Path) -> Optional[Path]:
-    if "rlnTomoReconstructedTomogram" not in tomo_row.index:
-        return None
-    p = Path(str(tomo_row["rlnTomoReconstructedTomogram"]))
-    if not p.is_absolute():
-        p = project_path / p
-    f32 = p.with_name(p.stem + "_f32.mrc")
-    if f32.exists():
-        return f32
-    if p.exists():
-        return p
-    return None
-
-
-def _vis_asset_url(asset_path: str) -> str:
-    # mtime-keyed cache-buster — see ROADMAP §4.7. When the atlas/manifest
-    # regenerates, the URL changes, so the browser doesn't keep serving a
-    # stale copy from disk cache against an unchanged path.
-    try:
-        v = int(Path(asset_path).stat().st_mtime)
-    except OSError:
-        v = 0
-    return f"/api/vis-asset?path={urllib.parse.quote(asset_path, safe='')}&v={v}"
-
-
-def _position_label(tomo_name: str) -> tuple[str, tuple[int, int]]:
-    stage, beam = _infer_position(tomo_name)
-    if stage == 0:
-        return tomo_name.rsplit("_", 1)[-1], (stage, beam)
-    return f"Pos {stage} · Beam {beam}", (stage, beam)
-
-
-def has_any_extract_jobs() -> bool:
-    state = get_project_state()
-    return any(_candidate_extract_instances(state))
-
-
-def has_any_previews_rendered() -> bool:
-    state = get_project_state()
-    if state.project_path is None:
-        return False
-    for instance_id, job_model in _candidate_extract_instances(state):
-        job_dir = _job_dir_for(instance_id, job_model, state.project_path)
-        if not job_dir:
-            continue
-        if (job_dir / "vis" / "preview" / "manifest.json").exists():
-            return True
-    return False
-
-
-def has_any_dashboard_data() -> bool:
-    """True when at least one array job has emitted a task manifest, i.e.
-    the dashboard has any TS data to populate the sidebar with."""
-    state = get_project_state()
-    if state.project_path is None:
-        return False
-    project_path = Path(state.project_path)
-    for jt in (JobType.FS_MOTION_CTF, JobType.TS_ALIGNMENT, JobType.TS_CTF, JobType.TS_RECONSTRUCT):
-        for iid, jm in state.jobs.items():
-            if getattr(jm, "job_type", None) != jt and iid.split("__")[0] != jt.value:
-                continue
-            jd = resolve_job_dir(jm, project_path)
-            if jd and (jd / ".task_manifest.json").exists():
-                return True
-    return False
-
-
-# ---------------------------------------------------------------------------
-# Per-TS journey collector — feeds the 6-pill sidebar strip
-# ---------------------------------------------------------------------------
-
-
-# (key, label, JobType for array stages, or None for synthetic stages handled below).
-_PILL_STAGES: list[tuple[str, str, Optional[JobType]]] = [
-    ("fs_ctf", "FS/CTF", JobType.FS_MOTION_CTF),
-    ("align", "Align", JobType.TS_ALIGNMENT),
-    ("ctf", "CTF", JobType.TS_CTF),
-    ("recon", "Recon", JobType.TS_RECONSTRUCT),
-    ("pick", "Pick", None),
-    ("subtomo", "Subtomo", None),
-]
-
-# Preprocessing track = the 4 array stages (one shared bar per TS row). The
-# particle stages (pick → subtomo) render as a separate per-species track.
-_PREP_STAGES = _PILL_STAGES[:4]
-
-
-# Legacy-job fallback: when `.task_manifest.json` is absent, derive the TS
-# list from the stage's primary output star (which lists every TS the job
-# touched) and apply a coarse job-level status to all of them. Lets pre-
-# array-tracker projects show real "ok" pills instead of being stuck on
-# "pending" for stages that actually finished.
-_ARRAY_STAGE_OUTPUT_STAR: dict[JobType, str] = {
-    JobType.FS_MOTION_CTF: "fs_motion_and_ctf.star",
-    JobType.TS_ALIGNMENT: "aligned_tilt_series.star",
-    JobType.TS_CTF: "ts_ctf_tilt_series.star",
-    JobType.TS_RECONSTRUCT: "tomograms.star",
-}
-
-
-def _ts_names_from_star(p: Path) -> list[str]:
-    """Return the rlnTomoName column from the first DataFrame in a star file."""
-    if not p.exists():
-        return []
-    try:
-        import starfile
-
-        data = starfile.read(p, always_dict=True)
-        for v in data.values():
-            if isinstance(v, pd.DataFrame) and "rlnTomoName" in v.columns:
-                return [str(x) for x in v["rlnTomoName"].tolist()]
-    except Exception as e:
-        logger.warning("Could not read TS list from %s: %s", p, e)
-    return []
-
-
-def _coarse_job_status(jm) -> str:
-    es = getattr(jm, "execution_status", None)
-    if es == JobStatus.SUCCEEDED:
-        return "ok"
-    if es == JobStatus.FAILED:
-        return "fail"
-    if es in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED):
-        return "running"
-    return "pending"
-
-
-def _array_stage_status(project_path: Path, jm) -> tuple[list[str], dict[str, str]]:
-    """For an array job, return (ordered TS items, {ts: status_string}).
-
-    Prefers the per-TS array-task tracker (.task_manifest.json + .task_status/)
-    when present. Falls back to the stage's output star + job-level execution
-    status for legacy jobs that ran before the tracker was wired up.
-    """
-    job_dir = resolve_job_dir(jm, project_path)
-    if job_dir is None:
-        return [], {}
-    manifest = read_manifest(job_dir)
-    if manifest is not None:
-        items = manifest.get("items") or []
-        if items:
-            return list(items), scan_statuses(job_dir, items)
-
-    jt = getattr(jm, "job_type", None)
-    primary = _ARRAY_STAGE_OUTPUT_STAR.get(jt)
-    candidates: list[Path] = []
-    if primary:
-        candidates.append(job_dir / primary)
-    candidates.append(job_dir / "tomograms.star")
-    items: list[str] = []
-    for p in candidates:
-        items = _ts_names_from_star(p)
-        if items:
-            break
-    if not items:
-        return [], {}
-    coarse = _coarse_job_status(jm)
-    return items, {ts: coarse for ts in items}
-
-
-def _job_running_or_failed(jm) -> Optional[str]:
-    """For non-array jobs, derive a coarse status from execution_status. Returns
-    'running' / 'fail' / None (None means "fall back to per-TS data check")."""
-    es = getattr(jm, "execution_status", None)
-    if es == JobStatus.RUNNING or es == JobStatus.QUEUED or es == JobStatus.SCHEDULED:
-        return "running"
-    if es == JobStatus.FAILED:
-        return "fail"
-    return None
-
-
-def _zero_pick_tomos_from_tmresults(job_dir: Path) -> set[str]:
-    """Walk `<job_dir>/tmResults/*_particles.star` and return the set of
-    tomograms whose per-TS particles file exists but contains zero data
-    rows. This is the on-disk signal that PyTOM ran on that TS and produced
-    no candidates above cutoff — the supervisor's `pd.concat` merge silently
-    drops these, so they vanish from `candidates.star` and the preview
-    manifest. We surface them here so the journey pill can read "zero"
-    instead of the misleading "pending".
-
-    Fast: each file is header-only (~600 bytes); a 24-TS project takes a
-    few ms. Returns an empty set if `tmResults/` doesn't exist (older
-    project layouts).
-    """
-    tm_dir = job_dir / "tmResults"
-    if not tm_dir.is_dir():
-        return set()
-    out: set[str] = set()
-    for p in tm_dir.glob("*_particles.star"):
-        try:
-            import starfile
-
-            data = starfile.read(p, always_dict=True)
-        except Exception:
-            continue
-        # Find the particles dataframe (first DataFrame in the file).
-        df = None
-        for v in data.values():
-            if isinstance(v, pd.DataFrame):
-                df = v
-                break
-        if df is None or len(df) > 0:
-            continue
-        # Strip the "_particles" suffix to recover the tomo name.
-        stem = p.stem
-        if stem.endswith("_particles"):
-            tomo_name = stem[: -len("_particles")]
-            out.add(tomo_name)
-    return out
-
-
-def _candidate_extract_status_per_ts(job_dir: Path, jm) -> dict[str, str]:
-    """Read the candidate-extract job's preview manifest to bucket TS statuses.
-
-    Buckets:
-      - "ok": manifest entry has picks_json
-      - "fail": tomo listed in summary.errored
-      - "zero": tomo was processed but produced 0 picks above cutoff. Fast
-        path reads summary.zero_picks if present (manifest v10+); otherwise
-        falls back to scanning `tmResults/*_particles.star` for header-only
-        files.
-      - "running" / "pending": defaults based on job state, applied for any
-        TS that's expected (per the staged tomograms.star) but not yet
-        covered by any of the buckets above.
-    """
-    manifest = read_preview_manifest(job_dir) or {}
-    entries = manifest.get("tomograms") or {}
-    summary = manifest.get("summary") or {}
-    errored = {e.get("tomo") for e in (summary.get("errored") or []) if e.get("tomo")}
-
-    # Fast path: orchestrator-recorded zero_picks (v10+). Fallback: scan
-    # tmResults for legacy manifests. The scan is cheap (header-only files)
-    # so we run it unconditionally on miss to recover from old projects.
-    zero_picks: set[str] = set(summary.get("zero_picks") or [])
-    if not zero_picks:
-        zero_picks = _zero_pick_tomos_from_tmresults(job_dir)
-
-    coarse = _job_running_or_failed(jm)
-    out: dict[str, str] = {}
-
-    for tomo_name, entry in entries.items():
-        if tomo_name in errored:
-            out[tomo_name] = "fail"
-        elif entry.get("picks_json"):
-            out[tomo_name] = "ok"
-        elif coarse == "running":
-            out[tomo_name] = "running"
-        else:
-            out[tomo_name] = "pending"
-
-    # Promote zero-pick tomos. These don't appear in `entries` (the
-    # orchestrator only emitted entries for tomos with at least one pick),
-    # so they're additive to the dict.
-    for tomo_name in zero_picks:
-        if tomo_name not in out:
-            out[tomo_name] = "zero"
-
-    return out
-
-
-def _read_subtomo_extracted_ts(job_dir: Path) -> set[str]:
-    """Read job_dir/particles.star and return the set of TS that had at
-    least one row of extracted particles. Tolerant of missing files /
-    parse errors."""
-    particles_star = job_dir / "particles.star"
-    if not particles_star.exists():
-        return set()
-    try:
-        import starfile
-
-        data = starfile.read(particles_star, always_dict=True)
-        df = data.get("particles")
-        if df is None:
-            for v in data.values():
-                if isinstance(v, pd.DataFrame) and "rlnTomoName" in v.columns:
-                    df = v
-                    break
-        if df is None or "rlnTomoName" not in df.columns:
-            return set()
-        return {str(t) for t in df["rlnTomoName"].astype(str).unique()}
-    except Exception as e:
-        logger.warning("Could not parse subtomo particles.star %s: %s", particles_star, e)
-        return set()
-
-
-def _subtomo_extract_status_per_ts(job_dir: Path, jm, expected_ts: Optional[set[str]] = None) -> dict[str, str]:
-    """Bucket per-TS status for the subtomo-extraction job.
-
-    Two layouts are supported, in priority order:
-
-      1. **Array layout** (post-conversion): `.task_manifest.json` exists.
-         Per-TS pass/fail from `.task_status/<ts>.{ok,fail}` is the source
-         of truth. An "ok" task that didn't write any row to particles.star
-         is demoted to "zero" (extraction ran but produced 0 particles for
-         that TS — e.g. all picks filtered by max_dose / min_frames).
-
-      2. **Legacy one-shot layout** (no manifest): we don't have per-TS
-         markers. Fall back to particles.star membership crossed with
-         `expected_ts` (typically the union of "ok" picks across upstream
-         candidate-extract instances). A TS in `expected_ts` but absent
-         from particles.star is "zero" iff the job has SUCCEEDED, else
-         "running" / "pending" depending on job state.
-    """
-    from ui.components.task_utils import read_manifest as read_array_manifest
-    from ui.components.task_utils import scan_statuses
-
-    extracted = _read_subtomo_extracted_ts(job_dir)
-    out: dict[str, str] = {}
-
-    # ── Layout 1: array layout ─────────────────────────────────────────
-    array_manifest = read_array_manifest(job_dir)
-    if array_manifest is not None:
-        items = array_manifest.get("items") or []
-        if items:
-            statuses = scan_statuses(job_dir, items)
-            for ts in items:
-                st = statuses.get(ts, "pending")
-                if st == "ok" and ts not in extracted:
-                    # task completed but the TS isn't in particles.star —
-                    # relion_tomo_subtomo ran and produced nothing (all
-                    # candidates filtered out at this stage).
-                    out[ts] = "zero"
-                else:
-                    out[ts] = st
-            return out
-
-    # ── Layout 2: legacy one-shot ──────────────────────────────────────
-    for ts in extracted:
-        out[ts] = "ok"
-
-    if expected_ts:
-        es = getattr(jm, "execution_status", None)
-        job_running = es in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED)
-        job_succeeded = es == JobStatus.SUCCEEDED
-        for ts in expected_ts:
-            if ts in extracted:
-                continue
-            if job_succeeded:
-                out[ts] = "zero"
-            elif job_running:
-                out[ts] = "running"
-            # Else: leave unset; caller defaults to "pending".
-
-    return out
-
-
-def _collect_dashboard_journey(project_state, project_path: Path) -> tuple[dict[str, dict[str, str]], list[str]]:
-    """Collect per-TS status across the 6 dashboard stages.
-
-    Returns:
-        journey: {ts_name: {stage_key: status_string}} where status is one of
-                 "ok" / "fail" / "running" / "pending".
-        ts_names: ordered list of all tilt series in the project (union across
-                  array-job manifests). Order follows the first stage that
-                  declares a given TS.
-    """
-    journey: dict[str, dict[str, str]] = {}
-    ts_order: list[str] = []
-    seen: set[str] = set()
-
-    # Walk the 4 array stages first so ts_order reflects pipeline order.
-    for key, _label, jt in _PILL_STAGES:
-        if jt is None:
-            continue
-        for iid, jm in (project_state.jobs or {}).items():
-            if getattr(jm, "job_type", None) != jt and iid.split("__")[0] != jt.value:
-                continue
-            items, statuses = _array_stage_status(project_path, jm)
-            if not items:
-                continue
-            for ts_name in items:
-                if ts_name not in seen:
-                    ts_order.append(ts_name)
-                    seen.add(ts_name)
-                journey.setdefault(ts_name, {})[key] = statuses.get(ts_name, "pending")
-            break  # one job per array stage
-
-    # Pick stage: combine across all candidate-extract instances. Promotion
-    # order keeps "ok" winning over "zero" (multi-species: if one species
-    # produced picks here and another didn't, the row is genuinely "ok").
-    pick_combined: dict[str, str] = {}
-    pick_order = {"ok": 5, "running": 4, "zero": 3, "fail": 2, "pending": 1}
-    for iid, jm in _candidate_extract_instances(project_state):
-        jd = _job_dir_for(iid, jm, project_path)
-        if jd is None:
-            continue
-        statuses = _candidate_extract_status_per_ts(jd, jm)
-        for ts_name, st in statuses.items():
-            cur = pick_combined.get(ts_name)
-            if cur is None or pick_order.get(st, 0) > pick_order.get(cur, 0):
-                pick_combined[ts_name] = st
-            if ts_name not in seen:
-                ts_order.append(ts_name)
-                seen.add(ts_name)
-    for ts_name, st in pick_combined.items():
-        journey.setdefault(ts_name, {})["pick"] = st
-
-    # Subtomo stage: combine across all subtomo-extract instances. Pass the
-    # "ok" pick set as `expected_ts` so the predicate can infer zero-state
-    # for TS that should have been extracted but didn't make it into
-    # particles.star (e.g. filtered out by max_dose / min_frames).
-    picked_ok: set[str] = {ts for ts, st in pick_combined.items() if st == "ok"}
-    subtomo_combined: dict[str, str] = {}
-    subtomo_order = {"ok": 5, "running": 4, "zero": 3, "fail": 2, "pending": 1}
-    for iid, jm in _subtomo_extract_instances(project_state):
-        jd = _job_dir_for(iid, jm, project_path)
-        if jd is None:
-            continue
-        statuses = _subtomo_extract_status_per_ts(jd, jm, expected_ts=picked_ok)
-        for ts_name, st in statuses.items():
-            cur = subtomo_combined.get(ts_name)
-            if cur is None or subtomo_order.get(st, 0) > subtomo_order.get(cur, 0):
-                subtomo_combined[ts_name] = st
-            if ts_name not in seen:
-                ts_order.append(ts_name)
-                seen.add(ts_name)
-    for ts_name, st in subtomo_combined.items():
-        journey.setdefault(ts_name, {})["subtomo"] = st
-
-    # Fill missing pills with "pending" so renderers don't have to defend.
-    for ts_name in ts_order:
-        row = journey.setdefault(ts_name, {})
-        for key, _label, _jt in _PILL_STAGES:
-            row.setdefault(key, "pending")
-
-    return journey, ts_order
-
-
-def _species_label_for(jm, iid: str, manifest: dict) -> str:
-    """Display label for a species: manifest species_name → instance suffix →
-    job_model.species_id → bare instance id."""
-    return str(
-        (manifest.get("template") or {}).get("species_name")
-        or _split_species_id(iid)
-        or getattr(jm, "species_id", None)
-        or iid
-    )
-
-
-def _matching_subtomo_instance(state, species_id):
-    """The SUBTOMO_EXTRACTION instance attached to this species_id, or None."""
-    for s_iid, s_jm in _subtomo_extract_instances(state):
-        _, s_sid = _resolve_species(state, s_jm, s_iid)
-        if s_sid == species_id:
-            return s_iid, s_jm
-    return None
-
-
-def _recon_mrc_map(state, project_path: Path) -> dict[str, str]:
-    """{ts_name: reconstructed-tomogram path} read once from the recon job's
-    tomograms.star, so the roster info popover can list the volume without a
-    per-row disk read."""
-    rec = _find_job_by_type(state, JobType.TS_RECONSTRUCT)
-    if not rec:
-        return {}
-    jd = _job_dir_for(rec[0], rec[1], project_path)
-    if jd is None:
-        return {}
-    df = _read_tomograms_table(jd / "tomograms.star")
-    if df is None or "rlnTomoName" not in df.columns:
-        return {}
-    out: dict[str, str] = {}
-    for _, r in df.iterrows():
-        mrc = _resolve_volume_for_3dmod(r, project_path)
-        if mrc:
-            out[str(r["rlnTomoName"])] = str(mrc)
-    return out
-
-
-def _collect_species_journey(project_state, project_path: Path) -> dict[str, list[dict]]:
-    """Per-TS per-species particle-track data for the roster.
-
-    {ts: [{idx, label, color, species_id, pick_status, subtomo_status, n_picks,
-    ce_star, subtomo_star, pixel_size_ang, tomo_dims}]}. Species order + color
-    follow `_candidate_extract_instances` enumeration, so the roster dot matches
-    the canvas overlay and the species tabs everywhere."""
-    out: dict[str, list[dict]] = {}
-    for idx, (iid, jm) in enumerate(_candidate_extract_instances(project_state)):
-        jd = _job_dir_for(iid, jm, project_path)
-        if jd is None:
-            continue
-        color = _SPECIES_OVERLAY_COLORS[idx % len(_SPECIES_OVERLAY_COLORS)]
-        _, species_id = _resolve_species(project_state, jm, iid)
-        manifest = read_preview_manifest(jd) or {}
-        entries = manifest.get("tomograms") or {}
-        label = _species_label_for(jm, iid, manifest)
-        pick_status = _candidate_extract_status_per_ts(jd, jm)
-        sub_match = _matching_subtomo_instance(project_state, species_id)
-        sub_status: dict[str, str] = {}
-        sub_star = None
-        reviewed: dict[str, int] = {}
-        if sub_match is not None:
-            sub_jd = _job_dir_for(sub_match[0], sub_match[1], project_path)
-            if sub_jd is not None:
-                from services.visualization import picks_filter
-
-                sub_star = str(sub_jd / "particles.star")
-                reviewed = picks_filter.read_reviewed_counts(sub_jd)
-                picked_ok = {ts for ts, st in pick_status.items() if st == "ok"}
-                sub_status = _subtomo_extract_status_per_ts(sub_jd, sub_match[1], expected_ts=picked_ok)
-        ce_star = str(jd / "candidates.star")
-        for ts in set(pick_status) | set(sub_status):
-            entry = entries.get(ts) or {}
-            out.setdefault(ts, []).append(
-                {
-                    "idx": idx,
-                    "label": label,
-                    "color": color,
-                    "species_id": species_id,
-                    "pick_status": pick_status.get(ts, "pending"),
-                    "subtomo_status": sub_status.get(ts, "pending"),
-                    "n_picks": entry.get("n_picks"),
-                    "filtered_count": reviewed.get(ts),  # kept count if reviewed, else None
-                    "ce_star": ce_star,
-                    "subtomo_star": sub_star,
-                    "pixel_size_ang": entry.get("pixel_size_ang"),
-                    "tomo_dims": entry.get("tomo_dims_xyz_px"),
-                }
-            )
-    for ts in out:
-        out[ts].sort(key=lambda s: s["idx"])
-    return out
-
-
-def _journey_signature(journey: dict, species_journey: dict, ts_names: list) -> tuple:
-    """Cheap fingerprint of everything the roster renders — prep statuses +
-    per-species (status, status, count). Lets the live timer rebuild the sidebar
-    only when this actually moves (FingerprintedView discipline), so progress
-    ticks don't tear down rows under an in-flight click."""
-    parts = []
-    for ts in ts_names:
-        jr = journey.get(ts, {})
-        prep = tuple(jr.get(k, "") for k, _, _ in _PREP_STAGES)
-        sps = tuple(
-            (s["label"], s["pick_status"], s["subtomo_status"], s["n_picks"], s.get("filtered_count"))
-            for s in species_journey.get(ts, [])
-        )
-        parts.append((ts, prep, sps))
-    return tuple(parts)
-
-
-# ---------------------------------------------------------------------------
-# Plotly figure builders — used by the picks-only scatter fallback when no
-# subtomo cutout atlas exists. ui.plotly() accepts a JSON dict directly, so we
-# build dicts rather than depending on the plotly Python package (ROADMAP §4.2).
-# ---------------------------------------------------------------------------
-
-
-def _empty_fig(message: str) -> dict:
-    return {
-        "data": [],
-        "layout": {
-            "annotations": [
-                {
-                    "text": message,
-                    "showarrow": False,
-                    "xref": "paper",
-                    "yref": "paper",
-                    "x": 0.5,
-                    "y": 0.5,
-                    "font": {"color": "#9ca3af", "size": 12},
-                }
-            ],
-            "margin": {"t": 5, "b": 5, "l": 5, "r": 5},
-            "paper_bgcolor": "#f8fafc",
-            "plot_bgcolor": "#f8fafc",
-            "xaxis": {"visible": False},
-            "yaxis": {"visible": False},
-        },
-        "config": {"displaylogo": False, "responsive": True},
-    }
-
-
-def _build_xy_scatter_fig(picks: list, tomo_dims_xyz: tuple, score_field: Optional[str]) -> dict:
-    x_dim, y_dim, _z_dim = tomo_dims_xyz
-    has_scores = picks and "score" in picks[0]
-    xs = [p["x"] for p in picks]
-    ys = [p["y"] for p in picks]
-    custom = [[p["i"], p.get("z", 0), p.get("score")] for p in picks]
-    marker: dict = {"size": 6, "line": {"width": 0}, "opacity": 0.85}
-    if has_scores:
-        marker["color"] = [p.get("score") for p in picks]
-        marker["colorscale"] = "Viridis"
-        marker["showscale"] = True
-        marker["colorbar"] = {
-            "title": {"text": score_field or "score", "font": {"size": 9}},
-            "thickness": 8,
-            "len": 0.7,
-            "tickfont": {"size": 9},
-            "outlinewidth": 0,
-        }
-    else:
-        marker["color"] = "#fbbf24"
-
-    trace = {
-        "type": "scattergl",
-        "x": xs,
-        "y": ys,
-        "mode": "markers",
-        "marker": marker,
-        "customdata": custom,
-        "hovertemplate": (
-            "pick #%{customdata[0]}<br>"
-            "x=%{x}, y=%{y}, z=%{customdata[1]}"
-            + ("<br>score=%{customdata[2]:.4f}" if has_scores else "")
-            + "<extra></extra>"
-        ),
-        "name": "picks",
-    }
-    layout: dict = {
-        "xaxis": {
-            "title": {"text": "X (px)", "font": {"size": 10}},
-            "range": [0, x_dim],
-            "showgrid": False,
-            "zeroline": False,
-            "tickfont": {"size": 9},
-        },
-        "yaxis": {
-            "title": {"text": "Y (px)", "font": {"size": 10}},
-            "range": [0, y_dim],
-            "showgrid": False,
-            "zeroline": False,
-            "tickfont": {"size": 9},
-        },
-        "margin": {"t": 8, "b": 38, "l": 50, "r": 8},
-        "paper_bgcolor": "white",
-        "plot_bgcolor": "#f8fafc",
-        "showlegend": False,
-        "shapes": [
-            {
-                "type": "rect",
-                "xref": "x",
-                "yref": "y",
-                "x0": 0,
-                "y0": 0,
-                "x1": x_dim,
-                "y1": y_dim,
-                "line": {"color": "#cbd5e1", "width": 0.8, "dash": "dash"},
-                "layer": "above",
-            }
-        ],
-    }
-    return {"data": [trace], "layout": layout, "config": {"displaylogo": False, "responsive": True}}
-
-
-def _build_xz_scatter_fig(
-    picks: list, tomo_dims_xyz: tuple, score_field: Optional[str], xz_preview_url: Optional[str] = None
-) -> dict:
-    x_dim, _y_dim, z_dim = tomo_dims_xyz
-    has_scores = picks and "score" in picks[0]
-    xs = [p["x"] for p in picks]
-    zs = [p["z"] for p in picks]
-    custom = [[p["i"], p.get("y", 0), p.get("score")] for p in picks]
-    marker: dict = {"size": 5, "line": {"width": 0}, "opacity": 0.85}
-    if has_scores:
-        marker["color"] = [p.get("score") for p in picks]
-        marker["colorscale"] = "Viridis"
-        marker["showscale"] = False
-    else:
-        marker["color"] = "#fbbf24"
-
-    trace = {
-        "type": "scattergl",
-        "x": xs,
-        "y": zs,
-        "mode": "markers",
-        "marker": marker,
-        "customdata": custom,
-        "hovertemplate": (
-            "pick #%{customdata[0]}<br>"
-            "x=%{x}, z=%{y}, y=%{customdata[1]}"
-            + ("<br>score=%{customdata[2]:.4f}" if has_scores else "")
-            + "<extra></extra>"
-        ),
-        "name": "picks",
-    }
-    layout: dict = {
-        "xaxis": {
-            "title": {"text": "X (px)", "font": {"size": 10}},
-            "range": [0, x_dim],
-            "showgrid": False,
-            "zeroline": False,
-            "tickfont": {"size": 9},
-        },
-        "yaxis": {
-            "title": {"text": "Z (px)", "font": {"size": 10}},
-            "range": [0, z_dim],
-            "showgrid": False,
-            "zeroline": False,
-            "tickfont": {"size": 9},
-        },
-        "margin": {"t": 8, "b": 38, "l": 50, "r": 8},
-        "paper_bgcolor": "white",
-        "plot_bgcolor": "#0f172a" if xz_preview_url else "white",
-        "showlegend": False,
-        "shapes": [
-            {
-                "type": "rect",
-                "xref": "x",
-                "yref": "y",
-                "x0": 0,
-                "y0": 0,
-                "x1": x_dim,
-                "y1": z_dim,
-                "line": {"color": "#cbd5e1", "width": 0.8, "dash": "dash"},
-            }
-        ],
-    }
-    if xz_preview_url:
-        layout["images"] = [
-            {
-                "source": xz_preview_url,
-                "xref": "x",
-                "yref": "y",
-                "x": 0,
-                "y": z_dim,
-                "sizex": x_dim,
-                "sizey": z_dim,
-                "sizing": "stretch",
-                "opacity": 0.85,
-                "layer": "below",
-            }
-        ]
-    return {"data": [trace], "layout": layout, "config": {"displaylogo": False, "responsive": True}}
-
-
-def _build_score_hist_fig(picks: list, score_field: Optional[str]) -> dict:
-    scores = [p.get("score") for p in picks if p.get("score") is not None]
-    if not scores:
-        return _empty_fig("no score column in candidates.star")
-    mean_v = sum(scores) / len(scores)
-    return {
-        "data": [
-            {
-                "type": "histogram",
-                "x": scores,
-                "nbinsx": 30,
-                "marker": {"color": "#4338ca"},
-                "hovertemplate": "%{x}<br>%{y} picks<extra></extra>",
-            }
-        ],
-        "layout": {
-            "xaxis": {"title": {"text": score_field or "score", "font": {"size": 10}}, "tickfont": {"size": 9}},
-            "yaxis": {"title": {"text": "count", "font": {"size": 10}}, "tickfont": {"size": 9}},
-            "margin": {"t": 8, "b": 38, "l": 50, "r": 8},
-            "bargap": 0.05,
-            "paper_bgcolor": "white",
-            "plot_bgcolor": "white",
-            "shapes": [
-                {
-                    "type": "line",
-                    "xref": "x",
-                    "yref": "paper",
-                    "x0": mean_v,
-                    "x1": mean_v,
-                    "y0": 0,
-                    "y1": 1,
-                    "line": {"color": "#9ca3af", "width": 1.2, "dash": "dash"},
-                }
-            ],
-            "annotations": [
-                {
-                    "text": f"mean {mean_v:.4f}",
-                    "xref": "x",
-                    "yref": "paper",
-                    "x": mean_v,
-                    "y": 0.96,
-                    "showarrow": False,
-                    "yanchor": "top",
-                    "xanchor": "left",
-                    "xshift": 4,
-                    "font": {"size": 9, "color": "#6b7280"},
-                    "bgcolor": "rgba(255,255,255,0.85)",
-                }
-            ],
-        },
-        "config": {"displaylogo": False, "responsive": True},
-    }
 
 
 def _read_picks_json(path: Path) -> dict:
@@ -971,180 +134,6 @@ def _per_tilt_star_path(job_dir: Path, ts_name: str) -> Path:
     return job_dir / "tilt_series" / f"{ts_name}.star"
 
 
-def _safe_floats(series) -> list[float]:
-    """Coerce a pandas Series to a list of Python floats; non-finite stays as
-    None so Plotly draws gaps instead of dropping to the floor."""
-    import math
-
-    out: list[float] = []
-    for v in series:
-        try:
-            f = float(v)
-        except (TypeError, ValueError):
-            out.append(None)
-            continue
-        if not math.isfinite(f):
-            out.append(None)
-        else:
-            out.append(f)
-    return out
-
-
-def _is_meaningful_series(values: list[float], *, threshold: float = 1e-3) -> bool:
-    """True when the column carries real signal — at least one finite value
-    AND max-abs above `threshold`. Filters out WarpTools placeholder columns
-    (`1e-6` for AccumMotion / CtfMaxResolution; `None` for CtfFigureOfMerit)
-    so we don't pollute the dashboard with flat-line plots. See memory
-    `project_warp_relion_star_placeholders.md`."""
-    finite = [v for v in values if v is not None]
-    if not finite:
-        return False
-    return max(abs(v) for v in finite) >= threshold
-
-
-def _stats(values: list[float]) -> dict:
-    """Median / IQR / count over the non-None entries. Returns a dict with
-    keys median, q1, q3, min, max, n."""
-    import statistics
-
-    finite = [v for v in values if v is not None]
-    if not finite:
-        return {"median": None, "q1": None, "q3": None, "min": None, "max": None, "n": 0}
-    finite_sorted = sorted(finite)
-    n = len(finite_sorted)
-    median = statistics.median(finite_sorted)
-    if n >= 4:
-        q1 = statistics.median(finite_sorted[: n // 2])
-        q3 = statistics.median(finite_sorted[(n + 1) // 2 :])
-    else:
-        q1 = q3 = median
-    return {"median": median, "q1": q1, "q3": q3, "min": finite_sorted[0], "max": finite_sorted[-1], "n": n}
-
-
-def _build_per_tilt_chart(
-    x_tilts: list[float],
-    series: list[dict],
-    *,
-    x_label: str = "tilt (°)",
-    y_label: str = "",
-    h_lines: Optional[list[dict]] = None,
-    customdata: Optional[list[list]] = None,
-    y_unit: str = "",
-    y_range: Optional[tuple[float, float]] = None,
-) -> dict:
-    """Compact chart: x = tilt angle, y = one or more per-tilt metrics.
-
-    `series`: list of {name, y, color, dash?, mode?} entries. Default mode is
-    `markers` — discrete per-tilt estimates connect badly with lines (zigzag
-    or tangled) so caller must opt-in via `mode='lines+markers'` when the
-    metric varies continuously across tilts (e.g. shifts, refined angles).
-    `customdata`: parallel list of [tilt_index, frame_basename, ...] pairs;
-    surfaced in hover so users can identify which tilt a point belongs to.
-    `y_unit`: short suffix appended to the y value in the hover string
-    (e.g. " µm", " Å").
-    `y_range`: fixed y-axis [min, max] — locks the axis across tilt-series
-    so the same metric is visually comparable. Auto-extends if observed
-    data exceeds the bounds (so we never clip outliers).
-    """
-    traces = []
-    for s in series:
-        marker_size = s.get("marker_size", 6)
-        trace: dict = {
-            "type": "scatter",
-            "mode": s.get("mode", "markers"),
-            "x": x_tilts,
-            "y": s["y"],
-            "line": {"color": s.get("color", "#4338ca"), "width": s.get("width", 1.4), "dash": s.get("dash", "solid")},
-            "marker": {
-                "size": marker_size,
-                "color": s.get("color", "#4338ca"),
-                "line": {"color": "#ffffff", "width": 0.6},
-            },
-            "name": s["name"],
-        }
-        if customdata is not None:
-            trace["customdata"] = customdata
-            trace["hovertemplate"] = (
-                f"<b>{s['name']}</b>: %{{y:.3g}}{y_unit}"
-                "<br>Tilt #%{customdata[0]} · %{x:.2f}°"
-                "<br><span style='font-size:9px;color:#94a3b8'>%{customdata[1]}</span>"
-                "<extra></extra>"
-            )
-        else:
-            trace["hovertemplate"] = (
-                f"<b>{s['name']}</b>: %{{y:.3g}}{y_unit}<br>Stage angle: %{{x:.2f}}°<extra></extra>"
-            )
-        traces.append(trace)
-    layout: dict = {
-        "xaxis": {"title": {"text": x_label, "font": {"size": 9}}, "tickfont": {"size": 8}, "zeroline": False},
-        "yaxis": {"title": {"text": y_label, "font": {"size": 9}}, "tickfont": {"size": 8}, "zeroline": False},
-        "margin": {"t": 6, "b": 32, "l": 50, "r": 12},
-        "paper_bgcolor": "white",
-        "plot_bgcolor": "#fafafa",
-        "showlegend": len(series) > 1,
-        "legend": {"orientation": "h", "x": 0, "y": 1.14, "font": {"size": 9}},
-        "hovermode": "x unified",
-    }
-    if y_range:
-        # Auto-extend the fixed range if observed data exceeds it — never
-        # clip outliers; lock the axis only when data fits.
-        ymin, ymax = float(y_range[0]), float(y_range[1])
-        for s in series:
-            for v in s.get("y") or []:
-                if v is None:
-                    continue
-                try:
-                    fv = float(v)
-                except (TypeError, ValueError):
-                    continue
-                if fv < ymin:
-                    ymin = fv
-                if fv > ymax:
-                    ymax = fv
-        layout["yaxis"]["range"] = [ymin, ymax]
-        layout["yaxis"]["autorange"] = False
-    if h_lines:
-        shapes = []
-        annotations = []
-        for h in h_lines:
-            shapes.append(
-                {
-                    "type": "line",
-                    "xref": "paper",
-                    "yref": "y",
-                    "x0": 0,
-                    "x1": 1,
-                    "y0": h["y"],
-                    "y1": h["y"],
-                    "line": {"color": h.get("color", "#9ca3af"), "width": 1.0, "dash": "dash"},
-                }
-            )
-            if h.get("label"):
-                annotations.append(
-                    {
-                        "text": h["label"],
-                        "xref": "paper",
-                        "yref": "y",
-                        "x": 1,
-                        "xanchor": "right",
-                        "y": h["y"],
-                        "yanchor": "bottom",
-                        "showarrow": False,
-                        "font": {"size": 8, "color": h.get("color", "#9ca3af")},
-                        "bgcolor": "rgba(255,255,255,0.85)",
-                    }
-                )
-        if shapes:
-            layout["shapes"] = shapes
-        if annotations:
-            layout["annotations"] = annotations
-    return {
-        "data": traces,
-        "layout": layout,
-        "config": {"displaylogo": False, "responsive": True, "displayModeBar": False},
-    }
-
-
 def _read_atlas_index(index_path: Path) -> Optional[dict]:
     if not index_path or not Path(index_path).exists():
         return None
@@ -1156,669 +145,6 @@ def _read_atlas_index(index_path: Path) -> Optional[dict]:
     except Exception as e:
         logger.warning("Could not parse cutout index %s: %s", index_path, e)
         return None
-
-
-# ---------------------------------------------------------------------------
-# CSS
-# ---------------------------------------------------------------------------
-
-
-_CB_CSS = """
-.cb-sidebar {
-    width: 300px; min-width: 300px; flex-shrink: 0;
-    display: flex; flex-direction: column;
-}
-.cb-sidebar-header {
-    padding: 8px 10px 6px;
-    border-bottom: 1px solid #e5e7eb;
-    background: #f8fafc;
-    flex-shrink: 0;
-    font-size: 11px;
-    color: #475569;
-}
-.cb-sidebar-rows { overflow-y: auto; flex: 1; min-height: 0; }
-.cb-ts-row {
-    display: flex; flex-direction: column; gap: 3px;
-    padding: 5px 10px; border-bottom: 1px solid #f1f1f1;
-    cursor: pointer;
-}
-.cb-ts-row:hover { background: #f8fafc; }
-.cb-ts-row.selected { background: #eef2ff; border-left: 3px solid #6366f1; padding-left: 7px; }
-.cb-ts-titlebar { display: flex; align-items: center; gap: 4px; min-height: 18px; }
-.cb-ts-row .cb-ts-pos { font-weight: 600; color: #1f2937; font-size: 11px; }
-.cb-ts-info-btn { color: #cbd5e1 !important; min-height: 18px !important; }
-.cb-ts-info-btn:hover { color: #6366f1 !important; }
-/* Two tracks per row: a 'prep' bar (the 4 array stages) and one line per
- * species (pick + subtomo segments + pick count). Fixed-width segments keep a
- * stage comparable across tracks; the head column aligns the bars vertically. */
-.cb-track { display: flex; align-items: center; gap: 6px; }
-.cb-track-head { flex: 0 0 66px; display: flex; align-items: center; gap: 4px; overflow: hidden; }
-.cb-track-name { font-size: 9px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.3px; }
-.cb-sp-name {
-    font-size: 10px; color: #475569; font-family: ui-monospace, monospace;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.cb-roster-sp-dot {
-    width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
-}
-.cb-pill-strip { display: flex; gap: 2px; }
-.cb-pill { height: 4px; width: 13px; flex: 0 0 13px; border-radius: 2px; background: #e5e7eb; }
-.cb-pill.ok { background: #10b981; }
-.cb-pill.fail { background: #dc2626; }
-.cb-pill.running { background: #f59e0b; }
-.cb-pill.pending { background: #d1d5db; }
-.cb-sp-count {
-    margin-left: auto; font-size: 10px; font-family: ui-monospace, monospace;
-    color: #475569; min-width: 16px; text-align: right;
-}
-/* Review column: kept-count after curation (indigo funnel). Present only for
- * reviewed TS, so its presence = "reviewed", absence = "not yet". */
-.cb-sp-filtered {
-    display: flex; align-items: center; gap: 1px; margin-left: 6px; flex: 0 0 auto;
-    font-size: 10px; font-family: ui-monospace, monospace; color: #6366f1;
-}
-/* zero = stage processed this TS but produced no output (e.g. 0 picks
-   above cutoff). Dimmed amber-into-grey so it reads as "ran, yielded
-   nothing" — distinct from both "ok" green and "pending" grey. */
-.cb-pill.zero {
-    background: repeating-linear-gradient(
-        45deg, #9ca3af, #9ca3af 2px, #d1d5db 2px, #d1d5db 4px
-    );
-}
-/* skip = supervisor deliberately did not dispatch a task for this TS
-   (upstream produced nothing actionable). Soft hatched grey reads as
-   "intentionally blank", distinct from "pending" flat grey. */
-.cb-pill.skip {
-    background: repeating-linear-gradient(
-        45deg, #cbd5e1, #cbd5e1 2px, #e5e7eb 2px, #e5e7eb 4px
-    );
-}
-/* Per-row info popover (the ⓘ): full tomo name + metadata + file paths, each
- * with a copy-full-path button. Click-opened so the copy buttons are usable. */
-.cb-info-card { min-width: 300px; max-width: 460px; padding: 6px 4px; display: flex; flex-direction: column; gap: 3px; }
-.cb-info-row { display: flex; align-items: center; gap: 6px; }
-.cb-info-key { font-size: 9px; text-transform: uppercase; letter-spacing: 0.3px; color: #94a3b8; flex: 0 0 88px; }
-.cb-info-val {
-    font-size: 10px; font-family: ui-monospace, monospace; color: #334155;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    flex: 1 1 auto; min-width: 0;
-    /* rtl truncates the LEFT of long paths, keeping the filename visible. */
-    direction: rtl; text-align: left;
-}
-.cb-info-copy { color: #94a3b8 !important; }
-.cb-info-copy:hover { color: #6366f1 !important; }
-.cb-info-meta { font-size: 10px; color: #64748b; font-family: ui-monospace, monospace; padding: 1px 0 3px 88px; }
-.cb-main { padding: 12px; }
-/* (height/flex/overflow set inline at construction time so the dialog viewport
-   chain is self-contained; this rule only carries the padding chrome.) */
-.cb-empty {
-    flex: 1; display: flex; align-items: center; justify-content: center;
-    color: #9ca3af; font-size: 13px; padding: 40px; flex-direction: column; gap: 8px;
-}
-.cb-section-title {
-    font-size: 10px; text-transform: uppercase; font-weight: 600;
-    color: #64748b; letter-spacing: 0.3px;
-}
-.cb-section-card {
-    background: #ffffff; border: 1px solid #e5e7eb; border-radius: 6px;
-    padding: 6px 9px; margin-bottom: 5px;
-}
-.cb-section-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.cb-aspect { width: 100%; }
-.cb-picks-right { border-left: 1px solid #eef2f7; padding-left: 14px; }
-@media (max-width: 900px) {
-    .cb-picks-right {
-        border-left: none; padding-left: 0;
-        border-top: 1px solid #eef2f7; padding-top: 10px;
-    }
-}
-.cb-hover-card {
-    background: #f8fafc; border: 1px solid #e5e7eb; border-radius: 4px;
-    padding: 8px 10px; font-family: ui-monospace, monospace;
-    font-size: 11px; color: #374151;
-    display: grid; grid-template-columns: max-content 1fr;
-    gap: 4px 12px; align-items: baseline;
-}
-.cb-hover-card .cb-hover-key {
-    color: #6b7280; text-transform: uppercase; font-size: 9px;
-    font-weight: 700; letter-spacing: 0.4px;
-}
-.cb-hover-card .cb-hover-val { color: #1f2937; }
-.cb-hover-card.cb-hover-empty { color: #9ca3af; font-style: italic; }
-/* Horizontal variant: hovered-pick stats as an inline strip at the top of the
- * gallery (key:value pairs in a wrapping flex row). */
-.cb-hover-horizontal {
-    display: flex; flex-wrap: wrap; gap: 3px 16px; align-items: baseline;
-    padding: 5px 9px; margin-bottom: 4px;
-}
-.cb-hover-horizontal .cb-hover-pair { display: flex; align-items: baseline; gap: 4px; }
-.cb-gallery-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, 96px);
-    gap: 4px; padding: 6px 2px 6px 2px; justify-content: start;
-}
-.cb-gallery-tile {
-    position: relative; width: 96px; height: 96px;
-    background-color: #0f172a; background-repeat: no-repeat;
-    border-radius: 3px; cursor: pointer; overflow: hidden;
-    border: 2px solid transparent; transition: transform 0.06s ease;
-}
-.cb-gallery-tile:hover { transform: scale(1.04); border-color: #c7d2fe; }
-.cb-gallery-tile.selected {
-    border-color: #4338ca;
-    box-shadow: 0 0 0 1px #4338ca, 0 4px 10px rgba(67,56,202,0.25);
-}
-.cb-gallery-tile .cb-tile-score {
-    position: absolute; bottom: 0; right: 0;
-    padding: 1px 4px; background: rgba(15,23,42,0.72);
-    font-family: ui-monospace, monospace; font-size: 9px; color: #f8fafc;
-    border-top-left-radius: 3px;
-}
-.cb-gallery-tile .cb-tile-z {
-    position: absolute; bottom: 0; left: 0;
-    padding: 1px 4px; background: rgba(15,23,42,0.55);
-    font-family: ui-monospace, monospace; font-size: 9px; color: #cbd5e1;
-    border-top-right-radius: 3px;
-}
-.cb-gallery-tile .cb-tile-idx {
-    position: absolute; top: 0; right: 0;
-    padding: 0 4px; background: rgba(15,23,42,0.55);
-    font-family: ui-monospace, monospace; font-size: 9px; color: #cbd5e1;
-    border-bottom-left-radius: 3px;
-}
-.cb-gallery-tile .cb-tile-rank {
-    position: absolute; top: 0; left: 0;
-    padding: 0 4px; background: rgba(67,56,202,0.85);
-    font-family: ui-monospace, monospace; font-size: 9px; color: white;
-    border-bottom-right-radius: 3px;
-}
-.cb-gallery-empty {
-    padding: 18px; text-align: center; font-size: 11px; color: #6b7280;
-    background: #f8fafc; border-radius: 4px; border: 1px dashed #cbd5e1;
-}
-.cb-reference-strip {
-    display: flex; gap: 8px; align-items: stretch;
-    padding: 6px 2px; border-bottom: 1px dashed #e5e7eb;
-    margin-bottom: 4px;
-}
-.cb-reference-strip .cb-ref-group {
-    display: flex; flex-direction: column; gap: 2px;
-}
-.cb-reference-strip .cb-ref-label {
-    font-size: 9px; color: #6b7280; text-transform: uppercase;
-    font-weight: 700; letter-spacing: 0.4px; padding: 0 2px;
-}
-.cb-reference-strip .cb-ref-tiles {
-    display: flex; gap: 4px;
-}
-.cb-reference-strip .cb-ref-divider {
-    width: 1px; background: #e5e7eb; margin: 0 2px;
-}
-.cb-template-tile {
-    position: relative; width: 96px; height: 96px;
-    background-color: #0f172a; background-repeat: no-repeat;
-    background-size: 96px 96px;
-    border-radius: 3px; overflow: hidden;
-    border: 2px solid #10b981;
-    box-shadow: 0 0 0 1px #10b981;
-}
-.cb-template-tile .cb-tile-rank {
-    position: absolute; top: 0; left: 0;
-    padding: 0 4px; background: rgba(16,185,129,0.92);
-    font-family: ui-monospace, monospace; font-size: 9px; color: white;
-    border-bottom-right-radius: 3px;
-}
-.cb-noise-tile {
-    position: relative; width: 96px; height: 96px;
-    background-color: #0f172a; background-repeat: no-repeat;
-    border-radius: 3px; overflow: hidden; cursor: pointer;
-    border: 2px solid #fb923c;
-    box-shadow: 0 0 0 1px #fb923c;
-    transition: transform 0.06s ease;
-}
-.cb-noise-tile:hover { transform: scale(1.04); }
-.cb-noise-tile .cb-tile-rank {
-    position: absolute; top: 0; left: 0;
-    padding: 0 4px; background: rgba(251,146,60,0.92);
-    font-family: ui-monospace, monospace; font-size: 9px; color: white;
-    border-bottom-right-radius: 3px;
-}
-.cb-noise-tile .cb-tile-score {
-    position: absolute; bottom: 0; right: 0;
-    padding: 1px 4px; background: rgba(15,23,42,0.72);
-    font-family: ui-monospace, monospace; font-size: 9px; color: #f8fafc;
-    border-top-left-radius: 3px;
-}
-.cb-tomo-preview {
-    width: 100%; background: #0f172a; border-radius: 4px;
-    overflow: hidden; position: relative;
-}
-.cb-tomo-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.cb-preview-stack { display: flex; flex-direction: column; gap: 6px; width: 100%; }
-.cb-pick-marker {
-    position: absolute; width: 14px; height: 14px;
-    border-radius: 50%; border: 2px solid #fff;
-    background: rgba(244, 114, 182, 0.95);
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 0 8px rgba(244, 114, 182, 0.55);
-    transform: translate(-50%, -50%);
-    pointer-events: none; opacity: 0;
-    transition: opacity 0.08s ease, left 0.05s linear, top 0.05s linear;
-    z-index: 6; left: 0; top: 0;
-}
-.cb-pick-ghost {
-    position: absolute; width: 5px; height: 5px;
-    border-radius: 50%; background: rgba(67, 56, 202, 0.55);
-    box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.25);
-    transform: translate(-50%, -50%);
-    pointer-events: none; z-index: 4;
-}
-.cb-overlay-hide .cb-pick-ghost { display: none; }
-/* Per-species overlay layer over the shared recon canvas. Inset to the
- * host so child ghost-dots anchor to the same box as the slab image; a
- * single checkbox toggles the whole species layer (X/Y + X/Z together).
- * The layer carries `--sp-color` (set inline per species); the ghost-dot
- * restyle rule below reads it via var() so each species' dots are colored. */
-.cb-pick-layer { position: absolute; inset: 0; pointer-events: none; z-index: 4; }
-.cb-pick-layer-hidden { display: none; }
-.cb-recon-canvas { background: #0f172a; border-radius: 6px; }
-/* X/Y + X/Z stack: the wrapper width (capped to keep X/Y ~52vh tall) governs
- * both views, so the side strip is always the same width as the top-down. */
-.cb-canvas-stack { width: 100%; margin: 0 auto; }
-.cb-species-toggle-row {
-    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-    padding: 4px 2px 6px 2px;
-}
-.cb-species-swatch {
-    width: 10px; height: 10px; border-radius: 50%;
-    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.3); flex: 0 0 auto;
-}
-/* Toggle-legend swatch shape mirrors the dot glyph (see .cb-shape-*). */
-.cb-swatch-circle { border-radius: 50%; }
-.cb-swatch-square { border-radius: 0; }
-.cb-swatch-diamond { border-radius: 0; transform: rotate(45deg); }
-.cb-swatch-triangle { border-radius: 0; clip-path: polygon(50% 0, 0 100%, 100% 100%); }
-/* Particles section: slabs LEFT, galleries RIGHT, side by side so the user
- * can hover a tile and watch its dot light up on the canvas at the same time.
- * Wraps to stacked on narrow viewports. */
-.cb-particles-split { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
-.cb-particles-canvas-col { flex: 1 1 360px; min-width: 280px; max-width: 540px; }
-.cb-particles-tabs-col { flex: 2 1 440px; min-width: 340px; }
-/* Per-species tabs beside the canvas. Matched to the journey aesthetic:
- * small, slate, no-caps, thin indigo indicator, and a per-species color
- * swatch tying each tab to its overlay color on the shared canvas. */
-.cb-species-tabs { min-height: 28px; border-bottom: 1px solid #e5e7eb; }
-.cb-species-panels .q-tab-panel { padding: 8px 0 0 0; }
-.cb-species-tabs .q-tab { min-height: 28px; padding: 0 10px; text-transform: none; }
-.cb-species-tab .q-tab__label {
-    font-size: 11px; font-weight: 600; color: #64748b; line-height: 1.15; white-space: nowrap;
-}
-.cb-species-tabs .q-tab--active .q-tab__label { color: #4338ca; }
-/* Per-species color dot before the label, tying the tab to its canvas overlay
- * color (--sp-color set inline per tab). Uses Quasar's stable tab internals. */
-.cb-species-tab .q-tab__content::before {
-    content: ''; width: 8px; height: 8px; border-radius: 50%;
-    background: var(--sp-color, #94a3b8); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.2);
-    margin-right: 6px; flex: 0 0 auto; align-self: center;
-}
-/* Per-tab header zone: always-visible essentials + icon controls, with the
- * bulky size pills + 3dmod tucked into a collapsed details expansion so the
- * gallery starts high. */
-.cb-tab-header {
-    display: flex; flex-direction: column; gap: 2px;
-    padding: 0 0 6px 0; border-bottom: 1px solid #f1f5f9; margin-bottom: 6px;
-}
-.cb-tab-essentials { font-size: 10px; color: #64748b; font-family: ui-monospace, monospace; }
-.cb-tab-details .q-item { min-height: 22px; padding: 0 4px; }
-.cb-tab-details .q-item__label { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.3px; }
-.cb-tab-details .q-expansion-item__content { padding: 4px 0 2px 0; }
-.cb-preview-toolbar {
-    display: flex; align-items: center; gap: 10px;
-    font-size: 10px; color: #475569;
-    padding: 2px 0 4px 0;
-}
-.cb-gallery-scroll { overflow-y: auto; max-height: 68vh; padding-right: 4px; position: relative; }
-.cb-cutouts-actions { flex-shrink: 0; }
-/* Cutouts on top, controls compacted underneath. */
-.cb-cutouts-head { padding: 0 0 2px 0; }
-.cb-gallery-controls-box {
-    display: flex; flex-direction: column; gap: 4px;
-    margin-top: 6px; padding-top: 6px; border-top: 1px solid #eef2f6;
-    font-size: 11px;
-}
-.cb-gallery-controls-box .cb-filter-toolbar { padding: 0; }
-.cb-gallery-controls-box .cb-hover-card { margin: 0; }
-/* Box-select (lasso) marquee + active state. */
-/* While a box-select drag is in progress: crosshair + suppress text selection.
-   Tiles keep pointer-events (clicks must work); the post-drag synthetic click is
-   swallowed in JS instead. */
-.cb-lasso-dragging, .cb-lasso-dragging .cb-gallery-tile { cursor: crosshair; }
-.cb-lasso-dragging { user-select: none; }
-.cb-lasso-rect {
-    position: absolute; z-index: 6; pointer-events: none;
-    border: 1px dashed #4f46e5; background: rgba(79,70,229,0.12);
-}
-.cb-failures-list {
-    font-size: 10px; color: #6b7280;
-    font-family: ui-monospace, monospace;
-    max-height: 90px; overflow-y: auto;
-    background: #f8fafc; border: 1px solid #e5e7eb;
-    border-radius: 3px; padding: 6px 8px;
-}
-.cb-failures-list .cb-failure-row {
-    display: flex; gap: 8px; padding: 1px 0;
-    border-bottom: 1px dashed #e5e7eb;
-}
-.cb-failures-list .cb-failure-row:last-child { border-bottom: none; }
-.cb-failures-list .cb-failure-i { color: #ef4444; min-width: 32px; }
-.cb-instance-toolbar {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 11px; color: #475569;
-    padding: 2px 0 4px 0; flex-wrap: wrap;
-}
-.cb-datadump-grid {
-    display: grid; grid-template-columns: max-content 1fr;
-    gap: 2px 14px; font-family: ui-monospace, monospace;
-    font-size: 11px; padding: 2px 0;
-}
-.cb-datadump-key {
-    color: #6b7280; text-transform: uppercase;
-    font-size: 9px; font-weight: 600; letter-spacing: 0.3px;
-    align-self: baseline;
-}
-.cb-datadump-val { color: #1f2937; align-self: baseline; word-break: break-all; }
-.cb-metric-strip {
-    font-family: ui-monospace, monospace; font-size: 10px;
-    color: #475569;
-}
-.cb-section-placeholder {
-    font-size: 10px; color: #9ca3af; font-style: italic;
-    padding: 4px 0 2px 0;
-}
-.cb-plot-row {
-    display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 4px 0;
-}
-.cb-plot-cell {
-    flex: 1 1 320px; min-width: 260px;
-    background: #ffffff; border: 1px solid #f1f5f9; border-radius: 4px;
-    padding: 2px 4px;
-}
-.cb-plot-cell-wide { flex: 1 1 100%; min-width: 280px; }
-.cb-plot-label {
-    font-size: 9px; color: #64748b; font-weight: 600;
-    padding: 1px 4px 0; text-transform: uppercase; letter-spacing: 0.3px;
-}
-.cb-stat-strip {
-    display: flex; gap: 14px; flex-wrap: wrap;
-    font-family: ui-monospace, monospace; font-size: 10px;
-    color: #475569; padding: 2px 0 4px 0;
-}
-.cb-stat-strip .cb-stat-key { color: #94a3b8; margin-right: 3px; }
-.cb-stat-strip .cb-stat-val { color: #1e293b; font-weight: 600; }
-.cb-drop-list {
-    font-family: ui-monospace, monospace; font-size: 10px; color: #6b7280;
-    background: #fef3c7; border: 1px solid #fde68a; border-radius: 3px;
-    padding: 6px 8px; margin: 4px 0; max-height: 120px; overflow-y: auto;
-}
-.cb-drop-list .cb-drop-row {
-    display: flex; gap: 8px; padding: 1px 0; border-bottom: 1px dashed #fde68a;
-}
-.cb-drop-list .cb-drop-row:last-child { border-bottom: none; }
-.cb-drop-list .cb-drop-tilt { color: #b45309; min-width: 60px; }
-.cb-datadump-grid-2col {
-    display: grid; grid-template-columns: max-content 1fr max-content 1fr;
-    gap: 2px 12px; font-family: ui-monospace, monospace;
-    font-size: 11px; padding: 2px 0;
-}
-.cb-pixel-section-title {
-    display: flex; align-items: center; gap: 5px; padding: 8px 0 2px 0;
-    font-size: 11px; color: #475569; font-weight: 600;
-    border-top: 1px solid #f1f5f9; margin-top: 6px;
-}
-/* Wrapper allows horizontal scroll on narrow viewports without breaking
- * column alignment. The table itself is one CSS Grid so universal +
- * per-species rows share column widths automatically. */
-.cb-pixel-table-wrapper {
-    overflow-x: auto;
-    padding-bottom: 4px;
-}
-.cb-pixel-table {
-    display: grid;
-    grid-template-columns:
-        minmax(170px, max-content)
-        minmax(60px, max-content)
-        minmax(120px, max-content)
-        minmax(160px, max-content)
-        minmax(150px, max-content)
-        minmax(120px, max-content)
-        minmax(90px, max-content)
-        minmax(180px, 1fr);
-    column-gap: 28px;
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    padding: 2px 0;
-    min-width: max-content;  /* lets the grid grow past the wrapper for x-scroll */
-}
-.cb-pixel-cell {
-    display: flex; align-items: center; gap: 5px;
-    padding: 4px 2px;
-    color: #1f2937;
-    border-bottom: 1px dashed #f1f5f9;
-    white-space: nowrap;
-}
-.cb-pixel-cell.cb-pixel-header {
-    color: #6b7280; text-transform: uppercase;
-    font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
-    border-bottom: 1px solid #e2e8f0;
-}
-.cb-pixel-cell.cb-pixel-warn-error { background: #fef2f2; color: #b91c1c; }
-.cb-pixel-cell.cb-pixel-warn-warn  { background: #fff7ed; color: #b45309; }
-.cb-pixel-cell.cb-pixel-warn-info  { color: #475569; }
-.cb-pixel-cell.cb-pixel-notes { white-space: normal; color: #475569; font-size: 10px; }
-.cb-pixel-stripe {
-    display: inline-block; width: 3px; height: 12px;
-    border-radius: 1px; background: #cbd5e1; flex-shrink: 0;
-}
-.cb-pixel-stage-label    { color: #1e293b; font-weight: 600; }
-.cb-pixel-instance-label { color: #94a3b8; font-size: 9px; }
-.cb-pixel-warn-icon      { cursor: help; }
-/* Species marker = a single full-width row inside the same grid; keeps
- * column alignment perfect. */
-.cb-pixel-species-row {
-    grid-column: 1 / -1;
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 2px 4px 2px; margin-top: 6px;
-    border-top: 1px dashed #cbd5e1;
-    font-family: ui-monospace, monospace;
-    background: #f8fafc;
-}
-.cb-pixel-species-row .cb-pixel-stripe { width: 4px; height: 14px; }
-.cb-pixel-species-name {
-    color: #334155; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.5px; font-size: 11px;
-}
-.cb-pixel-species-id {
-    color: #94a3b8; font-size: 9px; font-weight: 400;
-}
-/* Inline status chips used in section-card headers and chip strips. */
-.cb-chip-strip {
-    display: flex; gap: 6px; flex-wrap: wrap;
-    padding: 4px 0 6px 0;
-}
-.cb-chip {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 2px 8px; border-radius: 999px;
-    font-family: ui-monospace, monospace; font-size: 10px;
-    border: 1px solid #e5e7eb; background: #f8fafc;
-    color: #475569; cursor: help; line-height: 1.4;
-    white-space: nowrap;
-}
-.cb-chip .cb-chip-label {
-    color: #94a3b8; text-transform: uppercase;
-    font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
-}
-.cb-chip .cb-chip-value { color: #1e293b; font-weight: 600; }
-.cb-chip-ok      { background: #ecfdf5; border-color: #a7f3d0; }
-.cb-chip-ok      .cb-chip-value { color: #047857; }
-.cb-chip-warn    { background: #fffbeb; border-color: #fcd34d; }
-.cb-chip-warn    .cb-chip-value { color: #b45309; }
-.cb-chip-error   { background: #fef2f2; border-color: #fecaca; }
-.cb-chip-error   .cb-chip-value { color: #b91c1c; }
-.cb-chip-info    { background: #eff6ff; border-color: #bfdbfe; }
-.cb-chip-info    .cb-chip-value { color: #1d4ed8; }
-.cb-chip-neutral { background: #f1f5f9; }
-.cb-chip-icon    { font-size: 11px !important; }
-/* Recon-section large canvas: viewport-filling WarpTools PNG preview. */
-.cb-recon-preview {
-    width: 100%;
-    background: #0f172a;
-    border-radius: 6px;
-    overflow: hidden;
-    margin: 8px 0 4px 0;
-    display: flex; justify-content: center; align-items: center;
-}
-.cb-recon-preview img {
-    width: 100%;
-    max-height: 75vh;
-    object-fit: contain;
-    display: block;
-}
-.cb-recon-preview-caption {
-    font-family: ui-monospace, monospace; font-size: 10px;
-    color: #6b7280; padding: 2px 4px 6px 4px;
-}
-/* ----------------------------------------------------------------------
- * Polarity invert: a runtime toggle in the section header flips the
- * apparent intensity of template, X/Y slab, X/Z slab, and cutout tiles
- * together — same density convention across all four. Double-invert
- * trick on tile children keeps overlay labels readable.
- * ---------------------------------------------------------------------- */
-.cb-invert-polarity .cb-tomo-preview > img,
-.cb-invert-polarity .cb-template-tile,
-.cb-invert-polarity .cb-noise-tile,
-.cb-invert-polarity .cb-gallery-tile {
-    filter: invert(1) hue-rotate(180deg);
-}
-.cb-invert-polarity .cb-template-tile > *,
-.cb-invert-polarity .cb-noise-tile > *,
-.cb-invert-polarity .cb-gallery-tile > * {
-    filter: invert(1) hue-rotate(180deg);
-}
-/* Shared recon canvas: `ui.image` renders a q-img that nests the <img> a
- * couple levels down, so the `> img` direct-child rule above can miss it.
- * Use a descendant combinator scoped to the canvas so Invert reliably
- * flips the slab. Same filter value → no double-inversion where both match.
- * Pick-dot layers are excluded, so dots keep their species colors. */
-.cb-invert-polarity .cb-recon-canvas img {
-    filter: invert(1) hue-rotate(180deg);
-}
-/* Ghost dots and the pick marker overlay sit on top of the X/Y / X/Z
- * preview img. They aren't part of the inverted set — keep them at
- * their declared color so they don't flicker between hues when toggled. */
-
-/* ----------------------------------------------------------------------
- * Ghost dot restyle: smaller, brighter (cyan), white ring; pointer-events
- * enabled so they're individually hoverable (drives reverse highlight of
- * the matching gallery tile via the JS bridge in _render_gallery_body).
- * ---------------------------------------------------------------------- */
-.cb-pick-ghost {
-    pointer-events: auto !important;
-    cursor: pointer;
-    width: 3px !important; height: 3px !important;
-    background: var(--sp-color, #00e5ff) !important;
-    /* Crisp dual ring: solid dark inner + bright white outer. At this tiny
-     * size the high-contrast double ring is what makes the dot legible on
-     * any tomogram backdrop — not the dot area itself. */
-    box-shadow: 0 0 0 1px rgba(0,0,0,1), 0 0 0 2px rgba(255,255,255,0.9) !important;
-    transition: box-shadow 0.08s ease;
-}
-/* Invisible hit-area so the 3px dot is easy to hover AND click (click toggles
- * keep/drop). Inherits pointer-events:auto from the dot. */
-.cb-pick-ghost::after { content: ''; position: absolute; inset: -4px; }
-/* Active / hover: NO size change — just a subtle colored backlight glow so the
- * matching pick reads at a glance without ballooning over its neighbours. */
-.cb-pick-ghost:hover,
-.cb-pick-ghost.cb-ghost-active {
-    box-shadow: 0 0 0 1px rgba(0,0,0,1), 0 0 0 2px rgba(255,255,255,1),
-                0 0 6px 1.5px var(--sp-color, #00e5ff) !important;
-    z-index: 7;
-}
-/* Dropped/excluded pick: grey the dot so the slab agrees with the gallery
- * (filtered cutouts → greyed dots). Overrides the species color + glow. */
-.cb-pick-ghost.cb-pick-ghost-dropped {
-    background: #9ca3af !important;
-    box-shadow: 0 0 0 1px rgba(0,0,0,0.55), 0 0 0 2px rgba(255,255,255,0.35) !important;
-    opacity: 0.5;
-}
-/* Per-list glyph (set on the layer via .cb-shape-*, cascades to its dots).
- * Color stays the primary distinguisher; shape is secondary reinforcement.
- * Dots are 3px and lean on the dual ring for legibility, so shapes stay
- * simple (triangle trades the ring for a filled glyph — used only by merged). */
-.cb-shape-circle .cb-pick-ghost { border-radius: 50%; }
-.cb-shape-square .cb-pick-ghost { border-radius: 0; }
-.cb-shape-diamond .cb-pick-ghost { border-radius: 0; transform: translate(-50%, -50%) rotate(45deg); }
-.cb-shape-triangle .cb-pick-ghost { border-radius: 0; clip-path: polygon(50% 0, 0 100%, 100% 100%); }
-
-/* ----------------------------------------------------------------------
- * Filter UX: per-tile keep/drop state. Default is keep (no extra class);
- * dropped tiles dim + show diagonal strikethrough so the user can scan a
- * sorted grid and see which were vetoed without losing their position.
- * ---------------------------------------------------------------------- */
-.cb-gallery-tile.cb-tile-dropped {
-    border-color: #ef4444 !important;
-    box-shadow: 0 0 0 1px #ef4444 !important;
-}
-.cb-gallery-tile.cb-tile-dropped::after {
-    content: '';
-    position: absolute; inset: 0;
-    pointer-events: none;
-    background: repeating-linear-gradient(
-        135deg,
-        rgba(239,68,68,0.0) 0 6px,
-        rgba(239,68,68,0.55) 6px 7px
-    );
-}
-/* Degenerate tiles: candidates that produced no cutout (no subtomo match /
- * render failed), shown at the end of the grid for count↔index transparency.
- * Flat slate placeholder, not interactive; the ✕ + index + reason tooltip make
- * it obvious these aren't pickable. When the exclude checkbox is on they read
- * as struck-through (excluded from the saved set). */
-.cb-gallery-tile.cb-tile-degenerate {
-    background: #1e293b; cursor: default; opacity: 0.7;
-    border-color: #334155 !important; box-shadow: none !important;
-    display: flex; align-items: center; justify-content: center;
-}
-.cb-gallery-tile.cb-tile-degenerate .cb-tile-degen-mark {
-    font-size: 22px; color: #64748b; line-height: 1;
-}
-.cb-degen-toggle .q-checkbox__label { font-size: 10px; color: #64748b; }
-/* Reverse-hover highlight: when the user mouses a ghost dot in the preview,
- * the matching gallery tile gets this transient ring (distinct from the
- * persistent .selected state so the two don't collide visually). */
-.cb-gallery-tile.cb-tile-highlight {
-    outline: 2px solid #22d3ee;
-    outline-offset: 1px;
-    box-shadow: 0 0 0 1px #22d3ee, 0 0 8px rgba(34,211,238,0.6);
-}
-.cb-filter-toolbar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 4px 0; flex-wrap: wrap;
-}
-/* Saved filtered-set path line (under the toolbar); reuses .cb-info-* styling. */
-.cb-filter-path { gap: 6px; padding: 0 0 4px 0; }
-.cb-filter-counter {
-    font-family: ui-monospace, monospace; font-size: 10px;
-    color: #475569;
-    padding: 1px 6px; border-radius: 3px;
-    background: #f1f5f9; border: 1px solid #e2e8f0;
-}
-.cb-filter-counter.cb-filter-dirty {
-    color: #b45309; background: #fef3c7; border-color: #fde68a;
-}
-"""
-
-
-def _ensure_assets_loaded() -> None:
-    ui.add_head_html(f"<style>{_CB_CSS}</style>")
 
 
 # ---------------------------------------------------------------------------
@@ -1849,7 +175,7 @@ def open_tomo_dashboard(ts_name: Optional[str] = None, focus_section: Optional[s
     # Per-mount auto-kick dedup. Cleared on each fresh dashboard open so a
     # reload after the user fixed a stuck job re-triggers generation.
     reset_auto_kick_state()
-    _ensure_assets_loaded()
+    ensure_assets_loaded()
 
     with (
         ui.dialog().props("maximized") as dlg,
@@ -2189,17 +515,6 @@ def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, re
 # ---------------------------------------------------------------------------
 
 
-def _find_job_by_type(project_state, jt: JobType) -> Optional[tuple[str, object]]:
-    """Return (instance_id, job_model) for the first job matching this type,
-    or None. The match accepts either `job_model.job_type == jt` or an
-    `instance_id` whose base prefix matches `jt.value` (covers `__species`
-    instances)."""
-    for iid, jm in (project_state.jobs or {}).items():
-        if getattr(jm, "job_type", None) == jt or iid.split("__")[0] == jt.value:
-            return iid, jm
-    return None
-
-
 def _render_datadump_card(
     section_key: str,
     icon: str,
@@ -2236,67 +551,6 @@ def _render_datadump_card(
 
 
 # ---------------------------------------------------------------------------
-# Pixel / binning sanity panel  (ROADMAP §11)
-#
-# Shows, in one dense monospace table, how pixel size + tomogram dimensions
-# + per-instance box / padding / particle-diameter propagate through the
-# pipeline. Sanity rules flag violations inline (per-cell icon + tooltip):
-#  - box (Å) vs particle diameter (Å) outside 1.5–3×
-#  - subtomo crop > box (impossible padding)
-#  - particle diameter inconsistency across candidate-extract instances
-#  - template volume px ≠ reconstruction px (picks would be garbage)
-# ---------------------------------------------------------------------------
-
-
-def _split_species_id(instance_id: str) -> Optional[str]:
-    """`templatematching__ribosome` → `ribosome`; bare instance_id → None."""
-    parts = instance_id.split("__", 1)
-    return parts[1] if len(parts) > 1 else None
-
-
-def _resolve_species(state, job_model, instance_id: str):
-    """Find the ParticleSpecies a per-particle job is attached to. Tries:
-    1. `instance_id` suffix (`templatematching__ribosome` → `ribosome`).
-    2. `job_model.species_id` field (set even when instance_id is bare).
-    3. Single-species fallback: if exactly one species exists in the
-       project, attribute the job to it.
-    Returns (species or None, species_id or None)."""
-    sid = _split_species_id(instance_id)
-    if sid:
-        sp = state.get_species(sid)
-        if sp:
-            return sp, sid
-    sid2 = getattr(job_model, "species_id", None)
-    if sid2:
-        sp = state.get_species(sid2)
-        if sp:
-            return sp, sid2
-        return None, sid2
-    if len(state.species_registry) == 1:
-        sp = state.species_registry[0]
-        return sp, sp.id
-    return None, None
-
-
-# Template-header reads are cached centrally in
-# services.templating.template_metadata (mtime-keyed); use the shared
-# helper here as a thin tuple shim so existing callsites don't change.
-
-
-def _read_template_apix_box(template_path: str) -> tuple[Optional[float], Optional[int]]:
-    info = read_template_header(template_path)
-    return info.apix_ang, info.box_px
-
-
-def _template_match_instances(state) -> list[tuple[str, object]]:
-    out: list[tuple[str, object]] = []
-    for iid, jm in state.jobs.items():
-        if getattr(jm, "job_type", None) == JobType.TEMPLATE_MATCH_PYTOM:
-            out.append((iid, jm))
-    return sorted(out, key=lambda kv: kv[0])
-
-
-# ---------------------------------------------------------------------------
 # tmResults *_job.json reader — surfaces what PyTOM actually applied per TS
 # (vs. what the user declared in project_params.json)
 # ---------------------------------------------------------------------------
@@ -2313,600 +567,6 @@ def _read_tm_job_json(job_dir: Path, ts_name: str) -> Optional[dict]:
     except Exception as e:
         logger.warning("Could not read TM job json %s: %s", p, e)
         return None
-
-
-def _parse_tomo_dimensions(s: str) -> Optional[tuple[int, int, int]]:
-    """`'4096x4096x2048'` → `(4096, 4096, 2048)`. Returns None on parse failure.
-    Native-pixel-size dimensions as written into TsAlignmentParams.tomo_dimensions."""
-    if not s:
-        return None
-    try:
-        parts = s.lower().split("x")
-        if len(parts) != 3:
-            return None
-        return (int(parts[0]), int(parts[1]), int(parts[2]))
-    except (ValueError, AttributeError):
-        return None
-
-
-def _scale_tomo_dims(native_dims: tuple[int, int, int], native_px: float, target_px: float) -> tuple[int, int, int]:
-    if target_px <= 0 or native_px <= 0:
-        return native_dims
-    f = native_px / target_px
-    return (int(round(native_dims[0] * f)), int(round(native_dims[1] * f)), int(round(native_dims[2] * f)))
-
-
-def _compute_pixel_chain(project_state) -> list[dict]:
-    """Walk pipeline stages and return rows for the pixel-sanity table.
-    One row per pipeline stage; multi-instance fan-out for TM / Pick / Subtomo
-    (one row per species). Each row has the columns the table renders, plus
-    an empty `warnings` dict that `_apply_sanity_rules` later populates."""
-    ms = project_state.microscope
-    acq = project_state.acquisition
-    native_px = float(ms.pixel_size_angstrom or 0.0)
-
-    rows: list[dict] = []
-
-    def make_row(stage_key: str, stage_label: str, **kw) -> dict:
-        return {
-            "stage_key": stage_key,
-            "stage_label": stage_label,
-            "px_size_ang": kw.get("px_size_ang"),
-            "tomo_px": kw.get("tomo_px"),
-            "box_px": kw.get("box_px"),
-            "box_ang": kw.get("box_ang"),
-            "particle_diameter_ang": kw.get("particle_diameter_ang"),
-            "notes": kw.get("notes") or [],
-            "warnings": {},
-            "instance_id": kw.get("instance_id"),
-            "species_color": kw.get("species_color"),
-            "species_id": kw.get("species_id"),
-            "species_name": kw.get("species_name"),
-            "_template_workbench_px": kw.get("_template_workbench_px"),
-            "_crop_px": kw.get("_crop_px"),
-        }
-
-    # ---- Camera (always) ----
-    rows.append(
-        make_row(
-            "camera",
-            "Camera",
-            px_size_ang=native_px or None,
-            tomo_px=(acq.detector_dimensions[0], acq.detector_dimensions[1], None),
-            notes=[f"detector frame · {int(ms.acceleration_voltage_kv)} kV"],
-        )
-    )
-
-    # ---- FS Motion / CTF ----
-    fs = _find_job_by_type(project_state, JobType.FS_MOTION_CTF)
-    if fs:
-        rows.append(
-            make_row(
-                "fs_ctf",
-                "FS Motion / CTF",
-                px_size_ang=native_px or None,
-                instance_id=fs[0],
-                notes=["per-frame; no rescale"],
-            )
-        )
-
-    # ---- Tilt Filter (pipeline job OR standalone) ----
-    tf_in_pipeline = _find_job_by_type(project_state, JobType.TILT_FILTER)
-    tf_standalone = (
-        project_state.project_path is not None and (Path(project_state.project_path) / "TiltFilter").exists()
-    )
-    if tf_in_pipeline or tf_standalone:
-        rows.append(
-            make_row(
-                "tilt_filter",
-                "Tilt Filter",
-                px_size_ang=native_px or None,
-                instance_id=tf_in_pipeline[0] if tf_in_pipeline else None,
-                notes=["row drop only; no rescale"],
-            )
-        )
-
-    # ---- Alignment (rescale + native-px tomo dims) ----
-    ali = _find_job_by_type(project_state, JobType.TS_ALIGNMENT)
-    aligned_px: Optional[float] = None
-    aligned_dims_native: Optional[tuple[int, int, int]] = None
-    aligned_dims_at_align_px: Optional[tuple[int, int, int]] = None
-    if ali:
-        ali_iid, ali_jm = ali
-        v = float(getattr(ali_jm, "rescale_angpixs", 0.0) or 0.0)
-        aligned_px = v if v > 0 else None
-        aligned_dims_native = _parse_tomo_dimensions(getattr(ali_jm, "tomo_dimensions", "") or "")
-        if aligned_dims_native and aligned_px and native_px > 0:
-            aligned_dims_at_align_px = _scale_tomo_dims(aligned_dims_native, native_px, aligned_px)
-        notes = []
-        if aligned_px and native_px > 0:
-            notes.append(f"rescale ÷{aligned_px / native_px:.1f}")
-        am = getattr(ali_jm, "alignment_method", None)
-        if am is not None:
-            notes.append(f"method={getattr(am, 'value', am)}")
-        rows.append(
-            make_row(
-                "align",
-                "Align",
-                px_size_ang=aligned_px,
-                tomo_px=aligned_dims_at_align_px,
-                instance_id=ali_iid,
-                notes=notes,
-            )
-        )
-
-    # ---- TS CTF (post-alignment refit; inherits aligned px / dims) ----
-    ctf = _find_job_by_type(project_state, JobType.TS_CTF)
-    if ctf:
-        rows.append(
-            make_row(
-                "ts_ctf",
-                "TS CTF",
-                px_size_ang=aligned_px,
-                tomo_px=aligned_dims_at_align_px,
-                instance_id=ctf[0],
-                notes=["inherits align scale"],
-            )
-        )
-
-    # ---- Reconstruct (rescale to recon_px) ----
-    rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
-    recon_px: Optional[float] = None
-    recon_dims: Optional[tuple[int, int, int]] = None
-    if rec:
-        rec_iid, rec_jm = rec
-        v = float(getattr(rec_jm, "rescale_angpixs", 0.0) or 0.0)
-        recon_px = v if v > 0 else None
-        if aligned_dims_native and recon_px and native_px > 0:
-            recon_dims = _scale_tomo_dims(aligned_dims_native, native_px, recon_px)
-        notes = []
-        if recon_px and native_px > 0:
-            notes.append(f"rescale ÷{recon_px / native_px:.1f}")
-        if getattr(rec_jm, "deconv", 0):
-            notes.append("deconv")
-        rows.append(
-            make_row("recon", "Recon", px_size_ang=recon_px, tomo_px=recon_dims, instance_id=rec_iid, notes=notes)
-        )
-
-    # ---- Template Match (one row per species) ----
-    for tm_iid, tm_jm in _template_match_instances(project_state):
-        species, species_id = _resolve_species(project_state, tm_jm, tm_iid)
-        # Template path: per-job override (v1) wins when set, otherwise the
-        # species's v2 template (or v1 fallback). MRC header is the
-        # authoritative source for apix and box.
-        tmpl_path = getattr(tm_jm, "template_path", "") or (get_effective_template_path(species) if species else "")
-        tmpl_px = 0.0
-        tmpl_box = 0
-        if tmpl_path:
-            mrc_apix, mrc_box = _read_template_apix_box(tmpl_path)
-            tmpl_px = float(mrc_apix or 0.0)
-            tmpl_box = int(mrc_box or 0)
-        op_px = recon_px or aligned_px
-        tmpl_box_ang = (tmpl_box * tmpl_px) if (tmpl_box and tmpl_px) else None
-        notes = []
-        ang_search = getattr(tm_jm, "angular_search", None)
-        if ang_search:
-            notes.append(f"θ={ang_search}°")
-        # Symmetry: prefer species (v2 source of truth); fall back to job (v1).
-        sym = (getattr(species, "symmetry", None) if species else None) or getattr(tm_jm, "symmetry", None)
-        if sym:
-            notes.append(f"sym={sym}")
-        if tmpl_px:
-            notes.append(f"tmpl px={tmpl_px:g}")
-        if tmpl_path and not (tmpl_px and tmpl_box):
-            notes.append("tmpl header unreadable")
-        rows.append(
-            make_row(
-                "tm",
-                "TM",
-                px_size_ang=op_px,
-                tomo_px=recon_dims,
-                box_px=tmpl_box if tmpl_box else None,
-                box_ang=tmpl_box_ang,
-                instance_id=tm_iid,
-                species_color=getattr(species, "color", None),
-                species_id=species_id,
-                species_name=getattr(species, "name", None) or species_id,
-                _template_workbench_px=tmpl_px or None,
-                notes=notes,
-            )
-        )
-
-    # ---- Candidate Extract (one row per species) ----
-    candidate_diameter_by_species: dict[Optional[str], list[tuple[str, float]]] = {}
-    for ce_iid, ce_jm in _candidate_extract_instances(project_state):
-        species, species_id = _resolve_species(project_state, ce_jm, ce_iid)
-        # Particle diameter: prefer species.diameter_ang (v2 source of truth);
-        # fall back to the per-Pick-job value (v1) so projects pre-migration
-        # still surface a number.
-        species_diameter = float(getattr(species, "diameter_ang", 0.0) or 0.0) if species else 0.0
-        diameter = species_diameter or float(getattr(ce_jm, "particle_diameter_ang", 0.0) or 0.0)
-        if diameter:
-            candidate_diameter_by_species.setdefault(species_id, []).append((ce_iid, diameter))
-        notes = []
-        method = getattr(ce_jm, "cutoff_method", None)
-        cv = getattr(ce_jm, "cutoff_value", None)
-        if method is not None and cv is not None:
-            mv = getattr(method, "value", str(method))
-            notes.append(f"{mv}={cv:g}")
-        max_n = getattr(ce_jm, "max_num_particles", None)
-        if max_n:
-            notes.append(f"max N={max_n}")
-        score_apix = getattr(ce_jm, "apix_score_map", "auto") or "auto"
-        if score_apix and score_apix != "auto":
-            notes.append(f"score apix={score_apix}")
-        # Particle diameter in voxels at recon px (handy mental check)
-        if diameter and recon_px:
-            notes.append(f"Ø ≈ {diameter / recon_px:.0f} px @ {recon_px:g} Å/px")
-        rows.append(
-            make_row(
-                "pick",
-                "Pick",
-                px_size_ang=recon_px,
-                tomo_px=recon_dims,
-                particle_diameter_ang=diameter or None,
-                instance_id=ce_iid,
-                species_color=getattr(species, "color", None),
-                species_id=species_id,
-                species_name=getattr(species, "name", None) or species_id,
-                notes=notes,
-            )
-        )
-
-    # ---- Subtomo Extract (one row per species) ----
-    for se_iid, se_jm in _subtomo_extract_instances(project_state):
-        species, species_id = _resolve_species(project_state, se_jm, se_iid)
-        binning = float(getattr(se_jm, "binning", 1.0) or 1.0)
-        eff_px = (native_px * binning) if native_px > 0 else None
-        bx = int(getattr(se_jm, "box_size", 0) or 0)
-        cx = int(getattr(se_jm, "crop_size", -1) or -1)
-        box_px = bx if bx > 0 else None
-        box_ang = (box_px * eff_px) if (box_px and eff_px) else None
-        notes = []
-        if binning != 1.0:
-            notes.append(f"bin={binning:g}")
-        # Surface candidate diameter cross-link for sanity rule
-        diameter_for_species: Optional[float] = None
-        items = candidate_diameter_by_species.get(species_id) or []
-        if items:
-            diameter_for_species = items[0][1]
-        rows.append(
-            make_row(
-                "subtomo",
-                "Subtomo",
-                px_size_ang=eff_px,
-                box_px=box_px,
-                box_ang=box_ang,
-                particle_diameter_ang=diameter_for_species,
-                instance_id=se_iid,
-                species_color=getattr(species, "color", None),
-                species_id=species_id,
-                species_name=getattr(species, "name", None) or species_id,
-                _crop_px=cx if cx > 0 else None,
-                notes=notes,
-            )
-        )
-
-    return rows
-
-
-def _apply_sanity_rules(rows: list[dict]) -> None:
-    """Mutate `rows`: populate per-cell `warnings` for sanity-rule violations.
-
-    Each warning is `(level, message)` where level ∈ {"error", "warn", "info"}
-    and the dict key matches a column id from `_PIXEL_COLUMNS` (so the icon
-    attaches to the offending cell).
-    """
-    recon_px: Optional[float] = None
-    for r in rows:
-        if r["stage_key"] == "recon":
-            recon_px = r["px_size_ang"]
-            break
-
-    # Particle diameter consistency across candidate-extract instances of
-    # the same species
-    by_species: dict[Optional[str], list[dict]] = {}
-    for r in rows:
-        if r["stage_key"] == "pick" and r.get("particle_diameter_ang"):
-            by_species.setdefault(r.get("species_id"), []).append(r)
-    for sid, items in by_species.items():
-        if len(items) <= 1:
-            continue
-        diam_values = [r["particle_diameter_ang"] for r in items]
-        if max(diam_values) - min(diam_values) > 1e-3 * max(diam_values):
-            msg = (
-                f"Particle diameter differs across candidate-extract instances for "
-                f"species '{sid or '—'}' ({min(diam_values):g}–{max(diam_values):g} Å) — "
-                f"likely a binning-arithmetic mistake."
-            )
-            for r in items:
-                r["warnings"]["particle"] = ("warn", msg)
-
-    # Box vs particle diameter  (TM and Subtomo)
-    # Box vs particle Ø — tighter zones than the older 1.5–3.0× window
-    # (per JOURNEY_CANDIDATE_METRICS.md §"Box and crop sizing rationality"):
-    #   red  < 1.5×  (particle won't fit; tight Refine3D shifts will clip)
-    #   amber 1.5–2.0× (acceptable but no margin for refinement)
-    #   green 2.0–3.0×
-    #   amber > 3.0× (wasted compute)
-    for r in rows:
-        if r["stage_key"] not in ("tm", "subtomo"):
-            continue
-        b = r.get("box_ang")
-        d = r.get("particle_diameter_ang")
-        if not b or not d:
-            continue
-        ratio = b / d
-        if ratio < 1.5:
-            r["warnings"]["box"] = (
-                "error",
-                f"Box {b:g} Å is {ratio:.2f}× particle diameter {d:g} Å — particle won't fit. "
-                f"Aim for ≥ 2.0× (≥ 1.5× absolute floor).",
-            )
-        elif ratio < 2.0:
-            r["warnings"]["box"] = (
-                "warn",
-                f"Box {b:g} Å is {ratio:.2f}× particle diameter {d:g} Å — tight; no margin for "
-                f"Refine3D shifts. Aim for ≥ 2.0×.",
-            )
-        elif ratio > 3.0:
-            r["warnings"]["box"] = (
-                "warn",
-                f"Box {b:g} Å is {ratio:.2f}× particle diameter {d:g} Å — wasted compute. Aim for 2.0–3.0×.",
-            )
-
-    # Template volume px vs recon px (silent mismatch ⇒ garbage picks)
-    if recon_px:
-        for r in rows:
-            if r["stage_key"] != "tm":
-                continue
-            wb_px = r.get("_template_workbench_px")
-            if wb_px and abs(wb_px - recon_px) / recon_px > 0.05:
-                r["warnings"]["px"] = (
-                    "error",
-                    f"Template prepared at {wb_px:g} Å/px but reconstruction is at "
-                    f"{recon_px:g} Å/px. Picks will be unreliable from this mismatch. "
-                    f"Re-render the template at {recon_px:g} Å/px (simpler than re-running "
-                    f"the reconstruction; templates are cheap to regenerate).",
-                )
-
-    # Subtomo crop sanity
-    #
-    # Crop ratio thresholds (per JOURNEY_CANDIDATE_METRICS.md):
-    #   red    crop < diameter  (particle clipped — absolute floor)
-    #   red    crop > box       (invalid; crop must fit inside box)
-    #   amber  crop / diameter  < 1.2× (tight; no margin for shifts)
-    #   green  crop / diameter ≥ 1.5×
-    for r in rows:
-        if r["stage_key"] != "subtomo":
-            continue
-        crop = r.get("_crop_px")
-        box = r.get("box_px")
-        eff_px = r.get("px_size_ang")
-        diameter = r.get("particle_diameter_ang")
-        if box and crop is not None and crop > box:
-            r["warnings"]["crop"] = (
-                "error",
-                f"crop ({crop} px) > box ({box} px) — invalid; crop must fit within the box.",
-            )
-            continue
-        # Cropped volume must contain the particle (≥ 1× diameter is the
-        # absolute floor; below that, the particle doesn't fit in the cropped
-        # output cube and gets clipped). Between 1.0–1.2× is the "tight,
-        # no margin" warn zone; ≥ 1.5× is the comfortable target.
-        if crop and eff_px and diameter:
-            crop_ang = crop * eff_px
-            ratio = crop_ang / diameter
-            if ratio < 1.0:
-                r["warnings"]["crop"] = (
-                    "error",
-                    f"crop {crop_ang:g} Å ({crop} px) < particle diameter {diameter:g} Å — "
-                    f"particle won't fit in the cropped subtomogram. Increase crop_size.",
-                )
-            elif ratio < 1.2:
-                r["warnings"]["crop"] = (
-                    "warn",
-                    f"crop {crop_ang:g} Å is {ratio:.2f}× particle diameter {diameter:g} Å — "
-                    f"tight; only {(ratio - 1) * 50:.0f}% margin per side around the particle. "
-                    f"Refine3D shifts may clip. Aim for ≥ 1.5×.",
-                )
-
-
-# --- Sanity-table renderers --------------------------------------------------
-
-
-def _fmt_px(v: Optional[float]) -> str:
-    return "—" if not v else f"{v:g}"
-
-
-def _fmt_dims_px(d: Optional[tuple]) -> str:
-    if d is None:
-        return "—"
-    parts = [str(x) for x in d if x is not None]
-    return " × ".join(parts) if parts else "—"
-
-
-def _fmt_dims_ang(d: Optional[tuple], px: Optional[float]) -> str:
-    if d is None or not px:
-        return "—"
-    vals = [int(round(x * px)) for x in d if x is not None]
-    return " × ".join(f"{v:,}" for v in vals) if vals else "—"
-
-
-def _fmt_box_combined(r: dict) -> str:
-    """`128 px (794 Å)` or `—`. Single column, both units inline."""
-    bp = r.get("box_px")
-    ba = r.get("box_ang")
-    if bp is None and ba is None:
-        return "—"
-    if bp is None:
-        return f"{ba:g} Å"
-    if ba is None:
-        return f"{bp} px"
-    return f"{bp} px ({ba:g} Å)"
-
-
-def _fmt_crop_combined(r: dict) -> str:
-    cp = r.get("_crop_px")
-    eff_px = r.get("px_size_ang")
-    if not cp:
-        return "—"
-    if eff_px:
-        return f"{cp} px ({cp * eff_px:g} Å)"
-    return f"{cp} px"
-
-
-def _fmt_particle(r: dict) -> str:
-    d = r.get("particle_diameter_ang")
-    if not d:
-        return "—"
-    return f"{d:g} Å"
-
-
-def _pixel_cell(text: str, warning: Optional[tuple[str, str]] = None, *, notes: bool = False) -> None:
-    cls = "cb-pixel-cell"
-    if notes:
-        cls += " cb-pixel-notes"
-    if warning:
-        cls += f" cb-pixel-warn-{warning[0]}"
-    with ui.element("div").classes(cls):
-        ui.label(text)
-        if warning:
-            icon = "error" if warning[0] == "error" else "warning_amber"
-            ui.icon(icon, size="12px").classes("cb-pixel-warn-icon").tooltip(warning[1])
-
-
-_PIXEL_COLUMNS: list[tuple[str, str, str]] = [
-    ("stage", "stage", ""),
-    ("px", "Å/px", "Pixel size at this stage."),
-    ("dim_px", "tomo (px)", "Tomogram (or detector) dimensions in voxels at this stage's pixel size."),
-    (
-        "dim_ang",
-        "tomo (Å)",
-        "Physical size of the imaged volume in Å. Approximately invariant across stages — "
-        "only the px sampling changes with binning.",
-    ),
-    (
-        "box",
-        "box",
-        "Template-volume box (TM) or particle subtomo box (Subtomo). Shown as 'N px (M Å)'. "
-        "Flagged when the Å dimension is outside 1.5–3× of particle diameter.",
-    ),
-    (
-        "crop",
-        "crop",
-        "Cropped subtomogram size — Subtomo Extract only. crop_size = -1 in config means 'no cropping'. "
-        "Shown as 'N px (M Å)'.",
-    ),
-    (
-        "particle",
-        "particle",
-        "Particle diameter (Å) — set on Candidate Extract. Cross-applies to TM and Subtomo rows for "
-        "the box-vs-particle sanity check (since the box must contain the particle plus margin).",
-    ),
-    ("notes", "notes", ""),
-]
-
-_UNIVERSAL_STAGE_KEYS = {"camera", "fs_ctf", "tilt_filter", "align", "ts_ctf", "recon"}
-
-
-def _render_pixel_row_cells(r: dict) -> None:
-    """Emit the row cells for one row inside the surrounding `cb-pixel-table`.
-    Column count must match `_PIXEL_COLUMNS`."""
-    stripe = r.get("species_color")
-    for col_key, _label, _hint in _PIXEL_COLUMNS:
-        warning = r["warnings"].get(col_key)
-        if col_key == "stage":
-            cls = "cb-pixel-cell"
-            if warning:
-                cls += f" cb-pixel-warn-{warning[0]}"
-            with ui.element("div").classes(cls):
-                ui.element("span").classes("cb-pixel-stripe").style(f"background:{stripe};" if stripe else "")
-                ui.label(r["stage_label"]).classes("cb-pixel-stage-label")
-                if r.get("instance_id"):
-                    ui.label(r["instance_id"]).classes("cb-pixel-instance-label")
-        elif col_key == "px":
-            _pixel_cell(_fmt_px(r["px_size_ang"]), warning)
-        elif col_key == "dim_px":
-            _pixel_cell(_fmt_dims_px(r["tomo_px"]), warning)
-        elif col_key == "dim_ang":
-            _pixel_cell(_fmt_dims_ang(r["tomo_px"], r["px_size_ang"]), warning)
-        elif col_key == "box":
-            _pixel_cell(_fmt_box_combined(r), warning)
-        elif col_key == "crop":
-            _pixel_cell(_fmt_crop_combined(r), warning)
-        elif col_key == "particle":
-            _pixel_cell(_fmt_particle(r), warning)
-        elif col_key == "notes":
-            _pixel_cell(" · ".join(r["notes"]) if r["notes"] else "—", warning, notes=True)
-
-
-def _render_pixel_header_cells() -> None:
-    for _, label, hint in _PIXEL_COLUMNS:
-        with ui.element("div").classes("cb-pixel-cell cb-pixel-header"):
-            ui.label(label)
-            if hint:
-                ui.icon("info_outline", size="11px").classes("cb-pixel-warn-icon").tooltip(hint)
-
-
-def _group_rows_by_species(rows: list[dict]) -> tuple[list[dict], list[tuple[Optional[str], list[dict]]]]:
-    """Split into (universal_rows, [(species_id, species_rows), ...]).
-    Universal stages share one table; per-species stages each get their own
-    sub-table so multi-species projects stay readable."""
-    universal: list[dict] = []
-    by_species: dict[Optional[str], list[dict]] = {}
-    species_order: list[Optional[str]] = []
-    for r in rows:
-        if r["stage_key"] in _UNIVERSAL_STAGE_KEYS:
-            universal.append(r)
-            continue
-        sid = r.get("species_id")
-        if sid not in by_species:
-            species_order.append(sid)
-            by_species[sid] = []
-        by_species[sid].append(r)
-    return universal, [(sid, by_species[sid]) for sid in species_order]
-
-
-def _render_pixel_sanity_table(rows: list[dict]) -> None:
-    """Dense monospace table. Universal stages (Camera → Recon) at the top,
-    per-species stages (TM, Pick, Subtomo) underneath, separated by a
-    full-width species marker row. All rows share one CSS Grid so columns
-    line up across species. Wrapper has `overflow-x: auto` for narrow
-    viewports. Sanity-rule violations surface as per-cell icons with
-    tooltips."""
-    if not rows:
-        return
-
-    with ui.element("div").classes("cb-pixel-section-title"):
-        ui.icon("rule", size="13px").classes("text-indigo-600")
-        ui.label("Pixel / binning sanity")
-        ui.icon("info_outline", size="11px").classes("cb-pixel-warn-icon").tooltip(
-            "Per-stage pixel size, tomogram dimensions, and template/extract/subtomo "
-            "box + padding. Inline warnings flag binning-arithmetic mistakes "
-            "(particle won't fit in box, template px ≠ recon px, etc.). "
-            "Per-particle stages (TM, Pick, Subtomo) appear under a species marker; "
-            "the table scrolls horizontally on narrow viewports."
-        )
-
-    universal, species_groups = _group_rows_by_species(rows)
-
-    with ui.element("div").classes("cb-pixel-table-wrapper"):
-        with ui.element("div").classes("cb-pixel-table"):
-            _render_pixel_header_cells()
-            for r in universal:
-                _render_pixel_row_cells(r)
-            for sid, group_rows in species_groups:
-                first = group_rows[0]
-                species_name = first.get("species_name") or sid or "unspecified"
-                species_color = first.get("species_color") or "#94a3b8"
-                with ui.element("div").classes("cb-pixel-species-row"):
-                    ui.element("span").classes("cb-pixel-stripe").style(f"background:{species_color};")
-                    ui.label(str(species_name)).classes("cb-pixel-species-name")
-                    if sid and species_name != sid:
-                        ui.label(f"({sid})").classes("cb-pixel-species-id")
-                for r in group_rows:
-                    _render_pixel_row_cells(r)
 
 
 # ---------------------------------------------------------------------------
@@ -4179,18 +1839,212 @@ def _render_registry_list_cutouts(sp: dict, project_path: Path, refresh) -> None
             star_sig = int(Path(star_path).stat().st_mtime) if star_path and Path(star_path).exists() else 0
         except OSError:
             star_sig = 0
-        dedup = f"{species_id}:{tomo_name}:{lst['slug']}:{star_sig}"
+        dedup_key = f"{species_id}:{tomo_name}:{lst['slug']}:{star_sig}"
         ready = _auto_kick_list_cutouts(
-            Path(recon), lst["picks"], star_path, atlas_path, index_path, box_px, project_path, refresh, dedup
+            Path(recon), lst["picks"], star_path, atlas_path, index_path, box_px, project_path, refresh, dedup_key
         )
-        if ready:
-            atlas_meta = _read_atlas_index(index_path)
-            if atlas_meta:
-                _render_list_cutout_sheet(lst, sp, project_path, atlas_meta, str(atlas_path))
-                continue
-        # Not renderable yet: a written index means the build ran (empty result);
-        # no index means it's still in flight.
-        _render_list_cutouts_status(lst, sp, project_path, building=not index_path.exists())
+        atlas_meta = _read_atlas_index(index_path) if ready else None
+        if atlas_meta:
+            _render_list_cutout_sheet(lst, sp, project_path, atlas_meta, str(atlas_path))
+        else:
+            # No tiles yet: a written index means the build ran (empty result);
+            # no index means it's still in flight.
+            _render_list_cutouts_status(lst, sp, project_path, building=not index_path.exists())
+        # Merged lists carry the overlap/dedup panel (the user-driven radius dedup).
+        if lst.get("list_type") == PickListType.MERGED:
+            _render_clash_panel(lst, sp, project_path, refresh)
+
+
+def _dedup_default_radius(sp: dict) -> float:
+    """Default overlap radius (Å) ≈ particle_diameter / 2 from the candidate-extract
+    job; 100 Å when the diameter is unknown."""
+    d = float(getattr(sp.get("jm"), "particle_diameter_ang", 0.0) or 0.0)
+    return round(d / 2.0, 1) if d > 0 else 100.0
+
+
+def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> None:
+    """Overlap overview + 'Deduplicate' for a merged list. At the CHOSEN radius it
+    shows how many picks clash; the user varies the radius and clicks Deduplicate to
+    remove them (manual kept over auto). Nothing dedups automatically. Calm styling —
+    informational, not an alarm."""
+    from backend import get_backend
+
+    star = lst.get("path")
+    if not star:
+        return
+    species_id = sp.get("species_id") or ""
+    tomo_name = sp["row"]["tomo_name"]
+
+    with (
+        ui.element("div")
+        .classes("w-full")
+        .style(
+            "margin: 4px 0 2px; padding: 6px 8px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 6px;"
+        )
+    ):
+        with ui.row().classes("items-center gap-2 w-full"):
+            ui.icon("join_inner", size="14px").classes("text-orange-700")
+            ui.label("Overlap").classes("text-[11px] font-semibold text-orange-800")
+            radius_in = (
+                ui.number(value=_dedup_default_radius(sp), step=1, min=0)
+                .props("dense outlined suffix=Å debounce=600")
+                .classes("text-xs")
+                .style("width: 92px;")
+                .tooltip("Two picks closer than this (Å) are treated as the same particle")
+            )
+            note = ui.label("checking overlaps…").classes("text-[11px] text-gray-600")
+            ui.space()
+            dedup_btn = (
+                ui.button("Deduplicate", icon="cleaning_services", on_click=lambda: _do_dedup())
+                .props("dense no-caps size=sm color=orange-7")
+                .tooltip(
+                    "Remove every pick within the radius of a higher-priority pick (manual kept over auto). "
+                    "Rewrites this merged list — re-extract after."
+                )
+            )
+
+        async def _recompute(_e=None):
+            backend = get_backend()
+            if backend is None:
+                return
+            r = float(radius_in.value or 0)
+            stats = await backend.list_clash_stats(star, tomo_name, r)
+            if not stats.get("success"):
+                note.set_text("overlap check unavailable")
+                return
+            nt, nc, nr, na = stats["n_total"], stats["n_clashing"], stats["n_removed"], stats["n_after"]
+            if nr <= 0:
+                note.set_text(f"no overlaps at {r:g} Å · {nt} picks")
+                note.classes(replace="text-[11px] text-emerald-700")
+                dedup_btn.props("disable")
+            else:
+                note.set_text(f"{nc} of {nt} clash at {r:g} Å → dedup keeps {na}")
+                note.classes(replace="text-[11px] text-orange-800 font-medium")
+                dedup_btn.props(remove="disable")
+
+        async def _do_dedup(_e=None):
+            backend = get_backend()
+            if backend is None:
+                ui.notify("Backend unavailable.", type="negative")
+                return
+            r = float(radius_in.value or 0)
+            res = await backend.deduplicate_pick_list(star, tomo_name, r)
+            if not res.get("success"):
+                ui.notify(f"Deduplicate failed: {res.get('error')}", type="negative")
+                return
+            state_obj = get_project_state()
+            pl = state_obj.get_pick_list(lst["slug"], species_id, tomo_name)
+            if pl is not None:
+                pl.count = int(res.get("n_after", pl.count))
+                state_obj.mark_dirty()
+                import asyncio as _asyncio
+
+                _asyncio.create_task(get_state_service().save_project())
+            ui.notify(
+                f"Removed {res.get('n_removed', 0)} overlapping picks · {res.get('n_after', 0)} kept", type="positive"
+            )
+            refresh()
+
+        radius_in.on_value_change(_recompute)
+        import asyncio as _asyncio
+
+        _asyncio.create_task(_recompute())
+
+
+def _open_merge_dialog(sp: dict, project_path: Path, refresh) -> None:
+    """Pick 2+ lists → union into a new `merged` list (NO dedup — overlaps are
+    surfaced on the merged list afterwards, deduped at a radius the user chooses).
+    Minimal trigger; the richer co-located lists UI is later."""
+    from backend import get_backend
+
+    species_id = sp.get("species_id") or ""
+    species_label = sp.get("label") or species_id or ""
+    tomo_name = sp["row"]["tomo_name"]
+    job_dir = Path(sp["job_dir"])
+
+    # Mergeable sources: the auto list (candidates.star) + each workbench list.
+    sources: list[dict] = []
+    auto_picks = sp.get("picks") or []
+    if auto_picks:
+        sources.append(
+            {
+                "label": f"{sp.get('label') or 'auto'} · auto ({len(auto_picks)})",
+                "path": str(job_dir / "candidates.star"),
+                "type": "auto",
+                "slug": "auto",
+            }
+        )
+    for lst in sp.get("lists") or []:
+        if lst.get("slug") == "auto" or not lst.get("path"):
+            continue
+        lt = lst.get("list_type")
+        sources.append(
+            {
+                "label": f"{lst['label']} ({len(lst.get('picks', []))})",
+                "path": lst["path"],
+                "type": (lt.value if hasattr(lt, "value") else str(lt)),
+                "slug": lst["slug"],
+            }
+        )
+    if len(sources) < 2:
+        ui.notify("Need at least 2 lists on this tomogram to merge.", type="warning")
+        return
+
+    checks: dict[int, object] = {}
+    with ui.dialog() as dialog, ui.card().classes("w-[30rem] max-w-full gap-2"):
+        ui.label(f"Merge pick lists — {tomo_name}").classes("text-base font-bold")
+        ui.label(
+            "Union of the selected lists into a new 'merged' list. No dedup here — overlaps are flagged on "
+            "the merged list, where you deduplicate at a radius you choose."
+        ).classes("text-xs text-gray-600")
+        for i, s in enumerate(sources):
+            checks[i] = ui.checkbox(s["label"], value=True).props("dense").classes("text-sm")
+
+        async def _do_merge():
+            chosen = [sources[i] for i, cb in checks.items() if cb.value]
+            if len(chosen) < 2:
+                ui.notify("Select at least 2 lists.", type="warning")
+                return
+            backend = get_backend()
+            if backend is None:
+                ui.notify("Backend unavailable.", type="negative")
+                return
+            res = await backend.merge_pick_lists(
+                project_path,
+                species_id,
+                species_label,
+                tomo_name,
+                [{"path": c["path"], "type": c["type"]} for c in chosen],
+            )
+            if not res.get("success"):
+                ui.notify(f"Merge failed: {res.get('error')}", type="negative")
+                return
+            dialog.close()
+            state_obj = get_project_state()
+            state_obj.add_pick_list(
+                PickList(
+                    slug="merged",
+                    label="Merged",
+                    list_type=PickListType.MERGED,
+                    species_id=species_id,
+                    tomo_name=tomo_name,
+                    path=res["out_star"],
+                    count=int(res.get("count", 0)),
+                    color=_PICK_LIST_DEFAULT_COLOR.get(PickListType.MERGED, "#ff6d00"),
+                    parent_slugs=[c["slug"] for c in chosen],
+                    created_by=getattr(backend, "username", ""),
+                )
+            )
+            import asyncio as _asyncio
+
+            _asyncio.create_task(get_state_service().save_project())
+            ui.notify(f"Merged {res.get('count', 0)} picks from {len(chosen)} lists", type="positive")
+            refresh()
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button("Create merged list", icon="join_inner", color="indigo", on_click=_do_merge).props("no-caps")
+    dialog.open()
 
 
 def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id: str, shape: str = "circle"):
@@ -5028,6 +2882,14 @@ def _render_species_tab_header(sp: dict, tm_info: dict, project_path: Path, refr
                 .props("dense no-caps size=sm flat color=indigo")
                 .tooltip("Ingest a .coords you saved in ArtiaX back into the pipeline as a manual pick list")
             )
+            if len(sp.get("lists") or []) >= 2:
+                (
+                    ui.button(
+                        "Merge lists", icon="join_inner", on_click=lambda: _open_merge_dialog(sp, project_path, refresh)
+                    )
+                    .props("dense no-caps size=sm flat color=indigo")
+                    .tooltip("Union 2+ pick lists into a 'merged' list (dedup overlaps after, at your chosen radius)")
+                )
             gen_missing_btn = (
                 ui.button(
                     icon="auto_fix_high",
