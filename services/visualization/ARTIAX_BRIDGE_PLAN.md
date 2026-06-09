@@ -9,44 +9,52 @@ pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the cont
 
 ## NEXT SESSION — start here (prioritized)
 
-**⛔ 2026-06-09 (session 10) — 4 ISSUES UNRESOLVED, user rejected the fixes ("absolute shit", "laggy as
-fuck"). The rail subpanel restructure (compact pills + far-right icon buttons) landed & is accepted; these
-four did NOT land. FIX THESE FIRST, before Slice B item 7.**
+**✅ 2026-06-09 (session 11) — all 4 session-10 issues ADDRESSED in code (compile+ruff+format clean; NONE
+runtime-verified — same env limits: venv lacks numpy, no browser, sandbox can't reach /groups). Edits in
+`ui/tomo_dashboard_dialog.py` + `ui/dashboard/css.py`. ONE follow-up remains: auto-INGEST firing (item 2).
+Approach differed from session 10's "guess + ship": every fix here is backed by a full static trace.**
 
-1. **WIDTH — STILL ~half (TOP PRIORITY, user most emphatic).** Both `.cb-gallery-grid` AND `.cb-list-rail`
-   render at ~half the available horizontal width; the user wants them to FILL it. Two fixes were tried and
-   did NOT work: (a) `_SLAB_MAX_VH` 76→60vh; (b) `.cb-particles-canvas-col` `flex: 3 1 600px`→`flex: 0 0 auto`
-   + inline `width` (was `max-width`), `.cb-particles-tabs-col` left `flex: 1`. Both shipped (harmless). LEAD:
-   the slab sits BESIDE the gallery; at `_SLAB_MAX_VH·aspect` it's ~half the viewport on the user's monitor, so
-   the gallery gets the other half BY LAYOUT. To make the gallery FULL either shrink/relocate the slab hard,
-   OR there's a deeper inner cap (`.cb-species-panels` q-tab-panel / `.cb-workbench-split` /
-   `.cb-particles-tabs-col` not actually stretching). **I worked BLIND (no browser in this env) and kept
-   guessing wrong — next session OPEN DEVTOOLS, inspect the computed-width chain from `.cb-particles-tabs-col`
-   down to `.cb-gallery-grid`, find the element stuck at 50%. Measure, don't guess.**
+1. **WIDTH — FIXED (mechanism, not another guess).** Full STATIC trace (devtools weren't needed): inside
+   `.cb-particles-tabs-col` everything is `w-full`/`width:100%`/`align-items:stretch` straight down to
+   `.cb-gallery-grid` — there is NO hidden 50% cap. The gallery/rail were "half" purely because the slab
+   column's inline width `min(1080px, _SLAB_MAX_VH·aspect)` lands at ≈half the row on a normal monitor (the
+   1080px arm also ≈half a 1440p row), and tabs-col `flex:1` only got the remainder. The two session-10 fixes
+   never bounded the *horizontal split*, which is exactly why nothing visibly moved. FIX: new
+   `_SLAB_MAX_PCT = 34`; the slab's inline `max-width:100%` is now `max-width:34%`, so the slab can't exceed
+   34% of the row and the gallery/rail always claim ≥~64%. Slabs stay LEFT (durable pref). `_SLAB_MAX_PCT` is
+   the single tuning knob (lower → wider gallery). PENDING: user eyeballs the ratio.
 
-2. **Manual picks STILL need the Import click (no auto-ingest).** CONFIRMED GOOD: the detection logic —
-   `_pending_save_for_tomo` replicated against the real bundle (`…/agg_20260311_412_Grid3/.curation_sessions/
-   bundles/412/`) correctly CLAIMS `particles.coords` (single-tomo bundle). CONFIRMED ROOT CAUSE of re-import:
-   `pick_lists: []` in project_params.json — the manual-pick save was fire-and-forget `create_task(
-   save_project())`, GC'd before it ran. FIX LANDED: `_persist_manual_pick_list` now `async` + `await
-   save_project(force=True)` (all 4 callers await). UNVERIFIED: whether `_auto_kick_coords_ingest` actually
-   FIRES at runtime (couldn't run app — venv lacks numpy). Next: add `logger.info` at top of
-   `_auto_kick_coords_ingest`, confirm it fires for 412/Position_13; confirm pick_lists is non-empty after one
-   import. NOTE: merge/dedup saves (`tomo_dashboard_dialog.py:1993, 2091`) have the SAME GC bug — same fix.
+2. **Manual picks STILL need the Import click — REAL ROOT CAUSE FOUND (deeper than the GC save).** The GC bug
+   was real but only explained RE-import. The "needs a click at all" cause: `_auto_kick_coords_ingest` is only
+   ever CALLED from `_collect_species_data_for_ts` (tomo_dashboard_dialog.py:2268), which only runs on a
+   dashboard REBUILD. The sole auto-rebuild is the 4 s `_maybe_refresh` timer (~line 371), whose signature is
+   built ENTIRELY from the background-task registry (running/recent task ids+progress, lines ~380-389) — it has
+   NO knowledge of the curation bundle's `.coords` files. An ArtiaX save is an EXTERNAL process (not a registry
+   task), so it never moves the signature → no rebuild → the prescan never runs → the user must trigger a
+   rebuild, and Import is what they reach for. The guard logic was fine; the function just isn't invoked
+   post-save. DONE this session: GC saves at 1993 (`_do_dedup`) + 2091 (`_do_merge`) → `await
+   save_project(force=True)`; `logger.info` added at each gate of `_auto_kick_coords_ingest` (entry +
+   skip-reasons) so a runtime check shows fire-or-why-not (expect: NO log line appears after an ArtiaX save
+   until something else rebuilds the dashboard — that confirms this diagnosis). STILL TODO (needs user nod +
+   runtime test): make a fresh save actually trigger a rebuild. Recommended = have "Curate in ArtiaX" spawn a
+   background WATCHER task that polls the bundle dir OFF-loop for the new `.coords`, ingests it, and (being a
+   registry task) bumps `_maybe_refresh`'s signature → the list appears with no click. (Alt: fold a
+   curation-dir mtime into the refresh signature — but that puts Lustre stats on the 4 s event-loop tick,
+   contradicting item 3; only acceptable via `to_thread`.)
 
-3. **Laggy on switch to the imported list.** The cutout build IS async, but the SWITCH does synchronous Lustre
-   I/O on the event loop in `_render_single_list_cutouts` (`Path(...).exists()`/`.stat()` + `is_output_stale`
-   stats + `_read_atlas_index` JSON read). For 5 picks the tiles are trivial — the freeze is disk latency.
-   FIX: move that I/O off-loop (`asyncio.to_thread`/`run.io_bound`), paint a spinner immediately, fill on ready.
+3. **Laggy on switch — FIXED (off-loop).** `_render_single_list_cutouts` is now `async`: it paints a spinner,
+   runs ALL read-only probes (recon/star stat, `is_output_stale`, `_read_atlas_index`) inside
+   `asyncio.to_thread`, then builds the tiles; the cold-path build-kick stays on-loop (it installs a ui.timer).
+   `_render_list_detail` + the tab body's `_render_detail` + `_select` were made async to await it, and the
+   initial detail render is scheduled with `ui.timer(0.05, _render_detail, once=True)` so the sync tab builder
+   stays sync. This is the change with the HIGHEST runtime-verification need (NiceGUI async-handler +
+   once-timer path) — smoke-test a list switch first.
 
-4. **Wrong feedback style.** User wants the **bottom-right green/gray BackgroundTask tray post**
-   (`_BackgroundTaskTray`, like tomo-preview rendering), NOT a bottom-center Material `ui.notify`. The
-   `show_start_toast=True` I added produced the bottom-center notify — REVERTED to False. The cutout/prescan
-   tasks ARE BackgroundTasks, so they SHOULD already appear in the bottom-right tray — next session VERIFY
-   they do; if not, that (not `ui.notify`) is the feedback fix.
-
-Session-10 edits are in `ui/tomo_dashboard_dialog.py` + `ui/dashboard/css.py` (compile+ruff+format clean, NONE
-runtime-verified). KEEP the persistence async-await fix; re-examine the width + prescan-firing + lag.
+4. **Feedback style — CONFIRMED already correct, NO change.** The cutout + ingest tasks submit with
+   `show_start_toast=False` (no bottom-center notify) and `project_path=…`; the tray
+   (`mount_background_task_tray`) is mounted on the workspace route (workspace_page.py:177, main_ui.py:127) and
+   shows active + 30 s-recent tasks for the project, so they already surface in the bottom-right tray. The
+   session-10 `show_start_toast` revert was the whole fix; nothing left to do.
 
 **UPDATE 2026-06-08 (session 9) — SLICE B items 1–6 + 2 follow-up fixes LANDED (compile+ruff+format clean,
 ALL pending runtime verify in the app).** The species-tab/rail UX is overhauled end to end: (1) two-level

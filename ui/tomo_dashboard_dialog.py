@@ -368,7 +368,31 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
     _last_signature = {"sig": None}
     _active = {"on": True}
 
-    def _maybe_refresh() -> None:
+    def _curation_bundles_sig() -> tuple:
+        # Newest .coords mtime per species bundle dir. An ArtiaX save is an
+        # EXTERNAL process — it never appears as a background task, so the
+        # registry signature below can't see it. Folding these mtimes into the
+        # signature is what lets a fresh save move it → triggers a rebuild →
+        # `_auto_kick_coords_ingest` finally runs and ingests WITHOUT a click.
+        # Runs OFF-loop (see _maybe_refresh) — globs a handful of small dirs.
+        base = Path(project_path) / ".curation_sessions" / "bundles"
+        out: list[tuple[str, int]] = []
+        try:
+            for d in base.iterdir():
+                if not d.is_dir():
+                    continue
+                newest = 0.0
+                for c in d.glob("*.coords"):
+                    try:
+                        newest = max(newest, c.stat().st_mtime)
+                    except OSError:
+                        pass
+                out.append((d.name, int(newest)))
+        except OSError:
+            return ()
+        return tuple(sorted(out))
+
+    async def _maybe_refresh() -> None:
         if not _active["on"]:
             return
         try:
@@ -387,6 +411,10 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
                     if not t.is_running and t.finished_at and (t.finished_at - t.started_at).total_seconds() < 86400
                 ),
             )
+            # External ArtiaX .coords saves aren't registry tasks — fold the
+            # bundle-dir mtimes in (off-loop) so a fresh save still triggers the
+            # rebuild that runs the auto-ingest prescan.
+            sig = sig + (await asyncio.to_thread(_curation_bundles_sig),)
             if sig != _last_signature["sig"]:
                 _last_signature["sig"] = sig
                 refresh_all()
@@ -1864,14 +1892,19 @@ def _render_list_cutout_sheet(lst: dict, sp: dict, project_path: Path, atlas_met
                 t._props["title"] = f"#{i}"
 
 
-def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh) -> None:
+async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh) -> None:
     """Detail pane for ONE workbench list (manual/imported/merged): a read-only
     recon-sourced cutout sheet (these lists were never subtomo-extracted, so tiles
     are cut from the binned recon at each pick voxel) + the overlap/dedup panel for
     a merged list. Carved from the old per-list loop so the rail's detail pane can
-    show a single selected list."""
+    show a single selected list.
+
+    The read-only disk probes (recon/star stat, atlas staleness, atlas-index read)
+    run OFF the event loop via ``asyncio.to_thread`` so selecting a list doesn't
+    freeze the whole UI on Lustre latency — a spinner shows until they return."""
     recon = (sp.get("row") or {}).get("vol_path")
-    if not recon or not Path(recon).exists():
+
+    def _no_recon() -> None:
         with ui.element("div").classes("cb-empty"):
             ui.icon("image_not_supported", size="24px").classes("text-gray-400")
             ui.label("No reconstructed tomogram on disk — cutouts unavailable.").classes("text-xs")
@@ -1880,27 +1913,59 @@ def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh
             )
         if lst.get("list_type") == PickListType.MERGED:
             _render_clash_panel(lst, sp, project_path, refresh)
+
+    if not recon:
+        _no_recon()
         return
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
     box_px = _list_cutout_box_px(sp)
     atlas_path, index_path = _list_cutout_paths(project_path, species_id, tomo_name, lst["slug"])
     star_path = lst.get("path")
-    try:
-        star_sig = int(Path(star_path).stat().st_mtime) if star_path and Path(star_path).exists() else 0
-    except OSError:
-        star_sig = 0
-    dedup_key = f"{species_id}:{tomo_name}:{lst['slug']}:{star_sig}"
-    ready = _auto_kick_list_cutouts(
-        Path(recon), lst["picks"], star_path, atlas_path, index_path, box_px, project_path, refresh, dedup_key
-    )
-    atlas_meta = _read_atlas_index(index_path) if ready else None
+
+    # Spinner while the disk probes run off-loop (Lustre stat/read latency was the
+    # "laggy on switch" freeze — it blocked the event loop mid-click).
+    with ui.element("div").classes("w-full").style("margin-top: 10px;") as pending_box:
+        with ui.row().classes("items-center gap-2"):
+            ui.spinner(size="16px", color="indigo-500")
+            ui.label("loading cutouts…").style("font-size: 10px; color: #94a3b8;")
+
+    def _probe() -> dict:
+        recon_exists = Path(recon).exists()
+        try:
+            star_sig = int(Path(star_path).stat().st_mtime) if star_path and Path(star_path).exists() else 0
+        except OSError:
+            star_sig = 0
+        sources = [Path(recon)] + ([Path(star_path)] if star_path else [])
+        fresh = atlas_path.exists() and index_path.exists() and not is_output_stale(atlas_path, sources)
+        return {
+            "recon_exists": recon_exists,
+            "star_sig": star_sig,
+            "atlas_meta": _read_atlas_index(index_path) if fresh else None,
+            "index_exists": index_path.exists(),
+        }
+
+    io = await asyncio.to_thread(_probe)
+    pending_box.delete()
+
+    if not io["recon_exists"]:
+        _no_recon()
+        return
+    atlas_meta = io["atlas_meta"]
+    if atlas_meta is None:
+        # Cold path: kick ONE background build (stays on-loop — it installs a
+        # ui.timer) and fall through to the building/empty status.
+        dedup_key = f"{species_id}:{tomo_name}:{lst['slug']}:{io['star_sig']}"
+        if _auto_kick_list_cutouts(
+            Path(recon), lst["picks"], star_path, atlas_path, index_path, box_px, project_path, refresh, dedup_key
+        ):
+            atlas_meta = _read_atlas_index(index_path)  # rare: built between probe and now
     if atlas_meta:
         _render_list_cutout_sheet(lst, sp, project_path, atlas_meta, str(atlas_path))
     else:
         # No tiles yet: a written index means the build ran (empty result);
         # no index means it's still in flight.
-        _render_list_cutouts_status(lst, sp, project_path, building=not index_path.exists())
+        _render_list_cutouts_status(lst, sp, project_path, building=not io["index_exists"])
     # Merged lists carry the overlap/dedup panel (the user-driven radius dedup).
     if lst.get("list_type") == PickListType.MERGED:
         _render_clash_panel(lst, sp, project_path, refresh)
@@ -1988,9 +2053,9 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
             if pl is not None:
                 pl.count = int(res.get("n_after", pl.count))
                 state_obj.mark_dirty()
-                import asyncio as _asyncio
-
-                _asyncio.create_task(get_state_service().save_project())
+                # AWAIT (force) so the dedup'd count lands on disk — a fire-and-forget
+                # create_task gets GC'd before it runs (same bug as the manual-list save).
+                await get_state_service().save_project(force=True)
             ui.notify(
                 f"Removed {res.get('n_removed', 0)} overlapping picks · {res.get('n_after', 0)} kept", type="positive"
             )
@@ -2086,9 +2151,9 @@ def _open_merge_dialog(sp: dict, project_path: Path, refresh) -> None:
                     created_by=getattr(backend, "username", ""),
                 )
             )
-            import asyncio as _asyncio
-
-            _asyncio.create_task(get_state_service().save_project())
+            # AWAIT (force) so the new merged list lands on disk — a fire-and-forget
+            # create_task gets GC'd before it runs (same bug as the manual-list save).
+            await get_state_service().save_project(force=True)
             ui.notify(f"Merged {res.get('count', 0)} picks from {len(chosen)} lists", type="positive")
             refresh()
 
@@ -2346,6 +2411,15 @@ def _render_species_master_eye(sp: dict, tab) -> None:
 # Lower → narrower slabs → more width for the gallery/tabs column beside them.
 _SLAB_MAX_VH = 60
 
+# Hard ceiling on the slab column's share of the Particles row WIDTH. The vh cap
+# above sets the slab width to _SLAB_MAX_VH·aspect, which on a typical monitor
+# lands at ~half the row — so the gallery/rail column beside it only ever got the
+# OTHER half, regardless of flex (this was the "gallery is half-width" bug: the two
+# prior fixes tweaked vh + flex but never bounded the horizontal split). Capping the
+# slab's width as a % of the row bounds that split directly, so the gallery/rail
+# column always claims the rest. Tune to taste: lower → wider gallery.
+_SLAB_MAX_PCT = 34
+
 
 def _render_particles_section(ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None) -> bool:
     """Unified Particles section: a shared tomogram canvas with every species'
@@ -2383,13 +2457,14 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
         # at the same time. Wraps on narrow viewports.
         with ui.element("div").classes("cb-particles-split"):
             canvas_col = ui.element("div").classes("cb-particles-canvas-col")
-            # Cap the column at the slab's ACTUAL rendered width (the X/Y is
-            # height-capped at _SLAB_MAX_VH) so it hugs the previews and leaves no
-            # whitespace before the gallery. All species share the TS's
-            # reconstructed tomogram → take the first real dims for the aspect.
+            # Width = the slab's natural height-capped width (X/Y height-capped at
+            # _SLAB_MAX_VH), but never more than _SLAB_MAX_PCT% of the row — so the
+            # gallery/rail column beside it always gets the majority instead of the
+            # slab eating ~half the row by its vh·aspect width. All species share the
+            # TS's reconstructed tomogram → take the first real dims for the aspect.
             cdims = next((sp["dims"] for sp in species_data if sp.get("dims") and tuple(sp["dims"]) != (1, 1, 1)), None)
             cx, cy = (max(int(cdims[0]), 1), max(int(cdims[1]), 1)) if cdims else (1, 1)
-            canvas_col.style(f"width: min(1080px, calc({_SLAB_MAX_VH}vh * {cx} / {cy})); max-width: 100%")
+            canvas_col.style(f"width: min(1080px, calc({_SLAB_MAX_VH}vh * {cx} / {cy})); max-width: {_SLAB_MAX_PCT}%")
             with canvas_col:
                 # Shared canvas: lazily renders the recon slab and overlays each
                 # species' picks. Returns {iid: {"xy": layer_id, "xz": layer_id}}
@@ -2716,15 +2791,24 @@ def _auto_kick_coords_ingest(
         return
     pending = _pending_save_for_tomo(project_path, species_label, species_id, tomo_name)
     if pending is None:
+        logger.info("coords-prescan[%s/%s]: no attributable ArtiaX .coords save in bundle", species_label, tomo_name)
         return
     coords, mtime = pending
     key = f"{species_id}:{tomo_name}:{mtime}"
     if key in _AUTO_INGESTED_COORDS:
+        logger.info("coords-prescan[%s]: save already ingested this session (mtime %.0f)", tomo_name, mtime)
         return
     pl = get_project_state().get_pick_list("manual", species_id, tomo_name)
     if pl is not None and pl.created_at is not None and pl.created_at.timestamp() >= mtime:
+        logger.info(
+            "coords-prescan[%s]: manual list already current (created %.0f ≥ save %.0f)",
+            tomo_name,
+            pl.created_at.timestamp(),
+            mtime,
+        )
         return  # the registered manual list already reflects this (or a newer) save
     _AUTO_INGESTED_COORDS.add(key)
+    logger.info("coords-prescan[%s]: ingesting %s (mtime %.0f) in background", tomo_name, coords.name, mtime)
 
     async def _run(progress_cb):
         from backend import get_backend
@@ -2910,13 +2994,13 @@ def _render_species_tab_body(
         rail_host = ui.element("div").classes("cb-list-rail-host")
         detail_host = ui.element("div").classes("cb-list-detail-host")
 
-    def _render_detail() -> None:
+    async def _render_detail() -> None:
         detail_host.clear()
         lst = next((x for x in lists if x["slug"] == sel["slug"]), None)
         with detail_host:
-            _render_list_detail(sp, lst, layer_ids, project_path, refresh, refresh_roster)
+            await _render_list_detail(sp, lst, layer_ids, project_path, refresh, refresh_roster)
 
-    def _select(slug: str) -> None:
+    async def _select(slug: str) -> None:
         if slug == sel["slug"] or slug not in slugs:
             return
         if sel["slug"] in chip_els:
@@ -2925,7 +3009,7 @@ def _render_species_tab_body(
         _SELECTED_LIST_SLUG[key] = slug
         if slug in chip_els:
             chip_els[slug].classes(add="selected")
-        _render_detail()
+        await _render_detail()
 
     with rail_host:
         _render_list_rail(
@@ -2938,7 +3022,10 @@ def _render_species_tab_body(
             on_select=_select,
             chip_els=chip_els,
         )
-    _render_detail()
+    # The detail pane renders one tick later via a once-timer: _render_detail is
+    # async now (its workbench-list branch probes disk off-loop), so it can't be
+    # called inline from this sync builder — schedule it onto the event loop.
+    ui.timer(0.05, _render_detail, once=True)
 
     # 3dmod copy-command at the BOTTOM of the tab (Slice B item 5) — below the
     # rail + detail, out of the old header expansion.
@@ -3059,11 +3146,12 @@ def _render_list_rail(
                 )
 
 
-def _render_list_detail(
+async def _render_list_detail(
     sp: dict, lst: Optional[dict], layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster
 ) -> None:
     """Detail pane for the selected rail chip: the auto list shows the status-aware
-    subtomo gallery / scatter; a workbench list shows its recon cutout sheet."""
+    subtomo gallery / scatter; a workbench list shows its recon cutout sheet (whose
+    disk probes run off-loop, hence async)."""
     if lst is None:
         with ui.element("div").classes("cb-empty"):
             ui.icon("inbox", size="28px").classes("text-gray-400")
@@ -3072,7 +3160,7 @@ def _render_list_detail(
     if lst["slug"] == "auto":
         _render_species_auto_section(sp, layer_ids, project_path, refresh, refresh_roster)
     else:
-        _render_single_list_cutouts(sp, lst, project_path, refresh)
+        await _render_single_list_cutouts(sp, lst, project_path, refresh)
 
 
 def _render_species_auto_section(

@@ -306,15 +306,24 @@ _CB_CSS = """
 /* Slab column is pinned to the slab's natural height-capped width: its WIDTH is set
  * INLINE per-tomo (_render_particles_section) to min(1080px, _SLAB_MAX_VH·x/y), and
  * it does NOT flex-grow — so the gallery/tabs column (flex-grow 1) claims ALL the
- * remaining width instead of the slab eating 3/4 of it by flex ratio (lower
- * _SLAB_MAX_VH → narrower slabs → wider gallery). max-width:100% (inline) keeps the
- * slab from overflowing a narrow viewport, where the tabs column wraps below it. */
+ * remaining width. The inline max-width is _SLAB_MAX_PCT% of the row (NOT 100%): the
+ * vh·aspect width alone lands at ~half the row on a typical monitor, so this %
+ * ceiling is what actually keeps the slab from eating half and starving the gallery
+ * (lower _SLAB_MAX_PCT → wider gallery). On a very narrow viewport the tabs column
+ * wraps below the slab. */
 .cb-particles-canvas-col { flex: 0 0 auto; }
 .cb-particles-tabs-col { flex: 1 1 360px; min-width: 360px; }
 /* List workbench inside a species tab: a horizontal pick-list chip rail ABOVE
  * the selected list's detail/gallery — stacked, not side-by-side, so the short
- * rail doesn't leave dead vertical space beside the tall gallery. */
-.cb-workbench-split { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+ * rail doesn't leave dead vertical space beside the tall gallery.
+ * width:100% is REQUIRED: the q-tab-panel content area sizes its children to
+ * their content (flex align, not stretch), so without an explicit width this
+ * column shrink-wraps to the gallery/rail content (~half) instead of filling the
+ * tabs column — that was the real "gallery is half-width" bug, NOT the slab. */
+.cb-workbench-split {
+    display: flex; flex-direction: column; gap: 8px; align-items: stretch;
+    width: 100%; min-width: 0;
+}
 .cb-list-rail-host { width: 100%; }
 .cb-list-detail-host { width: 100%; min-width: 0; }
 /* The rail is a contained subpanel header above the gallery: a title on the left,
