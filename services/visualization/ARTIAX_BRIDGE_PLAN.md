@@ -9,6 +9,45 @@ pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the cont
 
 ## NEXT SESSION — start here (prioritized)
 
+**⛔ 2026-06-09 (session 10) — 4 ISSUES UNRESOLVED, user rejected the fixes ("absolute shit", "laggy as
+fuck"). The rail subpanel restructure (compact pills + far-right icon buttons) landed & is accepted; these
+four did NOT land. FIX THESE FIRST, before Slice B item 7.**
+
+1. **WIDTH — STILL ~half (TOP PRIORITY, user most emphatic).** Both `.cb-gallery-grid` AND `.cb-list-rail`
+   render at ~half the available horizontal width; the user wants them to FILL it. Two fixes were tried and
+   did NOT work: (a) `_SLAB_MAX_VH` 76→60vh; (b) `.cb-particles-canvas-col` `flex: 3 1 600px`→`flex: 0 0 auto`
+   + inline `width` (was `max-width`), `.cb-particles-tabs-col` left `flex: 1`. Both shipped (harmless). LEAD:
+   the slab sits BESIDE the gallery; at `_SLAB_MAX_VH·aspect` it's ~half the viewport on the user's monitor, so
+   the gallery gets the other half BY LAYOUT. To make the gallery FULL either shrink/relocate the slab hard,
+   OR there's a deeper inner cap (`.cb-species-panels` q-tab-panel / `.cb-workbench-split` /
+   `.cb-particles-tabs-col` not actually stretching). **I worked BLIND (no browser in this env) and kept
+   guessing wrong — next session OPEN DEVTOOLS, inspect the computed-width chain from `.cb-particles-tabs-col`
+   down to `.cb-gallery-grid`, find the element stuck at 50%. Measure, don't guess.**
+
+2. **Manual picks STILL need the Import click (no auto-ingest).** CONFIRMED GOOD: the detection logic —
+   `_pending_save_for_tomo` replicated against the real bundle (`…/agg_20260311_412_Grid3/.curation_sessions/
+   bundles/412/`) correctly CLAIMS `particles.coords` (single-tomo bundle). CONFIRMED ROOT CAUSE of re-import:
+   `pick_lists: []` in project_params.json — the manual-pick save was fire-and-forget `create_task(
+   save_project())`, GC'd before it ran. FIX LANDED: `_persist_manual_pick_list` now `async` + `await
+   save_project(force=True)` (all 4 callers await). UNVERIFIED: whether `_auto_kick_coords_ingest` actually
+   FIRES at runtime (couldn't run app — venv lacks numpy). Next: add `logger.info` at top of
+   `_auto_kick_coords_ingest`, confirm it fires for 412/Position_13; confirm pick_lists is non-empty after one
+   import. NOTE: merge/dedup saves (`tomo_dashboard_dialog.py:1993, 2091`) have the SAME GC bug — same fix.
+
+3. **Laggy on switch to the imported list.** The cutout build IS async, but the SWITCH does synchronous Lustre
+   I/O on the event loop in `_render_single_list_cutouts` (`Path(...).exists()`/`.stat()` + `is_output_stale`
+   stats + `_read_atlas_index` JSON read). For 5 picks the tiles are trivial — the freeze is disk latency.
+   FIX: move that I/O off-loop (`asyncio.to_thread`/`run.io_bound`), paint a spinner immediately, fill on ready.
+
+4. **Wrong feedback style.** User wants the **bottom-right green/gray BackgroundTask tray post**
+   (`_BackgroundTaskTray`, like tomo-preview rendering), NOT a bottom-center Material `ui.notify`. The
+   `show_start_toast=True` I added produced the bottom-center notify — REVERTED to False. The cutout/prescan
+   tasks ARE BackgroundTasks, so they SHOULD already appear in the bottom-right tray — next session VERIFY
+   they do; if not, that (not `ui.notify`) is the feedback fix.
+
+Session-10 edits are in `ui/tomo_dashboard_dialog.py` + `ui/dashboard/css.py` (compile+ruff+format clean, NONE
+runtime-verified). KEEP the persistence async-await fix; re-examine the width + prescan-firing + lag.
+
 **UPDATE 2026-06-08 (session 9) — SLICE B items 1–6 + 2 follow-up fixes LANDED (compile+ruff+format clean,
 ALL pending runtime verify in the app).** The species-tab/rail UX is overhauled end to end: (1) two-level
 visibility eyes (per-list chip eye + per-species tab master-eye; the canvas "Show picks" row retired);

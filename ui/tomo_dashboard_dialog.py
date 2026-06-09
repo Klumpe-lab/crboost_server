@@ -2263,6 +2263,9 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
         _, species_id = _resolve_species(project_state, jm, iid)
         sub_match = _matching_subtomo_instance(project_state, species_id)
         subtomo_job_dir = _job_dir_for(sub_match[0], sub_match[1], project_path) if sub_match else None
+        # Prescan: auto-ingest a fresh ArtiaX save at the bundle's tomo-named path
+        # so a curated list surfaces without an explicit Import click.
+        _auto_kick_coords_ingest(job_dir, project_path, species_id, str(label), ts_name, refresh)
         sp_entry = {
             "idx": idx,
             "iid": iid,
@@ -2338,6 +2341,12 @@ def _render_species_master_eye(sp: dict, tab) -> None:
     eye.on("click.stop", _toggle)
 
 
+# Slab height cap (vh) for the Particles canvas: the X/Y slab is capped at this
+# fraction of viewport height, so the slab column's width = _SLAB_MAX_VH·aspect.
+# Lower → narrower slabs → more width for the gallery/tabs column beside them.
+_SLAB_MAX_VH = 60
+
+
 def _render_particles_section(ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None) -> bool:
     """Unified Particles section: a shared tomogram canvas with every species'
     picks overlaid (toggleable), plus a per-species tab carrying that species'
@@ -2375,12 +2384,12 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
         with ui.element("div").classes("cb-particles-split"):
             canvas_col = ui.element("div").classes("cb-particles-canvas-col")
             # Cap the column at the slab's ACTUAL rendered width (the X/Y is
-            # height-capped at 76vh) so it hugs the previews and leaves no
+            # height-capped at _SLAB_MAX_VH) so it hugs the previews and leaves no
             # whitespace before the gallery. All species share the TS's
             # reconstructed tomogram → take the first real dims for the aspect.
             cdims = next((sp["dims"] for sp in species_data if sp.get("dims") and tuple(sp["dims"]) != (1, 1, 1)), None)
             cx, cy = (max(int(cdims[0]), 1), max(int(cdims[1]), 1)) if cdims else (1, 1)
-            canvas_col.style(f"max-width: min(1080px, calc(76vh * {cx} / {cy}))")
+            canvas_col.style(f"width: min(1080px, calc({_SLAB_MAX_VH}vh * {cx} / {cy})); max-width: 100%")
             with canvas_col:
                 # Shared canvas: lazily renders the recon slab and overlays each
                 # species' picks. Returns {iid: {"xy": layer_id, "xz": layer_id}}
@@ -2457,7 +2466,7 @@ def _render_particles_canvas(
     with_picks = [sp for sp in species_data if sp.get("lists")]
     if not with_picks:
         # Recon slab exists but nothing picked yet — clean slab, no overlay.
-        with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style("max-height: 76vh;"):
+        with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style(f"max-height: {_SLAB_MAX_VH}vh;"):
             ui.image(_vis_asset_url(str(xy_png)))
         return layer_ids
 
@@ -2475,7 +2484,7 @@ def _render_particles_canvas(
     # X/Y and X/Z share ONE stack that fills the (per-tomo width-capped) canvas
     # column — each child is width:100% of the stack and derives its height from
     # its own aspect-ratio. The COLUMN's max-width (set in _render_particles_section
-    # to min(1080px, 76vh·x/y), R1) caps the X/Y at ~76vh tall while preserving the
+    # to min(1080px, _SLAB_MAX_VH·x/y), R1) caps the X/Y at ~_SLAB_MAX_VH tall while preserving the
     # tomogram aspect AND hugging the previews (no whitespace before the gallery);
     # the X/Z then reads as a proportional strip below it (height = width · z/x).
     stack = ui.element("div").classes("cb-canvas-stack")
@@ -2611,17 +2620,16 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
         await open_curation_control_center(backend, project_path, bundle=bundle)
 
 
-def _register_manual_pick_list(sp: dict, result: dict, refresh) -> None:
-    """Upsert a `manual` PickList for this (species, tomo) from a successful
-    backend import, persist ProjectState, and refresh so the new diamond layer
-    appears on the canvas. One `manual` list per (species, tomo) — a re-import
-    replaces it (the raw .coords are still archived per-import for provenance)."""
-    import asyncio as _asyncio
-
-    state = get_project_state()
-    species_id = sp.get("species_id") or ""
-    tomo_name = sp["row"]["tomo_name"]
-    state.add_pick_list(
+async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: str) -> int:
+    """Upsert the `manual` PickList for this (species, tomo) from a backend import
+    result and persist ProjectState — AWAITED with force=True so the registry
+    actually lands on disk. A fire-and-forget `create_task(save_project())` was
+    getting GC'd before it ran, leaving `pick_lists: []` in project_params.json and
+    forcing a re-import on every reopen. Returns the imported pick count. UI-free so
+    both the explicit-import click path and the prescan auto-ingest share it. One
+    `manual` list per (species, tomo) — a re-import replaces it (the raw .coords are
+    still archived per-import for provenance)."""
+    get_project_state().add_pick_list(
         PickList(
             slug="manual",
             label="Manual (ArtiaX)",
@@ -2634,14 +2642,112 @@ def _register_manual_pick_list(sp: dict, result: dict, refresh) -> None:
             created_by=result.get("created_by", ""),
         )
     )
-    _asyncio.create_task(get_state_service().save_project())
+    await get_state_service().save_project(force=True)
+    return int(result.get("count", 0))
+
+
+async def _register_manual_pick_list(sp: dict, result: dict, refresh) -> None:
+    """Explicit-import click path: persist the `manual` list, toast, and refresh so
+    the new diamond layer appears on the canvas."""
+    tomo_name = sp["row"]["tomo_name"]
+    count = await _persist_manual_pick_list(result, sp.get("species_id") or "", tomo_name)
     src = Path(result.get("coords_source", "")).name
     ui.notify(
-        f"Imported {int(result.get('count', 0))} manual picks for {tomo_name}" + (f" (from {src})" if src else ""),
+        f"Imported {count} manual picks for {tomo_name}" + (f" (from {src})" if src else ""),
         type="positive",
         timeout=3000,
     )
     refresh()
+
+
+_AUTO_INGESTED_COORDS: set[str] = set()
+
+
+def _pending_save_for_tomo(
+    project_path: Path, species_label: str, species_id: str, tomo_name: str
+) -> Optional[tuple[Path, float]]:
+    """The ArtiaX `.coords` save to auto-ingest for THIS (species, tomo), or None.
+
+    Saves land in the per-species bundle dir (`.curation_sessions/bundles/<species>/`),
+    where our own exports are tomo-named (`<tomo>__auto.coords` / `<tomo>__…_ref.coords`)
+    but the user's SAVE may be named anything (e.g. `particles.coords`). We attribute
+    the newest user save (excluding our exports) to this tomo iff it's tomo-self-evident:
+    its name starts with `<tomo>__`, OR this is the only tomo the species has curated
+    (the bundle's `*__auto.coords` set is exactly {this tomo}) and the save is plainly
+    named (no `__`, so it can't be masquerading as another tomo's). Multi-tomo bundles
+    with arbitrarily-named saves stay on the Import button — no safe tomo attribution.
+    Returns (path, mtime) of the newest qualifying save, for the caller's guards."""
+    from services.visualization import artiax_bridge
+
+    bundle_slug = artiax_bridge._safe_slug(species_label or species_id or tomo_name)
+    bundle = Path(project_path) / ".curation_sessions" / "bundles" / bundle_slug
+    if not bundle.is_dir():
+        return None
+    tomo_slug = artiax_bridge._safe_slug(tomo_name)
+    saves: list[tuple[Path, float]] = []
+    for c in bundle.glob("*.coords"):
+        if c.name.endswith("__auto.coords") or c.name.endswith("_ref.coords"):
+            continue  # our own reference exports, not the user's save
+        try:
+            saves.append((c, c.stat().st_mtime))
+        except OSError:
+            continue
+    if not saves:
+        return None
+    curated = {c.name[: -len("__auto.coords")] for c in bundle.glob("*__auto.coords")}
+    single_tomo = curated == {tomo_slug}
+    saves.sort(key=lambda t: t[1], reverse=True)
+    for path, mtime in saves:
+        if path.name.startswith(f"{tomo_slug}__") or (single_tomo and "__" not in path.name):
+            return (path, mtime)
+    return None
+
+
+def _auto_kick_coords_ingest(
+    job_dir: Path, project_path: Path, species_id: str, species_label: str, tomo_name: str, refresh
+) -> None:
+    """Prescan: if the user saved an ArtiaX `.coords` for this (species, tomo) — see
+    `_pending_save_for_tomo` for how an arbitrarily-named save is safely attributed —
+    and it's newer than the registered `manual` list (or there's none yet), ingest it
+    in the background so the list appears without a click. An mtime-keyed dedup set +
+    a created_at guard make it idempotent; the Import button stays for out-of-tree /
+    unattributable saves. Safe to call every render."""
+    if not species_id:
+        return
+    pending = _pending_save_for_tomo(project_path, species_label, species_id, tomo_name)
+    if pending is None:
+        return
+    coords, mtime = pending
+    key = f"{species_id}:{tomo_name}:{mtime}"
+    if key in _AUTO_INGESTED_COORDS:
+        return
+    pl = get_project_state().get_pick_list("manual", species_id, tomo_name)
+    if pl is not None and pl.created_at is not None and pl.created_at.timestamp() >= mtime:
+        return  # the registered manual list already reflects this (or a newer) save
+    _AUTO_INGESTED_COORDS.add(key)
+
+    async def _run(progress_cb):
+        from backend import get_backend
+
+        backend = get_backend()
+        if backend is None:
+            return {"success": False, "error": "no backend"}
+        progress_cb(0, 0, "ingesting ArtiaX save…")
+        result = await backend.import_curation_picks(
+            project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id, coords_path=coords
+        )
+        if result.get("success"):
+            await _persist_manual_pick_list(result, species_id, tomo_name)
+        return result
+
+    from ui.background_task import BackgroundTask
+
+    BackgroundTask(
+        title=f"Ingest ArtiaX save · {tomo_name}",
+        subtitle=species_label or species_id,
+        project_path=str(project_path),
+        dedup_key=f"coords-ingest:{species_id}:{tomo_name}:{mtime}",
+    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
 
 
 async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -> None:
@@ -2671,7 +2777,7 @@ async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -
                 return
             ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
             return
-        _register_manual_pick_list(sp, result, refresh)
+        await _register_manual_pick_list(sp, result, refresh)
 
 
 def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> None:
@@ -2708,7 +2814,7 @@ def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> No
                 ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
                 return
             dialog.close()
-            _register_manual_pick_list(sp, result, refresh)
+            await _register_manual_pick_list(sp, result, refresh)
 
         with ui.row().classes("w-full justify-end gap-2"):
             ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -2895,71 +3001,61 @@ def _attach_auto_chip_tooltip(el, sp: dict, tm_info: dict) -> None:
 def _render_list_rail(
     sp: dict, lists: list[dict], project_path: Path, refresh, *, tm_info: dict, selected_slug, on_select, chip_els: dict
 ) -> None:
-    """The pick-list chip rail + the species-level curation toolbar. Each chip:
-    shape/color swatch · label · count · a visibility eye; a second line carries a
-    type tag (pytom / manual (ArtiaX) / imported / merged) and, for workbench lists,
-    the extraction-state badge. The pytom tag carries a tooltip with the auto pick
-    stats + template-match essentials (moved off the tab header, Slice B item 3).
-    Clicking a chip selects the list → drives the detail pane; the eye (click.stop)
-    toggles just that list's canvas dots. `chip_els` is filled {slug: element} so
-    selection can re-highlight without rebuilding the rail."""
+    """The pick-list subpanel header: a compact single-line pill per list (swatch ·
+    label · count · extraction badge · visibility eye) in a wrapping middle zone,
+    with the species curation actions (Curate / Import / Merge) as small icon
+    buttons pinned to the far right. The auto (pytom) pill carries a hover tooltip
+    with its pick stats + template-match essentials. Clicking a pill selects the
+    list → drives the detail pane; the eye (click.stop) toggles just that list's
+    canvas dots. `chip_els` is filled {slug: element} so selection can re-highlight
+    without rebuilding the rail."""
     state_obj = get_project_state()
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
     with ui.element("div").classes("cb-list-rail"):
         ui.label("Pick lists").classes("cb-rail-title")
-        for lst in lists:
-            slug = lst["slug"]
-            chip = ui.element("div").classes("cb-list-chip")
-            chip_els[slug] = chip
-            if slug == selected_slug:
-                chip.classes(add="selected")
-            chip.on("click", lambda e, s=slug: on_select(s))
-            with chip:
-                with ui.row().classes("items-center gap-1 w-full no-wrap"):
+        with ui.element("div").classes("cb-rail-pills"):
+            for lst in lists:
+                slug = lst["slug"]
+                chip = ui.element("div").classes("cb-list-chip")
+                chip_els[slug] = chip
+                if slug == selected_slug:
+                    chip.classes(add="selected")
+                chip.on("click", lambda e, s=slug: on_select(s))
+                with chip:
                     ui.element("div").classes(f"cb-list-chip-swatch cb-swatch-{lst['shape']}").style(
                         f"background: {lst['color']};"
                     )
                     ui.label(lst["label"]).classes("cb-list-chip-label")
-                    ui.space()
                     ui.label(str(len(lst.get("picks") or []))).classes("cb-list-chip-count")
-                    if lst.get("_layer_els"):
-                        _render_list_eye(lst, sp)
-                with ui.row().classes("items-center gap-1 no-wrap cb-list-chip-meta"):
-                    tag = ui.label(_LIST_TYPE_TAG.get(lst.get("list_type"), "")).classes("cb-list-chip-tag")
                     if slug == "auto":
-                        tag.classes(add="cb-list-chip-tag-info")
-                        _attach_auto_chip_tooltip(tag, sp, tm_info)
+                        _attach_auto_chip_tooltip(chip, sp, tm_info)
                     else:
                         pl = state_obj.get_pick_list(slug, species_id, tomo_name)
                         est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
                         text, cls = _EXTRACTION_BADGE.get(est, ("", ""))
                         if text:
                             ui.label(text).classes(f"cb-list-chip-badge {cls}")
+                    if lst.get("_layer_els"):
+                        _render_list_eye(lst, sp)
         with ui.element("div").classes("cb-rail-toolbar"):
             (
-                ui.button(
-                    "Curate in ArtiaX", icon="view_in_ar", on_click=lambda: _handle_curate_in_artiax(sp, project_path)
-                )
-                .props("dense no-caps size=sm color=indigo")
-                .tooltip("Open this tomogram + its picks in ChimeraX + ArtiaX for manual curation")
+                ui.button(icon="view_in_ar", on_click=lambda: _handle_curate_in_artiax(sp, project_path))
+                .props("flat dense round size=sm color=indigo")
+                .tooltip("Curate in ArtiaX — open this tomogram + its picks in ChimeraX + ArtiaX")
             )
             (
-                ui.button(
-                    "Import picks",
-                    icon="download",
-                    on_click=lambda: _handle_import_curation_picks(sp, project_path, refresh),
-                )
-                .props("dense no-caps size=sm flat color=indigo")
-                .tooltip("Ingest a .coords you saved in ArtiaX back into the pipeline as a manual pick list")
+                ui.button(icon="download", on_click=lambda: _handle_import_curation_picks(sp, project_path, refresh))
+                .props("flat dense round size=sm")
+                .classes("text-slate-500")
+                .tooltip("Import picks — ingest a .coords you saved in ArtiaX as a manual pick list")
             )
             if len(sp.get("lists") or []) >= 2:
                 (
-                    ui.button(
-                        "Merge lists", icon="join_inner", on_click=lambda: _open_merge_dialog(sp, project_path, refresh)
-                    )
-                    .props("dense no-caps size=sm flat color=indigo")
-                    .tooltip("Union 2+ pick lists into a 'merged' list (dedup overlaps after, at your chosen radius)")
+                    ui.button(icon="join_inner", on_click=lambda: _open_merge_dialog(sp, project_path, refresh))
+                    .props("flat dense round size=sm")
+                    .classes("text-slate-500")
+                    .tooltip("Merge lists — union 2+ pick lists (dedup overlaps after, at your chosen radius)")
                 )
 
 
@@ -4403,6 +4499,7 @@ def reset_auto_kick_state() -> None:
     _AUTO_KICKED_IMOD.clear()
     _AUTO_KICKED_RECON_SLABS.clear()
     _AUTO_KICKED_LIST_CUTOUTS.clear()
+    _AUTO_INGESTED_COORDS.clear()
 
 
 def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> bool:

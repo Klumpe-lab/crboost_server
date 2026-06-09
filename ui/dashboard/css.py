@@ -303,28 +303,39 @@ _CB_CSS = """
  * can hover a tile and watch its dot light up on the canvas at the same time.
  * Wraps to stacked on narrow viewports. */
 .cb-particles-split { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
-/* Slab column is the DOMINANT one (R1): flex-grow 3 vs the tabs' 1 so it claims
- * the width and pushes the gallery/tools cluster right. Its max-width is set
- * INLINE per-tomo (_render_particles_section) to min(1080px, 76vh·x/y) — the
- * slab's actual height-capped width — so the column HUGS the previews and leaves
- * no whitespace before the gallery (R1b). */
-.cb-particles-canvas-col { flex: 3 1 600px; min-width: 440px; }
-.cb-particles-tabs-col { flex: 1 1 360px; min-width: 340px; }
+/* Slab column is pinned to the slab's natural height-capped width: its WIDTH is set
+ * INLINE per-tomo (_render_particles_section) to min(1080px, _SLAB_MAX_VH·x/y), and
+ * it does NOT flex-grow — so the gallery/tabs column (flex-grow 1) claims ALL the
+ * remaining width instead of the slab eating 3/4 of it by flex ratio (lower
+ * _SLAB_MAX_VH → narrower slabs → wider gallery). max-width:100% (inline) keeps the
+ * slab from overflowing a narrow viewport, where the tabs column wraps below it. */
+.cb-particles-canvas-col { flex: 0 0 auto; }
+.cb-particles-tabs-col { flex: 1 1 360px; min-width: 360px; }
 /* List workbench inside a species tab: a horizontal pick-list chip rail ABOVE
  * the selected list's detail/gallery — stacked, not side-by-side, so the short
  * rail doesn't leave dead vertical space beside the tall gallery. */
 .cb-workbench-split { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
 .cb-list-rail-host { width: 100%; }
 .cb-list-detail-host { width: 100%; min-width: 0; }
-.cb-list-rail { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
+/* The rail is a contained subpanel header above the gallery: a title on the left,
+ * the compact list pills wrapping in a flex:1 middle zone, and the curation icon
+ * buttons pinned to the far right (the top-level row never wraps, so the buttons
+ * stay on the title line instead of dropping below the pills). */
+.cb-list-rail {
+    display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 8px;
+    padding: 4px 8px; background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px;
+}
 .cb-rail-title {
     font-size: 9px; text-transform: uppercase; font-weight: 700; color: #94a3b8;
-    letter-spacing: 0.04em; align-self: center;
+    letter-spacing: 0.04em; align-self: center; flex: 0 0 auto;
+}
+.cb-rail-pills {
+    display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0;
 }
 .cb-list-chip {
-    border: 1px solid #e5e7eb; border-radius: 6px; padding: 5px 7px; cursor: pointer; background: #fff;
-    display: flex; flex-direction: column; gap: 2px; transition: border-color 0.12s, background 0.12s;
-    flex: 0 0 auto; min-width: 128px;
+    border: 1px solid #e5e7eb; border-radius: 6px; padding: 2px 7px; cursor: pointer; background: #fff;
+    display: flex; flex-direction: row; align-items: center; gap: 5px; transition: border-color 0.12s, background 0.12s;
+    flex: 0 0 auto; min-width: 0;
 }
 .cb-list-chip:hover { border-color: #c7d2fe; background: #fafbff; }
 .cb-list-chip.selected { border-color: #6366f1; background: #eef2ff; box-shadow: inset 2px 0 0 #6366f1; }
@@ -338,14 +349,6 @@ _CB_CSS = """
 .cb-badge-ok { color: #059669; }
 .cb-badge-todo { color: #94a3b8; }
 .cb-badge-stale { color: #d97706; }
-/* Chip second line: a small type tag (pytom / manual / imported / merged); the
- * pytom tag is an info handle (cursor:help) for the auto-pick stats tooltip. */
-.cb-list-chip-meta { margin-top: 1px; flex-wrap: wrap; row-gap: 2px; }
-.cb-list-chip-tag {
-    font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
-    color: #64748b; background: #f1f5f9; border-radius: 4px; padding: 0 4px; line-height: 1.55;
-}
-.cb-list-chip-tag-info { cursor: help; text-decoration: underline dotted #cbd5e1; text-underline-offset: 2px; }
 /* Rich pytom-chip info tooltip: a light card (overrides Quasar's dark default)
  * with an auto-pick-stats section + a template-match section. */
 .cb-chip-tooltip {
