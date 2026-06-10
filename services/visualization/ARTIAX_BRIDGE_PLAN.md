@@ -83,8 +83,25 @@ prune both under `_curation_registry_lock`, prune re-reads fresh and removes onl
 projects); (4) `send_chimerax_command` reaps the ssh child on timeout + `ServerAliveInterval`; (5) per-session
 `_curation_swap_locks` serialize overlapping swaps into one session. *Still NOT enforced (accepted):* one-live-session
 user-wide at LAUNCH (housekeeping is per-project) — but find-or-reuse + newest-first selection make the acute
-wrong-viewer bug unreachable in normal use. *Deferred polish:* a "Currently loaded: <sp/tomo>" indicator in the
-dialog (backend tracks it in `_curation_loaded`; UI not yet wired); fixed LOCAL viewer port. *RUNTIME FIX #1 (2026-06-10, user hit it on EVERY tomo):* the ⚡ button failed `Load failed: ssh/curl to clip-g3-1
+wrong-viewer bug unreachable in normal use. *Deferred polish:* fixed LOCAL viewer port (roadmap #2 — needs worker +
+backend + dialog together; left until the core ⚡ path is runtime-verified). *SESSION-13 CONTINUATION (2026-06-10,
+code-clean, PENDING runtime):* (a) roadmap #1 LANDED — the "Currently loaded: <sp/tomo>" indicator is now wired:
+`backend.get_curation_loaded(session_info)` reads `_curation_loaded`; the dialog shows it on reconnect + after each
+swap (per-user shared, so it reflects a tomo a swap loaded from another project). (b) HARDENING — `send_chimerax_command`
+error extraction is now list-or-string safe (a real ChimeraX error shows legibly, not as its first char). *RUNTIME
+ROUND 2 (2026-06-10, user tested ⚡ — works, "always eventually loads tomo+picks", but intermittent error toast +
+a traceback):* (c) FIXED — the false-negative is real: `send_chimerax_command` now treats ONLY the top-level `error`
+field as failure (`ok = not cx_err`), demoting the noisy `log messages.error` channel to a logged diagnostic — a
+multi-command swap routinely logs benign error-level lines (ArtiaX re-init after `close session`) while every command
+ran. (e) FIXED — `_handle_load_into_session` crashed `RuntimeError: parent element ... deleted` on the post-load
+`ui.notify`: the ~20 s load outlives the dashboard's periodic `main_area.clear()`, deleting the coroutine's slot; now
+captures the page-layout slot up front + a `_notify` helper routes through it and swallows the race. (f) FIXED (the
+"picks land in the wrong tomo's folder" complaint) — the swap now appends ChimeraX `cd <curation_dir>` (via
+`swap_chimerax_commands(..., cwd=)`) so ArtiaX's Save dialog follows the loaded tomo (worker only sets cwd at launch);
+best-effort/last so a build without `cd` still loads. (d) FLAGGED, NOT fixed: with `save current first` ON, the FIRST swap after a
+CB_CXC-preloaded start saves nothing (the preloaded tomo isn't in `_curation_loaded`) — the confirm dialog already
+warns picks may be lost; clean fix = seed `_curation_loaded` at launch (invasive, threads species/tomo through
+`launch_curation_session`). *RUNTIME FIX #1 (2026-06-10, user hit it on EVERY tomo):* the ⚡ button failed `Load failed: ssh/curl to clip-g3-1
 failed: command-line line 0: unsupported option "accept-new"`. The CBE headnode runs OpenSSH 7.4 (el7), which
 predates `StrictHostKeyChecking=accept-new` (OpenSSH 7.6). FIXED `send_chimerax_command` → `StrictHostKeyChecking=no`
 (el7-safe auto-accept; the manual `ssh` test worked only because interactive ssh prompts, which `BatchMode=yes` can't).
@@ -92,6 +109,36 @@ This is the el7-OpenSSH sibling of the kernel-ABI/page-align traps — code-clea
 after restart**. *RUNTIME GATE:* start a session → on a tomo tile click ⚡ → confirm → ArtiaX swaps to that tomo+picks;
 click ⚡ on a tomo in ANOTHER project → same session swaps (cross-project reuse); `save current first` writes the prior
 list to its `Curation/<sp>/<tomo>/`.
+
+**▶ OPEN (session 13 runtime round 2, 2026-06-10) — two design items the user raised, NOT yet built:**
+1. **Swap is slow (~20 s/tomo).** ROOT CAUSE measured: the recon ArtiaX opens is the `*_6.20Apx.mrc` reconstruction
+   = **1.07 GB, float32, ~268 M voxels** (e.g. `…/External/job006/warp_tiltseries/reconstruction/…_6.20Apx.mrc`). A
+   single-stream Lustre read of 1 GB is only ~1–2 s, so the 20 s is COMPUTE — ArtiaX/ChimeraX processing the whole
+   268 M-voxel array on open (data stats / slice textures), the user's "histogram" hunch. ROBUST FIX = open a
+   DOWNSAMPLED display recon for picking (picks stay in register: `.coords` are physical-Å and ArtiaX converts via the
+   DISPLAYED volume's header px). 2× further bin → 12.4 Å/px ≈ 134 MB (8× fewer voxels); 4× → 24.8 Å/px ≈ 17 MB (64×).
+   For a 412 (large complex) center-picking, even 24.8 Å/px is plenty — but the binning is the USER's science call.
+   Options: (A) generate+cache lazily on first open (helps re-opens only); (B) pre-sweep all tomos' display recons in
+   the background (helps the first/only open — the real win for an N-tomo pass). UNDECIDED: which binning + A vs B.
+   Cheap localize-first experiment: in the live session, hand-time `artiax open tomo <recon>` vs a small pre-binned
+   copy to confirm compute-bound before building the sweep.
+2. **Save UX rebuild — BUILT (2026-06-10, user approved the direction; code-clean, PENDING runtime).** The manual
+   ArtiaX Save dialog is unreliable to locate (Qt remembers last-dir; the worker only sets cwd at launch — the
+   `cd`-on-swap fix helps the FIRST save but Qt stickiness can scatter later ones), so crboost-CONTROLLED REST saves
+   are now the FOREFRONT path and the by-hand path is documented as a clearly-labelled fallback. LANDED:
+   `backend.save_curation_picks(session_info, *, project_path, tomo_name, species_*)` resolves the LOADED tomo's
+   `curation_dir` (from `_curation_loaded`, fallback to the passed tuple) and calls `save_session_particle_lists` →
+   `.coords` land where the dashboard prescan auto-imports them; the dialog gained a green **"Save picks now"** button
+   (`_save_picks_now`, gated live, non-destructive/no-confirm) + a **"Prefer to save by hand in ArtiaX?"** expansion
+   that states the EXACT contract — folder `Curation/<sp>/<tomo>/` (follows the loaded tomo via `_refresh_loaded`),
+   format = ArtiaX `.coords` (NOT RELION star), name = anything except `auto.coords`/`*_ref.coords`, newest wins; the
+   two swap-confirm blurbs (dialog + dashboard ⚡) now explain what "save current first" does + where. THE ONE
+   RUNTIME GATE: `save_session_particle_lists` (the `info models` "json values" parse + `save … partlist`) is still
+   UNVERIFIED — "Save picks now" / "save current first" do nothing if `info models` doesn't surface the model tree
+   over REST. Added a raw-response diagnostic log (`save_session_particle_lists: no models from 'info models' — raw:
+   …`) so the first test pinpoints the structure instead of a blind retry. VERIFY: pick a NEW list in ArtiaX → "Save
+   picks now" → expect toast "Saved N list(s)" + a `.coords` in the tomo's `Curation/.../` + the manual list appears;
+   if it says "nothing open" though picks exist, grab that raw-models log line.
 
 **▶▶ DO THIS FIRST — runtime-verify the session-12 landings (all code-clean, NONE runtime-tested; the server has
 NO auto-reload → restart `python main.py` + hard-reload the browser before testing, see [[reference_hpc_env]]).**
