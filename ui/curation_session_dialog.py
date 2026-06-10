@@ -58,6 +58,10 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
     cxc_path = b.get("cxc_path")
     commands = b.get("commands") or []
     manual_coords = b.get("manual_coords") or ""
+    # The per-(species,tomo) curation folder (= manual_coords' parent): the forefront
+    # save target, and where a by-hand ArtiaX save must land. _refresh_loaded repoints it
+    # at the LOADED tomogram's folder once a swap records one.
+    _initial_save_dir = str(Path(manual_coords).parent) if manual_coords else ""
     tomo_name = b.get("tomo_name") or ""
     auto_count = b.get("auto_count")
     cmd_block = "\n".join(commands)
@@ -76,7 +80,7 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
     # Live session values; copy buttons read from here (closures) so they stay
     # correct as the session transitions off → starting → live without a rebuild.
     sv = {"tunnel": "", "address": "", "password": "", "node": "", "job_id": None, "rest_port": None}
-    state = {"session_dir": None, "timer": None, "busy": False, "kind": "off", "load_busy": False}
+    state = {"session_dir": None, "timer": None, "busy": False, "kind": "off", "load_busy": False, "save_busy": False}
 
     # Stable page-level host slot (see module docstring). Fall back to the caller's
     # slot if a layout isn't reachable — degraded (may close on refresh) but works.
@@ -158,6 +162,15 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
                 )
             ui.separator()
 
+            # "Currently loaded" — what the shared live session has open via the REST
+            # swap (backend._curation_loaded). Filled on reconnect + after each Load;
+            # hidden until something is loaded. The session is per-user, so this can
+            # reflect a tomogram a swap loaded from a different project's dashboard.
+            loaded_lbl = ui.label("").classes(
+                "text-[11px] text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded self-start whitespace-nowrap"
+            )
+            loaded_lbl.set_visibility(False)
+
             body = ui.column().classes("w-full gap-1").style("overflow-y: auto; flex: 1 1 auto; min-height: 0;")
             with body:
                 # ── action row (Start/Stop swap in place; spinner while starting) ──
@@ -206,7 +219,7 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
 
                 ui.separator().classes("my-1")
 
-                # ── LOAD THIS TOMOGRAM (the per-tomo repeated action — most used) ──
+                # ── LOAD THIS TOMOGRAM (swap the live viewer to this tomo + its picks) ──
                 load_btn = None
                 if commands:
                     with ui.row().classes("w-full items-center gap-2"):
@@ -233,19 +246,43 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
                         else "Paste into the ChimeraX command line (bottom of its window):"
                     ).classes("text-[11px] text-gray-500")
                     ui.label(cmd_block).classes(_BLOCK)
-                    if manual_coords:
-                        with ui.row().classes("items-center gap-1 w-full mt-1"):
-                            ui.label("Save picks to").classes("text-[11px] text-gray-500").style(
-                                "width: 92px; min-width: 92px;"
-                            )
-                            ui.label(manual_coords).classes(_BOX)
-                            _copy(manual_coords, "Copy save path")
-                        ui.label(
-                            "In ArtiaX: new particle list → pick → save as .coords at that path → crboost ingests it."
-                        ).classes("text-[10px] text-gray-400")
                 else:
                     ui.label(
                         "Open a tomogram from a species gallery's “Curate in ArtiaX” to preload it + its picks here."
+                    ).classes("text-[11px] text-gray-500")
+
+                ui.separator().classes("my-1")
+
+                # ── PICK & SAVE (the forefront save path: crboost files your lists over
+                # the command channel, so there's no ArtiaX Save dialog to get lost in) ──
+                with ui.row().classes("w-full items-center gap-2"):
+                    ui.label("Pick & save").classes("text-xs font-semibold text-gray-700")
+                    ui.space()
+                    save_btn = ui.button(
+                        "Save picks now", icon="save", color="green", on_click=lambda: _save_picks_now()
+                    ).props("dense no-caps size=sm")
+                    save_btn.tooltip(
+                        "Save the pick lists you made in ArtiaX into the loaded tomogram's folder — no Save dialog"
+                    )
+                ui.label(
+                    "In ArtiaX, make a NEW particle list and pick into it (don't add to the auto list). Then click "
+                    "Save picks now — crboost files it under the loaded tomogram and imports it for you."
+                ).classes("text-[11px] text-gray-500")
+
+                with ui.expansion("Prefer to save by hand in ArtiaX?", icon="folder_open").classes("w-full text-xs"):
+                    with ui.row().classes("items-center gap-1 w-full"):
+                        _kw("Folder")
+                        save_dir_lbl = ui.label(_initial_save_dir or "— load a tomogram —").classes(_BOX)
+                        _copy(
+                            lambda: save_dir_lbl.text if (save_dir_lbl.text or "").startswith("/") else "",
+                            "Copy folder path",
+                        )
+                    ui.markdown(
+                        "- **Format:** *ArtiaX coordinates* (`.coords`) — **not** RELION star (its writer is buggy).\n"
+                        "- **Name:** anything (e.g. `picks.coords`), **except** `auto.coords` / `*_ref.coords` "
+                        "(crboost's own exports).\n"
+                        "- The Save dialog already opens in this folder. crboost auto-imports the **newest** "
+                        "`.coords` here within a few seconds."
                     ).classes("text-[11px] text-gray-500")
 
                 with ui.expansion("Troubleshooting", icon="help_outline").classes("w-full text-xs"):
@@ -266,6 +303,25 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
         "off": ("○ No session", _chip_base + "bg-gray-100 text-gray-500"),
     }
 
+    def _refresh_loaded() -> None:
+        """Reflect the shared session's currently-loaded (species, tomo) from the
+        backend into the indicator. No-op-safe if the backend predates the getter."""
+        cur = None
+        try:
+            getter = getattr(backend, "get_curation_loaded", None)
+            if getter is not None:
+                cur = getter({"slurm_job_id": sv["job_id"], "session_dir": state["session_dir"]})
+        except Exception:
+            cur = None
+        tn = (cur or {}).get("tomo_name") or ""
+        if tn:
+            sp_txt = cur.get("species_label") or cur.get("species_id") or ""
+            loaded_lbl.set_text(f"Loaded in session: {sp_txt + ' · ' if sp_txt else ''}{tn}")
+            cd = cur.get("curation_dir")
+            if cd:
+                save_dir_lbl.set_text(cd)  # by-hand save folder follows the loaded tomo
+        loaded_lbl.set_visibility(bool(tn))
+
     def _apply(kind: str, busy_msg: str = "") -> None:
         state["kind"] = kind
         text, klass = _chip[kind]
@@ -277,6 +333,7 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
         busy_box.set_visibility(kind == "starting")
         if load_btn is not None:
             load_btn.set_visibility(kind == "live")
+        save_btn.set_visibility(kind == "live")
         if busy_msg:
             busy_lbl.set_text(busy_msg)
         job_lbl.set_text((f"SLURM {sv['job_id']}" + (f" · {sv['node']}" if sv["node"] else "")) if sv["job_id"] else "")
@@ -284,10 +341,12 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
             tunnel_lbl.set_text(sv["tunnel"] or "—")
             addr_lbl.set_text(sv["address"] or "—")
             pass_lbl.set_text(sv["password"] or "—")
+            _refresh_loaded()
         else:
             tunnel_lbl.set_text("— start the session —")
             addr_lbl.set_text("—")
             pass_lbl.set_text("—")
+            loaded_lbl.set_visibility(False)
         ts_md.set_content(_troubleshooting_md())
 
     # ── actions (re-entry guarded) ──────────────────────────────────────────────
@@ -367,10 +426,13 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
             with ui.dialog().props("persistent") as confirm, ui.card().classes("w-[26rem] max-w-full gap-2"):
                 ui.label("Load into running session?").classes("text-sm font-bold")
                 ui.label(
-                    f"This clears what ArtiaX has open and loads {tomo_name or 'this tomogram'} + its picks. "
-                    "Unsaved manual picks in the session will be lost."
+                    f"This swaps ArtiaX to {tomo_name or 'this tomogram'} + its picks, clearing what's open now. "
+                    "Any manual picks you haven't saved for the current tomogram would be lost."
                 ).classes("text-[12px] text-gray-600")
-                save_cb = ui.checkbox("Save current picks first", value=True).props("dense").classes("text-[12px]")
+                save_cb = ui.checkbox("Save my current picks first", value=True).props("dense").classes("text-[12px]")
+                ui.label("crboost saves your open lists to the current tomogram's folder before switching.").classes(
+                    "text-[10px] text-gray-400"
+                )
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
                     ui.button("Load", color="indigo", on_click=lambda: confirm.submit(True)).props("dense no-caps")
@@ -413,12 +475,58 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
                 if saved and saved.get("saved"):
                     msg += f" Saved {len(saved['saved'])} list(s) first."
                 ui.notify(msg, type="positive")
+                _refresh_loaded()
             else:
                 ui.notify(f"Load failed: {res.get('error') or 'unknown error'}", type="negative", timeout=7000)
         finally:
             if load_btn is not None:
                 load_btn.props(remove="loading")
             state["load_busy"] = False
+
+    async def _save_picks_now() -> None:
+        """Forefront save: crboost writes the manual lists open in the session to the
+        loaded tomogram's folder over the REST channel (no ArtiaX Save dialog), where
+        the dashboard prescan imports them. Non-destructive → no confirm."""
+        if state["kind"] != "live" or not sv.get("rest_port"):
+            ui.notify("Start the session and load a tomogram first.", type="warning")
+            return
+        if state["save_busy"]:
+            return
+        state["save_busy"] = True
+        save_btn.props("loading")
+        try:
+            session_info = {
+                "node": sv["node"],
+                "rest_port": sv["rest_port"],
+                "slurm_job_id": sv["job_id"],
+                "session_dir": state["session_dir"],
+            }
+            res = await backend.save_curation_picks(
+                session_info,
+                project_path=project_path,
+                tomo_name=tomo_name,
+                species_id=species_id,
+                species_label=species_label,
+            )
+            if res.get("success"):
+                n = res.get("count") or 0
+                if n:
+                    ui.notify(
+                        f"Saved {n} pick list(s) for {res.get('tomo') or 'this tomogram'} — crboost is importing them.",
+                        type="positive",
+                        timeout=5000,
+                    )
+                else:
+                    ui.notify(
+                        "No manual pick lists are open in ArtiaX — make a new list and pick into it first.",
+                        type="warning",
+                        timeout=6000,
+                    )
+            else:
+                ui.notify(f"Save failed: {res.get('error') or 'unknown error'}", type="negative", timeout=7000)
+        finally:
+            save_btn.props(remove="loading")
+            state["save_busy"] = False
 
     # ── entry: reconnect a live session (no sbatch) or show the off state ────────
     _apply("starting", "Checking for a running session…")

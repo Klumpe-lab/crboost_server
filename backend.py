@@ -639,9 +639,19 @@ class CryoBoostBackend:
             return {"success": True, "raw": raw}  # non-JSON body (server not in json mode) → treat as ok
         cx_err = data.get("error")
         log = data.get("log messages") or {}
-        err_msgs = log.get("error") if isinstance(log, dict) else None
-        ok = not cx_err and not err_msgs
-        return {"success": ok, "error": cx_err or (err_msgs[0] if err_msgs else None), "raw": raw, "data": data}
+        log_err = log.get("error") if isinstance(log, dict) else None
+        log_err_txt = (log_err[0] if isinstance(log_err, (list, tuple)) else str(log_err)) if log_err else None
+        # A multi-command swap (`close session ; artiax start ; artiax open tomo … ; open …`)
+        # routinely logs benign error-LEVEL lines even when every command ran — ArtiaX
+        # re-inits after `close session`, and the user confirmed the tomo+picks always load
+        # while this fired. So the authoritative hard-failure signal is ChimeraX's TOP-LEVEL
+        # `error` field (a raised exception / unparsable command), NOT the noisy per-message
+        # error channel. Keep the log error in the result + log the raw envelope so a genuine
+        # failure stays traceable; only flip success on a real top-level error.
+        ok = not cx_err
+        if cx_err or log_err_txt:
+            logger.info("ChimeraX REST error indicators (success=%s): %s", ok, raw[:1500])
+        return {"success": ok, "error": cx_err or None, "log_error": log_err_txt, "raw": raw, "data": data}
 
     async def save_session_particle_lists(self, session_info: Dict[str, Any], dest_dir: Path) -> Dict[str, Any]:
         """Best-effort save of every ArtiaX ParticleList currently open in the live
@@ -661,8 +671,17 @@ class CryoBoostBackend:
             return {"success": False, "error": f"could not parse model list: {e}"}
         dest = Path(dest_dir)
         dest.mkdir(parents=True, exist_ok=True)
+        model_list = models if isinstance(models, list) else []
+        if not model_list:
+            # `info models` parsed to nothing — this ChimeraX build may not surface the
+            # model tree in "json values" over REST. Log the raw envelope so a save that
+            # finds no lists ("nothing open" though picks exist) is diagnosable without a
+            # blind round-trip; this is the one REST path not yet runtime-verified.
+            logger.info(
+                "save_session_particle_lists: no models from 'info models' — raw: %s", (info.get("raw") or "")[:1500]
+            )
         saved: List[str] = []
-        for m in models if isinstance(models, list) else []:
+        for m in model_list:
             if not isinstance(m, dict) or m.get("class") != "ParticleList":
                 continue
             spec = m.get("spec")
@@ -674,6 +693,50 @@ class CryoBoostBackend:
             if res.get("success"):
                 saved.append(str(out))
         return {"success": True, "saved": saved}
+
+    async def save_curation_picks(
+        self,
+        session_info: Dict[str, Any],
+        *,
+        project_path: Optional[Path] = None,
+        tomo_name: str = "",
+        species_id: str = "",
+        species_label: str = "",
+    ) -> Dict[str, Any]:
+        """Forefront save: write every manual ParticleList open in the live session to
+        the LOADED tomogram's curation dir as ``.coords``, where the dashboard prescan
+        (`_auto_kick_coords_ingest`) auto-imports it as a ``manual`` pick list. crboost
+        chooses the path, so the user never touches ArtiaX's Save dialog.
+
+        The destination is the tomogram the session actually has open (tracked in
+        ``_curation_loaded``); ``(project_path, tomo_name, species_*)`` is only a
+        fallback for a session whose load this process didn't record (e.g. a
+        ``.cxc``-preloaded start). Returns ``count`` (lists saved) so the UI can tell
+        "saved N" from "nothing open to save"."""
+        from services.visualization import artiax_bridge
+
+        job_id = str((session_info or {}).get("slurm_job_id") or (session_info or {}).get("session_dir") or "")
+        loaded = self._curation_loaded.get(job_id) or {}
+        tomo = loaded.get("tomo_name") or tomo_name
+        dest: Optional[Path] = None
+        if loaded.get("curation_dir"):
+            dest = Path(loaded["curation_dir"])
+        elif project_path and tomo_name:
+            dest = artiax_bridge.curation_dir(
+                Path(project_path), tomo_name, species_id=species_id, species_label=species_label
+            )
+        if dest is None:
+            return {"success": False, "error": "No tomogram is loaded in the session yet — load one first."}
+        res = await self.save_session_particle_lists(session_info, dest)
+        saved = res.get("saved") or []
+        return {
+            "success": res.get("success", False),
+            "error": res.get("error"),
+            "saved": saved,
+            "count": len(saved),
+            "tomo": tomo,
+            "dest": str(dest),
+        }
 
     async def load_into_session(
         self,
@@ -723,12 +786,17 @@ class CryoBoostBackend:
             if not bundle.get("success"):
                 return {"success": False, "error": bundle.get("error") or "could not prepare picks"}
 
-            swap = " ; ".join(artiax_bridge.swap_chimerax_commands(bundle["recon"], bundle.get("auto_coords")))
+            # Point ChimeraX's cwd at this tomo's curation dir so ArtiaX's "Save particle
+            # list" dialog defaults there (the worker only sets cwd at launch — it goes
+            # stale after a swap, scattering saves into the wrong tomogram's folder).
+            out_dir = artiax_bridge.curation_dir(
+                Path(project_path), tomo_name, species_id=species_id, species_label=species_label
+            )
+            swap = " ; ".join(
+                artiax_bridge.swap_chimerax_commands(bundle["recon"], bundle.get("auto_coords"), cwd=out_dir)
+            )
             res = await self.send_chimerax_command(session_info, swap)
             if res.get("success"):
-                out_dir = artiax_bridge.curation_dir(
-                    Path(project_path), tomo_name, species_id=species_id, species_label=species_label
-                )
                 self._curation_loaded[job_id] = {
                     "project_path": str(project_path),
                     "species_id": species_id,
@@ -743,6 +811,16 @@ class CryoBoostBackend:
                 "auto_count": bundle.get("auto_count"),
                 "saved": saved,
             }
+
+    def get_curation_loaded(self, session_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """What (species, tomo) the live session currently has open via the REST swap,
+        or None. Keyed exactly as load_into_session records it, so a reconnecting dialog
+        can show a "Currently loaded" indicator. The session is shared per-user, so this
+        reflects whatever the last swap put in ArtiaX — even a tomogram loaded from a
+        different project's dashboard. In-memory only: empty until this backend process
+        has done at least one load_into_session (a preloaded-via-.cxc start is not tracked)."""
+        job_id = str((session_info or {}).get("slurm_job_id") or (session_info or {}).get("session_dir") or "")
+        return self._curation_loaded.get(job_id) if job_id else None
 
     async def prepare_curation_bundle(
         self,

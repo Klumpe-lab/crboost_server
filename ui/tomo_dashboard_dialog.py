@@ -2676,15 +2676,32 @@ async def _handle_load_into_session(sp: dict, project_path: Path) -> None:
     async with _curation_flight(f"loadinto:{species_id}:{tomo_name}") as acquired:
         if not acquired:
             return
+        # This handler awaits a ~20 s load; during it the dashboard's periodic
+        # main_area.clear() deletes the slot this coroutine was entered under, so a later
+        # bare ui.notify dies with "parent element ... has been deleted". Capture the page
+        # LAYOUT slot (never cleared) up front and route every notify through it; swallow
+        # the residual race so a stale toast never surfaces a traceback.
+        try:
+            host = context.client.layout.default_slot
+        except Exception:
+            host = nullcontext()
+
+        def _notify(msg: str, **kw) -> None:
+            try:
+                with host:
+                    ui.notify(msg, **kw)
+            except Exception:
+                logger.info("load-into-session: dropped notify (slot gone): %s", msg)
+
         backend = get_backend()
         if backend is None:
-            ui.notify("Backend unavailable.", type="negative")
+            _notify("Backend unavailable.", type="negative")
             return
         active = await backend.find_active_curation_session_any()
         if not active:
             active = await backend.find_active_curation_session(project_path)
         if not active or not active.get("rest_port"):
-            ui.notify(
+            _notify(
                 "No running ChimeraX session yet — click ‘Curate in ArtiaX’ to start one, then load tomograms into it.",
                 type="warning",
                 timeout=6000,
@@ -2693,18 +2710,17 @@ async def _handle_load_into_session(sp: dict, project_path: Path) -> None:
 
         # Confirm — `close session` wipes unsaved manual picks. Layout-parented so
         # the 4 s dashboard refresh can't clear the dialog mid-interaction.
-        try:
-            host = context.client.layout.default_slot
-        except Exception:
-            host = nullcontext()
         with host:
             with ui.dialog().props("persistent") as confirm, ui.card().classes("w-[26rem] max-w-full gap-2"):
                 ui.label("Load into running session?").classes("text-sm font-bold")
                 ui.label(
-                    f"Swap the running ArtiaX (on {active.get('node') or '?'}) to {tomo_name} + its picks. "
-                    "Unsaved manual picks in the session will be lost."
+                    f"Swap the running ArtiaX (on {active.get('node') or '?'}) to {tomo_name} + its picks, clearing "
+                    "what's open now. Any manual picks you haven't saved for the current tomogram would be lost."
                 ).classes("text-[12px] text-gray-600")
-                save_cb = ui.checkbox("Save current picks first", value=True).props("dense").classes("text-[12px]")
+                save_cb = ui.checkbox("Save my current picks first", value=True).props("dense").classes("text-[12px]")
+                ui.label("crboost saves your open lists to the current tomogram's folder before switching.").classes(
+                    "text-[10px] text-gray-400"
+                )
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
                     ui.button("Load", color="indigo", on_click=lambda: confirm.submit(True)).props("dense no-caps")
@@ -2718,7 +2734,7 @@ async def _handle_load_into_session(sp: dict, project_path: Path) -> None:
             return
 
         job_dir = Path(sp["job_dir"])
-        ui.notify(f"Loading {tomo_name} into the running session…", type="info")
+        _notify(f"Loading {tomo_name} into the running session…", type="info")
         res = await backend.load_into_session(
             active,
             project_path,
@@ -2731,12 +2747,12 @@ async def _handle_load_into_session(sp: dict, project_path: Path) -> None:
         )
         if res.get("success"):
             n = res.get("auto_count")
-            ui.notify(
+            _notify(
                 f"Loaded {tomo_name}{f' ({n} picks)' if n is not None else ''} into the running session.",
                 type="positive",
             )
         else:
-            ui.notify(f"Load failed: {res.get('error') or 'unknown error'}", type="negative", timeout=7000)
+            _notify(f"Load failed: {res.get('error') or 'unknown error'}", type="negative", timeout=7000)
 
 
 async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -> None:

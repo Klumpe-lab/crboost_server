@@ -187,7 +187,7 @@ def session_chimerax_commands(recon_mrc, auto_coords: Optional[Path] = None) -> 
 
 
 def swap_chimerax_commands(
-    recon_mrc, pick_file=None, *, clear: bool = True, force_apix: Optional[float] = None
+    recon_mrc, pick_file=None, *, clear: bool = True, force_apix: Optional[float] = None, cwd=None
 ) -> list[str]:
     """The in-session "swap to this tomogram" command sequence — what crboost POSTs
     over the REST channel (see ``backend.send_chimerax_command``) to load a new
@@ -200,11 +200,19 @@ def swap_chimerax_commands(
     end-to-end as one semicolon-joined command (2026-06-10). ``force_apix`` adds a
     pixel-size override for the just-opened tomogram (``#1.1.1`` after a fresh
     clear) for the rare case the MRC header pixel size can't be trusted.
+
+    ``cwd`` appends a ChimeraX ``cd <dir>`` so ArtiaX's "Save particle list" dialog
+    defaults to THIS tomogram's curation dir (the worker only sets the process cwd
+    at launch — after a swap it points at the wrong tomo). Appended LAST so that even
+    if a ChimeraX build lacks ``cd`` the tomogram + picks have already loaded (and the
+    benign error is non-fatal; see ``backend.send_chimerax_command``).
     """
     cmds: list[str] = ["close session"] if clear else []
     cmds.extend(session_chimerax_commands(recon_mrc, pick_file))
     if force_apix is not None:
         cmds.append(f"artiax tomo #1.1.1 pixelSize {float(force_apix)}")
+    if cwd is not None:
+        cmds.append(f"cd {_cxc_quote(cwd)}")
     return cmds
 
 
