@@ -27,11 +27,12 @@ import asyncio
 import json
 import logging
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from nicegui import app, ui
+from nicegui import app, context, ui
 
 from services.configs.user_prefs_service import get_prefs_service
 from services.models_base import JobStatus, JobType, ListExtractionState, PickListType
@@ -369,25 +370,28 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
     _active = {"on": True}
 
     def _curation_bundles_sig() -> tuple:
-        # Newest .coords mtime per species bundle dir. An ArtiaX save is an
-        # EXTERNAL process — it never appears as a background task, so the
+        # Newest .coords mtime per per-(species,tomo) curation dir. An ArtiaX save
+        # is an EXTERNAL process — it never appears as a background task, so the
         # registry signature below can't see it. Folding these mtimes into the
         # signature is what lets a fresh save move it → triggers a rebuild →
         # `_auto_kick_coords_ingest` finally runs and ingests WITHOUT a click.
         # Runs OFF-loop (see _maybe_refresh) — globs a handful of small dirs.
-        base = Path(project_path) / ".curation_sessions" / "bundles"
+        base = Path(project_path) / "Curation"
         out: list[tuple[str, int]] = []
         try:
-            for d in base.iterdir():
-                if not d.is_dir():
+            for sp_dir in base.iterdir():
+                if not sp_dir.is_dir():
                     continue
-                newest = 0.0
-                for c in d.glob("*.coords"):
-                    try:
-                        newest = max(newest, c.stat().st_mtime)
-                    except OSError:
-                        pass
-                out.append((d.name, int(newest)))
+                for tomo_dir in sp_dir.iterdir():
+                    if not tomo_dir.is_dir():
+                        continue
+                    newest = 0.0
+                    for c in tomo_dir.glob("*.coords"):
+                        try:
+                            newest = max(newest, c.stat().st_mtime)
+                        except OSError:
+                            pass
+                    out.append((f"{sp_dir.name}/{tomo_dir.name}", int(newest)))
         except OSError:
             return ()
         return tuple(sorted(out))
@@ -2647,12 +2651,92 @@ async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
             job_dir / "tomograms.star",
             tomo_name,
             sp.get("label") or sp.get("species_id") or "",
+            species_id=sp.get("species_id") or "",
         )
         if not bundle.get("success"):
             ui.notify(f"Could not prepare picks for {tomo_name}: {bundle.get('error')}", type="negative")
             return
         bundle["tomo_name"] = tomo_name
+        bundle["candidates_star"] = str(job_dir / "candidates.star")
+        bundle["tomograms_star"] = str(job_dir / "tomograms.star")
+        bundle["species_id"] = sp.get("species_id") or ""
+        bundle["species_label"] = sp.get("label") or sp.get("species_id") or ""
         await open_curation_control_center(backend, project_path, bundle=bundle)
+
+
+async def _handle_load_into_session(sp: dict, project_path: Path) -> None:
+    """Per-tomo 'Load into running session': swap the user's ALREADY-running
+    ChimeraX/ArtiaX to THIS (species, tomo) over the REST channel — the reuse path
+    that avoids relaunching a viewer per tomogram (the session is per-user, found
+    across all projects). No live session → point the user at 'Curate in ArtiaX'."""
+    from backend import get_backend
+
+    tomo_name = sp["row"]["tomo_name"]
+    species_id = sp.get("species_id") or ""
+    async with _curation_flight(f"loadinto:{species_id}:{tomo_name}") as acquired:
+        if not acquired:
+            return
+        backend = get_backend()
+        if backend is None:
+            ui.notify("Backend unavailable.", type="negative")
+            return
+        active = await backend.find_active_curation_session_any()
+        if not active:
+            active = await backend.find_active_curation_session(project_path)
+        if not active or not active.get("rest_port"):
+            ui.notify(
+                "No running ChimeraX session yet — click ‘Curate in ArtiaX’ to start one, then load tomograms into it.",
+                type="warning",
+                timeout=6000,
+            )
+            return
+
+        # Confirm — `close session` wipes unsaved manual picks. Layout-parented so
+        # the 4 s dashboard refresh can't clear the dialog mid-interaction.
+        try:
+            host = context.client.layout.default_slot
+        except Exception:
+            host = nullcontext()
+        with host:
+            with ui.dialog().props("persistent") as confirm, ui.card().classes("w-[26rem] max-w-full gap-2"):
+                ui.label("Load into running session?").classes("text-sm font-bold")
+                ui.label(
+                    f"Swap the running ArtiaX (on {active.get('node') or '?'}) to {tomo_name} + its picks. "
+                    "Unsaved manual picks in the session will be lost."
+                ).classes("text-[12px] text-gray-600")
+                save_cb = ui.checkbox("Save current picks first", value=True).props("dense").classes("text-[12px]")
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
+                    ui.button("Load", color="indigo", on_click=lambda: confirm.submit(True)).props("dense no-caps")
+        go = await confirm
+        do_save = bool(save_cb.value) if go else False
+        try:
+            confirm.delete()
+        except Exception:
+            pass
+        if not go:
+            return
+
+        job_dir = Path(sp["job_dir"])
+        ui.notify(f"Loading {tomo_name} into the running session…", type="info")
+        res = await backend.load_into_session(
+            active,
+            project_path,
+            job_dir / "candidates.star",
+            job_dir / "tomograms.star",
+            tomo_name,
+            sp.get("label") or species_id or "",
+            species_id=species_id,
+            save_first=do_save,
+        )
+        if res.get("success"):
+            n = res.get("auto_count")
+            ui.notify(
+                f"Loaded {tomo_name}{f' ({n} picks)' if n is not None else ''} into the running session.",
+                type="positive",
+            )
+        else:
+            ui.notify(f"Load failed: {res.get('error') or 'unknown error'}", type="negative", timeout=7000)
 
 
 async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -> None:
@@ -2685,6 +2769,7 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
             job_dir / "tomograms.star",
             tomo_name,
             sp.get("label") or species_id or "",
+            species_id=species_id,
             source_star=Path(star),
             coords_label=lst["slug"],
         )
@@ -2692,6 +2777,12 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
             ui.notify(f"Could not prepare {lst.get('label')}: {bundle.get('error')}", type="negative")
             return
         bundle["tomo_name"] = tomo_name
+        bundle["candidates_star"] = str(job_dir / "candidates.star")
+        bundle["tomograms_star"] = str(job_dir / "tomograms.star")
+        bundle["species_id"] = species_id
+        bundle["species_label"] = sp.get("label") or species_id or ""
+        bundle["source_star"] = str(star)
+        bundle["coords_label"] = lst["slug"]
         await open_curation_control_center(backend, project_path, bundle=bundle)
 
 
@@ -2743,39 +2834,28 @@ def _pending_save_for_tomo(
 ) -> Optional[tuple[Path, float]]:
     """The ArtiaX `.coords` save to auto-ingest for THIS (species, tomo), or None.
 
-    Saves land in the per-species bundle dir (`.curation_sessions/bundles/<species>/`),
-    where our own exports are tomo-named (`<tomo>__auto.coords` / `<tomo>__…_ref.coords`)
-    but the user's SAVE may be named anything (e.g. `particles.coords`). We attribute
-    the newest user save (excluding our exports) to this tomo iff it's tomo-self-evident:
-    its name starts with `<tomo>__`, OR this is the only tomo the species has curated
-    (the bundle's `*__auto.coords` set is exactly {this tomo}) and the save is plainly
-    named (no `__`, so it can't be masquerading as another tomo's). Multi-tomo bundles
-    with arbitrarily-named saves stay on the Import button — no safe tomo attribution.
-    Returns (path, mtime) of the newest qualifying save, for the caller's guards."""
+    Saves land in the per-(species,tomo) `curation_dir`, so every `.coords` under it
+    is THIS tomogram's by construction — the newest one that isn't a crboost export
+    (`auto.coords` / `*_ref.coords`) is the user's save, no name/single-tomo heuristic
+    needed (that ambiguity was the old per-species cross-tomo bleed). Returns
+    (path, mtime) of the newest qualifying save, for the caller's guards."""
     from services.visualization import artiax_bridge
 
-    bundle_slug = artiax_bridge._safe_slug(species_label or species_id or tomo_name)
-    bundle = Path(project_path) / ".curation_sessions" / "bundles" / bundle_slug
-    if not bundle.is_dir():
+    d = artiax_bridge.curation_dir(project_path, tomo_name, species_id=species_id, species_label=species_label)
+    if not d.is_dir():
         return None
-    tomo_slug = artiax_bridge._safe_slug(tomo_name)
     saves: list[tuple[Path, float]] = []
-    for c in bundle.glob("*.coords"):
-        if c.name.endswith("__auto.coords") or c.name.endswith("_ref.coords"):
-            continue  # our own reference exports, not the user's save
+    for c in d.glob("*.coords"):
+        if c.name == "auto.coords" or c.name.endswith("_ref.coords"):
+            continue  # crboost's reference exports, not the user's save
         try:
             saves.append((c, c.stat().st_mtime))
         except OSError:
             continue
     if not saves:
         return None
-    curated = {c.name[: -len("__auto.coords")] for c in bundle.glob("*__auto.coords")}
-    single_tomo = curated == {tomo_slug}
     saves.sort(key=lambda t: t[1], reverse=True)
-    for path, mtime in saves:
-        if path.name.startswith(f"{tomo_slug}__") or (single_tomo and "__" not in path.name):
-            return (path, mtime)
-    return None
+    return saves[0]
 
 
 def _auto_kick_coords_ingest(
@@ -2836,8 +2916,8 @@ def _auto_kick_coords_ingest(
 
 async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -> None:
     """Per-tomo 'Import picks': find the .coords the user saved in ArtiaX (any
-    filename, newest first), convert → ManualPicks star, register a `manual`
-    PickList. If nothing is found in the curation dirs, prompt for an explicit
+    filename, newest first), convert → the tomo's manual.star, register a `manual`
+    PickList. If nothing is found in the curation dir, prompt for an explicit
     path (ArtiaX's save dialog may default anywhere). SingleFlight-guarded."""
     from backend import get_backend
 
@@ -3130,6 +3210,11 @@ def _render_list_rail(
                 ui.button(icon="view_in_ar", on_click=lambda: _handle_curate_in_artiax(sp, project_path))
                 .props("flat dense round size=sm color=indigo")
                 .tooltip("Curate in ArtiaX — open this tomogram + its picks in ChimeraX + ArtiaX")
+            )
+            (
+                ui.button(icon="bolt", on_click=lambda: _handle_load_into_session(sp, project_path))
+                .props("flat dense round size=sm color=indigo")
+                .tooltip("Load into running session — swap the live ArtiaX to this tomogram (reuse one session)")
             )
             (
                 ui.button(icon="download", on_click=lambda: _handle_import_curation_picks(sp, project_path, refresh))

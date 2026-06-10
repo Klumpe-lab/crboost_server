@@ -9,10 +9,171 @@ pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the cont
 
 ## NEXT SESSION — start here (prioritized)
 
-**✅ 2026-06-09 (session 11) — all 4 session-10 issues ADDRESSED in code (compile+ruff+format clean; NONE
-runtime-verified — same env limits: venv lacks numpy, no browser, sandbox can't reach /groups). Edits in
-`ui/tomo_dashboard_dialog.py` + `ui/dashboard/css.py`. ONE follow-up remains: auto-INGEST firing (item 2).
-Approach differed from session 10's "guess + ship": every fix here is backed by a full static trace.**
+**▶▶▶ ACTIVE BUILD (session 13, 2026-06-10) — REST command channel VERIFIED at runtime → build the per-user
+REUSABLE session.** **STATUS: IMPLEMENTED + adversarially reviewed 2026-06-10 (compile/ruff/format/bash-n
+clean; 5 review findings fixed; PENDING runtime verify — restart `python main.py`).** The user de-risked the
+whole approach live on CBE and said "stick to this." This SUPERSEDES the
+paste-in "Load this tomogram" UX (kept only as a graceful fallback) and turns "Curate in ArtiaX" into a one-click
+load/swap into a single long-lived viewer. The S12 control-center rewrite (below) is partly superseded — the dialog
+now also goes NON-MODAL with a "Currently loaded" indicator + a "Load into running session" button.
+
+*What's proven (user-confirmed runtime):*
+- ChimeraX's built-in REST server, auto-started by the worker via `--cmd "remotecontrol rest start port $REST_PORT
+  json true"` (REST_PORT = `CX_REST_PORT` else `46000+DISPLAY_NUM`; `rest_port` now in `session.json` + the banner).
+  `curation_session.sh` edit LANDED (bash -n clean).
+- Transport = **ssh-hop curl GET**: `ssh <node> curl -s -G --data-urlencode 'command=…' http://127.0.0.1:<rest_port>/run`.
+  Passwordless headnode→compute-node ssh works on CBE. REST binds `127.0.0.1` (no auth) → loopback + ssh-hop ONLY;
+  never bind routable. **GOTCHA:** must be a GET QUERY — `--data-urlencode` WITHOUT `-G` posts a urlencoded body →
+  `"command" parameter missing` (the `/run` handler reads `command` from the query string; multipart `-F` also works,
+  urlencoded POST does NOT). The backend dispatcher MUST use `-G`.
+- Verified over the channel: `info models` (full model tree — ArtiaX `#1`, tomogram `#1.1.1`, lists `#1.2.1`/`#1.2.2`),
+  `set bgColor` (visible), `artiax open tomo <path>` (loads a 2nd tomogram), and the full swap
+  `close session ; artiax start ; artiax open tomo <recon> ; open <coords>` as ONE semicolon-joined command.
+- Self-cleaning tunnel LANDED: worker `TUNNEL_CMD` prefixes `kill $(lsof -ti tcp:<port>) 2>/dev/null;` (`\$( )`
+  escaped so it runs on the user's Mac) — kills the stale-forward "connection refused" trap.
+
+*Decision (user): ONE shared session per USER*, reused across tomos/species/PROJECTS. The session is just a viewer;
+every file sent is an absolute path on the shared FS, so cross-project = different paths, no relaunch/re-tunnel/
+re-password. This is ALSO the real fix for the VNC port-churn pain (tunnel once; the port never changes because the
+session never relaunches). A fixed LOCAL viewer port (bookmark `localhost:5901` forever, remote varies) folds in here.
+
+*Build order:*
+1. **Backend dispatch (pure additions, no behavior change — do first; independently testable with the same curl).**
+   - `backend.send_chimerax_command(session_info, command_str) -> dict`: read `node`+`rest_port` from session.json,
+     `asyncio.create_subprocess_exec("ssh", node, "curl -s -G --data-urlencode …")` (same subprocess shape as
+     `scancel`), parse the json-true response, return `{ok, error, json_values, log}`.
+   - `artiax_bridge.swap_chimerax_commands(recon_mrc, pick_file, *, clear=True, force_apix=None) -> str`: builds
+     `close session ; artiax start ; artiax open tomo <recon> ; open <picks> [; lighting simple]`. Reuses/extends
+     `session_chimerax_commands` (single source of the load backbone). Pure-string (compile-clean in Claude's venv).
+   - `backend.load_into_session(session_info, project_root, tomo_name, species_id, *, save_first=False)`: resolve
+     `curation_dir(...)`, optional `save_current_lists` first, send the swap, update `_session_loaded_context[job_id]`
+     (project_root, species_id, tomo_name, curation_dir).
+   - `backend.save_current_lists(session_info, prev_curation_dir, prev_list_model)`: POST
+     `save <prev_curation_dir>/manual.coords partlist #<model>` (no `artiax save`; ChimeraX `save … partlist #N`;
+     `.coords` because RELION-5 writer is buggy #40). Needs the prev list's model id → save BEFORE close.
+2. **Per-user find-or-reuse.** Widen `find_active_curation_session` from per-project to per-USER (scan all projects'
+   `.curation_sessions/*/job.json`, or a `~/.crboost/curation` user registry; squeue-derived liveness, `-J cb-curation`).
+   Launch = find-or-reuse → stops the duplicate-job pileup. Launch a GENERIC session: omit `CB_CXC` (empty-but-ready;
+   the `--cmd` does REST; add `ui tool show ArtiaX ; artiax start`).
+3. **Config flag** `CurationConfig.rest_enabled` (start `true`, verified) + optional rest-port base. Off → pure paste-in.
+4. **UI.** `ui/curation_session_dialog.py` → non-modal dockable (parent at `context.client.layout.default_slot`,
+   already the anti-clear parent) + "Currently loaded: <species / tomo>" indicator (from `_session_loaded_context`) +
+   a "Load into running session" button (SingleFlight + confirm dialog: warn `close session` WIPES unsaved manual
+   picks, "save current first" checkbox default ON). Per-(species,tomo) gallery tile gets the same "Load into running
+   session" action when a live session exists. POST failure → fall back to the existing copy-paste command block.
+
+*Risks / open Qs:* `close session` resets camera/lighting + may drop ArtiaX → re-arm with `artiax start` (the swap
+string already does; confirm the ArtiaX panel doesn't also need `ui tool show ArtiaX`). Targeted `close #1.1.1` /
+`close #1.2.*` (ids from `info models`) is a cleaner swap than the full reset, BUT model ids aren't stable across
+opens → `close session` is the safe default. Pixel size from the MRC header; `artiax tomo #N pixelSize <apix>` only if
+off-register. Claude's venv lacks numpy/starfile → compile/ruff/format ONLY; user runtime-tests + run a multi-agent
+code-review pass (no runtime here). No commits without an ask.
+
+*LANDED (session 13, code-clean + reviewed; files):* `containers/chimerax_artiax/curation_session.sh` (REST start
+via `--cmd`, `rest_port` in session.json + banner, self-cleaning `kill $(lsof…)` tunnel); `services/configs/
+config_service.py` (`CurationConfig.rest_enabled`); `services/visualization/artiax_bridge.py`
+(`swap_chimerax_commands`); `backend.py` (`send_chimerax_command` ssh-hop `curl -G`, `save_session_particle_lists`,
+`load_into_session`, per-user registry `~/.crboost/curation/registry.jsonl` + `find_active_curation_session_any`,
+`__init__` locks/state); `ui/curation_session_dialog.py` ("Load into running session" button + confirm + save-first,
+rest_port in `sv`, cross-project reconnect); `ui/tomo_dashboard_dialog.py` (per-tile ⚡ "Load into running session"
++ `_handle_load_into_session`, bundle keys stamped). *5 adversarial-review findings FIXED:* (1) HIGH — a transient
+squeue `[]` no longer wipes the registry (prune gated on `jobs` non-empty); (2) registry lost-update race → append +
+prune both under `_curation_registry_lock`, prune re-reads fresh and removes only confirmed-dead dirs; (3)
+`find_active_curation_session_any` now picks the NEWEST live session (was oldest → wrong-viewer swap across
+projects); (4) `send_chimerax_command` reaps the ssh child on timeout + `ServerAliveInterval`; (5) per-session
+`_curation_swap_locks` serialize overlapping swaps into one session. *Still NOT enforced (accepted):* one-live-session
+user-wide at LAUNCH (housekeeping is per-project) — but find-or-reuse + newest-first selection make the acute
+wrong-viewer bug unreachable in normal use. *Deferred polish:* a "Currently loaded: <sp/tomo>" indicator in the
+dialog (backend tracks it in `_curation_loaded`; UI not yet wired); fixed LOCAL viewer port. *RUNTIME FIX #1 (2026-06-10, user hit it on EVERY tomo):* the ⚡ button failed `Load failed: ssh/curl to clip-g3-1
+failed: command-line line 0: unsupported option "accept-new"`. The CBE headnode runs OpenSSH 7.4 (el7), which
+predates `StrictHostKeyChecking=accept-new` (OpenSSH 7.6). FIXED `send_chimerax_command` → `StrictHostKeyChecking=no`
+(el7-safe auto-accept; the manual `ssh` test worked only because interactive ssh prompts, which `BatchMode=yes` can't).
+This is the el7-OpenSSH sibling of the kernel-ABI/page-align traps — code-clean, **STILL pending runtime re-verify
+after restart**. *RUNTIME GATE:* start a session → on a tomo tile click ⚡ → confirm → ArtiaX swaps to that tomo+picks;
+click ⚡ on a tomo in ANOTHER project → same session swaps (cross-project reuse); `save current first` writes the prior
+list to its `Curation/<sp>/<tomo>/`.
+
+**▶▶ DO THIS FIRST — runtime-verify the session-12 landings (all code-clean, NONE runtime-tested; the server has
+NO auto-reload → restart `python main.py` + hard-reload the browser before testing, see [[reference_hpc_env]]).**
+Three chunks landed this session; verify before building anything new. Detailed per-chunk blocks are below
+("⚠️ Slice C.0 — LANDED" + the two "✅ ALSO LANDED (session 12)" blocks):
+1. **Scope fix (Slice C.0).** Curate a tomo → save a `.coords` in ArtiaX → confirm it lands under
+   `Curation/<species_id>/<tomo>/` and auto-ingests with NO Import click; cross-tomo bleed should be impossible.
+2. **Curation control center** (`ui/curation_session_dialog.py`). Open "Curate in ArtiaX" → confirm it STAYS
+   OPEN through a dashboard refresh (the old close-on-rerender bug), the status chip tracks live/starting/off,
+   and the Connect creds + Load commands are all reachable in one stable layout.
+3. **VNC lifecycle.** ONE-TIME first, clear the existing mess: `scancel -u $USER -n cb-curation` (cluster) +
+   `lsof -ti tcp:5901 | xargs kill` (Mac). Then a fresh session should land on its OWN port (5902–5989, not
+   5901), the tunnel command backgrounds itself (`ssh -f -N …`) and frees the terminal, and ONE Stop clears all
+   zombies. The ONLY unverified mechanism is the worker's `/tmp/.X<n>-lock` free-display scan — if a session
+   can't start its VNC server, look there first.
+
+**▶ CURRENT PRIORITIES (session 12, 2026-06-09) — RE-STEERED by the user away from extraction.** Slice C
+(per-list extraction) is PARKED: it's the terminal step, and validating star formats for lists that are
+mis-scoped (geometric garbage) and merged through a raw UX is premature. Build trust + inspectability FIRST.
+New order:
+1. **✅ Slice C.0 — SCOPE STANDARDIZATION: LANDED in code (compile+ruff+format+bash clean; PENDING runtime
+   verify).** The cross-tomo save bleed is fixed by moving every curation file under ONE per-(species,tomo)
+   dir `Curation/<species_id>/<tomo>/` and scoping all scans to it. Details in the "⚠️ Slice C.0 — LANDED"
+   block below. **Open question (b) RESOLVED:** correctness does NOT depend on where ArtiaX saves — it depends
+   on scoping the *scans* to the per-tomo dir (now done). The worker `cd`s ChimeraX into that dir so a save
+   *defaults* there (best-effort UX nudge), and a save steered elsewhere is still handled by explicit-path
+   Import. NO file-migration (old `ManualPicks/`+`bundles/` data still loads via stored absolute paths; the
+   bleed means some old imports may be wrong-tomo garbage → re-curate rather than launder). RUNTIME GATE:
+   launch a fresh session, save a `.coords`, confirm it lands in `Curation/<sp>/<tomo>/` + auto-ingests.
+2. **Interaction parity / the brushing carve (Slice B item 7)** — give manual/imported/merged lists the same
+   tile↔dot brushing the auto list has (carve `_render_gallery_body`'s tile-grid + hover bridge into a reusable
+   component). The keystone: it's what makes a merge trustable (today non-auto lists get only a read-only
+   sprite sheet).
+3. **Merge UX polish** — overlap preview in the merge dialog before committing; a "what drops" preview on
+   dedup; make the manual-wins-over-auto priority visible (today it's encoded only by row order).
+4. **Global styling pass (Slice B item 8)** — DEFERRED per user ("ui polish a little later").
+Open question still for the user (only gates the eventual Slice C launch, NOT the above): (a) does a generated
+per-list optset star extract cleanly in `relion_tomo_subtomo`?
+
+**✅ ALSO LANDED (session 12, user interjection) — curation control center REWRITTEN (`ui/curation_session_dialog.py`;
+compile+ruff+format clean, PENDING runtime verify).** Two fixes: (1) **the panel no longer closes on a dashboard
+re-render** — root cause was framework-level (NiceGUI 3.0.3 `events.handle_event` runs an async click handler inside
+`arguments.sender.parent_slot`, so the dialog parented under `main_area`, which the 4 s live-refresh `clear()`s — my
+scope-fix's curation-mtime-in-signature made it fire on every Curate click). Fix = parent at the page slot
+`with context.client.layout.default_slot:` (never cleared). Recorded as a general gotcha in
+[[feedback_reactive_ui_patterns]] — the merge/import/dedup dialogs have the SAME latent bug. (2) **One STABLE-layout
+one-stop-shop** (user: used across 80–100 tomos, "do this correctly"): a status chip (● live on cN / ◌ starting /
+○ off / ✕ failed), Start/Stop swap in place, and the Connect (tunnel/address/password) + Load-this-tomogram command
+block built ONCE with values that fill via `set_text`/`set_visibility` — NO more `body.clear()` shape-shifting per
+state; smaller fonts (`text-[11px]`), the load commands on a dark mono block with a prominent "Copy commands" button;
+`persistent` + replace-on-reopen (per-client) so it can't be dismissed by accident or stack across tomos. RUNTIME
+GATE: open it, confirm it stays put through a refresh and the creds/commands are all reachable in one place. NOTE the
+dialog is modal — switching to the next tomo's Curate button needs a Close first; a non-modal dockable panel is a
+possible future ask.
+
+**✅ ALSO LANDED (session 12) — VNC session lifecycle: unique ports + zombie housekeeping + fail-loud tunnel
+(`backend.py` + `containers/chimerax_artiax/curation_session.sh`; clean, PENDING runtime verify).** Symptom: RealVNC
+"connection closed unexpectedly" on `localhost:5901` while the panel says Live. Three compounding root causes fixed:
+(1) **port was ALWAYS 5901** — `DISPLAY_NUM=${CX_DISPLAY:-1}`, never set, so every session used display `:1`. Now
+`launch_curation_session` sets `CX_DISPLAY = 2 + (int(session_id[:6],16) % 88)` (→ port 5902–5989, unique-ish per
+session); the worker treats it as a PREFERENCE and free-scans `/tmp/.X<n>-lock` + the X11 socket for an actually-free
+display, writing the real port into `session.json` (UI already reads port/tunnel from there, so no other change).
+(2) **no zombie cleanup** — each Start spawned a new SLURM job; `find_active` reconnects to the FIRST live one and old
+Stop killed only that one, so repeated tries piled up live-but-wedged sessions you kept re-finding. Now
+`launch_curation_session` scancels all live project cb-curation jobs before submitting, and `stop_curation_session`
+gained `project_path=` so ONE Stop sweeps the whole pile (`_live_project_curation_job_ids` helper; squeue-derived
+liveness). (3) **silent-failure tunnel** — `ssh -L 5901:…` with a stale local 5901 forward already up binds nothing
+but still connects → dead forward → "connection closed." Now `ssh -f -N -o ExitOnForwardFailure=yes -L …`: `-f -N`
+backgrounds it + frees the terminal (user's request), `ExitOnForwardFailure=yes` makes it FAIL LOUDLY on a local-port
+collision instead of silently. Panel text + troubleshooting updated (tunnel backgrounds; how to stop it). NOTE: a
+file-migration-free existing mess (zombie jobs + stale Mac tunnels) needs a one-time manual clear: `scancel -u $USER
+-n cb-curation` on the cluster + `lsof -ti tcp:5901 | xargs kill` on the Mac.
+⚠️ The server does NOT auto-reload — code/CSS edits are invisible until the user restarts `python main.py` +
+hard-reloads (this masked ~3 sessions of working fixes; see [[reference_hpc_env]]).
+
+**✅✅ 2026-06-09 (session 11) — ALL 4 ISSUES CONFIRMED FIXED by the user at runtime ("full width, no
+freezes"; auto-ingest verified in the server log). Edits in `ui/tomo_dashboard_dialog.py` + `ui/dashboard/css.py`.
+TWO hard-won lessons: (a) **the server does NOT auto-reload** — `main.py` runs `uvicorn.run(app)` with no
+`reload=True`, and CSS is injected from Python, so code+CSS edits do NOTHING until the user restarts
+`python main.py` + hard-reloads the browser. This masked ~3 sessions of *working* fixes as "didn't work" (now
+in [[reference_hpc_env]]). (b) The WIDTH cause was NOT the slab and a top-down CSS read MISSED it — see item 1;
+the user's devtools width-chain measurement is what cracked it. Next ArtiaX work = "### Slice B item 7" / Slice C.**
 
 1. **WIDTH — FIXED (mechanism, not another guess).** Full STATIC trace (devtools weren't needed): inside
    `.cb-particles-tabs-col` everything is `w-full`/`width:100%`/`align-items:stretch` straight down to
@@ -22,7 +183,13 @@ Approach differed from session 10's "guess + ship": every fix here is backed by 
    never bounded the *horizontal split*, which is exactly why nothing visibly moved. FIX: new
    `_SLAB_MAX_PCT = 34`; the slab's inline `max-width:100%` is now `max-width:34%`, so the slab can't exceed
    34% of the row and the gallery/rail always claim ≥~64%. Slabs stay LEFT (durable pref). `_SLAB_MAX_PCT` is
-   the single tuning knob (lower → wider gallery). PENDING: user eyeballs the ratio.
+   the single tuning knob (lower → wider gallery). **CORRECTION (the static trace's "no inner cap" was WRONG):
+   the slab cap alone changed NOTHING visible. The user's devtools measurement found the REAL culprit =
+   `.cb-workbench-split` (the rail+gallery column) had no width of its own and SHRINK-WRAPPED to its content
+   (~half) inside the q-tab-panel (whose content area sizes children to content, not stretch). FIX = `width:
+   100%; min-width:0` on `.cb-workbench-split` (css.py). BOTH are needed: slab cap widens the tabs column,
+   width:100% makes the gallery fill it. Lesson: when something is half-width, MEASURE the computed width up the
+   parent chain in devtools — a top-down CSS read can miss a shrink-wrapping flex child. CONFIRMED full-width.**
 
 2. **Manual picks STILL need the Import click — REAL ROOT CAUSE FOUND (deeper than the GC save).** The GC bug
    was real but only explained RE-import. The "needs a click at all" cause: `_auto_kick_coords_ingest` is only
@@ -40,7 +207,10 @@ Approach differed from session 10's "guess + ship": every fix here is backed by 
    background WATCHER task that polls the bundle dir OFF-loop for the new `.coords`, ingests it, and (being a
    registry task) bumps `_maybe_refresh`'s signature → the list appears with no click. (Alt: fold a
    curation-dir mtime into the refresh signature — but that puts Lustre stats on the 4 s event-loop tick,
-   contradicting item 3; only acceptable via `to_thread`.)
+   contradicting item 3; only acceptable via `to_thread`.) **DONE + CONFIRMED: implemented the Alt the safe way
+   — `_curation_bundles_sig()` (newest `.coords` mtime per bundle dir) folded into `_maybe_refresh`'s signature
+   via `await asyncio.to_thread(...)` (off-loop, no event-loop stalls). Server log confirms a fresh save now
+   auto-ingests with NO click: `coords-prescan[...]: ingesting particles.coords` → `Imported 5 manual picks`.**
 
 3. **Laggy on switch — FIXED (off-loop).** `_render_single_list_cutouts` is now `async`: it paints a spinner,
    runs ALL read-only probes (recon/star stat, `is_output_stale`, `_read_atlas_index`) inside
@@ -204,6 +374,61 @@ ORIGINAL (full spec for items 3–8, kept for reference):
    "Curate in ArtiaX" / "Import picks" / "Merge lists" buttons look dated ("ripped out of a 2010 Material-UI app")
    -> restyle to the compact/light journey chrome (cf. [[feedback_journey_layout_preferences]]). Audit the cb-*
    particles classes for consistency (sizes, weights, colors).
+
+**⚠️ Slice C.0 — LANDED 2026-06-09 (session 12), compile+ruff+format+bash clean, PENDING runtime verify.**
+WHAT SHIPPED (the design below is preserved as the record): one shared `artiax_bridge.curation_dir(project,
+tomo, *, species_id, species_label)` → `Curation/<species_id_slug>/<tomo_slug>/` (species_id-first slug, so
+prepare/import/merge/discover/prescan/refresh-sig all resolve the SAME dir). `prepare_curation_bundle` (backend
+out_dir + bridge filenames `auto.coords`/`open.cxc`/`<label>_ref.coords`), `import_curation_picks` (→
+`manual.star` + `imports/<stamp>.coords`), `merge_pick_lists` (→ `<slug>.star`), `_discover_manual_coords`
+(now `(project, tomo, *, species_id, species_label)` scanning ONLY the per-tomo dir — the bleed source, the
+per-species newest-wins, is gone), `_pending_save_for_tomo` (single-tomo/name heuristic deleted — every
+`.coords` in the dir is this tomo's), `_curation_bundles_sig` (walks `Curation/*/*/`), and the worker
+`curation_session.sh` (`cd`s ChimeraX to `dirname(CB_CXC)` so saves default into the per-tomo dir — best-effort,
+not a correctness dep). NO migration (justified above + in the priorities block). RUNTIME GATE: fresh session →
+save `.coords` → confirm it lands in `Curation/<sp>/<tomo>/` and auto-ingests with no Import click. ⚠️ server
+does NOT auto-reload — restart `python main.py` + hard-reload first (see [[reference_hpc_env]]).
+
+**ORIGINAL DESIGN (2026-06-09 — DO BEFORE the extraction launch) — kept as the record.**
+BUG the user hit live: curation is scoped PER SPECIES (`.curation_sessions/bundles/<species>/`), NOT
+per-(species, tomo). A user save with a generic name (`particles.coords`) can't be attributed to a tomo, so the
+Import button (`_discover_manual_coords`, newest-`.coords`-wins) and the prescan (`_pending_save_for_tomo`,
+single-tomo heuristic) attribute the SAME save to whatever tomo is in view — clicking Import on tomo 13-3
+imported tomo 13-1's coords and even rendered cutouts. WORSE than a mislabel: `.coords` are physical-Å positions
+tied to a SPECIFIC tomogram's volume, so 13-1's positions on 13-3 are geometric nonsense — and would feed wrong
+coords into per-list extraction → garbage subtomos. Scope MUST be fixed before the Slice C launch.
+FIX = ONE per-(species, tomo) curation dir, self-describing scope:
+    <project>/Curation/<species_slug>/<tomo_name>/
+        open.cxc          # ArtiaX preload for THIS tomo
+        auto.coords       # exported auto picks (was <tomo>__auto.coords in the shared per-species bundle)
+        <slug>.coords     # exported list for re-curation
+        manual.star       # imported manual PickList (was ManualPicks/<species>/<tomo>.star)
+        merged.star
+        <slug>/           # per-list extraction output (Slice C): particles.star, optimisation_set.star, Subtomograms/
+Rules that kill the ambiguity: (1) the "Curate in ArtiaX" launch for (species, tomo) points ArtiaX's SAVE TARGET
+at that tomo's dir (via the `.cxc` working dir / save path) so a save lands there; a `.coords` under
+`Curation/<species>/<tomo>/` belongs to <tomo>, period — even with a generic filename. (2) Import + prescan scan
+ONLY that per-tomo dir and DELETE the recency / single-tomo heuristics (the bleed source). (3) `PickList.path` +
+`extracted_path` live under the per-tomo dir → scope is self-evident from the path. Touches:
+`prepare_curation_bundle` (export → per-tomo dir), the `.cxc`/session launch (save target),
+`import_curation_picks` / `_pending_save_for_tomo` / `_discover_manual_coords` (scan per-tomo dir only), the
+PickList registry paths, + a migration for existing `.curation_sessions/bundles/<species>/` + `ManualPicks/
+<species>/` data. OPEN QUESTION (user/ArtiaX domain): can the `.cxc`/session reliably force ArtiaX to SAVE into
+the per-tomo dir? If not, the live session tracks the active (species, tomo) and attributes any new save to it.
+INTERIM SAFETY until done: do NOT trust generic-save auto-import across tomos. The step-1 optset-builder is
+unaffected — it takes an explicit list-star + tomo.
+
+**Slice C — STARTED 2026-06-09 (session 11): per-list extraction.** Step 1 (the format-sensitive core) LANDED:
+`services/visualization/list_extraction.py::build_list_optset` builds a per-list `optimisation_set` by MIRRORING
+the candidate-extract `candidates.star` schema (reuse its columns + any non-particle blocks verbatim; synthesise
+one row per list coord; orientations→0; `rlnOpticsGroup` from the candidate; generated `rlnTomoParticleName`) +
+a `__main__` CLI to eyeball the generated `particles.star`/`optimisation_set.star` WITHOUT submitting a SLURM job
+(validate-first — a bad star = a wasted extraction). User picked the "mirror candidate schema" option. PENDING:
+user format-validation on a real 412 manual list. NEXT (once confirmed): backend `extract_pick_list()` (build
+optset → submit the EXISTING `subtomo_extraction` driver scoped to the per-list optset, single-tomo, output →
+`Curation/<species>/<tomo>/<slug>/` → `PickList.mark_extracted` + `save_project(force=True)`, wrapped as a
+BackgroundTask) + UI Extract/Re-extract button on the non-auto list (gated by `extraction_state()`) + resolver
+tier (authoritative list's `extracted_path` becomes the canonical optset `resolve_canonical_optset` returns).
 
 **Then:** further ArtiaX work — Slice C (per-list Extract wiring, above) + co-located `Curation/<species>/<tomo>/
 <slug>/` dir + whatever the user raises next ("i have a lot more to say").

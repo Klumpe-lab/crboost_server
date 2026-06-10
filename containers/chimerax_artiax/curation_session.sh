@@ -17,15 +17,29 @@ set -euo pipefail
 
 SIF="${CX_SIF:?CX_SIF must be set to the chimerax_artiax.sif path (conf.yaml curation.sif_path)}"
 CXBIN="${CX_BIN:-chimerax}"
-DISPLAY_NUM="${CX_DISPLAY:-1}"
 GEOMETRY="${CX_GEOMETRY:-1920x1080}"
 # On a compute node `hostname -f` is the compute node, NOT the login host the
 # user SSHes into — crboost always passes CX_LOGIN_HOST. The fallback is only
 # for a bare manual run from the login node.
 LOGIN_HOST="${CX_LOGIN_HOST:-$(hostname -f)}"
 SESSION_DIR="${CB_SESSION_DIR:-}"
-VNC_PORT=$(( 5900 + DISPLAY_NUM ))
 NODE="$(hostname -s)"
+
+# Choose the X display for this session. CX_DISPLAY (set by crboost, unique-ish per
+# session) is the PREFERENCE; if it's already taken on this node — a concurrent
+# curation job, or a zombie VNC server from a crashed prior run — fall back to the
+# next free display so we never collide on the rfb port. /tmp is host-shared (bound
+# into the container), so /tmp/.X<n>-lock + the X11 socket are the real node-wide locks.
+WANT_DISPLAY="${CX_DISPLAY:-1}"
+DISPLAY_NUM=""
+for n in "$WANT_DISPLAY" $(seq 2 99); do
+  if [ ! -e "/tmp/.X${n}-lock" ] && [ ! -e "/tmp/.X11-unix/X${n}" ]; then
+    DISPLAY_NUM="$n"
+    break
+  fi
+done
+DISPLAY_NUM="${DISPLAY_NUM:-$WANT_DISPLAY}"
+VNC_PORT=$(( 5900 + DISPLAY_NUM ))
 USER_NAME="${USER:-$(id -un)}"
 
 # GPU / VirtualGL path: when CX_VGL is set (the *_GL.sif on a GPU node) inject the
@@ -48,6 +62,15 @@ else
   GL_ENV=''
 fi
 
+# Command channel: start ChimeraX's built-in REST server on the node's loopback so
+# crboost can POST ChimeraX/ArtiaX commands (close / open tomo / open picks) into THIS
+# running session instead of relying on copy-paste over VNC. Binds 127.0.0.1 only and
+# has no auth, so it's reachable only on-node — the headnode drives it via
+# `ssh <node> curl http://127.0.0.1:<rest_port>/run`. Port is unique-ish per session
+# (derived off the display) unless the backend overrides it via CX_REST_PORT.
+REST_PORT="${CX_REST_PORT:-$(( 46000 + DISPLAY_NUM ))}"
+CX_LAUNCH="$CX_LAUNCH --cmd $(printf '%q' "remotecontrol rest start port $REST_PORT json true")"
+
 # Optional startup .cxc (CB_CXC): a crboost-generated script that preloads the
 # tomogram + our picks in ArtiaX so the session opens ready instead of blank.
 # Missing/blank ⇒ a bare ChimeraX (the user opens files by hand). printf %q keeps
@@ -58,6 +81,18 @@ if [ -n "${CB_CXC:-}" ]; then
   else
     echo "WARNING: CB_CXC set but not found ($CB_CXC) — starting a blank session." >&2
   fi
+fi
+
+# Best-effort: default ChimeraX's cwd (where ArtiaX's "Save particle list" dialog
+# first opens) to the per-(species,tomo) curation dir that holds CB_CXC, so a manual
+# .coords save lands beside the tomo's other curation files and crboost auto-ingests
+# it with no save-dialog navigation. NOT a correctness dependency — crboost scopes its
+# import scan to this dir, and a save the user steers elsewhere is still handled by the
+# per-tomo "Import picks" (explicit path). Falls back to $HOME for a blank session.
+if [ -n "${CB_CXC:-}" ] && [ -f "$CB_CXC" ]; then
+  SAVE_DIR="$(dirname "$CB_CXC")"
+else
+  SAVE_DIR="$HOME"
 fi
 
 BINDS=(-B /tmp -B /groups -B /software -B /scratch -B "$HOME")
@@ -79,14 +114,22 @@ mkdir -p "$HOME/.vnc"
 apptainer exec "${BINDS[@]}" "$SIF" x11vnc -storepasswd "$VNC_PASS" "$HOME/.vnc/passwd" >/dev/null 2>&1
 chmod 600 "$HOME/.vnc/passwd"
 
-TUNNEL_CMD="ssh -L ${VNC_PORT}:${NODE}:${VNC_PORT} ${USER_NAME}@${LOGIN_HOST}"
+# -f -N: open the forward and hand the terminal back (no remote shell), so it
+# doesn't tie up a Terminal window — the user can close it. ExitOnForwardFailure=yes
+# makes ssh FAIL LOUDLY if the local port is already taken instead of silently
+# connecting with a dead forward — that silent failure is the "connection closed
+# unexpectedly" trap. The leading `kill $(lsof…)` FREES that local port first: a stale
+# forward from a crashed prior session is exactly what makes the fresh tunnel fail
+# (and a leftover dead forward is the "connection refused" the user sees). \$( ) is
+# escaped so the worker stores it literally — it runs on the user's Mac, not the node.
+TUNNEL_CMD="kill \$(lsof -ti tcp:${VNC_PORT}) 2>/dev/null; ssh -f -N -o ExitOnForwardFailure=yes -L ${VNC_PORT}:${NODE}:${VNC_PORT} ${USER_NAME}@${LOGIN_HOST}"
 
 # Publish machine-readable connection info BEFORE blocking on ChimeraX so crboost
 # can surface it as soon as the job starts running.
 if [ -n "$SESSION_DIR" ]; then
   mkdir -p "$SESSION_DIR"
   cat > "$SESSION_DIR/session.json" <<JSON
-{"status": "ready", "node": "${NODE}", "display": ${DISPLAY_NUM}, "port": ${VNC_PORT}, "password": "${VNC_PASS}", "login_host": "${LOGIN_HOST}", "user": "${USER_NAME}", "tunnel_cmd": "${TUNNEL_CMD}"}
+{"status": "ready", "node": "${NODE}", "display": ${DISPLAY_NUM}, "port": ${VNC_PORT}, "rest_port": ${REST_PORT}, "password": "${VNC_PASS}", "login_host": "${LOGIN_HOST}", "user": "${USER_NAME}", "tunnel_cmd": "${TUNNEL_CMD}"}
 JSON
 fi
 
@@ -97,6 +140,7 @@ cat <<EOF
    node:      $NODE
    display:   :$DISPLAY_NUM   (VNC rfb port $VNC_PORT)
    password:  $VNC_PASS
+   rest:      127.0.0.1:$REST_PORT  (command channel — ssh-hop from headnode)
  On your Mac, open ONE tunnel (reuses your ControlMaster auth):
    $TUNNEL_CMD
  then point the TurboVNC Viewer at:
@@ -131,6 +175,7 @@ apptainer exec ${NV_FLAG} --writable-tmpfs "${BINDS[@]}" "$SIF" bash -lc "
   export XDG_CONFIG_HOME='$CXCFG' XDG_CACHE_HOME='$CXCACHE'
   export DISPLAY=:$DISPLAY_NUM
   $GL_ENV
+  cd \"$SAVE_DIR\" 2>/dev/null || true
   fluxbox >/dev/null 2>&1 &
   $CX_LAUNCH
 "

@@ -2,27 +2,43 @@
 
 Option A (no in-crboost proxying): crboost submits the VNC desktop as a SLURM job
 and hands the user the exact connection details — one SSH tunnel + a viewer + a
-password. ONE dialog, opened from the journeys gallery's per-tomo "Curate in
-ArtiaX" button (and the sidebar), ALWAYS shows session status; when live it shows
-the full connection info AND — for a specific tomogram — the copy-paste commands
-to load it + the `.coords` save target; when off, a Start button. The session is
+password. ONE panel, opened from the journeys gallery's per-tomo "Curate in
+ArtiaX" button (and the sidebar). It is a **one-stop shop with a STABLE layout**:
+a status chip (live / starting / off / failed) drives the chrome, Start/Stop swap
+in place, and the Connect + Load-this-tomogram guidance is built ONCE — the live
+values (tunnel / address / password) fill into fixed slots when the session comes
+up rather than the whole panel re-rendering into a different shape. The session is
 per-project and reused (find_active_curation_session) — at most one lives at a
 time, so reconnecting keeps the user's one tunnel + viewer.
+
+The panel is parented at the page LAYOUT slot, NOT the caller's slot: "Curate in
+ArtiaX" is an async click handler on a button inside the dashboard's ``main_area``,
+and NiceGUI (``events.handle_event``) runs an async handler within the sender's
+``parent_slot`` — so a dialog created naively lands under ``main_area`` and is
+destroyed the next time the 4 s live-refresh does ``main_area.clear()`` (the
+"window closes behind me" bug). ``client.layout.default_slot`` lives for the whole
+page and is never cleared.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 
-from nicegui import ui
+from nicegui import context, ui
 
 logger = logging.getLogger(__name__)
 
-_BOX = "font-mono text-xs bg-gray-100 px-2 py-1 rounded flex-grow break-all"
-_BLOCK = "font-mono text-xs bg-gray-100 px-2 py-1 rounded flex-grow whitespace-pre"
+_BOX = "font-mono text-[11px] bg-gray-100 px-2 py-1 rounded flex-grow break-all leading-tight"
+_BLOCK = "font-mono text-[11px] bg-slate-900 text-slate-100 px-2 py-1.5 rounded flex-grow whitespace-pre leading-snug"
+
+# Per-client: the currently-open curation panel, so re-opening (e.g. switching to
+# the next tomogram in an 80–100-tomo session) REPLACES it instead of stacking
+# hidden overlays. Keyed by client id so two browser tabs don't delete each other's.
+_OPEN_DIALOGS: dict = {}
 
 
 def _copy_js(text: str) -> str:
@@ -32,270 +48,393 @@ def _copy_js(text: str) -> str:
 async def open_curation_control_center(backend, project_path: Optional[Path], *, bundle: Optional[dict] = None) -> None:
     """Open the curation control center.
 
-    ``bundle`` (from ``backend.prepare_curation_bundle``) ties the dialog to one
-    (species, tomogram): Start preloads it, and the running view shows the paste-in
-    commands to load it + the ``.coords`` save target. With no bundle (sidebar) it's
-    a project-level session start/connect panel. The dialog checks liveness itself,
-    so both entry points behave identically — there is no separate chooser.
+    ``bundle`` (from ``backend.prepare_curation_bundle``) ties the panel to one
+    (species, tomogram): Start preloads it, and the Load section shows the paste-in
+    commands + the ``.coords`` save target. With no bundle (sidebar) it's a
+    project-level start/connect panel. The panel checks liveness itself, so both
+    entry points behave identically — there is no separate chooser.
     """
-    cxc_path = (bundle or {}).get("cxc_path")
-    commands = (bundle or {}).get("commands") or []
-    manual_coords = (bundle or {}).get("manual_coords") or ""
-    tomo_name = (bundle or {}).get("tomo_name") or ""
-    auto_count = (bundle or {}).get("auto_count")
+    b = bundle or {}
+    cxc_path = b.get("cxc_path")
+    commands = b.get("commands") or []
+    manual_coords = b.get("manual_coords") or ""
+    tomo_name = b.get("tomo_name") or ""
+    auto_count = b.get("auto_count")
     cmd_block = "\n".join(commands)
 
-    with (
-        ui.dialog() as dialog,
-        ui.card()
-        .classes("w-[46rem] max-w-full")
-        .style("max-height: 88vh; display: flex; flex-direction: column; gap: 8px;"),
-    ):
-        with ui.row().classes("w-full items-center gap-2"):
-            ui.icon("view_in_ar", color="indigo").classes("text-2xl")
-            ui.label("Curate in ChimeraX + ArtiaX").classes("text-lg font-bold")
-            if tomo_name:
-                ui.label(tomo_name).classes("text-[11px] font-mono text-gray-500")
-        body = ui.column().classes("w-full gap-2").style("overflow-y: auto; flex: 1 1 auto; min-height: 0;")
-        with ui.row().classes("w-full justify-end mt-1"):
-            ui.button("Close", on_click=lambda: (_stop_timer(), dialog.close())).props("flat")
-    dialog.open()
+    # Inputs for the one-click "Load into running session" swap (REST channel). The
+    # dashboard handler stamps these onto the bundle; absent (sidebar entry) → no button.
+    candidates_star = b.get("candidates_star")
+    tomograms_star = b.get("tomograms_star")
+    species_id = b.get("species_id") or ""
+    species_label = b.get("species_label") or ""
+    source_star = b.get("source_star")
+    coords_label = b.get("coords_label") or "auto"
+    _cur_cfg = getattr(getattr(backend, "config_service", None), "curation", None)
+    can_load = bool(getattr(_cur_cfg, "rest_enabled", True)) and bool(candidates_star and tomograms_star)
 
-    # done = connection info shown (stop polling); busy = an action is mid-flight
-    # (re-entry guard so a double-click can't submit/stop twice).
-    state = {"job_id": None, "session_dir": None, "timer": None, "done": False, "busy": False}
+    # Live session values; copy buttons read from here (closures) so they stay
+    # correct as the session transitions off → starting → live without a rebuild.
+    sv = {"tunnel": "", "address": "", "password": "", "node": "", "job_id": None, "rest_port": None}
+    state = {"session_dir": None, "timer": None, "busy": False, "kind": "off", "load_busy": False}
 
-    def _stop_timer():
+    # Stable page-level host slot (see module docstring). Fall back to the caller's
+    # slot if a layout isn't reachable — degraded (may close on refresh) but works.
+    try:
+        _client = context.client
+        host_slot = _client.layout.default_slot
+        cid = _client.id
+    except Exception:
+        host_slot, cid = None, None
+
+    def _stop_timer() -> None:
         if state["timer"] is not None:
             state["timer"].cancel()
             state["timer"] = None
 
-    # ── copyable-at-all-times primitives ──────────────────────────────────────
-    def _copy_btn(text: str, tip: str = "Copy"):
-        ui.button(icon="content_copy", on_click=lambda t=text: ui.run_javascript(_copy_js(t))).props(
-            "flat dense round"
-        ).tooltip(tip)
-
-    def _copy_row(text: str):
-        with ui.row().classes("items-center gap-1 w-full"):
-            ui.label(text).classes(_BOX)
-            _copy_btn(text)
-
-    def _kv_copy(key: str, value: str):
-        with ui.row().classes("items-center gap-2 w-full"):
-            ui.label(key).classes("text-sm text-gray-600").style("width: 84px; min-width: 84px;")
-            ui.label(value).classes(_BOX)
-            _copy_btn(value)
-
-    def _cmd_box(block: str):
-        with ui.row().classes("items-start gap-1 w-full"):
-            ui.label(block).classes(_BLOCK)
-            _copy_btn(block, "Copy all commands")
-
-    def _step(badge: str, title: str):
-        with ui.row().classes("items-center gap-2 mt-2"):
-            ui.label(badge).classes(
-                "flex items-center justify-center bg-blue-600 text-white rounded-full text-xs font-bold"
-            ).style("width: 20px; height: 20px; min-width: 20px;")
-            ui.label(title).classes("font-medium")
-
-    def _load_steps_block():
-        """The 'load THIS tomogram' instructions — paste-in for now (REST
-        auto-dispatch is the planned upgrade). Shown live (actionable) and, in the
-        off state, inside an expansion so the commands are copyable before launch."""
-        ui.markdown(
-            "**① switch to your VNC viewer · ② click the ChimeraX command line (bottom of the window) · ③ paste:**"
-        ).classes("text-sm")
-        _cmd_box(cmd_block)
-        ui.markdown(
-            "Then in the **ArtiaX** panel create a **new particle list**, pick into it (don't add to the auto "
-            "list), and **save it as a `.coords`** at the path below — crboost ingests it back."
-        ).classes("text-sm")
-        if manual_coords:
-            _kv_copy("Save to", manual_coords)
-
-    # ── render states ─────────────────────────────────────────────────────────
-    def render_waiting(msg: str):
-        body.clear()
-        with body:
-            with ui.row().classes("items-center gap-2"):
-                ui.spinner(size="lg")
-                ui.label(msg)
-            ui.label("This usually takes a few seconds once a compute node is free. You can leave this open.").classes(
-                "text-xs text-gray-400"
-            )
-
-    def render_error(msg: str):
+    def _close() -> None:
         _stop_timer()
-        body.clear()
-        with body:
-            ui.label("The session did not start").classes("text-red-600 font-medium")
-            ui.label(msg or "(no detail)").classes(
-                "font-mono text-xs whitespace-pre-wrap bg-gray-100 p-2 rounded w-full"
-            )
-            ui.button("Try again", icon="refresh", on_click=lambda: _start()).props("flat")
+        try:
+            dialog.close()
+            dialog.delete()
+        except Exception:
+            pass
+        _OPEN_DIALOGS.pop(cid, None)
 
-    def render_off():
-        _stop_timer()
-        body.clear()
-        with body:
-            with ui.row().classes("items-center gap-2"):
-                ui.icon("radio_button_unchecked", color="grey").classes("text-2xl")
-                ui.label("No curation session is running").classes("font-medium text-gray-700")
-            if tomo_name:
-                n = f" with {auto_count} auto picks" if auto_count is not None else ""
-                ui.label(
-                    f"Start one to open {tomo_name}{n} preloaded in ChimeraX + ArtiaX on a GPU node "
-                    "(~10–30 s to land + start). The tunnel command + password appear right here once it's up."
-                ).classes("text-sm text-gray-600")
-            else:
-                ui.label(
-                    "Start one to open a ChimeraX + ArtiaX VNC desktop on a GPU node. The tunnel command + "
-                    "password appear right here once it's up. (Open a tomogram from a species gallery's "
-                    "“Curate in ArtiaX” to preload it.)"
-                ).classes("text-sm text-gray-600")
-            ui.button("Start session", icon="play_arrow", color="indigo", on_click=lambda: _start()).props("no-caps")
-            if commands:
-                with ui.expansion("What you'll do once it's open", icon="list").classes("w-full text-sm mt-1"):
-                    _load_steps_block()
+    def _copy(text_or_getter, tip: str = "Copy") -> None:
+        def _do() -> None:
+            t = text_or_getter() if callable(text_or_getter) else text_or_getter
+            ui.run_javascript(_copy_js(t or ""))
 
-    def render_ready(info: dict):
-        _stop_timer()
-        body.clear()
-        tunnel = info.get("tunnel_cmd") or ""
-        port = info.get("port")
-        password = info.get("password") or ""
-        node = info.get("node") or "?"
-        login_host = info.get("login_host") or ""
-        user = info.get("user") or ""
-        viewer_addr = f"localhost:{port}"
-        with body:
-            with ui.row().classes("items-center gap-2"):
-                ui.icon("check_circle", color="green").classes("text-2xl")
-                ui.label(f"Session running on {node}").classes("font-medium text-green-700")
-            ui.label(
-                f"SLURM job {state['job_id']} — it stays up until you quit ChimeraX or press Stop; you can "
-                "disconnect and reconnect the viewer without losing it."
-            ).classes("text-xs text-gray-600")
-            ui.separator()
+        ui.button(icon="content_copy", on_click=_do).props("flat dense round size=sm").tooltip(tip)
 
-            # ── CONNECT (the part the user needs and never saved) ──
-            ui.label("Connect to it").classes("text-sm font-semibold text-gray-700")
-            _step("1", "Get a VNC viewer (one-time)")
-            ui.markdown(
-                "A VNC viewer shows the remote ChimeraX window on your Mac. **Any** works — RealVNC, TigerVNC, "
-                "TurboVNC — or macOS's built-in **Screen Sharing** (no install). You only need one."
-            ).classes("text-sm")
-            _step("2", "Open the SSH tunnel — one Terminal window, leave it open")
-            ui.label(
-                "Securely forwards a local port to the session's node. Paste it into Terminal and LEAVE THAT "
-                "WINDOW OPEN for the whole session — it sits there with no output, which is correct (it's holding "
-                "the tunnel). If it prompts, that's your normal cluster login."
-            ).classes("text-xs text-gray-600")
-            _copy_row(tunnel)
-            _step("3", "Open the viewer and enter the password")
-            ui.markdown(
-                "**Any VNC viewer:** connect to the address below, then enter the password.  "
-                f"**macOS Screen Sharing:** in Terminal run `open vnc://{viewer_addr}`, or in Finder press ⌘K "
-                f"and enter `vnc://{viewer_addr}`."
-            ).classes("text-sm")
-            _kv_copy("Address", viewer_addr)
-            _kv_copy("Password", password)
-            ui.label("(One-time password, only for this session.)").classes("text-xs text-gray-400")
-            ui.separator()
+    def _num(n: str) -> None:
+        ui.label(n).classes(
+            "flex items-center justify-center bg-indigo-600 text-white rounded-full text-[10px] font-bold"
+        ).style("width: 18px; height: 18px; min-width: 18px; margin-top: 1px;")
 
-            # ── LOAD THIS TOMOGRAM (what to do next) ──
-            if commands:
-                ui.label("Load this tomogram").classes("text-sm font-semibold text-gray-700")
-                if cxc_path:
-                    ui.label(
-                        "If you started the session from THIS tomogram, it's already loaded — give ChimeraX a few "
-                        "seconds. Otherwise (or to reload it), paste the commands below."
-                    ).classes("text-xs text-gray-500")
-                _load_steps_block()
-            else:
-                ui.markdown(
-                    "Open a tomogram from a species gallery's **Curate in ArtiaX** button to load it (and its "
-                    "auto/curated picks) here with one paste — or in ChimeraX type "
-                    "`artiax start` then `artiax open tomo <recon>.mrc` and `open <picks>.coords`."
-                ).classes("text-sm text-gray-500")
+    def _kw(text: str) -> None:
+        ui.label(text).classes("text-[11px] text-gray-500").style("width: 64px; min-width: 64px;")
 
-            with ui.expansion("Troubleshooting", icon="help_outline").classes("w-full text-sm"):
-                ui.markdown(
-                    f"- **Viewer won't connect:** the Terminal running the tunnel (step 2) must still be open, and "
-                    f"the address must be exactly `{viewer_addr}`.\n"
-                    "- **Black or grey screen for a few seconds:** normal — the desktop and ChimeraX are still "
-                    "starting; give it ~5–10 s.\n"
-                    '- **"Connection refused":** the tunnel isn\'t up (step 2 closed/errored) or the session ended. '
-                    "Reopen the tunnel, or press Stop and Start again.\n"
-                    "- **Password rejected:** copy it again above — it's case-sensitive.\n"
-                    f"- **Session details:** node `{node}`, rfb port `{port}`, login `{user}@{login_host}`."
+    def _troubleshooting_md() -> str:
+        addr = sv["address"] or "localhost:<port>"
+        port = sv["address"].split(":")[-1] if sv["address"] else "<port>"
+        return (
+            f"- **Viewer won't connect:** re-run the step-② tunnel and connect to `{addr}` exactly. It backgrounds "
+            'itself; an "address already in use" error just means it is already up.\n'
+            "- **Black/grey screen for a few seconds:** normal — the desktop + ChimeraX are still starting (~5–10 s).\n"
+            '- **"Connection closed/refused":** the tunnel didn\'t come up or the session ended — re-run the tunnel, '
+            "or press Stop then Start (Stop also clears any leftover sessions).\n"
+            "- **Password rejected:** copy it again above (case-sensitive).\n"
+            f"- **Stop the background tunnel:** on your Mac, `lsof -ti tcp:{port} | xargs kill`.\n"
+            "- **Picks look shifted in ArtiaX:** tell us — the `.cxc` may need an explicit pixel-size line."
+        )
+
+    # Replace any panel already open for this client (switching tomos).
+    prev = _OPEN_DIALOGS.get(cid)
+    if prev is not None:
+        try:
+            prev.delete()
+        except Exception:
+            pass
+
+    ctx = host_slot if host_slot is not None else nullcontext()
+    with ctx:
+        with (
+            ui.dialog().props("persistent") as dialog,
+            ui.card()
+            .classes("w-[44rem] max-w-full")
+            .style("max-height: 88vh; display: flex; flex-direction: column; gap: 6px;"),
+        ):
+            # ── header: title · tomo · status chip ──
+            with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                ui.icon("view_in_ar", color="indigo").classes("text-xl")
+                ui.label("Curate in ChimeraX + ArtiaX").classes("text-base font-bold")
+                if tomo_name:
+                    ui.label(tomo_name).classes("text-[11px] font-mono text-gray-500 truncate")
+                ui.space()
+                status_chip = ui.label("○ No session").classes(
+                    "text-[11px] font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 whitespace-nowrap"
                 )
+            ui.separator()
 
-            with ui.row().classes("w-full justify-between items-center mt-2"):
-                ui.label(f"SLURM job {state['job_id']} · node {node}").classes("text-xs text-gray-500")
-                ui.button("Stop session", color="red", icon="stop", on_click=lambda: _stop()).props("flat dense")
+            body = ui.column().classes("w-full gap-1").style("overflow-y: auto; flex: 1 1 auto; min-height: 0;")
+            with body:
+                # ── action row (Start/Stop swap in place; spinner while starting) ──
+                with ui.row().classes("w-full items-center gap-2"):
+                    start_btn = ui.button("Start session", icon="play_arrow", color="indigo", on_click=lambda: _start())
+                    start_btn.props("no-caps dense")
+                    stop_btn = ui.button("Stop session", icon="stop", color="red", on_click=lambda: _stop())
+                    stop_btn.props("flat dense no-caps")
+                    busy_box = ui.row().classes("items-center gap-2")
+                    with busy_box:
+                        ui.spinner(size="sm")
+                        busy_lbl = ui.label("Starting…").classes("text-xs text-gray-600")
+                    ui.space()
+                    job_lbl = ui.label("").classes("text-[11px] text-gray-500 whitespace-nowrap")
 
-    # ── actions (re-entry guarded) ────────────────────────────────────────────
-    async def _poll():
-        if state["done"] or not state["session_dir"]:
+                # ── CONNECT (always one place; values fill in when live) ──
+                ui.label("Connect to the session").classes("text-xs font-semibold text-gray-700 mt-1")
+                with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                    _num("1")
+                    ui.label(
+                        "Get any VNC viewer once — RealVNC / TigerVNC / TurboVNC, or macOS Screen Sharing (no install)."
+                    ).classes("text-[11px] text-gray-600")
+                with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                    _num("2")
+                    with ui.column().classes("gap-0.5 flex-grow min-w-0"):
+                        ui.label(
+                            "SSH tunnel — paste in a Terminal; it backgrounds itself, then you can close the window:"
+                        ).classes("text-[11px] text-gray-600")
+                        with ui.row().classes("items-center gap-1 w-full"):
+                            tunnel_lbl = ui.label("— start the session —").classes(_BOX)
+                            _copy(lambda: sv["tunnel"], "Copy tunnel command")
+                with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                    _num("3")
+                    with ui.column().classes("gap-0.5 flex-grow min-w-0"):
+                        ui.label("Open the viewer at this address, then enter the password:").classes(
+                            "text-[11px] text-gray-600"
+                        )
+                        with ui.row().classes("items-center gap-1 w-full"):
+                            _kw("Address")
+                            addr_lbl = ui.label("—").classes(_BOX)
+                            _copy(lambda: sv["address"], "Copy address")
+                        with ui.row().classes("items-center gap-1 w-full"):
+                            _kw("Password")
+                            pass_lbl = ui.label("—").classes(_BOX)
+                            _copy(lambda: sv["password"], "Copy password")
+
+                ui.separator().classes("my-1")
+
+                # ── LOAD THIS TOMOGRAM (the per-tomo repeated action — most used) ──
+                load_btn = None
+                if commands:
+                    with ui.row().classes("w-full items-center gap-2"):
+                        ui.label("Load this tomogram").classes("text-xs font-semibold text-gray-700")
+                        if auto_count is not None:
+                            ui.label(f"{auto_count} auto picks").classes("text-[10px] text-gray-400")
+                        ui.space()
+                        if can_load:
+                            load_btn = ui.button(
+                                "Load into running session",
+                                icon="bolt",
+                                color="indigo",
+                                on_click=lambda: _load_into_session(),
+                            ).props("dense no-caps size=sm")
+                            load_btn.tooltip("Swap the running ArtiaX to this tomogram + picks — no copy-paste")
+                        ui.button(
+                            "Copy commands",
+                            icon="content_copy",
+                            on_click=lambda: ui.run_javascript(_copy_js(cmd_block)),
+                        ).props("flat dense no-caps size=sm color=indigo")
+                    ui.label(
+                        "One click loads it into the live session. Or paste these into the ChimeraX command line:"
+                        if can_load
+                        else "Paste into the ChimeraX command line (bottom of its window):"
+                    ).classes("text-[11px] text-gray-500")
+                    ui.label(cmd_block).classes(_BLOCK)
+                    if manual_coords:
+                        with ui.row().classes("items-center gap-1 w-full mt-1"):
+                            ui.label("Save picks to").classes("text-[11px] text-gray-500").style(
+                                "width: 92px; min-width: 92px;"
+                            )
+                            ui.label(manual_coords).classes(_BOX)
+                            _copy(manual_coords, "Copy save path")
+                        ui.label(
+                            "In ArtiaX: new particle list → pick → save as .coords at that path → crboost ingests it."
+                        ).classes("text-[10px] text-gray-400")
+                else:
+                    ui.label(
+                        "Open a tomogram from a species gallery's “Curate in ArtiaX” to preload it + its picks here."
+                    ).classes("text-[11px] text-gray-500")
+
+                with ui.expansion("Troubleshooting", icon="help_outline").classes("w-full text-xs"):
+                    ts_md = ui.markdown("").classes("text-[11px]")
+
+            with ui.row().classes("w-full justify-end mt-1"):
+                ui.button("Close", on_click=_close).props("flat dense")
+
+    _OPEN_DIALOGS[cid] = dialog
+    dialog.open()
+
+    # ── single state applier (NO body rebuild — targeted updates only) ──────────
+    _chip_base = "text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap "
+    _chip = {
+        "live": ("● Live on {node}", _chip_base + "bg-green-100 text-green-700"),
+        "starting": ("◌ Starting…", _chip_base + "bg-amber-100 text-amber-700"),
+        "error": ("✕ Failed", _chip_base + "bg-red-100 text-red-600"),
+        "off": ("○ No session", _chip_base + "bg-gray-100 text-gray-500"),
+    }
+
+    def _apply(kind: str, busy_msg: str = "") -> None:
+        state["kind"] = kind
+        text, klass = _chip[kind]
+        status_chip.set_text(text.format(node=sv["node"] or "?"))
+        status_chip.classes(replace=klass)
+        start_btn.set_visibility(kind in ("off", "error"))
+        start_btn.set_text("Try again" if kind == "error" else "Start session")
+        stop_btn.set_visibility(kind == "live")
+        busy_box.set_visibility(kind == "starting")
+        if load_btn is not None:
+            load_btn.set_visibility(kind == "live")
+        if busy_msg:
+            busy_lbl.set_text(busy_msg)
+        job_lbl.set_text((f"SLURM {sv['job_id']}" + (f" · {sv['node']}" if sv["node"] else "")) if sv["job_id"] else "")
+        if kind == "live":
+            tunnel_lbl.set_text(sv["tunnel"] or "—")
+            addr_lbl.set_text(sv["address"] or "—")
+            pass_lbl.set_text(sv["password"] or "—")
+        else:
+            tunnel_lbl.set_text("— start the session —")
+            addr_lbl.set_text("—")
+            pass_lbl.set_text("—")
+        ts_md.set_content(_troubleshooting_md())
+
+    # ── actions (re-entry guarded) ──────────────────────────────────────────────
+    async def _poll() -> None:
+        if state["session_dir"] is None:
             return
-        info = await backend.get_curation_session_info(state["session_dir"], state["job_id"])
-        status = info.get("status")
-        if status == "ready":
-            state["done"] = True
-            render_ready(info)
-        elif status == "pending":
-            render_waiting(f"Waiting for a compute node (SLURM {info.get('slurm_state', 'PENDING')})…")
-        elif status == "starting":
-            render_waiting("Node allocated — starting ChimeraX…")
-        elif status == "ended":
-            state["done"] = True
-            render_error(info.get("detail") or "The session job ended before it came up.")
+        info = await backend.get_curation_session_info(state["session_dir"], sv["job_id"])
+        st = info.get("status")
+        if st == "ready":
+            sv.update(
+                node=info.get("node") or "?",
+                address=f"localhost:{info.get('port')}",
+                password=info.get("password") or "",
+                tunnel=info.get("tunnel_cmd") or "",
+                rest_port=info.get("rest_port"),
+            )
+            _stop_timer()
+            _apply("live")
+        elif st == "pending":
+            _apply("starting", f"Waiting for a compute node ({info.get('slurm_state', 'PENDING')})…")
+        elif st == "starting":
+            _apply("starting", "Node allocated — starting ChimeraX…")
+        elif st == "ended":
+            _stop_timer()
+            _apply("error")
+            ui.notify(info.get("detail") or "The session job ended before it came up.", type="negative", timeout=6000)
 
-    async def _start():
+    async def _start() -> None:
         if state["busy"]:
             return
         state["busy"] = True
         try:
-            state["done"] = False
             _stop_timer()
-            render_waiting("Submitting curation session…")
+            _apply("starting", "Submitting curation session…")
             result = await backend.launch_curation_session(project_path, cxc_path=cxc_path)
             if not result.get("success"):
-                render_error(result.get("error") or "launch failed")
+                _apply("error")
+                ui.notify(result.get("error") or "launch failed", type="negative", timeout=6000)
                 return
-            state["job_id"] = result.get("slurm_job_id")
+            sv["job_id"] = result.get("slurm_job_id")
             state["session_dir"] = result.get("session_dir")
-            render_waiting(f"Submitted SLURM job {state['job_id']} — waiting for a node…")
+            _apply("starting", f"Submitted SLURM job {sv['job_id']} — waiting for a node…")
             await _poll()
-            if not state["done"]:
+            if state["kind"] not in ("live", "error"):
                 state["timer"] = ui.timer(3.0, _poll)
         finally:
             state["busy"] = False
 
-    async def _stop():
+    async def _stop() -> None:
         if state["busy"]:
             return
         state["busy"] = True
         try:
-            if state["job_id"]:
-                await backend.stop_curation_session(state["job_id"])
+            # Pass project_path so Stop sweeps the WHOLE zombie pile, not just the one
+            # we reconnected to — otherwise a stale session keeps getting re-found.
+            await backend.stop_curation_session(sv["job_id"], project_path=project_path)
             _stop_timer()
-            state.update({"job_id": None, "session_dir": None, "done": False})
+            sv.update(job_id=None, node="", address="", password="", tunnel="")
+            state["session_dir"] = None
+            _apply("off")
             ui.notify("Curation session stopped", type="info")
-            render_off()  # back to the start state — NOT an auto-relaunch (that was the double-submit)
         finally:
             state["busy"] = False
 
-    # ── entry: status-first. Reconnect a live session (no sbatch) or show Start ──
-    render_waiting("Checking for a running session…")
-    active = await backend.find_active_curation_session(project_path) if project_path else None
+    async def _load_into_session() -> None:
+        """One-click swap: clear the running ArtiaX and load THIS tomogram + picks
+        over the REST channel — the alternative to copy-pasting the commands."""
+        if state["load_busy"]:
+            return
+        if state["kind"] != "live" or not sv.get("rest_port"):
+            ui.notify("Start the session first (and wait for it to go live).", type="warning")
+            return
+
+        # Confirm — `close session` is an irreversible wipe of unsaved manual picks.
+        cctx = host_slot if host_slot is not None else nullcontext()
+        with cctx:
+            with ui.dialog().props("persistent") as confirm, ui.card().classes("w-[26rem] max-w-full gap-2"):
+                ui.label("Load into running session?").classes("text-sm font-bold")
+                ui.label(
+                    f"This clears what ArtiaX has open and loads {tomo_name or 'this tomogram'} + its picks. "
+                    "Unsaved manual picks in the session will be lost."
+                ).classes("text-[12px] text-gray-600")
+                save_cb = ui.checkbox("Save current picks first", value=True).props("dense").classes("text-[12px]")
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
+                    ui.button("Load", color="indigo", on_click=lambda: confirm.submit(True)).props("dense no-caps")
+        go = await confirm
+        do_save = bool(save_cb.value) if go else False
+        try:
+            confirm.delete()
+        except Exception:
+            pass
+        if not go:
+            return
+
+        state["load_busy"] = True
+        if load_btn is not None:
+            load_btn.props("loading")
+        try:
+            session_info = {
+                "node": sv["node"],
+                "rest_port": sv["rest_port"],
+                "slurm_job_id": sv["job_id"],
+                "session_dir": state["session_dir"],
+            }
+            res = await backend.load_into_session(
+                session_info,
+                project_path,
+                Path(candidates_star),
+                Path(tomograms_star),
+                tomo_name,
+                species_label,
+                species_id=species_id,
+                source_star=Path(source_star) if source_star else None,
+                coords_label=coords_label,
+                save_first=do_save,
+            )
+            if res.get("success"):
+                n = res.get("auto_count")
+                extra = f" ({n} picks)" if n is not None else ""
+                saved = res.get("saved") if isinstance(res.get("saved"), dict) else None
+                msg = f"Loaded {tomo_name}{extra} into the running session."
+                if saved and saved.get("saved"):
+                    msg += f" Saved {len(saved['saved'])} list(s) first."
+                ui.notify(msg, type="positive")
+            else:
+                ui.notify(f"Load failed: {res.get('error') or 'unknown error'}", type="negative", timeout=7000)
+        finally:
+            if load_btn is not None:
+                load_btn.props(remove="loading")
+            state["load_busy"] = False
+
+    # ── entry: reconnect a live session (no sbatch) or show the off state ────────
+    _apply("starting", "Checking for a running session…")
+    active = (await backend.find_active_curation_session(project_path)) if project_path else None
+    if not active:
+        # Per-user reuse: the user's one live session may live under a DIFFERENT
+        # project — find it across all projects so we reconnect instead of relaunch.
+        try:
+            active = await backend.find_active_curation_session_any()
+        except Exception:
+            active = None
     if active:
-        state["job_id"] = active.get("slurm_job_id")
+        sv["job_id"] = active.get("slurm_job_id")
         state["session_dir"] = active.get("session_dir")
         await _poll()
-        if not state["done"]:
+        if state["kind"] not in ("live", "error"):
             state["timer"] = ui.timer(3.0, _poll)
     else:
-        render_off()
+        _apply("off")
