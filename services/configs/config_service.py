@@ -124,6 +124,10 @@ class CurationConfig(BaseModel):
     geometry: str = "1920x1080"
     chimerax_bin: str = "chimerax"
     login_host: Optional[str] = None
+    # Drive a running ChimeraX from crboost over its REST server (the worker starts
+    # `remotecontrol rest` on the node's loopback; crboost POSTs via `ssh <node> curl`).
+    # Enables the one-click "Load into running session" swap; off → copy-paste only.
+    rest_enabled: bool = True
 
 
 class Config(BaseModel):

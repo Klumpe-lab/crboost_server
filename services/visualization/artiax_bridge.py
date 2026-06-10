@@ -110,7 +110,7 @@ def import_coords_to_centered_star(
 
     Minimal schema: ``rlnTomoName`` + the three ``rlnCenteredCoordinate*Angst`` columns
     (positions only — refinement derives angles). Merge into a `_combined` set adds any
-    further columns. Lands at e.g. ``ManualPicks/<species>/<tomo>.star``.
+    further columns. Lands at e.g. ``Curation/<species>/<tomo>/manual.star``.
     """
     coords = read_coords_file(Path(coords_path))
     frame = frame_for_tomo(Path(tomograms_star), tomo_name, project_root=project_root)
@@ -155,6 +155,22 @@ def _safe_slug(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", str(name)).strip("_") or "tomo"
 
 
+def curation_dir(project_root, tomo_name: str, *, species_id: str = "", species_label: str = "") -> Path:
+    """The per-(species, tomo) curation directory — one self-describing home for a
+    single tomogram's ArtiaX bundle (``open.cxc`` + exported ``auto.coords``), the
+    user's saved ``.coords``, the imported ``manual.star`` / ``merged.star``, the
+    raw-save ``imports/`` archive, and (later) per-list extraction output.
+
+    Keyed on ``species_id`` (the stable PickList-registry key; ``species_label`` then
+    ``tomo_name`` are fallbacks) so prepare / import / merge / discover / prescan all
+    resolve the SAME directory. A ``.coords`` under here belongs to ``tomo_name``,
+    period — even with a generic filename — which is what kills the cross-tomo save
+    bleed (a per-species dir could not attribute a generic save to a tomogram).
+    """
+    sp_slug = _safe_slug(species_id or species_label or tomo_name)
+    return Path(project_root) / "Curation" / sp_slug / _safe_slug(tomo_name)
+
+
 def session_chimerax_commands(recon_mrc, auto_coords: Optional[Path] = None) -> list[str]:
     """The ChimeraX command lines that load a tomogram + our picks into ArtiaX.
 
@@ -167,6 +183,28 @@ def session_chimerax_commands(recon_mrc, auto_coords: Optional[Path] = None) -> 
     if auto_coords is not None:
         cmds.append(f"open {_cxc_quote(auto_coords)}")
     cmds.append("lighting simple")
+    return cmds
+
+
+def swap_chimerax_commands(
+    recon_mrc, pick_file=None, *, clear: bool = True, force_apix: Optional[float] = None
+) -> list[str]:
+    """The in-session "swap to this tomogram" command sequence — what crboost POSTs
+    over the REST channel (see ``backend.send_chimerax_command``) to load a new
+    tomogram + its picks into an ALREADY-running ArtiaX, instead of relaunching.
+
+    ``clear`` prepends ``close session`` (a hard wipe of every open model — ArtiaX
+    itself is dropped, then re-armed by the ``artiax start`` in the load backbone).
+    ``close session`` is the safe clear because ArtiaX model ids are not stable
+    across opens, so targeting individual ``close #N`` would be fragile. Verified
+    end-to-end as one semicolon-joined command (2026-06-10). ``force_apix`` adds a
+    pixel-size override for the just-opened tomogram (``#1.1.1`` after a fresh
+    clear) for the rare case the MRC header pixel size can't be trusted.
+    """
+    cmds: list[str] = ["close session"] if clear else []
+    cmds.extend(session_chimerax_commands(recon_mrc, pick_file))
+    if force_apix is not None:
+        cmds.append(f"artiax tomo #1.1.1 pixelSize {float(force_apix)}")
     return cmds
 
 
@@ -223,15 +261,15 @@ def prepare_curation_bundle(
     """Materialize everything a ChimeraX/ArtiaX session needs to open one
     tomogram preloaded with a reference pick list.
 
-    Exports the picks in ``candidates_star`` (any star with ``rlnTomoName`` +
-    centered-Å coords — the PyTOM auto list, or a workbench manual/merged star)
-    to a ``.coords`` and writes ``open_<tomo>.cxc`` loading it. ``coords_label``
-    names that reference export: ``"auto"`` keeps the historical
-    ``<tomo>__auto.coords`` / ``open_<tomo>.cxc`` names; any other label (a
-    re-curation of a specific list) gets ``<tomo>__<label>_ref.coords`` and
-    ``open_<tomo>__<label>.cxc`` so the import scan can tell crboost's reference
-    export from the user's own save. Launch with ``CB_CXC`` pointing at
-    ``cxc_path``.
+    ``out_dir`` is the per-(species, tomo) :func:`curation_dir`, so the exports use
+    plain, tomo-implicit names. Exports the picks in ``candidates_star`` (any star
+    with ``rlnTomoName`` + centered-Å coords — the PyTOM auto list, or a workbench
+    manual/merged star) to a ``.coords`` and writes ``open.cxc`` loading it.
+    ``coords_label`` names that reference export: ``"auto"`` → ``auto.coords`` /
+    ``open.cxc``; any other label (a re-curation of a specific list) →
+    ``<label>_ref.coords`` / ``open__<label>.cxc`` so the import scan can tell
+    crboost's reference export from the user's own save. Launch with ``CB_CXC``
+    pointing at ``cxc_path``.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -242,12 +280,11 @@ def prepare_curation_bundle(
             f"No reconstructed tomogram on disk for {tomo_name!r} "
             "(rlnTomoReconstructedTomogram) — curation needs the binned recon to open in ArtiaX."
         )
-    slug = _safe_slug(tomo_name)
     is_auto = coords_label == "auto"
-    ref_coords = out_dir / (f"{slug}__auto.coords" if is_auto else f"{slug}__{_safe_slug(coords_label)}_ref.coords")
+    ref_coords = out_dir / ("auto.coords" if is_auto else f"{_safe_slug(coords_label)}_ref.coords")
     n = export_tomo_picks_to_coords(Path(candidates_star), Path(tomograms_star), tomo_name, ref_coords, project_root)
-    manual_coords = out_dir / f"{slug}__manual.coords"
-    cxc_path = out_dir / (f"open_{slug}.cxc" if is_auto else f"open_{slug}__{_safe_slug(coords_label)}.cxc")
+    manual_coords = out_dir / "manual.coords"
+    cxc_path = out_dir / ("open.cxc" if is_auto else f"open__{_safe_slug(coords_label)}.cxc")
     cxc_path.write_text(
         build_session_cxc(
             recon,
