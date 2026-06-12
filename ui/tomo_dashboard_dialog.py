@@ -119,6 +119,11 @@ _LIST_TYPE_TAG = {
 # (which rebuilds the whole tab body) doesn't bounce the user back to the auto list.
 _SELECTED_LIST_SLUG: dict[tuple[str, str], str] = {}
 
+# Sticky per-(species_id, tomo) set of slugs ticked for an inline merge. Module-level
+# so the rail rebuild on refresh doesn't drop a half-made selection (cf. the selected-
+# slug above). Cleared after a merge lands. Drives the co-located merge bar.
+_MERGE_SELECT: dict[tuple[str, str], set[str]] = {}
+
 
 def _read_picks_json(path: Path) -> dict:
     if not path or not Path(path).exists():
@@ -158,17 +163,72 @@ def _per_tilt_star_path(job_dir: Path, ts_name: str) -> Path:
     return job_dir / "tilt_series" / f"{ts_name}.star"
 
 
+# Atlas-index parse cache (P3): path -> (mtime, meta). The cutout sheet re-reads
+# the same index JSON on every visit; memoizing by mtime skips the parse on a warm
+# revisit AND lets the sheet skip its loading spinner when the index is already in
+# memory. Invalidated automatically when the index file is rewritten (new mtime).
+_ATLAS_INDEX_MEMO: dict[str, tuple[float, dict]] = {}
+
+
 def _read_atlas_index(index_path: Path) -> Optional[dict]:
     if not index_path or not Path(index_path).exists():
         return None
+    key = str(index_path)
+    try:
+        mtime = Path(index_path).stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    hit = _ATLAS_INDEX_MEMO.get(key)
+    if hit is not None and hit[0] == mtime:
+        return hit[1]
     try:
         meta = json.loads(Path(index_path).read_text())
         if not meta.get("index"):
             return None
+        _ATLAS_INDEX_MEMO[key] = (mtime, meta)
         return meta
     except Exception as e:
         logger.warning("Could not parse cutout index %s: %s", index_path, e)
         return None
+
+
+# Keep/drop derive cache (P2 + P3): derive_keep_state_for_list reads TWO stars
+# (source + <slug>_filtered.star) to recover which rows survived curation. Both the
+# rail count (P2) and the cutout sheet's keep overlay (P3) need it, and collect runs
+# on every 4s refresh — so memoize by (source mtime, filtered mtime) to avoid
+# re-reading two stars per list per tick. None = no filter committed (all kept).
+_KEEP_STATE_MEMO: dict[str, tuple[tuple, Optional[set[int]]]] = {}
+
+
+def _memoized_keep_state(source_star: Path) -> Optional[set[int]]:
+    """``picks_filter.derive_keep_state_for_list`` memoized by the two stars' mtimes
+    so the table count and the cutout keep overlay share one read. Returns the kept
+    ROW indices of ``source_star`` (None when no ``_filtered`` star exists)."""
+    from services.visualization import picks_filter
+
+    src = Path(source_star)
+    filt = picks_filter.filtered_list_path(src)
+    try:
+        fmt = filt.stat().st_mtime if filt.exists() else None
+    except OSError:
+        fmt = None
+    if fmt is None:
+        return None  # no filtered star → all rows kept; nothing to read or cache
+    try:
+        smt = src.stat().st_mtime if src.exists() else 0.0
+    except OSError:
+        smt = 0.0
+    key = str(src)
+    sig = (smt, fmt)
+    hit = _KEEP_STATE_MEMO.get(key)
+    if hit is not None and hit[0] == sig:
+        return hit[1]
+    try:
+        keep = picks_filter.derive_keep_state_for_list(src)
+    except Exception:
+        keep = None
+    _KEEP_STATE_MEMO[key] = (sig, keep)
+    return keep
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +355,7 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
             if selected["ts"] is None:
                 _render_no_data_empty_state()
             else:
-                _render_main_pane_for_ts(selected["ts"], state, project_path, refresh_all, render_strip)
+                _render_main_pane_for_ts(selected["ts"], state, project_path, request_refresh, render_strip)
 
     def render_strip() -> None:
         # Signature-gated (FingerprintedView discipline): the 4 s live timer
@@ -356,6 +416,19 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         render_strip()
         render_main()
 
+    # P1: coalesce the initial refresh storm. On load several background auto-kicks
+    # (preview / IMOD / recon-slabs / coords-ingest / list-cutouts) each fire
+    # on_complete → refresh, and the 4 s live tick adds more — N immediate full
+    # rebuilds make the page "jitter a few times on load". Those paths call
+    # request_refresh() to raise a flag instead; the coalesce timer (set up with the
+    # live timer below) flushes ONE trailing-edge rebuild once requests go quiet. The
+    # first paint just below still rebuilds immediately.
+    _refresh_req = {"pending": False, "quiet": 0}
+
+    def request_refresh() -> None:
+        _refresh_req["pending"] = True
+        _refresh_req["quiet"] = 0
+
     _build_panel_toggle_row(panel_toggle_container, render_main)
     refresh_all()
 
@@ -368,6 +441,7 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
 
     _last_signature = {"sig": None}
     _active = {"on": True}
+    _curation_tick = {"n": 0}
 
     def _curation_bundles_sig() -> tuple:
         # Newest .coords mtime per per-(species,tomo) curation dir. An ArtiaX save
@@ -401,32 +475,78 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
             return
         try:
             registry = get_background_task_registry()
-            active = [t for t in registry.for_project(str(project_path)) if t.is_running]
-            # Signature picks up "task started", "task finished", and
-            # per-tick progress so we re-render any time meaningful
-            # state changed. Cheap to compute; cheap to compare.
-            sig = tuple((t.id, t.progress_current, t.progress_total) for t in active) + (
-                tuple(
-                    # Include very-recently-finished tasks so the dashboard
-                    # picks up the final manifest write (which happens at
-                    # the end of the render) within one refresh window.
-                    (t.id, t.status)
-                    for t in registry.for_project(str(project_path))
-                    if not t.is_running and t.finished_at and (t.finished_at - t.started_at).total_seconds() < 86400
-                ),
+            proj_tasks = registry.for_project(str(project_path))
+            active = [t for t in proj_tasks if t.is_running]
+            # Running-task MEMBERSHIP only — deliberately NOT progress_current/total.
+            # The main pane shows "generating…" placeholders + final results, never a
+            # progress bar (that lives in the tray), so a task START (id appears here)
+            # and FINISH (id leaves here → enters `finished` below) each warrant one
+            # rebuild — but a per-tick PROGRESS update must NOT, or every tick of a
+            # long preview/cutout job tears down and rebuilds the whole pane (the
+            # "jittery every few seconds" bug). CLAUDE.md: polls observe state, they
+            # don't rebuild the DOM on every tick.
+            running = tuple(sorted(t.id for t in active))
+            # Recently-finished tasks so the dashboard picks up the final manifest
+            # write within one refresh window.
+            finished = tuple(
+                (t.id, t.status)
+                for t in proj_tasks
+                if not t.is_running and t.finished_at and (t.finished_at - t.started_at).total_seconds() < 86400
             )
             # External ArtiaX .coords saves aren't registry tasks — fold the
             # bundle-dir mtimes in (off-loop) so a fresh save still triggers the
             # rebuild that runs the auto-ingest prescan.
-            sig = sig + (await asyncio.to_thread(_curation_bundles_sig),)
+            curation = await asyncio.to_thread(_curation_bundles_sig)
+            # Curation-session liveness drives the toolbox 'Curate' button color (gray
+            # = none / green = live). It shells out to squeue, so poll at a slow cadence
+            # (~every 4th 4 s tick ≈ 16 s) and fold the bool into the signature so a
+            # session started/stopped anywhere repaints the rail.
+            _curation_tick["n"] += 1
+            if _curation_tick["n"] % 4 == 1:
+                try:
+                    from backend import get_backend
+
+                    bk = get_backend()
+                    _CURATION_SESSION_LIVE["on"] = bool(await bk.find_active_curation_session_any()) if bk else False
+                except Exception:
+                    pass
+            sig = (running, finished, curation, _CURATION_SESSION_LIVE["on"])
             if sig != _last_signature["sig"]:
+                prev = _last_signature["sig"]
                 _last_signature["sig"] = sig
-                refresh_all()
+                # Name what moved, so a lingering rebuild is diagnosable from the log
+                # rather than guessed at (the dashboard has no auto-reload).
+                if prev is not None:
+                    moved = []
+                    if running != prev[0]:
+                        moved.append("tasks")
+                    if finished != prev[1]:
+                        moved.append("tasks-done")
+                    if curation != prev[2]:
+                        moved.append("curation-save")
+                    if len(prev) > 3 and sig[3] != prev[3]:
+                        moved.append("curation-session")
+                    logger.info("journey live-refresh rebuild (changed: %s)", ", ".join(moved) or "unknown")
+                request_refresh()
         except RuntimeError:
             # Client gone — timer will clean up shortly.
             pass
 
     live_timer = ui.timer(4.0, _maybe_refresh)
+
+    def _flush_refresh() -> None:
+        # Trailing-edge flush of the coalesced refresh (P1): rebuild once the request
+        # flag has been quiet for ~one tick, so a burst of auto-kick completions
+        # collapses into a single rebuild instead of N. Idle cost is one bool check.
+        if not _refresh_req["pending"]:
+            return
+        _refresh_req["quiet"] += 1
+        if _refresh_req["quiet"] >= 2:
+            _refresh_req["pending"] = False
+            _refresh_req["quiet"] = 0
+            refresh_all()
+
+    refresh_coalesce_timer = ui.timer(0.2, _flush_refresh)
 
     def _set_journey_active(on: bool) -> None:
         # Pause the 4 s live-refresh (its signature does per-tick disk I/O in
@@ -436,8 +556,10 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         try:
             if on:
                 live_timer.activate()
+                refresh_coalesce_timer.activate()
             else:
                 live_timer.deactivate()
+                refresh_coalesce_timer.deactivate()
         except Exception:
             pass
 
@@ -1836,19 +1958,18 @@ def _auto_kick_list_cutouts(
 
 
 def _render_list_header(lst: dict, sp: dict, project_path: Path) -> None:
-    """Swatch + label + 'Open in ArtiaX' for one workbench list, rendered inside a
-    caller-provided row so the contact sheet and the building/empty states share
-    one header. 'Open in ArtiaX' re-opens THIS list for another curation pass —
-    non-destructive: saving in ArtiaX yields a new list, this one is untouched."""
+    """Swatch + label (+ merge provenance) for one workbench list, rendered inside a
+    caller-provided row so the contact sheet and the building/empty states share one
+    header. The 'Open in ArtiaX' action lived here too but was REDUNDANT with the
+    rail toolbox's Curate/Load (both open this tomo in ArtiaX) — removed per the user;
+    `_handle_open_list_in_artiax` stays as the W1 round-trip-edit foundation."""
     ui.element("div").classes(f"cb-species-swatch cb-swatch-{lst['shape']}").style(f"background: {lst['color']};")
     ui.label(lst["label"]).classes("cb-section-title")
-    (
-        ui.button(
-            "Open in ArtiaX", icon="view_in_ar", on_click=lambda: _handle_open_list_in_artiax(sp, lst, project_path)
+    parents = lst.get("parent_slugs") or []
+    if parents:
+        ui.label("⋃ " + ", ".join(parents)).style("font-size: 9px; color: #94a3b8;").tooltip(
+            "Merged from these lists (row order = type priority: manual/imported before auto)"
         )
-        .props("flat dense no-caps size=sm color=indigo")
-        .tooltip("Re-open this list in ChimeraX + ArtiaX to refine it — saving yields a new list, this one untouched")
-    )
 
 
 def _render_list_cutouts_status(lst: dict, sp: dict, project_path: Path, *, building: bool) -> None:
@@ -1866,9 +1987,20 @@ def _render_list_cutouts_status(lst: dict, sp: dict, project_path: Path, *, buil
             )
 
 
-def _render_list_cutout_sheet(lst: dict, sp: dict, project_path: Path, atlas_meta: dict, atlas_path: str) -> None:
-    """Read-only contact sheet of one list's recon cutouts (CSS sprite tiles, no
-    JS bridge). Tiles are keyed by pick index (= the overlay dots' data-pick-idx)."""
+def _render_list_cutout_sheet(
+    lst: dict, sp: dict, project_path: Path, atlas_meta: dict, atlas_path: str, initial_keep, refresh
+) -> None:
+    """Interactive contact sheet for one workbench list (manual/imported/merged):
+    CSS-sprite tiles cut from the recon, each click-toggleable keep/drop. A dropped
+    tile greys out AND greys its matching slab ghost-dot (the dot↔tile sync, via the
+    list's own `_lid_xy/_lid_xz` canvas layers). Each toggle AUTO-COMMITS the kept
+    subset to `<slug>_filtered.star` (no Save click) — so the selection persists across
+    navigation and the merge + per-list extraction consume exactly the kept picks; the
+    rail table's count cell live-updates to kept/total. "Reset" clears the filter (all
+    kept). These lists are scoreless, so keep/discard IS the filter — there is no score
+    threshold ([[feedback_per_list_extraction]])."""
+    from services.visualization import picks_filter
+
     index = atlas_meta.get("index", {})
     if not index:
         return
@@ -1877,23 +2009,272 @@ def _render_list_cutout_sheet(lst: dict, sp: dict, project_path: Path, atlas_met
     atlas_url = _vis_asset_url(atlas_path)
     tile = 96
     bg_w, bg_h = cols * tile, rows * tile
-    n_ok = int(atlas_meta.get("n_ok", len(index)))
+    all_idx = sorted(int(k) for k in index.keys())
+    star_path = lst.get("path")
+    # The list's own slab dot-layers (stashed by the canvas renderer) — used to
+    # mirror keep/drop onto the ghost dots. Empty when the list isn't on the canvas.
+    layer_ids = [lid for lid in (lst.get("_lid_xy"), lst.get("_lid_xz")) if lid]
+    grid_id = f"cb-list-grid-{uuid.uuid4().hex[:8]}"
+    client = ui.context.client
+    tiles: dict[int, object] = {}
+    # keep_set == None means "no curation yet — all kept implicitly"; it materializes
+    # to a concrete set on the first toggle. Every toggle AUTO-COMMITS to
+    # <slug>_filtered.star (serialized via `commit`) — so the selection persists across
+    # navigation and the merge/extraction consume exactly the kept picks, no Save click.
+    state = {"keep_set": set(initial_keep) if initial_keep is not None else None}
+    commit = {"running": False, "dirty": False}
+    species_id = sp.get("species_id") or ""
+    tomo_name = sp["row"]["tomo_name"]
+
+    def _is_kept(i: int) -> bool:
+        ks = state["keep_set"]
+        return True if ks is None else i in ks
+
+    def _dropped_now() -> list[int]:
+        ks = state["keep_set"]
+        return [] if ks is None else [i for i in all_idx if i not in ks]
+
+    def _run_js(js: str) -> None:
+        try:
+            client.run_javascript(js)
+        except Exception:
+            pass  # client gone / slot torn down — the dot sync is best-effort cosmetic
+
+    def _sync_all_dots() -> None:
+        if not layer_ids:
+            return
+        _run_js(
+            "(function(){var ls=%(ls)s;var d=new Set(%(d)s);ls.forEach(function(lid){"
+            "var h=document.getElementById(lid);if(!h)return;"
+            "h.querySelectorAll('.cb-pick-ghost[data-pick-idx]').forEach(function(g){"
+            "if(d.has(g.getAttribute('data-pick-idx')))g.classList.add('cb-pick-ghost-dropped');"
+            "else g.classList.remove('cb-pick-ghost-dropped');});});})();"
+            % {"ls": json.dumps(layer_ids), "d": json.dumps([str(i) for i in _dropped_now()])}
+        )
+
+    def _counter_txt() -> str:
+        # Count kept among the VISIBLE tiles only — keep_set may carry tile-less
+        # row indices (out-of-bounds picks kept in a prior filter), which must not
+        # inflate the counter past the tile count.
+        ks = state["keep_set"]
+        kept = len(all_idx) if ks is None else sum(1 for i in all_idx if i in ks)
+        return f"kept {kept}/{len(all_idx)}"
+
+    def _update_count_cell(total: int, fc) -> None:
+        # Live-update this list's count cell in the rail table (shared `lst` dict).
+        el = lst.get("_count_el")
+        if el is None:
+            return
+        try:
+            el.set_text(_list_count_text(total, fc))
+        except Exception:
+            pass  # rail torn down — best-effort cosmetic
+
+    async def _commit_loop() -> None:
+        """Auto-commit the current keep/drop to <slug>_filtered.star, serialized so
+        rapid toggles can't race or hammer Lustre: a toggle arriving mid-write just
+        flags `dirty` and the running loop re-writes the final state. Drops empty →
+        the filtered star is discarded (revert to all-kept). Persists the kept count
+        on the PickList so the table survives navigation."""
+        if not star_path:
+            return
+        if commit["running"]:
+            commit["dirty"] = True
+            return
+        commit["running"] = True
+        try:
+            while True:
+                commit["dirty"] = False
+                ks = state["keep_set"]
+                dropped = (set(all_idx) - ks) if ks is not None else set()
+                try:
+                    if dropped:
+                        res = await asyncio.to_thread(picks_filter.save_filtered_list, Path(star_path), set(dropped))
+                        kept, total = int(res["kept"]), int(res["total"])
+                    else:
+                        await asyncio.to_thread(picks_filter.discard_filtered_list, Path(star_path))
+                        kept = total = len(lst.get("picks") or [])
+                except Exception:
+                    logger.exception("keep/drop auto-commit failed for %s", star_path)
+                    break
+                fc = None if kept == total else kept
+                pl = get_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
+                if pl is not None and pl.filtered_count != fc:
+                    pl.filtered_count = fc
+                    await get_state_service().save_project(force=True)
+                lst["filtered_count"] = fc
+                _update_count_cell(total, fc)
+                if not commit["dirty"]:
+                    break
+        finally:
+            commit["running"] = False
+
+    async def _toggle(i: int) -> None:
+        ks = state["keep_set"]
+        if ks is None:
+            ks = set(all_idx)  # materialize keep-all, then flip this one
+            state["keep_set"] = ks
+        kept = i not in ks  # state AFTER the toggle
+        if kept:
+            ks.add(i)
+        else:
+            ks.discard(i)
+        t = tiles.get(i)
+        if t is not None:
+            if kept:
+                t.classes(remove="cb-tile-dropped")
+            else:
+                t.classes(add="cb-tile-dropped")
+        if layer_ids:
+            _run_js(
+                "(function(){var ls=%(ls)s;var idx='%(i)s';var drop=%(drop)s;ls.forEach(function(lid){"
+                "var h=document.getElementById(lid);if(!h)return;"
+                "h.querySelectorAll('.cb-pick-ghost[data-pick-idx=\"'+idx+'\"]').forEach(function(g){"
+                "if(drop)g.classList.add('cb-pick-ghost-dropped');else g.classList.remove('cb-pick-ghost-dropped');"
+                "});});})();" % {"ls": json.dumps(layer_ids), "i": i, "drop": "false" if kept else "true"}
+            )
+        counter.set_text(_counter_txt())
+        await _commit_loop()  # auto-save the keep/drop → persists + feeds merge/extraction
+
+    async def _on_reset() -> None:
+        state["keep_set"] = None
+        for t in tiles.values():
+            t.classes(remove="cb-tile-dropped")
+        _sync_all_dots()
+        counter.set_text(_counter_txt())
+        await _commit_loop()  # discards the filtered star + clears the kept count
+        ui.notify("Reset — all picks kept", type="positive", timeout=1500)
+
+    def _install_hover_bridge() -> None:
+        """Bidirectional hover brushing for THIS list: hover a tile → glow its slab
+        ghost-dot(s); hover a ghost-dot → glow it + highlight/scroll-to its tile.
+        Delegated on the Particles section card (the stable ancestor of both the
+        canvas and this sheet), grid re-resolved lazily — mirrors the auto gallery
+        bridge, but the handler pair is stashed on the card and the prior one removed
+        first, so re-renders don't stack duplicate listeners. No-op without the
+        list's canvas dot-layers."""
+        if not layer_ids:
+            return
+        _run_js(
+            """
+            setTimeout(function() {
+                var gid = %(grid)s;
+                var lids = %(layers)s;
+                if (!document.getElementById(gid)) return;
+                var root = document.getElementById(gid).closest('.cb-section-card') || document.body;
+                function getGrid() { return document.getElementById(gid); }
+                function layers() {
+                    return lids.map(function(id) { return document.getElementById(id); }).filter(Boolean);
+                }
+                function ourGhost(el) {
+                    var l = el.closest && el.closest('.cb-pick-layer');
+                    return !!l && lids.indexOf(l.id) !== -1;
+                }
+                function ghostsFor(idx) {
+                    var out = [];
+                    layers().forEach(function(h) {
+                        h.querySelectorAll('.cb-pick-ghost[data-pick-idx="' + idx + '"]')
+                         .forEach(function(g) { out.push(g); });
+                    });
+                    return out;
+                }
+                function clearActive() {
+                    layers().forEach(function(h) {
+                        h.querySelectorAll('.cb-pick-ghost.cb-ghost-active')
+                         .forEach(function(g) { g.classList.remove('cb-ghost-active'); });
+                    });
+                    var gr = getGrid();
+                    if (gr) gr.querySelectorAll('.cb-tile-highlight')
+                            .forEach(function(t) { t.classList.remove('cb-tile-highlight'); });
+                }
+                function isOurs(el) {
+                    if (!el || !el.closest) return false;
+                    var gr = getGrid();
+                    var t = el.closest('.cb-gallery-tile[data-pick-idx]');
+                    if (t && gr && gr.contains(t)) return true;
+                    var gh = el.closest('.cb-pick-ghost[data-pick-idx]');
+                    return !!(gh && ourGhost(gh));
+                }
+                if (root._cbListBridge) {
+                    root.removeEventListener('mouseover', root._cbListBridge.over);
+                    root.removeEventListener('mouseout', root._cbListBridge.out);
+                }
+                var over = function(e) {
+                    if (!e.target.closest) return;
+                    var gr = getGrid();
+                    var t = e.target.closest('.cb-gallery-tile[data-pick-idx]');
+                    if (t && gr && gr.contains(t)) {
+                        var idx = t.getAttribute('data-pick-idx');
+                        clearActive();
+                        ghostsFor(idx).forEach(function(g) { g.classList.add('cb-ghost-active'); });
+                        return;
+                    }
+                    var gh = e.target.closest('.cb-pick-ghost[data-pick-idx]');
+                    if (gh && ourGhost(gh)) {
+                        var gi = gh.getAttribute('data-pick-idx');
+                        clearActive();
+                        ghostsFor(gi).forEach(function(g) { g.classList.add('cb-ghost-active'); });
+                        var g2 = getGrid();
+                        if (g2) {
+                            var tl = g2.querySelector('.cb-gallery-tile[data-pick-idx="' + gi + '"]');
+                            if (tl) {
+                                tl.classList.add('cb-tile-highlight');
+                                var tr = tl.getBoundingClientRect(), gb = g2.getBoundingClientRect();
+                                if (tr.top < gb.top || tr.bottom > gb.bottom)
+                                    tl.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+                            }
+                        }
+                    }
+                };
+                var out = function(e) {
+                    if (!e.target.closest) return;
+                    var lv = e.target.closest('.cb-gallery-tile[data-pick-idx]') ||
+                             e.target.closest('.cb-pick-ghost[data-pick-idx]');
+                    if (!lv || !isOurs(lv)) return;
+                    if (!isOurs(e.relatedTarget)) clearActive();
+                };
+                root._cbListBridge = {over: over, out: out};
+                root.addEventListener('mouseover', over);
+                root.addEventListener('mouseout', out);
+            }, 60);
+            """
+            % {"grid": json.dumps(grid_id), "layers": json.dumps(layer_ids)}
+        )
+
     with ui.element("div").classes("w-full").style("margin-top: 10px;"):
         with ui.row().classes("items-center gap-2").style("margin-bottom: 4px;"):
             _render_list_header(lst, sp, project_path)
-            ui.label(f"{n_ok} tiles · from recon · read-only").style("font-size: 9px; color: #94a3b8;")
-        with ui.element("div").style("display: flex; flex-wrap: wrap; gap: 4px;"):
-            for i in sorted(int(k) for k in index.keys()):
+            counter = ui.label(_counter_txt()).classes("cb-filter-counter")
+            ui.space()
+            ui.button("Reset", icon="restart_alt", on_click=_on_reset).props("flat dense no-caps").tooltip(
+                "Clear this list's keep/drop — revert to all picks kept"
+            )
+        ui.label("click a tile to keep/drop — saved automatically · hover to find it on the slab").style(
+            "font-size: 9px; color: #94a3b8; margin-bottom: 4px;"
+        )
+        grid_el = ui.element("div").style("display: flex; flex-wrap: wrap; gap: 4px;")
+        grid_el._props["id"] = grid_id
+        with grid_el:
+            for i in all_idx:
                 pos = index.get(str(i))
                 if not pos:
                     continue
                 r, c = pos
-                t = ui.element("div").style(
-                    f"width: {tile}px; height: {tile}px; border-radius: 4px; border: 1px solid #e5e7eb; "
-                    f"background-image: url({atlas_url}); background-repeat: no-repeat; "
-                    f"background-size: {bg_w}px {bg_h}px; background-position: {-c * tile}px {-r * tile}px;"
+                cls = "cb-gallery-tile" if _is_kept(i) else "cb-gallery-tile cb-tile-dropped"
+                t = (
+                    ui.element("div")
+                    .classes(cls)
+                    .style(
+                        f"background-image: url({atlas_url}); background-size: {bg_w}px {bg_h}px; "
+                        f"background-position: {-c * tile}px {-r * tile}px;"
+                    )
                 )
-                t._props["title"] = f"#{i}"
+                t._props["title"] = f"#{i} · click: keep/drop"
+                t._props["data-pick-idx"] = str(i)
+                t.on("click", lambda _e, i=i: _toggle(i))
+                tiles[i] = t
+    _sync_all_dots()
+    _install_hover_bridge()
 
 
 async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh) -> None:
@@ -1928,11 +2309,19 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
     star_path = lst.get("path")
 
     # Spinner while the disk probes run off-loop (Lustre stat/read latency was the
-    # "laggy on switch" freeze — it blocked the event loop mid-click).
-    with ui.element("div").classes("w-full").style("margin-top: 10px;") as pending_box:
-        with ui.row().classes("items-center gap-2"):
-            ui.spinner(size="16px", color="indigo-500")
-            ui.label("loading cutouts…").style("font-size: 10px; color: #94a3b8;")
+    # "laggy on switch" freeze — it blocked the event loop mid-click). P3: on a warm
+    # REVISIT the atlas index is already in memory and the keep-state derive is
+    # memoized, so the probe returns near-instantly — skip the "loading cutouts…"
+    # spinner that otherwise flashes on every open and reads as a full re-render.
+    warm = str(index_path) in _ATLAS_INDEX_MEMO
+    pending_box = None
+    if warm:
+        logger.info("list-cutouts[%s/%s]: atlas cache HIT — rendering without spinner", species_id, lst["slug"])
+    else:
+        with ui.element("div").classes("w-full").style("margin-top: 10px;") as pending_box:
+            with ui.row().classes("items-center gap-2"):
+                ui.spinner(size="16px", color="indigo-500")
+                ui.label("loading cutouts…").style("font-size: 10px; color: #94a3b8;")
 
     def _probe() -> dict:
         recon_exists = Path(recon).exists()
@@ -1942,15 +2331,22 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
             star_sig = 0
         sources = [Path(recon)] + ([Path(star_path)] if star_path else [])
         fresh = atlas_path.exists() and index_path.exists() and not is_output_stale(atlas_path, sources)
+        # Existing keep/drop curation for this list (centered-Å match against
+        # <slug>_filtered.star), derived off-loop here so the interactive sheet opens
+        # already reflecting saved drops. Memoized by mtime (shared with the rail
+        # count). None = no filter yet (all kept).
+        keep = _memoized_keep_state(Path(star_path)) if star_path else None
         return {
             "recon_exists": recon_exists,
             "star_sig": star_sig,
             "atlas_meta": _read_atlas_index(index_path) if fresh else None,
             "index_exists": index_path.exists(),
+            "keep": keep,
         }
 
     io = await asyncio.to_thread(_probe)
-    pending_box.delete()
+    if pending_box is not None:
+        pending_box.delete()
 
     if not io["recon_exists"]:
         _no_recon()
@@ -1965,7 +2361,7 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
         ):
             atlas_meta = _read_atlas_index(index_path)  # rare: built between probe and now
     if atlas_meta:
-        _render_list_cutout_sheet(lst, sp, project_path, atlas_meta, str(atlas_path))
+        _render_list_cutout_sheet(lst, sp, project_path, atlas_meta, str(atlas_path), io.get("keep"), refresh)
     else:
         # No tiles yet: a written index means the build ran (empty result);
         # no index means it's still in flight.
@@ -2071,100 +2467,9 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
         _asyncio.create_task(_recompute())
 
 
-def _open_merge_dialog(sp: dict, project_path: Path, refresh) -> None:
-    """Pick 2+ lists → union into a new `merged` list (NO dedup — overlaps are
-    surfaced on the merged list afterwards, deduped at a radius the user chooses).
-    Minimal trigger; the richer co-located lists UI is later."""
-    from backend import get_backend
-
-    species_id = sp.get("species_id") or ""
-    species_label = sp.get("label") or species_id or ""
-    tomo_name = sp["row"]["tomo_name"]
-    job_dir = Path(sp["job_dir"])
-
-    # Mergeable sources: the auto list (candidates.star) + each workbench list.
-    sources: list[dict] = []
-    auto_picks = sp.get("picks") or []
-    if auto_picks:
-        sources.append(
-            {
-                "label": f"{sp.get('label') or 'auto'} · auto ({len(auto_picks)})",
-                "path": str(job_dir / "candidates.star"),
-                "type": "auto",
-                "slug": "auto",
-            }
-        )
-    for lst in sp.get("lists") or []:
-        if lst.get("slug") == "auto" or not lst.get("path"):
-            continue
-        lt = lst.get("list_type")
-        sources.append(
-            {
-                "label": f"{lst['label']} ({len(lst.get('picks', []))})",
-                "path": lst["path"],
-                "type": (lt.value if hasattr(lt, "value") else str(lt)),
-                "slug": lst["slug"],
-            }
-        )
-    if len(sources) < 2:
-        ui.notify("Need at least 2 lists on this tomogram to merge.", type="warning")
-        return
-
-    checks: dict[int, object] = {}
-    with ui.dialog() as dialog, ui.card().classes("w-[30rem] max-w-full gap-2"):
-        ui.label(f"Merge pick lists — {tomo_name}").classes("text-base font-bold")
-        ui.label(
-            "Union of the selected lists into a new 'merged' list. No dedup here — overlaps are flagged on "
-            "the merged list, where you deduplicate at a radius you choose."
-        ).classes("text-xs text-gray-600")
-        for i, s in enumerate(sources):
-            checks[i] = ui.checkbox(s["label"], value=True).props("dense").classes("text-sm")
-
-        async def _do_merge():
-            chosen = [sources[i] for i, cb in checks.items() if cb.value]
-            if len(chosen) < 2:
-                ui.notify("Select at least 2 lists.", type="warning")
-                return
-            backend = get_backend()
-            if backend is None:
-                ui.notify("Backend unavailable.", type="negative")
-                return
-            res = await backend.merge_pick_lists(
-                project_path,
-                species_id,
-                species_label,
-                tomo_name,
-                [{"path": c["path"], "type": c["type"]} for c in chosen],
-            )
-            if not res.get("success"):
-                ui.notify(f"Merge failed: {res.get('error')}", type="negative")
-                return
-            dialog.close()
-            state_obj = get_project_state()
-            state_obj.add_pick_list(
-                PickList(
-                    slug="merged",
-                    label="Merged",
-                    list_type=PickListType.MERGED,
-                    species_id=species_id,
-                    tomo_name=tomo_name,
-                    path=res["out_star"],
-                    count=int(res.get("count", 0)),
-                    color=_PICK_LIST_DEFAULT_COLOR.get(PickListType.MERGED, "#ff6d00"),
-                    parent_slugs=[c["slug"] for c in chosen],
-                    created_by=getattr(backend, "username", ""),
-                )
-            )
-            # AWAIT (force) so the new merged list lands on disk — a fire-and-forget
-            # create_task gets GC'd before it runs (same bug as the manual-list save).
-            await get_state_service().save_project(force=True)
-            ui.notify(f"Merged {res.get('count', 0)} picks from {len(chosen)} lists", type="positive")
-            refresh()
-
-        with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Create merged list", icon="join_inner", color="indigo", on_click=_do_merge).props("no-caps")
-    dialog.open()
+# _open_merge_dialog was removed 2026-06-11 — merging is now the co-located inline
+# merge bar built in _render_list_rail (tick 2+ pills → name → Merge), no popup.
+# See W3 in services/visualization/ARTIAX_BRIDGE_PLAN.md.
 
 
 def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id: str, shape: str = "circle"):
@@ -2279,6 +2584,7 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                 "picks": auto_picks,
                 "dims": sp["dims"],
                 "visible": True,
+                "filtered_count": sp.get("auto_kept_count"),
             }
         )
     species_id = sp.get("species_id") or ""
@@ -2288,7 +2594,30 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
         for pl in project_state.get_pick_lists(species_id, ts_name):
             picks = _read_pick_list_voxels(Path(pl.path), dims, pixel_size)
             if not picks:
-                continue
+                # P4: a PERSISTED list that reads back as 0 picks must NOT be silently
+                # dropped — that is exactly how a merged/manual list could vanish from
+                # the rail (a coord/dims/apix regression making its star unreadable
+                # looked identical to "no list"). Keep it in the rail (visible,
+                # selectable, debuggable) and log the cause instead of skipping it.
+                logger.warning(
+                    "pick list %r (%s) for %s/%s read back 0 picks from %s — rendering empty",
+                    pl.slug,
+                    pl.list_type,
+                    species_id,
+                    ts_name,
+                    pl.path,
+                )
+            # P2: the table count must match the cutout sheet, which derives kept/total
+            # live from <slug>_filtered.star. pl.filtered_count is a cache that goes
+            # stale (None) when the filter was committed in a prior session, so source
+            # the count from the same star the sheet reads whenever it exists.
+            filtered_count = pl.filtered_count
+            if picks:
+                keep = _memoized_keep_state(Path(pl.path))
+                if keep is not None:
+                    filtered_count = len(keep)
+            else:
+                filtered_count = None
             lists.append(
                 {
                     "slug": pl.slug,
@@ -2300,6 +2629,8 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                     "dims": dims,
                     "visible": pl.visible,
                     "path": pl.path,
+                    "parent_slugs": pl.parent_slugs,
+                    "filtered_count": filtered_count,
                 }
             )
     return lists
@@ -2332,6 +2663,16 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
         _, species_id = _resolve_species(project_state, jm, iid)
         sub_match = _matching_subtomo_instance(project_state, species_id)
         subtomo_job_dir = _job_dir_for(sub_match[0], sub_match[1], project_path) if sub_match else None
+        # Auto list's curated kept count (the subtomo-gallery keep/drop), read off the
+        # cheap reviewed sidecar so the table shows kept/total for auto like the rest.
+        auto_kept_count = None
+        if subtomo_job_dir:
+            try:
+                from services.visualization import picks_filter
+
+                auto_kept_count = picks_filter.read_reviewed_counts(subtomo_job_dir).get(ts_name)
+            except Exception:
+                auto_kept_count = None
         # Prescan: auto-ingest a fresh ArtiaX save at the bundle's tomo-named path
         # so a curated list surfaces without an explicit Import click.
         _auto_kick_coords_ingest(job_dir, project_path, species_id, str(label), ts_name, refresh)
@@ -2342,6 +2683,7 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
             "job_dir": job_dir,
             "species_id": species_id,
             "subtomo_job_dir": subtomo_job_dir,
+            "auto_kept_count": auto_kept_count,
             "row": row,
             "manifest": manifest,
             "entry": entry,
@@ -2802,7 +3144,7 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
         await open_curation_control_center(backend, project_path, bundle=bundle)
 
 
-async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: str) -> int:
+async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: str, project_path: Path) -> int:
     """Upsert the `manual` PickList for this (species, tomo) from a backend import
     result and persist ProjectState — AWAITED with force=True so the registry
     actually lands on disk. A fire-and-forget `create_task(save_project())` was
@@ -2810,11 +3152,20 @@ async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: st
     forcing a re-import on every reopen. Returns the imported pick count. UI-free so
     both the explicit-import click path and the prescan auto-ingest share it. One
     `manual` list per (species, tomo) — a re-import replaces it (the raw .coords are
-    still archived per-import for provenance)."""
-    get_project_state().add_pick_list(
+    still archived per-import for provenance).
+
+    `project_path` is REQUIRED — it resolves the real registry by path. The prescan
+    auto-ingest runs in a BackgroundTask with NO client/tab context, where bare
+    `get_project_state()` returns a blank throwaway; the add + save then silently
+    no-opped and the manual list never surfaced (W2)."""
+    # P5: label the list after the .coords file the user named in ArtiaX (its stem),
+    # not a fixed "Manual (ArtiaX)". The `manual` slug stays stable for re-ingest;
+    # only the display label tracks the source filename. Falls back when unknown.
+    src_stem = Path(result.get("coords_source") or "").stem
+    get_state_service().state_for(project_path).add_pick_list(
         PickList(
             slug="manual",
-            label="Manual (ArtiaX)",
+            label=src_stem or "Manual (ArtiaX)",
             list_type=PickListType.MANUAL,
             species_id=species_id,
             tomo_name=tomo_name,
@@ -2824,15 +3175,15 @@ async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: st
             created_by=result.get("created_by", ""),
         )
     )
-    await get_state_service().save_project(force=True)
+    await get_state_service().save_project(project_path=project_path, force=True)
     return int(result.get("count", 0))
 
 
-async def _register_manual_pick_list(sp: dict, result: dict, refresh) -> None:
+async def _register_manual_pick_list(sp: dict, result: dict, refresh, project_path: Path) -> None:
     """Explicit-import click path: persist the `manual` list, toast, and refresh so
     the new diamond layer appears on the canvas."""
     tomo_name = sp["row"]["tomo_name"]
-    count = await _persist_manual_pick_list(result, sp.get("species_id") or "", tomo_name)
+    count = await _persist_manual_pick_list(result, sp.get("species_id") or "", tomo_name, project_path)
     src = Path(result.get("coords_source", "")).name
     ui.notify(
         f"Imported {count} manual picks for {tomo_name}" + (f" (from {src})" if src else ""),
@@ -2843,6 +3194,11 @@ async def _register_manual_pick_list(sp: dict, result: dict, refresh) -> None:
 
 
 _AUTO_INGESTED_COORDS: set[str] = set()
+
+# Whether the user has a live ChimeraX+ArtiaX curation session right now. Polled at a
+# slow cadence by the journey's _maybe_refresh (squeue is the source of truth) and read
+# by the rail toolbox to color the 'Curate' button (gray = none / green = live).
+_CURATION_SESSION_LIVE: dict = {"on": False}
 
 
 def _pending_save_for_tomo(
@@ -2917,7 +3273,7 @@ def _auto_kick_coords_ingest(
             project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id, coords_path=coords
         )
         if result.get("success"):
-            await _persist_manual_pick_list(result, species_id, tomo_name)
+            await _persist_manual_pick_list(result, species_id, tomo_name, project_path)
         return result
 
     from ui.background_task import BackgroundTask
@@ -2957,7 +3313,7 @@ async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -
                 return
             ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
             return
-        await _register_manual_pick_list(sp, result, refresh)
+        await _register_manual_pick_list(sp, result, refresh, project_path)
 
 
 def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> None:
@@ -2994,7 +3350,7 @@ def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> No
                 ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
                 return
             dialog.close()
-            await _register_manual_pick_list(sp, result, refresh)
+            await _register_manual_pick_list(sp, result, refresh, project_path)
 
         with ui.row().classes("w-full justify-end gap-2"):
             ui.button("Cancel", on_click=dialog.close).props("flat")
@@ -3074,6 +3430,7 @@ def _render_species_tab_body(
                 "picks": sp.get("picks") or [],
                 "dims": sp.get("dims") or [1, 1, 1],
                 "visible": True,
+                "filtered_count": sp.get("auto_kept_count"),
             },
         )
 
@@ -3181,54 +3538,255 @@ def _attach_auto_chip_tooltip(el, sp: dict, tm_info: dict) -> None:
                 ui.label("  ·  ".join(tm_bits)).classes("cb-tt-line")
 
 
+def _list_count_text(total: int, filtered_count: Optional[int]) -> str:
+    """Table count cell text: 'kept/total' when a keep/drop filter is committed for
+    this list, else just the total. `filtered_count` is None (no filter) or the kept
+    count; equal-to-total is treated as no effective filter."""
+    if filtered_count is not None and filtered_count != total:
+        return f"{filtered_count}/{total}"
+    return str(total)
+
+
 def _render_list_rail(
     sp: dict, lists: list[dict], project_path: Path, refresh, *, tm_info: dict, selected_slug, on_select, chip_els: dict
 ) -> None:
-    """The pick-list subpanel header: a compact single-line pill per list (swatch ·
-    label · count · extraction badge · visibility eye) in a wrapping middle zone,
-    with the species curation actions (Curate / Import / Merge) as small icon
-    buttons pinned to the far right. The auto (pytom) pill carries a hover tooltip
-    with its pick stats + template-match essentials. Clicking a pill selects the
-    list → drives the detail pane; the eye (click.stop) toggles just that list's
-    canvas dots. `chip_els` is filled {slug: element} so selection can re-highlight
-    without rebuilding the rail."""
+    """The pick-list subpanel header: a compact aligned TABLE (header + one row per
+    list: merge-check · swatch · name · count(kept/total) · authoritative-radio ·
+    extracted-mark · visibility eye) on the left + a vertical action toolbox (Curate /
+    Load / Import) on the right. Every row shares one grid template so the columns line
+    up under the header. The auto (pytom) row's name carries a hover tooltip with its
+    pick stats + template-match essentials. The authoritative radio is one-per-(species,
+    tomo) — clicking it sets which list downstream extraction/aggregation consume.
+    Clicking a row selects it → drives the detail; the eye, the auth radio and the
+    merge-check use click.stop so they don't also select. Ticking 2+ rows reveals an
+    INLINE merge bar (name → Merge). `chip_els` is filled {slug: row-element} so
+    selection can re-highlight without rebuilding the table."""
+    from backend import get_backend
+
     state_obj = get_project_state()
     species_id = sp.get("species_id") or ""
+    species_label = sp.get("label") or species_id or ""
     tomo_name = sp["row"]["tomo_name"]
-    with ui.element("div").classes("cb-list-rail"):
-        ui.label("Pick lists").classes("cb-rail-title")
-        with ui.element("div").classes("cb-rail-pills"):
+    key = (species_id, tomo_name)
+    _MERGE_SELECT.setdefault(key, set())
+    merge_boxes: dict[str, object] = {}
+
+    def _box_style(checked: bool) -> str:
+        base = "width:13px; height:13px; border-radius:3px; cursor:pointer; flex-shrink:0;"
+        return base + (
+            " background:#6366f1; border:1.5px solid #6366f1;"
+            if checked
+            else " background:transparent; border:1.5px solid #cbd5e1;"
+        )
+
+    def _source_for(slug: str):
+        # Each ticked list contributes its KEPT subset to the merge — the user's
+        # keep/drop must NOT bleed unselected picks into a merge:
+        #   • auto  → particles_filtered.star (the curated subtomo set; it carries
+        #     centered-Å coords + rlnTomoName, so the merge reads exactly the kept
+        #     auto picks for this tomo) when filtered, else the full candidates.star.
+        #   • workbench → <slug>_filtered.star when the cutout sheet committed drops,
+        #     else the full list star.
+        from services.visualization import picks_filter
+
+        if slug == "auto":
+            sub = sp.get("subtomo_job_dir")
+            if sub and picks_filter.has_filtered_set(Path(sub)):
+                return {"path": str(Path(sub) / picks_filter.PARTICLES_FILTERED_NAME), "type": "auto", "slug": "auto"}
+            return {"path": str(Path(sp["job_dir"]) / "candidates.star"), "type": "auto", "slug": "auto"}
+        lst = next((x for x in lists if x["slug"] == slug), None)
+        if not lst or not lst.get("path"):
+            return None
+        lt = lst.get("list_type")
+        filtered = picks_filter.filtered_list_path(Path(lst["path"]))
+        path = str(filtered) if filtered.exists() else lst["path"]
+        return {"path": path, "type": (lt.value if hasattr(lt, "value") else str(lt)), "slug": slug}
+
+    def _update_merge_bar() -> None:
+        n = len(_MERGE_SELECT.get(key, set()))
+        merge_bar.style(f"display: {'flex' if n >= 2 else 'none'}; align-items:center; gap:6px; margin-top:6px;")
+        merge_btn.set_text(f"Merge {n} lists" if n >= 2 else "Merge")
+
+    def _clear_merge() -> None:
+        _MERGE_SELECT[key] = set()
+        for b in merge_boxes.values():
+            b.style(_box_style(False))
+        _update_merge_bar()
+
+    def _toggle_merge(slug: str) -> None:
+        selset = _MERGE_SELECT.setdefault(key, set())
+        selset.discard(slug) if slug in selset else selset.add(slug)
+        box = merge_boxes.get(slug)
+        if box is not None:
+            box.style(_box_style(slug in selset))
+        _update_merge_bar()
+
+    async def _do_inline_merge() -> None:
+        chosen = [s for s in (_source_for(sl) for sl in _MERGE_SELECT.get(key, set())) if s]
+        if len(chosen) < 2:
+            ui.notify("Tick at least 2 lists to merge.", type="warning")
+            return
+        backend = get_backend()
+        if backend is None:
+            ui.notify("Backend unavailable.", type="negative")
+            return
+        # NAME → slug: re-using a name replaces that merge (upsert); a new name makes a
+        # distinct merged list (own slug → own star, chip, curation), so no clobber.
+        raw_name = (name_in.value or "").strip() or "Merged"
+        slug = f"merged__{_fs_slug(raw_name)}"
+        res = await backend.merge_pick_lists(
+            project_path,
+            species_id,
+            species_label,
+            tomo_name,
+            [{"path": c["path"], "type": c["type"]} for c in chosen],
+            out_slug=slug,
+        )
+        if not res.get("success"):
+            ui.notify(f"Merge failed: {res.get('error')}", type="negative")
+            return
+        get_project_state().add_pick_list(
+            PickList(
+                slug=slug,
+                label=raw_name,
+                list_type=PickListType.MERGED,
+                species_id=species_id,
+                tomo_name=tomo_name,
+                path=res["out_star"],
+                count=int(res.get("count", 0)),
+                color=_PICK_LIST_DEFAULT_COLOR.get(PickListType.MERGED, "#ff6d00"),
+                parent_slugs=[c["slug"] for c in chosen],
+                created_by=getattr(backend, "username", ""),
+            )
+        )
+        # Persist by explicit project_path (not the client-context default) so the
+        # merged list survives a restart even if this runs without a resolvable
+        # client state — the same contract the manual-list persist proved out (P4).
+        await get_state_service().save_project(project_path=project_path, force=True)
+        _MERGE_SELECT[key] = set()  # consumed
+        _SELECTED_LIST_SLUG[key] = slug  # land on the new merge
+        ui.notify(f"Created '{raw_name}' — {res.get('count', 0)} picks from {len(chosen)} lists", type="positive")
+        refresh()
+
+    # Authoritative-list selector (one per species,tomo): which list downstream
+    # extraction/aggregation consume. Default 'auto'. Radio-style — exactly one on.
+    auth_state = {"slug": state_obj.get_authoritative_slug(species_id, tomo_name)}
+    auth_icons: dict[str, object] = {}
+
+    async def _set_authoritative(slug: str) -> None:
+        if slug == auth_state["slug"]:
+            return
+        st = get_project_state()
+        st.set_authoritative_slug(species_id, tomo_name, slug)
+        await get_state_service().save_project(force=True)
+        auth_state["slug"] = slug
+        for s, ic in auth_icons.items():
+            if ic is None:
+                continue
+            on = s == slug
+            ic.name = "radio_button_checked" if on else "radio_button_unchecked"
+            ic.classes(add="cb-auth-on" if on else "cb-auth-off", remove="cb-auth-off" if on else "cb-auth-on")
+        label = next((x["label"] for x in lists if x["slug"] == slug), slug)
+        ui.notify(f"Authoritative → {label} — downstream extraction/aggregation will use it", type="positive")
+
+    with ui.element("div").classes("cb-list-top"):
+        # The list TABLE: one aligned row per pick list — [merge-check · swatch · name ·
+        # count(kept/total) · authoritative-radio · extracted-mark · eye]. A row click
+        # selects it → drives the detail gallery; the merge-check, the auth radio and the
+        # eye use click.stop so they don't also select. Every row shares the .cb-ltable-row
+        # grid template, so the columns line up under the header.
+        with ui.element("div").classes("cb-ltable"):
+            with ui.element("div").classes("cb-ltable-row cb-ltable-head"):
+                ui.element("div")  # merge-check col
+                ui.element("div")  # swatch col
+                ui.label("list").classes("cb-ltable-h-name")
+                ui.label("picks").classes("cb-ltable-h-num")
+                ui.label("auth").classes("cb-ltable-h-cell").tooltip("Authoritative downstream list (one per tomogram)")
+                ui.label("ext").classes("cb-ltable-h-cell").tooltip("Subtomo-extracted state")
+                ui.label("path").classes("cb-ltable-h-cell").tooltip("Copy the full path to this list's backing file")
+                ui.element("div")  # eye col
             for lst in lists:
                 slug = lst["slug"]
-                chip = ui.element("div").classes("cb-list-chip")
-                chip_els[slug] = chip
+                row = ui.element("div").classes("cb-ltable-row")
+                chip_els[slug] = row
                 if slug == selected_slug:
-                    chip.classes(add="selected")
-                chip.on("click", lambda e, s=slug: on_select(s))
-                with chip:
-                    ui.element("div").classes(f"cb-list-chip-swatch cb-swatch-{lst['shape']}").style(
+                    row.classes(add="selected")
+                row.on("click", lambda e, s=slug: on_select(s))
+                with row:
+                    with ui.element("div").classes("cb-ltable-cell"):
+                        mbox = ui.element("div").style(_box_style(slug in _MERGE_SELECT[key]))
+                        mbox.tooltip("Tick to include this list in a merge")
+                        mbox.on("click.stop", lambda e, s=slug: _toggle_merge(s))
+                        merge_boxes[slug] = mbox
+                    ui.element("div").classes(f"cb-ltable-swatch cb-swatch-{lst['shape']}").style(
                         f"background: {lst['color']};"
                     )
-                    ui.label(lst["label"]).classes("cb-list-chip-label")
-                    ui.label(str(len(lst.get("picks") or []))).classes("cb-list-chip-count")
+                    name = ui.label(lst["label"]).classes("cb-ltable-name")
                     if slug == "auto":
-                        _attach_auto_chip_tooltip(chip, sp, tm_info)
-                    else:
-                        pl = state_obj.get_pick_list(slug, species_id, tomo_name)
-                        est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
-                        text, cls = _EXTRACTION_BADGE.get(est, ("", ""))
-                        if text:
-                            ui.label(text).classes(f"cb-list-chip-badge {cls}")
-                    if lst.get("_layer_els"):
-                        _render_list_eye(lst, sp)
-        with ui.element("div").classes("cb-rail-toolbar"):
+                        name.style("cursor: help;")
+                        _attach_auto_chip_tooltip(name, sp, tm_info)
+                    total = len(lst.get("picks") or [])
+                    cnt = ui.label(_list_count_text(total, lst.get("filtered_count"))).classes("cb-ltable-count")
+                    cnt.tooltip("kept / total picks after keep-drop curation")
+                    lst["_count_el"] = cnt  # so the cutout sheet can live-update it on keep/drop
+                    with ui.element("div").classes("cb-ltable-cell"):
+                        on = slug == auth_state["slug"]
+                        ic = ui.icon("radio_button_checked" if on else "radio_button_unchecked", size="15px").classes(
+                            "cb-auth " + ("cb-auth-on" if on else "cb-auth-off")
+                        )
+                        ic.tooltip("Authoritative list — downstream tools consume this one. Click to set.")
+                        ic.on("click.stop", lambda e, s=slug: _set_authoritative(s))
+                        auth_icons[slug] = ic
+                    with ui.element("div").classes("cb-ltable-cell"):
+                        if slug != "auto":
+                            pl = state_obj.get_pick_list(slug, species_id, tomo_name)
+                            est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
+                            text, cls = _EXTRACTION_BADGE.get(est, ("", ""))
+                            if text:
+                                # Symbol only in the table (○/✓/⚠); full label on hover.
+                                ui.label(text.split(" ", 1)[0]).classes(f"cb-ltable-badge {cls}").tooltip(text)
+                    with ui.element("div").classes("cb-ltable-cell"):
+                        # P6: copy the full path to this list's backing file (auto →
+                        # candidates.star; workbench → its star). Tooltip shows it; the
+                        # click copies. click.stop so copying doesn't also select the row.
+                        copy_path = (
+                            str(Path(sp["job_dir"]) / "candidates.star") if slug == "auto" else (lst.get("path") or "")
+                        )
+                        if copy_path:
+                            cbtn = (
+                                ui.button(icon="content_copy")
+                                .props("flat dense round size=sm")
+                                .classes("cb-info-copy")
+                                .tooltip(copy_path)
+                            )
+                            cbtn.on(
+                                "click.stop",
+                                lambda e, v=copy_path: (
+                                    ui.clipboard.write(v),
+                                    ui.notify("Copied path", type="positive", timeout=800),
+                                ),
+                            )
+                    with ui.element("div").classes("cb-ltable-cell"):
+                        if lst.get("_layer_els"):
+                            _render_list_eye(lst, sp)
+        # The per-(species,tomo) curation actions, pulled OUT of the table into a
+        # vertical side toolbox (Curate in ArtiaX / Load into session / Import).
+        with ui.element("div").classes("cb-list-toolbox"):
+            # Curate button reflects live-session state: muted gray when no ChimeraX
+            # session is up, green when one is running (polled into _CURATION_SESSION_LIVE).
+            _sess_live = _CURATION_SESSION_LIVE.get("on", False)
             (
                 ui.button(icon="view_in_ar", on_click=lambda: _handle_curate_in_artiax(sp, project_path))
-                .props("flat dense round size=sm color=indigo")
-                .tooltip("Curate in ArtiaX — open this tomogram + its picks in ChimeraX + ArtiaX")
+                .props("flat dense round size=sm")
+                .classes("cb-curate-live" if _sess_live else "cb-curate-off")
+                .tooltip(
+                    "Curate in ArtiaX — a session is running; open this tomogram + its picks in it"
+                    if _sess_live
+                    else "Curate in ArtiaX — start a ChimeraX + ArtiaX session for this tomogram + its picks"
+                )
             )
             (
-                ui.button(icon="bolt", on_click=lambda: _handle_load_into_session(sp, project_path))
+                ui.button(icon="swap_horiz", on_click=lambda: _handle_load_into_session(sp, project_path))
                 .props("flat dense round size=sm color=indigo")
                 .tooltip("Load into running session — swap the live ArtiaX to this tomogram (reuse one session)")
             )
@@ -3238,13 +3796,24 @@ def _render_list_rail(
                 .classes("text-slate-500")
                 .tooltip("Import picks — ingest a .coords you saved in ArtiaX as a manual pick list")
             )
-            if len(sp.get("lists") or []) >= 2:
-                (
-                    ui.button(icon="join_inner", on_click=lambda: _open_merge_dialog(sp, project_path, refresh))
-                    .props("flat dense round size=sm")
-                    .classes("text-slate-500")
-                    .tooltip("Merge lists — union 2+ pick lists (dedup overlaps after, at your chosen radius)")
-                )
+    # Inline merge bar — co-located replacement for the merge popup. A SIBLING of the
+    # table+toolbox row (both children of the full-width rail_host block → it stacks
+    # BELOW them); hidden until 2+ rows are ticked, shown/labeled by _update_merge_bar.
+    merge_bar = (
+        ui.element("div").classes("cb-merge-bar").style("display:none; align-items:center; gap:6px; width:100%;")
+    )
+    with merge_bar:
+        ui.icon("join_inner", size="16px").classes("text-indigo-600").tooltip(
+            "Union the ticked lists into a named merged list (dedup overlaps after, in its own panel)"
+        )
+        name_in = (
+            ui.input(placeholder="merge name").props("dense outlined").classes("text-xs").style("max-width:150px;")
+        )
+        merge_btn = ui.button("Merge", on_click=_do_inline_merge).props("dense no-caps unelevated color=indigo size=sm")
+        ui.button(icon="close", on_click=lambda: _clear_merge()).props("flat dense round size=sm").classes(
+            "text-slate-400"
+        ).tooltip("Clear merge selection")
+    _update_merge_bar()
 
 
 async def _render_list_detail(

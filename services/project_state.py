@@ -520,6 +520,12 @@ class PickList(BaseModel):
     extracted_count: int = 0  # picks covered by that extraction (≠ count ⇒ picks added/removed ⇒ stale)
     extracted_at: Optional[datetime] = None  # when the extraction ran (vs source mtime ⇒ in-place edits ⇒ stale)
 
+    # How many picks survive the user's keep/drop curation in the cutout sheet
+    # (None = no filter committed = all `count` kept). The keep/drop auto-commits to
+    # `<slug>_filtered.star`; this is the cached kept count for the table, and the
+    # filtered star is what the merge + per-list extraction actually consume.
+    filtered_count: Optional[int] = None
+
     def extraction_state(self) -> ListExtractionState:
         """Derived per-list extraction status: NOT_EXTRACTED (coords only) / STALE
         (picks changed since extraction) / EXTRACTED (current). Computed from the
@@ -587,6 +593,11 @@ class ProjectState(BaseModel):
     # against the files the resolver owns. See ARTIAX_BRIDGE_PLAN.md
     # "## Curation workbench — the multi-list model".
     pick_lists: List[PickList] = Field(default_factory=list)
+    # Per-(species, tomo) AUTHORITATIVE pick list: which list downstream tools
+    # (per-list extraction / aggregation) consume. Keyed by `_auth_key(species, tomo)`
+    # → slug ("auto" or a workbench-list slug). Absent ⇒ "auto" (the candidate set,
+    # the historical default). Exactly one list is authoritative per (species, tomo).
+    authoritative_pick_lists: Dict[str, str] = Field(default_factory=dict)
     pipeline_active: bool = Field(default=False)
 
     # Dataset import summary (set at project creation)
@@ -689,6 +700,22 @@ class ProjectState(BaseModel):
         if removed:
             self.mark_dirty()
         return removed
+
+    @staticmethod
+    def _auth_key(species_id: str, tomo_name: str) -> str:
+        return f"{species_id}\x1f{tomo_name}"
+
+    def get_authoritative_slug(self, species_id: str, tomo_name: str) -> str:
+        """Slug of the list downstream tools consume for this (species, tomo).
+        Defaults to 'auto' (the candidate set) when nothing was chosen."""
+        return self.authoritative_pick_lists.get(self._auth_key(species_id, tomo_name), "auto")
+
+    def set_authoritative_slug(self, species_id: str, tomo_name: str, slug: str) -> None:
+        """Choose the authoritative list for this (species, tomo) — the one downstream
+        per-list extraction / aggregation consume. Marks dirty; caller persists.
+        'auto' is stored explicitly so a switch back from a workbench list persists."""
+        self.authoritative_pick_lists[self._auth_key(species_id, tomo_name)] = slug
+        self.mark_dirty()
 
     def ensure_job_initialized(
         self, job_type: JobType, instance_id: Optional[str] = None, template_path: Optional[Path] = None
