@@ -9,9 +9,203 @@ pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the cont
 
 ## NEXT SESSION — start here (prioritized)
 
-**▶▶▶ ACTIVE BUILD (session 13, 2026-06-10) — REST command channel VERIFIED at runtime → build the per-user
-REUSABLE session.** **STATUS: IMPLEMENTED + adversarially reviewed 2026-06-10 (compile/ruff/format/bash-n
-clean; 5 review findings fixed; PENDING runtime verify — restart `python main.py`).** The user de-risked the
+**▶▶▶ SESSION 16 — P1–P6 LANDED 2026-06-11 (all code-clean: py_compile + `ruff check` + `ruff format` clean on the two
+touched files `ui/tomo_dashboard_dialog.py` + `ui/dashboard/css.py`; PENDING RUNTIME — restart `python main.py` + hard-reload).
+P7 (styling) DEFERRED to the user. Files touched: `ui/tomo_dashboard_dialog.py`, `ui/dashboard/css.py`. The original spec
+bullets are kept below; each is annotated [LANDED] with what was actually done + the key on-disk findings.**
+
+**WHAT LANDED (S16):**
+- **P1 [LANDED]** — trailing-edge refresh coalescing. New `_refresh_req` flag + `request_refresh()` (raised by every auto-kick
+  on_complete via the `refresh` param passed down + by the 4s `_maybe_refresh`); a new always-on `refresh_coalesce_timer`
+  (`ui.timer(0.2, _flush_refresh)`, paused/resumed with `live_timer` in `_set_journey_active`) flushes ONE `refresh_all()` once
+  requests go quiet for ~1 tick. First paint + tab-select stay immediate (they call `refresh_all`/`render_main` directly, not
+  via the flag). Net: a burst of N completions on load = 1 rebuild, not N. RUNTIME GATE: page settles after ≤1 rebuild instead
+  of jittering several times on load + when the manual list first appears.
+- **P2 [LANDED + on-disk-CONFIRMED]** — table count now sourced from the same star the cutout sheet reads. `_collect_pick_lists_for_species`
+  derives `filtered_count` from `<slug>_filtered.star` (via the new mtime-memoized `_memoized_keep_state`) instead of trusting the
+  cached `pl.filtered_count`. CONFIRMED the bug on disk: GT project `agg_20260311_412_Grid3` Position_13 `manual` had
+  `filtered_count=None` in project_params.json but `manual_filtered.star` has 4 kept of 7 → table showed `7`, sheet showed `4/7`.
+  Now both read 4/7. RUNTIME GATE: re-open a filtered manual list → table shows `kept/total` matching the sheet's preloaded selection.
+- **P3 [LANDED]** — atlas cutouts no longer flash a spinner / re-parse on warm revisits. `_read_atlas_index` memoized by (path,mtime)
+  → `_ATLAS_INDEX_MEMO`; `_render_single_list_cutouts` skips the "loading cutouts…" spinner when the index is already in that memo
+  (logs `atlas cache HIT`); keep-state derive shares `_memoized_keep_state` (no double star-read). NOTE confirmed `_vis_asset_url`
+  is mtime-keyed so the atlas PNG URL is stable across visits (NOT a cache-bust re-decode) — the spinner+probe WAS the re-render
+  perception. RUNTIME GATE: revisit a list's cutouts → no spinner flash, log shows `atlas cache HIT`.
+- **P4 [LANDED as a DEFENSIVE GUARD — root cause was already fixed].** ON-DISK EVIDENCE settles it: the merged list
+  `merged__newmergeee` (count=14, filtered_count=13, parents=[manual,auto]) IS in project_params.json AND its star is on disk AND
+  fully readable (14 valid `rlnCenteredCoordinate*` rows via `merge_lists_to_star`). So merges DO persist + read back — S15's
+  persistence work already fixed the vanishing; the user's report predates it (or was an earlier non-persisting merge). Two
+  hardenings landed so it can NEVER silently vanish again: (a) `_collect_pick_lists_for_species` no longer `continue`-skips a
+  persisted list that reads back 0 picks — it renders it empty + logs a warning (visible + debuggable, not invisible); (b)
+  `_do_inline_merge` now saves via `save_project(project_path=project_path, force=True)` (was the client-context default) matching
+  the proven manual-persist contract. RUNTIME GATE: create a merge → restart → it's still in the rail. (Likely already true.)
+- **P5 [LANDED]** — manual-list label is now the `.coords` filename STEM (`Path(result["coords_source"]).stem`, fallback
+  "Manual (ArtiaX)"), set in `_persist_manual_pick_list`. Slug stays `manual` for stable re-ingest. Both the explicit-import and
+  prescan-ingest paths share this (both call `_persist_manual_pick_list`; `coords_source` confirmed in backend.py:985). RUNTIME
+  GATE: import a `.coords` named e.g. `Position_13_picks.coords` → the rail label reads `Position_13_picks`, not "Manual (ArtiaX)".
+- **P6 [LANDED]** — new `path` column in the list table: a `content_copy` button (reusing `.cb-info-copy`) per row whose tooltip
+  shows + click copies the backing file's FULL path (auto → `candidates.star`, workbench → `pl.path`). `click.stop` so it doesn't
+  also select the row. CSS grid widened 7→8 cols (`...26px 22px 20px`) in `ui/dashboard/css.py`; header + every row gained the cell.
+  RUNTIME GATE: hover the copy icon → full path tooltip; click → "Copied path" toast + clipboard has it.
+- **P7 [PARTIALLY LANDED — the user-named targets done; broad audit still open].** S16-cont restyled the **curation control
+  center** (`ui/curation_session_dialog.py`) + the rail toolbox buttons per the user's specific peeves (all code-clean, PENDING
+  RUNTIME):
+  - Dialog widened `44rem → 56rem` + `88vh → 90vh`, and the command block now WRAPS (`whitespace-pre-wrap break-all`, was
+    `whitespace-pre`) → kills the horizontal scrollbar ("sliders on the bottom"); the card has room so vertical scroll is rare.
+  - One copyable-code language: `_BOX`/`_BLOCK` unified to white-inset/mono/bordered (was a gray chip vs a dark slate-900 block).
+  - The three sections (Connect / Load / Pick & save) are now uniform light `_SECTION` panels with a shared `_section_head`
+    (icon + title + right-aligned actions), replacing separator-divided prose.
+  - Copy reworded to lead with automation: Load says "crboost preloads this tomogram and its picks for you … commands below are
+    a manual fallback you only need if that doesn't work"; Pick & save says "crboost saves your picks for you … offers to save
+    automatically when you switch tomograms … steps below only if you'd rather save by hand." (was hand-y imperative phrasing).
+  - **Load-into-session icon `bolt → swap_horiz`** (lightning was meaningless) — in BOTH the dialog and the rail toolbox.
+  - **'Curate in ArtiaX' toolbox button now reflects live-session state**: muted gray (`.cb-curate-off`) when no ChimeraX
+    session is up, soft-green pill (`.cb-curate-live`) when one is live. Liveness is polled into module-level
+    `_CURATION_SESSION_LIVE` by the journey's `_maybe_refresh` (~16 s cadence, squeue-derived, folded into the refresh signature
+    so a start/stop anywhere repaints the rail). CSS in `ui/dashboard/css.py`.
+  STILL OPEN: the panel-wide font/button/color audit across the WHOLE Particles panel (Slice B item 8) beyond these named targets.
+
+**Original spec bullets (still the reference for pointers):**
+
+- **P1 — Upfront page JITTER (still).** The dashboard still jitters a few times on load and as the ArtiaX manual list first
+  appears. S14 killed the per-progress-tick rebuild, but the INITIAL burst remains: each `_auto_kick_*` (preview-gen / IMOD /
+  coords-ingest prescan) fires `refresh()` on completion, and the manual list appearing IS the prescan ingest landing → a
+  rebuild. Several refreshes pile up in the first seconds. FIX IDEA: coalesce/debounce the initial refresh burst (trailing-edge
+  refresh), or gate the ingest-driven rebuild. Pointers: `_maybe_refresh` signature (~tomo_dashboard 371-389), the
+  `_auto_kick_*` on_complete→refresh callbacks.
+- **P2 — Table count OUT OF SYNC with the loaded selection.** Re-opening a filtered manual list preloads the kept selection
+  correctly in the cutout sheet (3 of 7) BUT the table shows `7`, not `3/7` — incongruent. ROOT CAUSE: the table reads
+  `lst["filtered_count"]` = `pl.filtered_count` (CACHED on the PickList), which is None/stale when `<slug>_filtered.star` exists
+  on disk but the cached count wasn't persisted (filter committed in a prior session / before `filtered_count` existed). The
+  cutout sheet DERIVES from the star (`derive_keep_state_for_list`) → the two diverge. FIX: source the table count from the SAME
+  truth as the sheet — at collect time, if `<slug>_filtered.star` exists set `filtered_count` from it (row/derived count) instead
+  of trusting `pl.filtered_count`. Pointers: `_collect_pick_lists_for_species`, `picks_filter.filtered_list_path` /
+  `derive_keep_state_for_list`. (Collect already does per-list disk reads; one more stat/read is fine, or cache by mtime.)
+- **P3 — Cutouts re-render every visit (persist them).** The recon-cutout atlas IS cached
+  (`.curation_sessions/cutouts/<sp>/<tomo>__<slug>.png` + index, staleness-checked) yet it looks like it re-renders on every
+  visit. Hypotheses: (a) the async `_probe` paints a "loading cutouts…" spinner on EVERY open even on a cache HIT (reads the
+  atlas index off-loop each time) → looks like a rebuild; (b) `is_output_stale(atlas, [recon, star])` churns on a source mtime.
+  FIX: confirm the cache HIT (log it); if it's just the spinner/probe, skip the spinner when the index is already in-memory +
+  memoize `_read_atlas_index` by path+mtime. Pointers: `_render_single_list_cutouts` (`_probe`, spinner,
+  `_auto_kick_list_cutouts`), `is_output_stale`, `_read_atlas_index`.
+- **P4 — Merged list does NOT survive a new session (HIGH).** The user merged + saved 3-4× but never sees last session's merge
+  on restart. The merge DOES auto-persist in code (`_do_inline_merge`: `add_pick_list(merged__<name>)` + `save_project(force=True)`)
+  — so it's a broken ROUND-TRIP, not a missing save (answer to "do I save manually?" = no, it's automatic; it's just not
+  surviving reload). PRIME SUSPECT: on reload `_collect_pick_lists_for_species` does
+  `picks = _read_pick_list_voxels(pl.path, dims, pixel_size); if not picks: continue` — if the merged star
+  (`Curation/<sp>/<tomo>/<slug>.star`) is missing/unreadable or yields no voxel picks (bad dims/apix/coords), the merged list is
+  SILENTLY DROPPED from the rail even though the PickList persisted. VERIFY: (a) does `merged__<name>` land in
+  project_params.json after merge? (b) is its star on disk + re-readable on reload? Consider rendering a persisted list even with
+  0 readable picks (visible + debuggable) instead of `continue`-skipping. Pointers: `_do_inline_merge`, `backend.merge_pick_lists`,
+  `_collect_pick_lists_for_species`.
+- **P5 — Manual list label = the FILENAME, not "Manual (ArtiaX)".** Imported `.coords` → PickList label is hardcoded
+  `"Manual (ArtiaX)"` (`tomo_dashboard ~3023`). Change to the source `.coords` filename STEM (what the user named it in ArtiaX).
+  Keep the `manual` slug stable for re-ingest (W1) — only the LABEL changes. Pointers: `_register_manual_pick_list` /
+  `_persist_manual_pick_list` / `backend.import_curation_picks` (thread the `.coords` stem through as the label).
+- **P6 — Copyable full-path column.** Add a table column per list with a copy-to-clipboard of the backing file's FULL path
+  (auto → `candidates.star`; workbench → `pl.path`; optionally the `<slug>_filtered.star` when present) so the user can always
+  find where everything is saved. Reuse the existing copy-path pattern (`cb-info-copy` / info-card copy button). Pointers:
+  `_render_list_rail` table (new column + `ui.icon("content_copy")` → clipboard), `ui/dashboard/css.py`.
+- **P7 — UI / styling polish (Slice B item 8 — the user will also do this).** Standardize fonts/buttons/colors across the
+  Particles panel to the journey aesthetic; the workbench table/toolbox/merge-bar are unified (S15) but the broader audit is open.
+
+**Slice C (per-list EXTRACTION) is DEFERRED behind P1–P7 per the user.** Its pointer is kept below.
+
+**SESSION 15 (2026-06-11) — pick-list panel UI rework (user peeves; compile/ruff/format clean, PENDING RUNTIME —
+no auto-reload, restart `python main.py` + hard-reload). Files: `ui/tomo_dashboard_dialog.py` + `ui/dashboard/css.py`.**
+The user confirmed the core ArtiaX loop works and asked to de-motley the pick-list panel. LANDED:
+1. **Pills → compact aligned TABLE.** `_render_list_rail` now emits one `.cb-ltable-row` per list — a shared 6-track
+   grid `[merge-check · swatch · name · count · extract-mark · eye]`, so columns line up instead of ragged free-floating
+   pills. Row click selects → drives the gallery (merge-check + eye `click.stop`). Extract badge is now a symbol-only
+   `○/✓/⚠` with the full label on hover. Removed CSS: `.cb-list-rail/.cb-rail-*/.cb-list-chip*`; added
+   `.cb-list-top/.cb-ltable*/.cb-list-toolbox`.
+2. **3-icon toolbox extracted to a side panel.** Curate / Load / Import moved OUT of the table into a vertical
+   `.cb-list-toolbox` beside it (the "separate side thingy").
+3. **Markers enlarged + backlight brightened.** Base ghost 3→4px; brush/hover now GROWS to 8px + a bright
+   `0 0 11px 4px` glow (was a near-invisible `0 0 6px 1.5px`, no size change). **Merged TRIANGLE fixed**: clip-path was
+   CLIPPING its box-shadow ring/glow → it was a 3px bare fill nobody could see. Now 9px at rest with a `drop-shadow`
+   outline (filter follows the clipped shape), 14px with an orange `drop-shadow` halo on brush.
+4. **Keep/drop filter now propagates into merge.** `_source_for` prefers `<slug>_filtered.star` when it exists → a
+   merge consumes exactly the KEPT picks. Per-list extraction (Slice C) is already designed to read the same filtered
+   star, so dropping a pick will carry all the way downstream once Slice C lands.
+5. **Removed the duplicate "Open in ArtiaX"** from the gallery header (`_render_list_header`) — redundant with the
+   toolbox Curate/Load. `_handle_open_list_in_artiax` kept as the W1 round-trip-edit foundation (now uncalled).
+6. **Styling:** the pick-list workbench (table / toolbox / inline merge bar) is unified into one light-slate/indigo
+   language. The broader panel-wide audit (every button/font across the whole Particles panel — Slice B item 8) is
+   STILL OPEN. RUNTIME GATE: rows align into a table, click a row → its gallery; brush a manual diamond → bright glow;
+   a merged triangle is actually visible + glows orange on brush; merge a filtered manual list → kept-only count.
+
+**SESSION 15-cont (2026-06-11) — keep/drop PERSISTENCE + AUTHORITATIVE selector (user peeves round 2; compile/ruff/format
+clean for my edits, PENDING RUNTIME). Files: `services/project_state.py` + `ui/tomo_dashboard_dialog.py` + `ui/dashboard/css.py`.**
+The user hit: manual-list keep/drop reset to all-7 on navigate (only persisted on a Save click), and merge unioned FULL lists.
+LANDED:
+1. **Auto-commit keep/drop (no Save button).** The cutout sheet's "Save picks" is GONE; every tile toggle (and Reset)
+   now auto-writes `<slug>_filtered.star` via a serialized `_commit_loop` (running/dirty flags → no ordering races / no
+   Lustre hammering; drops-empty → discards the star). So the selection PERSISTS across navigation (re-read by
+   `derive_keep_state_for_list` on re-open) and feeds the merge. `_toggle`/`_on_reset` are now async.
+2. **Merge unions only KEPT picks.** Already wired in S15 (`_source_for` prefers `<slug>_filtered.star`); with auto-commit
+   the filtered star is always current → 10-of-20 ∪ 3-of-7 = 13. (Auto-in-merge still uses the full candidates.star — auto
+   has its own score+keep/drop gallery flow, out of scope; flagged.)
+3. **Kept/total in the table.** New `PickList.filtered_count` (cached kept count, None = no filter) → the count column shows
+   `kept/total`; the cutout sheet live-updates the rail cell (shared `lst["_count_el"]`) on each toggle + persists
+   `filtered_count` so it survives navigation/refresh.
+4. **Authoritative-list column (NEW).** `ProjectState.authoritative_pick_lists` (per-(species,tomo) → slug, default "auto")
+   + `get/set_authoritative_slug`. The table gained an "auth" radio column (exactly one on; click sets it, persists,
+   live-updates the radios). Plus a header row + the existing "ext" (subtomo-extracted ○/✓/⚠) column. **The downstream
+   CONSUMPTION is still Slice C** — the resolver isn't wired to read `get_authoritative_slug` yet (and workbench lists have
+   no `extracted_path` until extracted), so the switch persists + displays but doesn't change downstream until extraction
+   lands. ⚠️ `services/project_state.py` has PRE-EXISTING ruff debt (17 unused-import F401s in the import block + format
+   drift in unrelated dict-comprehensions) — NOT from this change; left untouched (surgical). RUNTIME GATE: drop 4 of 7 on
+   a manual list → navigate away + back → still 3 kept; table shows 3/7; merge two filtered lists → kept-only count; click
+   a list's auth radio → it persists across refresh.
+
+**SESSION 15-cont2 (2026-06-11) — merge respects the AUTO filter + auto kept/total in the table (user: "DO NOT count
+unselected particles"; compile/ruff/format clean, PENDING RUNTIME). File: `ui/tomo_dashboard_dialog.py`.**
+1. **The merge was still unioning the FULL auto set.** `pick_merge.read_centered_coords` reads each source star; the auto
+   source was `candidates.star` (all auto picks), so a 10/20 auto + 4/7 manual produced ~21, not 14. FIX: `_source_for("auto")`
+   now returns `subtomo_job_dir/particles_filtered.star` (the curated subtomo set — it carries centered-Å + rlnTomoName, so
+   `read_centered_coords` yields exactly the KEPT auto picks for this tomo) when `has_filtered_set`, else full candidates.
+   Workbench lists already used `<slug>_filtered.star`. Net: a merge now = sum of KEPT subsets.
+2. **Auto kept/total in the table.** `_collect_species_data_for_ts` reads `picks_filter.read_reviewed_counts(subtomo_job_dir)
+   [ts]` → `sp["auto_kept_count"]` → both auto lst-entries set `filtered_count`, so the auto row shows e.g. 10/20 like the
+   rest. (Updates on refresh, not live — the auto filter lives in the separate subtomo gallery, not the cutout sheet.)
+3. **"Cutouts look unrecognizable after merge" — ASSESSED, not a location bug.** Auto gallery = EXTRACTED-SUBTOMO cutouts
+   (`render_pick_cutouts_atlas`); manual/merged = RECON cutouts (`render_recon_cutouts_atlas`): a 5-voxel Z-slab MEAN of a
+   `2× particle-diameter` box cut straight from the binned reconstruction at the pick voxel — raw data (missing wedge, no CTF),
+   looser framing, thin Z. LOCATION is identical (same `centered_angst_to_voxel` w/ the same dims+apix; the merge writes valid
+   centered-Å), so picks ARE in the right place — it's the SOURCE (raw recon vs extracted subtomo) + framing (2× box) + depth
+   (5-vox slab) that differ by design. Comparable subtomo cutouts only exist once the list is extracted (Slice C). Tuning
+   levers if wanted: tighten `_list_cutout_box_px` toward the subtomo box; thicken `slab_px`. NOT changed (user asked a Q).
+
+**▶▶▶ NEXT SESSION START HERE — per-list EXTRACTION (Slice C).** The curation workbench loop is now COMPLETE
+(import → keep/discard + brushing → named merge → dedup), but nothing it produces reaches the pipeline yet. The next
+build wires an **"Extract" action per list**: subtomo-extract a chosen list's picks (consume its `<slug>_filtered.star`
+when present, else the full list star) → `mark_extracted()` → that list's `extracted_path` becomes the canonical optset
+the downstream IO-slot resolver forwards (zero driver changes). Foundations exist: `PickList.extracted_path/
+extracted_count/extracted_at` + `extraction_state()` + `mark_extracted()` (`project_state.py`), the chip extraction
+badge (rail), and `picks_filter.save_filtered_list`/`filtered_list_path`. Scope it (which extraction job/driver, where
+per-list particles land, how the resolver picks the list's optset) BEFORE building. See [[feedback_per_list_extraction]].
+Polish alternatives if extraction is deferred: lasso box-select for list tiles, carving the shared hover-brush bridge
+to de-dupe the JS, the styling pass.
+
+**⚠️ ALL of this session's work + everything below is code-complete but PENDING RUNTIME — the server has NO auto-reload,
+so restart `python main.py` + hard-reload before testing (see reference_hpc_env). No code changed after the last
+compile/ruff/format-clean checkpoint.**
+
+**SESSION 14 (2026-06-11) — LANDED (compile/ruff/format clean):** (1) **W2 auto-import display FIXED** — a BackgroundTask
+has no NiceGUI client context, so bare `get_project_state()` returned a blank throwaway → the prescan's add + path-less
+save silently no-opped; fixed by resolving via explicit `project_path` (`state_for`/`save_project(project_path=)`).
+**USER-CONFIRMED working at runtime.** (2) **Page jitter FIXED** — the 4 s live-refresh signature included per-tick task
+progress, rebuilding the whole pane on every progress tick; now it watches task membership, not progress. (3) **W4(a)
+interactive keep/discard filter** for manual/merged lists — `picks_filter.save_filtered_list` (DROP-based, preserves
+tile-less picks) + the list cutout sheet is now click-to-keep/drop → `<slug>_filtered.star`. (4) **Hover-brushing** for
+those lists (tile↔dot, mirrors the auto bridge, no listener leak). (5) **W3 COMPLETE** — named merges (`merged__<name>`;
+re-use a name = replace, new name = distinct list) + provenance (`⋃ parents`) + the **co-located inline merge panel**
+(per-pill merge checkbox + an inline merge bar below the rail; the merge popup `_open_merge_dialog` is removed). Detail
+in the W1–W4 bullets below + memory [[project_artiax_bridge]] (sessions 14, 14-rt, cont, cont2, cont3, cont4).
+
+**✅ LANDED (session 13, 2026-06-10) — per-user REUSABLE REST session (⚡ load/swap; user-confirmed at runtime).** The
+user de-risked the
 whole approach live on CBE and said "stick to this." This SUPERSEDES the
 paste-in "Load this tomogram" UX (kept only as a graceful fallback) and turns "Curate in ArtiaX" into a one-click
 load/swap into a single long-lived viewer. The S12 control-center rewrite (below) is partly superseded — the dialog
@@ -139,6 +333,84 @@ list to its `Curation/<sp>/<tomo>/`.
    …`) so the first test pinpoints the structure instead of a blind retry. VERIFY: pick a NEW list in ArtiaX → "Save
    picks now" → expect toast "Saved N list(s)" + a `.coords` in the tomo's `Curation/.../` + the manual list appears;
    if it says "nothing open" though picks exist, grab that raw-models log line.
+
+**▶ NEXT FUNCTIONALITY — per-tomo multi-list curation (user-requested 2026-06-10). Four workstreams; most already
+have foundations, so this is mostly COMPLETION + GENERALIZATION, not greenfield. Pick one and I'll spec it before
+building.**
+
+- **W1 — Bidirectional manual lists (full edit loop).** HAVE: per-list "Open in ArtiaX" (`_handle_open_list_in_artiax`,
+  tomo_dashboard ~2758) exports a chosen list's centered-Å star as `<tomo>__<slug>_ref.coords` and opens it as a
+  reference; auto-import (W2) brings new saves back. GAP: a true ROUND-TRIP edit — open an existing `manual`/`merged`
+  list back into ArtiaX as the EDITABLE list, edit, save, and re-ingest into the SAME slug (replace, not spawn a new
+  `manual`). Needs an "edit in ArtiaX" that loads the list editable (not a `_ref` — the scan skips `*_ref.coords`) +
+  an import that targets the originating slug instead of always writing `manual.star`.
+- **W2 — Auto-import on save — ROOT-CAUSED + FIXED in code 2026-06-10 (S14; PENDING runtime verify — server has no
+  auto-reload, restart `python main.py` + hard-reload).** The import always RAN (prescan `_auto_kick_coords_ingest` →
+  `manual.star` on disk) but the chip never showed. **Both prime suspects above were WRONG** — it is NOT a
+  captured-`project_state` / replaced-singleton mismatch and NOT a shallow re-render. REAL CAUSE:
+  `_persist_manual_pick_list` ran inside the prescan's `BackgroundTask` work coroutine, which has **NO NiceGUI
+  client/tab context** (`background_tasks.py` runs work via bare `asyncio.create_task`); `get_project_state()`
+  resolves the project from the current tab's `app.storage.tab` (`project_state.py:926`), so with no client it hits
+  `except RuntimeError` and **returns a blank throwaway `ProjectState()`**. Thus `add_pick_list(manual)` mutated a
+  discarded object and the path-less `save_project(force=True)` no-opped (blank state's `project_path is None` →
+  early `return` at `project_state.py:1042`). `manual.star` still landed because `backend.import_curation_picks`
+  writes it from explicit paths — hence "import runs, nothing shows." The explicit Import BUTTON worked only because
+  it runs in client context. KEYS were never it (correctly ruled out). **FIX:** `_persist_manual_pick_list` now takes
+  `project_path` and resolves the real registry context-independently via
+  `get_state_service().state_for(project_path).add_pick_list(...)` + `save_project(project_path=project_path,
+  force=True)`; `project_path` threaded through `_register_manual_pick_list` and all 4 callers (2 click, 1 prescan-bg).
+  The dashboard's captured `state` (`tomo_dashboard_dialog.py:257`, resolved in client context) IS that same registry
+  singleton, so the bg add is now visible on the `refresh()` rebuild → chip appears. **SIBLING of the same anti-pattern
+  fixed** in `ui/tilt_filter_panel.py` (thumbnail `_run` → `tilt_filter_png_dir` now persists). The dashboard
+  preview/IMOD bg kicks were AUDITED clean (they capture `state` before the coroutine and never path-less-save inside
+  it). General rule: `feedback_background_task_no_client_context`. RUNTIME GATE: save a `.coords` in ArtiaX → `manual`
+  chip auto-surfaces within ~4 s (no Import click) AND `pick_lists` gains the `manual` entry in `project_params.json`.
+- **W3 — List-merge interface.** HAVE: `_open_merge_dialog` (union 2+ lists → a `merged` list, priority-ordered) +
+  a per-merged-list Overlap panel (clash stats + radius dedup), wired to `backend.merge_pick_lists` /
+  `list_clash_stats` / `deduplicate_pick_list`. The code itself flags it "minimal trigger; richer co-located lists UI
+  is later." GAP: (a) only ONE `merged` slug per (species,tomo) — a second merge overwrites; allow NAMED merges;
+  (b) a co-located lists panel (see every list + select-to-merge + dedup inline) instead of a separate dialog;
+  (c) merge provenance (which lists + dedup radius) surfaced on the merged chip.
+  **✅ (a) NAMED MERGES + (c) provenance LANDED 2026-06-11 (compile/ruff/format clean, PENDING runtime).** Dialog
+  gained a "Merge name" input (default `merge N+1`); `slug = merged__<name>` → re-use a name = replace that merge,
+  new name = distinct merged list (own star/chip/curation), no more single-`merged` clobber; lands selection on the
+  new merge. `parent_slugs` now flows to the render dict + `_render_list_header` shows a muted `⋃ <parents>` line.
+  The rail already gives each slug its own chip + full keep/discard + brushing + clash/dedup panel, so named merges
+  are first-class.
+  **✅ (b) CO-LOCATED PANEL LANDED 2026-06-11 → W3 COMPLETE (compile/ruff/format clean, PENDING runtime).** Removed
+  `_open_merge_dialog` (popup gone); each rail pill gained a `click.stop` merge-checkbox + an inline merge bar (name +
+  "Merge N" + clear) sits full-width BELOW the rail row (sibling of `.cb-list-rail`, which is `flex row nowrap`), shown
+  only when 2+ ticked. Selection persists in module `_MERGE_SELECT`; reuses the named-merge slug logic; no css.py edits
+  (inline styles + manual display toggle). Dedup stays per-merge in the detail clash panel. **NEXT: per-list EXTRACTION
+  wiring (Slice C)** — consume `<slug>_filtered.star`/the list star downstream — or polish (lasso, shared-bridge carve,
+  styling).
+- **W4 — Generalize selection/filtering to ALL lists (auto, manual, merged) — the real new work.** HAVE:
+  `services/visualization/picks_filter.py` curates the AUTO list ONLY — hard-wired to the subtomo-extraction job dir
+  (`save_filtered_picks_for_ts(subtomo_job_dir, …)` → `particles_filtered.star`; downstream prefers `_filtered` via
+  the IO-slot resolver). GAP: the gallery keep/discard + "save filtered" must operate on ANY chosen list's star,
+  writing a per-list `<slug>_filtered` variant the per-list extraction ([[feedback_per_list_extraction]]) consumes —
+  i.e. make `picks_filter` list-PARAMETRIC (take a star + slug, not a subtomo job dir). NOTE: `manual` lists are
+  positions-only (no CC score) → "filter" there = manual/spatial keep-discard, not score-threshold; the UI must
+  degrade gracefully when there's no score column.
+  **✅ INTERACTIVE-FILTER SLICE LANDED 2026-06-11 (option (a), compile/ruff/format clean, PENDING runtime restart).**
+  `picks_filter` gained list-parametric `save_filtered_list(source_star, dropped_indices)` (DROP-based — keeps every
+  row except explicit drops, so tile-less/out-of-bounds picks survive), `derive_keep_state_for_list`,
+  `discard_filtered_list`, `filtered_list_path` (`manual.star`→`manual_filtered.star`). `_render_list_cutout_sheet`
+  is now interactive: click a tile to keep/drop, dropped tile greys + greys its slab ghost-dot (the dot↔tile sync,
+  via the list's own `_lid_xy/_lid_xz` layers), Save→`<slug>_filtered.star`, Reset→delete; existing filter loads on
+  open. **Did NOT carve the `_render_gallery_body` auto monolith** (too risky without runtime) — built a parallel
+  interactive sheet reusing the small `_sync_dropped_dots` JS pattern; auto gallery untouched.
+  **✅ HOVER-BRUSHING LANDED 2026-06-11** (`_install_hover_bridge` in `_render_list_cutout_sheet`): hover tile→glow
+  slab dot, hover dot→glow + highlight/scroll-to tile; delegated on the section card, grid re-resolved lazily, fresh
+  per-render grid id, handler pair stashed on the card + removed-before-re-add so re-renders don't leak listeners
+  (improves on the auto bridge). **STILL DEFERRED:** lasso box-select for lists, the shared-bridge dedup carve, and
+  downstream extraction consuming `<slug>_filtered.star` (Slice C). See [[feedback_per_list_extraction]].
+
+Order (user-agreed 2026-06-10): **W4 is the agreed next build** (highest value: makes manual/merged lists
+first-class for downstream extraction/refine). **W2 is FIXED in code (2026-06-10, PENDING runtime)** — once confirmed
+at runtime, W4 unblocks (its whole point was moot while curated lists didn't show). Then **W3** polish → **W1** edit-loop. OPEN DESIGN FORK
+for W4 (user has NOT answered): manual lists are scoreless → is per-list "filter" = manual keep/discard tiles,
+spatial/region cull, or pass-through-unfiltered-where-no-score? Spec this before building.
 
 **▶▶ DO THIS FIRST — runtime-verify the session-12 landings (all code-clean, NONE runtime-tested; the server has
 NO auto-reload → restart `python main.py` + hard-reload the browser before testing, see [[reference_hpc_env]]).**

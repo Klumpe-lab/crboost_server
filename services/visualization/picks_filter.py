@@ -393,3 +393,103 @@ def discard_ts_filter(subtomo_job_dir: Path, ts_name: str) -> str:
 # The gallery now passes the species-matched subtomo_job_dir directly (resolved
 # via _matching_subtomo_instance in the dashboard). See
 # PICKS_FILTER_AGGREGATION_ROADMAP.md.
+
+
+# ── List-parametric filtering (manual / imported / merged workbench lists) ────
+# Workbench lists are NOT subtomo-extracted: their star IS the curated pick list
+# (centered-Å rows, one per pick) and the gallery pick index == the row order
+# (cutouts + overlay dots are keyed by row position). So "filter" here is simply
+# "keep a subset of rows" → write `<stem>_filtered.star` beside the source. None
+# of the candidates Å-match / optimisation-set indirection above applies — that
+# is only needed for the AUTO list, whose score-sorted gallery order differs from
+# its subtomo particle rows. Manual lists are scoreless, so the only "filter" is
+# the user's per-tile keep/discard (no threshold); the kept subset is canonical.
+
+
+def _list_particle_block(data: dict):
+    """(key, df) of the pick table in a centered-Å list star: prefer 'particles',
+    else the first block carrying the centered-Å coord columns (or rlnTomoName).
+    Returns (None, None) if no table-like block is present."""
+    from services.visualization.coords import CENTERED_COLS
+
+    if "particles" in data and isinstance(data["particles"], pd.DataFrame):
+        return "particles", data["particles"]
+    for k, v in data.items():
+        if isinstance(v, pd.DataFrame) and (all(c in v.columns for c in CENTERED_COLS) or "rlnTomoName" in v.columns):
+            return k, v
+    return None, None
+
+
+def filtered_list_path(source_star: Path) -> Path:
+    """Where a list's curated subset lives: `<stem>_filtered.star` beside the
+    source (manual.star → manual_filtered.star), so per-list extraction can prefer
+    it the way the subtomo resolver prefers particles_filtered.star."""
+    source_star = Path(source_star)
+    return source_star.with_name(f"{source_star.stem}_filtered.star")
+
+
+def save_filtered_list(source_star: Path, dropped_indices: set[int], out_star: Optional[Path] = None) -> dict:
+    """Write the source list MINUS the dropped rows. `dropped_indices` are 0-based
+    ROW positions the user discarded; EVERY other row is kept — including any pick
+    with no gallery tile (e.g. an out-of-bounds recon cutout), so a save never
+    silently loses a placed pick the curator never saw. Preserves the star's block
+    structure, swapping only the pick table. Returns
+    {"kept", "dropped", "total", "filtered_path"}."""
+    import starfile
+
+    source_star = Path(source_star)
+    out_star = Path(out_star) if out_star is not None else filtered_list_path(source_star)
+    data = starfile.read(source_star, always_dict=True)
+    key, df = _list_particle_block(data)
+    if df is None:
+        raise RuntimeError(f"No pick table found in {source_star}")
+    drop = {i for i in dropped_indices if 0 <= i < len(df)}
+    kept_positions = [i for i in range(len(df)) if i not in drop]
+    data[key] = df.iloc[kept_positions].reset_index(drop=True)
+    starfile.write(data, out_star, overwrite=True)
+    return {"kept": len(kept_positions), "dropped": len(drop), "total": int(len(df)), "filtered_path": str(out_star)}
+
+
+def derive_keep_state_for_list(source_star: Path, filtered_star: Optional[Path] = None) -> Optional[set[int]]:
+    """Which row indices of `source_star` survive in its `_filtered` star, matched
+    by centered-Å coord (robust to row reordering). None when no filtered file
+    exists (= all rows implicitly kept); a (possibly empty) set otherwise."""
+    import starfile
+
+    from services.visualization.coords import CENTERED_COLS
+
+    source_star = Path(source_star)
+    filtered_star = Path(filtered_star) if filtered_star is not None else filtered_list_path(source_star)
+    if not filtered_star.exists():
+        return None
+    _, df_src = _list_particle_block(starfile.read(source_star, always_dict=True))
+    _, df_filt = _list_particle_block(starfile.read(filtered_star, always_dict=True))
+    if df_src is None or df_filt is None or not all(c in df_src.columns for c in CENTERED_COLS):
+        return None
+    kept_keys: set[tuple[int, int, int]] = set()
+    for _, r in df_filt.iterrows():
+        try:
+            kept_keys.add(_coord_key(r[CENTERED_COLS[0]], r[CENTERED_COLS[1]], r[CENTERED_COLS[2]]))
+        except (TypeError, ValueError, KeyError):
+            continue
+    kept: set[int] = set()
+    for i in range(len(df_src)):
+        r = df_src.iloc[i]
+        try:
+            if _coord_key(r[CENTERED_COLS[0]], r[CENTERED_COLS[1]], r[CENTERED_COLS[2]]) in kept_keys:
+                kept.add(i)
+        except (TypeError, ValueError, KeyError):
+            continue
+    return kept
+
+
+def discard_filtered_list(source_star: Path, filtered_star: Optional[Path] = None) -> bool:
+    """Delete a list's `_filtered` star (revert to all-kept). True if removed."""
+    filtered_star = Path(filtered_star) if filtered_star is not None else filtered_list_path(Path(source_star))
+    if filtered_star.exists():
+        try:
+            filtered_star.unlink()
+            return True
+        except OSError as e:
+            logger.warning("Failed to remove %s: %s", filtered_star, e)
+    return False

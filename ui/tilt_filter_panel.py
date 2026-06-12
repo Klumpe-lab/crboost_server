@@ -455,14 +455,16 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job
 
         def _start():
             async def _run(progress_cb):
-                n = await asyncio.to_thread(
-                    generate_tilt_thumbnails, ts_ctf_star, project_path, png_dir, progress_cb
-                )
-                st = get_project_state()
-                if st:
+                n = await asyncio.to_thread(generate_tilt_thumbnails, ts_ctf_star, project_path, png_dir, progress_cb)
+                # Resolve by explicit path: this runs in a BackgroundTask with no
+                # client/tab context, where bare get_project_state() returns a blank
+                # throwaway — so the assignment + path-less save silently no-opped and
+                # tilt_filter_png_dir never persisted (same class as the curation W2 bug).
+                if project_path:
+                    st = get_state_service().state_for(project_path)
                     st.tilt_filter_png_dir = str(png_dir)
                     st.mark_dirty()
-                    await get_state_service().save_project()
+                    await get_state_service().save_project(project_path=project_path, force=True)
                 return f"{n} thumbnails generated"
 
             status_lbl.text = "Running — gallery will appear here when complete."

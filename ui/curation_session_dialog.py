@@ -32,8 +32,21 @@ from nicegui import context, ui
 
 logger = logging.getLogger(__name__)
 
-_BOX = "font-mono text-[11px] bg-gray-100 px-2 py-1 rounded flex-grow break-all leading-tight"
-_BLOCK = "font-mono text-[11px] bg-slate-900 text-slate-100 px-2 py-1.5 rounded flex-grow whitespace-pre leading-snug"
+# One copyable-code language across all three sections: a white inset on the light
+# section panels, mono, bordered. `_BOX` is a single inline value (address, tunnel,
+# folder); `_BLOCK` is the multi-line command paste — it WRAPS (whitespace-pre-wrap +
+# break-all) so a long command never spills a horizontal scrollbar off the card.
+_BOX = (
+    "font-mono text-[11px] bg-white border border-slate-200 text-slate-700 "
+    "px-2 py-1 rounded flex-grow min-w-0 break-all leading-tight"
+)
+_BLOCK = (
+    "font-mono text-[11px] bg-white border border-slate-200 text-slate-700 "
+    "px-2 py-1.5 rounded w-full break-all leading-snug whitespace-pre-wrap"
+)
+# Each of the three sections (Connect / Load / Pick & save) is one of these light
+# panels, so they read as parallel cards instead of separator-divided prose.
+_SECTION = "w-full gap-1.5 rounded-lg border border-slate-200 bg-slate-50 p-3"
 
 # Per-client: the currently-open curation panel, so re-opening (e.g. switching to
 # the next tomogram in an 80–100-tomo session) REPLACES it instead of stacking
@@ -120,6 +133,16 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
     def _kw(text: str) -> None:
         ui.label(text).classes("text-[11px] text-gray-500").style("width: 64px; min-width: 64px;")
 
+    def _section_head(icon: str, title: str):
+        """Consistent header for one of the three section panels: muted icon + bold
+        title. Returns the row so the caller can re-enter it (``with hdr:``) to drop
+        a trailing ``ui.space()`` + the section's action buttons on the right."""
+        row = ui.row().classes("w-full items-center gap-2 no-wrap")
+        with row:
+            ui.icon(icon, size="16px").classes("text-slate-400")
+            ui.label(title).classes("text-[12px] font-semibold text-slate-700")
+        return row
+
     def _troubleshooting_md() -> str:
         addr = sv["address"] or "localhost:<port>"
         port = sv["address"].split(":")[-1] if sv["address"] else "<port>"
@@ -147,8 +170,8 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
         with (
             ui.dialog().props("persistent") as dialog,
             ui.card()
-            .classes("w-[44rem] max-w-full")
-            .style("max-height: 88vh; display: flex; flex-direction: column; gap: 6px;"),
+            .classes("w-[56rem] max-w-full")
+            .style("max-height: 90vh; display: flex; flex-direction: column; gap: 6px;"),
         ):
             # ── header: title · tomo · status chip ──
             with ui.row().classes("w-full items-center gap-2 no-wrap"):
@@ -171,7 +194,7 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
             )
             loaded_lbl.set_visibility(False)
 
-            body = ui.column().classes("w-full gap-1").style("overflow-y: auto; flex: 1 1 auto; min-height: 0;")
+            body = ui.column().classes("w-full gap-2").style("overflow-y: auto; flex: 1 1 auto; min-height: 0;")
             with body:
                 # ── action row (Start/Stop swap in place; spinner while starting) ──
                 with ui.row().classes("w-full items-center gap-2"):
@@ -186,105 +209,119 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
                     ui.space()
                     job_lbl = ui.label("").classes("text-[11px] text-gray-500 whitespace-nowrap")
 
-                # ── CONNECT (always one place; values fill in when live) ──
-                ui.label("Connect to the session").classes("text-xs font-semibold text-gray-700 mt-1")
-                with ui.row().classes("items-start gap-2 w-full no-wrap"):
-                    _num("1")
-                    ui.label(
-                        "Get any VNC viewer once — RealVNC / TigerVNC / TurboVNC, or macOS Screen Sharing (no install)."
-                    ).classes("text-[11px] text-gray-600")
-                with ui.row().classes("items-start gap-2 w-full no-wrap"):
-                    _num("2")
-                    with ui.column().classes("gap-0.5 flex-grow min-w-0"):
-                        ui.label(
-                            "SSH tunnel — paste in a Terminal; it backgrounds itself, then you can close the window:"
-                        ).classes("text-[11px] text-gray-600")
-                        with ui.row().classes("items-center gap-1 w-full"):
-                            tunnel_lbl = ui.label("— start the session —").classes(_BOX)
-                            _copy(lambda: sv["tunnel"], "Copy tunnel command")
-                with ui.row().classes("items-start gap-2 w-full no-wrap"):
-                    _num("3")
-                    with ui.column().classes("gap-0.5 flex-grow min-w-0"):
-                        ui.label("Open the viewer at this address, then enter the password:").classes(
-                            "text-[11px] text-gray-600"
-                        )
-                        with ui.row().classes("items-center gap-1 w-full"):
-                            _kw("Address")
-                            addr_lbl = ui.label("—").classes(_BOX)
-                            _copy(lambda: sv["address"], "Copy address")
-                        with ui.row().classes("items-center gap-1 w-full"):
-                            _kw("Password")
-                            pass_lbl = ui.label("—").classes(_BOX)
-                            _copy(lambda: sv["password"], "Copy password")
-
-                ui.separator().classes("my-1")
-
-                # ── LOAD THIS TOMOGRAM (swap the live viewer to this tomo + its picks) ──
-                load_btn = None
-                if commands:
-                    with ui.row().classes("w-full items-center gap-2"):
-                        ui.label("Load this tomogram").classes("text-xs font-semibold text-gray-700")
-                        if auto_count is not None:
-                            ui.label(f"{auto_count} auto picks").classes("text-[10px] text-gray-400")
+                # ── SECTION 1 · CONNECT (always one place; values fill in when live) ──
+                with ui.column().classes(_SECTION):
+                    hdr = _section_head("vpn_key", "Connect to the session")
+                    with hdr:
                         ui.space()
-                        if can_load:
+                        ui.label("one-time setup").classes("text-[10px] text-slate-400")
+                    with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                        _num("1")
+                        ui.label(
+                            "Get any VNC viewer once — RealVNC / TigerVNC / TurboVNC, or macOS Screen Sharing "
+                            "(no install)."
+                        ).classes("text-[11px] text-gray-600")
+                    with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                        _num("2")
+                        with ui.column().classes("gap-0.5 flex-grow min-w-0"):
+                            ui.label(
+                                "SSH tunnel — paste in a Terminal; it backgrounds itself, then you can close "
+                                "the window:"
+                            ).classes("text-[11px] text-gray-600")
+                            with ui.row().classes("items-center gap-1 w-full"):
+                                tunnel_lbl = ui.label("— start the session —").classes(_BOX)
+                                _copy(lambda: sv["tunnel"], "Copy tunnel command")
+                    with ui.row().classes("items-start gap-2 w-full no-wrap"):
+                        _num("3")
+                        with ui.column().classes("gap-0.5 flex-grow min-w-0"):
+                            ui.label("Open the viewer at this address, then enter the password:").classes(
+                                "text-[11px] text-gray-600"
+                            )
+                            with ui.row().classes("items-center gap-1 w-full"):
+                                _kw("Address")
+                                addr_lbl = ui.label("—").classes(_BOX)
+                                _copy(lambda: sv["address"], "Copy address")
+                            with ui.row().classes("items-center gap-1 w-full"):
+                                _kw("Password")
+                                pass_lbl = ui.label("—").classes(_BOX)
+                                _copy(lambda: sv["password"], "Copy password")
+
+                # ── SECTION 2 · LOAD THIS TOMOGRAM (auto-preloaded; commands = fallback) ──
+                load_btn = None
+                with ui.column().classes(_SECTION):
+                    hdr = _section_head("layers", "Load this tomogram")
+                    with hdr:
+                        if auto_count is not None:
+                            ui.label(f"{auto_count} auto picks").classes("text-[10px] text-slate-400")
+                        ui.space()
+                        if commands and can_load:
                             load_btn = ui.button(
                                 "Load into running session",
-                                icon="bolt",
+                                icon="swap_horiz",
                                 color="indigo",
                                 on_click=lambda: _load_into_session(),
                             ).props("dense no-caps size=sm")
                             load_btn.tooltip("Swap the running ArtiaX to this tomogram + picks — no copy-paste")
-                        ui.button(
-                            "Copy commands",
-                            icon="content_copy",
-                            on_click=lambda: ui.run_javascript(_copy_js(cmd_block)),
-                        ).props("flat dense no-caps size=sm color=indigo")
-                    ui.label(
-                        "One click loads it into the live session. Or paste these into the ChimeraX command line:"
-                        if can_load
-                        else "Paste into the ChimeraX command line (bottom of its window):"
-                    ).classes("text-[11px] text-gray-500")
-                    ui.label(cmd_block).classes(_BLOCK)
-                else:
-                    ui.label(
-                        "Open a tomogram from a species gallery's “Curate in ArtiaX” to preload it + its picks here."
-                    ).classes("text-[11px] text-gray-500")
+                        if commands:
+                            ui.button(
+                                "Copy commands",
+                                icon="content_copy",
+                                on_click=lambda: ui.run_javascript(_copy_js(cmd_block)),
+                            ).props("flat dense no-caps size=sm color=indigo")
+                    if commands:
+                        ui.label(
+                            "crboost preloads this tomogram and its picks for you — use Load into running "
+                            "session to swap the live viewer to it. The commands below are a manual fallback "
+                            "you only need if that doesn't work."
+                            if can_load
+                            else "crboost preloads this tomogram and its picks when the session starts. To "
+                            "switch the running viewer by hand, paste these into the ChimeraX command line "
+                            "(bottom of its window):"
+                        ).classes("text-[11px] text-gray-500")
+                        ui.label(cmd_block).classes(_BLOCK)
+                    else:
+                        ui.label(
+                            "Open a tomogram from a species gallery's “Curate in ArtiaX” to preload it + its "
+                            "picks here."
+                        ).classes("text-[11px] text-gray-500")
 
-                ui.separator().classes("my-1")
-
-                # ── PICK & SAVE (the forefront save path: crboost files your lists over
-                # the command channel, so there's no ArtiaX Save dialog to get lost in) ──
-                with ui.row().classes("w-full items-center gap-2"):
-                    ui.label("Pick & save").classes("text-xs font-semibold text-gray-700")
-                    ui.space()
-                    save_btn = ui.button(
-                        "Save picks now", icon="save", color="green", on_click=lambda: _save_picks_now()
-                    ).props("dense no-caps size=sm")
-                    save_btn.tooltip(
-                        "Save the pick lists you made in ArtiaX into the loaded tomogram's folder — no Save dialog"
-                    )
-                ui.label(
-                    "In ArtiaX, make a NEW particle list and pick into it (don't add to the auto list). Then click "
-                    "Save picks now — crboost files it under the loaded tomogram and imports it for you."
-                ).classes("text-[11px] text-gray-500")
-
-                with ui.expansion("Prefer to save by hand in ArtiaX?", icon="folder_open").classes("w-full text-xs"):
-                    with ui.row().classes("items-center gap-1 w-full"):
-                        _kw("Folder")
-                        save_dir_lbl = ui.label(_initial_save_dir or "— load a tomogram —").classes(_BOX)
-                        _copy(
-                            lambda: save_dir_lbl.text if (save_dir_lbl.text or "").startswith("/") else "",
-                            "Copy folder path",
+                # ── SECTION 3 · PICK & SAVE (crboost files your lists for you) ──
+                with ui.column().classes(_SECTION):
+                    hdr = _section_head("save", "Pick & save")
+                    with hdr:
+                        ui.space()
+                        save_btn = ui.button(
+                            "Save picks now", icon="save", color="green", on_click=lambda: _save_picks_now()
+                        ).props("dense no-caps size=sm")
+                        save_btn.tooltip(
+                            "Save the pick lists you made in ArtiaX into the loaded tomogram's folder — no Save dialog"
                         )
-                    ui.markdown(
-                        "- **Format:** *ArtiaX coordinates* (`.coords`) — **not** RELION star (its writer is buggy).\n"
-                        "- **Name:** anything (e.g. `picks.coords`), **except** `auto.coords` / `*_ref.coords` "
-                        "(crboost's own exports).\n"
-                        "- The Save dialog already opens in this folder. crboost auto-imports the **newest** "
-                        "`.coords` here within a few seconds."
+                    ui.label(
+                        "Make a NEW particle list in ArtiaX and pick into it (don't add to the auto list). "
+                        "crboost saves your picks for you — click Save picks now, and it also offers to save "
+                        "automatically when you switch tomograms. The steps below are only if you'd rather "
+                        "save by hand."
                     ).classes("text-[11px] text-gray-500")
+                    with ui.expansion("Prefer to save by hand in ArtiaX?", icon="folder_open").classes(
+                        "w-full text-xs"
+                    ):
+                        with ui.row().classes("items-center gap-1 w-full"):
+                            _kw("Folder")
+                            save_dir_lbl = ui.label(_initial_save_dir or "— load a tomogram —").classes(_BOX)
+                            _copy(
+                                lambda: save_dir_lbl.text if (save_dir_lbl.text or "").startswith("/") else "",
+                                "Copy folder path",
+                            )
+                        ui.markdown(
+                            "- **Format:** *ArtiaX coordinates* (`.coords`) — **not** RELION star "
+                            "(its writer is buggy).\n"
+                            "- **Name:** anything (e.g. `picks.coords`), **except** `auto.coords` / `*_ref.coords` "
+                            "(crboost's own exports).\n"
+                            "- The Save dialog already opens in this folder. crboost auto-imports the **newest** "
+                            "`.coords` here within a few seconds."
+                        ).classes("text-[11px] text-gray-500")
 
+                # ── Troubleshooting (collapsed) ──
                 with ui.expansion("Troubleshooting", icon="help_outline").classes("w-full text-xs"):
                     ts_md = ui.markdown("").classes("text-[11px]")
 

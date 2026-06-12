@@ -641,17 +641,33 @@ class CryoBoostBackend:
         log = data.get("log messages") or {}
         log_err = log.get("error") if isinstance(log, dict) else None
         log_err_txt = (log_err[0] if isinstance(log_err, (list, tuple)) else str(log_err)) if log_err else None
-        # A multi-command swap (`close session ; artiax start ; artiax open tomo … ; open …`)
-        # routinely logs benign error-LEVEL lines even when every command ran — ArtiaX
-        # re-inits after `close session`, and the user confirmed the tomo+picks always load
-        # while this fired. So the authoritative hard-failure signal is ChimeraX's TOP-LEVEL
-        # `error` field (a raised exception / unparsable command), NOT the noisy per-message
-        # error channel. Keep the log error in the result + log the raw envelope so a genuine
-        # failure stays traceable; only flip success on a real top-level error.
-        ok = not cx_err
-        if cx_err or log_err_txt:
-            logger.info("ChimeraX REST error indicators (success=%s): %s", ok, raw[:1500])
-        return {"success": ok, "error": cx_err or None, "log_error": log_err_txt, "raw": raw, "data": data}
+        # ChimeraX's REST `error` is {"type","message"} (sometimes a bare string), and it carries
+        # BOTH real failures and benign internal noise. Distinguish them: a real command failure is
+        # a UserError (bad args / missing file — we MUST surface it); an internal trigger bug is some
+        # other exception type. Concretely, ArtiaX/ChimeraX's command-history save() raises
+        # AttributeError ("'ParticleList' object has no attribute 'string'") on EVERY command once a
+        # particle list is open — the command still ran and the tomo/picks loaded, so it must not
+        # fail the call (it was toasting "Load failed" on every successful swap). Heuristic: fail
+        # only on a UserError dict or a clean non-traceback string; log everything else as noise.
+        real_err = None
+        benign_err = None
+        if isinstance(cx_err, dict):
+            etype, emsg = cx_err.get("type"), (cx_err.get("message") or "")
+            if etype and etype != "UserError":
+                benign_err = f"{etype}: {emsg}".strip(": ")
+            elif emsg:
+                real_err = emsg
+        elif isinstance(cx_err, str) and cx_err:
+            if "Traceback (most recent call last)" in cx_err:
+                benign_err = cx_err
+            else:
+                real_err = cx_err
+        ok = not real_err
+        if real_err:
+            logger.info("ChimeraX REST command error: %s — raw: %s", real_err, raw[:1500])
+        elif benign_err or log_err_txt:
+            logger.debug("ChimeraX REST benign diagnostics: %s", raw[:1500])
+        return {"success": ok, "error": real_err, "log_error": log_err_txt or benign_err, "raw": raw, "data": data}
 
     async def save_session_particle_lists(self, session_info: Dict[str, Any], dest_dir: Path) -> Dict[str, Any]:
         """Best-effort save of every ArtiaX ParticleList currently open in the live

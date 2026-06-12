@@ -326,35 +326,73 @@ _CB_CSS = """
 }
 .cb-list-rail-host { width: 100%; }
 .cb-list-detail-host { width: 100%; min-width: 0; }
-/* The rail is a contained subpanel header above the gallery: a title on the left,
- * the compact list pills wrapping in a flex:1 middle zone, and the curation icon
- * buttons pinned to the far right (the top-level row never wraps, so the buttons
- * stay on the title line instead of dropping below the pills). */
-.cb-list-rail {
-    display: flex; flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 8px;
-    padding: 4px 8px; background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px;
+/* The pick-list workbench header sits ABOVE the selected list's gallery: a
+ * compact aligned TABLE of lists (one row each) on the left + a vertical action
+ * toolbox on the right. The table replaces the old free-floating pills, which
+ * wrapped to ragged, inconsistent widths; every row shares one grid template so
+ * the swatch / name / count / extract mark / eye line up into columns. */
+.cb-list-top { display: flex; flex-direction: row; align-items: stretch; gap: 8px; width: 100%; }
+.cb-ltable {
+    flex: 1 1 auto; min-width: 0;
+    display: flex; flex-direction: column; gap: 1px;
+    background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px; padding: 3px;
 }
-.cb-rail-title {
-    font-size: 9px; text-transform: uppercase; font-weight: 700; color: #94a3b8;
-    letter-spacing: 0.04em; align-self: center; flex: 0 0 auto;
+.cb-ltable-row {
+    display: grid;
+    grid-template-columns: 16px 14px minmax(0, 1fr) 48px 30px 26px 22px 20px;
+    align-items: center; gap: 8px;
+    padding: 3px 7px; border-radius: 5px; cursor: pointer;
+    border: 1px solid transparent; transition: background 0.12s, border-color 0.12s;
 }
-.cb-rail-pills {
-    display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0;
+.cb-ltable-row:hover { background: #ffffff; border-color: #e3e8f0; }
+.cb-ltable-row.selected { background: #eef2ff; border-color: #c7d2fe; box-shadow: inset 2px 0 0 #6366f1; }
+/* Header row: muted column labels, non-interactive, a hairline under it. */
+.cb-ltable-head { cursor: default; box-shadow: inset 0 -1px 0 #eef1f6; }
+.cb-ltable-head:hover { background: transparent; border-color: transparent; }
+.cb-ltable-h-name, .cb-ltable-h-num, .cb-ltable-h-cell {
+    font-size: 8px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.04em; color: #b6c0cf;
 }
-.cb-list-chip {
-    border: 1px solid #e5e7eb; border-radius: 6px; padding: 2px 7px; cursor: pointer; background: #fff;
-    display: flex; flex-direction: row; align-items: center; gap: 5px; transition: border-color 0.12s, background 0.12s;
-    flex: 0 0 auto; min-width: 0;
+.cb-ltable-h-num { justify-self: end; }
+.cb-ltable-h-cell { text-align: center; }
+.cb-ltable-cell { display: flex; align-items: center; justify-content: center; min-width: 0; }
+.cb-ltable-swatch {
+    width: 11px; height: 11px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+    justify-self: center; flex: 0 0 auto;
 }
-.cb-list-chip:hover { border-color: #c7d2fe; background: #fafbff; }
-.cb-list-chip.selected { border-color: #6366f1; background: #eef2ff; box-shadow: inset 2px 0 0 #6366f1; }
-.cb-list-chip-swatch { width: 9px; height: 9px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25); flex: 0 0 auto; }
-.cb-list-chip-label {
+.cb-ltable-name {
     font-size: 11px; font-weight: 600; color: #475569;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.cb-list-chip-count { font-size: 11px; font-family: ui-monospace, monospace; color: #334155; }
-.cb-list-chip-badge { font-size: 9px; font-weight: 600; }
+.cb-ltable-count {
+    font-size: 11px; font-family: ui-monospace, monospace; color: #334155; justify-self: end;
+}
+.cb-ltable-badge { font-size: 12px; font-weight: 700; cursor: help; line-height: 1; }
+/* Authoritative-list radio (one per species,tomo): indigo when set, slate when not. */
+.cb-auth { cursor: pointer; transition: color 0.12s; }
+.cb-auth-on { color: #6366f1; }
+.cb-auth-off { color: #cbd5e1; }
+.cb-auth-off:hover { color: #94a3b8; }
+/* Vertical action toolbox beside the table — the per-(species,tomo) curation
+ * actions (Curate in ArtiaX / Load into session / Import), pulled OUT of the row
+ * so the list table stays clean and the actions read as one toolbox. */
+.cb-list-toolbox {
+    flex: 0 0 auto;
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 3px; background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px;
+}
+/* 'Curate in ArtiaX' button state: muted gray when no ChimeraX session is running,
+ * a soft green pill when one is live (so the toolbox signals session state at a glance). */
+.cb-curate-off { color: #94a3b8 !important; }
+.cb-curate-off:hover { color: #6366f1 !important; }
+.cb-curate-live { color: #15803d !important; background: #dcfce7 !important; }
+.cb-curate-live:hover { background: #bbf7d0 !important; }
+/* Inline merge bar (shown when 2+ rows are ticked): a contained indigo strip below
+ * the table, matching the table/toolbox chrome. display:flex/none is toggled inline
+ * by _update_merge_bar; width/chrome live here so they survive that style rewrite. */
+.cb-merge-bar {
+    width: 100%; padding: 5px 8px;
+    background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 8px;
+}
 .cb-badge-ok { color: #059669; }
 .cb-badge-todo { color: #94a3b8; }
 .cb-badge-stale { color: #d97706; }
@@ -374,10 +412,6 @@ _CB_CSS = """
 .cb-eye { color: #94a3b8; cursor: pointer; flex: 0 0 auto; transition: color 0.12s; }
 .cb-eye:hover { color: #4338ca; }
 .cb-tab-eye { margin-left: 4px; align-self: center; }
-.cb-rail-toolbar {
-    display: flex; flex-direction: row; flex-wrap: wrap; gap: 4px;
-    margin-left: auto; align-items: center;
-}
 /* Per-species tabs beside the canvas. Matched to the journey aesthetic:
  * small, slate, no-caps, thin indigo indicator, and a per-species color
  * swatch tying each tab to its overlay color on the shared canvas. */
@@ -659,24 +693,27 @@ _CB_CSS = """
 .cb-pick-ghost {
     pointer-events: auto !important;
     cursor: pointer;
-    width: 3px !important; height: 3px !important;
+    width: 4px !important; height: 4px !important;
     background: var(--sp-color, #00e5ff) !important;
     /* Crisp dual ring: solid dark inner + bright white outer. At this tiny
      * size the high-contrast double ring is what makes the dot legible on
      * any tomogram backdrop — not the dot area itself. */
     box-shadow: 0 0 0 1px rgba(0,0,0,1), 0 0 0 2px rgba(255,255,255,0.9) !important;
-    transition: box-shadow 0.08s ease;
+    transition: box-shadow 0.1s ease, width 0.1s ease, height 0.1s ease, filter 0.1s ease;
 }
-/* Invisible hit-area so the 3px dot is easy to hover AND click (click toggles
+/* Invisible hit-area so the tiny dot is easy to hover AND click (click toggles
  * keep/drop). Inherits pointer-events:auto from the dot. */
-.cb-pick-ghost::after { content: ''; position: absolute; inset: -4px; }
-/* Active / hover: NO size change — just a subtle colored backlight glow so the
- * matching pick reads at a glance without ballooning over its neighbours. */
+.cb-pick-ghost::after { content: ''; position: absolute; inset: -5px; }
+/* Active / hover: GROW + a bright colored backlight glow so the brushed pick
+ * reads at a glance on a busy slab (the prior subtle glow was near-invisible,
+ * especially for the clip-path triangle whose box-shadow is clipped away —
+ * handled separately below via drop-shadow). */
 .cb-pick-ghost:hover,
 .cb-pick-ghost.cb-ghost-active {
+    width: 8px !important; height: 8px !important;
     box-shadow: 0 0 0 1px rgba(0,0,0,1), 0 0 0 2px rgba(255,255,255,1),
-                0 0 6px 1.5px var(--sp-color, #00e5ff) !important;
-    z-index: 7;
+                0 0 11px 4px var(--sp-color, #00e5ff) !important;
+    z-index: 8;
 }
 /* Dropped/excluded pick: grey the dot so the slab agrees with the gallery
  * (filtered cutouts → greyed dots). Overrides the species color + glow. */
@@ -692,7 +729,26 @@ _CB_CSS = """
 .cb-shape-circle .cb-pick-ghost { border-radius: 50%; }
 .cb-shape-square .cb-pick-ghost { border-radius: 0; }
 .cb-shape-diamond .cb-pick-ghost { border-radius: 0; transform: translate(-50%, -50%) rotate(45deg); }
-.cb-shape-triangle .cb-pick-ghost { border-radius: 0; clip-path: polygon(50% 0, 0 100%, 100% 100%); }
+/* Triangle (merged lists): clip-path CLIPS box-shadow, so the dual ring above
+ * is invisible — the dot was a 4px bare fill nobody could see. Give it more area
+ * AND swap the ring for a drop-shadow outline (filter follows the clipped shape),
+ * so a merged pick reads on the slab. */
+.cb-shape-triangle .cb-pick-ghost {
+    border-radius: 0; clip-path: polygon(50% 0, 0 100%, 100% 100%);
+    width: 9px !important; height: 9px !important;
+    box-shadow: none !important;
+    filter: drop-shadow(0 0 0.5px rgba(0,0,0,0.95)) drop-shadow(0 0 1.2px rgba(255,255,255,0.9));
+}
+/* Triangle brush/hover: grow + an orange drop-shadow halo (box-shadow is clipped,
+ * so the generic glow above can't reach it). */
+.cb-shape-triangle .cb-pick-ghost:hover,
+.cb-shape-triangle .cb-pick-ghost.cb-ghost-active {
+    width: 14px !important; height: 14px !important;
+    box-shadow: none !important;
+    filter: drop-shadow(0 0 1.5px rgba(255,255,255,1))
+            drop-shadow(0 0 5px var(--sp-color, #ff6d00))
+            drop-shadow(0 0 9px var(--sp-color, #ff6d00));
+}
 
 /* ----------------------------------------------------------------------
  * Filter UX: per-tile keep/drop state. Default is keep (no extra class);
