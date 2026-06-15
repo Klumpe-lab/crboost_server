@@ -9,6 +9,70 @@ pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the cont
 
 ## NEXT SESSION — start here (prioritized)
 
+**▶ S18 RUNTIME (2026-06-12) — Slice C extraction CONFIRMED WORKING; stale-badge bug ROOT-CAUSED + FIXED; new aggregation doc.**
+User ran Extract on a manual list (`agg_20260311_412_Grid3` / Position_13 / `manual`): the SLURM job ran in ~6s (just missed in a single
+`squeue` — it was NOT "no job"), correctly extracted the 4 KEPT picks → `manual/out/{optimisation_set.star,particles.star,Subtomograms/}`
++ `result.json{ok,count:4}`. But the badge read ⚠ STALE. ROOT CAUSE = the `filtered_count`-cache hazard (pre-runtime watch-item #2): the
+persisted PickList had `count=7, filtered_count=None, extracted_count=4` → `extraction_state()` compared 4 against the fallback `count=7` →
+false STALE. FIX (code-clean, PENDING RESTART): `_collect_pick_lists_for_species` now syncs `pl.filtered_count` from disk truth
+(`_memoized_keep_state`) + `mark_dirty()` so the badge reads ✓ (tomo_dashboard_dialog.py:2744-2756). **New reference+design doc:
+`services/visualization/LIST_EXTRACTION_AND_AGGREGATION.md`** (workflow-mapped, citations verified) — how list extraction/merge/forwarding
+work today + a staged design for SEAMLESS cross-tomo/cross-project aggregation of AUTHORITATIVE lists → one species-level
+`optimisation_set` → Class3D, with an extraction GATE (auto-extract or one explicit list; never silently ship un-extracted/stale picks).
+That doc supersedes priority #2 below (downstream forwarding) with a fuller plan; build order in its §8.9 (smallest first = move the
+`filtered_count` sync off the render path so headless `extraction_state()` is correct).
+
+**▶ S18 PRE-RUNTIME REVIEW DONE (2026-06-12, code-clean, PENDING RUNTIME — restart `python main.py` first).** A 5-lens
+adversarial workflow review of the whole Slice C path found ONE silent-correctness bug + 3 should-fixes. 3 surgical fixes
+APPLIED (py_compile + ruff check + ruff format clean on backend.py + ui/tomo_dashboard_dialog.py; project_state.py edit added
+0 new lint to its pre-existing 17-F401 debt, formatter left it alone):
+  - **[MUST · fixed]** Re-extract reused STALE subtomograms. `backend.extract_pick_list` cleared only the exit markers, not
+    `out_dir/out/`, so the driver's idempotency skip (`out/particles.star` + `out/Subtomograms/`) skipped `relion_tomo_subtomo`
+    on Re-extract → the OLD uncurated particles were kept while the NEW (curated) count was recorded and the badge flipped ✓
+    (silent wrong results downstream). Fix: `import shutil` + `shutil.rmtree(out_dir/"out", ignore_errors=True)` right after the
+    marker-unlink loop in `backend.py`. Driver skip kept (still guards a SLURM requeue, which bypasses the backend).
+  - **[should · fixed]** Same-count re-curation never read STALE. `PickList.extraction_state()` stat'd the BASE star, but
+    extraction consumes `<stem>_filtered.star`; a drop-A/keep-B swap (same kept count) bumps only the filtered star → false-fresh
+    ✓. Fix: stat the consumed `_filtered.star` when present (`services/project_state.py`, inlined — NO `picks_filter` import so
+    project_state stays pandas-free).
+  - **[should · fixed]** Driver's diagnosed `result.json{error}` was dropped (poller checked the FAILURE marker before reading
+    result.json) → generic "see run.err". Fix: `_poll` reads result.json on FAILURE + the handler surfaces `error`
+    (`ui/tomo_dashboard_dialog.py`).
+  - **[should · DEFERRED, report-only — needs design]** The 60-min watcher orphans a successful-but-queued extraction on the
+    contended gpu partition (badge stuck ○ forever; `mark_extracted` never called). Right fix = reconcile from `result.json` on
+    render (off-loop), NOT a longer loop. Plus 5 runtime watch-items: stale `pl.filtered_count` cache (cross-session filter →
+    could read STALE), raw `slurm_defaults` vs the subtomo profile/walltime, `subtomo_jm=None` geometry fallback, OSError→EXTRACTED.
+  - **REFUTED (no edit):** happy-path count gate (workbench list stars are single-tomo → driver `n` == kept count, ○→✓ flips),
+    input/output optset confusion (extracted_path is the OUTPUT optset, .exists() check is correct).
+Everything above is STILL PENDING RUNTIME — the 3 applied fixes make priority-1's runtime test below VALID (especially the
+Re-extract gate). Full report detail: this session's findings.
+
+**▶▶▶ SESSION 18 — START HERE (handoff after S17, 2026-06-12). Status: P1–P7 USER-CONFIRMED at runtime ("yeah shit works").
+Slice C per-list extraction CORE is built + code-clean but PENDING RUNTIME (no auto-reload → restart `python main.py` first).
+Priorities, in order:**
+
+1. **RUNTIME-VERIFY Slice C extraction (do this first — it's the only untested new path).** Restart, open a tomo's Particles
+   panel, select a MANUAL list → its detail pane shows the **Extraction** bar → click **Extract**. Expected: a SLURM job
+   appears in the task tray ("extracting subtomograms…"), then the badge flips ○→✓ and
+   `Curation/<sp>/<tomo>/<slug>/out/{particles.star,Subtomograms/,optimisation_set.star}` + `result.json` exist. If it
+   FAILS, the de-risk path is to run the driver standalone on a compute node FIRST:
+   `python -m drivers.extract_pick_list --candidate-optset <species jobdir>/optimisation_set.star --list-star
+   Curation/<sp>/<tomo>/manual_filtered.star --tomo <TS> --out-dir /tmp/extrtest --project-root <project> --box 384
+   --binning 1 --crop 224 --stack2d --float16` and read `run.err` / `result.json`. LIKELY TUNING POINTS: SLURM resources
+   are `state.slurm_defaults` (gpu partition — over-provisioned for one tomo, may queue long → consider a lighter config);
+   the container binds (`drivers/extract_pick_list._run`: project_root + out_dir + tomograms-parent + candidate-optset-parent);
+   box/bin pulled from `sp["subtomo_jm"]`. Full detail: the "SLICE C — CORE LANDED" block below.
+2. **Slice C downstream FORWARDING (the deferred capstone — the real remaining feature).** The extracted optset is on disk
+   + recorded (`PickList.extracted_path`) but nothing forwards it to refinement yet. Mechanism EXISTS: the subtomo job's
+   `output_optimisation_filtered` slot has `prefer_if_exists=True`, so the resolver already prefers
+   `<subtomo_job>/optimisation_set_filtered.star`. REMAINING = PRODUCE that species-level file by MERGING the
+   per-(species,tomo) AUTHORITATIVE lists' extractions (`ProjectState.get_authoritative_slug` + `drivers/subtomo_merge`).
+   It's per-tomo→per-species (auto extraction is one optset over all tomos; authoritative choice is per-tomo) and changes
+   what Class3D/Refine3D/ReconstructParticle consume → HIGH blast radius. Design + runtime-iterate; do NOT wire blind.
+3. **Broad P7 styling audit** — co-owned with the user; the NAMED targets (curation dialog, buttons) + the list-detail
+   chrome are done. The whole-panel font/button/color pass is runtime-iterative.
+4. **W1 (small loose end)** — open an existing manual list back in ArtiaX for editing + re-ingest under the same slug.
+
 **▶▶▶ SESSION 16 — P1–P6 LANDED 2026-06-11 (all code-clean: py_compile + `ruff check` + `ruff format` clean on the two
 touched files `ui/tomo_dashboard_dialog.py` + `ui/dashboard/css.py`; PENDING RUNTIME — restart `python main.py` + hard-reload).
 P7 (styling) DEFERRED to the user. Files touched: `ui/tomo_dashboard_dialog.py`, `ui/dashboard/css.py`. The original spec
@@ -109,7 +173,33 @@ bullets are kept below; each is annotated [LANDED] with what was actually done +
 - **P7 — UI / styling polish (Slice B item 8 — the user will also do this).** Standardize fonts/buttons/colors across the
   Particles panel to the journey aesthetic; the workbench table/toolbox/merge-bar are unified (S15) but the broader audit is open.
 
-**Slice C (per-list EXTRACTION) is DEFERRED behind P1–P7 per the user.** Its pointer is kept below.
+**▶▶▶ SLICE C — CORE LANDED (S17, 2026-06-12; code-clean, PENDING RUNTIME). The runnable per-list extraction +
+status UI is built; the downstream RESOLVER-FORWARDING merge is the one deferred capstone.** Files:
+`services/visualization/list_extraction.py`, `drivers/extract_pick_list.py` (NEW), `backend.py`,
+`services/project_state.py`, `ui/tomo_dashboard_dialog.py`, `ui/dashboard/css.py`.
+- **What runs now:** select a workbench list → its detail pane shows an **Extraction** bar (derived badge ○/✓/⚠ +
+  Extract/Re-extract). Clicking submits a one-off SLURM job: `backend.extract_pick_list` builds the per-list optset
+  (`list_extraction.build_list_optset`, prefers `<slug>_filtered.star` = the KEPT subset), bakes a container-wrapped
+  `relion_tomo_subtomo` into `config/qsub.sh` (exact `submit_tilt_filter_dl` pattern, resources = `state.slurm_defaults`),
+  and `drivers/extract_pick_list.py` runs it → `Curation/<sp>/<tomo>/<slug>/out/{particles.star,Subtomograms,optimisation_set.star}`
+  + `result.json`. A BackgroundTask watches the out dir (`RELION_JOB_EXIT_*` + `result.json`) and calls
+  `PickList.mark_extracted(optset, count)` (explicit `project_path`, W2 lesson). Box/bin/crop come from the species'
+  subtomo job (`sp["subtomo_jm"]`) so a list extracts compatibly with the auto set.
+- **Staleness fix:** `PickList.extraction_state()` now compares `extracted_count` against `filtered_count` (the kept
+  count) when a filter is committed, else `count` — so extracting 4-of-7 reads EXTRACTED, not instantly STALE.
+- **DEFERRED capstone — downstream forwarding.** The extracted optset is on disk + recorded, but nothing forwards it to
+  refinement yet. The mechanism EXISTS (the subtomo job's `output_optimisation_filtered` slot has `prefer_if_exists=True`
+  → the resolver already prefers `<subtomo_job>/optimisation_set_filtered.star`). The remaining work = build that
+  species-level `optimisation_set_filtered.star` by MERGING the per-(species,tomo) AUTHORITATIVE lists' extractions
+  (`get_authoritative_slug` + `drivers/subtomo_merge`) — per-tomo→per-species, high blast radius, needs runtime
+  iteration. NOT wired blind. RUNTIME GATE: select a manual list → Extract → tray shows the SLURM job → on success the
+  badge flips ✓ and `out/optimisation_set.star` exists; re-drop a pick → badge → ⚠ stale.
+
+**P7 (styling) — list-detail chrome unified (S17):** ad-hoc inline `font-size/color` in `_render_list_header` +
+`_render_list_cutouts_status` replaced by a shared `.cb-detail-meta` class; the new Extraction bar uses the same
+slate/indigo language. Broad panel-wide audit still co-owned with the user (runtime-iterative).
+
+**Slice C resolver-forwarding + the broad P7 audit are the remaining deferred items.** Pointer kept below.
 
 **SESSION 15 (2026-06-11) — pick-list panel UI rework (user peeves; compile/ruff/format clean, PENDING RUNTIME —
 no auto-reload, restart `python main.py` + hard-reload). Files: `ui/tomo_dashboard_dialog.py` + `ui/dashboard/css.py`.**
@@ -177,7 +267,10 @@ unselected particles"; compile/ruff/format clean, PENDING RUNTIME). File: `ui/to
    (5-vox slab) that differ by design. Comparable subtomo cutouts only exist once the list is extracted (Slice C). Tuning
    levers if wanted: tighten `_list_cutout_box_px` toward the subtomo box; thicken `slab_px`. NOT changed (user asked a Q).
 
-**▶▶▶ NEXT SESSION START HERE — per-list EXTRACTION (Slice C).** The curation workbench loop is now COMPLETE
+**▶▶▶ [SUPERSEDED by the SLICE C — CORE LANDED block above (S17 built the Extract action + driver + backend). Kept for the
+original scoping rationale; the per-list extraction "Extract action" described here is now BUILT — what remains is the
+downstream-forwarding merge, see SESSION 18 priority #2.] NEXT SESSION START HERE — per-list EXTRACTION (Slice C).** The
+curation workbench loop is now COMPLETE
 (import → keep/discard + brushing → named merge → dedup), but nothing it produces reaches the pipeline yet. The next
 build wires an **"Extract" action per list**: subtomo-extract a chosen list's picks (consume its `<slug>_filtered.star`
 when present, else the full list star) → `mark_extracted()` → that list's `extracted_path` becomes the canonical optset

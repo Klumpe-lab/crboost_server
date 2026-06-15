@@ -90,6 +90,18 @@ def _write_optimisation_set(path: Path, *, particles_star: Path, tomograms_star:
     )
 
 
+def write_extracted_optset(out_run_dir: Path, tomograms_star: Path) -> Path:
+    """Write the ``optimisation_set.star`` that points at a COMPLETED extraction's
+    ``particles.star`` (in ``out_run_dir``, produced by relion_tomo_subtomo) + the
+    shared ``tomograms.star``. This is the per-list extraction's canonical output —
+    recorded as ``PickList.extracted_path`` and (later) forwarded downstream. Returns
+    the optset path. Mirrors ``_write_optimisation_set`` (key-value, absolute paths)."""
+    out_run_dir = Path(out_run_dir)
+    optset = out_run_dir / "optimisation_set.star"
+    _write_optimisation_set(optset, particles_star=out_run_dir / "particles.star", tomograms_star=Path(tomograms_star))
+    return optset
+
+
 def _find_particles_block(star_dict: dict) -> Optional[str]:
     """Key of the block carrying per-particle rows (``rlnTomoName`` + a centered
     coord), preferring one that also has coords; never the data_optics block

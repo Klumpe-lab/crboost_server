@@ -1967,7 +1967,7 @@ def _render_list_header(lst: dict, sp: dict, project_path: Path) -> None:
     ui.label(lst["label"]).classes("cb-section-title")
     parents = lst.get("parent_slugs") or []
     if parents:
-        ui.label("⋃ " + ", ".join(parents)).style("font-size: 9px; color: #94a3b8;").tooltip(
+        ui.label("⋃ " + ", ".join(parents)).classes("cb-detail-meta").tooltip(
             "Merged from these lists (row order = type priority: manual/imported before auto)"
         )
 
@@ -1977,7 +1977,7 @@ def _render_list_cutouts_status(lst: dict, sp: dict, project_path: Path, *, buil
     build produced nothing (picks outside the recon / recon unreadable)."""
     with ui.element("div").classes("w-full").style("margin-top: 10px;"), ui.row().classes("items-center gap-2"):
         _render_list_header(lst, sp, project_path)
-        ui.label(f"· {len(lst.get('picks', []))} picks").style("font-size: 10px; color: #94a3b8;")
+        ui.label(f"· {len(lst.get('picks', []))} picks").classes("cb-detail-meta")
         if building:
             ui.spinner(size="16px", color="indigo-500")
             ui.label("rendering cutouts from the recon…").style("font-size: 10px; color: #94a3b8;")
@@ -2277,6 +2277,130 @@ def _render_list_cutout_sheet(
     _install_hover_bridge()
 
 
+def _render_list_extraction_bar(sp: dict, lst: dict, project_path: Path, refresh) -> None:
+    """Slice C: per-list extraction status + action. Shows the DERIVED extraction badge
+    (○ not extracted / ✓ extracted / ⚠ stale, from ``PickList.extraction_state()``) and
+    an Extract / Re-extract button that subtomo-extracts THIS list (its ``_filtered``
+    subset when present) into ``Curation/<species>/<tomo>/<slug>/``."""
+    species_id = sp.get("species_id") or ""
+    tomo_name = sp["row"]["tomo_name"]
+    pl = get_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
+    est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
+    text, cls = _EXTRACTION_BADGE.get(est, ("", ""))
+    with ui.row().classes("items-center gap-2 w-full").style("margin: 0 0 8px; padding-bottom: 6px;"):
+        ui.icon("dataset", size="15px").classes("text-slate-400")
+        ui.label("Extraction").classes("text-[11px] font-semibold text-slate-600")
+        if text:
+            ui.label(text).classes(cls).style("font-size: 11px; font-weight: 700;")
+        ui.space()
+        label = "Extract" if est == ListExtractionState.NOT_EXTRACTED else "Re-extract"
+        btn = ui.button(label, icon="science", on_click=lambda: _handle_extract_list(sp, lst, project_path, refresh))
+        btn.props("dense no-caps size=sm unelevated color=indigo")
+        btn.tooltip("Subtomo-extract this list's kept picks for downstream refinement (one SLURM job)")
+
+
+async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh) -> None:
+    """Submit + track a per-list subtomo extraction (Slice C). Resolves the species'
+    candidate optset + this list's curated star + the species subtomo params, fires
+    ``backend.extract_pick_list``, watches the out dir for completion (the qsub wrapper's
+    ``RELION_JOB_EXIT_*`` markers + the driver's ``result.json``), and records
+    ``PickList.mark_extracted`` on success. SingleFlight-guarded; the watch runs in a
+    BackgroundTask (no client context → persist by explicit ``project_path``, the W2 lesson)."""
+    from backend import get_backend
+    from services.visualization import picks_filter
+
+    slug = lst["slug"]
+    species_id = sp.get("species_id") or ""
+    tomo_name = sp["row"]["tomo_name"]
+    async with _curation_flight(f"extract:{species_id}:{tomo_name}:{slug}") as acquired:
+        if not acquired:
+            return
+        backend = get_backend()
+        if backend is None:
+            ui.notify("Backend unavailable.", type="negative")
+            return
+        star = lst.get("path")
+        if not star:
+            ui.notify(f"'{lst.get('label')}' has no backing star to extract.", type="warning")
+            return
+        # Prefer the curated subset so extraction consumes the KEPT picks, not all of them.
+        filtered = picks_filter.filtered_list_path(Path(star))
+        list_star = str(filtered) if filtered.exists() else str(star)
+        candidate_optset = Path(sp["job_dir"]) / "optimisation_set.star"
+        if not candidate_optset.exists():
+            ui.notify(
+                "Species candidate optimisation_set.star not found — cannot extract.", type="negative", timeout=5000
+            )
+            return
+        jm = sp.get("subtomo_jm")
+        params = dict(
+            box_size=int(getattr(jm, "box_size", 384) or 384),
+            binning=float(getattr(jm, "binning", 1.0) or 1.0),
+            crop_size=int(getattr(jm, "crop_size", 224) or 224),
+            max_dose=float(getattr(jm, "max_dose", -1.0)),
+            min_frames=int(getattr(jm, "min_frames", 1) or 1),
+            do_stack2d=bool(getattr(jm, "do_stack2d", True)),
+            do_float16=bool(getattr(jm, "do_float16", True)),
+        )
+
+        async def _run(progress_cb):
+            progress_cb(0, 0, "submitting extraction…")
+            res = await backend.extract_pick_list(
+                project_path, candidate_optset, Path(list_star), tomo_name, species_id, slug, **params
+            )
+            if not res.get("success"):
+                return res
+            out_dir = Path(res["out_dir"])
+
+            def _poll() -> tuple:
+                import json as _json
+
+                rj = out_dir / "result.json"
+                if (out_dir / "RELION_JOB_EXIT_FAILURE").exists():
+                    try:
+                        return ("failed", _json.loads(rj.read_text()) if rj.exists() else {})
+                    except Exception:
+                        return ("failed", {})
+                if (out_dir / "RELION_JOB_EXIT_SUCCESS").exists() or rj.exists():
+                    try:
+                        return ("done", _json.loads(rj.read_text()) if rj.exists() else {})
+                    except Exception:
+                        return ("done", {})
+                return ("running", {})
+
+            data: dict = {}
+            for _ in range(360):  # ~60 min at a 10 s cadence
+                status, d = await asyncio.to_thread(_poll)
+                if status == "failed":
+                    err = d.get("error") or "extraction job failed — see run.err in the list's out dir"
+                    return {"success": False, "error": err}
+                if status == "done":
+                    data = d
+                    break
+                progress_cb(0, 0, "extracting subtomograms…")
+                await asyncio.sleep(10)
+            else:
+                return {"success": False, "error": "extraction still running — check the SLURM job / tray"}
+            if not data.get("ok"):
+                return {"success": False, "error": data.get("error") or "extraction produced no usable result"}
+            st = get_state_service().state_for(project_path)
+            pl = st.get_pick_list(slug, species_id, tomo_name)
+            if pl is not None:
+                pl.mark_extracted(data["optimisation_set"], int(data.get("count", 0)))
+                await get_state_service().save_project(project_path=project_path, force=True)
+            return {"success": True, "count": int(data.get("count", 0))}
+
+        from ui.background_task import BackgroundTask
+
+        BackgroundTask(
+            title=f"Extract · {lst.get('label') or slug}",
+            subtitle=tomo_name,
+            project_path=str(project_path),
+            dedup_key=f"extract:{species_id}:{tomo_name}:{slug}",
+        ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=True)
+        ui.notify(f"Extraction submitted for '{lst.get('label') or slug}' — tracking in the task tray.", type="info")
+
+
 async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh) -> None:
     """Detail pane for ONE workbench list (manual/imported/merged): a read-only
     recon-sourced cutout sheet (these lists were never subtomo-extracted, so tiles
@@ -2287,6 +2411,9 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
     The read-only disk probes (recon/star stat, atlas staleness, atlas-index read)
     run OFF the event loop via ``asyncio.to_thread`` so selecting a list doesn't
     freeze the whole UI on Lustre latency — a spinner shows until they return."""
+    # Slice C: per-list extraction status + Extract/Re-extract action (shown for every
+    # workbench list, even with no recon preview below).
+    _render_list_extraction_bar(sp, lst, project_path, refresh)
     recon = (sp.get("row") or {}).get("vol_path")
 
     def _no_recon() -> None:
@@ -2618,6 +2745,15 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                     filtered_count = len(keep)
             else:
                 filtered_count = None
+            # Sync the persisted cache so PickList.extraction_state() (which reads
+            # pl.filtered_count, not this local) compares the extracted count against the
+            # SAME kept count the sheet + table show. Without this, a list filtered in a
+            # prior session (filtered_count=None on disk) reads falsely STALE right after a
+            # correct extraction of its kept subset. mark_dirty so the corrected count
+            # persists for cross-session / aggregation reads that never re-render this panel.
+            if pl.filtered_count != filtered_count:
+                pl.filtered_count = filtered_count
+                project_state.mark_dirty()
             lists.append(
                 {
                     "slug": pl.slug,
@@ -2683,6 +2819,7 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
             "job_dir": job_dir,
             "species_id": species_id,
             "subtomo_job_dir": subtomo_job_dir,
+            "subtomo_jm": sub_match[1] if sub_match else None,
             "auto_kept_count": auto_kept_count,
             "row": row,
             "manifest": manifest,
