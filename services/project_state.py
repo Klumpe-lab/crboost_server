@@ -532,14 +532,23 @@ class PickList(BaseModel):
         durable facts + cheap disk checks, never a stored flag."""
         if not self.extracted_path or not Path(self.extracted_path).exists():
             return ListExtractionState.NOT_EXTRACTED
-        # Picks changed since extraction? Count delta is the cheap add/remove
-        # signal; the source star's mtime (vs when extraction ran) catches in-place
-        # edits that keep the same count (a moved pick).
-        if self.extracted_count != self.count:
+        # Picks changed since extraction? Count delta is the cheap add/remove signal;
+        # the source star's mtime (vs when extraction ran) catches in-place edits that
+        # keep the same count (a moved pick). Per-list extraction consumes the KEPT
+        # subset, so compare against filtered_count (the kept count) when a keep/drop
+        # filter is committed — else extracting 4-of-7 would read as stale at once.
+        expected_count = self.filtered_count if self.filtered_count is not None else self.count
+        if self.extracted_count != expected_count:
             return ListExtractionState.STALE
         if self.extracted_at is not None and self.path:
             try:
-                src = Path(self.path)
+                # Extraction consumes the curated subset (<stem>_filtered.star) when a
+                # keep/drop filter is committed; re-curation rewrites THAT file, not the
+                # base star, so a same-count swap (drop A, keep B) only bumps the filtered
+                # star's mtime. Stat whichever file the extraction actually consumed.
+                base = Path(self.path)
+                consumed = base.with_name(f"{base.stem}_filtered.star")
+                src = consumed if consumed.exists() else base
                 if src.exists() and src.stat().st_mtime > self.extracted_at.timestamp() + 1.0:
                     return ListExtractionState.STALE
             except OSError:

@@ -483,6 +483,32 @@ def derive_keep_state_for_list(source_star: Path, filtered_star: Optional[Path] 
     return kept
 
 
+def sync_filtered_count(pl) -> bool:
+    """Set a PickList's cached ``filtered_count`` to disk truth — the kept-row count of
+    its ``<stem>_filtered.star`` (``None`` when no filter is committed = all rows kept).
+    Returns True if the value changed (caller persists / ``mark_dirty``).
+
+    ``PickList.extraction_state()`` compares the extracted count against ``filtered_count``,
+    but that cache only self-heals when the dashboard renders
+    (``_collect_pick_lists_for_species``). A HEADLESS reader (aggregation) must call this
+    first, or a correctly-extracted filtered list reads falsely STALE off a ``None`` cache
+    (extracted_count=kept vs the fallback total). Reads up to two stars; not memoized —
+    callers over many lists should batch. Pandas/starfile is pulled in via
+    ``derive_keep_state_for_list``."""
+    path = getattr(pl, "path", "")
+    if not path:
+        return False
+    try:
+        keep = derive_keep_state_for_list(Path(path))
+    except Exception:
+        return False
+    new_count = len(keep) if keep is not None else None
+    if pl.filtered_count != new_count:
+        pl.filtered_count = new_count
+        return True
+    return False
+
+
 def discard_filtered_list(source_star: Path, filtered_star: Optional[Path] = None) -> bool:
     """Delete a list's `_filtered` star (revert to all-kept). True if removed."""
     filtered_star = Path(filtered_star) if filtered_star is not None else filtered_list_path(Path(source_star))

@@ -6,6 +6,7 @@ import logging
 import os
 import pwd
 import shlex
+import shutil
 import socket
 import traceback
 import uuid
@@ -188,6 +189,260 @@ class CryoBoostBackend:
             state.mark_dirty()
             await self.state_service.save_project(project_path=project_path, force=True)
             return {"success": False, "error": str(e)}
+
+    async def extract_pick_list(
+        self,
+        project_path: Path,
+        candidate_optset: Path,
+        list_star: Path,
+        tomo_name: str,
+        species_id: str,
+        slug: str,
+        *,
+        box_size: int = 384,
+        binning: float = 1.0,
+        crop_size: int = 224,
+        max_dose: float = -1.0,
+        min_frames: int = 1,
+        do_stack2d: bool = True,
+        do_float16: bool = True,
+    ) -> Dict[str, Any]:
+        """Subtomo-extract ONE curation pick list (Slice C): submit
+        ``drivers/extract_pick_list.py`` as a one-off SLURM job via ``config/qsub.sh``
+        (same mechanism as ``submit_tilt_filter_dl``). Output lands in
+        ``<list_star dir>/<slug>/`` so lists extract independently. Returns the SLURM
+        job id + the dir to watch (``RELION_JOB_EXIT_SUCCESS/FAILURE`` + ``result.json``
+        appear there; the caller records ``PickList.mark_extracted`` on success).
+
+        Box/bin/crop default to the RELION subtomo defaults but the caller passes the
+        species' subtomo-job params so a list extracts compatibly with the auto set."""
+        project_path = Path(project_path)
+        out_dir = Path(list_star).parent / slug
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE", "result.json"):
+            (out_dir / marker).unlink(missing_ok=True)
+        # A user-initiated (re-)extract must re-cut from scratch: clear any prior
+        # extraction output so drivers/extract_pick_list.py does NOT hit its idempotency
+        # skip (out/particles.star + out/Subtomograms/) and silently reuse stale
+        # subtomograms for a now-curated pick set. A genuine SLURM requeue reruns
+        # run_extract.sh directly (bypassing this) and still benefits from that skip.
+        shutil.rmtree(out_dir / "out", ignore_errors=True)
+
+        python_exe = self.server_dir / "venv" / "bin" / "python3"
+        if not python_exe.exists():
+            python_exe = "python3"
+        script_path = self.server_dir / "drivers" / "extract_pick_list.py"
+        flags = ""
+        if do_stack2d:
+            flags += " --stack2d"
+        if do_float16:
+            flags += " --float16"
+        driver_cmd = (
+            f"export PYTHONPATH={self.server_dir}:${{PYTHONPATH}}; "
+            f"{python_exe} {script_path} "
+            f"--candidate-optset {shlex.quote(str(candidate_optset))} "
+            f"--list-star {shlex.quote(str(list_star))} "
+            f"--tomo {shlex.quote(str(tomo_name))} "
+            f"--out-dir {shlex.quote(str(out_dir))} "
+            f"--project-root {shlex.quote(str(project_path))} "
+            f"--box {int(box_size)} --binning {float(binning)} --crop {int(crop_size)} "
+            f"--max-dose {float(max_dose)} --min-frames {int(min_frames)}"
+            f"{flags}"
+        )
+
+        # SLURM resources = the project's defaults (proven to run relion_tomo_subtomo;
+        # over-provisioned for one tomo but consistent with the pipeline extraction).
+        slurm_cfg = self.state_service.state_for(project_path).slurm_defaults
+        constraint = slurm_cfg.constraint.strip("'\"")
+        template_text = (self.server_dir / "config" / "qsub.sh").read_text()
+        replacements = {
+            "XXXextra1XXX": slurm_cfg.partition,
+            "XXXextra2XXX": constraint,
+            "XXXextra3XXX": str(slurm_cfg.nodes),
+            "XXXextra4XXX": str(slurm_cfg.ntasks_per_node),
+            "XXXextra5XXX": str(slurm_cfg.cpus_per_task),
+            "XXXextra6XXX": slurm_cfg.gres,
+            "XXXextra7XXX": slurm_cfg.mem,
+            "XXXextra8XXX": slurm_cfg.time,
+            "XXXoutfileXXX": str(out_dir / "run.out"),
+            "XXXerrfileXXX": str(out_dir / "run.err"),
+            "XXXcommandXXX": driver_cmd,
+        }
+        script = template_text
+        for placeholder, value in replacements.items():
+            script = script.replace(placeholder, value)
+        sbatch_path = out_dir / "run_extract.sh"
+        sbatch_path.write_text(script)
+        sbatch_path.chmod(0o755)
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "sbatch",
+                str(sbatch_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(out_dir),
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                return {"success": False, "error": f"sbatch failed: {stderr.decode().strip()}"}
+            output = stdout.decode().strip()
+            slurm_job_id = output.split()[-1] if output else None
+            logger.info("Per-list extraction submitted: SLURM job %s (%s/%s)", slurm_job_id, species_id, slug)
+            return {"success": True, "slurm_job_id": slurm_job_id, "out_dir": str(out_dir)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_authoritative_extraction_status(self, project_path: Path, species_id: str) -> List[Dict[str, Any]]:
+        """Read-only: per-(species, tomo) authoritative-list extraction status — the
+        aggregation gate's input (see services/visualization/LIST_EXTRACTION_AND_AGGREGATION.md
+        §8.1). Returns one dict per tomo: {species_id, tomo_name, slug, kind, extraction_state,
+        optset_path, kept, total, notes}. Disk reads run off the event loop."""
+        from dataclasses import asdict
+        from services.aggregation_authoritative import enumerate_authoritative
+
+        state = self.state_service.state_for(Path(project_path))
+        handles = await asyncio.to_thread(enumerate_authoritative, state, Path(project_path), species_id)
+        return [{**asdict(h), "extraction_state": h.extraction_state.value} for h in handles]
+
+    async def get_authoritative_gate_report(self, project_path: Path, species_id: str) -> Dict[str, Any]:
+        """Read-only §8.3 gate: classify each (species, tomo) authoritative list as
+        ready / pending (workbench NOT_EXTRACTED|STALE — extractable here) / blocked, so the
+        UI/user sees exactly what must be extracted before a species roll-up. No side effects.
+        See services/visualization/LIST_EXTRACTION_AND_AGGREGATION.md §8.3."""
+        from services.aggregation_authoritative import compute_gate_report, enumerate_authoritative
+
+        state = self.state_service.state_for(Path(project_path))
+        handles = await asyncio.to_thread(enumerate_authoritative, state, Path(project_path), species_id)
+        return compute_gate_report(handles).to_dict()
+
+    async def _await_extraction_outdirs(self, out_dirs: List[str], timeout_s: int) -> Dict[str, tuple]:
+        """Poll each per-list extraction out dir (RELION_JOB_EXIT_* + result.json) until all
+        resolve or ``timeout_s`` elapses. Returns {out_dir: ("done"|"failed", data)} for the
+        resolved ones (an out dir absent from the result = still running). Disk scans run off
+        the event loop. Mirrors the per-list watcher in tomo_dashboard_dialog._handle_extract_list."""
+        import json as _json
+
+        pending = set(out_dirs)
+        results: Dict[str, tuple] = {}
+        if not pending:
+            return results
+
+        def _scan(dirs: set) -> Dict[str, tuple]:
+            done: Dict[str, tuple] = {}
+            for od in dirs:
+                p = Path(od)
+                rj = p / "result.json"
+                if (p / "RELION_JOB_EXIT_FAILURE").exists():
+                    try:
+                        done[od] = ("failed", _json.loads(rj.read_text()) if rj.exists() else {})
+                    except Exception:
+                        done[od] = ("failed", {})
+                elif (p / "RELION_JOB_EXIT_SUCCESS").exists() or rj.exists():
+                    try:
+                        done[od] = ("done", _json.loads(rj.read_text()) if rj.exists() else {})
+                    except Exception:
+                        done[od] = ("done", {})
+            return done
+
+        for _ in range(max(1, timeout_s // 10)):
+            if not pending:
+                break
+            done = await asyncio.to_thread(_scan, set(pending))
+            for od, r in done.items():
+                results[od] = r
+                pending.discard(od)
+            if not pending:
+                break
+            await asyncio.sleep(10)
+        return results
+
+    async def extract_authoritative_pending(
+        self, project_path: Path, species_id: str, *, only_tomos: Optional[List[str]] = None, timeout_s: int = 3600
+    ) -> Dict[str, Any]:
+        """§8.3 auto-extract: submit per-list subtomo extraction for every WORKBENCH
+        authoritative list that is NOT_EXTRACTED/STALE (optionally limited to ``only_tomos``),
+        wait for completion, record ``mark_extracted``, and persist. Never touches
+        'auto'/'filtered' or already-ready lists; idempotent (re-running acts only on
+        still-pending lists). Reuses ``extract_pick_list`` (which clears ``out/`` for a clean
+        re-cut). RUN INSIDE A BackgroundTask — it polls up to ``timeout_s``.
+
+        Returns {submitted, succeeded:[{tomo,slug,count}], failed:[{tomo,slug,error}],
+        blocked:[{tomo,slug,reason}], still_running:[{tomo,slug}], can_proceed}."""
+        from services.aggregation_authoritative import (
+            compute_gate_report,
+            enumerate_authoritative,
+            extract_inputs_for_list,
+        )
+
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        handles = await asyncio.to_thread(enumerate_authoritative, state, project_path, species_id)
+        pending = compute_gate_report(handles).pending
+        if only_tomos is not None:
+            keep = set(only_tomos)
+            pending = [h for h in pending if h.tomo_name in keep]
+
+        submitted: List[dict] = []
+        failed: List[dict] = []
+        blocked: List[dict] = []
+        watching: List[dict] = []  # {tomo, slug, out_dir}
+        for h in pending:
+            pl = state.get_pick_list(h.slug, species_id, h.tomo_name)
+            inputs = extract_inputs_for_list(state, project_path, species_id, pl) if pl is not None else None
+            if inputs is None:
+                blocked.append({"tomo": h.tomo_name, "slug": h.slug, "reason": "no candidate/subtomo job or list star"})
+                continue
+            res = await self.extract_pick_list(
+                project_path,
+                Path(inputs["candidate_optset"]),
+                Path(inputs["list_star"]),
+                h.tomo_name,
+                species_id,
+                h.slug,
+                **inputs["params"],
+            )
+            if not res.get("success"):
+                failed.append({"tomo": h.tomo_name, "slug": h.slug, "error": res.get("error")})
+                continue
+            submitted.append({"tomo": h.tomo_name, "slug": h.slug, "slurm_job_id": res.get("slurm_job_id")})
+            watching.append({"tomo": h.tomo_name, "slug": h.slug, "out_dir": res["out_dir"]})
+
+        results = await self._await_extraction_outdirs([w["out_dir"] for w in watching], timeout_s)
+
+        succeeded: List[dict] = []
+        still_running: List[dict] = []
+        state = self.state_service.state_for(project_path)
+        changed = False
+        for w in watching:
+            r = results.get(w["out_dir"])
+            if r is None:
+                still_running.append({"tomo": w["tomo"], "slug": w["slug"]})
+                continue
+            status, data = r
+            if status == "done" and data.get("ok"):
+                pl = state.get_pick_list(w["slug"], species_id, w["tomo"])
+                if pl is not None:
+                    pl.mark_extracted(data["optimisation_set"], int(data.get("count", 0)))
+                    changed = True
+                succeeded.append({"tomo": w["tomo"], "slug": w["slug"], "count": int(data.get("count", 0))})
+            else:
+                failed.append(
+                    {"tomo": w["tomo"], "slug": w["slug"], "error": data.get("error") or "extraction job failed"}
+                )
+        if changed:
+            state.mark_dirty()
+            await self.state_service.save_project(project_path=project_path, force=True)
+
+        handles2 = await asyncio.to_thread(enumerate_authoritative, state, project_path, species_id)
+        return {
+            "submitted": len(submitted),
+            "succeeded": succeeded,
+            "failed": failed,
+            "blocked": blocked,
+            "still_running": still_running,
+            "can_proceed": compute_gate_report(handles2).can_proceed,
+        }
 
     # ── ChimeraX + ArtiaX curation session (VNC over a SLURM job) ───────────────
 

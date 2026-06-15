@@ -396,6 +396,10 @@ _CB_CSS = """
 .cb-badge-ok { color: #059669; }
 .cb-badge-todo { color: #94a3b8; }
 .cb-badge-stale { color: #d97706; }
+/* Shared small metadata text in the per-list detail chrome (provenance, pick
+ * counts, sub-labels) — one slate tone + size instead of ad-hoc inline font
+ * styles, so the list header / extraction bar / status rows read as one block. */
+.cb-detail-meta { font-size: 10px; color: #94a3b8; line-height: 1.2; }
 /* Rich pytom-chip info tooltip: a light card (overrides Quasar's dark default)
  * with an auto-pick-stats section + a template-match section. */
 .cb-chip-tooltip {
