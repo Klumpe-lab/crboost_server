@@ -260,3 +260,70 @@ def run_command(command: str, cwd: Path, timeout: int = None):
 
     if process.returncode != 0:
         raise subprocess.CalledProcessError(process.returncode, command)
+
+
+def diagnose_stale_producer(path: Path) -> str:
+    """Build a diagnostic hint when a resolved upstream input is missing/empty.
+
+    Scans sibling ``External/job*/<name>`` entries for a populated copy of the
+    same output and names it. The classic trigger is a STALE JOB-NUMBER MAPPING
+    after an aborted+redeployed scheme run: crboost predicts each job's
+    External/jobNNN dir at deploy time, and after a scheme aborts partway the
+    prediction can drift one behind RELION's actual assignment — so a consumer
+    (e.g. alignment) ends up pointed at an empty stub dir (job003) instead of
+    the real producer output (job004). Returns "" when nothing useful is found.
+
+    See services/scheduling_and_orchestration/ORCHESTRATOR_ROADMAP.md.
+    """
+    try:
+        name = path.name
+        job_dir = path.parent
+        external_dir = job_dir.parent
+        if external_dir.name != "External":
+            return ""
+        found = []
+        for sib in sorted(external_dir.glob(f"job*/{name}")):
+            try:
+                if sib.resolve() == path.resolve():
+                    continue
+                if sib.is_dir() and any(sib.iterdir()):
+                    found.append(sib)
+                elif sib.is_file() and sib.stat().st_size > 0:
+                    found.append(sib)
+            except OSError:
+                continue
+        if not found:
+            return ""
+        listed = "\n        ".join(str(p) for p in found)
+        return (
+            f"\n  ↳ A populated '{name}' exists elsewhere:\n        {listed}"
+            f"\n  ↳ LIKELY CAUSE: stale job-number mapping after an aborted+redeployed scheme run —"
+            f" the predicted External/jobNNN drifted behind RELION's actual assignment, so this job"
+            f" points at an empty stub ({job_dir.name}) instead of the real producer output."
+            f"\n     See services/scheduling_and_orchestration/ORCHESTRATOR_ROADMAP.md (job-number off-by-one)."
+        )
+    except Exception:
+        return ""
+
+
+def require_producer_input(path: Path, label: str, *, require_nonempty: bool = True) -> None:
+    """Validate a resolved upstream input path; raise an actionable error when it
+    is missing (or, by default, present-but-empty).
+
+    Unlike a bare ``path.exists()`` check, the raised message runs
+    ``diagnose_stale_producer`` so a stale-job-number failure reads as exactly
+    that — pointing at the real producer dir — instead of a cryptic
+    "not found". Use for upstream inputs resolved from another job's output
+    (tomostar dirs, settings files, input star/processing dirs).
+    """
+    exists = path.exists()
+    empty = False
+    if exists and require_nonempty:
+        try:
+            empty = (path.is_dir() and not any(path.iterdir())) or (path.is_file() and path.stat().st_size == 0)
+        except OSError:
+            empty = False
+    if exists and not empty:
+        return
+    state = "is empty" if (exists and empty) else "not found"
+    raise FileNotFoundError(f"{label} {state}: {path}{diagnose_stale_producer(path)}")

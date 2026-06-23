@@ -88,8 +88,17 @@ def _resolve_array_job_dir(job_model, project_path: Optional[Path] = None) -> Op
     return None
 
 
-def _get_array_progress(job_model, project_path: Optional[Path] = None) -> Optional[Tuple[int, int, int]]:
-    """Return (n_done, n_failed, n_total) for array jobs, or None if not applicable."""
+def _get_array_progress(job_model, project_path: Optional[Path] = None) -> Optional[Tuple[int, int, int, int]]:
+    """Return (n_done, n_failed, n_total, n_running) for array jobs, or None.
+
+    n_done    = settled tasks (.ok + .fail)
+    n_failed  = .fail markers
+    n_total   = manifest item count
+    n_running = tasks SLURM has STARTED (task_<idx>.out exists) but not yet
+                settled. Surfacing this is what lets a fully-parallel array show
+                live work in flight instead of sitting at 0/N until a whole
+                throttle-wave of .ok markers lands at once.
+    """
     job_dir = _resolve_array_job_dir(job_model, project_path)
     if job_dir is None:
         return None
@@ -114,7 +123,12 @@ def _get_array_progress(job_model, project_path: Optional[Path] = None) -> Optio
                 n_ok += 1
             elif p.suffix == ".fail":
                 n_fail += 1
-    return (n_ok + n_fail, n_fail, len(items))
+    # SLURM creates task_<idx>.out the moment a child task starts running, so the
+    # count of started-but-unsettled tasks is the honest "running now" signal.
+    n_started = sum(1 for _ in job_dir.glob("task_*.out"))
+    n_settled = n_ok + n_fail
+    n_running = max(0, n_started - n_settled)
+    return (n_settled, n_fail, len(items), n_running)
 
 
 def _get_array_ts_statuses(
@@ -437,8 +451,15 @@ class RosterWidget(FingerprintedView):
             # signature can't disagree on what's being painted.
             progress = self._array_progress_cache.get(instance_id)
             if progress is not None:
-                n_done, n_fail, n_total = progress
+                n_done, n_fail, n_total, n_running = progress
                 n_ok = n_done - n_fail
+                # Live "running now" chip — shows that a parallel array is actively
+                # working even while the settled count (below) sits low between
+                # throttle-waves, so the row no longer looks frozen at 0/N.
+                if n_running > 0:
+                    ui.label(f"▸{n_running}").style(
+                        f"{MONO} font-size: 9px; font-weight: 700; color: #2563eb; flex-shrink: 0;"
+                    ).tooltip(f"{n_running} tilt-series running now")
                 if n_fail > 0:
                     # Show "ok/total fail!" — e.g. "17/18 1!"
                     ui.label(f"{n_ok}/{n_total}").style(
@@ -1446,7 +1467,7 @@ class RosterWidget(FingerprintedView):
                     f"font-size: 8px; color: {SB_MUTE}; "
                     "font-family: 'IBM Plex Mono', monospace; "
                     "text-align: center; line-height: 1.4; word-break: break-all; "
-                    "display: block; width: 100%; padding: 0 3px;"
+                    "white-space: pre-line; display: block; width: 100%; padding: 0 3px;"
                 )
                 self._refs["status_label"] = status_lbl
             else:
@@ -1482,7 +1503,17 @@ class RosterWidget(FingerprintedView):
         _hidden = {JobType.IMPORT_MOVIES.value, JobType.TS_IMPORT.value}
         visible_selected = sum(1 for iid in self.panel.ui_mgr.selected_jobs if iid.split("__")[0] not in _hidden)
         total = overview.get("total", visible_selected) if overview else visible_selected
-        el.set_text(f"{done}/{total}")
+        text = f"{done}/{total}"
+        # Surface SLURM queue waits so a long pending time reads as a cluster
+        # wait, not a hung orchestrator. This runs on every poll tick (it is NOT
+        # signature-gated), so the elapsed minutes stay live.
+        queued_jobs = (overview or {}).get("queued_jobs") or []
+        if queued_jobs:
+            max_pending = max((q.get("pending_secs", 0) for q in queued_jobs), default=0)
+            text += f"\n⏳ {len(queued_jobs)} in SLURM queue"
+            if max_pending >= 60:
+                text += f"\n{max_pending // 60}m for nodes"
+        el.set_text(text)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

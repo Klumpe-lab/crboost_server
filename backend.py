@@ -1348,6 +1348,7 @@ class CryoBoostBackend:
                     created_at = None
                     created_ts = None
                     creator = None
+                    owner_raw = None
                     pipeline_active = False
                     total_jobs_planned = 0
                     ts_count = 0
@@ -1364,6 +1365,7 @@ class CryoBoostBackend:
                             except Exception:
                                 created_ts = None
                         creator = data.get("created_by")
+                        owner_raw = data.get("owner")
                         pipeline_active = bool(data.get("pipeline_active", False))
                         jobs_dict = data.get("jobs") or {}
                         total_jobs_planned = len(jobs_dict)
@@ -1419,6 +1421,7 @@ class CryoBoostBackend:
                             "created_at": created_at,
                             "created_timestamp": created_ts,
                             "creator": creator,
+                            "owner": owner_raw,
                             "pipeline_active": pipeline_active,
                             "total_jobs_planned": total_jobs_planned,
                             "ts_count": ts_count,
@@ -1590,6 +1593,7 @@ class CryoBoostBackend:
         import_summary: Optional[Dict[str, Any]] = None,
         detected_params: Optional[Dict[str, Any]] = None,
         is_aggregation: bool = False,
+        shared: bool = False,
     ):
         return await self.project_service.initialize_new_project(
             project_name=project_name,
@@ -1601,7 +1605,34 @@ class CryoBoostBackend:
             import_summary=import_summary,
             detected_params=detected_params,
             is_aggregation=is_aggregation,
+            shared=shared,
         )
+
+    async def transfer_project_ownership(self, project_path: Path, new_owner: Optional[str]) -> Dict[str, Any]:
+        """Reassign a project's owner WITHOUT moving it on disk.
+
+        `owner` is pure attribution/grouping metadata; the on-disk location and
+        the path-keyed state registry are untouched. We resolve via state_for()
+        so the live in-memory state is mutated when the project is open in this
+        process (a blind JSON rewrite would be clobbered on its next save).
+
+        new_owner: a username, SHARED_OWNER ("@lab") for the shared/lab area, or
+        None to revert to the original creator. There is no access control
+        anywhere (identity is the OS user of each per-user process on a shared
+        filesystem), so this is honor-system attribution; cross-process
+        concurrency is the same unhandled race as any other concurrent edit.
+        """
+        try:
+            path = Path(project_path)
+            state = self.state_service.state_for(path)
+            state.owner = new_owner or None
+            state.update_modified()
+            state.mark_dirty()
+            await self.state_service.save_project(project_path=path, force=True)
+            return {"success": True, "owner": state.owner}
+        except Exception as e:
+            logger.error("Failed to transfer ownership of %s: %s", project_path, e)
+            return {"success": False, "error": str(e)}
 
     async def get_initial_parameters(self) -> Dict[str, Any]:
         """Returns a dump of the current project state."""

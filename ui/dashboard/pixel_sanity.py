@@ -562,11 +562,57 @@ def _render_pixel_row_cells(r: dict) -> None:
             _pixel_cell(" · ".join(r["notes"]) if r["notes"] else "—", warning, notes=True)
 
 
+def _render_box_crop_header_tooltip(kind: str) -> None:
+    """Rich, multi-line info tooltip for the box / crop column headers, using
+    the dashboard's light-card tooltip idiom (`cb-chip-tooltip`). Explains the
+    reconstruction-box-vs-output-box distinction plus a few worked scenarios —
+    box/crop sizing is the user's #1 binning-arithmetic foot-gun. Kept in sync
+    with the job-panel explainer (ui/job_plugins/subtomo_extraction.py)."""
+    with ui.tooltip().classes("cb-chip-tooltip"):
+        if kind == "box":
+            ui.label("BOX — reconstruction box").classes("cb-tt-head")
+            ui.label(
+                "The cube RELION builds each pseudo-subtomogram in (on a TM row: the template "
+                "volume). Must hold the particle PLUS the CTF-delocalized signal that high defocus "
+                "smears outward — too small truncates high-resolution information."
+            )
+            ui.label("aim 2–3× particle Ø · 1.5× floor · even numbers").classes("cb-tt-sub")
+            ui.separator().classes("cb-tt-sep")
+            ui.label("examples · Ø ≈ 300 Å").classes("cb-tt-head")
+            for line in (
+                "bin 4 (4 Å vox): 192 px = 768 Å · 2.6× ✓",
+                "bin 4: 64 px = 256 Å · 0.85× ✗ clipped",
+                "bin 2 (2 Å vox): 320 px = 640 Å · 2.1× ✓",
+            ):
+                ui.label(line).classes("cb-tt-line")
+        else:  # crop
+            ui.label("CROP — output box").classes("cb-tt-head")
+            ui.label(
+                "The central cube kept after reconstruction — what Refine3D / Class3D load, so it "
+                "sets on-disk size + downstream memory. The rebuild re-localizes signal to the "
+                "center, so the outer rim is redundant and safe to trim. −1 = no cropping."
+            )
+            ui.label("must be ≤ box · aim ≥ 1.5× particle Ø").classes("cb-tt-sub")
+            ui.separator().classes("cb-tt-sep")
+            ui.label("examples · Ø ≈ 300 Å").classes("cb-tt-head")
+            for line in (
+                "bin 4: 112 px = 448 Å · 1.5× ✓",
+                "bin 2: 160 px = 320 Å · 1.07× ⚠ tight",
+                "crop > box · ✗ invalid",
+            ):
+                ui.label(line).classes("cb-tt-line")
+
+
 def _render_pixel_header_cells() -> None:
-    for _, label, hint in _PIXEL_COLUMNS:
+    for col_key, label, hint in _PIXEL_COLUMNS:
         with ui.element("div").classes("cb-pixel-cell cb-pixel-header"):
             ui.label(label)
-            if hint:
+            # box / crop get a rich multi-line tooltip (explanation + worked
+            # scenarios); every other column keeps its plain one-line hint.
+            if col_key in ("box", "crop"):
+                with ui.icon("info_outline", size="11px").classes("cb-pixel-warn-icon"):
+                    _render_box_crop_header_tooltip(col_key)
+            elif hint:
                 ui.icon("info_outline", size="11px").classes("cb-pixel-warn-icon").tooltip(hint)
 
 

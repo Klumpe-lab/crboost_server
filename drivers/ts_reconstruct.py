@@ -39,7 +39,7 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command
+from drivers.driver_base import get_driver_context, run_command, require_producer_input
 from services.computing.container_service import get_container_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import TsReconstructParams
@@ -150,8 +150,7 @@ def run_supervisor_mode():
         paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
         instance_id = local_params_data["instance_id"]
 
-        if not paths["input_star"].exists():
-            raise FileNotFoundError(f"Input STAR not found: {paths['input_star']}")
+        require_producer_input(paths["input_star"], "Input STAR")
 
         ts_names = read_tilt_series_names_from_input_star(paths["input_star"])
         if not ts_names:

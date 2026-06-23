@@ -21,6 +21,7 @@ from typing import Awaitable, Callable, Dict, List, Optional
 from nicegui import ui, app
 
 from services.configs.user_prefs_service import get_prefs_service
+from services.project_state import SHARED_OWNER
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -51,9 +52,9 @@ def avatar_color(key: str) -> str:
 
 _STATUS_STYLES = {
     "running": {"color": CLR_RUNNING, "bg": "#eff6ff", "border": "#bfdbfe", "label": "live"},
-    "failed":  {"color": CLR_FAILED,  "bg": "#fef2f2", "border": "#fecaca", "label": "failed"},
-    "done":    {"color": CLR_DONE,    "bg": "#ecfdf5", "border": "#a7f3d0", "label": "done"},
-    "idle":    {"color": CLR_IDLE,    "bg": "#f1f5f9", "border": "#e2e8f0", "label": "idle"},
+    "failed": {"color": CLR_FAILED, "bg": "#fef2f2", "border": "#fecaca", "label": "failed"},
+    "done": {"color": CLR_DONE, "bg": "#ecfdf5", "border": "#a7f3d0", "label": "done"},
+    "idle": {"color": CLR_IDLE, "bg": "#f1f5f9", "border": "#e2e8f0", "label": "idle"},
 }
 
 
@@ -71,6 +72,11 @@ class ProjectsOverview:
         the confirm-and-delete dialog. If omitted, the delete button is
         hidden (e.g. inside the in-workspace switcher we don't want users
         nuking projects mid-session).
+    on_transfer : optional async callback (path: Path, new_owner: Optional[str]) -> None
+        If provided, a "transfer ownership" button is rendered on hover; the
+        component owns the picker dialog and the post-transfer refresh, the
+        callback just writes the new owner (SHARED_OWNER for the lab area, or a
+        username). No disk move — purely attribution metadata.
     base_path_provider : callable () -> str
         Returns the directory to scan. Re-evaluated on every refresh so
         external base-path changes (Browse button, Recent Locations clicks)
@@ -95,6 +101,7 @@ class ProjectsOverview:
         on_open: Callable[[Path], Awaitable[None]],
         base_path_provider: Callable[[], str],
         on_delete: Optional[Callable[[Path, str], Awaitable[None]]] = None,
+        on_transfer: Optional[Callable[[Path, Optional[str]], Awaitable[None]]] = None,
         auto_refresh_sec: float = DEFAULT_REFRESH_SEC,
         current_path: Optional[str] = None,
         show_filter: bool = True,
@@ -104,6 +111,7 @@ class ProjectsOverview:
         self.backend = backend
         self.on_open = on_open
         self.on_delete = on_delete
+        self.on_transfer = on_transfer
         self.base_path_provider = base_path_provider
         self.auto_refresh_sec = auto_refresh_sec
         self.current_path = current_path
@@ -112,9 +120,7 @@ class ProjectsOverview:
         self.title = title
         self.prefs = get_prefs_service()
         try:
-            self._current_resolved = (
-                str(Path(current_path).resolve()) if current_path else None
-            )
+            self._current_resolved = str(Path(current_path).resolve()) if current_path else None
         except Exception:
             self._current_resolved = None
 
@@ -137,17 +143,19 @@ class ProjectsOverview:
     def build(self):
         """Build the UI tree and return the outermost container.
         Triggers the first scan + starts the auto-refresh timer."""
-        outer = ui.column().classes("w-full gap-0").style(
-            "background: white; border-radius: 8px; "
-            f"border: 1px solid {CLR_BORDER}; "
-            "box-shadow: 0 1px 3px rgba(15,23,42,0.06);"
+        outer = (
+            ui.column()
+            .classes("w-full gap-0")
+            .style(
+                "background: white; border-radius: 8px; "
+                f"border: 1px solid {CLR_BORDER}; "
+                "box-shadow: 0 1px 3px rgba(15,23,42,0.06);"
+            )
         )
         self._outer_container = outer
         with outer:
             self._build_header()
-            with ui.scroll_area().classes("w-full").style(
-                f"height: {self.height_px}px; padding: 0;"
-            ):
+            with ui.scroll_area().classes("w-full").style(f"height: {self.height_px}px; padding: 0;"):
                 self._list_container = ui.column().classes("w-full").style("gap: 0; padding: 0;")
                 with self._list_container:
                     self._render_loading_skeleton()
@@ -206,15 +214,10 @@ class ProjectsOverview:
                 f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING}; "
                 "letter-spacing: -0.01em; flex-shrink: 0;"
             )
-            self._counts_label = ui.label("").style(
-                f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; flex: 1;"
-            )
+            self._counts_label = ui.label("").style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; flex: 1;")
 
             # Refresh button -- explicit re-scan in addition to the timer.
-            ui.button(
-                icon="refresh",
-                on_click=self.refresh,
-            ).props("flat dense round size=xs").classes(
+            ui.button(icon="refresh", on_click=self.refresh).props("flat dense round size=xs").classes(
                 "text-slate-400 hover:text-blue-600 shrink-0"
             ).tooltip(f"Rescan now (auto every {int(self.auto_refresh_sec)}s)")
 
@@ -245,9 +248,7 @@ class ProjectsOverview:
     def _render_loading_skeleton(self):
         with ui.row().classes("w-full items-center justify-center").style("padding: 24px 0;"):
             ui.spinner("dots", size="sm").style(f"color: {CLR_SUBLABEL};")
-            ui.label("Scanning…").style(
-                f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; margin-left: 8px;"
-            )
+            ui.label("Scanning…").style(f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; margin-left: 8px;")
 
     def _render_list(self):
         if self._list_container is None:
@@ -255,9 +256,13 @@ class ProjectsOverview:
         self._list_container.clear()
 
         all_projects = self._projects
+        eff = self._eff_owner_of  # mutable owner, falling back to created_by
+
         show_only_mine = self.prefs.prefs.show_only_mine
         if show_only_mine:
-            visible = [p for p in all_projects if (p.get("creator") or "") == CURRENT_USER]
+            # "Only mine" also surfaces the shared Lab area (under its own
+            # header) alongside the current user's own projects.
+            visible = [p for p in all_projects if eff(p) in (CURRENT_USER, SHARED_OWNER)]
         else:
             visible = all_projects
 
@@ -277,7 +282,7 @@ class ProjectsOverview:
             self._counts_label.set_text(counts)
 
         if self._mine_label is not None:
-            mine_count = sum(1 for p in all_projects if (p.get("creator") or "") == CURRENT_USER)
+            mine_count = sum(1 for p in all_projects if eff(p) == CURRENT_USER)
             self._mine_label.set_text(f"Only mine ({mine_count}/{len(all_projects)})")
 
         with self._list_container:
@@ -294,34 +299,47 @@ class ProjectsOverview:
                 )
                 return
 
-            # Group by owner -- the creator lives in a section header rather
-            # than on every row (it used to crowd the name/mnemonic). Current
-            # user's section floats to the top, the rest are alphabetical.
+            # Group by effective owner -- it lives in a section header rather
+            # than on every row (it used to crowd the name/mnemonic). The
+            # current user floats to the top, then Lab / Shared, then the rest
+            # alphabetically.
             groups: Dict[str, List[Dict]] = {}
             for proj in visible:
-                groups.setdefault(proj.get("creator") or "unknown", []).append(proj)
+                groups.setdefault(eff(proj), []).append(proj)
 
             def _section_order(k: str):
-                return (0, "") if k == CURRENT_USER else (1, k.lower())
+                if k == CURRENT_USER:
+                    return (0, "")
+                if k == SHARED_OWNER:
+                    return (1, "")
+                return (2, k.lower())
 
-            for creator in sorted(groups, key=_section_order):
-                self._render_section_header(creator, groups[creator])
-                for proj in groups[creator]:
+            for owner in sorted(groups, key=_section_order):
+                self._render_section_header(owner, groups[owner])
+                for proj in groups[owner]:
                     self._render_row(proj)
 
     def _render_section_header(self, creator: str, projects: List[Dict]):
         is_me = creator == CURRENT_USER
+        is_lab = creator == SHARED_OWNER
         known = creator and creator != "unknown"
-        dot = avatar_color(creator) if known else CLR_GHOST
+        if is_lab:
+            label_text = "Lab / Shared"
+            dot = CLR_RUNNING
+        elif known:
+            label_text = creator
+            dot = avatar_color(creator)
+        else:
+            label_text = "unknown owner"
+            dot = CLR_GHOST
         live = sum(1 for p in projects if p.get("live_status") == "running")
-        with ui.row().classes("w-full items-center").style(
-            f"gap: 6px; padding: 5px 12px; background: #f1f5f9; "
-            f"border-bottom: 1px solid {CLR_BORDER};"
+        with (
+            ui.row()
+            .classes("w-full items-center")
+            .style(f"gap: 6px; padding: 5px 12px; background: #f1f5f9; border-bottom: 1px solid {CLR_BORDER};")
         ):
-            ui.element("div").style(
-                f"width: 6px; height: 6px; border-radius: 50%; background: {dot}; flex-shrink: 0;"
-            )
-            ui.label(creator if known else "unknown owner").style(
+            ui.element("div").style(f"width: 6px; height: 6px; border-radius: 50%; background: {dot}; flex-shrink: 0;")
+            ui.label(label_text).style(
                 f"{MONO} font-size: 10px; font-weight: 700; color: {CLR_LABEL}; letter-spacing: 0.02em;"
             )
             if is_me:
@@ -348,6 +366,7 @@ class ProjectsOverview:
     _W_PILL = 50
     _W_DATE = 76
     _W_DELETE = 18
+    _W_XFER = 18
     _W_TS = 48
     _W_JOBS = 44
     _W_RUNFAIL = 44
@@ -385,12 +404,11 @@ class ProjectsOverview:
 
         # Two stacked lines: identity (left) + status (right) on line 1,
         # source path (left) + counts (right) on line 2.
-        base_style = "padding: 6px 12px 7px; gap: 4px; " f"border-bottom: 1px solid {CLR_BORDER};"
+        base_style = f"padding: 6px 12px 7px; gap: 4px; border-bottom: 1px solid {CLR_BORDER};"
         if is_current:
             row_classes = "w-full group"
             row_style = (
-                base_style + " background: #eff6ff; cursor: default; "
-                "border-left: 3px solid #3b82f6; padding-left: 9px;"
+                base_style + " background: #eff6ff; cursor: default; border-left: 3px solid #3b82f6; padding-left: 9px;"
             )
             row_click = None
         else:
@@ -407,8 +425,7 @@ class ProjectsOverview:
             # ---- Line 1: idx + avatar + name/mnemonic | status + date + delete ----
             with ui.row().classes("w-full items-center").style("gap: 8px; flex-wrap: nowrap;"):
                 ui.label(f"{stable_index:02d}").style(
-                    f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; "
-                    f"width: {self._W_IDX}px; text-align: right; {fixed}"
+                    f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; width: {self._W_IDX}px; text-align: right; {fixed}"
                 )
 
                 with ui.element("div").style(
@@ -425,8 +442,7 @@ class ProjectsOverview:
                 # under pressure; the (short) mnemonic never shrinks, so a long
                 # name can't push it around.
                 with ui.element("div").style(
-                    "flex: 1 1 0; min-width: 0; display: flex; align-items: baseline; "
-                    "gap: 6px; overflow: hidden;"
+                    "flex: 1 1 0; min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden;"
                 ):
                     ui.label(name).style(
                         f"{FONT} font-size: 11px; font-weight: 500; color: {CLR_HEADING}; "
@@ -449,22 +465,41 @@ class ProjectsOverview:
                     self._render_status_pill(live_status)
 
                 ui.label(last_activity).style(
-                    f"{MONO} font-size: 9px; color: {CLR_GHOST}; "
-                    f"width: {self._W_DATE}px; text-align: right; {fixed}"
+                    f"{MONO} font-size: 9px; color: {CLR_GHOST}; width: {self._W_DATE}px; text-align: right; {fixed}"
                 )
+
+                with ui.element("div").style(
+                    f"width: {self._W_XFER}px; {fixed} display: flex; justify-content: flex-end;"
+                ):
+                    if self.on_transfer is not None and not is_current:
+
+                        async def _xfer(p=path_str, n=name):
+                            await self._handle_transfer(Path(p), n)
+
+                        (
+                            ui.button(icon="swap_horiz", on_click=_xfer)
+                            .props("flat dense round size=xs")
+                            .classes(
+                                "text-slate-200 hover:text-blue-500 opacity-0 "
+                                "group-hover:opacity-100 transition-opacity"
+                            )
+                            .on("click.stop", lambda: None)
+                            .tooltip("Transfer ownership")
+                        )
 
                 with ui.element("div").style(
                     f"width: {self._W_DELETE}px; {fixed} display: flex; justify-content: flex-end;"
                 ):
                     if self.on_delete is not None and not is_current:
+
                         async def _del(p=path_str, n=name, r=row_el):
                             await self._handle_delete(Path(p), n, r)
+
                         (
                             ui.button(icon="delete_outline", on_click=_del)
                             .props("flat dense round size=xs")
                             .classes(
-                                "text-slate-200 hover:text-red-400 opacity-0 "
-                                "group-hover:opacity-100 transition-opacity"
+                                "text-slate-200 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
                             )
                             .on("click.stop", lambda: None)
                         )
@@ -472,15 +507,16 @@ class ProjectsOverview:
             # ---- Line 2: source path | TS count + jobs + run/fail + bar ----
             # Indented past the idx + avatar gutter (two 8px gaps between) so
             # the folder icon lines up under the name, not under the idx.
-            with ui.row().classes("w-full items-center").style(
-                f"gap: 8px; flex-wrap: nowrap; padding-left: {self._W_IDX + self._W_AVATAR + 16}px;"
+            with (
+                ui.row()
+                .classes("w-full items-center")
+                .style(f"gap: 8px; flex-wrap: nowrap; padding-left: {self._W_IDX + self._W_AVATAR + 16}px;")
             ):
                 # Source data directory -- the flexible cell; left-aligned so
                 # the absolute leading slash stays visible, truncates at the
                 # tail. Tooltip carries the full path.
                 with ui.element("div").style(
-                    "flex: 1 1 0; min-width: 0; display: flex; align-items: center; "
-                    "gap: 4px; overflow: hidden;"
+                    "flex: 1 1 0; min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden;"
                 ):
                     ui.icon("folder_open", size="11px").style(f"color: {CLR_GHOST}; flex-shrink: 0;")
                     if source_dir:
@@ -523,21 +559,16 @@ class ProjectsOverview:
         # bleed past the idx column. The "running" spinner is replaced by a
         # smaller animated dot via CSS-driven opacity to save horizontal real
         # estate; falls back to a solid dot for non-running states.
-        with ui.element("div").style(
-            "display: flex; align-items: center; gap: 3px; flex-shrink: 0;"
-        ):
+        with ui.element("div").style("display: flex; align-items: center; gap: 3px; flex-shrink: 0;"):
             ui.element("div").style(
-                f"width: 5px; height: 5px; border-radius: 50%; background: {s['color']}; "
-                "flex-shrink: 0;"
+                f"width: 5px; height: 5px; border-radius: 50%; background: {s['color']}; flex-shrink: 0;"
             )
             ui.label(s["label"]).style(
                 f"{FONT} font-size: 8px; color: {s['color']}; font-weight: 700; "
                 "letter-spacing: 0.04em; line-height: 1; text-transform: uppercase;"
             )
 
-    def _render_progress_bar(
-        self, succeeded: int, failed: int, running_live: int, executed: int, total_planned: int
-    ):
+    def _render_progress_bar(self, succeeded: int, failed: int, running_live: int, executed: int, total_planned: int):
         # Width is the planned total. Anything beyond `executed` is shown as
         # the "remaining/scheduled" portion (light grey).
         total = max(total_planned, executed, 1)
@@ -597,29 +628,94 @@ class ProjectsOverview:
 
     async def _show_delete_confirm(self, project_dir: Path, name: str) -> bool:
         with ui.dialog() as dialog, ui.card().classes("w-96"):
-            ui.label(f"Delete '{name}'?").style(
-                f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};"
+            ui.label(f"Delete '{name}'?").style(f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};")
+            ui.label("This will permanently remove the project directory and all its contents.").style(
+                f"{FONT} font-size: 12px; color: {CLR_LABEL}; margin-top: 4px;"
             )
-            ui.label(
-                "This will permanently remove the project directory and all its contents."
-            ).style(f"{FONT} font-size: 12px; color: {CLR_LABEL}; margin-top: 4px;")
             ui.label(str(project_dir)).style(
                 f"{MONO} font-size: 10px; color: {CLR_SUBLABEL}; margin-top: 6px; "
                 "padding: 5px 7px; background: #f8fafc; border-radius: 4px; "
                 "word-break: break-all;"
             )
             with ui.row().classes("w-full justify-end mt-3 gap-2"):
-                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props(
-                    "flat no-caps"
-                ).style(f"{FONT} font-size: 12px;")
-                ui.button(
-                    "Delete permanently", on_click=lambda: dialog.submit(True)
-                ).props("no-caps unelevated").style(
-                    f"{FONT} font-size: 12px; background: #be4343; color: white; "
-                    "border-radius: 6px; padding: 3px 14px;"
+                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat no-caps").style(
+                    f"{FONT} font-size: 12px;"
+                )
+                ui.button("Delete permanently", on_click=lambda: dialog.submit(True)).props("no-caps unelevated").style(
+                    f"{FONT} font-size: 12px; background: #be4343; color: white; border-radius: 6px; padding: 3px 14px;"
                 )
         result = await dialog
         return bool(result)
+
+    async def _handle_transfer(self, project_dir: Path, name: str):
+        """Transfer lifecycle owned by the component (mirrors _handle_delete):
+        show the picker dialog, pause auto-refresh, call on_transfer with the
+        chosen owner, then refresh so the row jumps to its new section.
+        on_transfer is just the metadata write -- no disk move."""
+        if self.on_transfer is None or self._outer_container is None:
+            return
+        with self._outer_container:
+            new_owner = await self._show_transfer_dialog(name)
+        if not new_owner:  # cancelled or empty input
+            return
+        self._pause_refresh = True
+        try:
+            await self.on_transfer(project_dir, new_owner)
+            dest = "Lab / Shared" if new_owner == SHARED_OWNER else new_owner
+            ui.notify(f"'{name}' → {dest}", type="positive")
+        except Exception as e:
+            logger.info("Transfer failed for %s: %s", project_dir, e)
+            try:
+                ui.notify(f"Transfer failed: {e}", type="negative")
+            except Exception:
+                pass
+        finally:
+            self._pause_refresh = False
+            await self.refresh()
+
+    async def _show_transfer_dialog(self, name: str) -> Optional[str]:
+        """Returns the new owner (SHARED_OWNER or a username) or None on cancel.
+        Username candidates come from owners/creators already seen in the scan
+        (there's no user directory to enumerate); free text is allowed too."""
+        candidates = sorted({self._eff_owner_of(p) for p in self._projects} - {"", "unknown", SHARED_OWNER})
+        with ui.dialog() as dialog, ui.card().classes("w-96"):
+            ui.label(f"Transfer '{name}'").style(f"{FONT} font-size: 13px; font-weight: 600; color: {CLR_HEADING};")
+            ui.label("Reassigns ownership for grouping only -- the project is not moved on disk.").style(
+                f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; margin-top: 2px;"
+            )
+            username_input = (
+                ui.input(label="Transfer to user", placeholder="username")
+                .props("dense outlined")
+                .classes("w-full")
+                .style("margin-top: 10px;")
+            )
+            if candidates:
+                with ui.row().classes("w-full items-center").style("gap: 4px; flex-wrap: wrap; margin-top: 4px;"):
+                    ui.label("known:").style(f"{MONO} font-size: 9px; color: {CLR_GHOST};")
+                    for cand in candidates:
+                        ui.button(cand, on_click=lambda c=cand: username_input.set_value(c)).props(
+                            "flat dense no-caps size=sm"
+                        ).style(f"{MONO} font-size: 9px; color: {CLR_LABEL}; padding: 0 6px;")
+            with ui.row().classes("w-full justify-between items-center mt-3 gap-2"):
+                ui.button("Move to Lab / Shared", on_click=lambda: dialog.submit(SHARED_OWNER)).props(
+                    "flat no-caps"
+                ).style(f"{FONT} font-size: 12px; color: {CLR_RUNNING};")
+                with ui.row().classes("items-center gap-2"):
+                    ui.button("Cancel", on_click=lambda: dialog.submit(None)).props("flat no-caps").style(
+                        f"{FONT} font-size: 12px;"
+                    )
+                    ui.button(
+                        "Transfer", on_click=lambda: dialog.submit((username_input.value or "").strip() or None)
+                    ).props("no-caps unelevated").style(
+                        f"{FONT} font-size: 12px; background: {CLR_RUNNING}; color: white; "
+                        "border-radius: 6px; padding: 3px 14px;"
+                    )
+        result = await dialog
+        return result
+
+    @staticmethod
+    def _eff_owner_of(p: Dict) -> str:
+        return p.get("owner") or p.get("creator") or "unknown"
 
     @staticmethod
     def _mark_row_deleting(row_el, name: str):
@@ -633,8 +729,7 @@ class ProjectsOverview:
             with row_el:
                 ui.spinner("dots", size="xs").style(f"color: {CLR_SUBLABEL};")
                 ui.label(f"Deleting {name}...").style(
-                    f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; "
-                    "font-style: italic; margin-left: 8px;"
+                    f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; font-style: italic; margin-left: 8px;"
                 )
             row_el.style(add="opacity: 0.5; pointer-events: none; cursor: default;")
             row_el.is_deleted = True
