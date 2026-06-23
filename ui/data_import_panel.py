@@ -490,6 +490,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         await asyncio.to_thread(shutil.rmtree, project_dir)
         remove_project_state(project_dir)
 
+    async def _transfer_project_owner(project_dir: Path, new_owner):
+        """Just the metadata side of an ownership transfer -- ProjectsOverview
+        owns the dialog and the post-transfer refresh (mirrors
+        _delete_project_on_disk). No disk move; only `owner` changes."""
+        await backend.transfer_project_ownership(project_dir, new_owner)
+
     # =========================================================================
     # FILE PICKERS
     # =========================================================================
@@ -681,10 +687,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                     for ts in p.tilt_series
                 ],
                 "tilt_metadata": {
-                    Path(t.frame_filename).stem: t.mdoc_stats
-                    for ts in selected_ts
-                    for t in ts.tilts
-                    if t.mdoc_stats
+                    Path(t.frame_filename).stem: t.mdoc_stats for ts in selected_ts for t in ts.tilts if t.mdoc_stats
                 },
             }
             sel_summary = overview.selected_acquisition_summary()
@@ -724,6 +727,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 import_summary=import_summary,
                 detected_params=detected_params,
                 is_aggregation=di.is_aggregation,
+                shared=di.is_shared,
             )
             if result.get("success"):
                 project_path = Path(result["project_path"])
@@ -735,9 +739,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 if di.is_aggregation:
                     state = backend.state_service.state_for(project_path)
                     ui_mgr.load_from_project(
-                        project_path=state.project_path,
-                        scheme_name=scheme_name,
-                        jobs=list(state.jobs.keys()),
+                        project_path=state.project_path, scheme_name=scheme_name, jobs=list(state.jobs.keys())
                     )
 
                 # Show success state before navigating
@@ -1010,9 +1012,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                             f"{FONT} font-size: 10px; color: {CLR_LABEL};"
                         )
                     count_lbl = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL};")
-                progress_bar = ui.linear_progress(value=0, show_value=False, size="4px").props(
-                    "indeterminate rounded"
-                ).style(f"color: {CLR_ACCENT};")
+                progress_bar = (
+                    ui.linear_progress(value=0, show_value=False, size="4px")
+                    .props("indeterminate rounded")
+                    .style(f"color: {CLR_ACCENT};")
+                )
             local_refs["parse_progress_timer"] = ui.timer(0.15, _tick)
 
         try:
@@ -1169,9 +1173,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                                 "Skip raw-data import. Project starts at SubtomoExtraction "
                                 "and merges optimisation_set.star files from existing projects."
                             ).style(f"{FONT} font-size: 10px;")
-                    ui.switch(
-                        value=ui_mgr.data_import.is_aggregation, on_change=on_aggregation_toggle
-                    ).props("dense").style("transform: scale(0.75);")
+                    ui.switch(value=ui_mgr.data_import.is_aggregation, on_change=on_aggregation_toggle).props(
+                        "dense"
+                    ).style("transform: scale(0.75);")
 
                 aggregation_hint = ui.label(
                     "Aggregation mode: this project will start at SubtomoExtraction. "
@@ -1182,6 +1186,26 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 )
                 aggregation_hint.set_visibility(ui_mgr.data_import.is_aggregation)
                 local_refs["aggregation_hint"] = aggregation_hint
+
+                # Shared/lab ownership toggle: when on, the project is created
+                # with owner = SHARED_OWNER (grouped under "Lab / Shared" in the
+                # roster) instead of belonging to the creating user. `created_by`
+                # still records who actually made it; ownership can be changed
+                # later from the roster.
+                def on_shared_toggle(e):
+                    ui_mgr.update_data_import(is_shared=bool(e.value))
+
+                with ui.row().classes("w-full items-center justify-between mb-2"):
+                    with ui.row().classes("items-center gap-1"):
+                        ui.label("Shared (lab) project").style(field_label_style)
+                        with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
+                            ui.tooltip(
+                                "Create under the shared Lab area instead of your own. "
+                                "Ownership can be transferred later from the roster."
+                            ).style(f"{FONT} font-size: 10px;")
+                    ui.switch(value=ui_mgr.data_import.is_shared, on_change=on_shared_toggle).props("dense").style(
+                        "transform: scale(0.75);"
+                    )
 
                 raw_data_section = ui.column().classes("w-full gap-1")
                 local_refs["raw_data_section"] = raw_data_section
@@ -1293,6 +1317,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 backend,
                 on_open=_open_from_overview,
                 on_delete=_delete_project_on_disk,
+                on_transfer=_transfer_project_owner,
                 base_path_provider=lambda: ui_mgr.data_import.project_base_path or "",
                 auto_refresh_sec=15.0,
                 show_filter=True,
@@ -1311,9 +1336,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 ):
                     with ui.row().classes("items-center gap-1"):
                         ui.icon("folder_open", size="12px")
-                        ui.label("Browse for another base location").style(
-                            f"{FONT} font-size: 10px; font-weight: 500;"
-                        )
+                        ui.label("Browse for another base location").style(f"{FONT} font-size: 10px; font-weight: 500;")
 
             # ----- Recent Project Locations -----
             with ui.column().classes("w-full gap-0").style(card_style):

@@ -325,9 +325,7 @@ class ProjectService:
         frames_dir = project_dir / "frames"
         project_mdoc_glob = str(project_dir / "mdoc" / "*.mdoc")
 
-        ts_list = build_from_mdocs(
-            project_mdoc_glob, frames_dir=frames_dir if frames_dir.exists() else None
-        )
+        ts_list = build_from_mdocs(project_mdoc_glob, frames_dir=frames_dir if frames_dir.exists() else None)
         # Fallback: if the project mdoc dir is empty (shouldn't happen for a
         # post-import project but can for hand-assembled test projects), fall
         # back to the source glob. Warn because this produces unprefixed TS
@@ -336,11 +334,10 @@ class ProjectService:
             logger.warning(
                 "Registry: project mdoc dir empty (%s); falling back to source glob %s. "
                 "TS IDs may not match ts_import output.",
-                project_mdoc_glob, mdocs_glob,
+                project_mdoc_glob,
+                mdocs_glob,
             )
-            ts_list = build_from_mdocs(
-                mdocs_glob, frames_dir=frames_dir if frames_dir.exists() else None
-            )
+            ts_list = build_from_mdocs(mdocs_glob, frames_dir=frames_dir if frames_dir.exists() else None)
         if not ts_list:
             logger.info("Registry: no mdocs found for %s", project_dir)
             return 0
@@ -356,7 +353,9 @@ class ProjectService:
         set_registry_for(project_dir, registry)
         logger.info(
             "Registry: persisted %d tilt-series (%d frames) to %s",
-            len(ts_list), registry.frame_count(), registry.registry_dir,
+            len(ts_list),
+            registry.frame_count(),
+            registry.registry_dir,
         )
         # Prime the path-keyed cache so backend.registry_for(project_dir) hits.
         _ = get_registry_for(project_dir)
@@ -373,6 +372,7 @@ class ProjectService:
         import_summary: Optional[Dict[str, Any]] = None,
         detected_params: Optional[Dict[str, Any]] = None,
         is_aggregation: bool = False,
+        shared: bool = False,
     ):
         try:
             project_dir = Path(project_base_path).expanduser() / project_name
@@ -383,7 +383,12 @@ class ProjectService:
 
             import getpass
             from services.project_nickname import nickname_for
-            from services.project_state import ProjectState, ImportPositionSummary, ImportTiltSeriesSummary
+            from services.project_state import (
+                ProjectState,
+                ImportPositionSummary,
+                ImportTiltSeriesSummary,
+                SHARED_OWNER,
+            )
 
             state = ProjectState()
             state.project_name = project_name
@@ -396,6 +401,8 @@ class ProjectService:
             state.mdocs_glob = mdocs_glob
             state.is_aggregation = is_aggregation
             state.created_by = getpass.getuser()
+            # `created_by` is immutable provenance; `owner` drives sharing/grouping.
+            state.owner = SHARED_OWNER if shared else None
             set_project_state_for(project_dir, state)
 
             # Aggregation projects have no pipeline jobs at creation time.
@@ -569,6 +576,7 @@ class ProjectService:
                         # Clear the stale in-memory registry so the rebuild
                         # starts from empty rather than merging.
                         from services.tilt_series import clear_registry
+
                         clear_registry(project_dir)
                     self._build_and_persist_registry(project_dir, mdocs_glob)
             except Exception as e:

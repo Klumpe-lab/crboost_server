@@ -57,6 +57,11 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION: Tuple[int, int] = (3, 0)
 
+# Sentinel `owner` value marking a project as shared/lab-owned rather than
+# belonging to one user. `owner` is mutable (transfer); `created_by` stays as
+# immutable provenance. None ⇒ owned by `created_by` (the legacy default).
+SHARED_OWNER = "@lab"
+
 
 # ─── Sidecar helpers ────────────────────────────────────────────────────
 # Each registered template / mask file has a `<file>.meta.json` sidecar
@@ -270,9 +275,7 @@ def _migrate_v1_to_v2(data: Dict[str, Any]) -> None:
         # — those move to MRC-header reads / ParticleTemplate respectively).
         if not sp.get("workbench_ui"):
             sp["workbench_ui"] = {
-                k: wb[k]
-                for k in ("auto_box", "apply_lowpass", "basic_shape_def", "auto_infer_seed")
-                if k in wb
+                k: wb[k] for k in ("auto_box", "apply_lowpass", "basic_shape_def", "auto_infer_seed") if k in wb
             }
 
     # Lift particle-intrinsic fields off job models onto the species. Old
@@ -322,9 +325,7 @@ def _migrate_v2_to_v3(data: Dict[str, Any], project_root: Optional[Path]) -> Non
         template_paths_in_collection = {
             t.get("template_path") for t in templates if isinstance(t, dict) and t.get("template_path")
         }
-        mask_paths_in_collection = {
-            m.get("mask_path") for m in masks if isinstance(m, dict) and m.get("mask_path")
-        }
+        mask_paths_in_collection = {m.get("mask_path") for m in masks if isinstance(m, dict) and m.get("mask_path")}
 
         # ── Pull v2 species.template into species.templates ────────────
         selected_template_id: Optional[str] = sp.get("selected_template_id") or None
@@ -334,16 +335,18 @@ def _migrate_v2_to_v3(data: Dict[str, Any], project_root: Optional[Path]) -> Non
             tpath = v2tpl["template_path"]
             v2_template_id = sidecar_ensure(tpath, "template")
             if tpath not in template_paths_in_collection:
-                templates.append({
-                    "id": v2_template_id,
-                    "template_path": tpath,
-                    "polarity": v2tpl.get("polarity", "black"),
-                    "lowpass_resolution_ang": v2tpl.get("lowpass_resolution_ang"),
-                    "source": v2tpl.get("source"),
-                    "imported_from": v2tpl.get("imported_from"),
-                    "created_at": v2tpl.get("created_at"),
-                    "notes": v2tpl.get("notes", ""),
-                })
+                templates.append(
+                    {
+                        "id": v2_template_id,
+                        "template_path": tpath,
+                        "polarity": v2tpl.get("polarity", "black"),
+                        "lowpass_resolution_ang": v2tpl.get("lowpass_resolution_ang"),
+                        "source": v2tpl.get("source"),
+                        "imported_from": v2tpl.get("imported_from"),
+                        "created_at": v2tpl.get("created_at"),
+                        "notes": v2tpl.get("notes", ""),
+                    }
+                )
                 template_paths_in_collection.add(tpath)
             if not selected_template_id:
                 selected_template_id = v2_template_id
@@ -354,18 +357,20 @@ def _migrate_v2_to_v3(data: Dict[str, Any], project_root: Optional[Path]) -> Non
                 mpath = v2mask["mask_path"]
                 mid = sidecar_ensure(mpath, "mask")
                 if mpath not in mask_paths_in_collection:
-                    masks.append({
-                        "id": mid,
-                        "mask_path": mpath,
-                        "method": v2mask.get("method"),
-                        "threshold": v2mask.get("threshold"),
-                        "extend_pixels": v2mask.get("extend_pixels"),
-                        "soft_edge_pixels": v2mask.get("soft_edge_pixels"),
-                        "lowpass_ang": v2mask.get("lowpass_ang"),
-                        "derived_from_template_id": v2_template_id,
-                        "created_at": v2mask.get("created_at"),
-                        "notes": v2mask.get("notes", ""),
-                    })
+                    masks.append(
+                        {
+                            "id": mid,
+                            "mask_path": mpath,
+                            "method": v2mask.get("method"),
+                            "threshold": v2mask.get("threshold"),
+                            "extend_pixels": v2mask.get("extend_pixels"),
+                            "soft_edge_pixels": v2mask.get("soft_edge_pixels"),
+                            "lowpass_ang": v2mask.get("lowpass_ang"),
+                            "derived_from_template_id": v2_template_id,
+                            "created_at": v2mask.get("created_at"),
+                            "notes": v2mask.get("notes", ""),
+                        }
+                    )
                     mask_paths_in_collection.add(mpath)
                 if not sp.get("selected_mask_id"):
                     sp["selected_mask_id"] = mid
@@ -391,11 +396,13 @@ def _migrate_v2_to_v3(data: Dict[str, Any], project_root: Optional[Path]) -> Non
                         if fpath in mask_paths_in_collection:
                             continue
                         mid = sidecar_ensure(fpath, "mask")
-                        masks.append({
-                            "id": mid,
-                            "mask_path": fpath,
-                            "method": "imported",  # unknown provenance
-                        })
+                        masks.append(
+                            {
+                                "id": mid,
+                                "mask_path": fpath,
+                                "method": "imported",  # unknown provenance
+                            }
+                        )
                         mask_paths_in_collection.add(fpath)
                     else:
                         if fpath in template_paths_in_collection:
@@ -407,11 +414,7 @@ def _migrate_v2_to_v3(data: Dict[str, Any], project_root: Optional[Path]) -> Non
                         else:
                             polarity = "black"
                         entry_id = sidecar_ensure(fpath, "template")
-                        templates.append({
-                            "id": entry_id,
-                            "template_path": fpath,
-                            "polarity": polarity,
-                        })
+                        templates.append({"id": entry_id, "template_path": fpath, "polarity": polarity})
                         template_paths_in_collection.add(fpath)
 
         # Default selected_template_id to first template entry if not set
@@ -576,6 +579,11 @@ class ProjectState(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     modified_at: datetime = Field(default_factory=datetime.now)
     created_by: Optional[str] = None
+    # Mutable ownership for sharing/transfer. None ⇒ owned by `created_by`;
+    # SHARED_OWNER ("@lab") ⇒ shared/lab project; otherwise a username the
+    # project was transferred to. Pure attribution/grouping metadata — never
+    # affects the on-disk location.
+    owner: Optional[str] = None
     job_path_mapping: Dict[str, str] = Field(default_factory=dict)
 
     movies_glob: str = ""
@@ -643,6 +651,15 @@ class ProjectState(BaseModel):
     @property
     def is_dirty(self) -> bool:
         return self._dirty
+
+    @property
+    def effective_owner(self) -> Optional[str]:
+        """Attribution target: explicit `owner` if set, else `created_by`."""
+        return self.owner or self.created_by
+
+    @property
+    def is_shared(self) -> bool:
+        return self.owner == SHARED_OWNER
 
     def save_if_dirty(self, path: Optional[Path] = None):
         if self.is_dirty:
@@ -851,6 +868,7 @@ class ProjectState(BaseModel):
             created_at=datetime.fromisoformat(data.get("created_at", datetime.now().isoformat())),
             modified_at=datetime.fromisoformat(data.get("modified_at", datetime.now().isoformat())),
             created_by=data.get("created_by"),
+            owner=data.get("owner"),
             movies_glob=data.get("movies_glob", ""),
             mdocs_glob=data.get("mdocs_glob", ""),
             microscope=MicroscopeParams(**data.get("microscope", {})),

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 import pandas as pd
 from pathlib import Path
 from typing import Dict, Any, List, Optional
@@ -34,6 +35,14 @@ class PipelineRunnerService:
         # tracked here so is_active() reports true and sync_all_jobs doesn't clear
         # pipeline_active out from under a running retry.
         self._retry_monitors: Dict[Path, asyncio.Task] = {}
+        # First-seen monotonic time per instance_id that is currently QUEUED in
+        # SLURM, so the UI can show how long a job has been waiting for cluster
+        # nodes (a long pending time reads as a cluster wait, not a hung
+        # orchestrator). Populated/pruned in get_pipeline_overview. In-memory
+        # only — resets on server restart, which is fine: the queue-wait context
+        # is ephemeral. Keyed "<project_path>::<instance_id>" to stay correct
+        # across multiple loaded projects sharing this singleton.
+        self._queued_since: Dict[str, float] = {}
         self.job_resolver = JobTypeResolver(backend_instance.pipeline_orchestrator.star_handler)
 
     def is_active(self, project_path: Path) -> bool:
@@ -229,21 +238,30 @@ class PipelineRunnerService:
             if status_str == "Pending":
                 new_status = JobStatus.SCHEDULED
             elif status_str == "Running":
-                job_dir_abs = str((Path(project_path) / job_path_clean).resolve())
-                sj = slurm_jobs_by_dir.get(job_dir_abs)
+                job_dir_clean = Path(project_path) / job_path_clean
+                sj = slurm_jobs_by_dir.get(str(job_dir_clean.resolve()))
+                supervisor_pending = False
                 if sj:
                     job_model.slurm_job_id = sj.job_id
-                    new_status = JobStatus.QUEUED if sj.state == "PENDING" else JobStatus.RUNNING
-                else:
-                    new_status = JobStatus.RUNNING
+                    supervisor_pending = sj.state == "PENDING"
 
-                # For array-dispatching jobs: if the supervisor wrote a task
-                # manifest, the job is actively running even if the supervisor's
-                # own SLURM state is still PENDING (children may already be running).
-                if new_status == JobStatus.QUEUED:
-                    manifest_path = Path(project_path) / job_path_clean / ".task_manifest.json"
-                    if manifest_path.exists():
+                # Honest RUNNING for array-dispatching jobs. The supervisor writes
+                # .task_manifest.json BEFORE it sbatches the child array, and its
+                # own SLURM state can read RUNNING while every child task is still
+                # PENDING in the queue. So neither manifest-existence nor the
+                # supervisor's state is a truthful "work in flight" signal — both
+                # produce a spinning spinner over a job that is doing nothing yet.
+                # SLURM creates task_<idx>.out the moment a child STARTS, so that
+                # is the real signal: the job stays QUEUED while its tasks wait for
+                # cluster nodes, and only flips to RUNNING (spinner) once a task
+                # actually runs. Non-array jobs fall back to the supervisor state.
+                if (job_dir_clean / ".task_manifest.json").exists():
+                    if any(job_dir_clean.glob("task_*.out")):
                         new_status = JobStatus.RUNNING
+                    else:
+                        new_status = JobStatus.QUEUED
+                else:
+                    new_status = JobStatus.QUEUED if supervisor_pending else JobStatus.RUNNING
             else:
                 try:
                     new_status = JobStatus(status_str)
@@ -381,6 +399,7 @@ class PipelineRunnerService:
         state = self.backend.state_service.state_for(Path(project_path))
 
         if not state.jobs:
+            self._prune_queued_since(str(project_path), set())
             return {
                 "status": "ok",
                 "total": 0,
@@ -388,12 +407,17 @@ class PipelineRunnerService:
                 "running": 0,
                 "failed": 0,
                 "scheduled": 0,
+                "queued": 0,
+                "queued_jobs": [],
                 "is_complete": True,
                 "jobs": {},
             }
 
-        total = succeeded = running = failed = scheduled = 0
-        for job_model in state.jobs.values():
+        now = time.monotonic()
+        total = succeeded = running = failed = scheduled = queued = 0
+        queued_jobs: List[Dict[str, Any]] = []
+        live_queued_keys: set = set()
+        for iid, job_model in state.jobs.items():
             # IMPORT_MOVIES is a local pre-step; TS_IMPORT is a silently-injected
             # prerequisite of TS_ALIGNMENT (see pipeline_builder_panel._PREREQUISITES).
             # Neither appears in the user-visible roster (PHASE_JOBS), so both
@@ -417,6 +441,21 @@ class PipelineRunnerService:
                 failed += 1
             elif s == JobStatus.SCHEDULED:
                 scheduled += 1
+            elif s == JobStatus.QUEUED:
+                queued += 1
+                key = f"{project_path}::{iid}"
+                live_queued_keys.add(key)
+                since = self._queued_since.setdefault(key, now)
+                queued_jobs.append(
+                    {
+                        "instance_id": iid,
+                        "slurm_job_id": getattr(job_model, "slurm_job_id", None),
+                        "pending_secs": max(0, int(now - since)),
+                    }
+                )
+
+        # Drop timers for jobs in this project that are no longer queued.
+        self._prune_queued_since(str(project_path), live_queued_keys)
 
         return {
             "status": "ok",
@@ -425,9 +464,19 @@ class PipelineRunnerService:
             "running": int(running),
             "failed": int(failed),
             "scheduled": int(scheduled),
-            "is_complete": running == 0 and total > 0,
+            "queued": int(queued),
+            "queued_jobs": queued_jobs,
+            # A pipeline with anything still queued or scheduled is NOT complete,
+            # even though `running == 0` — a job waiting for a SLURM node has
+            # running == 0 but is very much not done.
+            "is_complete": running == 0 and queued == 0 and scheduled == 0 and total > 0,
             "jobs": {},
         }
+
+    def _prune_queued_since(self, project_path: str, live_keys: set) -> None:
+        prefix = f"{project_path}::"
+        for key in [k for k in self._queued_since if k.startswith(prefix) and k not in live_keys]:
+            self._queued_since.pop(key, None)
 
     async def get_job_logs(self, project_path: str, job_name: str) -> Dict[str, str]:
         job_path = Path(project_path) / job_name.rstrip("/")

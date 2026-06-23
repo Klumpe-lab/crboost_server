@@ -34,7 +34,7 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command
+from drivers.driver_base import get_driver_context, run_command, require_producer_input
 from services.computing.container_service import get_container_service
 from services.jobs.ts_alignment import TsAlignmentParams
 from services.models_base import AlignmentMethod
@@ -217,12 +217,10 @@ def run_supervisor_mode():
         instance_id = local_params_data["instance_id"]
 
         tomostar_dir = paths["tomostar_dir"]
-        if not tomostar_dir.exists():
-            raise FileNotFoundError(f"Tomostar directory not found: {tomostar_dir}")
+        require_producer_input(tomostar_dir, "Tomostar directory")
 
         settings_file = paths["warp_tiltseries_settings"]
-        if not settings_file.exists():
-            raise FileNotFoundError(f"Settings file not found: {settings_file}")
+        require_producer_input(settings_file, "Settings file")
 
         # Copy the tomostar dir and settings into the job dir so staged environments
         # can reference them with stable paths

@@ -41,6 +41,10 @@ class DataImportFormState(BaseModel):
     # Aggregation mode: skip raw frames/mdocs, start at SubtomoExtraction.
     is_aggregation: bool = False
 
+    # Create the project as shared/lab-owned (owner = SHARED_OWNER) rather than
+    # belonging to the creating user.
+    is_shared: bool = False
+
     detected_pixel_size: Optional[float] = None
     detected_voltage: Optional[float] = None
     detected_dose_per_tilt: Optional[float] = None
@@ -508,6 +512,7 @@ class UIStateManager:
         movies_valid: Optional[bool] = None,
         mdocs_valid: Optional[bool] = None,
         is_aggregation: Optional[bool] = None,
+        is_shared: Optional[bool] = None,
     ):
         di = self._state.data_import
         if project_name is not None:
@@ -526,6 +531,8 @@ class UIStateManager:
             di.mdocs_valid = mdocs_valid
         if is_aggregation is not None:
             di.is_aggregation = is_aggregation
+        if is_shared is not None:
+            di.is_shared = is_shared
 
     def update_detected_params(
         self,

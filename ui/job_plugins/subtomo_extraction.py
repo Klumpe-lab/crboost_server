@@ -76,7 +76,87 @@ def render_subtomo_extraction_params(job_type, job_model, is_frozen, save_handle
         save_handler()
         _render_box_vs_diameter_warning(warning_container, state, species, job_model)
 
+    # Collapsed explainer (box vs crop vs binning + worked scenarios) sitting
+    # directly above the fields it describes. Mirrors the dashboard's box/crop
+    # header tooltips so the same guidance is one hover/click away here.
+    _render_box_crop_help()
     render_default_params_card(job_type, job_model, is_frozen, _on_save, ui_mgr=ui_mgr)
+
+
+def _render_box_crop_help() -> None:
+    """Collapsed explainer for box / crop / binning, with a few worked
+    scenarios. The numbers are illustrative (fixed Ø + unbinned px) — the live
+    box-vs-diameter check above already uses the project's real values; this
+    block is the conceptual "what do these two numbers even mean" reference.
+    Kept in sync with the dashboard's box/crop header tooltips (ui/dashboard/
+    pixel_sanity.py)."""
+    defs = [
+        (
+            "box",
+            "reconstruction box — the cube RELION builds each pseudo-subtomogram in. Big "
+            "enough to hold the particle PLUS the CTF-delocalized signal high defocus smears "
+            "outward; too small truncates high-res info.",
+        ),
+        (
+            "crop",
+            "output box — the central cube kept after reconstruction (what Refine3D / Class3D "
+            "load; sets file size + memory). The rebuild re-localizes signal to the center, "
+            "so the outer rim is redundant and safe to trim. -1 = no cropping.",
+        ),
+        (
+            "binning",
+            "voxel size = unbinned px × binning. box & crop are counted in these voxels, so "
+            "Å = N × voxel. Higher binning → coarser voxels, smaller & faster subtomos, "
+            "lower attainable resolution.",
+        ),
+    ]
+    scenarios = [
+        (
+            "✅",
+            "#16a34a",
+            "Balanced · bin 4 (4 Å voxel)",
+            "box 192 vox = 768 Å (2.6× Ø) · crop 112 vox = 448 Å (1.5× Ø)",
+        ),
+        (
+            "❌",
+            "#dc2626",
+            "Box too small · bin 4",
+            "box 64 vox = 256 Å (0.85× Ø) — particle clipped, delocalized signal lost. Raise box ≥ 150 vox.",
+        ),
+        (
+            "⚠",
+            "#d97706",
+            "Crop too tight · bin 2 (2 Å voxel)",
+            "box 320 vox = 640 Å (2.1× Ø ✓) · crop 160 vox = 320 Å (1.07× Ø) — almost no shift "
+            "margin. Raise crop ≥ 225 vox (1.5×).",
+        ),
+    ]
+    with (
+        ui.expansion("Box & crop sizing — what these mean", icon="straighten")
+        .classes("w-full text-[11px] mt-1")
+        .props("dense")
+    ):
+        with ui.column().classes("w-full gap-1 px-1 pb-1"):
+            with ui.element("div").style("display: grid; grid-template-columns: 54px 1fr; gap: 2px 8px; width: 100%;"):
+                for term, body in defs:
+                    ui.label(term).classes("text-[11px] font-mono font-semibold text-indigo-700")
+                    ui.label(body).classes("text-[11px] text-gray-600")
+            ui.label(
+                "Rules: crop ≤ box · box ≈ 2–3× particle Ø (1.5× floor) · crop ≥ ~1.5× Ø · prefer even numbers."
+            ).classes("text-[11px] text-gray-500 mt-1")
+            ui.label("Examples — particle Ø ≈ 300 Å, unbinned 1.0 Å/px:").classes(
+                "text-[11px] font-semibold text-gray-700 mt-1"
+            )
+            for icon, color, title, detail in scenarios:
+                with (
+                    ui.row()
+                    .classes("w-full items-baseline gap-2")
+                    .style(f"border-left: 2px solid {color}; padding-left: 6px;")
+                ):
+                    ui.label(icon).style(f"color: {color}; font-size: 11px; flex-shrink: 0;")
+                    with ui.column().classes("gap-0").style("flex: 1; min-width: 0;"):
+                        ui.label(title).classes("text-[11px] font-semibold text-gray-700")
+                        ui.label(detail).classes("text-[11px] text-gray-500 font-mono")
 
 
 def _render_empty_upstream_banner(job_model) -> None:

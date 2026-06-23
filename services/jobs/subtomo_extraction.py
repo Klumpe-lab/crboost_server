@@ -82,9 +82,33 @@ class SubtomoExtractionParams(AbstractJobParams):
     merge_only: bool = Field(default=False, description="If true, skip relion_tomo_subtomo and only merge")
 
     # Extraction parameters
-    binning: float = Field(default=1.0, description="Binning factor relative to unbinned data")
-    box_size: int = Field(default=384, description="Box size in binned pixels")
-    crop_size: int = Field(default=224, description="Cropped box size (-1 = no cropping)")
+    binning: float = Field(
+        default=1.0,
+        description=(
+            "Output voxel size = unbinned pixel size × this factor. box_size and crop_size are "
+            "counted in these binned voxels, so physical size (Å) = N × voxel. Higher binning → "
+            "coarser voxels, smaller & faster subtomos, lower attainable resolution. "
+            "E.g. 1.0 Å/px unbinned at bin 4 → 4 Å voxels."
+        ),
+    )
+    box_size: int = Field(
+        default=384,
+        description=(
+            "Reconstruction box, in binned voxels: the cube RELION builds each pseudo-subtomogram "
+            "in. Must hold the particle PLUS the CTF-delocalized signal high defocus smears outward "
+            "(too small truncates high-res info). Aim ~2–3× particle diameter (1.5× floor). "
+            "E.g. bin 4 → 192 vox = 768 Å. Prefer even numbers."
+        ),
+    )
+    crop_size: int = Field(
+        default=224,
+        description=(
+            "Output box, in binned voxels: the central cube kept after reconstruction — what "
+            "Refine3D/Class3D load, so it sets file size + memory. Must be ≤ box_size and still "
+            "hold the particle + alignment-shift margin (aim ≥ ~1.5× diameter). -1 = no cropping "
+            "(output = box_size). E.g. bin 4 → 112 vox = 448 Å."
+        ),
+    )
     # Output format
     do_float16: bool = Field(default=True, description="Write output in float16 to save space")
     do_stack2d: bool = Field(default=True, description="Write as 2D stacks (preferred for RELION 4.1+)")
