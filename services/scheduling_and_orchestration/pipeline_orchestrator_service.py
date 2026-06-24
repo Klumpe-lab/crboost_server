@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
+from services.computing.slurm_service import normalize_slurm_ids
 from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
@@ -16,6 +17,44 @@ if TYPE_CHECKING:
     from backend import CryoBoostBackend
 
 logger = logging.getLogger(__name__)
+
+
+def _toposort_submit_order(nodes: List[str], edges: List[tuple]) -> tuple:
+    """Kahn's topological sort over (producer, consumer) edges restricted to ``nodes``.
+
+    Returns ``(ordered_nodes, predecessors)`` where ``predecessors[c]`` is the set of
+    producer instance_ids of ``c`` within ``nodes``. Raises ``ValueError`` on a cycle.
+    Seeds the queue in ``nodes`` order so independent jobs keep their pipeline/UI order.
+    """
+    from collections import deque
+
+    nodeset = set(nodes)
+    indeg = {n: 0 for n in nodes}
+    succ: Dict[str, List[str]] = {n: [] for n in nodes}
+    preds: Dict[str, set] = {n: set() for n in nodes}
+    for producer, consumer in edges:
+        if producer not in nodeset or consumer not in nodeset or producer == consumer:
+            continue
+        if producer in preds[consumer]:
+            continue  # dedup (resolve_edges already dedups; defensive)
+        preds[consumer].add(producer)
+        succ[producer].append(consumer)
+        indeg[consumer] += 1
+
+    queue = deque([n for n in nodes if indeg[n] == 0])
+    order: List[str] = []
+    while queue:
+        n = queue.popleft()
+        order.append(n)
+        for m in succ[n]:
+            indeg[m] -= 1
+            if indeg[m] == 0:
+                queue.append(m)
+
+    if len(order) != len(nodes):
+        stuck = nodeset - set(order)
+        raise ValueError(f"cycle among {sorted(stuck)}")
+    return order, preds
 
 
 class PipelineOrchestratorService:
@@ -41,6 +80,14 @@ class PipelineOrchestratorService:
                 "message": "Pipeline is already running. Wait for it to complete or cancel it first.",
             }
 
+        # Persist the participating set + order for this run (P1.0 of the orchestrator
+        # rework) so a tab-less submitter/reconciler has the pipeline membership
+        # without UIState. The FULL selected set, in UI order (incl. already-finished
+        # upstreams, which the afterok DAG needs as producers). The save on the
+        # retry/fresh paths below persists it.
+        state.pipeline_order = list(selected_instance_ids)
+        state.mark_dirty()
+
         instances_to_run: List[str] = []
         for instance_id in selected_instance_ids:
             job_model = state.jobs.get(instance_id)
@@ -58,10 +105,17 @@ class PipelineOrchestratorService:
                 "pid": 0,
             }
 
-        # Partition: jobs that FAILED with an existing External/jobNNN dir get
-        # re-sbatched in place (preserves .task_status/*.ok for per-TS skip).
-        # Fresh jobs go through the schemer as before. If both exist, retries
-        # run first; the monitor hands off to the schemer on success.
+        # Orchestrator rework (P1.A): when the project opts into the afterok DAG, submit the WHOLE
+        # remaining set (FAILED + fresh) directly via SLURM dependencies. _submit_chain allocates
+        # fresh External/jobNNN dirs and rewires the afterok edges, so afterok re-runs do NOT use the
+        # schemer in-place retry path below; edges to already-SUCCEEDED producers are dropped (their
+        # outputs exist on disk). Dormant unless the flag is set; the schemer path is unchanged when off.
+        if state.use_afterok_orchestrator:
+            return await self._submit_chain(project_dir=project_dir, instances_to_run=instances_to_run, state=state)
+
+        # Schemer path -- Partition: jobs that FAILED with an existing External/jobNNN dir get
+        # re-sbatched in place (preserves .task_status/*.ok for per-TS skip). Fresh jobs go through
+        # the schemer as before. If both exist, retries run first; the monitor hands off on success.
         retry_ids: List[str] = []
         fresh_ids: List[str] = []
         for iid in instances_to_run:
@@ -191,6 +245,220 @@ class PipelineOrchestratorService:
             project_dir=project_dir, scheme_name=scheme_name, bind_paths=list(set(bind_paths))
         )
 
+    async def _submit_chain(self, project_dir: Path, instances_to_run: List[str], state) -> Dict[str, Any]:
+        """P1.A: submit the pipeline as a SLURM afterok DAG instead of via relion_schemer.
+
+        For each fresh job: allocate a stable External/jobNNN dir from the ProjectState
+        counter (no reuse-on-rerun -> no off-by-one), resolve paths, write the RELION-compat
+        job.star, and render run_submit.script. Then toposort resolve_edges() and sbatch each
+        supervisor with --dependency=afterok on its producers' supervisor job ids.
+
+        This method SUBMITS and persists slurm_job_id + QUEUED + pipeline_active=True. The monitor
+        dispatches afterok projects to reconcile_afterok (P1.B) -- which owns live status and winds
+        pipeline_active back down on completion -- while sync_all_jobs stays guarded off for them.
+        The chain executes in SLURM regardless of the headnode process (the durability win).
+
+        Failure handling: job-dir allocation uses a LOCAL counter committed to ProjectState only
+        after a clean prepare + toposort, so an early failure leaks neither the counter nor a
+        persisted dir number; whatever reaches SLURM is always persisted, so no slurm_job_id handle
+        is lost on a mid-chain sbatch error.
+        """
+        server_dir = Path(__file__).parent.parent.parent.resolve()
+
+        # Seed the sole job-dir allocator once from the existing RELION counter, then own it.
+        # (P1.C removes the star read entirely.)
+        if not state.job_dir_counter:
+            state.job_dir_counter = max(self._get_current_relion_counter(project_dir), 1)
+        # Allocate from a LOCAL counter during prepare; commit to state.job_dir_counter only after
+        # the whole prepare + toposort succeeds, so an early failure leaks neither the counter nor a
+        # persisted dir number (mirrors the schemer path's discardable local next_job_num).
+        next_job_num = state.job_dir_counter
+
+        resolver = PathResolutionService(state, active_instance_ids=set(instances_to_run))
+
+        prepared: Dict[str, tuple] = {}  # instance_id -> (job_dir, script_path)
+        for instance_id in instances_to_run:
+            job_model = state.jobs.get(instance_id)
+            if not job_model:
+                base_type_str = instance_id.split("__")[0]
+                try:
+                    job_type = JobType(base_type_str)
+                except ValueError:
+                    return {"success": False, "message": f"Unknown job type for instance '{instance_id}'"}
+                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
+                state.ensure_job_initialized(job_type, instance_id=instance_id, template_path=template_base)
+                job_model = state.jobs.get(instance_id)
+
+            job_type = job_model.job_type
+            category = JobCategory.IMPORT if job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
+
+            # Sole allocator: always consume a counter slot. No reuse-on-rerun branch
+            # (that was the documented off-by-one root) -- each submit owns a stable dir.
+            job_num = next_job_num
+            next_job_num += 1
+            rel = f"{category.value}/job{job_num:03d}"
+            job_dir = project_dir / rel
+            job_dir.mkdir(parents=True, exist_ok=True)
+            # Clear any stale exit sentinels so the reconciler's pass-1 can't latch a prior run's
+            # terminal status on a reused dir (mirrors the schemer prep path; correctness no longer
+            # depends on job_dir_counter monotonicity).
+            for _marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
+                (job_dir / _marker).unlink(missing_ok=True)
+
+            try:
+                io_paths = resolver.resolve_all_paths(job_type, job_model, job_dir, instance_id=instance_id)
+                context_paths = get_context_paths(job_type, job_model, job_dir)
+                resolved_paths = {**context_paths, **io_paths}
+            except PathResolutionError as e:
+                job_model.is_orphaned = True
+                job_model.missing_inputs = [str(e)]
+                return {"success": False, "message": f"Path resolution failed for {instance_id}: {e}"}
+
+            job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v is not None}
+            job_model.is_orphaned = False
+            job_model.missing_inputs = []
+            job_model.relion_job_name = rel + "/"
+            job_model.relion_job_number = job_num
+            state.job_path_mapping[instance_id] = rel
+            resolver.invalidate_cache()
+
+            # RELION-compat job.star into the real job dir (P1.C builds the full export on this).
+            self._write_job_star(
+                scheme_job_dir=job_dir,
+                instance_id=instance_id,
+                job_type=job_type,
+                job_model=job_model,
+                server_dir=server_dir,
+                project_dir=project_dir,
+            )
+
+            # IMPORT is metadata-only: write tilt_series.star ourselves from the registry inline
+            # (Option B, §6a) -- no relion binary, no supervisor, no afterok SLURM job. Mark it
+            # Succeeded + drop the exit sentinel so the roster/DAG show it and its consumers submit
+            # with no afterok producer (the star is on disk before the chain runs). Excluded from
+            # `prepared`, hence from the submit set/DAG below.
+            if job_type == JobType.IMPORT_MOVIES:
+                try:
+                    self._write_import_stars_inline(job_model, job_dir, project_dir)
+                except Exception as e:
+                    logger.exception("inline import writer failed for %s", instance_id)
+                    return {"success": False, "message": f"Import writer failed for {instance_id}: {e}"}
+                (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
+                job_model.execution_status = JobStatus.SUCCEEDED
+                job_model.slurm_job_id = None
+            else:
+                fn_exe = self._build_fn_exe(instance_id, job_type, job_model, project_dir, server_dir)
+                script_path = self._render_supervisor_script(job_dir, job_model, fn_exe, server_dir)
+                prepared[instance_id] = (job_dir, script_path)
+
+        # Derive the dependency DAG, restrict to the SUBMITTED set, toposort (cycle-checked).
+        # `prepared` excludes inline-completed jobs (e.g. IMPORT); an edge from such a producer to a
+        # submitted consumer drops out here, so the consumer submits with no afterok dep -- correct,
+        # since the producer's output is already on disk.
+        resolver.invalidate_cache()
+        edges = resolver.resolve_edges(instances_to_run)
+        submit_ids = list(prepared)
+        submit_set = set(submit_ids)
+        edges = [(p, c) for (p, c) in edges if p in submit_set and c in submit_set]
+        try:
+            order, preds = _toposort_submit_order(submit_ids, edges)
+        except ValueError as e:
+            return {"success": False, "message": f"Pipeline DAG is not acyclic ({e}); cannot submit afterok chain."}
+
+        # Prepare + toposort succeeded -> commit the allocator (these job dirs are now owned).
+        state.job_dir_counter = next_job_num
+
+        # Submit each supervisor in topo order, gating on its producers' supervisor ids. On a
+        # mid-chain sbatch error, stop the loop but still persist what already reached SLURM below.
+        instance_to_slurm: Dict[str, str] = {}
+        submitted: List[Dict[str, Any]] = []
+        submit_error: Optional[tuple] = None
+        for instance_id in order:
+            _job_dir, script_path = prepared[instance_id]
+            after_ids = normalize_slurm_ids(
+                [instance_to_slurm[p] for p in preds.get(instance_id, set()) if p in instance_to_slurm]
+            )
+            try:
+                slurm_id = await self.backend.pipeline_runner.submit_supervisor(
+                    script_path=script_path, cwd=project_dir, after_ids=after_ids or None
+                )
+            except Exception as e:
+                logger.exception("afterok submit failed for %s", instance_id)
+                submit_error = (instance_id, e)
+                break
+
+            instance_to_slurm[instance_id] = slurm_id
+            job_model = state.jobs[instance_id]
+            job_model.slurm_job_id = slurm_id
+            job_model.execution_status = JobStatus.QUEUED
+            submitted.append({"instance_id": instance_id, "slurm_job_id": slurm_id, "afterok": after_ids})
+            logger.info("submit_chain: %s -> slurm %s (afterok=%s)", instance_id, slurm_id, after_ids)
+
+        # Mark the run active (so the monitor ticks it -> reconcile_afterok) and persist the
+        # committed counter + every submitted handle (on success OR partial failure) so no live
+        # SLURM job is left unrecorded and a restart can re-observe the chain. reconcile_afterok
+        # owns winding pipeline_active back down when every job reaches a terminal state.
+        if submitted:
+            state.pipeline_active = True
+        state.mark_dirty()
+        await self.backend.state_service.save_project(project_path=project_dir, force=True)
+
+        if submit_error is not None:
+            failed_iid, err = submit_error
+            return {
+                "success": False,
+                "message": (
+                    f"sbatch failed for {failed_iid}: {err}. {len(submitted)} earlier job(s) are queued "
+                    f"in SLURM and recorded; cancel them manually until the P1.B reconciler lands."
+                ),
+                "afterok": True,
+                "submitted": submitted,
+            }
+
+        return {
+            "success": True,
+            "message": f"Submitted {len(submitted)} job(s) as a SLURM afterok DAG (schemer-free).",
+            "pid": 0,
+            "afterok": True,
+            "submitted": submitted,
+        }
+
+    def _render_supervisor_script(
+        self, job_dir: Path, job_model: AbstractJobParams, fn_exe: str, server_dir: Path
+    ) -> Path:
+        """Render config/qsub.sh -> <job_dir>/run_submit.script for a direct (schemer-free)
+        supervisor submit (P1.A).
+
+        Resources come from job_model._get_queue_options() -- the same per-job-type routing the
+        schemer reads from job.star (array jobs -> lightweight supervisor_slurm_defaults; single
+        jobs -> get_effective_slurm_config). Unlike the array renderer, the RELION_JOB_EXIT marker
+        block is KEPT: for a single supervisor job that marker is the completion signal.
+        """
+        template = (server_dir / "config" / "qsub.sh").read_text()
+        opts = dict(job_model._get_queue_options())  # qsub_extra1..8 already routed per job type
+
+        replacements = {
+            "XXXextra1XXX": opts.get("qsub_extra1", ""),  # partition
+            "XXXextra2XXX": opts.get("qsub_extra2", "").strip("'\""),  # constraint (template wraps it in quotes)
+            "XXXextra3XXX": opts.get("qsub_extra3", "1"),  # nodes
+            "XXXextra4XXX": opts.get("qsub_extra4", "1"),  # ntasks-per-node
+            "XXXextra5XXX": opts.get("qsub_extra5", "1"),  # cpus-per-task
+            "XXXextra6XXX": opts.get("qsub_extra6", ""),  # gres
+            "XXXextra7XXX": opts.get("qsub_extra7", ""),  # mem
+            "XXXextra8XXX": opts.get("qsub_extra8", ""),  # time
+            "XXXoutfileXXX": str(job_dir / "run.out"),
+            "XXXerrfileXXX": str(job_dir / "run.err"),
+            "XXXcommandXXX": fn_exe,
+        }
+        script = template
+        for placeholder, value in replacements.items():
+            script = script.replace(placeholder, value)
+
+        out_path = job_dir / "run_submit.script"
+        out_path.write_text(script)
+        out_path.chmod(0o755)
+        return out_path
+
     def _write_job_star(
         self,
         scheme_job_dir: Path,
@@ -274,38 +542,80 @@ class PipelineOrchestratorService:
 
         return int(counter)
 
+    def _write_import_stars_inline(self, job_model: ImportMoviesParams, job_dir: Path, project_dir: Path) -> None:
+        """Write ``Import/jobNNN/tilt_series.star`` + per-TS ``tilt_series/<TS>.star`` from the
+        TiltSeriesRegistry, reproducing what relion_python_tomo_import would emit (Option B; see
+        ORCHESTRATOR_REPLACEMENT_PLAN.md §6a). Runs inline in the server process -- pure metadata,
+        no relion binary, no container, no SLURM job. Columns mirror a known-good schemer-produced
+        import (the ``post_handedness_fix`` oracle): an 8-col global block + a 6-col per-TS block,
+        per-tilt rows in acquisition (tilt_index) order.
+        """
+        from services.tilt_series import get_registry_for
+        from services.configs.mdoc_service import get_mdoc_service
+
+        registry = get_registry_for(project_dir)
+        mdoc_service = get_mdoc_service()
+        rel = job_model.relion_job_name  # "Import/jobNNN/"
+        hand = -1 if job_model.acquisition.invert_defocus_hand else 1
+
+        per_ts_dir = job_dir / "tilt_series"
+        per_ts_dir.mkdir(parents=True, exist_ok=True)
+
+        global_rows: List[Dict[str, Any]] = []
+        for ts in sorted(registry.all_tilt_series(), key=lambda t: t.id):
+            # rlnTomoNominalDefocus (mdoc TargetDefocus) is not persisted in the registry; source it
+            # from the project mdoc, matched by movie basename. Non-fatal if absent (informational
+            # column, not consumed by our pipeline) -> defaults to 0.0.
+            target_defocus: Dict[str, float] = {}
+            try:
+                for sec in mdoc_service.parse_mdoc_file(ts.mdoc_path).get("data", []):
+                    sub = sec.get("SubFramePath", "").replace("\\", "/")
+                    if sub and "TargetDefocus" in sec:
+                        try:
+                            target_defocus[Path(sub).name] = float(sec["TargetDefocus"])
+                        except (TypeError, ValueError):
+                            pass
+            except Exception:
+                logger.warning("import writer: could not read mdoc %s for TS %s", ts.mdoc_path, ts.id)
+
+            frames = sorted(ts.frames, key=lambda f: f.tilt_index)
+            per_ts_df = pd.DataFrame(
+                {
+                    "rlnMicrographMovieName": [f"frames/{f.raw_filename}" for f in frames],
+                    "rlnTomoTiltMovieFrameCount": [1 for _ in frames],
+                    "rlnTomoNominalStageTiltAngle": [f.nominal_tilt_angle_deg for f in frames],
+                    "rlnTomoNominalTiltAxisAngle": [job_model.tilt_axis_angle for _ in frames],
+                    "rlnMicrographPreExposure": [f.pre_exposure_e_per_a2 for f in frames],
+                    "rlnTomoNominalDefocus": [target_defocus.get(f.raw_filename, 0.0) for f in frames],
+                }
+            )
+            self.star_handler.write({ts.id: per_ts_df}, per_ts_dir / f"{ts.id}.star")
+
+            global_rows.append(
+                {
+                    "rlnTomoName": ts.id,
+                    "rlnTomoTiltSeriesStarFile": f"{rel}tilt_series/{ts.id}.star",
+                    "rlnVoltage": job_model.voltage,
+                    "rlnSphericalAberration": job_model.spherical_aberration,
+                    "rlnAmplitudeContrast": job_model.amplitude_contrast,
+                    "rlnMicrographOriginalPixelSize": job_model.pixel_size,
+                    "rlnTomoHand": hand,
+                    "rlnOpticsGroupName": job_model.optics_group_name,
+                }
+            )
+
+        if not global_rows:
+            raise RuntimeError(f"TiltSeriesRegistry for {project_dir} is empty -- cannot write import tilt_series.star")
+
+        self.star_handler.write({"global": pd.DataFrame(global_rows)}, job_dir / "tilt_series.star")
+        logger.info("import writer: wrote tilt_series.star + %d per-TS stars into %s", len(global_rows), job_dir)
+
     def _build_import_command(self, params: ImportMoviesParams) -> str:
-        mdoc_glob = str(params.paths.get("mdoc_glob", ""))
-
-        cmd = [
-            "relion_import",
-            "--do_movies",
-            "--optics_group_name",
-            params.optics_group_name,
-            "--angpix",
-            str(params.pixel_size),
-            "--kV",
-            str(params.voltage),
-            "--Cs",
-            str(params.spherical_aberration),
-            "--Q0",
-            str(params.amplitude_contrast),
-            "--dose_per_tilt_image",
-            str(params.dose_per_tilt),
-            "--nominal_tilt_axis_angle",
-            str(params.tilt_axis_angle),
-        ]
-
-        if params.acquisition.invert_defocus_hand:
-            cmd.append("--invert_defocus_hand")
-
-        if params.do_at_most > 0:
-            cmd.extend(["--do_at_most", str(params.do_at_most)])
-
-        if mdoc_glob:
-            cmd.extend(["--i", mdoc_glob])
-
-        return " ".join(cmd)
+        # IMPORT is written inline by _write_import_stars_inline (Option B, §6a). This fn_exe is never
+        # executed -- the afterok path writes the star inline and does not submit an import supervisor;
+        # the schemer's relion.importtomo job.star ignores fn_exe and runs relion's native importer.
+        # Kept as a harmless no-op so a stray execution can't run a wrong relion_import command.
+        return "true  # crboost writes Import/tilt_series.star inline; relion import is not run"
 
     def _write_scheme_star(self, scheme_dir: Path, scheme_name: str, job_names: List[str]):
         general_df = pd.DataFrame(

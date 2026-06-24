@@ -131,6 +131,14 @@ class PipelineMonitor:
         state = get_project_state_for(project_path)  # loads + registers
         logger.info("Recovery[%s]: state loaded, reconciling...", project_path.name)
 
+        # Afterok-orchestrator projects (P1.B): the chain lives entirely in SLURM, so loading the
+        # state into the registry (above) is all recovery needs -- the normal tick's
+        # reconcile_afterok re-observes it. Skip the schemer-oriented recovery (sync_all_jobs is a
+        # no-op for them and a re-deploy would double-submit a chain that is still running).
+        if getattr(state, "use_afterok_orchestrator", False):
+            logger.info("Recovery[%s]: afterok project -- deferring to reconcile_afterok tick", project_path.name)
+            return
+
         # Step 1: reconcile what's on disk. sync_all_jobs walks
         # RELION_JOB_EXIT_* markers, patches default_pipeline.star, and
         # — critically — its self-heal branch at pipeline_runner.py:132
@@ -209,11 +217,21 @@ class PipelineMonitor:
 
         # Snapshot to avoid mutation-during-iteration when a new project
         # opens or closes mid-tick.
-        targets = [path for path, state in list(_project_states.items()) if state.pipeline_active]
+        targets = [(path, state) for path, state in list(_project_states.items()) if state.pipeline_active]
         if not targets:
             return
 
-        for project_path in targets:
+        for project_path, state in targets:
+            # Afterok-orchestrator projects (P1.B): reconcile from SLURM + sentinels and skip the
+            # schemer-specific handling below (no schemer stderr, no default_pipeline.star, no
+            # deferred re-deploy -- reconcile_afterok owns their status + pipeline_active).
+            if getattr(state, "use_afterok_orchestrator", False):
+                try:
+                    await self._backend.pipeline_runner.reconcile_afterok(str(project_path))
+                except Exception:
+                    logger.exception("Monitor: reconcile_afterok failed for %s", project_path)
+                continue
+
             # sbatch errors land on the schemer's stderr while the row in
             # default_pipeline.star still reads "Running" — sync_all_jobs
             # alone can't detect this because no exit marker is written

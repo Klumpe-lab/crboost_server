@@ -8,6 +8,11 @@ crboost_root: "/path/to/crboost_server"
 # Path to Python virtual environment/conda executable
 crboost_python: "/path/to/crboost_server/venv"
 
+# DEV TOGGLE (temporary): true => every project uses the afterok orchestrator (schemer-free
+# submit + inline import) instead of relion_schemer, without per-project project_params.json
+# edits. A per-project `use_afterok_orchestrator: true` still wins on its own. Default false.
+use_afterok_orchestrator: false
+
 local:
   # Default directory where new projects will be created
   DefaultProjectBase: "/path/to/your/projects"
