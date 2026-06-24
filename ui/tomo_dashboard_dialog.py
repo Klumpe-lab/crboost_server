@@ -1914,6 +1914,89 @@ def _list_cutout_box_px(sp: dict) -> int:
     return 48
 
 
+# ── Cutout display-filter UI (shared by the auto gallery + list sheet) ──
+# Presets live in services/visualization/cutout_filters.py. The control is two
+# compact selects: TYPE (None/Denoise/Local contrast/Bandpass/Lowpass) and, when
+# the type has more than one option, PARAM (its intensity/cutoff). `on_select(key)`
+# fires with the chosen preset key whenever either changes.
+def _cutout_filter_tooltip(apix, apix_source: str) -> str:
+    base = (
+        "Display filter only — never changes the data, the picks, or any star file. "
+        "Denoise / Local contrast usually read best on noisy tomograms; "
+        "Lowpass / Bandpass are frequency cutoffs. "
+    )
+    if apix and apix > 0:
+        return base + f"Frequency cutoffs use {apix:.2f} Å/px (from {apix_source}; e.g. 30 Å ≈ {30.0 / apix:.0f}px)."
+    return base + "Pixel size is unknown (absent from the cutout header), so the frequency filters are hidden."
+
+
+def _render_cutout_filter_controls(presets: list, apix, apix_source: str, on_select) -> None:
+    """Render the compact TYPE (+ conditional PARAM) selects into the current row.
+    `presets` are the preset dicts that have a variant atlas on disk (ordered).
+    Calls `on_select(preset_key)` whenever the selection changes."""
+    if len(presets) < 2:
+        return
+    types: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    by_type: dict[str, list[dict]] = {}
+    for p in presets:
+        t = p.get("type", "raw")
+        by_type.setdefault(t, []).append(p)
+        if t not in seen:
+            seen.add(t)
+            types.append((t, p.get("type_label", t)))
+
+    def _params(t: str) -> dict:
+        return {p["key"]: (p.get("param_label") or "—") for p in by_type.get(t, [])}
+
+    st = {"type": types[0][0], "key": by_type[types[0][0]][0]["key"]}
+
+    type_sel = (
+        ui.select({t: lbl for t, lbl in types}, value=st["type"])
+        .props("dense outlined options-dense")
+        .classes("text-xs")
+        .style("min-width: 116px;")
+    )
+    param_sel = (
+        ui.select(_params(st["type"]), value=st["key"])
+        .props("dense outlined options-dense")
+        .classes("text-xs")
+        .style("min-width: 84px;")
+    )
+    param_sel.set_visibility(len(by_type[st["type"]]) > 1)
+
+    def _on_type(e) -> None:
+        t = e.value or types[0][0]
+        st["type"] = t
+        opts = _params(t)
+        keys = list(opts)
+        st["key"] = keys[0] if keys else t
+        multi = len(keys) > 1
+        param_sel.set_visibility(multi)
+        if multi:
+            param_sel.set_options(opts, value=st["key"])
+        on_select(st["key"])
+
+    def _on_param(e) -> None:
+        st["key"] = e.value or st["key"]
+        on_select(st["key"])
+
+    type_sel.on_value_change(_on_type)
+    param_sel.on_value_change(_on_param)
+    with ui.icon("help_outline", size="13px").style("color: #94a3b8; cursor: help;"):
+        ui.tooltip(_cutout_filter_tooltip(apix, apix_source)).style("font-size: 10px; max-width: 320px;")
+
+
+def _atlas_index_is_current(index_path: Path) -> bool:
+    """A cutout index from an older filter-preset set has a stale (or missing)
+    `filter_schema`; treat those as stale so the current variant atlases get
+    (re)generated."""
+    from services.visualization.cutout_filters import FILTER_SCHEMA_VERSION
+
+    meta = _read_atlas_index(index_path)
+    return bool(meta) and meta.get("filter_schema") == FILTER_SCHEMA_VERSION
+
+
 def _auto_kick_list_cutouts(
     recon_mrc: Path,
     picks: list,
@@ -1924,13 +2007,19 @@ def _auto_kick_list_cutouts(
     project_path: Path,
     refresh,
     dedup_key: str,
+    apix_hint: Optional[float] = None,
 ) -> bool:
     """True if the list's recon-cutout atlas is on disk + fresh (render now); else
     kick ONE background build (mirrors `_auto_kick_recon_slabs`) and return False
     so the caller shows a placeholder. `dedup_key` carries the star mtime, so a
     re-import (new mtime) rebuilds without needing a dashboard reopen."""
     sources = [Path(recon_mrc)] + ([Path(star_path)] if star_path else [])
-    if atlas_path.exists() and index_path.exists() and not is_output_stale(atlas_path, sources):
+    if (
+        atlas_path.exists()
+        and index_path.exists()
+        and not is_output_stale(atlas_path, sources)
+        and _atlas_index_is_current(index_path)
+    ):
         return True
     if dedup_key in _AUTO_KICKED_LIST_CUTOUTS:
         return False
@@ -1943,7 +2032,13 @@ def _auto_kick_list_cutouts(
 
         progress_cb(0, 0, "cutting tiles from the recon…")
         return await _asyncio.to_thread(
-            render_recon_cutouts_atlas, Path(recon_mrc), picks, Path(atlas_path), Path(index_path), box_px=box_px
+            render_recon_cutouts_atlas,
+            Path(recon_mrc),
+            picks,
+            Path(atlas_path),
+            Path(index_path),
+            box_px=box_px,
+            apix_hint=apix_hint,
         )
 
     from ui.background_task import BackgroundTask
@@ -2241,11 +2336,30 @@ def _render_list_cutout_sheet(
             % {"grid": json.dumps(grid_id), "layers": json.dumps(layer_ids)}
         )
 
+    from services.visualization.cutout_filters import get_filter_presets, keyed_path
+
+    _apix = atlas_meta.get("apix")
+    _apix_source = atlas_meta.get("apix_source") or "unknown"
+    _list_filter_presets = [
+        p for p in get_filter_presets() if p["key"] == "raw" or keyed_path(Path(atlas_path), p["key"]).exists()
+    ]
+
+    def _on_list_select(key: str) -> None:
+        # Swap each tile's background-image to the chosen variant atlas, in place —
+        # no rebuild, so the keep/drop handlers and dot sync survive the switch.
+        url = _vis_asset_url(str(keyed_path(Path(atlas_path), key)))
+        for t in tiles.values():
+            try:
+                t.style(add=f"background-image: url({url});")
+            except Exception:
+                pass  # tile torn down — best-effort
+
     with ui.element("div").classes("w-full").style("margin-top: 10px;"):
         with ui.row().classes("items-center gap-2").style("margin-bottom: 4px;"):
             _render_list_header(lst, sp, project_path)
             counter = ui.label(_counter_txt()).classes("cb-filter-counter")
             ui.space()
+            _render_cutout_filter_controls(_list_filter_presets, _apix, _apix_source, _on_list_select)
             ui.button("Reset", icon="restart_alt", on_click=_on_reset).props("flat dense no-caps").tooltip(
                 "Clear this list's keep/drop — revert to all picks kept"
             )
@@ -2457,7 +2571,12 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
         except OSError:
             star_sig = 0
         sources = [Path(recon)] + ([Path(star_path)] if star_path else [])
-        fresh = atlas_path.exists() and index_path.exists() and not is_output_stale(atlas_path, sources)
+        fresh = (
+            atlas_path.exists()
+            and index_path.exists()
+            and not is_output_stale(atlas_path, sources)
+            and _atlas_index_is_current(index_path)
+        )
         # Existing keep/drop curation for this list (centered-Å match against
         # <slug>_filtered.star), derived off-loop here so the interactive sheet opens
         # already reflecting saved drops. Memoized by mtime (shared with the rail
@@ -2484,7 +2603,16 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
         # ui.timer) and fall through to the building/empty status.
         dedup_key = f"{species_id}:{tomo_name}:{lst['slug']}:{io['star_sig']}"
         if _auto_kick_list_cutouts(
-            Path(recon), lst["picks"], star_path, atlas_path, index_path, box_px, project_path, refresh, dedup_key
+            Path(recon),
+            lst["picks"],
+            star_path,
+            atlas_path,
+            index_path,
+            box_px,
+            project_path,
+            refresh,
+            dedup_key,
+            apix_hint=(sp.get("entry") or {}).get("pixel_size_ang"),
         ):
             atlas_meta = _read_atlas_index(index_path)  # rare: built between probe and now
     if atlas_meta:
@@ -4312,6 +4440,32 @@ def _render_gallery_body(
     cutout_index = atlas_meta.get("index", {})
     failures = entry.get("cutout_failures") or atlas_meta.get("failures") or []
 
+    # Display-filter variants (raw + lowpass/bandpass). Each variant is a sibling
+    # atlas PNG that shares this exact tile index, so switching filters just swaps
+    # the atlas URL the tiles + noise-reference tiles point at — no re-layout. apix
+    # is read from the cutout file's OWN header (subtomo and recon use different
+    # bins), so the Å→px conversion in the unit toggle/tooltip is always correct.
+    from services.visualization.cutout_filters import get_filter_presets
+
+    cutout_variants = entry.get("cutout_variants") or {}
+    cutout_apix = entry.get("cutout_apix")
+    cutout_apix_source = entry.get("cutout_apix_source") or "unknown"
+    _filter_presets = [p for p in get_filter_presets() if p["key"] in cutout_variants]
+
+    def _variant_atlas_url(key: str) -> str:
+        v = cutout_variants.get(key)
+        if v and v.get("atlas"):
+            return _vis_asset_url(v["atlas"])
+        return _vis_asset_url(entry["cutout_atlas"])
+
+    def _on_filter_select(key: str) -> None:
+        # Swap the atlas the tiles + noise-reference tiles point at, then re-render
+        # (positions are identical across filters — only the pixels differ).
+        nonlocal atlas_url
+        atlas_url = _variant_atlas_url(key)
+        _refresh_reference_strip()
+        _refresh_grid()
+
     x_dim = max(int(tomo_dims[0]), 1)
     y_dim = max(int(tomo_dims[1]), 1)
     z_dim = max(int(tomo_dims[2]), 1)
@@ -4399,18 +4553,18 @@ def _render_gallery_body(
         actions_slot = ui.row().classes("cb-cutouts-actions items-center gap-1")
 
     with controls_box:
-        # Hovered-pick stats strip (filled by the hover bridge) + sort, compact.
+        # Hovered-pick stats strip (filled by the hover bridge) + sort/filter, compact.
         hover_labels = _render_hover_card_skeleton(horizontal=True)
-        with ui.row().classes("w-full items-center gap-2"):
-            ui.label("SORT").style("font-size: 9px; letter-spacing: 0.06em; color: #94a3b8;")
+        with ui.row().classes("w-full items-center gap-1"):
+            ui.icon("sort", size="14px").style("color: #94a3b8;").tooltip("Sort order")
             sort_select = (
-                ui.select(
-                    options={"best": "Best score", "worst": "Worst score", "z": "By Z (deep → shallow)"}, value="best"
-                )
-                .props("dense outlined")
+                ui.select(options={"best": "Best", "worst": "Worst", "z": "Z depth"}, value="best")
+                .props("dense outlined options-dense")
                 .classes("text-xs")
-                .style("min-width: 170px;")
+                .style("min-width: 92px;")
             )
+            ui.icon("tune", size="14px").style("color: #94a3b8; margin-left: 6px;").tooltip("Display filter")
+            _render_cutout_filter_controls(_filter_presets, cutout_apix, cutout_apix_source, _on_filter_select)
             ui.space()
 
     # Filter toolbar: counter on the left, action buttons on the right. Shown
@@ -4597,7 +4751,17 @@ def _render_gallery_body(
         _refresh_path_row()
 
     with cutouts_box:
-        _render_reference_strip(picks, cutout_index, atlas_url, cols, rows, manifest)
+        # Wrapped so a filter switch re-renders the noise-floor reference tiles
+        # under the same filter as the grid (the template thumb is its own clean
+        # reference and stays raw).
+        ref_strip_container = ui.element("div").classes("w-full")
+
+        def _refresh_reference_strip():
+            ref_strip_container.clear()
+            with ref_strip_container:
+                _render_reference_strip(picks, cutout_index, atlas_url, cols, rows, manifest)
+
+        _refresh_reference_strip()
 
         grid_container = ui.element("div").classes("cb-gallery-scroll w-full")
         grid_container._props["id"] = gallery_id
@@ -4778,6 +4942,10 @@ def _render_gallery_body(
         _sync_dropped_dots()
 
     sort_select.on_value_change(lambda e: (state.update(sort_mode=e.value or "best"), _refresh_grid()))
+
+    # The filter TYPE/PARAM selects (rendered above) wire their own handlers via
+    # `_on_filter_select`, which swaps `atlas_url` and re-renders.
+
     # Ghost-dot clicks on the slab toggle keep/drop too — the bridge dispatches a
     # CustomEvent on grid_container, scoped to it so it's cleaned up with the gallery.
     grid_container.on("cbpicktoggle", _on_dot_toggle, js_handler="(e) => emit(e.detail)")

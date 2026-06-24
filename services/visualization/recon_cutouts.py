@@ -22,12 +22,13 @@ env, not Claude's bare venv.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+from services.visualization.cutout_filters import emit_filtered_atlases
 
 logger = logging.getLogger(__name__)
 
@@ -54,34 +55,6 @@ def _crop_slab(data, x: int, y: int, z: int, half_box: int, half_slab: int) -> O
     return slab
 
 
-def _sample_norm_bounds(data, picks: list, half_box: int, half_slab: int, sample_n: int = 12) -> Optional[tuple]:
-    """Pool pixels from a stratified pick sample → shared (lo, hi) 1-99 clip.
-
-    Stratified across the (score-sorted) pick order so the bounds aren't biased
-    toward only-particles or only-noise — same discipline as the subtomo atlas's
-    `_sample_global_norm_bounds`. Returns None if nothing read cleanly."""
-    if not picks:
-        return None
-    if len(picks) <= sample_n:
-        chosen = picks
-    else:
-        step = len(picks) / sample_n
-        chosen = [picks[int(i * step)] for i in range(sample_n)]
-    pooled: list = []
-    for p in chosen:
-        slab = _crop_slab(data, p.get("x", 0), p.get("y", 0), p.get("z", 0), half_box, half_slab)
-        if slab is not None:
-            pooled.append(slab.ravel())
-    if not pooled:
-        return None
-    flat = np.concatenate(pooled)
-    lo = float(np.percentile(flat, 1.0))
-    hi = float(np.percentile(flat, 99.0))
-    if hi <= lo:
-        hi = lo + 1.0
-    return (lo, hi)
-
-
 def render_recon_cutouts_atlas(
     recon_mrc: Path,
     picks: list,
@@ -92,23 +65,27 @@ def render_recon_cutouts_atlas(
     slab_px: int = 5,
     tile_px: int = 192,
     cols: int = 8,
+    filters: Optional[list] = None,
+    apix_hint: Optional[float] = None,
 ) -> Optional[dict]:
-    """Build a sprite-atlas PNG + index JSON of per-pick recon cutouts.
+    """Build sprite-atlas PNG(s) + index JSON(s) of per-pick recon cutouts — one
+    per display-filter preset (see services/visualization/cutout_filters.py).
 
     `picks` is a list of voxel-coord dicts `{x, y, z, ...}` in picks.json order.
-    Each tile is the mean over a `slab_px`-thick Z slab of a `box_px` box
-    centered on the pick, normalized tomogram-wide and resized to `tile_px`.
+    Each tile is the mean over a `slab_px`-thick Z slab of a `box_px` box centered
+    on the pick. The `raw` variant keeps the base filenames (back-compat); other
+    presets get `__<key>` siblings. apix is read from the recon MRC header (the
+    reconstruction bin), falling back to `apix_hint`.
 
     Tiles are keyed by ENUMERATE position (= picks.json order = the dots'
     `data-pick-idx`), identical to `render_pick_cutouts_atlas`, so the gallery's
     tile grid and the canvas dots cross-link with no change.
 
-    Returns a metadata dict (atlas/index paths, n_ok, failures, norm_bounds) or
-    None if the recon can't be read or every pick failed (an index JSON is still
-    written in the all-fail case so the caller can see why)."""
+    Returns a metadata dict (raw atlas/index paths, n_ok, failures, norm_bounds,
+    apix, apix_source, `variants` map) or None if the recon can't be read or every
+    pick failed (a raw index JSON is still written in the all-fail case)."""
     try:
         import mrcfile
-        from PIL import Image
     except ImportError as e:
         logger.warning("Recon cutout deps unavailable: %s", e)
         return None
@@ -124,66 +101,39 @@ def render_recon_cutouts_atlas(
 
     half_box = max(1, box_px // 2)
     half_slab = max(0, slab_px // 2)
-    rows = (n + cols - 1) // cols
-    atlas_w = cols * tile_px
-    atlas_h = rows * tile_px
-    index_entries: dict[str, list] = {}
-    failures: list[dict] = []
-    n_ok = 0
 
+    # Read the recon once: preload one 2D float slab per pick (None where the crop
+    # falls out of bounds), plus the header pixel size for Å→px conversion.
+    frames: list = []
+    fail_info: list = []
+    apix_header: Optional[float] = None
     try:
         with mrcfile.mmap(str(recon_mrc), mode="r") as m:
             data = m.data
             if data.ndim != 3:
                 logger.warning("Recon MRC not 3D: %s", recon_mrc)
                 return None
-            norm = _sample_norm_bounds(data, picks, half_box, half_slab)
-            lo, hi = norm if norm else (0.0, 1.0)
-
-            atlas = np.zeros((atlas_h, atlas_w), dtype=np.uint8)
-            for i, p in enumerate(picks):
+            try:
+                apix_header = float(m.voxel_size.x)
+            except Exception:
+                apix_header = None
+            for p in picks:
                 slab = _crop_slab(data, p.get("x", 0), p.get("y", 0), p.get("z", 0), half_box, half_slab)
-                if slab is None:
-                    failures.append({"i": i, "reason": "crop out of bounds"})
-                    continue
-                clipped = np.clip((slab - lo) / (hi - lo), 0.0, 1.0)
-                u8 = (clipped * 255.0).astype(np.uint8)
-                img = Image.fromarray(u8, mode="L").resize((tile_px, tile_px), Image.LANCZOS)
-                r, c = divmod(i, cols)
-                atlas[r * tile_px : (r + 1) * tile_px, c * tile_px : (c + 1) * tile_px] = np.array(img, dtype=np.uint8)
-                index_entries[str(i)] = [r, c]
-                n_ok += 1
+                frames.append(slab)
+                fail_info.append(None if slab is not None else {"reason": "crop out of bounds"})
     except Exception as e:
-        logger.warning("Recon cutout atlas failed for %s: %s", recon_mrc, e)
+        logger.warning("Recon cutout read failed for %s: %s", recon_mrc, e)
         return None
 
-    if n_ok == 0:
-        out_index_path.write_text(
-            json.dumps({"tile_px": tile_px, "cols": cols, "rows": rows, "n_picks": n, "n_ok": 0, "failures": failures})
-        )
-        return None
-
-    Image.fromarray(atlas, mode="L").save(str(out_atlas_path), format="PNG", optimize=True)
-    payload = {
-        "tile_px": tile_px,
-        "cols": cols,
-        "rows": rows,
-        "n_picks": n,
-        "n_ok": n_ok,
-        "atlas_w": atlas_w,
-        "atlas_h": atlas_h,
-        "index": index_entries,
-        "failures": failures,
-        "norm_lo": float(lo),
-        "norm_hi": float(hi),
-        "source": "recon",
-    }
-    out_index_path.write_text(json.dumps(payload))
-    return {
-        "atlas_path": str(out_atlas_path),
-        "index_path": str(out_index_path),
-        "n_ok": n_ok,
-        "n_total": n,
-        "failures": failures,
-        "norm_bounds": (lo, hi),
-    }
+    return emit_filtered_atlases(
+        frames,
+        fail_info,
+        out_atlas_path,
+        out_index_path,
+        apix_header=apix_header,
+        apix_hint=apix_hint,
+        filters=filters,
+        tile_px=tile_px,
+        cols=cols,
+        source="recon",
+    )

@@ -41,10 +41,14 @@ logger = logging.getLogger(__name__)
 
 PREVIEW_SUBDIR = Path("vis") / "preview"
 MANIFEST_NAME = "manifest.json"
-MANIFEST_VERSION = 12  # v12: server-rendered X/Y top-down slab (entry.xy_slab_preview) using the
-# same percentile pipeline as the X/Z slab, template thumb, and cutout atlas — so polarity is
-# consistent across all four render types and the dashboard's invert toggle flips them as a
-# unit. WarpTools PNG remains in entry.warp_tomo_preview for non-dashboard callers.
+MANIFEST_VERSION = 14  # v14: cutout filter presets expanded to denoise/local-contrast/bandpass/lowpass
+# (services/visualization/cutout_filters.py FILTER_SCHEMA_VERSION=2). v13: per-pick cutout atlas emits one
+# PNG per display-filter preset
+# (raw + lowpass/bandpass variants, see services/visualization/cutout_filters.py); entries gain
+# cutout_variants / cutout_apix / cutout_apix_source. v12: server-rendered X/Y top-down slab
+# (entry.xy_slab_preview) using the same percentile pipeline as the X/Z slab, template thumb, and
+# cutout atlas — so polarity is consistent across all four render types and the dashboard's invert
+# toggle flips them as a unit. WarpTools PNG remains in entry.warp_tomo_preview for non-dashboard callers.
 # v11: top-level `template` block (thumb_path + apix) for gallery reference tile;
 # tomogram-wide percentile normalization for cutout tiles (lo/hi in cutout_index.norm_*).
 # v10: record zero-pick tomograms in summary.zero_picks
@@ -382,11 +386,16 @@ def generate_candidate_previews(
             entry["cutout_index"] = None
             entry["cutout_n_ok"] = 0
             entry["cutout_failures"] = []
+            entry["cutout_variants"] = {}
+            entry["cutout_apix"] = None
+            entry["cutout_apix_source"] = None
             if coords_ang_sorted is not None and subtomo_index:
                 pick_to_mrcs = []
                 for x_a, y_a, z_a in coords_ang_sorted:
                     info = lookup_for_pick(subtomo_index, tomo_name, x_a, y_a, z_a)
                     pick_to_mrcs.append(info)
+                # apix is read from the .mrcs header (the subtomo-extraction bin);
+                # no hint here — `pixel_size` is the RECON bin, a different scale.
                 meta = render_pick_cutouts_atlas(
                     pick_to_mrcs, tomo_out_dir / "cutout_atlas.png", tomo_out_dir / "cutout_index.json"
                 )
@@ -395,6 +404,9 @@ def generate_candidate_previews(
                     entry["cutout_index"] = meta["index_path"]
                     entry["cutout_n_ok"] = meta["n_ok"]
                     entry["cutout_failures"] = meta.get("failures") or []
+                    entry["cutout_variants"] = meta.get("variants") or {}
+                    entry["cutout_apix"] = meta.get("apix")
+                    entry["cutout_apix_source"] = meta.get("apix_source")
 
             tomo_entries[tomo_name] = entry
             ok.append(tomo_name)

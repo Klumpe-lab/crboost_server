@@ -192,6 +192,70 @@ class PathResolutionService:
 
         return resolved_inputs
 
+    def resolve_edges(self, instance_ids: Optional[Sequence[str]] = None) -> List[Tuple[str, str]]:
+        """
+        Derive the producer->consumer dependency edges of the pipeline DAG.
+
+        For every consumer job (restricted to ``instance_ids`` if given, else all
+        jobs in state) each input slot is resolved exactly the way
+        :meth:`resolve_inputs` selects a source -- user ``source_overrides`` first,
+        then species-aware automatic selection -- but the chosen producer's *clean*
+        ``instance_id`` is recorded instead of a path. Returns deduplicated
+        ``(producer_instance_id, consumer_instance_id)`` pairs, suitable for a SLURM
+        ``--dependency=afterok`` topological submit (P1.A of the orchestrator
+        rework; see ORCHESTRATOR_REPLACEMENT_PLAN.md §6).
+
+        Producers with no SLURM job are excluded: a ``manual:`` file override
+        (user-picked file, no producing job) and the synthetic ``mergedSources``
+        aggregation producer -- an ``afterok`` on either would never be satisfiable.
+        Slots that cannot be resolved yet are skipped silently (no exception), so
+        this is safe on a partially-configured pipeline.
+
+        Selection mirrors :meth:`resolve_inputs` but is kept separate so edge
+        derivation tolerates unresolved slots and never resolves paths. The caller
+        restricts producers to the jobs actually being submitted and drops
+        already-SUCCEEDED producers (a finished upstream needs no dependency).
+        """
+        consumers = list(instance_ids) if instance_ids is not None else list(self.state.jobs.keys())
+        index = self._build_output_index()
+        edges: List[Tuple[str, str]] = []
+        seen: set = set()
+
+        for consumer_id in consumers:
+            job_model = self.state.jobs.get(consumer_id)
+            if job_model is None or job_model.job_type is None:
+                continue
+
+            overrides = getattr(job_model, "source_overrides", {}) or {}
+            consumer_species_id = getattr(job_model, "species_id", None)
+
+            for slot in self._get_input_schema(job_model.job_type):
+                chosen = None
+                override_key = overrides.get(slot.key)
+                if override_key:
+                    if override_key.startswith("manual:"):
+                        continue  # user-picked file -- no producing job, no edge
+                    chosen = self._resolve_override(slot, override_key, index)
+                if chosen is None:
+                    chosen = self._choose_candidate_for_slot(
+                        slot, index, consumer_species_id, consumer_instance_id=consumer_id
+                    )
+                if chosen is None:
+                    continue
+
+                producer_id = chosen.producer_instance_id
+                if not producer_id or producer_id == "mergedSources" or producer_id == consumer_id:
+                    # synthetic / non-job producer, or a self-edge from a pathological
+                    # override (the override path, unlike auto-selection, does not
+                    # exclude the consumer) -- neither is a valid afterok dependency.
+                    continue
+                edge = (producer_id, consumer_id)
+                if edge not in seen:
+                    seen.add(edge)
+                    edges.append(edge)
+
+        return edges
+
     # -------------------------------------------------------------------------
     # Candidate enumeration for UI
     # -------------------------------------------------------------------------
