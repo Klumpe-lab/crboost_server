@@ -145,6 +145,10 @@ class Config(BaseModel):
     curation: CurationConfig = Field(default_factory=CurationConfig)
     tools: Dict[str, ToolConfig] = Field(default_factory=dict)
     containers: Optional[Dict[str, str]] = None
+    # DEV TOGGLE (temporary): global override so every project uses the afterok orchestrator
+    # (schemer-free submit + inline import) without per-project project_params.json edits. A
+    # per-project `use_afterok_orchestrator: true` still wins on its own. Remove once validated.
+    use_afterok_orchestrator: bool = False
 
     class Config:
         extra = "ignore"

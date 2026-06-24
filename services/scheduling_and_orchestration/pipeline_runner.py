@@ -18,6 +18,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _afterok_state_to_status(slurm_state: str) -> JobStatus:
+    """Map a SLURM squeue/sacct state string to a JobStatus (P1.B afterok reconciler).
+    Unrecognized states -> UNKNOWN so the caller can decline to downgrade a live job."""
+    s = (slurm_state or "").split()[0].upper()  # 'CANCELLED by 123' -> 'CANCELLED'
+    if s == "COMPLETED":
+        return JobStatus.SUCCEEDED
+    if s in ("PENDING", "CONFIGURING", "REQUEUED", "RESIZING", "SUSPENDED"):
+        return JobStatus.QUEUED
+    if s in ("RUNNING", "COMPLETING"):
+        return JobStatus.RUNNING
+    if s in ("FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL", "DEADLINE", "PREEMPTED"):
+        return JobStatus.FAILED
+    return JobStatus.UNKNOWN
+
+
+# A tracked afterok job that has left the queue with NO exit sentinel and NO sacct terminal row
+# is concluded FAILED after this many seconds absent, so pipeline_active always winds down even
+# when a SIGKILL/NODE_FAIL/scancel bypassed the qsub trailer AND sacct is unavailable. Kept well
+# under SLURM's MinJobAge (~300s) so the job leaves the tracked set before it could be purged.
+_AFTEROK_ABSENT_GRACE_SEC = 90.0
+
+
 class PipelineRunnerService:
     """
     Owns the schemer process lifecycle and job status sync.
@@ -31,6 +53,9 @@ class PipelineRunnerService:
         self._active_processes: Dict[Path, asyncio.subprocess.Process] = {}
         self._stdout_log_paths: Dict[Path, Path] = {}
         self._stderr_log_paths: Dict[Path, Path] = {}
+        # P1.B afterok reconciler: first-absent monotonic time per supervisor slurm_id, for the
+        # grace window that concludes a marker-less vanished job FAILED (see reconcile_afterok).
+        self._afterok_absent_since: Dict[str, float] = {}
         # Retry monitors bypass the schemer but still count as pipeline activity —
         # tracked here so is_active() reports true and sync_all_jobs doesn't clear
         # pipeline_active out from under a running retry.
@@ -54,6 +79,14 @@ class PipelineRunnerService:
     # -------------------------------------------------------------------------
 
     async def sync_all_jobs(self, project_path: str) -> Dict[str, bool]:
+        # Orchestrator rework (P1.A): afterok-orchestrator projects do NOT use
+        # default_pipeline.star as their status source. Running the schemer-oriented
+        # reconcile below against one would wipe submit_chain's slurm_job_id /
+        # relion_job_name / QUEUED (those jobs have no matching star rows). The P1.B
+        # reconciler owns status for these projects; until then this is a no-op for them.
+        afterok_state = self.backend.state_service.state_for(Path(project_path))
+        if getattr(afterok_state, "use_afterok_orchestrator", False):
+            return {}
         pipeline_star = Path(project_path) / "default_pipeline.star"
         if not pipeline_star.exists():
             return {}
@@ -323,6 +356,150 @@ class PipelineRunnerService:
                 logger.error("Failed to persist status changes: %s", e)
 
         return changes
+
+    def _resolve_afterok_job_dir(self, job_model, project_path: Path) -> Optional[Path]:
+        """job_dir for an afterok job: the resolved paths['job_dir'] if present, else
+        project_path / relion_job_name (the submit_chain-allocated External/jobNNN)."""
+        jd = job_model.paths.get("job_dir") if getattr(job_model, "paths", None) else None
+        if jd and Path(jd).is_dir():
+            return Path(jd)
+        rjn = getattr(job_model, "relion_job_name", None)
+        if rjn:
+            return project_path / rjn.rstrip("/")
+        return None
+
+    def _afterok_refine_running(self, job_dir: Optional[Path]) -> JobStatus:
+        """B1 refinement for a supervisor squeue reports as RUNNING: it writes .task_manifest.json
+        BEFORE sbatching its child array, so 'supervisor RUNNING' with no started child is still
+        queued work; a child task_*.out is the real RUNNING signal. A single-shot (no-manifest)
+        job is genuinely RUNNING."""
+        if job_dir is not None and (job_dir / ".task_manifest.json").exists():
+            return JobStatus.RUNNING if any(job_dir.glob("task_*.out")) else JobStatus.QUEUED
+        return JobStatus.RUNNING
+
+    async def reconcile_afterok(self, project_path: str) -> Dict[str, bool]:
+        """P1.B: status reconciler for afterok-orchestrator projects (the monitor dispatches
+        these here instead of sync_all_jobs, which stays guarded off for them). Per NON-TERMINAL
+        tracked job (submit_chain set slurm_job_id), in order of authority:
+          1. disk RELION_JOB_EXIT_SUCCESS/FAILURE sentinels (written by the supervisor/qsub
+             trailer; survive sacct purge),
+          2. targeted ``squeue -j`` -> QUEUED-vs-RUNNING (B1) + DependencyNeverSatisfied,
+          3. ``sacct`` terminal state for jobs that left the queue without a sentinel,
+          4. a grace window: a job absent from squeue with no sentinel and no sacct row is
+             concluded FAILED after _AFTEROK_ABSENT_GRACE_SEC, so a marker-less death (SIGKILL /
+             NODE_FAIL / external scancel) -- even with sacct unavailable -- always winds down.
+        Mutates execution_status IN PLACE on the bound model; drives pipeline_active off live-job
+        presence (NOT is_active, which is always False for a headnode-process-free afterok run);
+        scancels DependencyNeverSatisfied dependents (stop-on-fail propagates over ticks). NEVER
+        concludes 'done' from an errored squeue (the B2 hazard)."""
+        from services.computing.slurm_service import normalize_slurm_ids
+
+        state = self.backend.state_service.state_for(Path(project_path))
+        if not getattr(state, "use_afterok_orchestrator", False):
+            return {}
+
+        proj = Path(project_path)
+        # Only NON-terminal jobs are reconciled: a SUCCEEDED/FAILED job is never re-read (honors the
+        # FAILED-exclusion invariant and keeps settled jobs out of the batched SLURM query).
+        tracked = {
+            iid: jm
+            for iid, jm in state.jobs.items()
+            if getattr(jm, "slurm_job_id", None) and jm.execution_status not in (JobStatus.SUCCEEDED, JobStatus.FAILED)
+        }
+
+        changes: Dict[str, bool] = {}
+        pending: Dict[str, List[str]] = {}  # slurm_id -> [instance_ids] lacking a terminal sentinel
+
+        # Pass 1 -- disk sentinels (authoritative, cheapest, no SLURM call).
+        for iid, jm in tracked.items():
+            job_dir = self._resolve_afterok_job_dir(jm, proj)
+            if job_dir is None:
+                continue
+            if (job_dir / "RELION_JOB_EXIT_SUCCESS").exists():
+                if jm.execution_status != JobStatus.SUCCEEDED:
+                    jm.execution_status = JobStatus.SUCCEEDED
+                    changes[iid] = True
+            elif (job_dir / "RELION_JOB_EXIT_FAILURE").exists():
+                if jm.execution_status != JobStatus.FAILED:
+                    jm.execution_status = JobStatus.FAILED
+                    changes[iid] = True
+            else:
+                pending.setdefault(str(jm.slurm_job_id), []).append(iid)
+
+        # Pass 2 -- SLURM for jobs without a terminal sentinel.
+        to_scancel: List[str] = []
+        if pending:
+            now = time.monotonic()
+            queued = await self.backend.slurm_service.query_jobs_by_ids(list(pending.keys()))
+            if queued is None:
+                # B2 guard: squeue errored. Do NOT downgrade any pending job; keep prior status
+                # (the run is presumed live) and persist only the pass-1 sentinel changes.
+                logger.warning("reconcile_afterok[%s]: squeue unavailable this tick; holding status", proj.name)
+            else:
+                absent = [sid for sid in pending if sid not in queued]
+                terminal = {}
+                if absent:
+                    # None (sacct error/unavailable) and {} (sacct ran, no row) both leave an
+                    # absentee without a terminal row -> the grace window below handles it.
+                    terminal = await self.backend.slurm_service.query_terminal_states(absent) or {}
+                for sid, iids in pending.items():
+                    if sid in queued or sid in terminal:
+                        self._afterok_absent_since.pop(sid, None)  # visible again -> reset grace
+                    for iid in iids:
+                        jm = tracked[iid]
+                        if sid in queued:
+                            sq_state, reason = queued[sid]
+                            if reason.strip("()").casefold() == "dependencyneversatisfied":
+                                # An upstream failed -> this afterok dependent can never run.
+                                new = JobStatus.FAILED
+                                to_scancel.append(sid)
+                            else:
+                                new = _afterok_state_to_status(sq_state)
+                                if new == JobStatus.RUNNING:
+                                    new = self._afterok_refine_running(self._resolve_afterok_job_dir(jm, proj))
+                                elif new == JobStatus.UNKNOWN:
+                                    new = JobStatus.QUEUED  # in the queue, just an unmapped state
+                        elif sid in terminal:
+                            new = _afterok_state_to_status(terminal[sid][0])
+                        else:
+                            # Gone from squeue, no exit sentinel, no sacct row: don't conclude
+                            # immediately (Lustre/sacct lag). After the grace window, FAIL it so
+                            # pipeline_active can wind down.
+                            first = self._afterok_absent_since.setdefault(sid, now)
+                            expired = (now - first) >= _AFTEROK_ABSENT_GRACE_SEC
+                            new = JobStatus.FAILED if expired else jm.execution_status
+                        if new != JobStatus.UNKNOWN and jm.execution_status != new:
+                            jm.execution_status = new
+                            changes[iid] = True
+        # Drop grace timers for ids no longer pending this tick (resolved / left tracked / none pending).
+        self._afterok_absent_since = {s: t for s, t in self._afterok_absent_since.items() if s in pending}
+
+        # Pass 3 -- scancel DependencyNeverSatisfied dependents so they don't sit PENDING forever
+        # (cancelling them parks THEIR dependents the same way, so stop-on-fail propagates per tick).
+        if to_scancel:
+            try:
+                await self.backend.slurm_service.scancel_jobs(normalize_slurm_ids(to_scancel))
+            except Exception:
+                logger.exception("reconcile_afterok[%s]: scancel of stalled dependents failed", proj.name)
+
+        # Pass 4 -- pipeline_active follows live-job presence; tracked excludes terminal jobs, so an
+        # all-resolved tracked set means the chain is done. (is_active is meaningless here: an
+        # afterok run owns no headnode process.)
+        any_live = any(jm.execution_status in (JobStatus.QUEUED, JobStatus.RUNNING) for jm in tracked.values())
+        if any_live and not state.pipeline_active:
+            state.pipeline_active = True
+            changes["__pipeline_active__"] = True
+        elif not any_live and state.pipeline_active:
+            state.pipeline_active = False
+            changes["__pipeline_active__"] = True
+
+        if changes:
+            try:
+                await self.backend.state_service.save_project(project_path=proj, force=True)
+            except Exception as e:
+                logger.error("reconcile_afterok[%s]: failed to persist status changes: %s", proj.name, e)
+
+        return {k: v for k, v in changes.items() if not k.startswith("__")}
 
     def _extract_job_number(self, job_path: str) -> int:
         try:
@@ -876,17 +1053,22 @@ class PipelineRunnerService:
         except Exception as e:
             logger.warning("Could not patch %s status to %s: %s", job_path, new_status, e)
 
-    async def _sbatch_script(self, script_path: Path, cwd: Path) -> str:
+    async def _sbatch_script(
+        self, script_path: Path, cwd: Path, dependency_after_ids: Optional[List[str]] = None
+    ) -> str:
         """sbatch in an env stripped of SLURM_*/SBATCH_* so the submission
-        doesn't inherit any parent job context. Returns the SLURM job ID."""
+        doesn't inherit any parent job context. Returns the SLURM job ID.
+
+        When dependency_after_ids is non-empty, injects
+        ``--dependency=afterok:<id>[:<id>...]`` so the job stays PENDING until every
+        listed job completes successfully (the SLURM afterok DAG, P1.A)."""
         clean_env = {k: v for k, v in os.environ.items() if not k.startswith(("SLURM_", "SBATCH_"))}
+        args = ["sbatch"]
+        if dependency_after_ids:
+            args.append("--dependency=afterok:" + ":".join(str(i) for i in dependency_after_ids))
+        args.append(str(script_path))
         process = await asyncio.create_subprocess_exec(
-            "sbatch",
-            str(script_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=str(cwd),
-            env=clean_env,
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(cwd), env=clean_env
         )
         stdout_b, stderr_b = await process.communicate()
         stdout = stdout_b.decode()
@@ -895,6 +1077,12 @@ class PipelineRunnerService:
             raise RuntimeError(f"sbatch rc={process.returncode} stderr={stderr!r}")
         # "Submitted batch job 12345"
         return stdout.strip().split()[-1]
+
+    async def submit_supervisor(self, script_path: Path, cwd: Path, after_ids: Optional[List[str]] = None) -> str:
+        """Public seam for the afterok orchestrator (P1.A): sbatch one supervisor
+        script, optionally gated on its producers' supervisor job ids via afterok.
+        Returns the SLURM job id. Thin wrapper over _sbatch_script."""
+        return await self._sbatch_script(script_path, cwd, dependency_after_ids=after_ids)
 
     async def _monitor_schemer(
         self,
@@ -1019,6 +1207,28 @@ class PipelineRunnerService:
         from services.computing.slurm_service import normalize_slurm_ids
 
         errors = []
+
+        # Afterok-orchestrator projects (P1.B): a full stop = scancel every tracked supervisor by its
+        # persisted slurm_job_id (authoritative -- covers still-PENDING dependents with no run.out or
+        # manifest), mark the live jobs FAILED, and clear pipeline_active. No schemer process, no star.
+        afterok_state = self.backend.state_service.state_for(project_dir)
+        if getattr(afterok_state, "use_afterok_orchestrator", False):
+            live = [
+                jm
+                for jm in afterok_state.jobs.values()
+                if getattr(jm, "slurm_job_id", None)
+                and jm.execution_status in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED)
+            ]
+            cancelled = normalize_slurm_ids([str(jm.slurm_job_id) for jm in live])
+            if cancelled:
+                res = await self.backend.slurm_service.scancel_jobs(cancelled)
+                if not res.get("success"):
+                    errors.append(f"afterok scancel: {res.get('error')}")
+            for jm in live:
+                jm.execution_status = JobStatus.FAILED
+            afterok_state.pipeline_active = False
+            await self.backend.state_service.save_project(project_path=project_dir, force=True)
+            return {"success": not errors, "cancelled_slurm_jobs": len(cancelled), "errors": errors}
 
         resolved = project_dir.resolve()
         process = self._active_processes.get(resolved)
@@ -1156,6 +1366,30 @@ class PipelineRunnerService:
 
         if not job_model:
             return {"success": False, "error": f"Job '{instance_id}' not found in state"}
+
+        # Afterok-orchestrator projects (P1.B): cancel via the persisted supervisor slurm_job_id
+        # (authoritative -- works for a still-PENDING dependent with no run.out/manifest), mark the
+        # job FAILED, and DO NOT clear pipeline_active: cancelling one supervisor parks its afterok
+        # dependents (DependencyNeverSatisfied), which reconcile_afterok scancels, and Pass 4 winds
+        # pipeline_active down only when every job is terminal. Clearing it here would stop the
+        # monitor ticking and freeze the rest of the live DAG.
+        if getattr(state, "use_afterok_orchestrator", False):
+            if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.QUEUED):
+                return {"success": False, "error": f"Job is not live (status: {job_model.execution_status})"}
+            cancelled: list = []
+            sid = getattr(job_model, "slurm_job_id", None)
+            if sid:
+                cancelled = normalize_slurm_ids([str(sid)])
+                res = await self.backend.slurm_service.scancel_jobs(cancelled)
+                if not res.get("success"):
+                    logger.info("afterok cancel_job scancel warning: %s", res.get("error"))
+            job_model.execution_status = JobStatus.FAILED
+            await self.backend.state_service.save_project(project_path=project_dir, force=True)
+            return {
+                "success": True,
+                "cancelled_slurm_ids": cancelled,
+                "message": f"Cancelled {instance_id}" + (f" (SLURM {', '.join(cancelled)})" if cancelled else ""),
+            }
 
         if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.SCHEDULED):
             return {"success": False, "error": f"Job is not running (status: {job_model.execution_status})"}

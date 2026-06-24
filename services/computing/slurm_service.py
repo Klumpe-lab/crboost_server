@@ -4,7 +4,7 @@ import logging
 from enum import Enum
 from pathlib import Path
 import re
-from typing import ClassVar, Dict, List, Any, Optional
+from typing import ClassVar, Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -332,6 +332,70 @@ class SlurmService:
         self._cache[cache_key] = jobs
         self._cache_timestamp[cache_key] = datetime.now()
         return jobs
+
+    async def query_jobs_by_ids(self, job_ids: List[str]) -> Optional[Dict[str, Tuple[str, str]]]:
+        """Targeted ``squeue -j <ids>`` for specific jobs (uncached -- the afterok reconciler
+        needs fresh per-tick reads). Returns ``{normalized_job_id: (state, reason)}`` for ids
+        STILL in the queue.
+
+        Critically distinguishes the two cases the broad ``get_user_jobs`` conflates (the B2 bug):
+          - ``None``  -> squeue ITSELF failed; the caller must NOT treat this as "jobs gone".
+          - ``{}``    -> squeue succeeded but none of the ids are queued (they genuinely left).
+        ``squeue -j`` exits non-zero once a job leaves the queue ("Invalid job id specified"),
+        which is benign-empty, not an error.
+        """
+        ids = normalize_slurm_ids(job_ids)
+        if not ids:
+            return {}
+        success, stdout, stderr = await self._run_command(
+            ["squeue", "-j", ",".join(ids), "-o", "%i|%T|%r", "--noheader"]
+        )
+        if not success:
+            if "invalid job id" in (stderr or "").lower():
+                return {}
+            logger.error("query_jobs_by_ids: squeue failed: %s", stderr)
+            return None
+        result: Dict[str, Tuple[str, str]] = {}
+        for line in stdout.strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split("|")
+            if len(parts) < 2:
+                continue
+            jid = parts[0].split("_", 1)[0].strip()  # array child '123_4' -> parent '123'
+            state = parts[1].strip()
+            reason = parts[2].strip() if len(parts) > 2 else ""
+            result.setdefault(jid, (state, reason))
+        return result
+
+    async def query_terminal_states(self, job_ids: List[str]) -> Optional[Dict[str, Tuple[str, str]]]:
+        """``sacct`` terminal State + ExitCode for jobs that have left the queue. Returns
+        ``{normalized_job_id: (state, exit_code)}``. ``None`` on CLI error (incl. sacct
+        unavailable) so the caller keeps prior status rather than fabricating a terminal one;
+        ``{}`` if sacct has no rows (e.g. purged past the retention window -> fall back to disk
+        sentinels). ``-X`` shows only the top-level job step (no .batch/.extern dup rows)."""
+        ids = normalize_slurm_ids(job_ids)
+        if not ids:
+            return {}
+        success, stdout, stderr = await self._run_command(
+            ["sacct", "-j", ",".join(ids), "-o", "JobID,State,ExitCode", "-n", "-P", "-X"]
+        )
+        if not success:
+            logger.warning("query_terminal_states: sacct failed (or unavailable): %s", stderr)
+            return None
+        result: Dict[str, Tuple[str, str]] = {}
+        for line in stdout.strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split("|")
+            if len(parts) < 2:
+                continue
+            jid = parts[0].split(".", 1)[0].split("_", 1)[0].strip()  # strip step + array suffix
+            state = parts[1].strip()
+            exit_code = parts[2].strip() if len(parts) > 2 else ""
+            if jid:
+                result.setdefault(jid, (state, exit_code))
+        return result
 
     async def find_slurm_job_for_directory(self, job_dir: Path) -> Optional[UserJob]:
         """
