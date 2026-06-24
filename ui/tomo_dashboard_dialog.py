@@ -1741,7 +1741,7 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
                     tooltip="Reconstructed tomogram MRC not on disk for this TS — can't sample for polarity.",
                     icon="brightness_medium",
                 )
-            _render_recon_big_preview(ts_name, project_path, None)
+            _render_recon_big_preview(ts_name, project_state, project_path, None, refresh)
             return True
 
         polarity = _compute_tomogram_polarity(Path(mrc_path))
@@ -1781,23 +1781,59 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
                     status="neutral",
                     tooltip="Fraction of voxels below mean − 1.5σ in the sampled Z slice.",
                 )
-        _render_recon_big_preview(ts_name, project_path, Path(mrc_path))
+        _render_recon_big_preview(ts_name, project_state, project_path, Path(mrc_path), refresh)
     return True
 
 
-def _render_recon_big_preview(ts_name: str, project_path: Path, mrc_path: Optional[Path]) -> None:
-    """Viewport-filling WarpTools tomogram PNG. The PNG sits next to the
-    .mrc as `<tomo>_<res>Apx.png`, written by ts_reconstruct as a side
-    effect. Rendered with `object-fit: contain` so the natural aspect
-    ratio (typically wide XY top-down) survives a tall viewport."""
+def _render_recon_big_preview(
+    ts_name: str, project_state, project_path: Path, mrc_path: Optional[Path], refresh
+) -> None:
+    """Side-by-side tomogram preview: the WarpTools recon PNG (left) and the
+    cryoCARE/IsoNet denoised X/Y slab (right).
+
+    The recon PNG sits next to the .mrc as `<tomo>_<res>Apx.png`, written by
+    ts_reconstruct. The denoised volume has no such PNG, so its pane is an X/Y
+    slab rendered from the denoised MRC on first view (background, cached). The
+    denoised pane only appears once denoisepredict has produced this TS; until
+    then the recon PNG shows alone. Images use `object-fit: contain` so the
+    natural aspect ratio (wide XY top-down) survives a tall viewport."""
     png_path = _find_warp_tomo_preview(project_path, ts_name, mrc_path)
-    if not png_path or not png_path.exists():
-        ui.label("No WarpTools preview PNG on disk for this tomogram.").classes("cb-section-placeholder")
+
+    dn_job_dir, dn_mrc = _resolve_denoised_mrc_for_ts(project_state, project_path, ts_name)
+    dn_png: Optional[Path] = None
+    if dn_job_dir is not None and dn_mrc is not None:
+        _auto_kick_denoise_slab(dn_job_dir, ts_name, dn_mrc, project_path, refresh)
+        candidate = _denoise_slab_path(dn_job_dir, ts_name)
+        if candidate.exists():
+            dn_png = candidate
+    has_denoise = dn_job_dir is not None and dn_mrc is not None
+
+    if (not png_path or not png_path.exists()) and not has_denoise:
+        ui.label("No tomogram preview on disk for this TS yet.").classes("cb-section-placeholder")
         return
-    url = _vis_asset_url(str(png_path))
-    with ui.element("div").classes("cb-recon-preview"):
-        ui.html(f"<img src='{url}' alt='{ts_name} WarpTools tomogram preview' />", sanitize=False)
-    ui.label(f"WarpTools preview · {png_path.name}").classes("cb-recon-preview-caption")
+
+    with ui.element("div").classes("cb-recon-compare"):
+        # ── recon (left): clean WarpTools PNG ──
+        with ui.element("div").classes("cb-recon-compare-pane"):
+            ui.label("recon").classes("cb-recon-pane-tag")
+            if png_path and png_path.exists():
+                with ui.element("div").classes("cb-recon-preview"):
+                    ui.html(
+                        f"<img src='{_vis_asset_url(str(png_path))}' alt='{ts_name} WarpTools recon' />", sanitize=False
+                    )
+                ui.label(f"WarpTools · {png_path.name}").classes("cb-recon-preview-caption")
+            else:
+                ui.label("No WarpTools preview PNG on disk.").classes("cb-section-placeholder")
+        # ── denoised (right): X/Y slab rendered from the denoised MRC ──
+        if has_denoise:
+            with ui.element("div").classes("cb-recon-compare-pane"):
+                ui.label("denoised").classes("cb-recon-pane-tag")
+                if dn_png is not None:
+                    with ui.element("div").classes("cb-recon-preview"):
+                        ui.html(f"<img src='{_vis_asset_url(str(dn_png))}' alt='{ts_name} denoised' />", sanitize=False)
+                    ui.label(f"denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
+                else:
+                    ui.label("rendering denoised slab…").classes("cb-section-placeholder")
 
 
 def _render_invert_switch(root) -> None:
@@ -1880,6 +1916,75 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
         subtitle="Shared canvas for the pick overlay",
         project_path=str(project_path),
         dedup_key=f"recon-slabs:{recon_job_dir}:{ts_name}",
+    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
+
+
+# ── Denoised tomogram preview (shown side-by-side with the recon in the Reconstruct
+# section) ─────────────────────────────────────────────────────────────────────────
+# cryoCARE/IsoNet write a denoised volume per tomogram but NO WarpTools preview PNG,
+# so the denoised pane is an X/Y slab we render from the denoised MRC ourselves —
+# same renderer + percentile pipeline as the recon slab — background-built and cached
+# under the denoise job's vis/slabs. The denoised tomograms.star repoints
+# rlnTomoReconstructedTomogram at the denoised volume, so the recon volume resolver
+# (_resolve_volume_for_3dmod) works unchanged.
+_AUTO_KICKED_DENOISE_SLAB: set[str] = set()
+
+
+def _resolve_denoised_mrc_for_ts(
+    project_state, project_path: Path, ts_name: str
+) -> tuple[Optional[Path], Optional[Path]]:
+    """(denoise_job_dir, denoised-tomogram MRC) for this TS, or Nones. Mirrors
+    _resolve_recon_mrc_for_ts against the denoisepredict job."""
+    dn = _find_job_by_type(project_state, JobType.DENOISE_PREDICT)
+    if not dn:
+        return None, None
+    dn_job_dir = _job_dir_for(dn[0], dn[1], project_path)
+    if not dn_job_dir:
+        return None, None
+    tomo_df = _read_tomograms_table(dn_job_dir / "tomograms.star")
+    if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
+        return dn_job_dir, None
+    match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
+    if match.empty:
+        return dn_job_dir, None
+    mrc = _resolve_volume_for_3dmod(match.iloc[0], project_path)
+    return dn_job_dir, (Path(mrc) if mrc else None)
+
+
+def _denoise_slab_path(denoise_job_dir: Path, ts_name: str) -> Path:
+    return denoise_job_dir / "vis" / "slabs" / f"{ts_name}_xy.png"
+
+
+def _render_denoise_slab_sync(mrc_path: Path, xy_png: Path) -> str:
+    render_xy_slab_preview(Path(mrc_path), xy_png)
+    return "denoised slab rendered"
+
+
+def _auto_kick_denoise_slab(denoise_job_dir: Path, ts_name: str, mrc_path: Path, project_path: Path, refresh) -> None:
+    """Render the denoised X/Y slab in the background if missing/stale. Mirrors
+    _auto_kick_recon_slabs: module-level dedup set + BackgroundTask dedup_key,
+    refresh-on-complete so the denoised pane fills when the PNG lands."""
+    key = f"{denoise_job_dir}:{ts_name}"
+    if key in _AUTO_KICKED_DENOISE_SLAB:
+        return
+    xy_png = _denoise_slab_path(denoise_job_dir, ts_name)
+    if xy_png.exists() and not is_output_stale(xy_png, [mrc_path]):
+        return
+    _AUTO_KICKED_DENOISE_SLAB.add(key)
+
+    async def _run(progress_cb):
+        import asyncio as _asyncio
+
+        progress_cb(0, 0, "rendering denoised slab…")
+        return await _asyncio.to_thread(_render_denoise_slab_sync, mrc_path, xy_png)
+
+    from ui.background_task import BackgroundTask
+
+    BackgroundTask(
+        title=f"Render denoised slab · {ts_name}",
+        subtitle="cryoCARE/IsoNet denoised tomogram preview",
+        project_path=str(project_path),
+        dedup_key=f"denoise-slab:{denoise_job_dir}:{ts_name}",
     ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
 
 

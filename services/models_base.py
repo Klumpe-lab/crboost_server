@@ -7,48 +7,67 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 class JobStatus(str, Enum):
     SUCCEEDED = "Succeeded"
-    FAILED    = "Failed"
-    RUNNING   = "Running"
-    QUEUED    = "Queued"
+    FAILED = "Failed"
+    RUNNING = "Running"
+    QUEUED = "Queued"
     SCHEDULED = "Scheduled"
-    UNKNOWN   = "Unknown"
+    UNKNOWN = "Unknown"
 
 
 class MicroscopeType(str, Enum):
     KRIOS_G3 = "Krios_G3"
     KRIOS_G4 = "Krios_G4"
-    GLACIOS  = "Glacios"
-    TALOS    = "Talos"
-    CUSTOM   = "Custom"
+    GLACIOS = "Glacios"
+    TALOS = "Talos"
+    CUSTOM = "Custom"
 
 
 class AlignmentMethod(str, Enum):
     ARETOMO = "AreTomo"
-    IMOD    = "IMOD"
-    RELION  = "Relion"
+    IMOD = "IMOD"
+    RELION = "Relion"
+
+
+class DenoiseMethod(str, Enum):
+    """Backend tool for the denoise train/predict steps. Selectable per-job; both
+    methods share the same two job types (denoisetrain, denoisepredict) and the same
+    upstream (even/odd half-tomograms from tsReconstruct)."""
+
+    CRYOCARE = "cryoCARE"
+    ISONET = "IsoNet"
+
+
+class IsoNetRefineMethod(str, Enum):
+    """IsoNet `refine --method` strategy. Values match the CLI strings. AUTO selects
+    isonet2-n2n when even/odd halves are present (missing-wedge correction + denoising)."""
+
+    AUTO = "auto"
+    N2N = "n2n"  # noise2noise denoising only
+    ISONET2 = "isonet2"  # single-map missing-wedge correction
+    ISONET2_N2N = "isonet2-n2n"  # even/odd: missing-wedge correction + denoising
 
 
 class JobCategory(str, Enum):
-    IMPORT     = "Import"
-    EXTERNAL   = "External"
+    IMPORT = "Import"
+    EXTERNAL = "External"
     MOTIONCORR = "MotionCorr"
-    CTFFIND    = "CtfFind"
+    CTFFIND = "CtfFind"
 
 
 class JobType(str, Enum):
-    IMPORT_MOVIES          = "importmovies"
-    FS_MOTION_CTF          = "fsMotionAndCtf"
-    TS_ALIGNMENT           = "aligntiltsWarp"
-    TS_IMPORT              = "tsImport"
-    TS_CTF                 = "tsCtf"
-    TILT_FILTER            = "tiltFilter"
-    TS_RECONSTRUCT         = "tsReconstruct"
-    DENOISE_TRAIN          = "denoisetrain"
-    DENOISE_PREDICT        = "denoisepredict"
-    TEMPLATE_MATCH_PYTOM   = "templatematching"
+    IMPORT_MOVIES = "importmovies"
+    FS_MOTION_CTF = "fsMotionAndCtf"
+    TS_ALIGNMENT = "aligntiltsWarp"
+    TS_IMPORT = "tsImport"
+    TS_CTF = "tsCtf"
+    TILT_FILTER = "tiltFilter"
+    TS_RECONSTRUCT = "tsReconstruct"
+    DENOISE_TRAIN = "denoisetrain"
+    DENOISE_PREDICT = "denoisepredict"
+    TEMPLATE_MATCH_PYTOM = "templatematching"
     TEMPLATE_EXTRACT_PYTOM = "tmextractcand"
-    SUBTOMO_EXTRACTION     = "subtomoExtraction"
-    RECONSTRUCT_PARTICLE   = "reconstructParticle"
+    SUBTOMO_EXTRACTION = "subtomoExtraction"
+    RECONSTRUCT_PARTICLE = "reconstructParticle"
 
     CLASS3D = "class3d"
 
@@ -72,11 +91,11 @@ class PickListType(str, Enum):
     overlay glyph each renders as is fixed by type (color varies per list);
     that mapping lives in the UI, not here."""
 
-    AUTO     = "auto"      # PyTOM candidates.star — read-only source
+    AUTO = "auto"  # PyTOM candidates.star — read-only source
     FILTERED = "filtered"  # CC/top-N derived from a parent list
-    MANUAL   = "manual"    # placed in ArtiaX, ingested from .coords
+    MANUAL = "manual"  # placed in ArtiaX, ingested from .coords
     IMPORTED = "imported"  # user-supplied .coords/star, ingested
-    MERGED   = "merged"    # 2+ lists combined with radius dedup
+    MERGED = "merged"  # 2+ lists combined with radius dedup
 
 
 class ListExtractionState(str, Enum):
@@ -89,12 +108,11 @@ class ListExtractionState(str, Enum):
     fully automatic — no throwaway re-extractions — nor manually tedious)."""
 
     NOT_EXTRACTED = "not_extracted"  # coordinates only; needs extraction to go downstream
-    EXTRACTED     = "extracted"      # extracted, and current with the list's picks
-    STALE         = "stale"          # extracted earlier, but picks changed since → re-extract
+    EXTRACTED = "extracted"  # extracted, and current with the list's picks
+    STALE = "stale"  # extracted earlier, but picks changed since → re-extract
 
 
 class MicroscopeParams(BaseModel):
-
     model_config = ConfigDict(validate_assignment=True)
     microscope_type: MicroscopeType = MicroscopeType.CUSTOM
     pixel_size_angstrom: float = Field(default=1.35, ge=0.5, le=10.0)

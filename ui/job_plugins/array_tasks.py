@@ -35,3 +35,8 @@ def render_tm_tasks(job_type, instance_id, job_model, backend, ui_mgr):
 @register_extra_tab(JobType.TEMPLATE_EXTRACT_PYTOM, key="tasks", label="Tasks", icon="view_list")
 def render_extract_tasks(job_type, instance_id, job_model, backend, ui_mgr):
     render_array_task_tracker(instance_id, job_model, ui_mgr)
+
+
+@register_extra_tab(JobType.DENOISE_PREDICT, key="tasks", label="Tasks", icon="view_list")
+def render_denoise_predict_tasks(job_type, instance_id, job_model, backend, ui_mgr):
+    render_array_task_tracker(instance_id, job_model, ui_mgr)
