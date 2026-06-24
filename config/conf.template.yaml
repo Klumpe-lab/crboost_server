@@ -163,6 +163,11 @@ tools:
     exec_mode: "container"
     container_path: "/path/to/cryocare.sif"
     bin_path: ""
+  # Alternative denoiser to cryoCARE, selectable per-job via DenoiseMethod.ISONET.
+  isonet:
+    exec_mode: "container"
+    container_path: "/path/to/isonet2.sif"
+    bin_path: ""
   pytom:
     exec_mode: "container"
     container_path: "/path/to/pytom_match_pick.sif"

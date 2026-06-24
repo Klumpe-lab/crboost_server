@@ -660,6 +660,21 @@ _CB_CSS = """
     font-family: ui-monospace, monospace; font-size: 10px;
     color: #6b7280; padding: 2px 4px 6px 4px;
 }
+/* Side-by-side recon | denoised comparison in the Reconstruct section. Two equal
+ * panes, each hosting a .cb-recon-preview canvas. Panes shrink (min-width:0) so the
+ * contained images scale down instead of overflowing. When denoise hasn't run, only
+ * the recon pane is emitted and it takes the full width. */
+.cb-recon-compare {
+    display: flex; gap: 8px; width: 100%; align-items: flex-start;
+}
+.cb-recon-compare-pane {
+    flex: 1 1 0; min-width: 0; display: flex; flex-direction: column;
+}
+.cb-recon-pane-tag {
+    font-family: ui-monospace, monospace; font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    color: #475569; padding: 0 2px 2px 2px;
+}
 /* ----------------------------------------------------------------------
  * Polarity invert: a runtime toggle in the section header flips the
  * apparent intensity of template, X/Y slab, X/Z slab, and cutout tiles
