@@ -16,6 +16,8 @@ from typing import Optional
 
 import numpy as np
 
+from services.visualization.cutout_filters import emit_filtered_atlases
+
 logger = logging.getLogger(__name__)
 
 
@@ -274,120 +276,93 @@ def render_xy_slab_preview(
 
 
 def render_pick_cutouts_atlas(
-    pick_to_mrcs: list, out_atlas_path: Path, out_index_path: Path, *, tile_px: int = 192, cols: int = 8
+    pick_to_mrcs: list,
+    out_atlas_path: Path,
+    out_index_path: Path,
+    *,
+    tile_px: int = 192,
+    cols: int = 8,
+    filters: Optional[list] = None,
+    apix_hint: Optional[float] = None,
 ) -> Optional[dict]:
-    """Build a sprite-atlas PNG of per-pick subtomo thumbnails plus an index JSON.
+    """Build sprite-atlas PNG(s) + index JSON(s) of per-pick subtomo thumbnails —
+    one per display-filter preset (see services/visualization/cutout_filters.py).
 
-    `pick_to_mrcs` is a list aligned to the pick order in picks.json; each
-    element is either None (no matching subtomo) or a dict with keys
+    `pick_to_mrcs` is aligned to the pick order in picks.json; each element is
+    None (no matching subtomo) or a dict with keys
       - mrcs: Path to the per-particle .mrcs
-      - visible_frames: list[int] | None  (1 = use that frame for thumbnail)
+      - visible_frames: list[int] | None  (1 = use that frame for the mean)
 
-    Each thumbnail is the per-frame mean (across visible frames only) of the
-    .mrcs, normalized to 8-bit greyscale and resized to `tile_px`.
+    Each thumbnail is the per-frame mean (visible frames only) of the .mrcs.
+    Normalization is **tomogram-wide** (one 1-99 percentile clip per atlas) so
+    pure-noise tiles stay uniformly grey and real-density tiles pop; the bounds
+    ride along in each index JSON so sibling renders can match. The `raw` variant
+    keeps the base filenames (back-compat); other presets get `__<key>` siblings.
+    apix is read from the .mrcs header (the subtomo-extraction bin), falling back
+    to `apix_hint`.
 
-    Normalization is **tomogram-wide**: we sample up to 12 picks, pool their
-    mean-frame pixels, and compute a single 1-99 percentile clip applied to
-    every tile. The previous per-tile percentile stretched pure-noise tiles
-    to fill 0-255 too, making them visually indistinguishable from low-SNR
-    particle tiles. With a shared clip, noise tiles stay uniformly grey and
-    real-density tiles pop. The bounds are exported in the index JSON so
-    sibling renders (template ref tile, noise baseline tiles) can match.
-
-    Returns a metadata dict on success or None if every pick failed. The
-    `failures` list inside the metadata names exactly which picks failed and
-    why, so the UI can surface "92/96 — 4 failures: <reasons>" instead of
-    silently dropping tiles.
+    Returns a metadata dict (raw atlas/index paths, n_ok, failures, norm_bounds,
+    apix, apix_source, `variants` map) or None if every pick failed. The
+    `failures` list names exactly which picks failed and why.
     """
-    try:
-        from PIL import Image
-    except ImportError as e:
-        logger.warning("Subtomo atlas deps unavailable: %s", e)
-        return None
-
-    out_atlas_path = Path(out_atlas_path)
-    out_index_path = Path(out_index_path)
-    out_atlas_path.parent.mkdir(parents=True, exist_ok=True)
-
     n = len(pick_to_mrcs)
     if n == 0:
         return None
 
-    norm_bounds = _sample_global_norm_bounds(pick_to_mrcs)
-
-    rows = (n + cols - 1) // cols
-    atlas_w = cols * tile_px
-    atlas_h = rows * tile_px
-    atlas = np.zeros((atlas_h, atlas_w), dtype=np.uint8)
-    index_entries: dict[str, list[int]] = {}
-    failures: list[dict] = []
-    n_ok = 0
-
-    for i, info in enumerate(pick_to_mrcs):
+    # Preload one 2D float mean-frame per pick (None where there's no subtomo or
+    # the read fails) plus a precise failure reason, and the header pixel size.
+    frames: list = []
+    fail_info: list = []
+    apix_header: Optional[float] = None
+    for info in pick_to_mrcs:
         if info is None:
-            failures.append({"i": i, "reason": "no subtomo match"})
+            frames.append(None)
+            fail_info.append({"reason": "no subtomo match"})
             continue
-        thumb, err = _render_one_subtomo_thumb(info["mrcs"], info.get("visible_frames"), tile_px, norm_bounds)
-        if thumb is None:
-            failures.append({"i": i, "reason": err or "render failed", "mrcs": str(info["mrcs"])})
-            continue
-        r, c = divmod(i, cols)
-        y0 = r * tile_px
-        x0 = c * tile_px
-        atlas[y0 : y0 + tile_px, x0 : x0 + tile_px] = thumb
-        index_entries[str(i)] = [r, c]
-        n_ok += 1
+        arr, err, apix = _load_subtomo_mean_frame(info["mrcs"], info.get("visible_frames"))
+        frames.append(arr)
+        if arr is None:
+            fail_info.append({"reason": err or "render failed", "mrcs": str(info["mrcs"])})
+        else:
+            fail_info.append(None)
+            if apix_header is None and apix:
+                apix_header = apix
 
-    if n_ok == 0:
-        # Still emit the index JSON so the caller can see why every pick failed.
-        out_index_path.write_text(
-            json.dumps({"tile_px": tile_px, "cols": cols, "rows": rows, "n_picks": n, "n_ok": 0, "failures": failures})
-        )
-        return None
-
-    Image.fromarray(atlas, mode="L").save(str(out_atlas_path), format="PNG", optimize=True)
-
-    payload = {
-        "tile_px": tile_px,
-        "cols": cols,
-        "rows": rows,
-        "n_picks": n,
-        "n_ok": n_ok,
-        "atlas_w": atlas_w,
-        "atlas_h": atlas_h,
-        "index": index_entries,
-        "failures": failures,
-        "norm_lo": float(norm_bounds[0]) if norm_bounds else None,
-        "norm_hi": float(norm_bounds[1]) if norm_bounds else None,
-    }
-    out_index_path.write_text(json.dumps(payload))
-    return {
-        "atlas_path": str(out_atlas_path),
-        "index_path": str(out_index_path),
-        "n_ok": n_ok,
-        "n_total": n,
-        "failures": failures,
-        "norm_bounds": norm_bounds,
-    }
+    return emit_filtered_atlases(
+        frames,
+        fail_info,
+        out_atlas_path,
+        out_index_path,
+        apix_header=apix_header,
+        apix_hint=apix_hint,
+        filters=filters,
+        tile_px=tile_px,
+        cols=cols,
+        source="subtomo",
+    )
 
 
 def _load_subtomo_mean_frame(
     mrcs_path: Path, visible_frames: Optional[list]
-) -> tuple[Optional[np.ndarray], Optional[str]]:
-    """Read one .mrcs and return the mean-frame float32 array (pre-normalization).
+) -> tuple[Optional[np.ndarray], Optional[str], Optional[float]]:
+    """Read one .mrcs → (mean-frame float32 array, error, apix).
 
-    Shared by the per-tile thumbnail renderer and the global-bounds sampler so
-    both consume the same underlying pixel values.
+    The mean frame (across visible frames only) is pre-normalization; `apix` is
+    the header voxel size (Å/px) of the subtomo-extraction bin, or None if absent.
     """
     try:
         import mrcfile
     except ImportError as e:
-        return None, f"deps unavailable: {e}"
+        return None, f"deps unavailable: {e}", None
     if not Path(mrcs_path).exists():
-        return None, "mrcs not on disk"
+        return None, "mrcs not on disk", None
     try:
         with mrcfile.mmap(str(mrcs_path), mode="r") as m:
             data = m.data
+            try:
+                apix = float(m.voxel_size.x)
+            except Exception:
+                apix = None
             if data.ndim == 2:
                 arr = np.array(data, dtype=np.float32, copy=True)
             elif data.ndim == 3:
@@ -404,83 +379,13 @@ def _load_subtomo_mean_frame(
                 stack = np.array(data, dtype=np.float32, copy=True)
                 arr = stack[mask].mean(axis=0)
             else:
-                return None, f"unexpected ndim {data.ndim}"
+                return None, f"unexpected ndim {data.ndim}", apix
     except Exception as e:
         logger.warning("Subtomo .mrcs read failed for %s: %s", mrcs_path, e)
-        return None, f"mrc read error: {e}"
+        return None, f"mrc read error: {e}", None
     if not np.isfinite(arr).any():
-        return None, "all-NaN frame mean"
-    return arr, None
-
-
-def _sample_global_norm_bounds(
-    pick_to_mrcs: list, sample_n: int = 12, percentile_lo: float = 1.0, percentile_hi: float = 99.0
-) -> Optional[tuple[float, float]]:
-    """Pool pixels from a stratified sample of picks and return shared (lo, hi).
-
-    Stratification: take picks at evenly spaced indices through the score-sorted
-    list. Index 0 is the best pick, last index is the worst — sampling across
-    the whole range keeps the bounds from being biased toward only-particles
-    (top of list) or only-noise (bottom). Up to `sample_n` valid samples are
-    pooled; if none read cleanly, returns None and the per-tile fallback
-    re-engages (caller handles).
-    """
-    if not pick_to_mrcs:
-        return None
-    valid = [(i, info) for i, info in enumerate(pick_to_mrcs) if info is not None]
-    if not valid:
-        return None
-    if len(valid) <= sample_n:
-        chosen = valid
-    else:
-        step = len(valid) / sample_n
-        chosen = [valid[int(i * step)] for i in range(sample_n)]
-    pooled: list[np.ndarray] = []
-    for _, info in chosen:
-        arr, _ = _load_subtomo_mean_frame(info["mrcs"], info.get("visible_frames"))
-        if arr is not None:
-            pooled.append(arr.ravel())
-    if not pooled:
-        return None
-    flat = np.concatenate(pooled)
-    lo = float(np.percentile(flat, percentile_lo))
-    hi = float(np.percentile(flat, percentile_hi))
-    if hi <= lo:
-        hi = lo + 1.0
-    return (lo, hi)
-
-
-def _render_one_subtomo_thumb(
-    mrcs_path: Path, visible_frames: Optional[list], tile_px: int, norm_bounds: Optional[tuple[float, float]] = None
-) -> tuple[Optional[np.ndarray], Optional[str]]:
-    """Mean across visible frames of one .mrcs, normalized + resized to tile_px×tile_px.
-
-    If `norm_bounds=(lo, hi)` is supplied the tile uses that shared clip; the
-    per-tile percentile fallback only applies when the global sample failed
-    (e.g. every sampled .mrcs unreadable). Returns (thumbnail, None) on
-    success or (None, reason) on failure.
-    """
-    try:
-        from PIL import Image
-    except ImportError as e:
-        return None, f"deps unavailable: {e}"
-    arr, err = _load_subtomo_mean_frame(mrcs_path, visible_frames)
-    if arr is None:
-        return None, err
-
-    if norm_bounds is not None:
-        lo, hi = norm_bounds
-    else:
-        lo = float(np.percentile(arr, 1.0))
-        hi = float(np.percentile(arr, 99.0))
-    if hi <= lo:
-        hi = lo + 1.0
-    norm = np.clip((arr - lo) / (hi - lo), 0.0, 1.0)
-    u8 = (norm * 255.0).astype(np.uint8)
-
-    img = Image.fromarray(u8, mode="L")
-    img = img.resize((tile_px, tile_px), Image.LANCZOS)
-    return np.array(img, dtype=np.uint8), None
+        return None, "all-NaN frame mean", apix
+    return arr, None, apix
 
 
 def extract_pick_subvolume(

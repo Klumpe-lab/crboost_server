@@ -55,7 +55,22 @@ logger = logging.getLogger(__name__)
 # load.  A major mismatch emits a loud warning; a missing version (pre-versioning
 # files) is treated as (0, 0).
 
-SCHEMA_VERSION: Tuple[int, int] = (3, 0)
+SCHEMA_VERSION: Tuple[int, int] = (3, 2)  # 3.2: +use_afterok_orchestrator + job_dir_counter (P1.A)
+
+
+def _afterok_global_default() -> bool:
+    """DEV TOGGLE (temporary): repo-config global override (`use_afterok_orchestrator: true` in
+    conf.yaml) so the afterok orchestrator can be exercised on every project without per-project
+    project_params.json edits. Applied as the field default (fresh projects) and OR'd into the
+    load path (existing projects); a per-project True always wins. Remove with the config field
+    once the afterok path is validated. See ORCHESTRATOR_REPLACEMENT_PLAN.md §6a."""
+    try:
+        from services.configs.config_service import get_config_service
+
+        return bool(get_config_service().config.use_afterok_orchestrator)
+    except Exception:
+        return False
+
 
 # Sentinel `owner` value marking a project as shared/lab-owned rather than
 # belonging to one user. `owner` is mutable (transfer); `created_by` stays as
@@ -603,6 +618,12 @@ class ProjectState(BaseModel):
     slurm_defaults: SlurmConfig = Field(default_factory=SlurmConfig.from_config_defaults)
 
     jobs: Dict[str, SerializeAsAny[AbstractJobParams]] = Field(default_factory=dict)
+    # Persisted pipeline membership + submit order (instance_ids). Historically the
+    # participating set + order lived ONLY in UIState.selected_jobs (per-browser-tab
+    # NiceGUI storage); persisting it here lets a tab-less submitter/reconciler know
+    # the run set. Written through at deploy; backfilled from `jobs` on load for
+    # legacy projects. See ORCHESTRATOR_REPLACEMENT_PLAN.md §6 (P1.0).
+    pipeline_order: List[str] = Field(default_factory=list)
     species_registry: List[ParticleSpecies] = Field(default_factory=list)
     # Per-(species, tomo) manual-curation workbench. Only workbench-authored
     # lists (manual/imported/merged) persist here; `auto`/`filtered` are
@@ -616,6 +637,18 @@ class ProjectState(BaseModel):
     # the historical default). Exactly one list is authoritative per (species, tomo).
     authoritative_pick_lists: Dict[str, str] = Field(default_factory=dict)
     pipeline_active: bool = Field(default=False)
+
+    # Orchestrator rework (P1.A): per-project opt-in to the SLURM afterok submit path
+    # (submit_chain) instead of relion_schemer. Default False (schemer) so a test
+    # project can exercise the afterok DAG while existing projects are unaffected.
+    # Live status under this flag requires the P1.B reconciler. See
+    # ORCHESTRATOR_REPLACEMENT_PLAN.md §6.
+    use_afterok_orchestrator: bool = Field(default_factory=_afterok_global_default)
+    # Sole job-dir-number allocator for the afterok path. Seeded once from
+    # default_pipeline.star's rlnPipeLineJobCounter at the first submit_chain, then
+    # monotonic -- always consumes a slot (no reuse-on-rerun), which fixes the
+    # job-number off-by-one. 0 = unseeded.
+    job_dir_counter: int = 0
 
     # Dataset import summary (set at project creation)
     import_total_positions: int = 0
@@ -931,6 +964,20 @@ class ProjectState(BaseModel):
                     )
             except Exception as e:
                 logger.warning("Skipping job instance '%s' - failed to deserialize: %s", instance_id, e)
+
+        # pipeline_order (P1.0): use the persisted value; for legacy projects that
+        # predate the field, backfill from the loaded job set in file order -- every
+        # initialized job is part of the pipeline. The authoritative value is the
+        # write-through at deploy.
+        project_state.pipeline_order = data.get("pipeline_order") or list(project_state.jobs.keys())
+
+        # Orchestrator rework (P1.A): explicit restore (load() is field-by-field, not
+        # cls(**data)). Both are additive optional fields, so defaulting keeps legacy
+        # projects on the schemer path untouched.
+        project_state.use_afterok_orchestrator = (
+            data.get("use_afterok_orchestrator", False) or _afterok_global_default()
+        )
+        project_state.job_dir_counter = data.get("job_dir_counter", 0)
 
         return project_state
 

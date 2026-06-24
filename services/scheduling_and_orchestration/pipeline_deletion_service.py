@@ -148,7 +148,21 @@ class PipelineDeletionService:
         }
         
         self.star_handler.write(data, deleted_star)
-    
+
+    def _move_job_dir_to_trash(self, project_dir: Path, job_name: str) -> bool:
+        """Move project_dir/<job_name> into Trash/, replacing any existing trash entry.
+        Returns True if a directory was actually moved (False if none on disk)."""
+        job_dir = project_dir / job_name.rstrip("/")
+        if not job_dir.exists():
+            return False
+        trash_dir = project_dir / "Trash" / job_name.rstrip("/").replace("/", "_")
+        trash_dir.parent.mkdir(parents=True, exist_ok=True)
+        if trash_dir.exists():
+            shutil.rmtree(trash_dir)
+        shutil.move(str(job_dir), str(trash_dir))
+        logger.info("Moved %s to %s", job_dir, trash_dir)
+        return True
+
     async def delete_job(
         self,
         project_dir: Path,
@@ -186,9 +200,17 @@ class PipelineDeletionService:
         
         job_mask = graph.processes["rlnPipeLineProcessName"] == job_name
         if not job_mask.any():
+            # Afterok-orchestrator jobs live only in ProjectState, never in default_pipeline.star,
+            # so there is no graph row to prune — but the job dir must still go to Trash. Leaving it
+            # orphaned confuses job-number allocation and makes the roster re-render the now-stateless
+            # instance as a ghost "scheduled" (yellow) entry. Do just the filesystem move and report
+            # success, not a spurious "not found" failure that strands the caller in a partial delete.
+            moved = self._move_job_dir_to_trash(project_dir, job_name)
             return DeletionResult(
-                success=False,
-                error=f"Job '{job_name}' not found in pipeline"
+                success=True,
+                deleted_jobs=[job_name],
+                message=f"Deleted {job_name} (afterok job; absent from default_pipeline.star)."
+                + ("" if moved else " No job directory on disk."),
             )
         
         # 3. Find downstream dependents (for warning)
@@ -228,17 +250,7 @@ class PipelineDeletionService:
             ]
         
         # 9. Move job directory to Trash
-        job_dir = project_dir / job_name.rstrip("/")
-        if job_dir.exists():
-            trash_dir = project_dir / "Trash" / job_name.rstrip("/").replace("/", "_")
-            trash_dir.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Remove existing trash if present (Relion does this)
-            if trash_dir.exists():
-                shutil.rmtree(trash_dir)
-            
-            shutil.move(str(job_dir), str(trash_dir))
-            logger.info("Moved %s to %s", job_dir, trash_dir)
+        self._move_job_dir_to_trash(project_dir, job_name)
         
         # 10. Write deleted_pipeline.star for audit
         if not deleted_processes.empty:
