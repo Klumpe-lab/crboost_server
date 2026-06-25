@@ -35,7 +35,7 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command, require_producer_input
+from drivers.driver_base import get_driver_context, run_command, run_command_with_retries, require_producer_input
 from services.computing.container_service import get_container_service
 from services.job_models import TsCtfParams
 from services.tilt_series import get_registry_for
@@ -352,7 +352,7 @@ def run_task_mode(array_idx: int):
         wrapped = get_container_service().wrap_command_for_tool(
             command=cmd, cwd=stage_root, tool_name=params.get_tool_name(), additional_binds=additional_binds
         )
-        run_command(wrapped, cwd=stage_root)
+        run_command_with_retries(wrapped, cwd=stage_root, label=f"ts_ctf {ts_name}")
 
         # Copy the updated XML back to the shared output dir
         staged_xml = stage_root / "warp_tiltseries" / f"{ts_name}.xml"

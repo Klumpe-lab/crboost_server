@@ -139,9 +139,6 @@ def _resolve_tomo_mrc(tomo_row, project_root: Optional[Path]) -> Optional[Path]:
     p = Path(str(tomo_row["rlnTomoReconstructedTomogram"]))
     if not p.is_absolute() and project_root is not None:
         p = project_root / p
-    f32 = p.with_name(p.stem + "_f32.mrc")
-    if f32.exists():
-        return f32
     if p.exists():
         return p
     return None
@@ -164,12 +161,7 @@ def _find_warp_tomo_preview(
     longer-named neighbor.
     """
     if mrc_path is not None:
-        stem = mrc_path.stem
-        # _f32 variant lives next to the canonical "_<res>Apx.mrc" — strip
-        # the suffix so we land on the same stem WarpTools uses for the PNG.
-        if stem.endswith("_f32"):
-            stem = stem[:-4]
-        png = mrc_path.parent / f"{stem}.png"
+        png = mrc_path.parent / f"{mrc_path.stem}.png"
         if png.exists():
             return png
     if project_root is None:

@@ -14,8 +14,8 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 - Set:    TASK mode. One tilt-series per array index. Reads the manifest, picks its
           TS, idempotently skips if the reconstruction MRC already exists, otherwise
           stages a per-TS input_processing dir (symlinking only this TS's XML),
-          runs `WarpTools ts_reconstruct`, performs the f16->f32 conversion just for
-          this TS, and atomically writes `.task_status/{ts_name}.{ok|fail}`.
+          runs `WarpTools ts_reconstruct`, and atomically writes
+          `.task_status/{ts_name}.{ok|fail}`.
 """
 
 import os
@@ -39,7 +39,7 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command, require_producer_input
+from drivers.driver_base import get_driver_context, run_command_with_retries, require_producer_input
 from services.computing.container_service import get_container_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import TsReconstructParams
@@ -83,32 +83,6 @@ def build_reconstruct_command(
         f"--perdevice {params.perdevice} "
         f"--dont_invert"
     )
-
-
-def convert_recon_to_f32_for_ts(recon_dir: Path, ts_name: str, rescale_angpixs: float) -> bool:
-    """
-    Convert the main per-TS reconstruction MRC from float16 to float32 (sibling file
-    with `_f32` suffix), matching the legacy single-job driver's IMOD compatibility step.
-    Idempotent: returns False if the f32 file already exists or the source is not float16.
-    """
-    import mrcfile
-    import numpy as np
-
-    rec_res = f"{rescale_angpixs:.2f}"
-    src = recon_dir / f"{ts_name}_{rec_res}Apx.mrc"
-    if not src.is_file():
-        return False
-    f32 = src.with_name(src.stem + "_f32.mrc")
-    if f32.exists():
-        return False
-    with mrcfile.open(str(src), mode="r") as mrc:
-        if mrc.data.dtype != np.float16:
-            return False
-        with mrcfile.new(str(f32), overwrite=True) as out:
-            out.set_data(mrc.data.astype(np.float32))
-            out.voxel_size = mrc.voxel_size
-    print(f"  [F32] {src.name} -> {f32.name}", flush=True)
-    return True
 
 
 # ----------------------------------------------------------------------
@@ -254,10 +228,8 @@ def run_task_mode(array_idx: int):
         out_mrc = reconstruction_mrc_path(job_dir, ts_name, params.rescale_angpixs)
 
         # Idempotency: skip TS whose reconstruction MRC already exists.
-        # Run the f16->f32 conversion just in case it was missed on a previous attempt.
         if out_mrc.exists() and out_mrc.stat().st_size > 0:
             print(f"[TASK {array_idx}] Reconstruction already exists, skipping: {out_mrc}", flush=True)
-            convert_recon_to_f32_for_ts(job_dir / "warp_tiltseries" / "reconstruction", ts_name, params.rescale_angpixs)
             write_status_atomic(status_dir, ts_name, ok=True)
             sys.exit(0)
 
@@ -278,9 +250,7 @@ def run_task_mode(array_idx: int):
             command=cmd, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
         )
 
-        run_command(wrapped, cwd=job_dir)
-
-        convert_recon_to_f32_for_ts(job_dir / "warp_tiltseries" / "reconstruction", ts_name, params.rescale_angpixs)
+        run_command_with_retries(wrapped, cwd=job_dir, label=f"ts_reconstruct {ts_name}")
 
         if not out_mrc.exists():
             raise FileNotFoundError(f"WarpTools reported success but expected output MRC missing: {out_mrc}")
