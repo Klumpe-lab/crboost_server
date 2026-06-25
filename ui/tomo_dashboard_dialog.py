@@ -681,10 +681,14 @@ def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, re
     # species' picks overlaid (toggleable), plus a per-species tab carrying
     # that species' TM sanity strip + gallery / scatter. Replaces both the
     # old per-species Template Match cards and the candidate-extract cards.
-    if "particles" not in hidden and _render_particles_section(
-        ts_name, project_state, project_path, refresh, refresh_roster
-    ):
-        rendered_any = True
+    if "particles" not in hidden:
+        # Candidate-extract path first; if it renders nothing (no TEMPLATE_EXTRACT
+        # jobs — e.g. a particle-only project), fall back to the imported-tomogram
+        # manual-picking section so the imported tomos still surface.
+        if _render_particles_section(ts_name, project_state, project_path, refresh, refresh_roster):
+            rendered_any = True
+        elif _render_imported_particles_section(ts_name, project_state, project_path, refresh, refresh_roster):
+            rendered_any = True
 
     if not rendered_any:
         if len(hidden) >= len(_DASHBOARD_PANEL_KEYS):
@@ -2875,14 +2879,23 @@ def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id:
 
 
 def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -> tuple[Optional[Path], Optional[Path]]:
-    """(recon_job_dir, reconstructed-tomogram MRC) for this TS, or Nones."""
+    """(recon_job_dir, reconstructed-tomogram MRC) for this TS, or Nones.
+
+    Falls back to the project-level imported tomograms.star (PARTICLES-header import
+    utility) for data-less / particle-only projects, which have no TS_RECONSTRUCT job."""
     rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
-    if not rec:
-        return None, None
-    recon_job_dir = _job_dir_for(rec[0], rec[1], project_path)
-    if not recon_job_dir:
-        return None, None
-    tomo_df = _read_tomograms_table(recon_job_dir / "tomograms.star")
+    if rec:
+        recon_job_dir = _job_dir_for(rec[0], rec[1], project_path)
+        if not recon_job_dir:
+            return None, None
+        star_path = recon_job_dir / "tomograms.star"
+    else:
+        imported = project_state.imported_tomograms_star_path()
+        if not imported:
+            return None, None
+        star_path = Path(imported)
+        recon_job_dir = star_path.parent
+    tomo_df = _read_tomograms_table(star_path)
     if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
         return recon_job_dir, None
     match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
@@ -3135,6 +3148,140 @@ _SLAB_MAX_VH = 60
 # slab's width as a % of the row bounds that split directly, so the gallery/rail
 # column always claims the rest. Tune to taste: lower → wider gallery.
 _SLAB_MAX_PCT = 34
+
+
+def _imported_wip_marker(text: str, tip: str) -> None:
+    """A subtle red 'unverified / missing' marker with an explanatory tooltip.
+    Per CLAUDE.md ('Surfacing uncertainty'): show a missing/ambiguous param, never
+    silently default it."""
+    with ui.row().classes("items-center gap-1").style("display:inline-flex;"):
+        ui.icon("error_outline", size="13px").classes("text-red-500")
+        ui.label(text).classes("font-mono text-red-600").tooltip(tip)
+
+
+def _render_imported_species_row(sp_obj, project_state, ts_name: str) -> None:
+    """One registered species' manual pick lists on this imported tomogram.
+
+    Counts come straight from the PickList registry (pl.count) — independent of the
+    tomogram's apix/dims, which are surfaced separately with their own markers (so a
+    suspect/missing geometry never silently mis-states a pick count). P2.1 lists picks;
+    P2.2 adds the canvas overlay, which is what actually needs apix + dims."""
+    color = (
+        getattr(sp_obj, "color", "")
+        or _SPECIES_OVERLAY_COLORS[sum(map(ord, str(sp_obj.id))) % len(_SPECIES_OVERLAY_COLORS)]
+    )
+    lists = project_state.get_pick_lists(sp_obj.id, ts_name)
+    with ui.element("div").style("display:flex; gap:10px; align-items:center; padding:3px 2px; font-size:11px;"):
+        ui.icon("circle", size="10px").style(f"color:{color};")
+        ui.label(str(sp_obj.name)).style("font-weight:600;")
+        if lists:
+            total = sum(int(getattr(pl, "count", 0) or 0) for pl in lists)
+            ui.label(f"{len(lists)} list(s) · {total} picks").classes("font-mono text-gray-600")
+        else:
+            ui.label("no picks yet").classes("italic text-gray-400")
+
+
+def _render_imported_particles_section(
+    ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None
+) -> bool:
+    """Particles section for imported tomograms (data-less / particle-only projects).
+
+    A separate, deliberately-simple renderer: the candidate-extract canvas + gallery
+    machinery assumes auto-pick data this source has none of, so we don't drive it
+    blind. Shows the imported tomogram's geometry — with provenance markers, never a
+    silent apix default (CLAUDE.md) — plus each registered species' manual pick lists.
+    The 'register species & pick' launcher (P2.2) will mount here."""
+    imported_star = project_state.imported_tomograms_star_path()
+    if not imported_star:
+        return False
+    tomo_df = _read_tomograms_table(Path(imported_star))
+    if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
+        return False
+    match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
+    if match.empty:
+        return False
+    row = match.iloc[0]
+
+    # Geometry from the star (cheap — no MRC re-read on the event loop). apix is
+    # surfaced WITH provenance: if it looks like the synthesize fallback (the recon
+    # MRC header had no voxel_size and no override was set), flag it red rather than
+    # presenting 1.0 A/px as if it were measured.
+    # binning follows RELION's convention (absent ⇒ 1.0); a corrupt non-positive /
+    # NaN value also falls back to 1 rather than poisoning the apix + dims math.
+    try:
+        binning = float(row.get("rlnTomoTomogramBinning", 1.0))
+    except (TypeError, ValueError):
+        binning = 1.0
+    if not (binning > 0):
+        binning = 1.0
+    try:
+        ts_px = float(row.get("rlnTomoTiltSeriesPixelSize", 0.0))
+    except (TypeError, ValueError):
+        ts_px = 0.0
+    binned_apix = ts_px * binning if ts_px > 0 else 0.0
+
+    def _binned_dim(col: str):
+        try:
+            return int(round(float(row[col]) / binning)) if col in row.index else None
+        except (TypeError, ValueError):
+            return None
+
+    bx, by, bz = _binned_dim("rlnTomoSizeX"), _binned_dim("rlnTomoSizeY"), _binned_dim("rlnTomoSizeZ")
+    dims_known = None not in (bx, by, bz)
+    species = list(getattr(project_state, "species_registry", []) or [])
+
+    with ui.element("div").classes("cb-section-card w-full") as card:
+        card._props["data-section"] = "particles"
+        with ui.element("div").classes("cb-section-card-header"):
+            ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
+            ui.label("Particles").classes("cb-section-title")
+            ui.label("imported tomogram").classes("text-[10px] font-mono text-gray-500")
+            ui.space()
+            ui.label("manual picking · WIP").classes("text-[10px] font-mono text-amber-600").tooltip(
+                "Particle-only project: pick manually in ArtiaX. Automated template matching on imported "
+                "tomograms is not wired yet (it needs a per-tilt-series star)."
+            )
+
+        with ui.element("div").style(
+            "display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:6px 2px; font-size:11px;"
+        ):
+            ui.label(ts_name).classes("font-mono").style("font-weight:600;")
+            if dims_known:
+                ui.label(f"{bx} x {by} x {bz} px").classes("font-mono text-gray-600")
+            else:
+                _imported_wip_marker(
+                    "dimensions unavailable", "tomograms.star has no rlnTomoSizeX/Y/Z for this tomogram."
+                )
+            if abs(binning - 1.0) > 1e-6:
+                ui.label(f"bin x{binning:g}").classes("font-mono text-gray-500")
+            # `not (ts_px > 0)` catches 0 / negative / NaN — definitely missing.
+            # A bare 1.0 A/px (binning 1) is AMBIGUOUS: it's the writer's fallback
+            # when an MRC header lacks voxel_size, but could also be genuine — so we
+            # surface it for confirmation rather than asserting either way.
+            if not (ts_px > 0):
+                _imported_wip_marker(
+                    "pixel size unset",
+                    "tomograms.star has no usable rlnTomoTiltSeriesPixelSize for this tomogram — set "
+                    "'Pixel size' on the Import Tomograms job.",
+                )
+            elif abs(ts_px - 1.0) < 1e-6 and abs(binning - 1.0) < 1e-6:
+                _imported_wip_marker(
+                    f"{binned_apix:g} A/px · verify",
+                    "Pixel size is exactly 1.0 A/px. If the recon MRC header lacked voxel_size this is the "
+                    "import fallback and picks would be mis-scaled — set 'Pixel size' on the Import Tomograms "
+                    "job. If 1.0 A/px is genuinely correct, ignore this.",
+                )
+            else:
+                ui.label(f"{binned_apix:g} A/px").classes("font-mono text-gray-600")
+
+        if not species:
+            ui.label("No species registered yet — register one to start picking.").classes(
+                "italic text-gray-500"
+            ).style("padding:6px 2px; font-size:11px;")
+        else:
+            for sp_obj in species:
+                _render_imported_species_row(sp_obj, project_state, ts_name)
+    return True
 
 
 def _render_particles_section(ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None) -> bool:

@@ -21,7 +21,6 @@ from services.jobs.candidate_extract import CandidateExtractPytomParams
 from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.jobs.reconstruct_particle import ReconstructParticleParams
 from services.jobs.class3d import Class3DParams
-from services.jobs.import_tomograms import ImportTomogramsParams
 
 from services.models_base import JobType
 from typing import Dict, Type
@@ -44,7 +43,6 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
         JobType.SUBTOMO_EXTRACTION: SubtomoExtractionParams,
         JobType.RECONSTRUCT_PARTICLE: ReconstructParticleParams,
         JobType.CLASS3D: Class3DParams,
-        JobType.IMPORT_TOMOGRAMS: ImportTomogramsParams,
     }
 
 
@@ -67,6 +65,5 @@ __all__ = [
     "SubtomoExtractionParams",
     "ReconstructParticleParams",
     "Class3DParams",
-    "ImportTomogramsParams",
     "jobtype_paramclass",
 ]

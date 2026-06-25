@@ -337,13 +337,11 @@ class PipelineOrchestratorService:
             # Mark Succeeded + drop the exit sentinel so the roster/DAG show them and their consumers
             # submit with no afterok producer (the star is on disk before the chain runs). Excluded
             # from `prepared`, hence from the submit set/DAG below. Currently: ImportMovies
-            # (tilt_series.star from the registry) and ImportTomograms (tomograms.star).
+            # (tilt_series.star from the registry).
             if getattr(job_model, "RUNS_INLINE", False):
                 try:
                     if job_type == JobType.IMPORT_MOVIES:
                         self._write_import_stars_inline(job_model, job_dir, project_dir)
-                    elif job_type == JobType.IMPORT_TOMOGRAMS:
-                        self._write_tomograms_star_inline(job_model, job_dir, project_dir)
                     else:
                         raise ValueError(f"RUNS_INLINE set but no inline writer for {job_type}")
                 except Exception as e:
@@ -483,9 +481,6 @@ class PipelineOrchestratorService:
     ) -> str:
         if job_type == JobType.IMPORT_MOVIES:
             return self._build_import_command(job_model)
-        if job_type == JobType.IMPORT_TOMOGRAMS:
-            # Written inline by _write_tomograms_star_inline; this fn_exe is never executed.
-            return "echo 'ImportTomograms is written inline by the orchestrator; not executed.'; exit 0"
 
         driver_map = {
             JobType.FS_MOTION_CTF: "fs_motion_and_ctf.py",
@@ -550,16 +545,6 @@ class PipelineOrchestratorService:
             raise ValueError(f"rlnPipeLineJobCounter not found in {pipeline_star}")
 
         return int(counter)
-
-    def _write_tomograms_star_inline(self, job_model, job_dir: Path, project_dir: Path) -> None:
-        """Write ``job_dir/tomograms.star`` for an ImportTomograms provider (inline; no SLURM).
-        Schema mirrors a real tsReconstruct ``data_global`` block so Template Matching + the
-        picking dashboard consume it like any reconstructed-tomogram source. See P1 in
-        PARTICLE_PROJECT_ROADMAP.md."""
-        from services.jobs.import_tomograms import write_tomograms_star_for_job
-
-        n = write_tomograms_star_for_job(job_model, job_dir, project_dir)
-        logger.info("ImportTomograms[%s]: wrote tomograms.star with %d tomogram(s)", job_dir.name, n)
 
     def _write_import_stars_inline(self, job_model: ImportMoviesParams, job_dir: Path, project_dir: Path) -> None:
         """Write ``Import/jobNNN/tilt_series.star`` + per-TS ``tilt_series/<TS>.star`` from the

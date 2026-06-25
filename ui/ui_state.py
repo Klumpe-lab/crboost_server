@@ -153,7 +153,6 @@ PIPELINE_ORDER: List[JobType] = [
     JobType.TS_RECONSTRUCT,
     JobType.DENOISE_TRAIN,
     JobType.DENOISE_PREDICT,
-    JobType.IMPORT_TOMOGRAMS,
     JobType.TEMPLATE_MATCH_PYTOM,
     JobType.TEMPLATE_EXTRACT_PYTOM,
     JobType.SUBTOMO_EXTRACTION,
@@ -176,7 +175,6 @@ JOB_DISPLAY_NAMES: Dict[JobType, str] = {
     JobType.SUBTOMO_EXTRACTION: "Subtomo Extraction",
     JobType.RECONSTRUCT_PARTICLE: "Reconstruct Particle",
     JobType.CLASS3D: "Class 3D",
-    JobType.IMPORT_TOMOGRAMS: "Import Tomograms",
     JobType.MERGED_SOURCES: "Merged Sources",
 }
 
