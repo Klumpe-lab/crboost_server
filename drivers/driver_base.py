@@ -262,6 +262,46 @@ def run_command(command: str, cwd: Path, timeout: int = None):
         raise subprocess.CalledProcessError(process.returncode, command)
 
 
+def run_command_with_retries(
+    command: str,
+    cwd: Path,
+    attempts: int = 3,
+    retry_delay: int = 10,
+    label: str = "command",
+    timeout: int = None,
+):
+    """
+    Run `command` via run_command(), retrying on a non-zero exit up to `attempts`
+    total tries. Bounded by design -- a small fixed cap and a short fixed delay (no
+    exponential backoff) -- so a transient tool/worker crash (e.g. WarpTools' GPU
+    worker self-terminating on a missed heartbeat) self-heals without the retries
+    idling the SLURM allocation for long. Retries are also implicitly capped by the
+    job's SLURM --time, so a genuinely-stuck tool can never loop "for ages".
+    Re-raises the final CalledProcessError once all attempts are exhausted.
+    """
+    import time
+
+    for attempt in range(1, attempts + 1):
+        try:
+            run_command(command, cwd=cwd, timeout=timeout)
+            if attempt > 1:
+                print(f"[retry] {label}: succeeded on attempt {attempt}/{attempts}", flush=True)
+            return
+        except subprocess.CalledProcessError as e:
+            if attempt >= attempts:
+                print(
+                    f"[retry] {label}: failed after {attempts} attempts (exit {e.returncode}); giving up",
+                    file=sys.stderr, flush=True,
+                )
+                raise
+            print(
+                f"[retry] {label}: attempt {attempt}/{attempts} failed (exit {e.returncode}); "
+                f"retrying in {retry_delay}s",
+                file=sys.stderr, flush=True,
+            )
+            time.sleep(retry_delay)
+
+
 def diagnose_stale_producer(path: Path) -> str:
     """Build a diagnostic hint when a resolved upstream input is missing/empty.
 

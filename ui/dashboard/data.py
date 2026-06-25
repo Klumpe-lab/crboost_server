@@ -159,9 +159,6 @@ def _resolve_volume_for_3dmod(tomo_row: pd.Series, project_path: Path) -> Option
     p = Path(str(tomo_row["rlnTomoReconstructedTomogram"]))
     if not p.is_absolute():
         p = project_path / p
-    f32 = p.with_name(p.stem + "_f32.mrc")
-    if f32.exists():
-        return f32
     if p.exists():
         return p
     return None

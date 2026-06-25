@@ -90,9 +90,15 @@ job_resource_profiles:
 
   denoisetrain:
     gres: "gpu:1"
-    mem: "32G"
+    # IsoNet refine ends with a predict pass that tiles a full ~1k^3 tomogram into
+    # overlapping cubes in RAM (2GB volume -> tens of GB of cube/output stacks). 32G
+    # OOM-killed mid-predict on a 1024x1024x512 dataset; g-nodes have 256G+.
+    mem: "128G"
     cpus_per_task: 4
-    time: "2:00:00"
+    # IsoNet training runs for hours; run_command's watchdog kills the tool at 0.9x the
+    # remaining walltime, and ~30 min of mask/extract prep runs first -- so the effective
+    # IsoNet budget is well under --time. 8h gives ~6.5h of real compute (QOS rejects 12h).
+    time: "8:00:00"
 
   denoisepredict:
     gres: "gpu:1"

@@ -249,9 +249,12 @@ class PipelineOrchestratorService:
         """P1.A: submit the pipeline as a SLURM afterok DAG instead of via relion_schemer.
 
         For each fresh job: allocate a stable External/jobNNN dir from the ProjectState
-        counter (no reuse-on-rerun -> no off-by-one), resolve paths, write the RELION-compat
-        job.star, and render run_submit.script. Then toposort resolve_edges() and sbatch each
-        supervisor with --dependency=afterok on its producers' supervisor job ids.
+        counter (monotonic, no reuse -> no off-by-one), resolve paths, write the RELION-compat
+        job.star, and render run_submit.script. A FAILED job that already owns a dir is the one
+        exception: it is re-submitted in place on that dir (no counter slot consumed) so its
+        `.task_status/*.ok` survives and the supervisor reruns only the failed/missing items.
+        Then toposort resolve_edges() and sbatch each supervisor with --dependency=afterok on
+        its producers' supervisor job ids.
 
         This method SUBMITS and persists slurm_job_id + QUEUED + pipeline_active=True. The monitor
         dispatches afterok projects to reconcile_afterok (P1.B) -- which owns live status and winds
@@ -292,16 +295,37 @@ class PipelineOrchestratorService:
             job_type = job_model.job_type
             category = JobCategory.IMPORT if job_type == JobType.IMPORT_MOVIES else JobCategory.EXTERNAL
 
-            # Sole allocator: always consume a counter slot. No reuse-on-rerun branch
-            # (that was the documented off-by-one root) -- each submit owns a stable dir.
-            job_num = next_job_num
-            next_job_num += 1
-            rel = f"{category.value}/job{job_num:03d}"
-            job_dir = project_dir / rel
+            # Dir allocation. Fresh jobs consume a slot from the sole monotonic allocator
+            # (job_dir_counter), never reused -- so crboost's numbers can't drift off-by-one.
+            # The ONE exception: a FAILED job that already owns a dir is re-submitted IN PLACE on
+            # that same dir, so the supervisor's submit_array_job sees the prior `.task_status/*.ok`
+            # and reruns only the failed/missing tilt-series instead of all of them. This reuses a
+            # dir crboost itself allocated and recorded (relion_job_number) and consumes no counter
+            # slot -- categorically unlike the schemer-era off-by-one (H1), which came from a SECOND
+            # allocator (RELION's schemer) assigning the next number while we reused a stale one.
+            # The afterok path has no second allocator, so in-place reuse here cannot reproduce H1.
+            existing_rel = (job_model.relion_job_name or "").rstrip("/")
+            reuse_dir = (
+                job_model.execution_status == JobStatus.FAILED
+                and bool(existing_rel)
+                and job_model.relion_job_number is not None
+                and (project_dir / existing_rel).is_dir()
+            )
+            if reuse_dir:
+                rel = existing_rel
+                job_num = job_model.relion_job_number
+                job_dir = project_dir / rel
+                logger.info("Reusing FAILED job dir %s for in-place retry of %s", rel, instance_id)
+            else:
+                job_num = next_job_num
+                next_job_num += 1
+                rel = f"{category.value}/job{job_num:03d}"
+                job_dir = project_dir / rel
             job_dir.mkdir(parents=True, exist_ok=True)
-            # Clear any stale exit sentinels so the reconciler's pass-1 can't latch a prior run's
-            # terminal status on a reused dir (mirrors the schemer prep path; correctness no longer
-            # depends on job_dir_counter monotonicity).
+            # Clear stale exit sentinels so the reconciler's pass-1 can't latch a prior run's
+            # terminal status. On a reused FAILED dir this is what lets the rerun proceed;
+            # `.task_status/*.ok` is deliberately left intact so the supervisor (clean_status_dir
+            # keep_ok=True) skips already-done items and resubmits only what failed.
             for _marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE"):
                 (job_dir / _marker).unlink(missing_ok=True)
 
