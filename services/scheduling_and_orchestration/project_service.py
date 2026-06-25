@@ -424,8 +424,10 @@ class ProjectService:
                 if "tilt_axis_degrees" in detected_params:
                     state.acquisition.tilt_axis_degrees = detected_params["tilt_axis_degrees"]
                 state.update_modified()
-            elif not is_aggregation:
-                # Fallback: re-parse mdocs (legacy path / no overview available)
+            elif mdocs_glob:
+                # Fallback: re-parse mdocs (legacy path / no overview available).
+                # Gated on having mdocs at all — data-less projects (aggregation or
+                # particle-only) have none, so this is skipped without a flag check.
                 await self.backend.state_service.update_from_mdoc(mdocs_glob, project_path=project_dir)
 
             # Apply dataset import summary so it's saved atomically with the project
@@ -472,9 +474,10 @@ class ProjectService:
             # 3. Build the TiltSeries registry from the imported mdocs, persist to
             # sidecar JSON under {project}/registry/. Stage-1 addition: failure
             # here is logged but non-fatal while we harden the registry; the
-            # STAR pipeline continues to work. Aggregation projects have no
-            # mdocs of their own to register.
-            if not is_aggregation:
+            # STAR pipeline continues to work. Data-less projects (aggregation or
+            # particle-only) have no mdocs of their own to register — gate on the
+            # mdocs glob, not a project-type flag.
+            if mdocs_glob:
                 try:
                     self._build_and_persist_registry(project_dir, mdocs_glob)
                 except Exception as e:

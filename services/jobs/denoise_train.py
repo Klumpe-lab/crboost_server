@@ -5,6 +5,47 @@ from pydantic import Field
 from services.jobs._base import AbstractJobParams
 from services.models_base import JobType, JobCategory, DenoiseMethod, IsoNetRefineMethod
 from services.io_slots import InputSlot, OutputSlot, JobFileType
+from services.computing.slurm_service import SlurmConfig
+
+
+# ── Dynamic training walltime ─────────────────────────────────────────────────
+# denoise_train is a SINGLE (non-array) job: it reduces ONE model from ALL the
+# selected tilt-series, so its SLURM --time must cover every tomogram
+# sequentially. A flat profile walltime (conf.yaml denoisetrain.time) silently
+# truncates larger datasets -- the in-job watchdog kills the run at 0.9x the
+# remaining walltime, which is what failed a 40-TS IsoNet refine (10 epochs x
+# ~12 min + ~48 min prepare_star/make_mask, well over the 2 h allocation).
+#
+# Linear model `base + per_ts * n_selected_ts`, floored at the static profile
+# time and capped. Sized for IsoNet refine (the slower path); cryoCARE
+# (fixed-epoch training) lands under it and merely over-allocates harmlessly.
+# The TS count is read in-memory from ProjectState -- no disk I/O, and known at
+# deploy time before the upstream tomograms.star exists. A narrowing
+# tomograms_for_training filter only makes the estimate conservative (safe).
+_TRAIN_WALLTIME_BASE_MIN = 30  # fixed overhead: prepare_star / make_mask / extract / I/O
+_TRAIN_WALLTIME_PER_TS_MIN = 5  # marginal training cost per tilt-series
+_TRAIN_WALLTIME_CAP_MIN = 8 * 60  # never request more than the partition realistically allows
+
+
+def _hms_to_minutes(t: str) -> int:
+    """SLURM walltime ('H:MM:SS' or 'D-H:MM:SS') -> whole minutes (any seconds round up)."""
+    try:
+        days, hms = t.split("-", 1) if "-" in t else ("0", t)
+        parts = [int(p) for p in hms.split(":")]
+        if len(parts) == 3:
+            h, m, s = parts
+        elif len(parts) == 2:
+            h, m, s = 0, parts[0], parts[1]
+        else:
+            return 0
+        return int(days) * 1440 + h * 60 + m + (1 if s else 0)
+    except (ValueError, IndexError):
+        return 0
+
+
+def _minutes_to_hms(minutes: int) -> str:
+    h, m = divmod(max(0, int(minutes)), 60)
+    return f"{h}:{m:02d}:00"
 
 
 class DenoiseTrainParams(AbstractJobParams):
@@ -66,3 +107,22 @@ class DenoiseTrainParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"reconstruct": "tsReconstruct"}
+
+    def _scaled_train_walltime(self, base_time: str) -> str:
+        """Scale `base_time` to the selected tilt-series count, floored at `base_time`
+        and capped. Returns `base_time` unchanged when the count is unknown (0)."""
+        n_ts = getattr(self._project_state, "import_selected_tilt_series", 0) or 0
+        if n_ts <= 0:
+            return base_time
+        minutes = _TRAIN_WALLTIME_BASE_MIN + _TRAIN_WALLTIME_PER_TS_MIN * n_ts
+        minutes = max(minutes, _hms_to_minutes(base_time))  # never below today's profile/default
+        minutes = min(minutes, _TRAIN_WALLTIME_CAP_MIN)
+        return _minutes_to_hms(minutes)
+
+    def get_effective_slurm_config(self) -> SlurmConfig:
+        # Single-job training walltime must cover ALL tilt-series; scale it to the
+        # dataset size unless the user has pinned an explicit time override.
+        cfg = super().get_effective_slurm_config()
+        if "time" not in self.slurm_overrides:
+            cfg.time = self._scaled_train_walltime(cfg.time)
+        return cfg

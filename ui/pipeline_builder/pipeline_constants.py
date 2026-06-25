@@ -16,6 +16,7 @@ PHASE_JOBS: Dict[str, List[JobType]] = {
         JobType.DENOISE_PREDICT,
     ],
     PHASE_PARTICLES: [
+        JobType.IMPORT_TOMOGRAMS,
         JobType.TEMPLATE_MATCH_PYTOM,
         JobType.TEMPLATE_EXTRACT_PYTOM,
         JobType.SUBTOMO_EXTRACTION,
@@ -40,6 +41,7 @@ ROSTER_ANCHOR: Dict[str, str] = {
 
 JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
     JobType.IMPORT_MOVIES: [],
+    JobType.IMPORT_TOMOGRAMS: [],  # provider: no in-project precursors
     JobType.FS_MOTION_CTF: [JobType.IMPORT_MOVIES],
     JobType.TS_ALIGNMENT: [JobType.FS_MOTION_CTF],
     JobType.TS_CTF: [JobType.TS_ALIGNMENT],
@@ -66,7 +68,11 @@ def missing_deps(job_type: JobType, selected_instance_ids: Set[str]) -> List[Job
         return any(s == prefix or s.startswith(prefix + "__") for s in selected_instance_ids)
 
     if job_type == JobType.TEMPLATE_MATCH_PYTOM:
-        if type_present(JobType.TS_RECONSTRUCT) or type_present(JobType.DENOISE_PREDICT):
+        if (
+            type_present(JobType.TS_RECONSTRUCT)
+            or type_present(JobType.DENOISE_PREDICT)
+            or type_present(JobType.IMPORT_TOMOGRAMS)
+        ):
             return []
         return [JobType.TS_RECONSTRUCT]
 
