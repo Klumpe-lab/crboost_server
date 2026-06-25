@@ -116,7 +116,9 @@ class PipelineBuilderPanel:
             if self.ui_mgr.is_running:
                 return
 
-            if job_type not in PHASE_JOBS[PHASE_PARTICLES]:
+            # ImportTomograms sits in the Particles section but is project-level
+            # (not per-species), so it skips the species picker like preprocessing jobs.
+            if job_type not in PHASE_JOBS[PHASE_PARTICLES] or job_type == JobType.IMPORT_TOMOGRAMS:
                 self.add_instance_to_pipeline(job_type)
                 return
 

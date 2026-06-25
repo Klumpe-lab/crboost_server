@@ -116,6 +116,7 @@ def _load_plugins():
         "ui.job_plugins.candidate_extract",
         "ui.job_plugins.tilt_filter",
         "ui.job_plugins.ts_reconstruct",
+        "ui.job_plugins.import_tomograms",
         "ui.job_plugins.array_tasks",
     ]
     for mod in _modules:

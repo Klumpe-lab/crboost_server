@@ -39,7 +39,13 @@ class DataImportFormState(BaseModel):
     mdocs_valid: bool = False
 
     # Aggregation mode: skip raw frames/mdocs, start at SubtomoExtraction.
+    # LEGACY — being replaced by particle-only + provider jobs (PARTICLE_PROJECT_ROADMAP.md P5).
     is_aggregation: bool = False
+
+    # Particle-only mode: create a data-less project (no raw frames/mdocs, no
+    # ImportMovies). Tomograms / picks / particles are supplied later via provider
+    # jobs. Unlike is_aggregation this yields a *plain* project (no orphaning band-aids).
+    is_particle_only: bool = False
 
     # Create the project as shared/lab-owned (owner = SHARED_OWNER) rather than
     # belonging to the creating user.
@@ -147,6 +153,7 @@ PIPELINE_ORDER: List[JobType] = [
     JobType.TS_RECONSTRUCT,
     JobType.DENOISE_TRAIN,
     JobType.DENOISE_PREDICT,
+    JobType.IMPORT_TOMOGRAMS,
     JobType.TEMPLATE_MATCH_PYTOM,
     JobType.TEMPLATE_EXTRACT_PYTOM,
     JobType.SUBTOMO_EXTRACTION,
@@ -169,6 +176,7 @@ JOB_DISPLAY_NAMES: Dict[JobType, str] = {
     JobType.SUBTOMO_EXTRACTION: "Subtomo Extraction",
     JobType.RECONSTRUCT_PARTICLE: "Reconstruct Particle",
     JobType.CLASS3D: "Class 3D",
+    JobType.IMPORT_TOMOGRAMS: "Import Tomograms",
     JobType.MERGED_SOURCES: "Merged Sources",
 }
 
@@ -512,6 +520,7 @@ class UIStateManager:
         movies_valid: Optional[bool] = None,
         mdocs_valid: Optional[bool] = None,
         is_aggregation: Optional[bool] = None,
+        is_particle_only: Optional[bool] = None,
         is_shared: Optional[bool] = None,
     ):
         di = self._state.data_import
@@ -531,6 +540,8 @@ class UIStateManager:
             di.mdocs_valid = mdocs_valid
         if is_aggregation is not None:
             di.is_aggregation = is_aggregation
+        if is_particle_only is not None:
+            di.is_particle_only = is_particle_only
         if is_shared is not None:
             di.is_shared = is_shared
 

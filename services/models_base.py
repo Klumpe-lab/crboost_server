@@ -71,6 +71,11 @@ class JobType(str, Enum):
 
     CLASS3D = "class3d"
 
+    # Provider job (particle-only / data-less projects): supplies reconstructed
+    # tomograms as a TOMOGRAMS_STAR without the preprocessing pipeline. Written
+    # inline at submit time (no SLURM job). See PARTICLE_PROJECT_ROADMAP.md P1.
+    IMPORT_TOMOGRAMS = "importtomograms"
+
     # Synthetic source: not a real pipeline job. Used by PathResolutionService to
     # surface <project>/MergedSources/optimisation_set.star as a producer candidate
     # for input_optimisation slots in aggregation projects. Never appears in
