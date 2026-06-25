@@ -117,6 +117,48 @@ def _reference_rows(reference_star: str):
     return df
 
 
+def preview_reference_metadata(reference_star: str) -> List[dict]:
+    """Project an existing ``tomograms.star`` into per-row preview dicts shaped exactly
+    like :func:`probe_mrc_metadata`, so the import dialog's reference-mode review table
+    reuses the same renderer. Reuses ``_reference_rows`` so block-selection / absolutize /
+    missing-block guards stay single-sourced. Never raises on a missing pixel size — it is
+    surfaced (``has_voxel_size=False``) for the UI to flag, never silently defaulted."""
+    import pandas as pd
+
+    df = _reference_rows(reference_star)
+
+    def _num(row, col):
+        if col not in df.columns:
+            return None
+        try:
+            v = row[col]
+            return float(v) if pd.notna(v) else None
+        except (TypeError, ValueError):
+            return None
+
+    out: List[dict] = []
+    for _, row in df.iterrows():
+        px = _num(row, "rlnTomoTiltSeriesPixelSize")
+        if px is None:
+            px = _num(row, "rlnMicrographOriginalPixelSize")
+        nx, ny, nz = _num(row, "rlnTomoSizeX"), _num(row, "rlnTomoSizeY"), _num(row, "rlnTomoSizeZ")
+        recon = str(row["rlnTomoReconstructedTomogram"]) if "rlnTomoReconstructedTomogram" in df.columns else ""
+        name = str(row["rlnTomoName"]) if "rlnTomoName" in df.columns else (Path(recon).name or "—")
+        out.append(
+            {
+                "name": name,
+                "path": recon,
+                "nx": int(nx) if nx else None,
+                "ny": int(ny) if ny else None,
+                "nz": int(nz) if nz else None,
+                "voxel_size": px,
+                "has_voxel_size": bool(px and px > 0),
+                "error": "",
+            }
+        )
+    return out
+
+
 def _synthesize_rows(
     mrc_paths: List[Path],
     *,
