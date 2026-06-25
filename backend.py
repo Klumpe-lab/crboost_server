@@ -316,6 +316,86 @@ class CryoBoostBackend:
         handles = await asyncio.to_thread(enumerate_authoritative, state, Path(project_path), species_id)
         return compute_gate_report(handles).to_dict()
 
+    # ── Tomogram import (PARTICLES-header utility; a project-level artifact, not a job) ──
+
+    async def list_tomogram_candidates(self, directory_or_glob: str) -> List[str]:
+        """Resolve a directory OR a glob to a sorted list of .mrc file paths (off the
+        event loop). A bare directory lists its ``*.mrc``; a glob is expanded directly."""
+
+        def _list() -> List[str]:
+            import glob as _glob
+
+            s = str(Path(directory_or_glob).expanduser()) if directory_or_glob else ""
+            if not s:
+                return []
+            if Path(s).is_dir():
+                return sorted(str(p) for p in Path(s).glob("*.mrc") if p.is_file())
+            return sorted(p for p in _glob.glob(s) if Path(p).is_file())
+
+        return await asyncio.to_thread(_list)
+
+    async def probe_tomogram_metadata(self, paths: List[str]) -> List[Dict[str, Any]]:
+        """MRC header metadata (dims, voxel size, has_voxel_size) for the import preview,
+        read off the event loop. Surfaces a missing voxel size so the widget can flag it
+        before commit (never silently defaults apix)."""
+        from services.tomogram_import import probe_mrc_metadata
+
+        return await asyncio.to_thread(probe_mrc_metadata, [Path(p) for p in paths])
+
+    async def commit_imported_tomograms(
+        self,
+        project_path: Path,
+        *,
+        mode: str = "synthesize",
+        mrc_paths: Optional[List[str]] = None,
+        reference_star: str = "",
+        pixel_size_angstrom: float = 0.0,
+        tomogram_binning: float = 1.0,
+        optics_group_name: str = "opticsGroup1",
+    ) -> Dict[str, Any]:
+        """Write ``Tomograms/tomograms.star`` from the selection + record it on
+        ``ProjectState.imported_tomograms``. Raises (propagated to the UI) if a selected
+        MRC has no voxel size and no pixel-size override — never silently defaults apix.
+        Microscope/optics values come from the project's microscope + acquisition params."""
+        from services.tomogram_import import write_tomograms_star
+        from services.project_state import ImportedTomograms
+
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        out_rel = Path("Tomograms") / "tomograms.star"
+        out_abs = project_path / out_rel
+
+        count = await asyncio.to_thread(
+            write_tomograms_star,
+            out_abs,
+            mode=mode,
+            mrc_paths=[Path(p) for p in (mrc_paths or [])],
+            reference_star=reference_star,
+            pixel_size_angstrom=pixel_size_angstrom,
+            tomogram_binning=tomogram_binning,
+            optics_group_name=optics_group_name,
+            voltage=state.microscope.acceleration_voltage_kv,
+            spherical_aberration=state.microscope.spherical_aberration_mm,
+            amplitude_contrast=state.microscope.amplitude_contrast,
+            invert_defocus_hand=state.acquisition.invert_defocus_hand,
+            project_tag=project_path.name,
+        )
+
+        state.set_imported_tomograms(
+            ImportedTomograms(
+                star_path=str(out_rel),
+                source_mode=mode,
+                source_paths=[str(p) for p in (mrc_paths or [])],
+                reference_star=reference_star,
+                pixel_size_angstrom=pixel_size_angstrom,
+                tomogram_binning=tomogram_binning,
+                optics_group_name=optics_group_name,
+                count=int(count),
+            )
+        )
+        await self.state_service.save_project(project_path=project_path, force=True)
+        return {"count": int(count), "star_path": str(out_abs)}
+
     async def _await_extraction_outdirs(self, out_dirs: List[str], timeout_s: int) -> Dict[str, tuple]:
         """Poll each per-list extraction out dir (RELION_JOB_EXIT_* + result.json) until all
         resolve or ``timeout_s`` elapses. Returns {out_dir: ("done"|"failed", data)} for the

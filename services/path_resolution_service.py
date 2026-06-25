@@ -244,7 +244,11 @@ class PathResolutionService:
                     continue
 
                 producer_id = chosen.producer_instance_id
-                if not producer_id or producer_id == "mergedSources" or producer_id == consumer_id:
+                if (
+                    not producer_id
+                    or producer_id in ("mergedSources", "importedTomograms")
+                    or producer_id == consumer_id
+                ):
                     # synthetic / non-job producer, or a self-edge from a pathological
                     # override (the override path, unlike auto-selection, does not
                     # exclude the consumer) -- neither is a valid afterok dependency.
@@ -508,6 +512,7 @@ class PathResolutionService:
                 )
 
         self._add_merged_sources_candidates(index, project_root)
+        self._add_imported_tomograms_candidates(index, project_root)
 
         for t, lst in index.items():
             index[t] = sorted(lst, key=lambda c: (c.producer_job_type.value, c.instance_path, c.producer_output_key))
@@ -535,6 +540,38 @@ class PathResolutionService:
                 path=str(merged_optset),
                 instance_path="MergedSources",
                 producer_instance_id="mergedSources",
+                execution_status=JobStatus.SUCCEEDED,
+                relion_job_number=0,
+                species_id=None,
+            )
+        )
+
+    def _add_imported_tomograms_candidates(
+        self, index: Dict[JobFileType, List[OutputCandidate]], project_root: Path
+    ) -> None:
+        # Imported tomograms (PARTICLES-header utility) are a project-level artifact,
+        # not a pipeline job. Surface the committed tomograms.star as a synthetic
+        # TOMOGRAMS_STAR producer so resolver-based consumers discover it like any
+        # reconstructed-tomogram source (mirrors _add_merged_sources_candidates). The
+        # manual-picking flow reads the star directly, so this matters only for future
+        # resolver consumers (e.g. TemplateMatch -- which separately also needs a
+        # tilt-series star, so this alone does not enable TM on imported tomograms).
+        rec = getattr(self.state, "imported_tomograms", None)
+        if not rec or not rec.star_path:
+            return
+        star = Path(rec.star_path)
+        if not star.is_absolute():
+            star = project_root / star
+        if not star.exists():
+            return
+        index[JobFileType.TOMOGRAMS_STAR].append(
+            OutputCandidate(
+                produces=JobFileType.TOMOGRAMS_STAR,
+                producer_job_type=JobType.MERGED_SOURCES,  # synthetic non-job marker (no IMPORT_TOMOGRAMS type)
+                producer_output_key="output_star",
+                path=str(star),
+                instance_path="Tomograms",
+                producer_instance_id="importedTomograms",
                 execution_status=JobStatus.SUCCEEDED,
                 relion_job_number=0,
                 species_id=None,
