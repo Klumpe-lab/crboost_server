@@ -342,6 +342,15 @@ class CryoBoostBackend:
 
         return await asyncio.to_thread(probe_mrc_metadata, [Path(p) for p in paths])
 
+    async def preview_reference_tomograms(self, reference_star: str) -> List[Dict[str, Any]]:
+        """Read an existing ``tomograms.star`` (off the event loop) and project its rows
+        into the same preview-dict shape ``probe_tomogram_metadata`` returns, so the import
+        dialog can show a review table before referencing it. Propagates the
+        FileNotFoundError / 'no rlnTomoName block' guards from ``_reference_rows`` to the UI."""
+        from services.tomogram_import import preview_reference_metadata
+
+        return await asyncio.to_thread(preview_reference_metadata, reference_star)
+
     async def commit_imported_tomograms(
         self,
         project_path: Path,
