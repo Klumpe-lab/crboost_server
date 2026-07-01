@@ -412,7 +412,6 @@ def merge_optimisation_sets_into_jobdir(
 
     for opt, ns in all_sources:
         p_star, t_star = _parse_optimisation_set(opt)
-        print(f"[MERGE DEBUG] opt={opt}  ->  particles={p_star}")    # <-- add this
 
         if not p_star.exists():
             raise FileNotFoundError(f"Missing particles.star referenced by {opt}: {p_star}")

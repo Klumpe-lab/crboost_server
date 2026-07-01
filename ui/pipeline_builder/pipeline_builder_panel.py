@@ -332,9 +332,10 @@ class PipelineBuilderPanel:
                             if getattr(sp, "diameter_ang", None):
                                 job_model.particle_diameter_ang = float(sp.diameter_ang)
 
-        # Aggregation projects: if the merge has been done, point any new
-        # consumer's input_optimisation slot at MergedSources/optimisation_set.star
-        # so the user doesn't need to manually configure the override.
+        # Aggregation projects: if the merge has been done, wire any new
+        # consumer's input_optimisation slot to the active merge's synthetic
+        # `mergedSources` producer (source_overrides key) so the user doesn't
+        # need to manually configure the override.
         from ui.aggregation_merge_card import apply_aggregation_overrides
 
         apply_aggregation_overrides(state)

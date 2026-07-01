@@ -1023,7 +1023,9 @@ _HINT_ASTIG = (
 _HINT_CTF_RES = "Best resolution (Å) at which CTF zeros could be fit. Lower = better fit / more usable signal."
 _HINT_CTF_FOM = "CTF fit figure-of-merit, dimensionless 0..1. Higher = more confident fit."
 _HINT_MOTION = (
-    "Accumulated beam-induced motion (Å) summed over the tilt's movie frames. Early = first half, late = second half."
+    "Per-tilt beam-induced motion (WarpTools MeanFrameMovement; units per Warp convention, ≈ Å). "
+    "Higher = more drift/charging, and it typically rises toward high tilt. Read from the frameseries XML, "
+    "not the star (whose motion columns are placeholders)."
 )
 _HINT_SHIFT = (
     "Per-tilt translation in Å applied during alignment to register each tilt to a common reference. "
@@ -1035,14 +1037,31 @@ _HINT_ALIGN_ANGLES = (
 )
 
 
-def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> None:
+def _render_ctf_motion_plots(
+    df: pd.DataFrame, *, show_motion: bool = True, frameseries_dir: Optional[Path] = None
+) -> None:
     """Defocus + astigmatism (always plotted as scatter, since each tilt is an
     independent estimate). CTF max-resolution / FOM / motion are gated on
     `_is_meaningful_series` because WarpTools-exported RELION stars often
     write `1e-6` placeholders for those columns — see
-    `project_warp_relion_star_placeholders.md`."""
+    `project_warp_relion_star_placeholders.md`.
+
+    When `frameseries_dir` (the FS-motion job's `warp_frameseries` folder) is
+    given, the CTF-resolution and motion panels read the REAL per-tilt values
+    from the WarpTools XML instead of the placeholder star columns — see
+    `docs/preprocessing-metrics-inventory.md` §4."""
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
     cd = _per_tilt_customdata(df)
+
+    # Real per-tilt CTF-fit resolution + motion live in the WarpTools frameseries
+    # XML, not the star (the star columns are 1e-6 / 'None' placeholders). Read
+    # them once here so the CTF-res + motion panels show real data.
+    xml_res: Optional[list] = None
+    xml_motion: Optional[list] = None
+    if frameseries_dir is not None and "rlnMicrographMovieName" in df.columns:
+        from services.tilt_series.frameseries_quality import quality_series
+
+        xml_res, xml_motion = quality_series(frameseries_dir, df["rlnMicrographMovieName"].tolist())
 
     has_def = "rlnDefocusU" in df.columns and "rlnDefocusV" in df.columns
     has_astig = "rlnCtfAstigmatism" in df.columns
@@ -1081,22 +1100,26 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
                 )
                 _plot_cell("Astigmatism per tilt", fig, hint=_HINT_ASTIG)
 
-    # CTF fit-quality plots: skip when WarpTools wrote placeholders.
-    if has_res:
-        res = _safe_floats(df["rlnCtfMaxResolution"])
-        if _is_meaningful_series(res):
-            with ui.element("div").classes("cb-plot-row"):
-                fig = _build_per_tilt_chart(
-                    tilts,
-                    [{"name": "CTF max res", "y": res, "color": _CTF_RES_COLOR, "marker_size": 6}],
-                    y_label="resolution (Å)",
-                    customdata=cd,
-                    y_unit=" Å",
-                    y_range=(0.0, 30.0),
-                )
-                _plot_cell("CTF fit resolution per tilt", fig, hint=_HINT_CTF_RES)
-        else:
-            skipped.append("CTF max-res")
+    # CTF fit resolution: prefer the real per-tilt CTFResolutionEstimate from the
+    # XML; fall back to the star column only for non-WarpTools exports that
+    # populate it for real (WarpTools writes a 1e-6 placeholder there).
+    res = xml_res if (xml_res is not None and _is_meaningful_series(xml_res)) else None
+    if res is None and has_res:
+        star_res = _safe_floats(df["rlnCtfMaxResolution"])
+        res = star_res if _is_meaningful_series(star_res) else None
+    if res is not None:
+        with ui.element("div").classes("cb-plot-row"):
+            fig = _build_per_tilt_chart(
+                tilts,
+                [{"name": "CTF fit res", "y": res, "color": _CTF_RES_COLOR, "marker_size": 6}],
+                y_label="resolution (Å)",
+                customdata=cd,
+                y_unit=" Å",
+                y_range=(0.0, 30.0),
+            )
+            _plot_cell("CTF fit resolution per tilt", fig, hint=_HINT_CTF_RES)
+    elif has_res:
+        skipped.append("CTF max-res")
     if has_fom:
         fom = _safe_floats(df["rlnCtfFigureOfMerit"])
         if _is_meaningful_series(fom, threshold=1e-4):
@@ -1112,11 +1135,17 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
         else:
             skipped.append("CTF FOM")
 
-    # Motion: cumulative across frames within a tilt — *is* a meaningful curve
-    # vs tilt order, so use lines+markers when it's not placeholder.
-    if show_motion and has_motion_total:
-        mt = _safe_floats(df["rlnAccumMotionTotal"])
-        if _is_meaningful_series(mt, threshold=0.05):
+    # Motion: prefer the real per-tilt MeanFrameMovement from the XML (single
+    # series). Fall back to the star's AccumMotion total/early/late only when
+    # those are real (non-WarpTools exports) — WarpTools writes 1e-6 there.
+    if show_motion:
+        if xml_motion is not None and _is_meaningful_series(xml_motion, threshold=1e-4):
+            with ui.element("div").classes("cb-plot-row"):
+                series = [{"name": "motion", "y": xml_motion, "color": _MOTION_TOTAL_COLOR, "mode": "lines+markers"}]
+                fig = _build_per_tilt_chart(tilts, series, y_label="mean frame motion", customdata=cd)
+                _plot_cell("Beam-induced motion per tilt", fig, wide=True, hint=_HINT_MOTION)
+        elif has_motion_total and _is_meaningful_series(_safe_floats(df["rlnAccumMotionTotal"]), threshold=0.05):
+            mt = _safe_floats(df["rlnAccumMotionTotal"])
             with ui.element("div").classes("cb-plot-row"):
                 series = [{"name": "total", "y": mt, "color": _MOTION_TOTAL_COLOR, "mode": "lines+markers"}]
                 if "rlnAccumMotionEarly" in df.columns:
@@ -1146,8 +1175,8 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
 
     if skipped:
         ui.label(
-            f"Skipped: {', '.join(skipped)} — WarpTools writes placeholder values for these columns "
-            "in its RELION star export (real numbers live in WarpTools' own metadata)."
+            f"Not shown: {', '.join(skipped)} — no real value in this export "
+            "(WarpTools leaves these star columns as placeholders and exports no CTF figure-of-merit)."
         ).classes("cb-section-placeholder")
 
 
@@ -1259,9 +1288,18 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
                     ui.label(str(v)).classes("cb-datadump-val")
             return True
 
+        # Real CTF-fit resolution + motion come from the frameseries XML, not the
+        # placeholder star columns (rlnCtfMaxResolution / rlnAccumMotion* = 1e-6).
+        fs_warp_dir = job_dir / "warp_frameseries"
+        ctf_res: list = []
+        motion_total: list = []
+        if "rlnMicrographMovieName" in df.columns:
+            from services.tilt_series.frameseries_quality import quality_series
+
+            r_xml, m_xml = quality_series(fs_warp_dir, df["rlnMicrographMovieName"].tolist())
+            ctf_res = [v for v in r_xml if v is not None]
+            motion_total = [v for v in m_xml if v is not None]
         defocus_um = [v / 1.0e4 for v in _safe_floats(df.get("rlnDefocusU", [])) if v is not None]
-        ctf_res = [v for v in _safe_floats(df.get("rlnCtfMaxResolution", [])) if v is not None]
-        motion_total = [v for v in _safe_floats(df.get("rlnAccumMotionTotal", [])) if v is not None]
         d_stats = _stats(defocus_um)
         r_stats = _stats(ctf_res)
         m_stats = _stats(motion_total)
@@ -1273,10 +1311,10 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         if r_stats["n"]:
             strip_rows.append(("CTF res", f"{r_stats['median']:.1f} Å (worst {r_stats['max']:.1f})"))
         if m_stats["n"]:
-            strip_rows.append(("motion (max)", f"{m_stats['max']:.1f} Å"))
+            strip_rows.append(("motion (max)", f"{m_stats['max']:.2f}"))
         _stat_strip(strip_rows)
 
-        _render_ctf_motion_plots(df, show_motion=True)
+        _render_ctf_motion_plots(df, show_motion=True, frameseries_dir=fs_warp_dir)
 
         with ui.expansion("Job parameters").classes("w-full text-[10px]").props("dense"):
             with ui.element("div").classes("cb-datadump-grid"):
@@ -1803,14 +1841,25 @@ def _render_recon_big_preview(
     natural aspect ratio (wide XY top-down) survives a tall viewport."""
     png_path = _find_warp_tomo_preview(project_path, ts_name, mrc_path)
 
-    dn_job_dir, dn_mrc = _resolve_denoised_mrc_for_ts(project_state, project_path, ts_name)
+    # One denoised pane, switchable across every denoise method that has a result for
+    # this TS (cryoCARE, IsoNet, …). The selection persists per-project across rebuilds.
+    methods = _available_denoise_methods_for_ts(project_state, project_path, ts_name)
+    has_denoise = bool(methods)
+    sel_key = str(project_path)
+    labels = [m[0] for m in methods]
+    selected = _SELECTED_DENOISE_METHOD.get(sel_key)
+    if selected not in labels:
+        selected = labels[0] if labels else None
+    sel = next((m for m in methods if m[0] == selected), None)
+
     dn_png: Optional[Path] = None
-    if dn_job_dir is not None and dn_mrc is not None:
+    dn_mrc: Optional[Path] = None
+    if sel is not None:
+        _, dn_job_dir, dn_mrc = sel
         _auto_kick_denoise_slab(dn_job_dir, ts_name, dn_mrc, project_path, refresh)
         candidate = _denoise_slab_path(dn_job_dir, ts_name)
         if candidate.exists():
             dn_png = candidate
-    has_denoise = dn_job_dir is not None and dn_mrc is not None
 
     if (not png_path or not png_path.exists()) and not has_denoise:
         ui.label("No tomogram preview on disk for this TS yet.").classes("cb-section-placeholder")
@@ -1828,14 +1877,32 @@ def _render_recon_big_preview(
                 ui.label(f"WarpTools · {png_path.name}").classes("cb-recon-preview-caption")
             else:
                 ui.label("No WarpTools preview PNG on disk.").classes("cb-section-placeholder")
-        # ── denoised (right): X/Y slab rendered from the denoised MRC ──
+        # ── denoised (right): X/Y slab for the selected method ──
         if has_denoise:
             with ui.element("div").classes("cb-recon-compare-pane"):
-                ui.label("denoised").classes("cb-recon-pane-tag")
+                with ui.row().classes("items-center gap-2 no-wrap"):
+                    ui.label("denoised").classes("cb-recon-pane-tag")
+                    if len(methods) >= 2:
+
+                        def _on_method(e, _key=sel_key) -> None:
+                            _SELECTED_DENOISE_METHOD[_key] = e.value
+                            refresh()
+
+                        (
+                            ui.toggle({lbl: lbl for lbl in labels}, value=selected, on_change=_on_method)
+                            .props("dense no-caps unelevated size=sm toggle-color=indigo color=grey-2")
+                            .classes("cb-denoise-method-toggle")
+                            .tooltip("Switch the denoised preview between methods with a result for this TS.")
+                        )
+                    else:
+                        ui.label(selected).classes("cb-recon-pane-method")
                 if dn_png is not None:
                     with ui.element("div").classes("cb-recon-preview"):
-                        ui.html(f"<img src='{_vis_asset_url(str(dn_png))}' alt='{ts_name} denoised' />", sanitize=False)
-                    ui.label(f"denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
+                        ui.html(
+                            f"<img src='{_vis_asset_url(str(dn_png))}' alt='{ts_name} {selected} denoised' />",
+                            sanitize=False,
+                        )
+                    ui.label(f"{selected} · denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
                 else:
                     ui.label("rendering denoised slab…").classes("cb-section-placeholder")
 
@@ -1933,26 +2000,73 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
 # (_resolve_volume_for_3dmod) works unchanged.
 _AUTO_KICKED_DENOISE_SLAB: set[str] = set()
 
+# Which denoise method's slab the user is currently viewing, keyed by project path.
+# A project can host several denoisepredict jobs (cryoCARE, IsoNet, …); the
+# Reconstruct section offers a per-method toggle and remembers the pick here so it
+# survives the dashboard's coalesced rebuilds.
+_SELECTED_DENOISE_METHOD: dict[str, str] = {}
 
-def _resolve_denoised_mrc_for_ts(
+
+def _denoise_method_label(job_model, instance_id: str) -> str:
+    """Human label for a denoisepredict job's method ('cryoCARE', 'IsoNet', …),
+    falling back to the instance_id when the field is absent."""
+    m = getattr(job_model, "denoise_method", None)
+    return getattr(m, "value", None) or (str(m) if m else instance_id)
+
+
+def _resolve_denoised_mrc_for_job(job_dir: Path, project_path: Path, ts_name: str) -> Optional[Path]:
+    """Denoised-tomogram MRC for one denoisepredict job + TS, or None. Prefers the
+    job's aggregated tomograms.star (rlnTomoReconstructedTomogram); falls back to the
+    per-tomogram file under denoised/ so results surface as the SLURM array lands
+    them, before the final star is written at job end."""
+    tomo_df = _read_tomograms_table(job_dir / "tomograms.star")
+    if tomo_df is not None and "rlnTomoName" in tomo_df.columns:
+        match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
+        if not match.empty:
+            mrc = _resolve_volume_for_3dmod(match.iloc[0], project_path)
+            if mrc:
+                return Path(mrc)
+    dn_dir = job_dir / "denoised"
+    if dn_dir.is_dir():
+        # Per-tomo file is "<ts_name>_<apix>Apx.mrc"; the tail after "<ts_name>_"
+        # must be just "<apix>Apx" (no extra underscore) so Position_1 doesn't match
+        # Position_1_2's file.
+        for f in sorted(dn_dir.glob(f"{ts_name}_*Apx.mrc")):
+            tail = f.stem[len(ts_name) + 1 :]
+            if tail.endswith("Apx") and tail[:-3].replace(".", "", 1).isdigit():
+                return f
+    return None
+
+
+def _available_denoise_methods_for_ts(
     project_state, project_path: Path, ts_name: str
-) -> tuple[Optional[Path], Optional[Path]]:
-    """(denoise_job_dir, denoised-tomogram MRC) for this TS, or Nones. Mirrors
-    _resolve_recon_mrc_for_ts against the denoisepredict job."""
-    dn = _find_job_by_type(project_state, JobType.DENOISE_PREDICT)
-    if not dn:
-        return None, None
-    dn_job_dir = _job_dir_for(dn[0], dn[1], project_path)
-    if not dn_job_dir:
-        return None, None
-    tomo_df = _read_tomograms_table(dn_job_dir / "tomograms.star")
-    if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
-        return dn_job_dir, None
-    match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
-    if match.empty:
-        return dn_job_dir, None
-    mrc = _resolve_volume_for_3dmod(match.iloc[0], project_path)
-    return dn_job_dir, (Path(mrc) if mrc else None)
+) -> list[tuple[str, Path, Path]]:
+    """(method_label, job_dir, denoised_mrc) for every denoisepredict job that has a
+    denoised volume for this TS, ordered by label. When two jobs share a method the
+    label is suffixed with the instance_id to keep selector keys unique/stable."""
+    found: list[tuple[str, str, Path, Path]] = []  # (label, iid, job_dir, mrc)
+    for iid, jm in (project_state.jobs or {}).items():
+        is_dn = (
+            getattr(jm, "job_type", None) == JobType.DENOISE_PREDICT
+            or iid.split("__")[0] == JobType.DENOISE_PREDICT.value
+        )
+        if not is_dn:
+            continue
+        job_dir = _job_dir_for(iid, jm, project_path)
+        if not job_dir:
+            continue
+        mrc = _resolve_denoised_mrc_for_job(job_dir, project_path, ts_name)
+        if mrc is not None:
+            found.append((_denoise_method_label(jm, iid), iid, job_dir, mrc))
+    label_counts: dict[str, int] = {}
+    for lbl, *_ in found:
+        label_counts[lbl] = label_counts.get(lbl, 0) + 1
+    out: list[tuple[str, Path, Path]] = []
+    for lbl, iid, job_dir, mrc in found:
+        disp = lbl if label_counts[lbl] == 1 else f"{lbl} ({iid})"
+        out.append((disp, job_dir, mrc))
+    out.sort(key=lambda t: t[0].lower())
+    return out
 
 
 def _denoise_slab_path(denoise_job_dir: Path, ts_name: str) -> Path:

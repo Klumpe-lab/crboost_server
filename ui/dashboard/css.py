@@ -675,6 +675,17 @@ _CB_CSS = """
     text-transform: uppercase; letter-spacing: 0.04em;
     color: #475569; padding: 0 2px 2px 2px;
 }
+/* Denoise-method selector in the denoised pane: a compact segmented toggle
+ * (cryoCARE | IsoNet | …) shown only when >1 method has a result for the TS;
+ * a single available method renders as the static label below instead. */
+.cb-denoise-method-toggle .q-btn {
+    font-family: ui-monospace, monospace; font-size: 10px;
+    min-height: 18px; padding: 0 7px;
+}
+.cb-recon-pane-method {
+    font-family: ui-monospace, monospace; font-size: 10px; font-weight: 600;
+    color: #4f46e5; padding: 0 2px 2px 2px;
+}
 /* ----------------------------------------------------------------------
  * Polarity invert: a runtime toggle in the section header flips the
  * apparent intensity of template, X/Y slab, X/Z slab, and cutout tiles

@@ -253,3 +253,53 @@ disambiguation) that P5 deletes.
 - `drivers/subtomo_merge.py:348-585` — `merge_optimisation_sets_into_jobdir` (concat + dedup + strict optics check; debug prints).
 - `ui/pipeline_builder/pipeline_roster.py:1589-1617` — sidebar merge button (stale badge); `pipeline_builder_panel.py:335-340,594-603` — override self-heal call sites.
 - `ui/pipeline_builder/merge_panel_component.py` — DEAD, delete.
+
+---
+
+## 2026-06-26 — ① Keystone LANDED + ride-alongs (code-clean + 4-lens adversarial review; PENDING runtime verify)
+
+**① Keystone — DONE.** The merged optset is now a first-class, labeled resolver producer.
+- `services/project_state.py`: new `MERGED_DIR_NAME` const + relocated `active_merge()`,
+  `active_merged_optset()`, `active_merged_optset_instance_path()` onto `ProjectState` (out of the UI so
+  `path_resolution_service` can call them without a `ui.` import). instance_path tracks the SAME file the
+  path resolves to (slug vs legacy flat).
+- `services/path_resolution_service.py`: `_add_merged_sources_candidates` now points at
+  `state.active_merged_optset()` (the slug optset, was the dead flat path); `OutputCandidate` gained a
+  `label` field → candidate shows **"Merged sources — <name>"**.
+- `ui/aggregation_merge_card.py`: `_active_merge`/`active_merged_optset` delegate to ProjectState;
+  `apply_aggregation_overrides` wires consumers via the producer **`source_key`**
+  (`mergedSources:MergedSources/<slug>`), not a bare `manual:` path → the IO-config dropdown shows the
+  named producer **selected**, not an anonymous "Manual path…".
+- `ui/pipeline_builder/io_config_component.py`: dropdown renders `c.label` verbatim.
+
+**Review outcome (4 lenses: round-trip / backward-compat / import-graph / deploy-DAG): 0 confirmed
+blockers/high/medium.** `resolve_edges` already excluded `mergedSources`, so no dangling afterok edge —
+the codebase had pre-wired the exclusion for exactly this producer. Addressed the low/nit findings:
+- **Silent-fallback guard (honors the no-silent-default rule):** a dangling `mergedSources:` override (its
+  optset deleted/moved, or active merge switched to a slug with no file) now SURFACES — `resolve_inputs`
+  adds it to `missing_required` (→ `PathResolutionError`) and `validate_input_slot` returns a red error —
+  instead of silently auto-picking a foreign optset producer (e.g. a downstream Class3D output). This was
+  a regression from the old `manual:` "File not found" behavior; scoped to the `mergedSources:` prefix
+  (consistent with the existing `resolve_edges` special-case).
+- Fixed the false "paths[k] is what the driver reads" docstring (paths is fully rebuilt at deploy by
+  `resolve_all_paths`; the source_key override is the single source of truth).
+- Updated 3 stale comments still describing the old `manual:` wiring (project_service.py:408,
+  pipeline_builder_panel.py:335, aggregation_merge_card module docstring).
+
+**Ride-alongs done:** deleted dead `ui/pipeline_builder/merge_panel_component.py` (zero importers) + fixed
+its stale docstring pointer in `ui/job_plugins/subtomo_extraction.py`; stripped the `[MERGE DEBUG]` print +
+`# <-- add this` note in `drivers/subtomo_merge.py`.
+
+**Not done (deferred ride-alongs — UI, want runtime):** SingleFlight on the dialog open handler; the
+`_DIALOG_REFS`/`_registry_expanded`/`_pending_save_task` cross-tab module-global leak; route the merge
+through BackgroundTask; make the sidebar "merged" badge reactive (`has_merged_outputs` is already
+slug-aware now, but read once off the render path).
+
+**⚠ Verification ceiling = py_compile + ruff (no pandas/nicegui env).** Runtime-UNVERIFIED. Restart
+`python main.py` + hard-reload, then confirm: after a merge, a ReconstructParticle job's input_optimisation
+dropdown LISTS and SHOWS-SELECTED "Merged sources — <name>" resolving to `MergedSources/<slug>/
+optimisation_set.star`. Pre-existing ruff F401/E501 drift in these files left untouched (not from this change).
+
+**Next: ② after-merge one-flow** (detect optset state extracted-vs-picks → one-click "Reconstruct
+particles" that adds + wires the consumer), then **③ surface state + counts on merge records + block
+mixing extracted/picks**. ② builds on this keystone — runtime-verify ① first.
