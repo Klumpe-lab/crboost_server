@@ -173,26 +173,33 @@ def run_isonet_predict_task(
     additional_binds: list,
     model_pt: Path,
     full_path: Path,
+    even_path: Path,
+    odd_path: Path,
     output_dir: Path,
     out_mrc: Path,
     ts_name: str,
     idx: int,
 ) -> None:
-    """Per-tomogram IsoNet prediction: stage this tomo's FULL reconstruction into a 1-file dir
-    (prepare_star --full populates rlnTomoName; predict denoises the full volume), [deconv], then
-    predict into a per-task dir and move the single corrected MRC to the canonical denoised path
-    (out_mrc). Predicting into an isolated per-task dir sidesteps IsoNet's output-filename
-    convention -- ISONET-ASSUMPTION: predict writes exactly one full-size .mrc. See
-    ISONET_INTEGRATION_PLAN.md."""
+    """Per-tomogram IsoNet prediction. Stage this tomo's full + even/odd reconstructions into a
+    one-file-each dir and build the prep STAR with prepare_star --full --even --odd (full ->
+    rlnTomoName, even/odd -> rlnTomoReconstructedTomogramHalf1/2), mirroring denoise_train. The
+    model denoise_train produces is isonet2-n2n (noise2noise): predict reads the even/odd halves,
+    denoises each, and averages -- an isonet2 (single-map) model instead reads rlnTomoName, so
+    staging all three keeps predict correct for either method. [deconv], then predict into a
+    per-task dir and move the single corrected MRC to the canonical denoised path (out_mrc).
+    Predicting into an isolated per-task dir sidesteps IsoNet's output-filename convention --
+    ISONET-ASSUMPTION: predict writes exactly one full-size .mrc. See ISONET_INTEGRATION_PLAN.md."""
     container = get_container_service()
     stage = job_dir / ".staging" / f"task_{ts_name}"
-    full_dir, corrected = stage / "full", stage / "corrected"
-    for d in (full_dir, corrected):
+    full_dir, even_dir, odd_dir, corrected = stage / "full", stage / "even", stage / "odd", stage / "corrected"
+    for d in (full_dir, even_dir, odd_dir, corrected):
         d.mkdir(parents=True, exist_ok=True)
-    link = full_dir / full_path.name
-    if link.exists() or link.is_symlink():
-        link.unlink()
-    link.symlink_to(full_path.resolve())
+    # prepare_star matches full/even/odd by basename across the three dirs (as in denoise_train).
+    for src, dst_dir in ((full_path, full_dir), (even_path, even_dir), (odd_path, odd_dir)):
+        link = dst_dir / src.name
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(src.resolve())
 
     prep = stage / "isonet_prep.star"
 
@@ -204,6 +211,7 @@ def run_isonet_predict_task(
 
     isonet(
         f"isonet.py prepare_star --full {shlex.quote(str(full_dir))} "
+        f"--even {shlex.quote(str(even_dir))} --odd {shlex.quote(str(odd_dir))} "
         f"--star_name {shlex.quote(str(prep))} --pixel_size auto"
     )
     input_col = "rlnTomoName"
@@ -412,14 +420,17 @@ def run_task_mode(array_idx: int):
             sys.exit(0)
 
         if params.denoise_method == DenoiseMethod.ISONET:
-            # IsoNet denoises the full reconstruction (rlnTomoName); even/odd were for training.
-            if not full_path.exists():
-                raise FileNotFoundError(f"Missing full reconstruction for {tomo_basename}: {full_path}")
+            # The isonet2-n2n model predicts on the even/odd halves (averaged); an isonet2 model
+            # uses the full (rlnTomoName). Stage all three, exactly as denoise_train did.
+            for label, p in (("full", full_path), ("even", even_path), ("odd", odd_path)):
+                if not p.exists():
+                    raise FileNotFoundError(f"Missing {label} reconstruction for {tomo_basename}: {p}")
             model_pt = manifest.get("isonet_model_pt")
             if not model_pt:
                 raise RuntimeError("Manifest missing isonet_model_pt (supervisor did not stage the IsoNet model)")
             run_isonet_predict_task(
-                params, job_dir, additional_binds, Path(model_pt), full_path, output_dir, out_mrc, ts_name, array_idx
+                params, job_dir, additional_binds, Path(model_pt),
+                full_path, even_path, odd_path, output_dir, out_mrc, ts_name, array_idx
             )
         else:
             if not even_path.exists() or not odd_path.exists():

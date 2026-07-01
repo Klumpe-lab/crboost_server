@@ -36,6 +36,11 @@ class OutputCandidate:
     # siblings of the same JobFileType.
     prefer_if_exists: bool = False
 
+    # Friendly label for synthetic (non-job) producers — e.g. "Merged sources —
+    # <name>". When set, the UI dropdown shows this verbatim instead of the
+    # derived "instance_path (jobtype)" form. None for ordinary job producers.
+    label: Optional[str] = None
+
     @property
     def source_key(self) -> str:
         """Key format for source_overrides: 'jobtype:instance_path'"""
@@ -44,6 +49,8 @@ class OutputCandidate:
     @property
     def display_name(self) -> str:
         """Human-readable name for UI dropdowns"""
+        if self.label:
+            return self.label
         status_icon = {
             JobStatus.SUCCEEDED: "ok",
             JobStatus.RUNNING: "running",
@@ -161,6 +168,16 @@ class PathResolutionService:
                             path=manual_path,
                         )
                     )
+                    continue
+
+                # A merged-sources override that no longer resolves (the active
+                # merge's optimisation_set.star was deleted/moved, or the active
+                # merge switched to a slug whose file is absent) must SURFACE, not
+                # silently fall through to some other optset producer (e.g. a
+                # downstream Class3D output). Mirrored in validate_input_slot.
+                if chosen is None and override_key.startswith(f"{JobType.MERGED_SOURCES.value}:"):
+                    if slot.required:
+                        missing_required.append(f"{slot.key} (merged-sources optimisation_set not found)")
                     continue
 
             # 2. Fall back to species-aware automatic selection
@@ -359,6 +376,19 @@ class PathResolutionService:
                     error_message=None if file_exists else f"File not found: {manual_path}",
                 )
 
+            # Dangling merged-sources override (its optset is gone) -> surface red,
+            # don't silently auto-pick a foreign optset producer. Mirrors resolve_inputs.
+            if chosen is None and override_key.startswith(f"{JobType.MERGED_SOURCES.value}:"):
+                return InputSlotValidation(
+                    slot_key=slot_key,
+                    is_valid=not slot.required,
+                    source_key=override_key,
+                    resolved_path=None,
+                    file_exists=False,
+                    is_user_override=True,
+                    error_message="Merged-sources optimisation_set not found (merge deleted or active merge switched?)",
+                )
+
         if chosen is None:
             chosen = self._choose_candidate_for_slot(
                 slot, index, consumer_species_id, consumer_instance_id=consumer_instance_id
@@ -523,26 +553,33 @@ class PathResolutionService:
     def _add_merged_sources_candidates(
         self, index: Dict[JobFileType, List[OutputCandidate]], project_root: Path
     ) -> None:
-        # MergedSources/optimisation_set.star is a project-level resource produced
-        # by the aggregation merge widget, not a pipeline job. Surface it as a
-        # synthetic producer whenever the file exists so consumers (Class3D /
-        # Refine3D / ReconstructParticle in aggregation projects) discover it
-        # through the normal candidate enumeration -- works regardless of the
-        # state.is_aggregation flag, which has been a single point of failure.
-        merged_optset = project_root / "MergedSources" / "optimisation_set.star"
-        if not merged_optset.exists():
+        # The merged optimisation_set.star is a project-level resource produced by
+        # the aggregation merge card, not a pipeline job. Surface the ACTIVE merge's
+        # optset (slug folder: MergedSources/<slug>/optimisation_set.star, or a
+        # legacy flat MergedSources/optimisation_set.star) as a synthetic producer so
+        # consumers (ReconstructParticle / Class3D / Refine3D) discover it through the
+        # normal candidate enumeration -- works regardless of the state.is_aggregation
+        # flag, which has been a single point of failure. ProjectState owns the
+        # active-merge resolution so the instance_path here matches the source_key
+        # that apply_aggregation_overrides writes.
+        merged_optset = self.state.active_merged_optset()
+        if merged_optset is None or not merged_optset.exists():
             return
+        instance_path = self.state.active_merged_optset_instance_path() or "MergedSources"
+        m = self.state.active_merge()
+        merge_name = (m.name or m.slug) if m is not None else "merged"
         index[JobFileType.OPTIMISATION_SET_STAR].append(
             OutputCandidate(
                 produces=JobFileType.OPTIMISATION_SET_STAR,
                 producer_job_type=JobType.MERGED_SOURCES,
                 producer_output_key="output_optimisation",
                 path=str(merged_optset),
-                instance_path="MergedSources",
+                instance_path=instance_path,
                 producer_instance_id="mergedSources",
                 execution_status=JobStatus.SUCCEEDED,
                 relion_job_number=0,
                 species_id=None,
+                label=f"Merged sources — {merge_name}",
             )
         )
 

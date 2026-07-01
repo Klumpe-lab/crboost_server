@@ -212,11 +212,16 @@ class IOConfigComponent:
         options = {}
         for c in candidates:
             style = STATUS_STYLE.get(c.execution_status, STATUS_STYLE[JobStatus.UNKNOWN])
-            is_pending = "pending_" in (c.instance_path or "")
-            display_name = get_job_display_name(JobType(c.producer_job_type.value))
-            inst = "scheduled" if is_pending else _short_instance_label(c.instance_path or "")
             status_label = style["label"]
-            option_label = f"[{status_label}] {inst} — {display_name}"
+            # Synthetic producers (e.g. merged sources) carry a friendly label;
+            # use it verbatim instead of the derived instance_path/jobtype form.
+            if getattr(c, "label", None):
+                option_label = f"[{status_label}] {c.label}"
+            else:
+                is_pending = "pending_" in (c.instance_path or "")
+                display_name = get_job_display_name(JobType(c.producer_job_type.value))
+                inst = "scheduled" if is_pending else _short_instance_label(c.instance_path or "")
+                option_label = f"[{status_label}] {inst} — {display_name}"
             options[c.source_key] = option_label
         options["manual"] = "Manual path…"
 

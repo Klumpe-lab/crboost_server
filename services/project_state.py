@@ -77,6 +77,12 @@ def _afterok_global_default() -> bool:
 # immutable provenance. None ⇒ owned by `created_by` (the legacy default).
 SHARED_OWNER = "@lab"
 
+# Project-relative location for aggregation merge outputs. Stable name, not under
+# External/ so it can't collide with the schemer's jobNNN allocation. Each named
+# merge writes its own MergedSources/<slug>/ folder (legacy projects wrote a flat
+# MergedSources/optimisation_set.star).
+MERGED_DIR_NAME = "MergedSources"
+
 
 # ─── Sidecar helpers ────────────────────────────────────────────────────
 # Each registered template / mask file has a `<file>.meta.json` sidecar
@@ -716,6 +722,54 @@ class ProjectState(BaseModel):
     def is_shared(self) -> bool:
         return self.owner == SHARED_OWNER
 
+    # ─── Aggregation merge resolution ────────────────────────────────────────
+    # The merged optimisation_set.star is a project-level resource (built by the
+    # aggregation merge card, not a pipeline job). These accessors live on
+    # ProjectState — not the UI — so the path resolver can surface the active
+    # merged optset as a first-class producer without a `ui.` import.
+
+    def active_merge(self) -> Optional["AggregationMerge"]:
+        """The merge downstream consumers wire to: the explicitly-active one, else
+        the newest recorded merge (None if no merge has been recorded)."""
+        merges = self.aggregation_merges or []
+        if not merges:
+            return None
+        if self.active_merge_slug:
+            m = next((x for x in merges if x.slug == self.active_merge_slug), None)
+            if m:
+                return m
+        return merges[-1]
+
+    def active_merged_optset(self) -> Optional[Path]:
+        """Resolved optimisation_set.star of the active merge (slug folder). Falls
+        back to a legacy flat MergedSources/optimisation_set.star (pre-registry
+        projects). None if nothing exists on disk yet."""
+        if self.project_path is None:
+            return None
+        root = self.project_path
+        m = self.active_merge()
+        if m is not None:
+            p = root / MERGED_DIR_NAME / m.slug / "optimisation_set.star"
+            if p.exists():
+                return p
+        legacy = root / MERGED_DIR_NAME / "optimisation_set.star"
+        return legacy if legacy.exists() else None
+
+    def active_merged_optset_instance_path(self) -> Optional[str]:
+        """Stable instance_path identifying the synthetic merged-sources producer for
+        the active merge. Shared by the resolver candidate and `source_overrides` so
+        the two always agree on the same key. Tracks the SAME file
+        active_merged_optset() resolves to (slug folder vs legacy flat) so the key can
+        never describe a different merge than the path. None when no merged optset exists."""
+        if self.project_path is None:
+            return None
+        root = self.project_path
+        m = self.active_merge()
+        if m is not None and (root / MERGED_DIR_NAME / m.slug / "optimisation_set.star").exists():
+            return f"{MERGED_DIR_NAME}/{m.slug}"
+        legacy = root / MERGED_DIR_NAME / "optimisation_set.star"
+        return MERGED_DIR_NAME if legacy.exists() else None
+
     def save_if_dirty(self, path: Optional[Path] = None):
         if self.is_dirty:
             self.save(path)
@@ -969,6 +1023,38 @@ class ProjectState(BaseModel):
                 project_state.imported_tomograms = ImportedTomograms(**it)
             except Exception as e:
                 logger.warning("Could not load imported_tomograms: %s", e)
+
+        # Restore aggregation state (cross-project merge). load() is field-by-field,
+        # so these MUST be restored explicitly -- otherwise a reloaded project (a UI
+        # restart OR a SLURM driver loading from disk) silently loses its merge
+        # registry, the synthetic `mergedSources` resolver candidate vanishes, and
+        # consumers fail to resolve input_optimisation at drive time. is_aggregation
+        # gates the merge-card UI + override self-heal, so it must survive too.
+        project_state.is_aggregation = data.get("is_aggregation", False)
+        project_state.active_merge_slug = data.get("active_merge_slug", "")
+        try:
+            # Mirror the _migrate_aggregation_sources validator (direct construction
+            # bypasses it): coerce a legacy bare-path str into {"optset_path": str}.
+            project_state.aggregation_sources = [
+                AggregationSource(**({"optset_path": s} if isinstance(s, str) else s))
+                for s in data.get("aggregation_sources", [])
+            ]
+        except Exception as e:
+            logger.warning("Could not load aggregation_sources: %s", e)
+            project_state.aggregation_sources = []
+        try:
+            project_state.aggregation_merges = [AggregationMerge(**m) for m in data.get("aggregation_merges", [])]
+        except Exception as e:
+            logger.warning("Could not load aggregation_merges: %s", e)
+            project_state.aggregation_merges = []
+
+        # Restore curation workbench pick lists (same field-by-field drop bug).
+        try:
+            project_state.pick_lists = [PickList(**p) for p in data.get("pick_lists", [])]
+        except Exception as e:
+            logger.warning("Could not load pick_lists: %s", e)
+            project_state.pick_lists = []
+        project_state.authoritative_pick_lists = data.get("authoritative_pick_lists", {})
 
         # Restore dataset import summary
         project_state.import_total_positions = data.get("import_total_positions", 0)

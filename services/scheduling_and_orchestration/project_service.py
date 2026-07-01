@@ -408,8 +408,10 @@ class ProjectService:
             # Aggregation projects have no pipeline jobs at creation time.
             # The merge step lives in a standalone workspace card (not in the
             # pipeline DAG), and downstream jobs (Reconstruct/Class3D/Refine3D)
-            # are added by the user via the regular job-roster UI; they pick
-            # up MergedSources/optimisation_set.star via a manual: override.
+            # are added by the user via the regular job-roster UI; they pick up
+            # the active merge's MergedSources/<slug>/optimisation_set.star through
+            # the synthetic `mergedSources` producer the path resolver registers
+            # (apply_aggregation_overrides wires it via a source_overrides key).
 
             # Apply microscope/acquisition params from the already-parsed dataset
             # overview (avoids re-parsing all mdocs from scratch). Aggregation

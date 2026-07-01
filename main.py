@@ -121,6 +121,7 @@ def setup_app():
         await backend.pipeline_monitor.stop()
 
     storage_secret = os.environ.get("CRBOOST_STORAGE_SECRET", "crboost-change-me")
+
     # Default reconnect_timeout is 3s, which sets ping_interval=4s / ping_timeout=2s
     # (nicegui/nicegui.py:129-130). Over an SSH tunnel any latency blip trips the
     # 2s pong deadline → socket drops → client teardown after 3s → full rebuild.

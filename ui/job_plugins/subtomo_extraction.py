@@ -3,9 +3,7 @@
 The cross-project merge ("Particle Merge") used to live here, but for
 aggregation projects it now lives in a standalone workspace card
 (ui/aggregation_merge_card.py). For normal pipelines, merging across
-extraction outputs is rare enough that the dedicated UI was removed; if
-you need it back per-job, re-mount render_merge_panel from
-ui/pipeline_builder/merge_panel_component.
+extraction outputs is rare enough that the dedicated per-job UI was removed.
 
 Job-specific fields (`box_size`, `crop_size`, `binning`) stay on the
 job — these ARE subtomo decisions. But there's a real cross-link worth

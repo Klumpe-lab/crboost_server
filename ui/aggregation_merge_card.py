@@ -3,9 +3,10 @@ Merge-sources card for aggregation projects.
 
 Lives at the top of the workspace (above the pipeline tabs) and lets the user
 build up a list of upstream optimisation_set.star sources, then merge them into
-<project>/MergedSources/. The output is a project-level resource that any
-downstream job (Reconstruct/Class3D/Refine3D/...) can read via a manual:
-override on its input_optimisation slot.
+<project>/MergedSources/<slug>/. The output is a project-level resource that any
+downstream job (Reconstruct/Class3D/Refine3D/...) reads through the synthetic
+`mergedSources` producer the path resolver registers for the active merge
+(apply_aggregation_overrides wires it via a source_overrides key).
 
 Selection is a navigable hierarchy — Project → Species → Tomogram — so the user
 sees what's actually inside each source (per-tomogram pick counts, curation
@@ -26,6 +27,7 @@ from typing import Dict, List, Optional
 from nicegui import ui, run
 
 from services.project_state import (
+    MERGED_DIR_NAME,
     AggregationMerge,
     AggregationMergeSource,
     AggregationSource,
@@ -37,10 +39,6 @@ from ui.projects_overview import avatar_color
 
 log = logging.getLogger(__name__)
 
-
-# Project-relative location for merged outputs. Stable name, not under External/
-# so it can't collide with the schemer's jobNNN allocation.
-MERGED_DIR_NAME = "MergedSources"
 
 # Steelblue is the single accent — reserved for the curated/uncurated highlight.
 # Everything else stays neutral slate.
@@ -63,30 +61,15 @@ def _merge_dir_for(slug: str) -> Optional[Path]:
 
 def _active_merge(state) -> Optional[AggregationMerge]:
     """The merge downstream consumers use: the explicitly-active one, else the
-    newest recorded merge."""
-    merges = state.aggregation_merges or []
-    if not merges:
-        return None
-    if state.active_merge_slug:
-        m = next((x for x in merges if x.slug == state.active_merge_slug), None)
-        if m:
-            return m
-    return merges[-1]
+    newest recorded merge. Thin wrapper over ProjectState.active_merge()."""
+    return state.active_merge()
 
 
 def active_merged_optset(state) -> Optional[Path]:
     """Resolved optimisation_set.star of the active merge. Falls back to a
-    legacy MergedSources/optimisation_set.star (pre-registry projects)."""
-    root = getattr(state, "project_path", None)
-    if root is None:
-        return None
-    m = _active_merge(state)
-    if m is not None:
-        p = root / MERGED_DIR_NAME / m.slug / "optimisation_set.star"
-        if p.exists():
-            return p
-    legacy = root / MERGED_DIR_NAME / "optimisation_set.star"
-    return legacy if legacy.exists() else None
+    legacy MergedSources/optimisation_set.star (pre-registry projects). Thin
+    wrapper over ProjectState.active_merged_optset()."""
+    return state.active_merged_optset()
 
 
 def _slugify(name: str, existing: set) -> str:
@@ -133,13 +116,17 @@ async def _debounced_save(state) -> None:
 
 def apply_aggregation_overrides(state) -> int:
     """For aggregation projects with a completed merge, point every consumer
-    job's input_optimisation slot at MergedSources/optimisation_set.star.
+    job's input_optimisation slot at the active merged optimisation_set.star.
     Idempotent. Returns count of jobs updated.
 
-    Belt-and-braces: writes BOTH `source_overrides[slot]` (the resolver path)
-    AND `paths[slot]` (the value the driver reads at run time). That way the
-    job is correctly wired even if the IO config UI fails to reflect the
-    override or the path resolver is bypassed at deploy time.
+    Wires via the synthetic merged-sources producer's `source_key` (not a bare
+    `manual:` path) so the IO-config dropdown shows "Merged sources — <name>"
+    selected and the merged optset resolves like any normal producer.
+
+    Writes `source_overrides[slot]` (the resolver key — the single source of
+    truth: the driver's path is re-resolved from it at deploy). Also pre-populates
+    `paths[slot]` for pre-deploy UI display only; that value is discarded and
+    rebuilt by resolve_all_paths at deploy, so it never reaches the driver.
 
     Also clears stale `is_orphaned` / `missing_inputs` markers since they
     were written before the override existed.
@@ -151,6 +138,7 @@ def apply_aggregation_overrides(state) -> int:
         either of the above hooks).
     """
     from services.io_slots import JobFileType
+    from services.models_base import JobType
 
     if not getattr(state, "is_aggregation", False):
         return 0
@@ -160,7 +148,11 @@ def apply_aggregation_overrides(state) -> int:
         return 0
 
     optset_str = str(optset)
-    override_value = f"manual:{optset_str}"
+    # source_key of the synthetic merged-sources candidate (path_resolution_service.
+    # _add_merged_sources_candidates). instance_path is shared via ProjectState so the
+    # two always agree; the `or` mirrors the candidate's same fallback defensively.
+    instance_path = state.active_merged_optset_instance_path() or MERGED_DIR_NAME
+    override_value = f"{JobType.MERGED_SOURCES.value}:{instance_path}"
     updated = 0
     for instance_id, job_model in state.jobs.items():
         schema = getattr(type(job_model), "INPUT_SCHEMA", None) or []
