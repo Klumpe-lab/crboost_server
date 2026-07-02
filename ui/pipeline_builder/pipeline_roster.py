@@ -14,6 +14,7 @@ from ui.ui_state import get_job_display_name, get_instance_display_name, instanc
 from ui.pipeline_builder.pipeline_constants import (
     PHASE_JOBS,
     PHASE_META,
+    PHASE_PARTICLES,
     ROSTER_ANCHOR,
     SB_MUTE,
     SB_ACT,
@@ -319,6 +320,9 @@ class RosterWidget(FingerprintedView):
                 ui.label(phase_label.upper()).style(
                     "font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.07em; line-height: 1;"
                 )
+                if phase_id == PHASE_PARTICLES:
+                    ui.space()
+                    self._build_import_tomograms_btn()
 
             for job_type in jobs:
                 instances = panel.ui_mgr.get_instances_for_type(job_type)
@@ -1528,6 +1532,59 @@ class RosterWidget(FingerprintedView):
             return p.read_text()
         except FileNotFoundError:
             return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>'
+
+    def _build_import_tomograms_btn(self):
+        """PARTICLES-header utility: import tomograms into a data-less project. A
+        project-level artifact, NOT a job (no SLURM/IO). Disabled when upstream tomograms
+        already exist (a regular project at the particle stage); a green dot marks an
+        import already committed. See ui/tomogram_import_dialog.py."""
+        from services.models_base import JobType
+        from services.project_state import get_project_state_for
+        from ui.tomogram_import_dialog import open_tomogram_import_dialog
+
+        project_path = self.panel.ui_mgr.project_path
+        has_upstream = False
+        already = False
+        try:
+            state = get_project_state_for(project_path)
+            has_upstream = any(getattr(jm, "job_type", None) == JobType.TS_RECONSTRUCT for jm in state.jobs.values())
+            already = state.imported_tomograms is not None and bool(state.imported_tomograms.star_path)
+        except Exception as e:
+            logger.debug("import-tomograms header button: could not read project state: %s", e)
+
+        disabled = has_upstream
+        tip = (
+            "Tomograms already come from the pipeline above"
+            if has_upstream
+            else ("Re-import tomograms" if already else "Import tomograms")
+        )
+
+        def _open():
+            if disabled:
+                return
+            open_tomogram_import_dialog(self.panel.backend, project_path, on_done=self.panel.rebuild_pipeline_ui)
+
+        container = (
+            ui.element("div")
+            .style(
+                "width: 22px; height: 22px; border-radius: 4px; "
+                "display: flex; align-items: center; justify-content: center; "
+                f"cursor: {'not-allowed' if disabled else 'pointer'}; flex-shrink: 0; position: relative; "
+                f"opacity: {'0.4' if disabled else '1'};"
+            )
+            .on("click", lambda: _open())
+            .tooltip(tip)
+        )
+        with container:
+            ui.icon("library_add", size="15px").style(
+                f"color: {'#9ca3af' if disabled else '#6366f1'}; pointer-events: none;"
+            )
+            if already and not disabled:
+                ui.element("div").style(
+                    "position: absolute; top: 1px; right: 1px; width: 6px; height: 6px; "
+                    "border-radius: 50%; background: #16a34a; pointer-events: none;"
+                )
+        return container
 
     def _build_aggregation_merge_btn(self):
         """Sidebar button that opens the merge-sources dialog. Shows a small

@@ -70,6 +70,10 @@ class AbstractJobParams(BaseModel):
     IS_TOMO_JOB: ClassVar[bool] = True
     IS_CONTINUE: ClassVar[bool] = False
     IS_INTERACTIVE: ClassVar[bool] = False  # Interactive tools manage their own status
+    # Provider/import jobs whose output is written inline at submit time (no SLURM job,
+    # no driver). The afterok orchestrator marks them SUCCEEDED immediately and their
+    # consumers depend on nothing. See pipeline_orchestrator_service._submit_chain.
+    RUNS_INLINE: ClassVar[bool] = False
 
     # ------------------------------------------------------------------
     # Phase 1c: USER_PARAMS whitelist.

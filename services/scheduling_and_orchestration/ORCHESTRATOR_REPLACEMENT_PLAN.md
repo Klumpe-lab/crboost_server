@@ -1,9 +1,29 @@
 # Orchestrator Replacement — Plan
 
-**Status:** PROPOSAL → GREENLIT → **PLAN FINALIZED 2026-06-23** (verified against a
-full codebase map; see §6 for the file-level phases). We are building this and
-excising `relion_schemer`. Companion to `../../PIPELINE_AND_ORCHESTRATOR_STATE.md`
-(repo root; the status-desync diagnosis), which is the concrete motivation.
+**Status:** PROPOSAL → GREENLIT → PLAN FINALIZED 2026-06-23 → **AFTEROK IS MAIN (2026-06-24).**
+The afterok orchestrator is the **primary runtime path**: `config/conf.yaml` ships
+`use_afterok_orchestrator: true`, so every project is submitted as a SLURM
+`--dependency=afterok` DAG and `relion_schemer` is **never launched**. P1.0 + P1.A
+(`_submit_chain`) + P1.B (`reconcile_afterok`) are landed and runtime-proven on the
+success path (see ▶ NEXT SESSION below).
+
+**The schemer is NOT deleted — it is dormant, not gone.** It survives behind the
+per-project `ProjectState.use_afterok_orchestrator` flag (template default `false`,
+live conf `true`) as a fallback until decommission. `default_pipeline.star` /
+`relion_job_name` are **demoted to a RELION-compatibility surface**: still created at
+project init, still seed the afterok job-dir counter (`orchestrator_service.py:270-271`),
+still resolve job dirs across the UI (`relion_job_name`, ~92 refs) — but they no longer
+*drive* execution. Sharpening their subservience to the orchestrator is deferred.
+
+**Remaining to fully excise the schemer:** **P1.C** (full RELION-compat export +
+*stop reading* `default_pipeline.star`) and **decommission** (flip the conf default to
+`false`→remove the flag, delete the dormant `_run_relion_schemer`/`_monitor_schemer`
+path in `pipeline_runner.py:729-1243` and the schemer branch in
+`deploy_and_run_scheme`). Treat afterok as main for all new work in the meantime.
+
+Companion to `../../PIPELINE_AND_ORCHESTRATOR_STATE.md` (repo root; the status-desync
+diagnosis) and to `../../PARTICLE_PROJECT_ROADMAP.md` (the particle-stage entry-point
+work that builds on the afterok inline-import-job pattern).
 
 **Location (2026-06-23, corrected):** build for **on-cluster** — the off-cluster
 VM is only *in talks*, NOT secured, so do not design around it. The reconciler +

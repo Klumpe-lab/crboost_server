@@ -230,8 +230,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             missing.append("Project Name")
         if not (di.project_base_path and di.project_base_path.strip()):
             missing.append("Project Path")
-        # Aggregation projects skip raw frames + mdocs entirely.
-        if di.is_aggregation:
+        # Data-less projects (aggregation or particle-only) skip raw frames + mdocs entirely.
+        if di.is_aggregation or di.is_particle_only:
             return missing
         if not di.movies_glob:
             missing.append("Data Path")
@@ -656,7 +656,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         selected_mdoc_paths = None
         import_summary = None
         detected_params = None
-        if overview and not di.is_aggregation:
+        if overview and not (di.is_aggregation or di.is_particle_only):
             selected_ts = overview.get_selected_tilt_series()
             selected_mdoc_paths = [str(ts.mdoc_path) for ts in selected_ts]
             import_summary = {
@@ -721,8 +721,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 project_name=di.project_name,
                 project_base_path=di.project_base_path,
                 selected_jobs=[j.value for j in ui_mgr.selected_jobs],
-                movies_glob="" if di.is_aggregation else di.movies_glob,
-                mdocs_glob="" if di.is_aggregation else di.mdocs_glob,
+                movies_glob="" if (di.is_aggregation or di.is_particle_only) else di.movies_glob,
+                mdocs_glob="" if (di.is_aggregation or di.is_particle_only) else di.mdocs_glob,
                 selected_mdoc_paths=selected_mdoc_paths,
                 import_summary=import_summary,
                 detected_params=detected_params,
@@ -1151,19 +1151,78 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                                     f"{FONT} font-size: 10px;"
                                 )
 
-                # Aggregation mode toggle: when on, this project skips raw
+                # Data-less project toggles. Both skip raw frames/mdocs and are
+                # mutually exclusive. Particle-only yields a PLAIN project (tomos/
+                # picks/particles supplied later via provider jobs); aggregation is
+                # the LEGACY merge-at-SubtomoExtraction path being phased out
+                # (PARTICLE_PROJECT_ROADMAP.md — P5 removes aggregation).
+                def _sync_dataless_visibility():
+                    di = ui_mgr.data_import
+                    section = local_refs.get("raw_data_section")
+                    if section:
+                        section.set_visibility(not (di.is_aggregation or di.is_particle_only))
+                    update_create_button_state()
+
+                def on_particle_only_toggle(e):
+                    enabled = bool(e.value)
+                    ui_mgr.update_data_import(is_particle_only=enabled)
+                    # Mutually exclusive with the legacy aggregation toggle.
+                    if enabled and ui_mgr.data_import.is_aggregation:
+                        ui_mgr.update_data_import(is_aggregation=False)
+                        agg_sw = local_refs.get("aggregation_switch")
+                        if agg_sw:
+                            agg_sw.value = False
+                        agg_hint = local_refs.get("aggregation_hint")
+                        if agg_hint:
+                            agg_hint.set_visibility(False)
+                    po_hint = local_refs.get("particle_only_hint")
+                    if po_hint:
+                        po_hint.set_visibility(enabled)
+                    _sync_dataless_visibility()
+
+                with ui.row().classes("w-full items-center justify-between mb-2"):
+                    with ui.row().classes("items-center gap-1"):
+                        ui.label("Particle-only project").style(field_label_style)
+                        with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
+                            ui.tooltip(
+                                "Start with no raw data. Supply reconstructed tomograms, "
+                                "manual picks, or particle sets later from the Particles section."
+                            ).style(f"{FONT} font-size: 10px;")
+                    local_refs["particle_only_switch"] = (
+                        ui.switch(value=ui_mgr.data_import.is_particle_only, on_change=on_particle_only_toggle)
+                        .props("dense")
+                        .style("transform: scale(0.75);")
+                    )
+
+                particle_only_hint = ui.label(
+                    "Particle-only mode: this project starts empty. Add reconstructed/denoised "
+                    "tomograms, manual picks (ArtiaX), or aggregated particle sets from the Particles section."
+                ).style(
+                    f"{FONT} font-size: 10px; color: {CLR_ACCENT_TEXT}; "
+                    f"background: {CLR_ACCENT_LIGHT}; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px;"
+                )
+                particle_only_hint.set_visibility(ui_mgr.data_import.is_particle_only)
+                local_refs["particle_only_hint"] = particle_only_hint
+
+                # Aggregation mode toggle (LEGACY): when on, this project skips raw
                 # frames/mdocs and starts at SubtomoExtraction (used to merge
                 # particles across multiple upstream projects).
                 def on_aggregation_toggle(e):
                     enabled = bool(e.value)
                     ui_mgr.update_data_import(is_aggregation=enabled)
-                    section = local_refs.get("raw_data_section")
-                    if section:
-                        section.set_visibility(not enabled)
+                    # Mutually exclusive with particle-only.
+                    if enabled and ui_mgr.data_import.is_particle_only:
+                        ui_mgr.update_data_import(is_particle_only=False)
+                        po_sw = local_refs.get("particle_only_switch")
+                        if po_sw:
+                            po_sw.value = False
+                        po_hint = local_refs.get("particle_only_hint")
+                        if po_hint:
+                            po_hint.set_visibility(False)
                     hint = local_refs.get("aggregation_hint")
                     if hint:
                         hint.set_visibility(enabled)
-                    update_create_button_state()
+                    _sync_dataless_visibility()
 
                 with ui.row().classes("w-full items-center justify-between mb-2"):
                     with ui.row().classes("items-center gap-1"):
@@ -1173,9 +1232,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                                 "Skip raw-data import. Project starts at SubtomoExtraction "
                                 "and merges optimisation_set.star files from existing projects."
                             ).style(f"{FONT} font-size: 10px;")
-                    ui.switch(value=ui_mgr.data_import.is_aggregation, on_change=on_aggregation_toggle).props(
-                        "dense"
-                    ).style("transform: scale(0.75);")
+                    local_refs["aggregation_switch"] = (
+                        ui.switch(value=ui_mgr.data_import.is_aggregation, on_change=on_aggregation_toggle)
+                        .props("dense")
+                        .style("transform: scale(0.75);")
+                    )
 
                 aggregation_hint = ui.label(
                     "Aggregation mode: this project will start at SubtomoExtraction. "
@@ -1209,7 +1270,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
                 raw_data_section = ui.column().classes("w-full gap-1")
                 local_refs["raw_data_section"] = raw_data_section
-                raw_data_section.set_visibility(not ui_mgr.data_import.is_aggregation)
+                raw_data_section.set_visibility(
+                    not (ui_mgr.data_import.is_aggregation or ui_mgr.data_import.is_particle_only)
+                )
                 with raw_data_section, ui.column().classes("w-full gap-2").style(section_style):
                     # Raw Frames & Mdocs (combined input)
                     with ui.column().classes("w-full gap-0"):

@@ -123,6 +123,22 @@ def _find_ts_ctf_star(project_path):
     return None
 
 
+def _find_fs_motion_warp_dir(project_path):
+    """Locate the FS-motion job's `warp_frameseries` folder — it holds the
+    per-tilt WarpTools XMLs with the REAL CTF-fit resolution + motion that the
+    star hides behind 1e-6 placeholders. Returns None if not found / not run.
+    See docs/preprocessing-metrics-inventory.md §4."""
+    state = get_project_state()
+    if not state:
+        return None
+    for _iid, jm in state.jobs.items():
+        if jm.job_type and jm.job_type.value == "fsMotionAndCtf" and jm.relion_job_name:
+            d = project_path / jm.relion_job_name.rstrip("/") / "warp_frameseries"
+            if d.is_dir():
+                return d
+    return None
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # MAIN PANEL
 # ═════════════════════════════════════════════════════════════════════════════
@@ -517,6 +533,21 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
     # Unique row ID for DOM identification (cryoBoostKey can have duplicates)
     df["_row_id"] = [f"r{i}" for i in range(len(df))]
 
+    # Real per-tilt CTF-fit resolution + motion from the FS-motion warp XMLs
+    # (cryoBoostKey == the XML basename == frame stem). The star's own res/motion
+    # columns are 1e-6 placeholders — the card's old "0.0px" chip read one of
+    # those. None where the XML is absent (no invented value).
+    fs_warp_dir = _find_fs_motion_warp_dir(project_path)
+    if fs_warp_dir is not None:
+        from services.tilt_series.frameseries_quality import read_frame_quality
+
+        qual = {k: read_frame_quality(fs_warp_dir, k) for k in df["cryoBoostKey"].unique()}
+        df["_xmlRes"] = df["cryoBoostKey"].map(lambda k: qual[k].ctf_resolution if qual.get(k) else None)
+        df["_xmlMotion"] = df["cryoBoostKey"].map(lambda k: qual[k].mean_frame_movement if qual.get(k) else None)
+    else:
+        df["_xmlRes"] = None
+        df["_xmlMotion"] = None
+
     # ── Live stats ──
     def _refresh_stats():
         stats_c.clear()
@@ -719,7 +750,11 @@ def _build_cards_html(ts_df, labels) -> str:
         angle = row.get("rlnTomoNominalStageTiltAngle", None)
         prob = row.get("cryoBoostDlProbability", 1.0)
         defocus_u = row.get("rlnDefocusU", None)
-        motion = row.get("rlnAccumMotionTotal", None)
+        # Real CTF-fit resolution + motion from the WarpTools XML (see
+        # _render_gallery_content); the star's rlnAccumMotionTotal is a 1e-6
+        # placeholder, so we no longer read it here.
+        ctf_res = row.get("_xmlRes", None)
+        motion = row.get("_xmlMotion", None)
         mrc_path = row.get("rlnMicrographName", "")
 
         bdr = "#ef4444" if is_bad else "#d1d5db"
@@ -745,8 +780,14 @@ def _build_cards_html(ts_df, labels) -> str:
             info_parts.append(f'<span style="color:{CLR_SUBLABEL};">p{prob:.2f}</span>')
         if defocus_u is not None and defocus_u > 0:
             info_parts.append(f'<span style="color:{CLR_SUBLABEL};">{defocus_u / 10000:.1f}\u00b5</span>')
-        if motion is not None and motion > 0:
-            info_parts.append(f'<span style="color:{CLR_SUBLABEL};">{motion:.1f}px</span>')
+        if isinstance(ctf_res, (int, float)) and ctf_res > 0:
+            info_parts.append(
+                f'<span style="color:{CLR_SUBLABEL};" title="CTF fit resolution (\u00c5)">{ctf_res:.1f}\u00c5</span>'
+            )
+        if isinstance(motion, (int, float)) and motion > 0:
+            info_parts.append(
+                f'<span style="color:{CLR_SUBLABEL};" title="beam-induced motion (WarpTools)">{motion:.2f}</span>'
+            )
 
         escaped_mrc = mrc_path.replace("&", "&amp;").replace('"', "&quot;")
         escaped_key = key.replace("&", "&amp;").replace('"', "&quot;")
