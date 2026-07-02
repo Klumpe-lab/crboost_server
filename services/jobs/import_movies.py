@@ -12,6 +12,7 @@ class ImportMoviesParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.IMPORT
     RELION_JOB_TYPE: ClassVar[str] = "relion.importtomo"
     IS_CONTINUE: ClassVar[bool] = True
+    RUNS_INLINE: ClassVar[bool] = True  # tilt_series.star written inline (Option B); see _submit_chain
 
     USER_PARAMS: ClassVar[Set[str]] = {"optics_group_name", "do_at_most"}
 

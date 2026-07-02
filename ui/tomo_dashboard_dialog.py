@@ -346,10 +346,89 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         )
 
     _strip_sig: dict[str, object] = {"sig": None}
+    _main_sig: dict[str, object] = {"sig": None}
     col_els: dict[str, object] = {}
     _sel_gen = {"n": 0}
 
-    def render_main() -> None:
+    def _curation_sig_for_ts(ts: str) -> tuple:
+        # Newest .coords mtime under Curation/<species>/<ts>/, scoped to the
+        # SELECTED ts. An external ArtiaX save is not a background task, so the
+        # gate must fold its mtime in or the auto-ingest prescan never runs on
+        # the timer path; scoping means a save for another tomo won't rebuild.
+        base = Path(project_path) / "Curation"
+        out: list[tuple[str, int]] = []
+        try:
+            for sp_dir in base.iterdir():
+                tdir = sp_dir / ts
+                if not tdir.is_dir():
+                    continue
+                newest = 0.0
+                for c in tdir.glob("*.coords"):
+                    try:
+                        newest = max(newest, c.stat().st_mtime)
+                    except OSError:
+                        pass
+                out.append((f"{sp_dir.name}/{ts}", int(newest)))
+        except OSError:
+            return ()
+        return tuple(sorted(out))
+
+    def _tilt_filter_sig_for_ts(ts: str) -> tuple:
+        # Per-ts labeled/filtered star mtimes for the tilt-filter section. NOT a
+        # journey pill stage, so _journey_signature can't see it; and the
+        # standalone TiltFilter tool has no job (→ no status), so job_states below
+        # can't see it either. Reuses the section's own resolver + path layout so
+        # a re-run OR an in-place rewrite moves the sig. Scoped to the selected ts.
+        fdir = _resolve_tilt_filter_dir(state, project_path)
+        if fdir is None:
+            return ()
+        out: list[tuple[str, int]] = []
+        for sub in ("tilt_series_labeled", "tilt_series_filtered"):
+            try:
+                out.append((sub, int((fdir / sub / f"{ts}.star").stat().st_mtime)))
+            except OSError:
+                out.append((sub, 0))
+        return tuple(out)
+
+    def _main_signature() -> tuple:
+        # FingerprintedView discipline for the main pane (mirrors render_strip).
+        # The 4 s live timer fires refresh_all on every background-task tick, but
+        # rebuilding the pane tears down its Plotly charts (and WebGL contexts) —
+        # so gate on the SELECTED ts's fingerprint: an unrelated-ts task moving
+        # must not twitch the pane. Landed artifacts (previews / slabs / manifests)
+        # are NOT fingerprinted here — each auto-kick's on_complete calls
+        # request_refresh(force_main=True), which bypasses this gate.
+        ts = selected["ts"]
+        if ts is None:
+            return ("__no_ts__",)
+        journey, _ts_names = _collect_dashboard_journey(state, project_path)
+        species_journey = _collect_species_journey(state, project_path)
+        # The journey sig only covers the 4 prep pill stages + per-species picks;
+        # sections like tilt_filter / dataset read job state it never sees. Fold in
+        # every job's execution_status (section-agnostic, cheap in-memory scan —
+        # catches a re-run's running→succeeded transition) plus the tilt-filter
+        # output mtimes (the one section with a job-less standalone path).
+        job_states = tuple(
+            (iid, str(getattr(jm, "execution_status", ""))) for iid, jm in sorted((state.jobs or {}).items())
+        )
+        return (
+            ts,
+            _journey_signature(journey, species_journey, [ts]),
+            job_states,
+            _tilt_filter_sig_for_ts(ts),
+            tuple(sorted(_hidden_dashboard_panels())),
+            _CURATION_SESSION_LIVE.get("on", False),
+            _curation_sig_for_ts(ts),
+        )
+
+    def render_main(force: bool = False) -> None:
+        # Signature-gated: skip the teardown+rebuild when nothing the selected
+        # pane shows changed. `force=True` (artifact completions, selection
+        # change, user toggles) always rebuilds. See _main_signature.
+        sig = _main_signature()
+        if not force and _main_sig["sig"] is not None and sig == _main_sig["sig"]:
+            return
+        _main_sig["sig"] = sig
         main_area.clear()
         with main_area:
             if selected["ts"] is None:
@@ -409,12 +488,12 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         await asyncio.sleep(0.02)
         if mine != _sel_gen["n"]:
             return  # superseded by a newer click during the flush
-        render_main()
+        render_main(force=True)  # selection changed — always rebuild
         render_strip()
 
-    def refresh_all() -> None:
+    def refresh_all(force_main: bool = False) -> None:
         render_strip()
-        render_main()
+        render_main(force=force_main)
 
     # P1: coalesce the initial refresh storm. On load several background auto-kicks
     # (preview / IMOD / recon-slabs / coords-ingest / list-cutouts) each fire
@@ -423,10 +502,16 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
     # request_refresh() to raise a flag instead; the coalesce timer (set up with the
     # live timer below) flushes ONE trailing-edge rebuild once requests go quiet. The
     # first paint just below still rebuilds immediately.
-    _refresh_req = {"pending": False, "quiet": 0}
+    _refresh_req = {"pending": False, "quiet": 0, "force_main": False}
 
-    def request_refresh() -> None:
+    def request_refresh(force_main: bool = True) -> None:
+        # force_main=True (the default — auto-kick on_complete handlers and user
+        # actions) rebuilds the main pane unconditionally: an artifact landed or
+        # the user acted. The 4 s live timer passes force_main=False so an
+        # unrelated-ts task tick lets render_main self-gate (no Plotly teardown).
         _refresh_req["pending"] = True
+        if force_main:
+            _refresh_req["force_main"] = True
         _refresh_req["quiet"] = 0
 
     _build_panel_toggle_row(panel_toggle_container, render_main)
@@ -527,7 +612,7 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
                     if len(prev) > 3 and sig[3] != prev[3]:
                         moved.append("curation-session")
                     logger.info("journey live-refresh rebuild (changed: %s)", ", ".join(moved) or "unknown")
-                request_refresh()
+                request_refresh(force_main=False)  # timer tick — let render_main self-gate
         except RuntimeError:
             # Client gone — timer will clean up shortly.
             pass
@@ -542,9 +627,11 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
             return
         _refresh_req["quiet"] += 1
         if _refresh_req["quiet"] >= 2:
+            fm = bool(_refresh_req["force_main"])
             _refresh_req["pending"] = False
             _refresh_req["quiet"] = 0
-            refresh_all()
+            _refresh_req["force_main"] = False
+            refresh_all(force_main=fm)
 
     refresh_coalesce_timer = ui.timer(0.2, _flush_refresh)
 
@@ -681,10 +768,14 @@ def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, re
     # species' picks overlaid (toggleable), plus a per-species tab carrying
     # that species' TM sanity strip + gallery / scatter. Replaces both the
     # old per-species Template Match cards and the candidate-extract cards.
-    if "particles" not in hidden and _render_particles_section(
-        ts_name, project_state, project_path, refresh, refresh_roster
-    ):
-        rendered_any = True
+    if "particles" not in hidden:
+        # Candidate-extract path first; if it renders nothing (no TEMPLATE_EXTRACT
+        # jobs — e.g. a particle-only project), fall back to the imported-tomogram
+        # manual-picking section so the imported tomos still surface.
+        if _render_particles_section(ts_name, project_state, project_path, refresh, refresh_roster):
+            rendered_any = True
+        elif _render_imported_particles_section(ts_name, project_state, project_path, refresh, refresh_roster):
+            rendered_any = True
 
     if not rendered_any:
         if len(hidden) >= len(_DASHBOARD_PANEL_KEYS):
@@ -1019,7 +1110,9 @@ _HINT_ASTIG = (
 _HINT_CTF_RES = "Best resolution (Å) at which CTF zeros could be fit. Lower = better fit / more usable signal."
 _HINT_CTF_FOM = "CTF fit figure-of-merit, dimensionless 0..1. Higher = more confident fit."
 _HINT_MOTION = (
-    "Accumulated beam-induced motion (Å) summed over the tilt's movie frames. Early = first half, late = second half."
+    "Per-tilt beam-induced motion (WarpTools MeanFrameMovement; units per Warp convention, ≈ Å). "
+    "Higher = more drift/charging, and it typically rises toward high tilt. Read from the frameseries XML, "
+    "not the star (whose motion columns are placeholders)."
 )
 _HINT_SHIFT = (
     "Per-tilt translation in Å applied during alignment to register each tilt to a common reference. "
@@ -1031,14 +1124,31 @@ _HINT_ALIGN_ANGLES = (
 )
 
 
-def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> None:
+def _render_ctf_motion_plots(
+    df: pd.DataFrame, *, show_motion: bool = True, frameseries_dir: Optional[Path] = None
+) -> None:
     """Defocus + astigmatism (always plotted as scatter, since each tilt is an
     independent estimate). CTF max-resolution / FOM / motion are gated on
     `_is_meaningful_series` because WarpTools-exported RELION stars often
     write `1e-6` placeholders for those columns — see
-    `project_warp_relion_star_placeholders.md`."""
+    `project_warp_relion_star_placeholders.md`.
+
+    When `frameseries_dir` (the FS-motion job's `warp_frameseries` folder) is
+    given, the CTF-resolution and motion panels read the REAL per-tilt values
+    from the WarpTools XML instead of the placeholder star columns — see
+    `docs/preprocessing-metrics-inventory.md` §4."""
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
     cd = _per_tilt_customdata(df)
+
+    # Real per-tilt CTF-fit resolution + motion live in the WarpTools frameseries
+    # XML, not the star (the star columns are 1e-6 / 'None' placeholders). Read
+    # them once here so the CTF-res + motion panels show real data.
+    xml_res: Optional[list] = None
+    xml_motion: Optional[list] = None
+    if frameseries_dir is not None and "rlnMicrographMovieName" in df.columns:
+        from services.tilt_series.frameseries_quality import quality_series
+
+        xml_res, xml_motion = quality_series(frameseries_dir, df["rlnMicrographMovieName"].tolist())
 
     has_def = "rlnDefocusU" in df.columns and "rlnDefocusV" in df.columns
     has_astig = "rlnCtfAstigmatism" in df.columns
@@ -1077,22 +1187,26 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
                 )
                 _plot_cell("Astigmatism per tilt", fig, hint=_HINT_ASTIG)
 
-    # CTF fit-quality plots: skip when WarpTools wrote placeholders.
-    if has_res:
-        res = _safe_floats(df["rlnCtfMaxResolution"])
-        if _is_meaningful_series(res):
-            with ui.element("div").classes("cb-plot-row"):
-                fig = _build_per_tilt_chart(
-                    tilts,
-                    [{"name": "CTF max res", "y": res, "color": _CTF_RES_COLOR, "marker_size": 6}],
-                    y_label="resolution (Å)",
-                    customdata=cd,
-                    y_unit=" Å",
-                    y_range=(0.0, 30.0),
-                )
-                _plot_cell("CTF fit resolution per tilt", fig, hint=_HINT_CTF_RES)
-        else:
-            skipped.append("CTF max-res")
+    # CTF fit resolution: prefer the real per-tilt CTFResolutionEstimate from the
+    # XML; fall back to the star column only for non-WarpTools exports that
+    # populate it for real (WarpTools writes a 1e-6 placeholder there).
+    res = xml_res if (xml_res is not None and _is_meaningful_series(xml_res)) else None
+    if res is None and has_res:
+        star_res = _safe_floats(df["rlnCtfMaxResolution"])
+        res = star_res if _is_meaningful_series(star_res) else None
+    if res is not None:
+        with ui.element("div").classes("cb-plot-row"):
+            fig = _build_per_tilt_chart(
+                tilts,
+                [{"name": "CTF fit res", "y": res, "color": _CTF_RES_COLOR, "marker_size": 6}],
+                y_label="resolution (Å)",
+                customdata=cd,
+                y_unit=" Å",
+                y_range=(0.0, 30.0),
+            )
+            _plot_cell("CTF fit resolution per tilt", fig, hint=_HINT_CTF_RES)
+    elif has_res:
+        skipped.append("CTF max-res")
     if has_fom:
         fom = _safe_floats(df["rlnCtfFigureOfMerit"])
         if _is_meaningful_series(fom, threshold=1e-4):
@@ -1108,11 +1222,17 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
         else:
             skipped.append("CTF FOM")
 
-    # Motion: cumulative across frames within a tilt — *is* a meaningful curve
-    # vs tilt order, so use lines+markers when it's not placeholder.
-    if show_motion and has_motion_total:
-        mt = _safe_floats(df["rlnAccumMotionTotal"])
-        if _is_meaningful_series(mt, threshold=0.05):
+    # Motion: prefer the real per-tilt MeanFrameMovement from the XML (single
+    # series). Fall back to the star's AccumMotion total/early/late only when
+    # those are real (non-WarpTools exports) — WarpTools writes 1e-6 there.
+    if show_motion:
+        if xml_motion is not None and _is_meaningful_series(xml_motion, threshold=1e-4):
+            with ui.element("div").classes("cb-plot-row"):
+                series = [{"name": "motion", "y": xml_motion, "color": _MOTION_TOTAL_COLOR, "mode": "lines+markers"}]
+                fig = _build_per_tilt_chart(tilts, series, y_label="mean frame motion", customdata=cd)
+                _plot_cell("Beam-induced motion per tilt", fig, wide=True, hint=_HINT_MOTION)
+        elif has_motion_total and _is_meaningful_series(_safe_floats(df["rlnAccumMotionTotal"]), threshold=0.05):
+            mt = _safe_floats(df["rlnAccumMotionTotal"])
             with ui.element("div").classes("cb-plot-row"):
                 series = [{"name": "total", "y": mt, "color": _MOTION_TOTAL_COLOR, "mode": "lines+markers"}]
                 if "rlnAccumMotionEarly" in df.columns:
@@ -1142,8 +1262,8 @@ def _render_ctf_motion_plots(df: pd.DataFrame, *, show_motion: bool = True) -> N
 
     if skipped:
         ui.label(
-            f"Skipped: {', '.join(skipped)} — WarpTools writes placeholder values for these columns "
-            "in its RELION star export (real numbers live in WarpTools' own metadata)."
+            f"Not shown: {', '.join(skipped)} — no real value in this export "
+            "(WarpTools leaves these star columns as placeholders and exports no CTF figure-of-merit)."
         ).classes("cb-section-placeholder")
 
 
@@ -1255,9 +1375,18 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
                     ui.label(str(v)).classes("cb-datadump-val")
             return True
 
+        # Real CTF-fit resolution + motion come from the frameseries XML, not the
+        # placeholder star columns (rlnCtfMaxResolution / rlnAccumMotion* = 1e-6).
+        fs_warp_dir = job_dir / "warp_frameseries"
+        ctf_res: list = []
+        motion_total: list = []
+        if "rlnMicrographMovieName" in df.columns:
+            from services.tilt_series.frameseries_quality import quality_series
+
+            r_xml, m_xml = quality_series(fs_warp_dir, df["rlnMicrographMovieName"].tolist())
+            ctf_res = [v for v in r_xml if v is not None]
+            motion_total = [v for v in m_xml if v is not None]
         defocus_um = [v / 1.0e4 for v in _safe_floats(df.get("rlnDefocusU", [])) if v is not None]
-        ctf_res = [v for v in _safe_floats(df.get("rlnCtfMaxResolution", [])) if v is not None]
-        motion_total = [v for v in _safe_floats(df.get("rlnAccumMotionTotal", [])) if v is not None]
         d_stats = _stats(defocus_um)
         r_stats = _stats(ctf_res)
         m_stats = _stats(motion_total)
@@ -1269,10 +1398,10 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         if r_stats["n"]:
             strip_rows.append(("CTF res", f"{r_stats['median']:.1f} Å (worst {r_stats['max']:.1f})"))
         if m_stats["n"]:
-            strip_rows.append(("motion (max)", f"{m_stats['max']:.1f} Å"))
+            strip_rows.append(("motion (max)", f"{m_stats['max']:.2f}"))
         _stat_strip(strip_rows)
 
-        _render_ctf_motion_plots(df, show_motion=True)
+        _render_ctf_motion_plots(df, show_motion=True, frameseries_dir=fs_warp_dir)
 
         with ui.expansion("Job parameters").classes("w-full text-[10px]").props("dense"):
             with ui.element("div").classes("cb-datadump-grid"):
@@ -1799,14 +1928,25 @@ def _render_recon_big_preview(
     natural aspect ratio (wide XY top-down) survives a tall viewport."""
     png_path = _find_warp_tomo_preview(project_path, ts_name, mrc_path)
 
-    dn_job_dir, dn_mrc = _resolve_denoised_mrc_for_ts(project_state, project_path, ts_name)
+    # One denoised pane, switchable across every denoise method that has a result for
+    # this TS (cryoCARE, IsoNet, …). The selection persists per-project across rebuilds.
+    methods = _available_denoise_methods_for_ts(project_state, project_path, ts_name)
+    has_denoise = bool(methods)
+    sel_key = str(project_path)
+    labels = [m[0] for m in methods]
+    selected = _SELECTED_DENOISE_METHOD.get(sel_key)
+    if selected not in labels:
+        selected = labels[0] if labels else None
+    sel = next((m for m in methods if m[0] == selected), None)
+
     dn_png: Optional[Path] = None
-    if dn_job_dir is not None and dn_mrc is not None:
+    dn_mrc: Optional[Path] = None
+    if sel is not None:
+        _, dn_job_dir, dn_mrc = sel
         _auto_kick_denoise_slab(dn_job_dir, ts_name, dn_mrc, project_path, refresh)
         candidate = _denoise_slab_path(dn_job_dir, ts_name)
         if candidate.exists():
             dn_png = candidate
-    has_denoise = dn_job_dir is not None and dn_mrc is not None
 
     if (not png_path or not png_path.exists()) and not has_denoise:
         ui.label("No tomogram preview on disk for this TS yet.").classes("cb-section-placeholder")
@@ -1824,14 +1964,32 @@ def _render_recon_big_preview(
                 ui.label(f"WarpTools · {png_path.name}").classes("cb-recon-preview-caption")
             else:
                 ui.label("No WarpTools preview PNG on disk.").classes("cb-section-placeholder")
-        # ── denoised (right): X/Y slab rendered from the denoised MRC ──
+        # ── denoised (right): X/Y slab for the selected method ──
         if has_denoise:
             with ui.element("div").classes("cb-recon-compare-pane"):
-                ui.label("denoised").classes("cb-recon-pane-tag")
+                with ui.row().classes("items-center gap-2 no-wrap"):
+                    ui.label("denoised").classes("cb-recon-pane-tag")
+                    if len(methods) >= 2:
+
+                        def _on_method(e, _key=sel_key) -> None:
+                            _SELECTED_DENOISE_METHOD[_key] = e.value
+                            refresh()
+
+                        (
+                            ui.toggle({lbl: lbl for lbl in labels}, value=selected, on_change=_on_method)
+                            .props("dense no-caps unelevated size=sm toggle-color=indigo color=grey-2")
+                            .classes("cb-denoise-method-toggle")
+                            .tooltip("Switch the denoised preview between methods with a result for this TS.")
+                        )
+                    else:
+                        ui.label(selected).classes("cb-recon-pane-method")
                 if dn_png is not None:
                     with ui.element("div").classes("cb-recon-preview"):
-                        ui.html(f"<img src='{_vis_asset_url(str(dn_png))}' alt='{ts_name} denoised' />", sanitize=False)
-                    ui.label(f"denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
+                        ui.html(
+                            f"<img src='{_vis_asset_url(str(dn_png))}' alt='{ts_name} {selected} denoised' />",
+                            sanitize=False,
+                        )
+                    ui.label(f"{selected} · denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
                 else:
                     ui.label("rendering denoised slab…").classes("cb-section-placeholder")
 
@@ -1929,26 +2087,71 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
 # (_resolve_volume_for_3dmod) works unchanged.
 _AUTO_KICKED_DENOISE_SLAB: set[str] = set()
 
+# Which denoise method's slab the user is currently viewing, keyed by project path.
+# A project can host several denoisepredict jobs (cryoCARE, IsoNet, …); the
+# Reconstruct section offers a per-method toggle and remembers the pick here so it
+# survives the dashboard's coalesced rebuilds.
+_SELECTED_DENOISE_METHOD: dict[str, str] = {}
 
-def _resolve_denoised_mrc_for_ts(
-    project_state, project_path: Path, ts_name: str
-) -> tuple[Optional[Path], Optional[Path]]:
-    """(denoise_job_dir, denoised-tomogram MRC) for this TS, or Nones. Mirrors
-    _resolve_recon_mrc_for_ts against the denoisepredict job."""
-    dn = _find_job_by_type(project_state, JobType.DENOISE_PREDICT)
-    if not dn:
-        return None, None
-    dn_job_dir = _job_dir_for(dn[0], dn[1], project_path)
-    if not dn_job_dir:
-        return None, None
-    tomo_df = _read_tomograms_table(dn_job_dir / "tomograms.star")
-    if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
-        return dn_job_dir, None
-    match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
-    if match.empty:
-        return dn_job_dir, None
-    mrc = _resolve_volume_for_3dmod(match.iloc[0], project_path)
-    return dn_job_dir, (Path(mrc) if mrc else None)
+
+def _denoise_method_label(job_model, instance_id: str) -> str:
+    """Human label for a denoisepredict job's method ('cryoCARE', 'IsoNet', …),
+    falling back to the instance_id when the field is absent."""
+    m = getattr(job_model, "denoise_method", None)
+    return getattr(m, "value", None) or (str(m) if m else instance_id)
+
+
+def _resolve_denoised_mrc_for_job(job_dir: Path, project_path: Path, ts_name: str) -> Optional[Path]:
+    """Denoised-tomogram MRC for one denoisepredict job + TS, or None. Prefers the
+    job's aggregated tomograms.star (rlnTomoReconstructedTomogram); falls back to the
+    per-tomogram file under denoised/ so results surface as the SLURM array lands
+    them, before the final star is written at job end."""
+    tomo_df = _read_tomograms_table(job_dir / "tomograms.star")
+    if tomo_df is not None and "rlnTomoName" in tomo_df.columns:
+        match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
+        if not match.empty:
+            mrc = _resolve_volume_for_3dmod(match.iloc[0], project_path)
+            if mrc:
+                return Path(mrc)
+    dn_dir = job_dir / "denoised"
+    if dn_dir.is_dir():
+        # Per-tomo file is "<ts_name>_<apix>Apx.mrc"; the tail after "<ts_name>_"
+        # must be just "<apix>Apx" (no extra underscore) so Position_1 doesn't match
+        # Position_1_2's file.
+        for f in sorted(dn_dir.glob(f"{ts_name}_*Apx.mrc")):
+            tail = f.stem[len(ts_name) + 1 :]
+            if tail.endswith("Apx") and tail[:-3].replace(".", "", 1).isdigit():
+                return f
+    return None
+
+
+def _available_denoise_methods_for_ts(project_state, project_path: Path, ts_name: str) -> list[tuple[str, Path, Path]]:
+    """(method_label, job_dir, denoised_mrc) for every denoisepredict job that has a
+    denoised volume for this TS, ordered by label. When two jobs share a method the
+    label is suffixed with the instance_id to keep selector keys unique/stable."""
+    found: list[tuple[str, str, Path, Path]] = []  # (label, iid, job_dir, mrc)
+    for iid, jm in (project_state.jobs or {}).items():
+        is_dn = (
+            getattr(jm, "job_type", None) == JobType.DENOISE_PREDICT
+            or iid.split("__")[0] == JobType.DENOISE_PREDICT.value
+        )
+        if not is_dn:
+            continue
+        job_dir = _job_dir_for(iid, jm, project_path)
+        if not job_dir:
+            continue
+        mrc = _resolve_denoised_mrc_for_job(job_dir, project_path, ts_name)
+        if mrc is not None:
+            found.append((_denoise_method_label(jm, iid), iid, job_dir, mrc))
+    label_counts: dict[str, int] = {}
+    for lbl, *_ in found:
+        label_counts[lbl] = label_counts.get(lbl, 0) + 1
+    out: list[tuple[str, Path, Path]] = []
+    for lbl, iid, job_dir, mrc in found:
+        disp = lbl if label_counts[lbl] == 1 else f"{lbl} ({iid})"
+        out.append((disp, job_dir, mrc))
+    out.sort(key=lambda t: t[0].lower())
+    return out
 
 
 def _denoise_slab_path(denoise_job_dir: Path, ts_name: str) -> Path:
@@ -2875,14 +3078,23 @@ def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id:
 
 
 def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -> tuple[Optional[Path], Optional[Path]]:
-    """(recon_job_dir, reconstructed-tomogram MRC) for this TS, or Nones."""
+    """(recon_job_dir, reconstructed-tomogram MRC) for this TS, or Nones.
+
+    Falls back to the project-level imported tomograms.star (PARTICLES-header import
+    utility) for data-less / particle-only projects, which have no TS_RECONSTRUCT job."""
     rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
-    if not rec:
-        return None, None
-    recon_job_dir = _job_dir_for(rec[0], rec[1], project_path)
-    if not recon_job_dir:
-        return None, None
-    tomo_df = _read_tomograms_table(recon_job_dir / "tomograms.star")
+    if rec:
+        recon_job_dir = _job_dir_for(rec[0], rec[1], project_path)
+        if not recon_job_dir:
+            return None, None
+        star_path = recon_job_dir / "tomograms.star"
+    else:
+        imported = project_state.imported_tomograms_star_path()
+        if not imported:
+            return None, None
+        star_path = Path(imported)
+        recon_job_dir = star_path.parent
+    tomo_df = _read_tomograms_table(star_path)
     if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
         return recon_job_dir, None
     match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
@@ -3135,6 +3347,140 @@ _SLAB_MAX_VH = 60
 # slab's width as a % of the row bounds that split directly, so the gallery/rail
 # column always claims the rest. Tune to taste: lower → wider gallery.
 _SLAB_MAX_PCT = 34
+
+
+def _imported_wip_marker(text: str, tip: str) -> None:
+    """A subtle red 'unverified / missing' marker with an explanatory tooltip.
+    Per CLAUDE.md ('Surfacing uncertainty'): show a missing/ambiguous param, never
+    silently default it."""
+    with ui.row().classes("items-center gap-1").style("display:inline-flex;"):
+        ui.icon("error_outline", size="13px").classes("text-red-500")
+        ui.label(text).classes("font-mono text-red-600").tooltip(tip)
+
+
+def _render_imported_species_row(sp_obj, project_state, ts_name: str) -> None:
+    """One registered species' manual pick lists on this imported tomogram.
+
+    Counts come straight from the PickList registry (pl.count) — independent of the
+    tomogram's apix/dims, which are surfaced separately with their own markers (so a
+    suspect/missing geometry never silently mis-states a pick count). P2.1 lists picks;
+    P2.2 adds the canvas overlay, which is what actually needs apix + dims."""
+    color = (
+        getattr(sp_obj, "color", "")
+        or _SPECIES_OVERLAY_COLORS[sum(map(ord, str(sp_obj.id))) % len(_SPECIES_OVERLAY_COLORS)]
+    )
+    lists = project_state.get_pick_lists(sp_obj.id, ts_name)
+    with ui.element("div").style("display:flex; gap:10px; align-items:center; padding:3px 2px; font-size:11px;"):
+        ui.icon("circle", size="10px").style(f"color:{color};")
+        ui.label(str(sp_obj.name)).style("font-weight:600;")
+        if lists:
+            total = sum(int(getattr(pl, "count", 0) or 0) for pl in lists)
+            ui.label(f"{len(lists)} list(s) · {total} picks").classes("font-mono text-gray-600")
+        else:
+            ui.label("no picks yet").classes("italic text-gray-400")
+
+
+def _render_imported_particles_section(
+    ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None
+) -> bool:
+    """Particles section for imported tomograms (data-less / particle-only projects).
+
+    A separate, deliberately-simple renderer: the candidate-extract canvas + gallery
+    machinery assumes auto-pick data this source has none of, so we don't drive it
+    blind. Shows the imported tomogram's geometry — with provenance markers, never a
+    silent apix default (CLAUDE.md) — plus each registered species' manual pick lists.
+    The 'register species & pick' launcher (P2.2) will mount here."""
+    imported_star = project_state.imported_tomograms_star_path()
+    if not imported_star:
+        return False
+    tomo_df = _read_tomograms_table(Path(imported_star))
+    if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
+        return False
+    match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
+    if match.empty:
+        return False
+    row = match.iloc[0]
+
+    # Geometry from the star (cheap — no MRC re-read on the event loop). apix is
+    # surfaced WITH provenance: if it looks like the synthesize fallback (the recon
+    # MRC header had no voxel_size and no override was set), flag it red rather than
+    # presenting 1.0 A/px as if it were measured.
+    # binning follows RELION's convention (absent ⇒ 1.0); a corrupt non-positive /
+    # NaN value also falls back to 1 rather than poisoning the apix + dims math.
+    try:
+        binning = float(row.get("rlnTomoTomogramBinning", 1.0))
+    except (TypeError, ValueError):
+        binning = 1.0
+    if not (binning > 0):
+        binning = 1.0
+    try:
+        ts_px = float(row.get("rlnTomoTiltSeriesPixelSize", 0.0))
+    except (TypeError, ValueError):
+        ts_px = 0.0
+    binned_apix = ts_px * binning if ts_px > 0 else 0.0
+
+    def _binned_dim(col: str):
+        try:
+            return int(round(float(row[col]) / binning)) if col in row.index else None
+        except (TypeError, ValueError):
+            return None
+
+    bx, by, bz = _binned_dim("rlnTomoSizeX"), _binned_dim("rlnTomoSizeY"), _binned_dim("rlnTomoSizeZ")
+    dims_known = None not in (bx, by, bz)
+    species = list(getattr(project_state, "species_registry", []) or [])
+
+    with ui.element("div").classes("cb-section-card w-full") as card:
+        card._props["data-section"] = "particles"
+        with ui.element("div").classes("cb-section-card-header"):
+            ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
+            ui.label("Particles").classes("cb-section-title")
+            ui.label("imported tomogram").classes("text-[10px] font-mono text-gray-500")
+            ui.space()
+            ui.label("manual picking · WIP").classes("text-[10px] font-mono text-amber-600").tooltip(
+                "Particle-only project: pick manually in ArtiaX. Automated template matching on imported "
+                "tomograms is not wired yet (it needs a per-tilt-series star)."
+            )
+
+        with ui.element("div").style(
+            "display:flex; gap:16px; align-items:center; flex-wrap:wrap; padding:6px 2px; font-size:11px;"
+        ):
+            ui.label(ts_name).classes("font-mono").style("font-weight:600;")
+            if dims_known:
+                ui.label(f"{bx} x {by} x {bz} px").classes("font-mono text-gray-600")
+            else:
+                _imported_wip_marker(
+                    "dimensions unavailable", "tomograms.star has no rlnTomoSizeX/Y/Z for this tomogram."
+                )
+            if abs(binning - 1.0) > 1e-6:
+                ui.label(f"bin x{binning:g}").classes("font-mono text-gray-500")
+            # `not (ts_px > 0)` catches 0 / negative / NaN — definitely missing.
+            # A bare 1.0 A/px (binning 1) is AMBIGUOUS: it's the writer's fallback
+            # when an MRC header lacks voxel_size, but could also be genuine — so we
+            # surface it for confirmation rather than asserting either way.
+            if not (ts_px > 0):
+                _imported_wip_marker(
+                    "pixel size unset",
+                    "tomograms.star has no usable rlnTomoTiltSeriesPixelSize for this tomogram — set "
+                    "'Pixel size' on the Import Tomograms job.",
+                )
+            elif abs(ts_px - 1.0) < 1e-6 and abs(binning - 1.0) < 1e-6:
+                _imported_wip_marker(
+                    f"{binned_apix:g} A/px · verify",
+                    "Pixel size is exactly 1.0 A/px. If the recon MRC header lacked voxel_size this is the "
+                    "import fallback and picks would be mis-scaled — set 'Pixel size' on the Import Tomograms "
+                    "job. If 1.0 A/px is genuinely correct, ignore this.",
+                )
+            else:
+                ui.label(f"{binned_apix:g} A/px").classes("font-mono text-gray-600")
+
+        if not species:
+            ui.label("No species registered yet — register one to start picking.").classes(
+                "italic text-gray-500"
+            ).style("padding:6px 2px; font-size:11px;")
+        else:
+            for sp_obj in species:
+                _render_imported_species_row(sp_obj, project_state, ts_name)
+    return True
 
 
 def _render_particles_section(ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None) -> bool:

@@ -34,12 +34,16 @@ def _empty_fig(message: str) -> dict:
             "xaxis": {"visible": False},
             "yaxis": {"visible": False},
         },
-        "config": {"displaylogo": False, "responsive": True},
+        "config": {"displaylogo": False, "responsive": True, "displayModeBar": False},
     }
 
 
 def _build_xy_scatter_fig(picks: list, tomo_dims_xyz: tuple, score_field: Optional[str]) -> dict:
     x_dim, y_dim, _z_dim = tomo_dims_xyz
+    # Pad the axes ~2% of each dim so edge picks (x≈0 or x≈x_dim — common in
+    # cryo-ET fields) draw their full marker inside the frame; the dashed
+    # reference rect stays at the true [0,dim] so it reads as the tomogram bound.
+    padx, pady = x_dim * 0.02, y_dim * 0.02
     has_scores = picks and "score" in picks[0]
     xs = [p["x"] for p in picks]
     ys = [p["y"] for p in picks]
@@ -77,14 +81,14 @@ def _build_xy_scatter_fig(picks: list, tomo_dims_xyz: tuple, score_field: Option
     layout: dict = {
         "xaxis": {
             "title": {"text": "X (px)", "font": {"size": 10}},
-            "range": [0, x_dim],
+            "range": [-padx, x_dim + padx],
             "showgrid": False,
             "zeroline": False,
             "tickfont": {"size": 9},
         },
         "yaxis": {
             "title": {"text": "Y (px)", "font": {"size": 10}},
-            "range": [0, y_dim],
+            "range": [-pady, y_dim + pady],
             "showgrid": False,
             "zeroline": False,
             "tickfont": {"size": 9},
@@ -107,13 +111,20 @@ def _build_xy_scatter_fig(picks: list, tomo_dims_xyz: tuple, score_field: Option
             }
         ],
     }
-    return {"data": [trace], "layout": layout, "config": {"displaylogo": False, "responsive": True}}
+    return {
+        "data": [trace],
+        "layout": layout,
+        "config": {"displaylogo": False, "responsive": True, "displayModeBar": False},
+    }
 
 
 def _build_xz_scatter_fig(
     picks: list, tomo_dims_xyz: tuple, score_field: Optional[str], xz_preview_url: Optional[str] = None
 ) -> dict:
     x_dim, _y_dim, z_dim = tomo_dims_xyz
+    # ~2% axis padding so edge picks draw their full marker inside the frame;
+    # the dashed reference rect stays at the true [0,dim] (see XY builder).
+    padx, padz = x_dim * 0.02, z_dim * 0.02
     has_scores = picks and "score" in picks[0]
     xs = [p["x"] for p in picks]
     zs = [p["z"] for p in picks]
@@ -144,14 +155,14 @@ def _build_xz_scatter_fig(
     layout: dict = {
         "xaxis": {
             "title": {"text": "X (px)", "font": {"size": 10}},
-            "range": [0, x_dim],
+            "range": [-padx, x_dim + padx],
             "showgrid": False,
             "zeroline": False,
             "tickfont": {"size": 9},
         },
         "yaxis": {
             "title": {"text": "Z (px)", "font": {"size": 10}},
-            "range": [0, z_dim],
+            "range": [-padz, z_dim + padz],
             "showgrid": False,
             "zeroline": False,
             "tickfont": {"size": 9},
@@ -188,7 +199,11 @@ def _build_xz_scatter_fig(
                 "layer": "below",
             }
         ]
-    return {"data": [trace], "layout": layout, "config": {"displaylogo": False, "responsive": True}}
+    return {
+        "data": [trace],
+        "layout": layout,
+        "config": {"displaylogo": False, "responsive": True, "displayModeBar": False},
+    }
 
 
 def _build_score_hist_fig(picks: list, score_field: Optional[str]) -> dict:
@@ -241,7 +256,7 @@ def _build_score_hist_fig(picks: list, score_field: Optional[str]) -> dict:
                 }
             ],
         },
-        "config": {"displaylogo": False, "responsive": True},
+        "config": {"displaylogo": False, "responsive": True, "displayModeBar": False},
     }
 
 
@@ -375,7 +390,13 @@ def _build_per_tilt_chart(
                     ymin = fv
                 if fv > ymax:
                     ymax = fv
-        layout["yaxis"]["range"] = [ymin, ymax]
+        # Pad the locked range by ~5% of span so a marker whose center sits at
+        # an extreme doesn't spill half its diameter past the axis rectangle
+        # (a fixed range disables Plotly's default auto-padding). Degenerate
+        # span (all-equal values) falls back to a small absolute pad.
+        span = ymax - ymin
+        pad = span * 0.05 if span > 0 else (abs(ymax) * 0.05 or 1.0)
+        layout["yaxis"]["range"] = [ymin - pad, ymax + pad]
         layout["yaxis"]["autorange"] = False
     if h_lines:
         shapes = []

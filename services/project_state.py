@@ -77,6 +77,12 @@ def _afterok_global_default() -> bool:
 # immutable provenance. None ⇒ owned by `created_by` (the legacy default).
 SHARED_OWNER = "@lab"
 
+# Project-relative location for aggregation merge outputs. Stable name, not under
+# External/ so it can't collide with the schemer's jobNNN allocation. Each named
+# merge writes its own MergedSources/<slug>/ folder (legacy projects wrote a flat
+# MergedSources/optimisation_set.star).
+MERGED_DIR_NAME = "MergedSources"
+
 
 # ─── Sidecar helpers ────────────────────────────────────────────────────
 # Each registered template / mask file has a `<file>.meta.json` sidecar
@@ -580,6 +586,24 @@ class PickList(BaseModel):
         self.extracted_at = datetime.now()
 
 
+class ImportedTomograms(BaseModel):
+    """Tomograms injected into a project via the PARTICLES-header import utility — a
+    project-level artifact, NOT a pipeline job. The committed ``tomograms.star`` lives at
+    ``star_path`` (``Tomograms/tomograms.star``, project-relative); the source fields are
+    provenance + let the import dialog reopen with the prior selection. See
+    services/tomogram_import.py + PARTICLE_PROJECT_ROADMAP.md (P1, un-job-ified)."""
+
+    star_path: str = ""  # project-relative (or absolute) path to the committed tomograms.star
+    source_mode: str = "synthesize"  # "synthesize" | "reference"
+    source_paths: List[str] = Field(default_factory=list)  # selected .mrc files (synthesize)
+    reference_star: str = ""  # an existing tomograms.star (reference mode)
+    pixel_size_angstrom: float = 0.0  # user override (0 ⇒ derived from MRC header)
+    tomogram_binning: float = 1.0
+    optics_group_name: str = "opticsGroup1"
+    count: int = 0  # cached tomogram count, for display
+    imported_at: datetime = Field(default_factory=datetime.now)
+
+
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
@@ -636,6 +660,10 @@ class ProjectState(BaseModel):
     # → slug ("auto" or a workbench-list slug). Absent ⇒ "auto" (the candidate set,
     # the historical default). Exactly one list is authoritative per (species, tomo).
     authoritative_pick_lists: Dict[str, str] = Field(default_factory=dict)
+    # Tomograms injected via the PARTICLES-header import utility (particle-only projects
+    # with no upstream recon). A project-level artifact, not a job — see ImportedTomograms
+    # / services/tomogram_import.py. None ⇒ no import committed.
+    imported_tomograms: Optional[ImportedTomograms] = None
     pipeline_active: bool = Field(default=False)
 
     # Orchestrator rework (P1.A): per-project opt-in to the SLURM afterok submit path
@@ -693,6 +721,54 @@ class ProjectState(BaseModel):
     @property
     def is_shared(self) -> bool:
         return self.owner == SHARED_OWNER
+
+    # ─── Aggregation merge resolution ────────────────────────────────────────
+    # The merged optimisation_set.star is a project-level resource (built by the
+    # aggregation merge card, not a pipeline job). These accessors live on
+    # ProjectState — not the UI — so the path resolver can surface the active
+    # merged optset as a first-class producer without a `ui.` import.
+
+    def active_merge(self) -> Optional["AggregationMerge"]:
+        """The merge downstream consumers wire to: the explicitly-active one, else
+        the newest recorded merge (None if no merge has been recorded)."""
+        merges = self.aggregation_merges or []
+        if not merges:
+            return None
+        if self.active_merge_slug:
+            m = next((x for x in merges if x.slug == self.active_merge_slug), None)
+            if m:
+                return m
+        return merges[-1]
+
+    def active_merged_optset(self) -> Optional[Path]:
+        """Resolved optimisation_set.star of the active merge (slug folder). Falls
+        back to a legacy flat MergedSources/optimisation_set.star (pre-registry
+        projects). None if nothing exists on disk yet."""
+        if self.project_path is None:
+            return None
+        root = self.project_path
+        m = self.active_merge()
+        if m is not None:
+            p = root / MERGED_DIR_NAME / m.slug / "optimisation_set.star"
+            if p.exists():
+                return p
+        legacy = root / MERGED_DIR_NAME / "optimisation_set.star"
+        return legacy if legacy.exists() else None
+
+    def active_merged_optset_instance_path(self) -> Optional[str]:
+        """Stable instance_path identifying the synthetic merged-sources producer for
+        the active merge. Shared by the resolver candidate and `source_overrides` so
+        the two always agree on the same key. Tracks the SAME file
+        active_merged_optset() resolves to (slug folder vs legacy flat) so the key can
+        never describe a different merge than the path. None when no merged optset exists."""
+        if self.project_path is None:
+            return None
+        root = self.project_path
+        m = self.active_merge()
+        if m is not None and (root / MERGED_DIR_NAME / m.slug / "optimisation_set.star").exists():
+            return f"{MERGED_DIR_NAME}/{m.slug}"
+        legacy = root / MERGED_DIR_NAME / "optimisation_set.star"
+        return MERGED_DIR_NAME if legacy.exists() else None
 
     def save_if_dirty(self, path: Optional[Path] = None):
         if self.is_dirty:
@@ -775,6 +851,26 @@ class ProjectState(BaseModel):
         'auto' is stored explicitly so a switch back from a workbench list persists."""
         self.authoritative_pick_lists[self._auth_key(species_id, tomo_name)] = slug
         self.mark_dirty()
+
+    def set_imported_tomograms(self, record: ImportedTomograms) -> None:
+        """Record the committed tomogram-import artifact (replaces any prior import).
+        Marks dirty; caller persists."""
+        self.imported_tomograms = record
+        self.mark_dirty()
+
+    def imported_tomograms_star_path(self) -> Optional[str]:
+        """Absolute path to the committed imported tomograms.star, or None. Resolves a
+        project-relative star_path against project_path; returns None when it can't be
+        made absolute (no project_path) rather than handing back a half-resolved path."""
+        rec = self.imported_tomograms
+        if not rec or not rec.star_path:
+            return None
+        p = Path(rec.star_path)
+        if not p.is_absolute():
+            if not self.project_path:
+                return None
+            p = Path(self.project_path) / p
+        return str(p)
 
     def ensure_job_initialized(
         self, job_type: JobType, instance_id: Optional[str] = None, template_path: Optional[Path] = None
@@ -921,6 +1017,45 @@ class ProjectState(BaseModel):
             logger.warning("Could not load species registry: %s", e)
             project_state.species_registry = []
 
+        it = data.get("imported_tomograms")
+        if it:
+            try:
+                project_state.imported_tomograms = ImportedTomograms(**it)
+            except Exception as e:
+                logger.warning("Could not load imported_tomograms: %s", e)
+
+        # Restore aggregation state (cross-project merge). load() is field-by-field,
+        # so these MUST be restored explicitly -- otherwise a reloaded project (a UI
+        # restart OR a SLURM driver loading from disk) silently loses its merge
+        # registry, the synthetic `mergedSources` resolver candidate vanishes, and
+        # consumers fail to resolve input_optimisation at drive time. is_aggregation
+        # gates the merge-card UI + override self-heal, so it must survive too.
+        project_state.is_aggregation = data.get("is_aggregation", False)
+        project_state.active_merge_slug = data.get("active_merge_slug", "")
+        try:
+            # Mirror the _migrate_aggregation_sources validator (direct construction
+            # bypasses it): coerce a legacy bare-path str into {"optset_path": str}.
+            project_state.aggregation_sources = [
+                AggregationSource(**({"optset_path": s} if isinstance(s, str) else s))
+                for s in data.get("aggregation_sources", [])
+            ]
+        except Exception as e:
+            logger.warning("Could not load aggregation_sources: %s", e)
+            project_state.aggregation_sources = []
+        try:
+            project_state.aggregation_merges = [AggregationMerge(**m) for m in data.get("aggregation_merges", [])]
+        except Exception as e:
+            logger.warning("Could not load aggregation_merges: %s", e)
+            project_state.aggregation_merges = []
+
+        # Restore curation workbench pick lists (same field-by-field drop bug).
+        try:
+            project_state.pick_lists = [PickList(**p) for p in data.get("pick_lists", [])]
+        except Exception as e:
+            logger.warning("Could not load pick_lists: %s", e)
+            project_state.pick_lists = []
+        project_state.authoritative_pick_lists = data.get("authoritative_pick_lists", {})
+
         # Restore dataset import summary
         project_state.import_total_positions = data.get("import_total_positions", 0)
         project_state.import_selected_positions = data.get("import_selected_positions", 0)
@@ -969,7 +1104,10 @@ class ProjectState(BaseModel):
         # predate the field, backfill from the loaded job set in file order -- every
         # initialized job is part of the pipeline. The authoritative value is the
         # write-through at deploy.
-        project_state.pipeline_order = data.get("pipeline_order") or list(project_state.jobs.keys())
+        _persisted_order = data.get("pipeline_order") or list(project_state.jobs.keys())
+        # Drop instance_ids whose job failed to deserialize (e.g. a removed JobType like
+        # the former 'importtomograms') so pipeline_order never references a ghost job.
+        project_state.pipeline_order = [iid for iid in _persisted_order if iid in project_state.jobs]
 
         # Orchestrator rework (P1.A): explicit restore (load() is field-by-field, not
         # cls(**data)). Both are additive optional fields, so defaulting keeps legacy

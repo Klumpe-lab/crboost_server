@@ -3,6 +3,7 @@
 Driver for RELION 3D Classification (relion_refine without --auto_refine).
 """
 
+import shutil
 import sys
 import traceback
 from pathlib import Path
@@ -126,12 +127,22 @@ def main():
         )
         run_command(wrapped_cmd, cwd=job_dir)
 
+        # relion_refine for Class3D (fixed --iter N, no --auto_refine) writes its
+        # outputs with the iteration number: run_it{N}_optimisation_set.star -- there
+        # is NO bare run_optimisation_set.star (that name is an auto-refine/Refine3D
+        # convention). The numbered file is the real completion signal; checking only
+        # the bare name false-failed every Class3D run at the very end despite all
+        # iterations completing. Check the numbered file, then mirror it to the
+        # un-numbered name the OUTPUT_SCHEMA path_template + downstream resolver expect.
+        final_optset = job_dir / f"run_it{params.n_iterations:03d}_optimisation_set.star"
         expected_optset = job_dir / "run_optimisation_set.star"
-        if not expected_optset.exists():
+        if not final_optset.exists():
             raise RuntimeError(
-                f"Expected output run_optimisation_set.star not found in {job_dir}. "
+                f"Expected output {final_optset.name} not found in {job_dir}. "
                 f"Check run.out for relion_refine errors."
             )
+        if not expected_optset.exists():
+            shutil.copy2(final_optset, expected_optset)
         print(f"[DRIVER] Output optimisation_set: {expected_optset}", flush=True)
 
         class_maps = sorted(job_dir.glob("run_it*_class*.mrc"))

@@ -356,17 +356,21 @@ class PipelineOrchestratorService:
                 project_dir=project_dir,
             )
 
-            # IMPORT is metadata-only: write tilt_series.star ourselves from the registry inline
-            # (Option B, §6a) -- no relion binary, no supervisor, no afterok SLURM job. Mark it
-            # Succeeded + drop the exit sentinel so the roster/DAG show it and its consumers submit
-            # with no afterok producer (the star is on disk before the chain runs). Excluded from
-            # `prepared`, hence from the submit set/DAG below.
-            if job_type == JobType.IMPORT_MOVIES:
+            # Inline-completed providers (RUNS_INLINE): metadata-only jobs whose output star is
+            # written here in-process -- no relion binary, no supervisor, no afterok SLURM job.
+            # Mark Succeeded + drop the exit sentinel so the roster/DAG show them and their consumers
+            # submit with no afterok producer (the star is on disk before the chain runs). Excluded
+            # from `prepared`, hence from the submit set/DAG below. Currently: ImportMovies
+            # (tilt_series.star from the registry).
+            if getattr(job_model, "RUNS_INLINE", False):
                 try:
-                    self._write_import_stars_inline(job_model, job_dir, project_dir)
+                    if job_type == JobType.IMPORT_MOVIES:
+                        self._write_import_stars_inline(job_model, job_dir, project_dir)
+                    else:
+                        raise ValueError(f"RUNS_INLINE set but no inline writer for {job_type}")
                 except Exception as e:
-                    logger.exception("inline import writer failed for %s", instance_id)
-                    return {"success": False, "message": f"Import writer failed for {instance_id}: {e}"}
+                    logger.exception("inline writer failed for %s", instance_id)
+                    return {"success": False, "message": f"Inline writer failed for {instance_id}: {e}"}
                 (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
                 job_model.execution_status = JobStatus.SUCCEEDED
                 job_model.slurm_job_id = None
