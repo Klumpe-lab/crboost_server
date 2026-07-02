@@ -1,0 +1,42 @@
+      ---
+  Session handoff — Journey graphs + metadata findings
+
+  What shipped (code-clean under ruff, PENDING RUNTIME — needs python main.py restart + hard reload)
+
+  Renderer decision: multi-agent eval found the "twitchy / out-of-range / ugly" complaints are ~85% architecture, not Plotly (fix-in-place 8.0 vs ECharts 7.4). You chose fix in place, reassess look after. Landed:
+  - ui/dashboard/figures.py — axis padding (per-tilt y-range 5% of span; XY/XZ scatters 2% of dim, rect kept at true bound) → kills "points outside range"; displayModeBar:False on scatters/hist → toolbar gone, drag-zoom retained.
+  - ui/tomo_dashboard_dialog.py — render_main FingerprintedView-gated (like render_strip). 4 s timer → force_main=False (self-gate); completions/toggles/selection → force_main=True. Sig = (selected_ts, journey-slice, all-job-statuses, tilt-filter star mtimes,
+  hidden-panels, curation-session, this-tomo curation mtimes).
+  - Adversarial review caught + fixed a regression: first cut gated only on _journey_signature (4 pill stages + picks) → tilt_filter/dataset could go stale; fixed by folding all-job-statuses + tilt-filter mtimes in.
+
+  Open verify threads: (1) no panel freezes on "generating…" on a live multi-TS project; (2) MeanFrameMovement units px vs Å; (3) after eyeballing de-twitched Plotly → ECharts swap or not.
+
+  What we learned from agg_* (crboost_data now readable via the claudeenv --bind)
+
+  - 9 agg_* = complete multi-TS 412 projects (4–29 TS), same 13-job chain, 2 species (412 I1 + 412_blob C1). All is_aggregation:false → "agg_" is just naming, aggregation is downstream intent.
+  - The registry is the rich displayable data model (registry/tilt_series/<TS>.json, schema v1.0): per-tilt CTF (defocus_u/v, defocus_angle, ctf_astigmatism), alignment (z_rot, x/y_shift, tilt_x/y), acquisition (nominal_tilt_angle, pre_exposure dose, acquisition_time),
+  per-TS recon (pixel_size, size_xyz, binning, are_angles_inverted=handedness, alignment_method), and cull flags (is_selected, is_filtered_out, filter_reason).
+  - NEW category — mdoc-raw acquisition (in project_params.json, not registry): min/mean/max_intensity, dose_rate, exposure_dose, prior_dose, image_shift_x/y, exposure_time, nominal defocus — dashboard shows ~none of it.
+  - Gotchas: registry defocus_u == defocus_v (stores mean + separate astig) → not a real U/V split; true U/V + CTF-fit-res + motion are only in the WarpTools XML (frameseries_quality.py — keep it). species_id inconsistent across projects (412_blob vs 412blob).
+
+  Roadmap — wire findings into the Journey (dependency-ordered)
+
+  - R0 — Finish renderer decision. Verify de-twitched Plotly; Plotly-as-is vs ECharts. Settle before building new charts. If ECharts, port XY/XZ scatter first (visualMap colorbar + hover + XZ image underlay = the risk).
+  - R1 — Typed registry reader (services/tilt_series/registry_reader.py, mirroring frameseries_quality.py). One structured source; cache by mtime. Enables R2–R4.
+  - R2 — Acquisition/Exposure panel (NEW, biggest untapped win): dose schedule (prior/exposure vs tilt), per-tilt mean±band intensity, beam-image-shift map (image_shift_x/y), nominal-vs-fitted defocus. Markers not lines; hover names tilt+frame.
+  - R3 — Point per-tilt CTF/align charts at the registry (③ ④). Honor mean-defocus gotcha (astig from ctf_astigmatism; keep XML for CTF-res/motion/true U/V).
+  - R4 — Exposure-curation cull view (⑤, now real): is_selected/is_filtered_out/filter_reason. Fork: (a) a lens on the heatmap strip, or (b) a dataset-level cull panel — pick with me.
+  - R5 — Cross-TS distributions (the multi-TS payoff): per-TS defocus range / astig spread / align residual / dose / kept-dropped — "is this session healthy?" at a glance.
+  - Cross-cutting: normalize species naming at read time; verify per-species tabs handle the blob; surface handedness (are_angles_inverted) — ties to the 412 chirality cascade.
+
+  Next-session restart checklist
+
+  1. ls /groups/klumpe/crboost_data/agg_20260311_412_Grid3/registry/tilt_series/ (expect 17) — if empty, the alias bind didn't take, relaunch.
+  2. Runtime-verify the render_main gate on a live multi-TS project.
+  3. R0 renderer decision → R1 registry reader → R2 acquisition panel.
+  4. Constraints: ruff-only static ceiling, no in-sandbox python, no server auto-reload.
+
+  Memory is already updated (reference_crboost_data_access, project_dashboard_renderer_twitch_fix, project_preproc_metrics_inventory), so this survives cold-start regardless.
+
+  Want me to drop this into a repo doc (e.g. append to docs/preprocessing-metrics-roadmap.md), or leave it as this message?
+

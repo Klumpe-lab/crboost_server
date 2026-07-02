@@ -346,10 +346,89 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         )
 
     _strip_sig: dict[str, object] = {"sig": None}
+    _main_sig: dict[str, object] = {"sig": None}
     col_els: dict[str, object] = {}
     _sel_gen = {"n": 0}
 
-    def render_main() -> None:
+    def _curation_sig_for_ts(ts: str) -> tuple:
+        # Newest .coords mtime under Curation/<species>/<ts>/, scoped to the
+        # SELECTED ts. An external ArtiaX save is not a background task, so the
+        # gate must fold its mtime in or the auto-ingest prescan never runs on
+        # the timer path; scoping means a save for another tomo won't rebuild.
+        base = Path(project_path) / "Curation"
+        out: list[tuple[str, int]] = []
+        try:
+            for sp_dir in base.iterdir():
+                tdir = sp_dir / ts
+                if not tdir.is_dir():
+                    continue
+                newest = 0.0
+                for c in tdir.glob("*.coords"):
+                    try:
+                        newest = max(newest, c.stat().st_mtime)
+                    except OSError:
+                        pass
+                out.append((f"{sp_dir.name}/{ts}", int(newest)))
+        except OSError:
+            return ()
+        return tuple(sorted(out))
+
+    def _tilt_filter_sig_for_ts(ts: str) -> tuple:
+        # Per-ts labeled/filtered star mtimes for the tilt-filter section. NOT a
+        # journey pill stage, so _journey_signature can't see it; and the
+        # standalone TiltFilter tool has no job (→ no status), so job_states below
+        # can't see it either. Reuses the section's own resolver + path layout so
+        # a re-run OR an in-place rewrite moves the sig. Scoped to the selected ts.
+        fdir = _resolve_tilt_filter_dir(state, project_path)
+        if fdir is None:
+            return ()
+        out: list[tuple[str, int]] = []
+        for sub in ("tilt_series_labeled", "tilt_series_filtered"):
+            try:
+                out.append((sub, int((fdir / sub / f"{ts}.star").stat().st_mtime)))
+            except OSError:
+                out.append((sub, 0))
+        return tuple(out)
+
+    def _main_signature() -> tuple:
+        # FingerprintedView discipline for the main pane (mirrors render_strip).
+        # The 4 s live timer fires refresh_all on every background-task tick, but
+        # rebuilding the pane tears down its Plotly charts (and WebGL contexts) —
+        # so gate on the SELECTED ts's fingerprint: an unrelated-ts task moving
+        # must not twitch the pane. Landed artifacts (previews / slabs / manifests)
+        # are NOT fingerprinted here — each auto-kick's on_complete calls
+        # request_refresh(force_main=True), which bypasses this gate.
+        ts = selected["ts"]
+        if ts is None:
+            return ("__no_ts__",)
+        journey, _ts_names = _collect_dashboard_journey(state, project_path)
+        species_journey = _collect_species_journey(state, project_path)
+        # The journey sig only covers the 4 prep pill stages + per-species picks;
+        # sections like tilt_filter / dataset read job state it never sees. Fold in
+        # every job's execution_status (section-agnostic, cheap in-memory scan —
+        # catches a re-run's running→succeeded transition) plus the tilt-filter
+        # output mtimes (the one section with a job-less standalone path).
+        job_states = tuple(
+            (iid, str(getattr(jm, "execution_status", ""))) for iid, jm in sorted((state.jobs or {}).items())
+        )
+        return (
+            ts,
+            _journey_signature(journey, species_journey, [ts]),
+            job_states,
+            _tilt_filter_sig_for_ts(ts),
+            tuple(sorted(_hidden_dashboard_panels())),
+            _CURATION_SESSION_LIVE.get("on", False),
+            _curation_sig_for_ts(ts),
+        )
+
+    def render_main(force: bool = False) -> None:
+        # Signature-gated: skip the teardown+rebuild when nothing the selected
+        # pane shows changed. `force=True` (artifact completions, selection
+        # change, user toggles) always rebuilds. See _main_signature.
+        sig = _main_signature()
+        if not force and _main_sig["sig"] is not None and sig == _main_sig["sig"]:
+            return
+        _main_sig["sig"] = sig
         main_area.clear()
         with main_area:
             if selected["ts"] is None:
@@ -409,12 +488,12 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         await asyncio.sleep(0.02)
         if mine != _sel_gen["n"]:
             return  # superseded by a newer click during the flush
-        render_main()
+        render_main(force=True)  # selection changed — always rebuild
         render_strip()
 
-    def refresh_all() -> None:
+    def refresh_all(force_main: bool = False) -> None:
         render_strip()
-        render_main()
+        render_main(force=force_main)
 
     # P1: coalesce the initial refresh storm. On load several background auto-kicks
     # (preview / IMOD / recon-slabs / coords-ingest / list-cutouts) each fire
@@ -423,10 +502,16 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
     # request_refresh() to raise a flag instead; the coalesce timer (set up with the
     # live timer below) flushes ONE trailing-edge rebuild once requests go quiet. The
     # first paint just below still rebuilds immediately.
-    _refresh_req = {"pending": False, "quiet": 0}
+    _refresh_req = {"pending": False, "quiet": 0, "force_main": False}
 
-    def request_refresh() -> None:
+    def request_refresh(force_main: bool = True) -> None:
+        # force_main=True (the default — auto-kick on_complete handlers and user
+        # actions) rebuilds the main pane unconditionally: an artifact landed or
+        # the user acted. The 4 s live timer passes force_main=False so an
+        # unrelated-ts task tick lets render_main self-gate (no Plotly teardown).
         _refresh_req["pending"] = True
+        if force_main:
+            _refresh_req["force_main"] = True
         _refresh_req["quiet"] = 0
 
     _build_panel_toggle_row(panel_toggle_container, render_main)
@@ -527,7 +612,7 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
                     if len(prev) > 3 and sig[3] != prev[3]:
                         moved.append("curation-session")
                     logger.info("journey live-refresh rebuild (changed: %s)", ", ".join(moved) or "unknown")
-                request_refresh()
+                request_refresh(force_main=False)  # timer tick — let render_main self-gate
         except RuntimeError:
             # Client gone — timer will clean up shortly.
             pass
@@ -542,9 +627,11 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
             return
         _refresh_req["quiet"] += 1
         if _refresh_req["quiet"] >= 2:
+            fm = bool(_refresh_req["force_main"])
             _refresh_req["pending"] = False
             _refresh_req["quiet"] = 0
-            refresh_all()
+            _refresh_req["force_main"] = False
+            refresh_all(force_main=fm)
 
     refresh_coalesce_timer = ui.timer(0.2, _flush_refresh)
 
@@ -2038,9 +2125,7 @@ def _resolve_denoised_mrc_for_job(job_dir: Path, project_path: Path, ts_name: st
     return None
 
 
-def _available_denoise_methods_for_ts(
-    project_state, project_path: Path, ts_name: str
-) -> list[tuple[str, Path, Path]]:
+def _available_denoise_methods_for_ts(project_state, project_path: Path, ts_name: str) -> list[tuple[str, Path, Path]]:
     """(method_label, job_dir, denoised_mrc) for every denoisepredict job that has a
     denoised volume for this TS, ordered by label. When two jobs share a method the
     label is suffixed with the instance_id to keep selector keys unique/stable."""

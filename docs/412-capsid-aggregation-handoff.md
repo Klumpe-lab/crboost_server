@@ -2,6 +2,10 @@
 
 *Working note for picking this up next session. Date: 2026-06-26.*
 
+> **→ Refinement continues in [`412-sta-refinement-playbook.md`](412-sta-refinement-playbook.md)** —
+> the job-by-job RELION-5/M sequence (mask → Refine3D → geometry loop → symmetry-expand → focused
+> capsomer → M), incl. Sven's inner/outer-shell masking. Gated on a Step-0 radial-profile measurement.
+
 ## What this is
 
 Aggregating ~120 template-matched picks of the **412 viral capsid** (icosahedral, **I1**
