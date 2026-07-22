@@ -411,10 +411,22 @@ def run_supervisor_mode():
         if results.missing:
             print(f"[SUPERVISOR] MISSING tomograms: {results.missing}", flush=True)
 
-        if not results.all_succeeded:
+        # A single malformed tilt-series must not deadlock a healthy dataset:
+        # drop the tomograms that failed/never-ran and carry the rest forward.
+        # Their per-TS .fail markers stay on disk, so the dashboard's per-TS
+        # strip still flags them red even though the job itself succeeds. Only a
+        # total wipeout (nothing matched) is fatal. Mirrors drivers/ts_alignment.py.
+        if not results.all_succeeded and not results.ok:
             (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (some tomograms did not succeed)", flush=True)
+            print("[SUPERVISOR] Marking job as FAILED (no tomograms succeeded)", flush=True)
             sys.exit(1)
+        excluded = sorted(results.failed + results.missing)
+        if excluded:
+            print(
+                f"[SUPERVISOR] PARTIAL SUCCESS: carrying {len(results.ok)} tomogram(s) forward, "
+                f"excluding {len(excluded)}/{len(tomo_names)} that did not succeed: {excluded}",
+                flush=True,
+            )
 
         output_tomograms = job_dir / "tomograms.star"
         shutil.copy2(input_star_tomos, output_tomograms)

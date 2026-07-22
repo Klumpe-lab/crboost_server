@@ -1,0 +1,142 @@
+Bootstrap: docker
+From: ubuntu:22.04
+
+# miss-alignment (https://github.com/warpem/miss-alignment)
+# "Learns to improve tilt-series alignment by making it worse."
+# CLI: `miss-alignment {train,infer} ...`
+#
+# Build recipe follows the upstream README verbatim:
+#   conda create -c conda-forge python=3.12 cuda-toolkit=12.9
+#   pip install torch==2.8.0
+#   pip install torch-projectors --index-url https://warpem.github.io/torch-projectors/cu129/simple/
+#   pip install miss-alignment
+#
+# CUDA/toolkit is provided by conda (cuda-toolkit=12.9); the base image is a plain
+# Ubuntu so there is a single source of CUDA and no LD_LIBRARY_PATH clash with a
+# CUDA base image. The host GPU driver is supplied at runtime via `apptainer --nv`.
+
+%environment
+    # 1. Isolation: block host/home site-packages contamination
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+    # 2. Prioritise the container's env python + conda-provided CUDA
+    export PATH="/opt/miniforge3/envs/miss-alignment/bin:/opt/miniforge3/bin:$PATH"
+    export CUDA_HOME="/opt/miniforge3/envs/miss-alignment"
+    export LD_LIBRARY_PATH="/opt/miniforge3/envs/miss-alignment/lib:$LD_LIBRARY_PATH"
+    # 3. Quiet logs
+    export TF_CPP_MIN_LOG_LEVEL=3
+
+%post
+    export DEBIAN_FRONTEND=noninteractive
+    export PYTHONNOUSERSITE=1
+    unset PYTHONPATH
+    unset PYTHONHOME
+
+    # Resilience against slow/flaky build-host networks: resume interrupted
+    # downloads (torch is ~888 MB) instead of restarting, and retry more.
+    # These PIP_* env vars are picked up by every pip call below.
+    export PIP_DEFAULT_TIMEOUT=120
+    export PIP_RETRIES=10
+    export PIP_RESUME_RETRIES=20
+
+    # 1. System dependencies (some torch-* deps may build from source)
+    apt-get update && apt-get install -y \
+        wget \
+        git \
+        build-essential \
+        && rm -rf /var/lib/apt/lists/*
+
+    # 2. Install Miniforge (conda-forge default channel)
+    cd /opt
+    wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O miniforge.sh
+    bash miniforge.sh -b -p /opt/miniforge3
+    rm miniforge.sh
+    export PATH="/opt/miniforge3/bin:$PATH"
+
+    # 3. Env with Python 3.12 + CUDA 12.9 RUNTIME libs (not the full toolkit).
+    #    Upstream README says `cuda-toolkit=12.9`, but that metapackage drags in
+    #    nvcc, headers, static libs AND the Nsight GUI profilers (Qt/X11/wayland) —
+    #    thousands of files that make conda's "Executing transaction" crawl for
+    #    ~40 min on a build overlay. torch-projectors ships PREBUILT cu129 wheels
+    #    (no source compile at install), so we only need the 12.9 runtime .so's it
+    #    links against (cudart/cublas/cufft/curand/cusolver/cusparse/nvrtc/...) —
+    #    that's `cuda-runtime`. torch brings its own cu12.8 libs; conda fills the
+    #    12.9 gap. If a runtime `ImportError: libcu*.so.12` appears, widen this to
+    #    `cuda-libraries-dev=12.9` (still far lighter than the full toolkit).
+    conda create -n miss-alignment -y \
+        -c conda-forge \
+        python=3.12 \
+        cuda-runtime=12.9 \
+        pip
+
+    MA_PY="/opt/miniforge3/envs/miss-alignment/bin/python"
+
+    # 4. PyTorch (pinned to the version the cu129 torch-projectors build targets)
+    "$MA_PY" -m pip install --no-cache-dir torch==2.8.0
+
+    # 5. torch-projectors — Blackwell/GPU projection kernels, cu129 wheel index
+    "$MA_PY" -m pip install --no-cache-dir \
+        torch-projectors \
+        --index-url https://warpem.github.io/torch-projectors/cu129/simple/
+
+    # 6. miss-alignment (pulls remaining deps from PyPI)
+    "$MA_PY" -m pip install --no-cache-dir miss-alignment
+
+    # 7. Build-time verification
+    echo "--- BUILD VERIFICATION ---"
+    "$MA_PY" --version
+    "$MA_PY" -c "import torch; print('torch', torch.__version__, '/ cuda build', torch.version.cuda)"
+    "$MA_PY" -c "import torch_projectors; print('torch-projectors OK')" || echo "WARN: torch_projectors import failed at build (may need GPU at runtime)"
+    "$MA_PY" -c "import miss_alignment; print('miss_alignment import OK')"
+    /opt/miniforge3/envs/miss-alignment/bin/miss-alignment --help || echo "WARN: miss-alignment --help returned nonzero"
+
+    conda clean --all -y
+
+%runscript
+    #!/bin/bash
+    # Hard-kill host paths at runtime
+    export PYTHONNOUSERSITE=1
+    export PYTHONPATH=""
+    export PYTHONHOME=""
+
+    source /opt/miniforge3/etc/profile.d/conda.sh
+    conda activate miss-alignment
+
+    if [ $# -eq 0 ]; then
+        /bin/bash
+    else
+        exec "$@"
+    fi
+
+%test
+    export PYTHONNOUSERSITE=1
+    source /opt/miniforge3/etc/profile.d/conda.sh
+    conda activate miss-alignment
+    python -c "import torch; print('torch', torch.__version__)"
+    python -c "import miss_alignment; print('miss_alignment OK')"
+    which miss-alignment
+
+%labels
+    Author Artem Kushner & Sven Klumpe
+    Tool miss-alignment
+    Torch 2.8.0
+    CUDA 12.9
+    Python 3.12
+
+%help
+    miss-alignment container (Python 3.12 / torch 2.8.0 / CUDA 12.9).
+
+    Usage:
+      apptainer exec --nv --no-home <image>.sif miss-alignment --help
+      apptainer exec --nv --no-home <image>.sif miss-alignment train --help
+      apptainer exec --nv --no-home <image>.sif miss-alignment infer --help
+
+    Notes / likely gotchas to watch for on first build+run:
+      - CUDA 12.9 runtime needs a recent host NVIDIA driver. If runs fail with a
+        CUDA driver/forward-compat error, the GPU node's driver is too old for 12.9.
+      - torch==2.8.0's pip wheel bundles its own CUDA libs; torch-projectors is a
+        cu129 wheel. If there is a runtime ABI/symbol clash between them, that is the
+        first place to look.
+      - torch_projectors may only import successfully on a machine with a GPU
+        visible (build host is typically CPU-only), hence the soft WARN above.

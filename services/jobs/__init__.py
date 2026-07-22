@@ -11,6 +11,7 @@ from services.jobs.import_movies import ImportMoviesParams
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.jobs.ts_import import TsImportParams
 from services.jobs.ts_alignment import TsAlignmentParams
+from services.jobs.miss_align import MissAlignParams
 from services.jobs.ts_ctf import TsCtfParams
 from services.jobs.tilt_filter import TiltFilterParams
 from services.jobs.ts_reconstruct import TsReconstructParams
@@ -33,6 +34,7 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
         JobType.FS_MOTION_CTF: FsMotionCtfParams,
         JobType.TS_IMPORT: TsImportParams,
         JobType.TS_ALIGNMENT: TsAlignmentParams,
+        JobType.MISS_ALIGN: MissAlignParams,
         JobType.TS_CTF: TsCtfParams,
         JobType.TILT_FILTER: TiltFilterParams,
         JobType.TS_RECONSTRUCT: TsReconstructParams,
@@ -55,6 +57,7 @@ __all__ = [
     "FsMotionCtfParams",
     "TsImportParams",
     "TsAlignmentParams",
+    "MissAlignParams",
     "TsCtfParams",
     "TiltFilterParams",
     "TsReconstructParams",

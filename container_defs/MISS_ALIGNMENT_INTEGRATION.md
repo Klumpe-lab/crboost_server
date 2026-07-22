@@ -1,9 +1,20 @@
 # miss-alignment → crboost integration roadmap
 
-**Status: the container is PROVEN end-to-end** (full macro-iteration on real 412
-data — see `docs/miss-alignment.md` §9). Everything unknown has been resolved. What
-remains is pure crboost wiring, and every piece of it is now specified. This doc is
-the plan for the next session.
+**Status: P1 backend wiring LANDED 2026-07-02 (code-clean + ruff, PENDING runtime).**
+Container was already PROVEN end-to-end (full macro-iteration on real 412 data — see
+`docs/miss-alignment.md` §9). P1 added, all ruff-clean and adversarially reviewed:
+`JobType.MISS_ALIGN` + `MissAlignSchedule` (`services/models_base.py`), `MissAlignParams`
++ `MISS_ALIGN_SCHEDULES` (`services/jobs/miss_align.py`), the driver (`drivers/miss_align.py`),
+registry (`services/jobs/__init__.py`, `job_models.py`), orchestrator maps (driver_map +
+DRIVER_TO_JOBTYPE), `tools.miss_alignment` + `job_resource_profiles.missAlign` in
+conf.yaml/conf.template.yaml, and UI addability (`ui_state.py` order/name +
+`pipeline_constants.py` phase/deps). **Runtime-CONFIRM list (couldn't verify in-sandbox):**
+(1) `miss-alignment train --config-file` flag name; (2) in-container `python` on PATH for the
+stamp step; (3) `--training-devices 0` maps to the gpu:1 allocation; (4) deploy on
+`412FCIso_Pos28_4` + manually route tsCtf→missAlign (see routing decision below) → compare recon.
+
+Remaining: **P2** (auto-routing + multi-GPU + UI plugin) and **P3** (`infer`). This doc is
+the plan; the tool reference is `docs/miss-alignment.md`.
 
 > Read `docs/miss-alignment.md` first — it has the tool reference, config schema,
 > invocation contract, and the **dimension-stamping** gotcha that this driver must
@@ -102,14 +113,36 @@ Templates to copy from: **`services/jobs/denoise_train.py`** + **`drivers/denois
 
 ---
 
-## Open decisions (small)
+## Open decisions
 
-- **Stamp source of truth:** read `warp_tiltseries.settings` (authoritative per-run)
-  for apix + dims; fall back to `ProjectState` only if absent. Do **not** trust
-  `MicroscopeParams.pixel_size_angstrom` (defaults to 1.35 — the apix default trap).
-- **`--prepare-stacks` default:** expose `prepare_stacks_apix` (default ~10.0). It
-  normalizes stacks to a known alignment resolution but needs frames+tomostar bound;
-  if a usable `.st` exists you can skip it. Decide whether it's on-by-default.
+- **⚠️ Downstream routing — CORRECTED (was wrong in the original plan).** The obvious
+  approach "edit `tsCtf`'s `preferred_source` from `aligntiltsWarp` → `missAlign`"
+  **silently REGRESSES every no-missAlign pipeline** and must NOT be used. Traced the
+  resolver (`path_resolution_service._choose_candidate_for_slot`): the score key is
+  `(species_match, pref, filtered_pref, relion_job_number, succeeded)` and `pref`
+  (matches `preferred_source`) is the ONLY guard above `relion_job_number` — there is
+  **no topological guard**. `WARP_TILTSERIES_DIR` is multi-producer (aligntiltsWarp,
+  tsCtf, tsReconstruct, missAlign). With `preferred_source="missAlign"` and no missAlign
+  job present, `pref=0` for all → `tsReconstruct` (highest job number, non-interactive)
+  wins → tsCtf resolves its input to a downstream/pending warp_tiltseries. This is
+  DIFFERENT from `tiltFilter` (whose fallback type `TS_CTF_TILT_SERIES_STAR` has a single
+  producer, so its declarative `accepts=[filtered, unfiltered]`+`preferred_source` pattern
+  is regression-free — that pattern does NOT transfer to this multi-producer slot).
+  - **P1 decision (LANDED): MANUAL routing.** `tsCtf.preferred_source` stays
+    `"aligntiltsWarp"` (untouched); to verify, point tsCtf's `input_processing` at the
+    missAlign job via the IO-tab source dropdown (writes a per-job `source_override`).
+  - **P2: auto-wire via per-instance `source_override`** (Choice Z): when missAlign is
+    inserted, set `tsCtf.source_overrides["input_processing"] = "missAlign:<live source_key>"`
+    at deploy time (after reconciliation, so the instance_path is live) and pop it on
+    removal — mirror `apply_aggregation_overrides` (`ui/aggregation_merge_card.py`). A stale
+    key degrades safely to raw align, never to a wrong downstream job.
+- **Stamp source of truth (DONE):** driver `read_settings_dims` parses
+  `warp_tiltseries.settings` (`<Param Name="PixelSize"/>` + `HeaderlessWidth/Height` under
+  `<Import>`, `DimensionsX/Y/Z` under `<Tomo>`); raises on missing/blank/non-positive.
+  Never trusts `MicroscopeParams.pixel_size_angstrom` (the 1.35 apix trap).
+- **`--prepare-stacks` default (DONE):** exposed as `prepare_stacks_apix`, default **0.0 =
+  off** (the proven smoke path used the existing aligned `.st`). >0 needs frames+tomostar
+  binds (wire those in P2).
 - **Multi-GPU mapping:** request N GPUs in SLURM and expand
   `--training-devices`/`--reconstruction-devices` from the allocation; scale walltime
   dynamically.
@@ -121,10 +154,13 @@ Templates to copy from: **`services/jobs/denoise_train.py`** + **`drivers/denois
 
 ## Phasing
 
-- **P1 — make it run in crboost:** param class + driver (single-GPU, `train`, fixed
-  sensible `iteration_settings`, dim-stamp pre-step, `--prepare-stacks`). Enough to
-  deploy on 1–few TS and feed `tsReconstruct`.
-- **P2 — production:** multi-GPU + dynamic walltime + UI plugin + schedule presets.
+- **P1 — make it run in crboost (LANDED, code-clean, PENDING runtime):** param class +
+  driver (single-GPU, `train`, `fast/default/thorough` schedule presets, dim-stamp
+  pre-step, `--prepare-stacks` off by default). Manual downstream routing. Dynamic
+  walltime already scales by n_ts × n_macro_iterations. Enough to deploy on 1–few TS.
+- **P2 — production:** auto-routing (per-instance `source_override`, see Open decisions)
+  + multi-GPU (expand `--training-devices`/`--reconstruction-devices` + gpu:N) + `--prepare-stacks`
+  frame binds + optional `ui/job_plugins/miss_align.py` renderer.
 - **P3 — `infer`:** a second job to reuse a trained model across datasets, if wanted.
 
 ## Verification path

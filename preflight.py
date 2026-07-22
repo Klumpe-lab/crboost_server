@@ -25,13 +25,13 @@ QSUB_FILE = CONFIG_DIR / "qsub.sh"
 class C:
     """ANSI colors"""
 
-    G = "\033[92m"  # green
-    Y = "\033[93m"  # yellow
-    R = "\033[91m"  # red
-    B = "\033[94m"  # blue
+    G    = "\033[92m"  # green
+    Y    = "\033[93m"  # yellow
+    R    = "\033[91m"  # red
+    B    = "\033[94m"  # blue
     BOLD = "\033[1m"
-    DIM = "\033[2m"
-    E = "\033[0m"  # end
+    DIM  = "\033[2m"
+    E    = "\033[0m"   # end
 
 
 def ok(text: str):

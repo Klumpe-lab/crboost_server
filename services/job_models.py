@@ -16,6 +16,7 @@ from services.jobs import (  # noqa: F401
     ExtractionCutoffMethod,
     FsMotionCtfParams,
     ImportMoviesParams,
+    MissAlignParams,
     ReconstructParticleParams,
     SubtomoExtractionParams,
     SymmetryGroup,

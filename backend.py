@@ -681,27 +681,48 @@ class CryoBoostBackend:
             except Exception as e:
                 return {"success": True, "status": "starting", "detail": f"session.json not readable yet: {e}"}
 
-        # No session.json yet — ask SLURM why.
+        # No session.json yet — ask SLURM why. query_jobs_by_ids distinguishes the two
+        # cases get_user_jobs conflates (get_user_jobs returns [] on squeue failure, which
+        # is indistinguishable from "no jobs"): None = squeue ITSELF failed (a transient we
+        # must NOT read as "job gone"); {} = squeue is healthy and the job genuinely left.
         state = None
+        squeue_ok = True
         if slurm_job_id:
-            jobs = await self.slurm_service.get_user_jobs(force_refresh=True)
-            for j in jobs:
-                if j.job_id == slurm_job_id or j.job_id.split("_", 1)[0] == slurm_job_id:
-                    state = j.state
-                    break
+            q = await self.slurm_service.query_jobs_by_ids([str(slurm_job_id)])
+            if q is None:
+                squeue_ok = False
+            else:
+                hit = q.get(str(slurm_job_id).split("_", 1)[0]) or q.get(str(slurm_job_id))
+                state = hit[0] if hit else None
 
         if state in ("PENDING", "CONFIGURING", "SCHEDULED"):
             return {"success": True, "status": "pending", "slurm_state": state}
         if state is not None:
             # RUNNING (or similar) but session.json not visible yet — just started / NFS lag.
             return {"success": True, "status": "starting", "slurm_state": state}
+        if not squeue_ok:
+            # Couldn't reach the scheduler this tick — keep the spinner up rather than
+            # fabricate an "ended" for a job that may well be alive (the transient-squeue
+            # false-ended bug). The next 3 s poll re-checks.
+            return {"success": True, "status": "pending", "slurm_state": "scheduler unreachable — retrying"}
 
-        # Not in the queue and no session.json. Only call it "ended" if the job
-        # actually ran (its log exists) — otherwise this is the brief window right
-        # after sbatch before the job registers in squeue, so report pending.
+        # squeue is healthy and the job is genuinely gone. Only "ended" if the job actually
+        # ran (its log exists) — otherwise this is the brief post-sbatch window before it
+        # registers, so report pending. If it ran but wrote NOTHING (0-byte log), it died in
+        # the node-side container/VNC bring-up before logging — surface an actionable message
+        # instead of a blank so the user retries rather than facing a mystery "session exited".
         log_file = sdir / "slurm.log"
         if log_file.exists():
-            return {"success": True, "status": "ended", "detail": log_file.read_text()[-1200:]}
+            tail = log_file.read_text()[-1200:].strip()
+            return {
+                "success": True,
+                "status": "ended",
+                "detail": tail
+                or (
+                    "The session process exited immediately without writing any log — usually a transient "
+                    "node-side container/VNC startup failure. Press Try again; it typically lands on a healthy node."
+                ),
+            }
         return {"success": True, "status": "pending", "slurm_state": "submitting"}
 
     async def stop_curation_session(

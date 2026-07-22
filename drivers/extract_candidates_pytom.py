@@ -278,10 +278,22 @@ def run_supervisor_mode():
         if results.missing:
             print(f"[SUPERVISOR] MISSING tomograms: {results.missing}", flush=True)
 
-        if not results.all_succeeded:
+        # Match template matching's partial-tolerance: one bad tomogram must not
+        # deadlock extraction for the healthy rest. The glob-based aggregation
+        # below naturally skips tomograms that produced no *_particles.star, and
+        # the per-TS .fail markers stay on disk for the dashboard. Only a total
+        # wipeout is fatal. Mirrors drivers/ts_alignment.py.
+        if not results.all_succeeded and not results.ok:
             (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (some tomograms did not succeed)", flush=True)
+            print("[SUPERVISOR] Marking job as FAILED (no tomograms succeeded)", flush=True)
             sys.exit(1)
+        excluded = sorted(results.failed + results.missing)
+        if excluded:
+            print(
+                f"[SUPERVISOR] PARTIAL SUCCESS: carrying {len(results.ok)} tomogram(s) forward, "
+                f"excluding {len(excluded)}/{len(tomo_names)} that did not succeed: {excluded}",
+                flush=True,
+            )
 
         # ---- Aggregate per-tomogram particle lists ----
         candidates_star = job_dir / "candidates.star"
