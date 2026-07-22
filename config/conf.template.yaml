@@ -70,6 +70,14 @@ job_resource_profiles:
     cpus_per_task: 2
     time: "0:15:00"
 
+  # Single multi-GPU-node job (not a per-TS array). `time` is a floor — scaled by
+  # n_ts x n_macro_iterations at deploy time (MissAlignParams.get_effective_slurm_config).
+  missAlign:
+    gres: "gpu:1"
+    mem: "48G"
+    cpus_per_task: 8
+    time: "2:00:00"
+
   tsCtf:
     gres: "gpu:1"
     mem: "8G"
@@ -194,3 +202,8 @@ tools:
     exec_mode: "container"
     container_path: "/path/to/pymol.sif"
     bin_path: "pymol"
+  # warpem miss-alignment: learned tilt-series alignment refinement (Warp-native).
+  miss_alignment:
+    exec_mode: "container"
+    container_path: "/path/to/miss_alignment.sif"
+    bin_path: ""

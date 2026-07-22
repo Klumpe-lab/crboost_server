@@ -15,6 +15,13 @@
 #               preloads a tomogram + picks; see services/visualization/artiax_bridge.py).
 set -euo pipefail
 
+# Make a pre-banner failure DIAGNOSABLE. A couple of early apptainer calls below send
+# their output to /dev/null; under `set -e` a failure there would kill the worker with a
+# 0-byte slurm.log, and crboost could then only report a blank "session exited" (the exact
+# 2026-07-07 symptom). This ERR trap prints the failing line to stderr (→ slurm.log) before
+# the shell exits, so the next occurrence names the node + the command that died.
+trap 'rc=$?; echo "==== curation worker FAILED (exit $rc) on $(hostname -s 2>/dev/null) at line ${LINENO}: ${BASH_COMMAND} ====" >&2' ERR
+
 SIF="${CX_SIF:?CX_SIF must be set to the chimerax_artiax.sif path (conf.yaml curation.sif_path)}"
 CXBIN="${CX_BIN:-chimerax}"
 GEOMETRY="${CX_GEOMETRY:-1920x1080}"
@@ -111,7 +118,10 @@ CXCACHE="$(mktemp -d /tmp/cx-cache.XXXXXX)"
 # VncAuth file with x11vnc -storepasswd (added by chimerax_artiax_patch.def).
 VNC_PASS="$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 8)"
 mkdir -p "$HOME/.vnc"
-apptainer exec "${BINDS[@]}" "$SIF" x11vnc -storepasswd "$VNC_PASS" "$HOME/.vnc/passwd" >/dev/null 2>&1
+# Keep stderr (only stdout → /dev/null): this is the FIRST apptainer call, so if the
+# container can't start on this node (image/overlay lock, bind race) its error must reach
+# slurm.log rather than vanish and leave a 0-byte log. See the ERR trap above.
+apptainer exec "${BINDS[@]}" "$SIF" x11vnc -storepasswd "$VNC_PASS" "$HOME/.vnc/passwd" >/dev/null
 chmod 600 "$HOME/.vnc/passwd"
 
 # -f -N: open the forward and hand the terminal back (no remote shell), so it

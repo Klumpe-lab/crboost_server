@@ -9,6 +9,7 @@ PHASE_JOBS: Dict[str, List[JobType]] = {
         JobType.IMPORT_MOVIES,
         JobType.FS_MOTION_CTF,
         JobType.TS_ALIGNMENT,
+        JobType.MISS_ALIGN,
         JobType.TS_CTF,
         JobType.TILT_FILTER,
         JobType.TS_RECONSTRUCT,
@@ -42,6 +43,9 @@ JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
     JobType.IMPORT_MOVIES: [],
     JobType.FS_MOTION_CTF: [JobType.IMPORT_MOVIES],
     JobType.TS_ALIGNMENT: [JobType.FS_MOTION_CTF],
+    # Optional insertable refinement: requires alignment, but tsCtf does NOT require it
+    # (tsCtf stays gated on TS_ALIGNMENT so the common no-missAlign pipeline is unchanged).
+    JobType.MISS_ALIGN: [JobType.TS_ALIGNMENT],
     JobType.TS_CTF: [JobType.TS_ALIGNMENT],
     JobType.TILT_FILTER: [JobType.TS_CTF],
     JobType.TS_RECONSTRUCT: [JobType.TS_CTF],

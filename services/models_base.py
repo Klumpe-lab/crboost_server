@@ -47,6 +47,18 @@ class IsoNetRefineMethod(str, Enum):
     ISONET2_N2N = "isonet2-n2n"  # even/odd: missing-wedge correction + denoising
 
 
+class MissAlignSchedule(str, Enum):
+    """miss-alignment macro-iteration schedule preset. Expands (in drivers/miss_align.py)
+    to the tool's `iteration_settings` list — a coarse->fine schedule of {downsample,
+    alignment-mode} entries whose length is the number of macro-iterations. FAST = quick
+    sanity pass; DEFAULT = balanced coarse->fine->local; THOROUGH = the full 8-iteration
+    schedule from the tool docs (production, runs for hours)."""
+
+    FAST = "fast"
+    DEFAULT = "default"
+    THOROUGH = "thorough"
+
+
 class JobCategory(str, Enum):
     IMPORT = "Import"
     EXTERNAL = "External"
@@ -58,6 +70,7 @@ class JobType(str, Enum):
     IMPORT_MOVIES = "importmovies"
     FS_MOTION_CTF = "fsMotionAndCtf"
     TS_ALIGNMENT = "aligntiltsWarp"
+    MISS_ALIGN = "missAlign"
     TS_IMPORT = "tsImport"
     TS_CTF = "tsCtf"
     TILT_FILTER = "tiltFilter"
