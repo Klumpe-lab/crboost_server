@@ -19,6 +19,7 @@ Flow:
 
 import sys
 import os
+import getpass
 import shutil
 import traceback
 import xml.etree.ElementTree as ET
@@ -60,6 +61,24 @@ for x in xmls:
     ts.save_meta(x)
 print(f"[stamp] stamped {len(xmls)} XML(s): apix={apix} img={W}x{H} vol={VX}x{VY}x{VZ}")
 """
+
+
+def allocated_gpu_count(default: int) -> int:
+    """GPUs SLURM actually gave this job (renumbered 0..N-1 inside the --nv container).
+
+    Read from SLURM's own count first so a manual `--gres` override still maps correctly; fall
+    back to CUDA_VISIBLE_DEVICES, then the declared num_gpus, then 1. Never returns < 1. Unset
+    inside the container by the wrapper, but the driver runs natively where SLURM sets them.
+    """
+    v = os.environ.get("SLURM_GPUS_ON_NODE", "")
+    if v.isdigit() and int(v) > 0:
+        return int(v)
+    cvd = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if cvd:
+        n = len([x for x in cvd.split(",") if x.strip()])
+        if n > 0:
+            return n
+    return max(1, default)
 
 
 def read_settings_dims(settings_path: Path) -> dict:
@@ -191,31 +210,49 @@ def main():
                 f"Set prepare_stacks_apix=0 to align the existing tiltstack/*.st (the proven path)."
             )
 
-        # 1. Stage COPIES into the job dir. miss-alignment refines the XMLs in place, so we
-        #    must not touch the upstream aligntiltsWarp output. The tiltstack/*.st are copied
-        #    too (reconstruction reads them). Fine for the P1 target of 1-few tilt-series.
+        # 1. Stage COPIES into the job dir. miss-alignment refines the XMLs IN PLACE and writes an
+        #    iterN/ snapshot + model.ckpt per macro-iteration, so on a RE-RUN we resume from the last
+        #    checkpoint rather than restart: if a prior attempt left iter*/ snapshots AND a model.ckpt
+        #    here, keep them (no re-stage) and start at the next iteration. A fresh run — or an
+        #    incomplete one with no checkpoint — stages a clean copy from the upstream aligntiltsWarp
+        #    output. (PENDING RUNTIME: confirm the tool auto-loads warp_tiltseries/model.ckpt when
+        #    --start-at-iteration > 0.)
         staged_processing = job_dir / "warp_tiltseries"
-        if staged_processing.exists():
-            shutil.rmtree(staged_processing)
-        print(f"[DRIVER] Staging {upstream_processing} -> {staged_processing}", flush=True)
-        shutil.copytree(upstream_processing, staged_processing)
-        shutil.copy(settings_src, job_dir / "warp_tiltseries.settings")
-        shutil.copy(input_star, job_dir / "aligned_tilt_series.star")
+        prior_iters = (
+            sorted(d for d in staged_processing.glob("iter*") if d.is_dir()) if staged_processing.exists() else []
+        )
+        resume_from = len(prior_iters) if (prior_iters and (staged_processing / "model.ckpt").exists()) else 0
+        if resume_from > 0:
+            print(
+                f"[DRIVER] RESUME: {resume_from} macro-iteration(s) already done in {staged_processing}; "
+                f"continuing at iteration {resume_from} from model.ckpt (no re-stage).",
+                flush=True,
+            )
+        else:
+            if staged_processing.exists():
+                shutil.rmtree(staged_processing)
+            print(f"[DRIVER] Staging {upstream_processing} -> {staged_processing}", flush=True)
+            shutil.copytree(upstream_processing, staged_processing)
+            shutil.copy(settings_src, job_dir / "warp_tiltseries.settings")
+            shutil.copy(input_star, job_dir / "aligned_tilt_series.star")
 
         container = get_container_service()
 
-        # 2. Stamp physical dims from the settings onto every staged XML (in-container).
-        dims = read_settings_dims(job_dir / "warp_tiltseries.settings")
-        print(f"[DRIVER] Settings dims: {dims}", flush=True)
-        stamp_path = job_dir / "stamp_dims.py"
-        stamp_path.write_text(STAMP_SCRIPT)
-        stamp_cmd = (
-            f"python stamp_dims.py {dims['apix']} {dims['W']} {dims['H']} {dims['VX']} {dims['VY']} {dims['VZ']}"
-        )
-        wrapped_stamp = container.wrap_command_for_tool(
-            command=stamp_cmd, cwd=job_dir, tool_name="miss_alignment", additional_binds=additional_binds
-        )
-        run_command(wrapped_stamp, cwd=job_dir)
+        # 2. Stamp physical dims from the settings onto every staged XML (in-container). Only on a
+        #    fresh stage — on resume the XMLs are already stamped + partially refined, and
+        #    re-stamping would rewrite them needlessly.
+        if resume_from == 0:
+            dims = read_settings_dims(job_dir / "warp_tiltseries.settings")
+            print(f"[DRIVER] Settings dims: {dims}", flush=True)
+            stamp_path = job_dir / "stamp_dims.py"
+            stamp_path.write_text(STAMP_SCRIPT)
+            stamp_cmd = (
+                f"python stamp_dims.py {dims['apix']} {dims['W']} {dims['H']} {dims['VX']} {dims['VY']} {dims['VZ']}"
+            )
+            wrapped_stamp = container.wrap_command_for_tool(
+                command=stamp_cmd, cwd=job_dir, tool_name="miss_alignment", additional_binds=additional_binds
+            )
+            run_command(wrapped_stamp, cwd=job_dir)
 
         # 3. Write config.yaml.
         config = build_config(params, staged_processing)
@@ -227,15 +264,39 @@ def main():
         #    caches). P1 is single-GPU: index 0 within the gpu:1 allocation.
         jobtmp = job_dir / ".miss_align_home"
         (jobtmp / "mpl").mkdir(parents=True, exist_ok=True)
+        # --cleanenv wipes USER/LOGNAME, and on this LDAP/SSSD cluster the bind-mounted static
+        # /etc/passwd can't resolve our uid → getpass.getuser() (torch.compile's inductor cache-dir
+        # setup) throws "getpwuid(): uid not found". Set USER/LOGNAME so that lookup short-circuits,
+        # and point TORCHINDUCTOR_CACHE_DIR at the job dir so torch skips default_cache_dir() entirely
+        # (and keeps its compile cache writable + isolated).
+        username = os.environ.get("USER") or getpass.getuser()
+        # dataloaders-per-trainer == PyTorch DataLoader workers. At 1 the GPU starves waiting on
+        # the CPU-side pool sampler (Lightning warns "num_workers ... may be a bottleneck") — the
+        # dominant slowdown in practice. Use the CPUs SLURM actually allocated (minus headroom for
+        # the trainer main process + the recon worker), capped by the tool's pool constraint
+        # pool//n_partitions >= 2*batch_size (docs §4) so it never raises at datamodule construction.
+        cpus = int(os.environ.get("SLURM_CPUS_PER_TASK") or 1)
+        max_loaders_by_pool = params.pool_size // (2 * params.batch_size)
+        n_dataloaders = max(1, min(cpus - 2, max_loaders_by_pool)) if cpus > 2 else 1
+        print(f"[DRIVER] dataloaders-per-trainer={n_dataloaders} (cpus={cpus}, cap={max_loaders_by_pool})", flush=True)
+        # GPU device split. Map the allocated GPUs (0..N-1): GPU 0 -> training, the rest -> the
+        # reconstruction pool, so recon and training run on SEPARATE cards instead of contending for
+        # one (docs §4). A single GPU keeps the shared 0/0 mode. Driven by the num_gpus job param
+        # (which sets --gres); we read the real allocation so a manual gres override still maps right.
+        n_gpus = allocated_gpu_count(default=params.num_gpus)
+        training_devices = "0"
+        recon_devices = "0" if n_gpus == 1 else ",".join(str(i) for i in range(1, n_gpus))
+        print(f"[DRIVER] GPUs={n_gpus}: training-devices={training_devices} recon-devices={recon_devices}", flush=True)
         train_parts = [
-            f"env HOME={jobtmp} MPLCONFIGDIR={jobtmp}/mpl OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
+            f"env HOME={jobtmp} MPLCONFIGDIR={jobtmp}/mpl USER={username} LOGNAME={username} "
+            f"TORCHINDUCTOR_CACHE_DIR={jobtmp}/torchinductor OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
             "miss-alignment train",
             "--config-file config.yaml",
-            "--training-devices 0",
-            "--reconstruction-devices 0",
+            f"--training-devices {training_devices}",
+            f"--reconstruction-devices {recon_devices}",
             f"--pool-size {params.pool_size}",
-            "--dataloaders-per-trainer 1",
-            "--start-at-iteration 0",
+            f"--dataloaders-per-trainer {n_dataloaders}",
+            f"--start-at-iteration {resume_from}",
         ]
         # (--prepare-stacks is intentionally NOT appended here: prepare_stacks_apix > 0 is refused
         #  above until P2 wires the raw-frame + tomostar binds. Re-enable it there, not here.)

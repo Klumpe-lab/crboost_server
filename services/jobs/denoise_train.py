@@ -25,6 +25,13 @@ from services.computing.slurm_service import SlurmConfig
 _TRAIN_WALLTIME_BASE_MIN = 30  # fixed overhead: prepare_star / make_mask / extract / I/O
 _TRAIN_WALLTIME_PER_TS_MIN = 5  # marginal training cost per tilt-series
 _TRAIN_WALLTIME_CAP_MIN = 8 * 60  # never request more than the partition realistically allows
+# IsoNet2 `refine` runs a FIXED ~10-epoch schedule (~12 min/epoch ≈ 2 h) whose cost is
+# dominated by the epoch count, NOT the tomogram count (make_mask/predict add a smaller
+# per-TS term). The cryoCARE 30-min base under-allocates it: 4 TS -> 30+20=50 min, floored
+# to the 2 h profile default, which the 0.9x in-job watchdog then trims below the ~2 h the
+# refine actually needs -> killed mid-epoch. IsoNet gets a large fixed base sized to clear
+# the watchdog (~2 h schedule + setup, with /0.9 headroom).
+_ISONET_TRAIN_WALLTIME_BASE_MIN = 165
 
 
 def _hms_to_minutes(t: str) -> int:
@@ -110,11 +117,17 @@ class DenoiseTrainParams(AbstractJobParams):
 
     def _scaled_train_walltime(self, base_time: str) -> str:
         """Scale `base_time` to the selected tilt-series count, floored at `base_time`
-        and capped. Returns `base_time` unchanged when the count is unknown (0)."""
+        and capped. IsoNet uses a large fixed base (its runtime is epoch-bound, ~constant
+        in TS count); cryoCARE keeps the small base and returns `base_time` when the count
+        is unknown (0)."""
+        is_isonet = self.denoise_method == DenoiseMethod.ISONET
         n_ts = getattr(self._project_state, "import_selected_tilt_series", 0) or 0
-        if n_ts <= 0:
+        # cryoCARE can't be estimated without a count -> keep the profile default. IsoNet's
+        # cost is a fixed schedule regardless of count, so still apply its (large) base floor.
+        if n_ts <= 0 and not is_isonet:
             return base_time
-        minutes = _TRAIN_WALLTIME_BASE_MIN + _TRAIN_WALLTIME_PER_TS_MIN * n_ts
+        base_min = _ISONET_TRAIN_WALLTIME_BASE_MIN if is_isonet else _TRAIN_WALLTIME_BASE_MIN
+        minutes = base_min + _TRAIN_WALLTIME_PER_TS_MIN * max(n_ts, 0)
         minutes = max(minutes, _hms_to_minutes(base_time))  # never below today's profile/default
         minutes = min(minutes, _TRAIN_WALLTIME_CAP_MIN)
         return _minutes_to_hms(minutes)

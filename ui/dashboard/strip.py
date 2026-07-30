@@ -100,6 +100,8 @@ def build_strip(
     recon_mrc_map: dict,
     on_select: Callable[[str], object],
     info_popover: Optional[Callable] = None,
+    excluded_ids: Optional[set] = None,
+    on_toggle_exclude: Optional[Callable[[str], object]] = None,
 ) -> dict:
     """Build the heatmap strip into ``container``; return ``{ts: column element}``
     so the caller can move the selection highlight without a full rebuild.
@@ -110,6 +112,7 @@ def build_strip(
     shell.
     """
     species = _aggregate_species(species_journey, ts_names)
+    excluded = excluded_ids or set()
     col_els: dict[str, object] = {}
 
     container.clear()
@@ -138,11 +141,26 @@ def build_strip(
         with ui.element("div").classes("cb-strip-scroll"), ui.element("div").classes("cb-strip-cols"):
             for ts in ts_names:
                 is_sel = ts == selected_ts
-                col = ui.element("div").classes("cb-strip-col" + (" selected" if is_sel else ""))
+                is_excl = ts in excluded
+                cls = "cb-strip-col" + (" selected" if is_sel else "") + (" excluded" if is_excl else "")
+                col = ui.element("div").classes(cls)
                 col.on("click", lambda t=ts: on_select(t))
                 col_els[ts] = col
                 with col:
                     ui.label(_compact_col_label(ts)).classes("cb-strip-colhead").tooltip(ts)
+                    # Per-TS exclude/restore toggle — the mute control that is
+                    # present at every stage (the strip is always on screen).
+                    # click.stop so toggling doesn't also select the column.
+                    if on_toggle_exclude is not None:
+                        tog = ui.icon("undo" if is_excl else "block").classes(
+                            "cb-strip-excl" + (" on" if is_excl else "")
+                        )
+                        tog.tooltip(
+                            "Restore this tilt-series to processing"
+                            if is_excl
+                            else "Exclude this tilt-series from processing (applies on next run)"
+                        )
+                        tog.on("click.stop", lambda t=ts: on_toggle_exclude(t))
                     jr = journey.get(ts, {})
                     with ui.element("div").classes("cb-strip-cell cb-strip-prepcell"):
                         for key, slabel, _jt in _PREP_STAGES:

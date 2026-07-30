@@ -17,23 +17,19 @@ class TiltFilterParams(AbstractJobParams):
 
     USER_PARAMS: ClassVar[Set[str]] = {"model_name", "image_size", "dl_batch_size", "prob_threshold", "prob_action"}
 
+    # Runs after tsImport, before alignment, so the cut actually filters
+    # alignment/CTF/reconstruct instead of only the display copy. The DL reads
+    # the motion-corrected averages via the fs-motion star; the verdict is applied
+    # by trimming the tomostar (drivers/tilt_filter.py), which every downstream
+    # WarpTools step reads. When this job is absent, alignment's tomostar_dir slot
+    # falls back to tsImport's tomostar and the pipeline is unchanged.
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
-        InputSlot(key="input_star", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
-        InputSlot(key="input_processing", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="tsCtf"),
+        InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf"),
+        InputSlot(key="input_tomostar", accepts=[JobFileType.TOMOSTAR_DIR], preferred_source="tsImport"),
     ]
 
     OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
-        OutputSlot(
-            key="output_star",
-            produces=JobFileType.FILTERED_TILT_SERIES_STAR,
-            path_template="filtered/tiltseries_filtered.star",
-        ),
-        OutputSlot(
-            key="output_processing",
-            produces=JobFileType.WARP_TILTSERIES_DIR,
-            path_template="warp_tiltseries/",
-            is_dir=True,
-        ),
+        OutputSlot(key="output_tomostar", produces=JobFileType.TOMOSTAR_DIR, path_template="tomostar/", is_dir=True)
     ]
 
     model_name: str = Field(default="default", description="DL model name for tilt quality classification")

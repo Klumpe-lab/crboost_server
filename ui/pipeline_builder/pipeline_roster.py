@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from pathlib import Path
@@ -33,13 +32,6 @@ logger = logging.getLogger(__name__)
 def _ts_cell(text: str, color: str, extra: str = ""):
     """Tiny monospace cell for the tilt-series table in the metadata popup."""
     ui.label(text).style(f"font-size: 9px; font-family: 'IBM Plex Mono', monospace; color: {color}; {extra}")
-
-
-def _profile_row_fields(gres: str, mem: str, cpus: str, time_val: str):
-    """Compact inline summary of SLURM resource fields for the profiles popup."""
-    with ui.row().classes("items-center gap-2"):
-        for lbl, val in [("gres", gres), ("mem", mem), ("cpu", cpus), ("time", time_val)]:
-            ui.label(f"{lbl}: {val}").style("font-size: 9px; font-family: 'IBM Plex Mono', monospace; color: #64748b;")
 
 
 _TOMO_DASHBOARD_SVG = (
@@ -484,45 +476,48 @@ class RosterWidget(FingerprintedView):
                     ui.label(f"0/{n_total}").style(
                         f"{MONO} font-size: 9px; font-weight: 600; color: #9ca3af; flex-shrink: 0;"
                     )
-            # Subsection icons + actions (right-aligned, flex-shrink: 0)
+            # Row actions (right-aligned, flex-shrink: 0). Config/Logs/Files are
+            # deliberately NOT repeated per row — they are reachable from the
+            # job's top-bar tab switcher once the job is opened by clicking its
+            # name, so the per-row icons were pure redundancy.
+            is_array = "array_throttle" in getattr(job_model, "USER_PARAMS", set()) if job_model else False
             with ui.element("div").style("display: flex; align-items: center; gap: 0; flex-shrink: 0;"):
-                for icon_name, tab_key, tip in [
-                    ("tune", "config", "Config"),
-                    ("article", "logs", "Logs"),
-                    ("folder_open", "files", "Files"),
-                ]:
+                # Array jobs get a single on-row chevron that toggles the inline
+                # per-TS sub-row list in place. It renders for EVERY array job
+                # (keyed on array_throttle — the same condition as the sub-rows
+                # below), not only those that register a Tasks tab, so a job like
+                # Subtomo Extraction can't end up with a list it has no control to
+                # collapse. The glyph reflects the current expand state so it reads
+                # as a real toggle.
+                from ui.job_plugins import get_extra_tabs
+
+                if is_array:
+                    # Seed the same default the sub-row renderer uses (expanded
+                    # while running) so the glyph and the list can't disagree on
+                    # the very first paint.
+                    is_running_job = job_model is not None and job_model.execution_status == JobStatus.RUNNING
+                    expanded_now = self._expanded_instances.setdefault(instance_id, is_running_job)
+                    chevron = "expand_more" if expanded_now else "chevron_right"
+                    (
+                        ui.button(icon=chevron, on_click=lambda iid=instance_id: self._toggle_ts_expansion(iid))
+                        .props("flat dense round size=xs color=grey-7")
+                        .style("flex-shrink: 0;")
+                        .tooltip("Toggle tilt-series list")
+                    )
+                # Extra tabs other than "tasks" still render as on-row nav buttons.
+                # ("tasks" is the toggle above and stays reachable from the top bar.)
+                for et in get_extra_tabs(job_type):
+                    if et.key == "tasks":
+                        continue
                     (
                         ui.button(
-                            icon=icon_name,
-                            on_click=lambda iid=instance_id, tk=tab_key: panel.switch_to_job_subsection(iid, tk),
+                            icon=et.icon,
+                            on_click=lambda iid=instance_id, tk=et.key: panel.switch_to_job_subsection(iid, tk),
                         )
                         .props("flat dense round size=xs color=grey-7")
                         .style("flex-shrink: 0;")
-                        .tooltip(tip)
+                        .tooltip(et.label)
                     )
-                # Extra tab icons. For array jobs the "tasks" tab is repurposed
-                # to toggle the inline per-TS sub-row view instead of navigating
-                # to a separate tab.
-                from ui.job_plugins import get_extra_tabs
-
-                for et in get_extra_tabs(job_type):
-                    if et.key == "tasks":
-                        (
-                            ui.button(icon=et.icon, on_click=lambda iid=instance_id: self._toggle_ts_expansion(iid))
-                            .props("flat dense round size=xs color=grey-7")
-                            .style("flex-shrink: 0;")
-                            .tooltip("Toggle tilt-series list")
-                        )
-                    else:
-                        (
-                            ui.button(
-                                icon=et.icon,
-                                on_click=lambda iid=instance_id, tk=et.key: panel.switch_to_job_subsection(iid, tk),
-                            )
-                            .props("flat dense round size=xs color=grey-7")
-                            .style("flex-shrink: 0;")
-                            .tooltip(et.label)
-                        )
                 if show_add and not panel.ui_mgr.is_running:
                     (
                         ui.button(icon="add", on_click=lambda j=job_type: panel.prompt_species_and_add(j))
@@ -538,14 +533,15 @@ class RosterWidget(FingerprintedView):
                     )
 
         # ── Per-TS sub-rows (collapsible, for array jobs) ──
-        is_array = "array_throttle" in getattr(job_model, "USER_PARAMS", set()) if job_model else False
+        # `is_array` computed above with the row actions; reuse it so the chevron
+        # and the sub-rows are gated on exactly the same condition.
         if is_array:
             is_running = job_model.execution_status == JobStatus.RUNNING
             # Default to expanded while running; persist any user toggle across refreshes.
             expanded = self._expanded_instances.setdefault(instance_id, is_running)
             # signature() populated this cache for expanded array jobs only.
-            # When collapsed we render just the arrow (so the user can expand);
-            # the per-TS detail loads on the next tick after expansion.
+            # When collapsed the on-row chevron is the only control; the per-TS
+            # detail loads on the next tick after the user expands.
             ts_data = self._array_ts_cache.get(instance_id) if expanded else None
             if ts_data is not None:
                 items, statuses, display_names = ts_data
@@ -584,14 +580,14 @@ class RosterWidget(FingerprintedView):
         expanded: bool = False,
         job_dir: Optional[Path] = None,
     ):
-        """Render collapsible per-tilt-series status rows under an array job.
+        """Render the collapsible per-tilt-series status list under an array job.
 
-        Layout order (top → bottom):
-          1. Slim arrow indicator row, always directly under the parent job row.
-          2. Expanded list of per-TS rows (only when expanded).
-
-        The arrow stays anchored under the parent row; it never travels to the
-        bottom of the expanded list. Rows are ordered by (stage, beam) ascending.
+        Visibility is driven solely by the on-row chevron toggle in
+        _render_instance_row (`expanded`); there is no separate arrow row
+        underneath the parent anymore — it used to render even before a job had
+        produced any tasks, which broke the visual flow of the roster. When the
+        list is expanded but the job hasn't run yet, a muted hint is shown
+        instead of an empty box. Rows are ordered by (stage, beam) ascending.
         Clicking a row navigates the main pane to this job's Tasks tab and scrolls
         to the matching entry there — no pop-up dialog, nothing to get auto-closed
         by a background refresh.
@@ -601,21 +597,6 @@ class RosterWidget(FingerprintedView):
         _TS_COLORS = {"ok": "#16a34a", "fail": "#dc2626", "running": "#2563eb", "pending": "#d1d5db"}
         _TS_ICONS = {"ok": "check_circle", "fail": "error", "running": "sync", "pending": "radio_button_unchecked"}
 
-        # 1. Arrow indicator row — always rendered, directly under the main job row.
-        with (
-            ui.element("div")
-            .style(
-                f"display: flex; align-items: center; gap: 0; "
-                f"padding: 0 4px 0 {indent}px; cursor: pointer; "
-                f"height: 10px; background: transparent;"
-            )
-            .on("click", lambda _e, iid=instance_id: self._toggle_ts_expansion(iid))
-        ):
-            ui.icon("expand_more" if expanded else "chevron_right", size="11px").style(
-                "color: #cbd5e1; flex-shrink: 0;"
-            )
-
-        # 2. Expanded list — rendered AFTER the arrow so it sits below it.
         container = ui.element("div").style(
             f"display: {'block' if expanded else 'none'}; border-left: 2px solid #e2e8f0; margin-left: {indent - 4}px;"
         )
@@ -623,6 +604,10 @@ class RosterWidget(FingerprintedView):
         display_order = sort_ts_by_position(items)
         panel = self.panel
         with container:
+            if not display_order:
+                ui.label("Per-tilt-series tasks appear here once the job starts running.").style(
+                    f"{MONO} font-size: 8px; color: #94a3b8; font-style: italic; padding: 2px 6px 2px 8px;"
+                )
             for ts_name in display_order:
                 status = statuses.get(ts_name, "pending")
                 color = _TS_COLORS.get(status, _TS_COLORS["pending"])
@@ -910,8 +895,6 @@ class RosterWidget(FingerprintedView):
             ui.element("div").style("height: 8px;")
 
             self._build_project_avatar(state)
-            ui.element("div").style("height: 2px;")
-            self._build_metadata_btn(state)
 
             ui.element("div").style("height: 4px;")
             self._sb_sep()
@@ -980,115 +963,60 @@ class RosterWidget(FingerprintedView):
             )
         return avatar
 
-    def _build_metadata_btn(self, state):
-        """
-        Compact stats widget showing key dataset numbers inline.
-        Click opens the full project overview popup.
-        """
-        px = state.microscope.pixel_size_angstrom
-        n_ts = state.import_selected_tilt_series or 0
-        n_pos = state.import_selected_positions or 0
+    def _render_project_params(self, state) -> None:
+        """Render a project's parameter sections (Project / Acquisition /
+        Dataset) into the current container. Used by the left pane of the
+        project hub; works for any loaded-or-detached ProjectState. SLURM
+        defaults intentionally NOT shown here — they live in the landing-page
+        settings editor now."""
+        if state is None:
+            with ui.element("div").style("padding: 40px 16px; text-align: center;"):
+                ui.icon("touch_app", size="22px").style("color: #cbd5e1;")
+                ui.label("Select a project to preview its parameters").style(
+                    f"{FONT} font-size: 11px; color: #94a3b8; margin-top: 6px;"
+                )
+            return
 
-        outer = (
-            ui.element("div")
-            .style(
-                "width: 34px; border-radius: 5px; margin: 1px 0; padding: 4px 0; "
-                "background: #f1f5f9; display: flex; flex-direction: column; "
-                "align-items: center; gap: 3px; cursor: pointer; flex-shrink: 0; "
-                "position: relative; border: 1px solid #e2e8f0;"
-            )
-            .tooltip("Click for full project parameters")
+        ts_sel = state.import_selected_tilt_series or 0
+        ts_tot = state.import_total_tilt_series or 0
+        if ts_tot:
+            ts_display = f"{ts_sel} of {ts_tot} selected"
+        elif ts_sel:
+            ts_display = str(ts_sel)
+        else:
+            ts_display = "---"
+        self._render_overview_section(
+            "Project",
+            [
+                ("Name", state.project_name),
+                ("Root", str(state.project_path) if state.project_path else "---"),
+                ("Movies", state.movies_glob or "---"),
+                ("MDOC", state.mdocs_glob or "---"),
+                ("Tilt-series", ts_display),
+            ],
+        )
+        self._render_overview_section(
+            "Acquisition",
+            [
+                ("Pixel", f"{fmt(state.microscope.pixel_size_angstrom)} Å"),
+                ("Voltage", f"{fmt(state.microscope.acceleration_voltage_kv)} kV"),
+                ("Cs", f"{fmt(state.microscope.spherical_aberration_mm)} mm"),
+                ("Amp. C.", fmt(state.microscope.amplitude_contrast)),
+                ("Dose", f"{fmt(state.acquisition.dose_per_tilt)} e⁻/Å²"),
+                ("Tilt ax.", f"{fmt(state.acquisition.tilt_axis_degrees)} °"),
+            ],
         )
 
-        _stat_val = f"{MONO} font-size: 9px; font-weight: 700; color: #1e40af; line-height: 1; pointer-events: none;"
-        _stat_lbl = "font-size: 7px; font-weight: 500; color: #94a3b8; line-height: 1; pointer-events: none;"
+        if state.import_total_positions or state.import_total_tilt_series:
+            ds_rows = []
+            if state.import_source_directory:
+                ds_rows.append(("Source", state.import_source_directory))
+            if state.import_frame_extension:
+                ds_rows.append(("Format", state.import_frame_extension))
+            self._render_overview_section("Dataset", ds_rows, bottom_border=False)
+            self._render_dataset_ts_expansion(state)
 
-        with outer:
-            # Pixel size
-            ui.label(f"{px:.2f}" if px else "---").style(_stat_val)
-            ui.label("\u212b").style(_stat_lbl)
-            # Separator
-            ui.element("div").style("width: 14px; height: 1px; background: #e2e8f0;")
-            # Tilt series count
-            ui.label(str(n_ts) if n_ts else "---").style(_stat_val)
-            ui.label("ts").style(_stat_lbl)
-            # Positions
-            if n_pos:
-                ui.element("div").style("width: 14px; height: 1px; background: #e2e8f0;")
-                ui.label(str(n_pos)).style(_stat_val)
-                ui.label("pos").style(_stat_lbl)
-
-            # Zero-size invisible button that owns the menu anchor --
-            # positioned absolutely so it doesn't affect layout
-            anchor_btn = (
-                ui.button()
-                .props("flat dense")
-                .style(
-                    "position: absolute; width: 0; height: 0; min-width: 0; "
-                    "padding: 0; opacity: 0; pointer-events: none;"
-                )
-            )
-            with anchor_btn:
-                with (
-                    ui.menu()
-                    .props('anchor="center right" self="center left" :offset="[8,0]"')
-                    .style(
-                        # Wide panel, single outer scroll. Inner sections intentionally
-                        # have NO overflow — the overview is a read-only dump and having
-                        # multiple nested scrollbars just wastes dexterity.
-                        "background: #ffffff; border: 1px solid #e2e8f0; "
-                        "border-radius: 5px; overflow-y: auto; "
-                        "min-width: 840px; max-width: 92vw; max-height: 85vh; "
-                        "padding: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.08);"
-                    )
-                ) as menu:
-                    ts_sel = state.import_selected_tilt_series or 0
-                    ts_tot = state.import_total_tilt_series or 0
-                    if ts_tot:
-                        ts_display = f"{ts_sel} of {ts_tot} selected"
-                    elif ts_sel:
-                        ts_display = str(ts_sel)
-                    else:
-                        ts_display = "---"
-                    self._render_overview_section(
-                        "Project",
-                        [
-                            ("Name", state.project_name),
-                            ("Root", str(state.project_path) if state.project_path else "---"),
-                            ("Movies", state.movies_glob or "---"),
-                            ("MDOC", state.mdocs_glob or "---"),
-                            ("Tilt-series", ts_display),
-                        ],
-                    )
-                    self._render_overview_section(
-                        "Acquisition",
-                        [
-                            ("Pixel", f"{fmt(state.microscope.pixel_size_angstrom)} Å"),
-                            ("Voltage", f"{fmt(state.microscope.acceleration_voltage_kv)} kV"),
-                            ("Cs", f"{fmt(state.microscope.spherical_aberration_mm)} mm"),
-                            ("Amp. C.", fmt(state.microscope.amplitude_contrast)),
-                            ("Dose", f"{fmt(state.acquisition.dose_per_tilt)} e⁻/Å²"),
-                            ("Tilt ax.", f"{fmt(state.acquisition.tilt_axis_degrees)} °"),
-                        ],
-                    )
-
-                    if state.import_total_positions or state.import_total_tilt_series:
-                        ds_rows = []
-                        if state.import_source_directory:
-                            ds_rows.append(("Source", state.import_source_directory))
-                        if state.import_frame_extension:
-                            ds_rows.append(("Format", state.import_frame_extension))
-                        self._render_overview_section("Dataset", ds_rows, bottom_border=False)
-                        self._render_dataset_ts_expansion(state)
-
-                    self._render_slurm_defaults_section()
-
-                    ui.element("div").style("height: 6px;")
-
-            # clicking the outer div opens the menu via JS
-            outer.on("click", lambda: menu.open())
-
-        return outer
+        ui.element("div").style("height: 6px;")
 
     # ── Overview helpers (denser layout, no nested scroll) ────────────────────
 
@@ -1167,70 +1095,6 @@ class RosterWidget(FingerprintedView):
                     ui.label(f"+{len(excluded_ts)} excluded").style(
                         "font-size: 9px; font-style: italic; color: #cbd5e1;"
                     )
-
-    def _render_slurm_defaults_section(self) -> None:
-        """SLURM defaults + per-job profiles inline in the project overview.
-
-        Folds in what used to be a separate gear-icon popup so there's one
-        canonical place in the UI for project-wide config.
-        """
-        try:
-            from services.configs.config_service import get_config_service
-            from services.models_base import JobType
-
-            cs = get_config_service()
-            profiles = cs.config.job_resource_profiles
-            sup = cs.supervisor_slurm_defaults
-            defaults = cs.slurm_defaults
-        except Exception:
-            return
-
-        self._overview_section_header("SLURM defaults")
-
-        # Global defaults row
-        with ui.element("div").style("padding: 3px 11px;"):
-            ui.label("Global").style("font-size: 9px; font-weight: 600; color: #94a3b8; margin-bottom: 2px;")
-            _profile_row_fields(defaults.gres, defaults.mem, str(defaults.cpus_per_task), defaults.time)
-
-        if profiles:
-            # Column header
-            with ui.element("div").style(
-                "display: grid; grid-template-columns: 1fr 72px 56px 44px 64px; gap: 4px; "
-                "padding: 3px 11px 2px; border-top: 1px solid #f1f5f9; background: #f8fafc;"
-            ):
-                for hdr in ("JOB TYPE", "GRES", "MEM", "CPU", "TIME"):
-                    ui.label(hdr).style("font-size: 8px; font-weight: 600; color: #94a3b8; letter-spacing: 0.04em;")
-
-            job_type_labels = {jt.value: jt.name.replace("_", " ").title() for jt in JobType}
-            for key, profile in profiles.items():
-                p = profile.model_dump(exclude_none=True)
-                gres = p.get("gres", "")
-                mem = p.get("mem", "")
-                cpus = str(p.get("cpus_per_task", ""))
-                time_val = p.get("time", "")
-                display_name = job_type_labels.get(key, key)
-                is_gpu = bool(gres)
-                row_bg = "#ffffff" if is_gpu else "#fafbfc"
-
-                with ui.element("div").style(
-                    f"display: grid; grid-template-columns: 1fr 72px 56px 44px 64px; gap: 4px; "
-                    f"padding: 2px 11px; border-bottom: 1px solid #fafbfc; background: {row_bg};"
-                ):
-                    ui.label(display_name).style(
-                        f"{MONO} font-size: 10px; color: #374151; "
-                        "white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
-                    )
-                    gres_color = "#2563eb" if is_gpu else "#94a3b8"
-                    ui.label(gres or "(none)").style(f"{MONO} font-size: 10px; color: {gres_color};")
-                    ui.label(mem).style(f"{MONO} font-size: 10px; color: #374151;")
-                    ui.label(cpus).style(f"{MONO} font-size: 10px; color: #374151;")
-                    ui.label(time_val).style(f"{MONO} font-size: 10px; color: #374151;")
-
-        with ui.element("div").style("padding: 3px 11px; background: #f8fafc; border-top: 1px solid #e2e8f0;"):
-            ui.label("Supervisor (array jobs)").style(
-                "font-size: 9px; font-weight: 600; color: #94a3b8; margin-bottom: 2px;"
-            )
-            _profile_row_fields(sup.gres or "(none)", sup.mem, str(sup.cpus_per_task), sup.time)
 
     async def _open_project_hub(self):
         from nicegui import app as ng_app
@@ -1354,32 +1218,61 @@ class RosterWidget(FingerprintedView):
                     prefs_service.prefs.add_recent_root(new_base)
                     prefs_service.save_to_app_storage(ng_app.storage.user)
                     _render_history()
+        # ── selected-project preview (left pane) ─────────────────────────────
+        selected_ref = {"path": current_path_str}
+        left_refs: Dict = {"container": None}
+
+        async def _load_left(path_str):
+            left = left_refs.get("container")
+            if left is None:
+                return
+            state = None
+            if path_str:
+                try:
+                    state = await panel.backend.read_project_state_detached(path_str)
+                except Exception as e:
+                    logger.info("Preview load failed for %s: %s", path_str, e)
+                    state = None
+            left.clear()
+            with left:
+                self._render_project_params(state)
+
+        async def _on_select(target: Path):
+            selected_ref["path"] = str(target)
+            await _load_left(str(target))
 
         # ── dialog ────────────────────────────────────────────────────────────
 
         with (
             ui.dialog() as dialog,
             ui.card().style(
-                "width: 920px; max-width: 92vw; padding: 0; overflow: hidden; "
-                "border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);"
+                "width: 96vw; max-width: 1440px; height: 88vh; padding: 0; overflow: hidden; "
+                "border-radius: 8px; box-shadow: 0 12px 32px rgba(0,0,0,0.18); "
+                "display: flex; flex-direction: column;"
             ),
         ):
-            # Base path bar with history dropdown
+            # Base path bar. Width fix: the inner flex row + input carry an
+            # explicit width:100% so the input fills the strip instead of
+            # shrink-wrapping to ~80 px of intrinsic content width.
             with ui.element("div").style(
-                "display: flex; align-items: center; gap: 6px; "
-                "padding: 7px 10px; border-bottom: 1px solid #e5e7eb; "
-                "background: #f8fafc; position: relative;"
+                "display: flex; align-items: center; gap: 6px; width: 100%; "
+                "padding: 7px 12px; border-bottom: 1px solid #e5e7eb; "
+                "background: #f8fafc; position: relative; flex-shrink: 0;"
             ):
                 ui.label("BASE").style(
                     f"{FONT} font-size: 9px; font-weight: 700; color: #94a3b8; letter-spacing: 0.09em; flex-shrink: 0;"
                 )
 
-                with ui.element("div").style("flex: 1; position: relative; min-width: 0;"):
-                    with ui.element("div").style("display: flex; align-items: center; gap: 4px;"):
+                with ui.element("div").style("flex: 1 1 auto; position: relative; min-width: 0; width: 100%;"):
+                    with ui.element("div").style("display: flex; align-items: center; gap: 4px; width: 100%;"):
                         path_input = (
                             ui.input(value=current_base["path"])
                             .props("dense borderless")
-                            .style(f"flex: 1; font-size: 10px; {MONO} color: #1e293b; background: transparent;")
+                            .classes("flex-1")
+                            .style(
+                                f"width: 100%; min-width: 0; font-size: 10px; {MONO} "
+                                "color: #1e293b; background: transparent;"
+                            )
                             .on("blur", _apply_base_change)
                         )
                         history_refs["path_input"] = path_input
@@ -1401,24 +1294,51 @@ class RosterWidget(FingerprintedView):
                     with history_dropdown:
                         history_refs["container"] = ui.element("div").style("width: 100%;")
 
-            # Mount the same Projects Overview widget as the landing page.
-            # Delete is intentionally disabled in the in-workspace switcher --
-            # too easy to nuke a project mid-session by mistake. The
-            # currently-loaded project is shown but rendered inert with a
-            # "current" highlight so the roster keeps continuity.
-            overview = ProjectsOverview(
-                panel.backend,
-                on_open=_switch_project,
-                on_delete=None,
-                base_path_provider=lambda: current_base["path"],
-                auto_refresh_sec=15.0,
-                current_path=current_path_str,
-                show_filter=True,
-                height_px=760,
-                title="Projects Overview",
-            )
-            overview_ref["comp"] = overview
-            overview.build()
+            # Two-column body: left = selected project's params, right = the
+            # all-projects roster (single-click previews here; arrow opens).
+            with ui.element("div").style(
+                "display: flex; flex-direction: row; align-items: stretch; width: 100%; "
+                "flex: 1 1 auto; min-height: 0;"
+            ):
+                # LEFT — parameter panel for the previewed project.
+                with ui.element("div").style(
+                    "flex: 0 0 380px; max-width: 40%; border-right: 1px solid #e5e7eb; "
+                    "display: flex; flex-direction: column; min-height: 0; background: #ffffff;"
+                ):
+                    with ui.element("div").style(
+                        "padding: 8px 14px; border-bottom: 1px solid #f1f5f9; flex-shrink: 0;"
+                    ):
+                        ui.label("Project parameters").style(
+                            f"{FONT} font-size: 12px; font-weight: 600; color: #0f172a;"
+                        )
+                        ui.label("Click a project to preview · use the arrow to open it").style(
+                            f"{FONT} font-size: 9px; color: #94a3b8; margin-top: 1px;"
+                        )
+                    with ui.scroll_area().classes("w-full").style("flex: 1 1 auto; min-height: 0; padding: 0;"):
+                        left_refs["container"] = ui.element("div").classes("w-full")
+
+                # RIGHT — roster; preview on click, travel via the row arrow.
+                with ui.element("div").style(
+                    "flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0;"
+                ):
+                    overview = ProjectsOverview(
+                        panel.backend,
+                        on_open=_switch_project,
+                        on_select=_on_select,
+                        on_delete=None,
+                        base_path_provider=lambda: current_base["path"],
+                        auto_refresh_sec=15.0,
+                        current_path=current_path_str,
+                        selected_path=current_path_str,
+                        show_filter=True,
+                        height_css="calc(88vh - 116px)",
+                        title="Projects Overview",
+                    )
+                    overview_ref["comp"] = overview
+                    overview.build()
+
+        # Paint the left pane for the currently-loaded project up front.
+        await _load_left(selected_ref["path"])
 
         # Cancel auto-refresh on any dismissal path. `hide` covers backdrop
         # click / escape / programmatic close; `before-hide` is a Quasar

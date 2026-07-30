@@ -29,6 +29,7 @@ server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import (
+    apply_exclusions,
     collect_task_results,
     install_cancel_handler,
     preflight_registry,
@@ -137,6 +138,10 @@ def run_supervisor_mode():
 
         per_task_cfg = params.get_effective_slurm_config()
 
+        # Honor user "exclude from processing": pre-skip excluded TS so they are
+        # never dispatched and count as settled (not failures) in aggregation.
+        apply_exclusions(job_dir, project_path, ts_names)
+
         array_job_id = submit_array_job(
             job_dir=job_dir,
             project_path=project_path,
@@ -179,11 +184,11 @@ def run_supervisor_mode():
             registry=registry, job_dir=job_dir, job_instance_id=instance_id, warp_folder="warp_tiltseries",
         )
         adapter.ingest(
-            ts_names,
+            results.ok,
             rescale_angpixs=params.rescale_angpixs,
             frame_pixel_size=params.pixel_size,
         )
-        adapter.emit_star(paths["input_star"], paths["output_star"])
+        adapter.emit_star(paths["input_star"], paths["output_star"], excluded_ids=set(results.skipped))
         registry.save()
 
         (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()

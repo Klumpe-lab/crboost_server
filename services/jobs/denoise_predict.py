@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Set, Tuple
+from typing import ClassVar, Dict, List, Optional, Set, Tuple
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams
@@ -15,15 +15,17 @@ class DenoisePredictParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = True
 
+    # denoise_method and isonet_deconv are intentionally NOT user-editable here: they are
+    # inherited from the denoisetrain job that produced this job's model (see
+    # inherited_from_train). Predict must run whatever the model was trained as, so exposing
+    # an independent setting only invites a train/predict mismatch that fails deep in the run.
     USER_PARAMS: ClassVar[Set[str]] = {
-        "denoise_method",
         "ntiles_x",
         "ntiles_y",
         "ntiles_z",
         "denoising_tomo_name",
         "perdevice",
         "array_throttle",
-        "isonet_deconv",
     }
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
@@ -98,3 +100,27 @@ class DenoisePredictParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> Dict[str, str]:
         return {"train": "denoisetrain"}
+
+    def inherited_from_train(self, project_state) -> Tuple[Optional[DenoiseMethod], Optional[bool]]:
+        """(denoise_method, isonet_deconv) inherited from the denoisetrain job that produced
+        this job's model, or (None, None) if it can't be resolved.
+
+        Predict has no independent method/deconv of its own — both are dictated by the train
+        job so the model and the prediction can never disagree. Matched by the resolved
+        model_path (falls back to the sole train job if the path isn't resolved yet). Used by
+        both the UI (read-only display) and the driver (authoritative override at run time)."""
+        model_s = str(self.paths.get("model_path", "") or "")
+        train = None
+        for jm in (getattr(project_state, "jobs", {}) or {}).values():
+            if getattr(jm, "job_type", None) != JobType.DENOISE_TRAIN:
+                continue
+            rel = (getattr(jm, "relion_job_name", None) or "").rstrip("/")
+            if rel and rel in model_s:
+                train = jm
+                break
+            train = train or jm  # single-train fallback when model_path isn't resolved yet
+        if train is None:
+            return (None, None)
+        m = getattr(train, "denoise_method", None)
+        d = getattr(train, "isonet_deconv", None)
+        return (m if isinstance(m, DenoiseMethod) else None, d if isinstance(d, bool) else None)

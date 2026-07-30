@@ -1429,6 +1429,16 @@ class CryoBoostBackend:
     async def scan_for_projects(self, base_path: str) -> List[Dict[str, Any]]:
         return await asyncio.to_thread(self._scan_for_projects_sync, base_path)
 
+    async def read_project_state_detached(self, project_path: str):
+        """Load a project's ProjectState from disk for read-only preview WITHOUT
+        registering it in the shared in-memory registry (so the central pipeline
+        observer / sync never picks up a merely-previewed project). Used by the
+        project hub's left-hand params panel."""
+        from services.project_state import ProjectState
+
+        params_file = Path(project_path) / "project_params.json"
+        return await asyncio.to_thread(ProjectState.load, params_file)
+
     def _scan_for_projects_sync(self, base_path: str) -> List[Dict[str, Any]]:
         projects = []
         path = Path(base_path)

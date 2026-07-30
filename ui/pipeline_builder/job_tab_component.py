@@ -24,6 +24,11 @@ from ui.pipeline_builder.files_tab import render_files_tab
 
 logger = logging.getLogger(__name__)
 
+# Job types still under active development. Flagged with a purple "Experimental" badge
+# in the job header so users know the tool is not yet production-hardened (its interface,
+# routing and outputs may still change).
+_EXPERIMENTAL_JOB_TYPES = {JobType.MISS_ALIGN}
+
 
 class DebouncedSaver:
     def __init__(self, delay: float = 1.0):
@@ -76,8 +81,7 @@ def _render_tab_content(
             "[&_.q-item]:min-h-0 [&_.q-item]:py-1 [&_.q-item]:px-3"
         )
         section_style = (
-            "border: 1px solid #e2e8f0; border-radius: 5px; "
-            "background: #ffffff; box-shadow: none; margin-bottom: 6px;"
+            "border: 1px solid #e2e8f0; border-radius: 5px; background: #ffffff; box-shadow: none; margin-bottom: 6px;"
         )
         # Inner padding: 14px left/right matches the q-item header padding
         # so labels in the form below line up under the section title.
@@ -161,6 +165,38 @@ def render_job_tab(
         widget_refs.switcher_container = switcher_container
         _render_tab_switcher(switcher_container, job_type, instance_id, active_tab, backend, ui_mgr, callbacks)
 
+        # Species tag for particle jobs (templatematching / subtomo / reconstruct
+        # / class3d / candidate-extract) so it's obvious which species this job
+        # instance belongs to — matches the badge already shown in the roster.
+        _sp_id = getattr(job_model, "species_id", None)
+        _species = state.get_species(_sp_id) if _sp_id else None
+        if _species is not None:
+            with (
+                ui.element("div")
+                .style(
+                    f"display: inline-flex; align-items: center; flex-shrink: 0; "
+                    f"background: {_species.color}18; border: 1px solid {_species.color}55; "
+                    f"border-radius: 999px; padding: 1px 8px;"
+                )
+                .tooltip(f"Species: {_species.name}")
+            ):
+                ui.label(_species.name).style(
+                    f"font-size: 9px; color: {_species.color}; font-weight: 600; white-space: nowrap;"
+                )
+
+        if job_type in _EXPERIMENTAL_JOB_TYPES:
+            with (
+                ui.element("div")
+                .style(
+                    "display: inline-flex; align-items: center; flex-shrink: 0; "
+                    "background: #f3e8ff; border: 1px solid #e9d5ff; border-radius: 999px; padding: 1px 8px;"
+                )
+                .tooltip("Experimental — under active development; interface, routing and outputs may change")
+            ):
+                ui.label("Experimental").style(
+                    "font-size: 9px; color: #6b21a8; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;"
+                )
+
         if job_model.relion_job_name and ui_mgr.project_path:
             full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
             ui.label(full_path).style(
@@ -222,6 +258,21 @@ def _render_interactive_job(
     ):
         BoundStatusDot(instance_id)
         ui.label(get_job_display_name(job_type)).classes("text-sm font-semibold text-gray-800")
+        with (
+            ui.element("div")
+            .style(
+                "display: inline-flex; align-items: center; flex-shrink: 0; "
+                "background: #dbeafe; border: 1px solid #bfdbfe; border-radius: 999px; padding: 1px 8px;"
+            )
+            .tooltip(
+                "Interactive — this step is driven by you: filter tilts (manually or with the DL model) and "
+                "commit, then run/resubmit so downstream jobs use your filtered set. If you don't add this job "
+                "to the pipeline, it's skipped and processing continues without tilt filtering."
+            )
+        ):
+            ui.label("Interactive").style(
+                "font-size: 9px; color: #1e40af; font-weight: 700; letter-spacing: 0.3px; white-space: nowrap;"
+            )
         if job_model.relion_job_name and ui_mgr.project_path:
             full_path = str(ui_mgr.project_path / job_model.relion_job_name.rstrip("/"))
             ui.label(full_path).classes("text-xs font-mono text-gray-400")

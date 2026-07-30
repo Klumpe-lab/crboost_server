@@ -102,27 +102,41 @@ class ProjectsOverview:
         base_path_provider: Callable[[], str],
         on_delete: Optional[Callable[[Path, str], Awaitable[None]]] = None,
         on_transfer: Optional[Callable[[Path, Optional[str]], Awaitable[None]]] = None,
+        on_select: Optional[Callable[[Path], Awaitable[None]]] = None,
         auto_refresh_sec: float = DEFAULT_REFRESH_SEC,
         current_path: Optional[str] = None,
+        selected_path: Optional[str] = None,
         show_filter: bool = True,
         height_px: int = 380,
+        height_css: Optional[str] = None,
         title: str = "Projects Overview",
     ):
         self.backend = backend
         self.on_open = on_open
         self.on_delete = on_delete
         self.on_transfer = on_transfer
+        # When set, a row click *previews* the project (on_select) instead of
+        # opening it, and an explicit travel arrow (on_open) is rendered per
+        # row. The landing page leaves this None → click still opens directly.
+        self.on_select = on_select
         self.base_path_provider = base_path_provider
         self.auto_refresh_sec = auto_refresh_sec
         self.current_path = current_path
         self.show_filter = show_filter
         self.height_px = height_px
+        # Optional CSS height override for the scroll area (e.g. "calc(88vh - 120px)")
+        # so the roster can fill a tall panel instead of a fixed pixel box.
+        self.height_css = height_css
         self.title = title
         self.prefs = get_prefs_service()
         try:
             self._current_resolved = str(Path(current_path).resolve()) if current_path else None
         except Exception:
             self._current_resolved = None
+        try:
+            self._selected_resolved = str(Path(selected_path).resolve()) if selected_path else None
+        except Exception:
+            self._selected_resolved = None
 
         self._projects: List[Dict] = []
         self._outer_container = None
@@ -153,9 +167,10 @@ class ProjectsOverview:
             )
         )
         self._outer_container = outer
+        _scroll_h = self.height_css or f"{self.height_px}px"
         with outer:
             self._build_header()
-            with ui.scroll_area().classes("w-full").style(f"height: {self.height_px}px; padding: 0;"):
+            with ui.scroll_area().classes("w-full").style(f"height: {_scroll_h}; padding: 0;"):
                 self._list_container = ui.column().classes("w-full").style("gap: 0; padding: 0;")
                 with self._list_container:
                     self._render_loading_skeleton()
@@ -194,6 +209,23 @@ class ProjectsOverview:
                 self.stop()
             except Exception as e:
                 logger.info("ProjectsOverview refresh failed: %s", e)
+
+    def set_selected(self, selected_path: Optional[str]):
+        """Mark a row as the previewed project (faint outline) and re-render.
+        No-op-safe if the list isn't mounted yet."""
+        try:
+            self._selected_resolved = str(Path(selected_path).resolve()) if selected_path else None
+        except Exception:
+            self._selected_resolved = None
+        self._render_list()
+
+    async def _travel(self, path: Path):
+        """Explicit 'open this project' from a row's arrow (preview mode)."""
+        try:
+            await self.on_open(path)
+        except Exception as e:
+            logger.info("Open project failed: %s", e)
+            ui.notify(f"Failed to open project: {e}", type="negative")
 
     def stop(self):
         """Cancel the auto-refresh timer (e.g. when a dialog closes)."""
@@ -370,6 +402,7 @@ class ProjectsOverview:
     _W_TS = 48
     _W_JOBS = 44
     _W_RUNFAIL = 44
+    _W_ARROW = 24
 
     def _render_row(self, proj: Dict):
         path_str = proj["path"]
@@ -402,19 +435,38 @@ class ProjectsOverview:
                 logger.info("Open project failed: %s", e)
                 ui.notify(f"Failed to open project: {e}", type="negative")
 
+        async def _select():
+            self.set_selected(path_str)
+            if self.on_select is not None:
+                try:
+                    await self.on_select(Path(path_str))
+                except Exception as e:
+                    logger.info("Preview project failed: %s", e)
+
+        # Preview mode (on_select set): a click previews the project and the
+        # row travels only via its explicit arrow. Otherwise a click opens it.
+        preview_mode = self.on_select is not None
+        is_selected = False
+        if self._selected_resolved:
+            try:
+                is_selected = str(Path(path_str).resolve()) == self._selected_resolved
+            except Exception:
+                is_selected = False
+
         # Two stacked lines: identity (left) + status (right) on line 1,
         # source path (left) + counts (right) on line 2.
         base_style = f"padding: 6px 12px 7px; gap: 4px; border-bottom: 1px solid {CLR_BORDER};"
+        outline = " box-shadow: inset 0 0 0 1.5px #93c5fd;" if is_selected else ""
         if is_current:
             row_classes = "w-full group"
-            row_style = (
-                base_style + " background: #eff6ff; cursor: default; border-left: 3px solid #3b82f6; padding-left: 9px;"
-            )
-            row_click = None
+            cur = " background: #eff6ff; border-left: 3px solid #3b82f6; padding-left: 9px;"
+            cur += " cursor: pointer;" if preview_mode else " cursor: default;"
+            row_style = base_style + cur + outline
+            row_click = _select if preview_mode else None
         else:
             row_classes = "w-full hover:bg-slate-50 transition-colors cursor-pointer group"
-            row_style = base_style
-            row_click = _open
+            row_style = base_style + outline
+            row_click = _select if preview_mode else _open
 
         row = ui.column().classes(row_classes).style(row_style)
         if row_click is not None:
@@ -502,6 +554,20 @@ class ProjectsOverview:
                                 "text-slate-200 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
                             )
                             .on("click.stop", lambda: None)
+                        )
+
+                # Explicit "travel" arrow — only in preview mode, and not on the
+                # already-loaded project. Always visible so it's obvious.
+                if preview_mode and not is_current:
+                    with ui.element("div").style(
+                        f"width: {self._W_ARROW}px; {fixed} display: flex; justify-content: flex-end;"
+                    ):
+                        (
+                            ui.button(icon="arrow_forward", on_click=lambda p=path_str: self._travel(Path(p)))
+                            .props("flat dense round size=xs")
+                            .classes("text-blue-400 hover:text-blue-600")
+                            .on("click.stop", lambda: None)
+                            .tooltip("Open this project")
                         )
 
             # ---- Line 2: source path | TS count + jobs + run/fail + bar ----

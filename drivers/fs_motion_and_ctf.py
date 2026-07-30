@@ -28,6 +28,7 @@ server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import (
+    apply_exclusions,
     collect_task_results,
     install_cancel_handler,
     preflight_registry,
@@ -318,6 +319,10 @@ def run_supervisor_mode():
         # Write the manifest with the frame mapping embedded
         per_task_cfg = params.get_effective_slurm_config()
 
+        # Honor user "exclude from processing": pre-skip excluded TS so they are
+        # never dispatched and count as settled (not failures) in aggregation.
+        apply_exclusions(job_dir, project_path, ts_names)
+
         array_job_id = submit_array_job(
             job_dir=job_dir,
             project_path=project_path,
@@ -367,8 +372,10 @@ def run_supervisor_mode():
         adapter = FsMotionCtfIngestAdapter(
             registry=registry, job_dir=job_dir, job_instance_id=instance_id, warp_folder="warp_frameseries",
         )
-        adapter.ingest(ts_names)
-        adapter.emit_star(input_star_path, paths["output_star"], project_root=project_path)
+        adapter.ingest(results.ok)
+        adapter.emit_star(
+            input_star_path, paths["output_star"], project_root=project_path, excluded_ids=set(results.skipped)
+        )
         registry.save()
 
         print("[SUPERVISOR] Metadata processing successful.", flush=True)

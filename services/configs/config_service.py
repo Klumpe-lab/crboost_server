@@ -1,13 +1,25 @@
 # services/configs/config_service.py
 """
 Pure configuration loader - reads conf.yaml and provides typed access.
+
+Two layers are merged at load time:
+  1. the shared server default  <repo>/config/conf.yaml  (read-only for users)
+  2. a per-user override        ~/.crboost/conf.yaml     (this user only)
+The override is a *partial* diff — only the keys a user changed via the
+settings UI — deep-merged on top of the server default. This lets one user
+retarget a container or a SLURM default for their own instance without ever
+touching the shared file that everyone else's server reads.
 """
 
-import os
+import copy
+import logging
+import shutil
 import yaml
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import Dict, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
+
+logger = logging.getLogger(__name__)
 
 
 def find_repo_root() -> Path:
@@ -32,6 +44,53 @@ def find_repo_root() -> Path:
 
 _REPO_ROOT = find_repo_root()
 DEFAULT_CONFIG_PATH = _REPO_ROOT / "config" / "conf.yaml"
+
+# Per-user override lives alongside the existing ~/.crboost/prefs.json
+# (see services/configs/user_prefs_service.py). Home-scoped, so each user's
+# server picks up only their own edits.
+USER_OVERRIDE_PATH = Path.home() / ".crboost" / "conf.yaml"
+
+
+def _deep_merge(base: dict, overlay: dict) -> dict:
+    """Recursively overlay `overlay` onto `base` (overlay wins on leaves).
+    Nested dicts are merged, not replaced, so a partial override keeps the
+    base's untouched siblings."""
+    out = dict(base)
+    for k, v in overlay.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def _deep_diff(base: dict, new: dict) -> dict:
+    """Return the subset of `new` whose leaves differ from `base`.
+
+    Used to reduce a user's full edited value-set down to just the deltas
+    from the server default, so the override file stays minimal and new
+    server-default keys keep flowing through on untouched fields.
+    """
+    diff: dict = {}
+    for k, v in new.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            sub = _deep_diff(base[k], v)
+            if sub:
+                diff[k] = sub
+        elif base.get(k) != v:
+            diff[k] = v
+    return diff
+
+
+def check_path_exists(path: Optional[str]) -> bool:
+    """True if a tool path resolves. Absolute paths are stat'd; a bare command
+    name (e.g. ``pymol``) is looked up on PATH."""
+    if not path or not str(path).strip():
+        return False
+    p = Path(path)
+    if p.is_absolute():
+        return p.exists()
+    return shutil.which(path) is not None
 
 
 class SlurmDefaultsConfig(BaseModel):
@@ -160,6 +219,8 @@ class ConfigService:
     def __init__(self, config_path: Path = None):
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
+        self._default_path = config_path
+        self._override_path = USER_OVERRIDE_PATH
 
         if not config_path.exists():
             # Diagnostic info to help debug future path shifts
@@ -170,12 +231,30 @@ class ConfigService:
             )
 
         with open(config_path, "r") as f:
-            data = yaml.safe_load(f)
+            base_data = yaml.safe_load(f) or {}
+        self._base_data: dict = base_data
+
+        # Layer 2: this user's personal override (may be absent).
+        override: dict = {}
+        if self._override_path.exists():
+            try:
+                with open(self._override_path, "r") as f:
+                    override = yaml.safe_load(f) or {}
+                if not isinstance(override, dict):
+                    logger.warning("User config override at %s is not a mapping — ignoring", self._override_path)
+                    override = {}
+            except Exception as e:
+                logger.warning("Failed to read user config override %s: %s — using default", self._override_path, e)
+                override = {}
+        self._override_data: dict = override
+
+        data = _deep_merge(base_data, override) if override else dict(base_data)
 
         # Migrate legacy key: tsreconstruct_supervisor_slurm → supervisor_slurm
         if "tsreconstruct_supervisor_slurm" in data and "supervisor_slurm" not in data:
             data["supervisor_slurm"] = data.pop("tsreconstruct_supervisor_slurm")
 
+        self._effective_data: dict = data
         self._config = Config(**data)
 
     @property
@@ -256,6 +335,72 @@ class ConfigService:
         if config.exec_mode == "container":
             return config.container_path
         return config.bin_path
+
+    # ── Per-user override management (settings UI) ────────────────────────
+
+    @property
+    def has_user_override(self) -> bool:
+        """True when a non-empty ~/.crboost/conf.yaml is currently layered on."""
+        return bool(self._override_data)
+
+    @property
+    def user_override_path(self) -> Path:
+        return self._override_path
+
+    @property
+    def default_config_path(self) -> Path:
+        return self._default_path
+
+    def base_dict(self) -> dict:
+        """The shared server default, as a plain dict (a deep copy)."""
+        return copy.deepcopy(self._base_data)
+
+    def effective_dict(self) -> dict:
+        """The merged (default + user override) config, as a plain dict."""
+        return copy.deepcopy(self._effective_data)
+
+    def save_user_override(self, new_values: dict) -> None:
+        """Persist the user's edited values to ~/.crboost/conf.yaml.
+
+        `new_values` is a nested dict shaped like conf.yaml holding the
+        editable subset. Only leaves that differ from the SERVER DEFAULT are
+        written, so the override stays a minimal diff and the shared file is
+        never touched. Resets the singleton so the next get_config_service()
+        reflects the change.
+        """
+        delta = _deep_diff(self._base_data, new_values)
+        self._override_path.parent.mkdir(parents=True, exist_ok=True)
+        if delta:
+            with open(self._override_path, "w") as f:
+                yaml.safe_dump(delta, f, default_flow_style=False, sort_keys=False)
+            logger.info("Wrote user config override (%d top-level keys) to %s", len(delta), self._override_path)
+        elif self._override_path.exists():
+            # Edited values collapsed back to the defaults → drop the override.
+            self._override_path.unlink()
+            logger.info("User config override matched defaults — removed %s", self._override_path)
+        reset_config_service()
+
+    def revert_to_defaults(self) -> None:
+        """Delete this user's override entirely, falling back to the shared
+        server conf.yaml. Resets the singleton."""
+        if self._override_path.exists():
+            self._override_path.unlink()
+            logger.info("Reverted to server defaults — removed %s", self._override_path)
+        reset_config_service()
+
+    def container_status(self) -> Dict[str, Any]:
+        """Existence check for every configured tool path. Powers the landing
+        status dot (green when all resolve, amber otherwise) and the per-row
+        markers in the settings panel."""
+        tools: List[Dict[str, Any]] = []
+        for name, tc in self._config.tools.items():
+            path = tc.container_path if tc.exec_mode == "container" else tc.bin_path
+            tools.append(
+                {"name": name, "exec_mode": tc.exec_mode, "path": path or "", "exists": check_path_exists(path)}
+            )
+        tools.sort(key=lambda t: t["name"])
+        n_ok = sum(1 for t in tools if t["exists"])
+        return {"all_ok": n_ok == len(tools) and len(tools) > 0, "n_ok": n_ok, "n_total": len(tools), "tools": tools}
 
 
 _config_service_instance: Optional[ConfigService] = None

@@ -79,6 +79,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         "data_history_container": None,
         "raw_data_section": None,  # whole frames+mdocs+overview block; hidden in aggregation mode
         "aggregation_hint": None,  # inline hint shown when aggregation mode is on
+        "gain_input": None,  # optional project-wide gain-reference path input
     }
 
     # =========================================================================
@@ -516,6 +517,22 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             if ui_mgr.panel_refs.mdocs_input:
                 ui_mgr.panel_refs.mdocs_input.set_directory(result[0])
 
+    async def pick_gain_path():
+        di = ui_mgr.data_import
+        cur = di.gain_reference_path
+        if cur:
+            start = str(Path(cur).parent)
+        elif di.movies_glob and "*" in di.movies_glob:
+            start = str(Path(di.movies_glob).parent)
+        else:
+            start = di.movies_glob or "~"
+        result = await local_file_picker(directory=start, mode="file")
+        if result:
+            ui_mgr.update_data_import(gain_reference_path=result[0])
+            gi = local_refs.get("gain_input")
+            if gi is not None:
+                gi.value = result[0]
+
     async def pick_project_path():
         start = ui_mgr.data_import.project_base_path or "~"
         result = await local_file_picker(directory=start, mode="directory")
@@ -700,6 +717,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 detected_params["dose_per_tilt"] = sel_summary.doses[0]
             if sel_summary.tilt_axes:
                 detected_params["tilt_axis_degrees"] = sel_summary.tilt_axes[0]
+            if di.gain_reference_path:
+                detected_params["gain_reference_path"] = di.gain_reference_path
 
         # Show progress overlay in the dataset overview area
         progress_container = local_refs.get("dataset_overview_container")
@@ -1337,6 +1356,35 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                             f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; padding-left: 2px; margin-top: 1px;"
                         )
                         ui_mgr.panel_refs.mdocs_hint_label = mdocs_hint
+
+                    # Optional project-wide gain reference (single file). Threaded into
+                    # acquisition.gain_reference_path and consumed automatically by the
+                    # frameseries motion/CTF and tilt-series import jobs (job.gain_path).
+                    with ui.column().classes("w-full gap-0").style("margin-top: 2px;"):
+                        with ui.row().classes("items-center gap-1"):
+                            ui.label("Gain Reference").style(field_label_style)
+                            with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
+                                ui.tooltip(
+                                    "Optional gain reference file (.mrc / .tiff / .dm4 / .gain). Applied "
+                                    "project-wide by every job that needs gain correction — frameseries "
+                                    "motion/CTF and tilt-series import. Leave empty if your frames are "
+                                    "already gain-corrected."
+                                ).style(f"{FONT} font-size: 10px;")
+                            ui.label("optional").style(f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};")
+                        with ui.row().classes("w-full items-center gap-1"):
+                            gain_input = (
+                                ui.input(
+                                    value=ui_mgr.data_import.gain_reference_path,
+                                    placeholder="/path/to/gain_reference.mrc",
+                                    on_change=lambda e: ui_mgr.update_data_import(gain_reference_path=e.value or ""),
+                                )
+                                .props("dense borderless hide-bottom-space")
+                                .style(input_mono_style)
+                            )
+                            local_refs["gain_input"] = gain_input
+                            ui.button(icon="folder", on_click=pick_gain_path).props("flat dense round size=xs").classes(
+                                "text-slate-400 hover:text-slate-600"
+                            )
 
                 # Dataset overview (populated when mdocs are validated). Lives
                 # inside raw_data_section so the aggregation toggle hides it too.

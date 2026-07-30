@@ -386,7 +386,10 @@ class PipelineBuilderPanel:
 
     # Job types that require a prerequisite job to exist in the pipeline.
     # When adding the key job type, the value job type is auto-added if missing.
-    _PREREQUISITES: Dict[JobType, JobType] = {JobType.TS_ALIGNMENT: JobType.TS_IMPORT}
+    _PREREQUISITES: Dict[JobType, JobType] = {
+        JobType.TS_ALIGNMENT: JobType.TS_IMPORT,
+        JobType.TILT_FILTER: JobType.TS_IMPORT,
+    }
 
     def _ensure_prerequisites(self, job_type: JobType, state):
         """Auto-add prerequisite jobs that this job type depends on."""

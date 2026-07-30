@@ -8,10 +8,10 @@ PHASE_JOBS: Dict[str, List[JobType]] = {
     PHASE_PREPROCESSING: [
         JobType.IMPORT_MOVIES,
         JobType.FS_MOTION_CTF,
+        JobType.TILT_FILTER,
         JobType.TS_ALIGNMENT,
         JobType.MISS_ALIGN,
         JobType.TS_CTF,
-        JobType.TILT_FILTER,
         JobType.TS_RECONSTRUCT,
         JobType.DENOISE_TRAIN,
         JobType.DENOISE_PREDICT,
@@ -47,7 +47,11 @@ JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
     # (tsCtf stays gated on TS_ALIGNMENT so the common no-missAlign pipeline is unchanged).
     JobType.MISS_ALIGN: [JobType.TS_ALIGNMENT],
     JobType.TS_CTF: [JobType.TS_ALIGNMENT],
-    JobType.TILT_FILTER: [JobType.TS_CTF],
+    # Optional insertable filter: runs after tsImport (its tomostar prerequisite is
+    # auto-added via _PREREQUISITES) and reads the fs-motion star for the DL pass.
+    # Gated positionally in the scheme before alignment; alignment does NOT declare a
+    # dep on it, so a no-filter pipeline is unchanged (mirrors MISS_ALIGN above).
+    JobType.TILT_FILTER: [JobType.FS_MOTION_CTF],
     JobType.TS_RECONSTRUCT: [JobType.TS_CTF],
     JobType.DENOISE_TRAIN: [JobType.TS_RECONSTRUCT],
     JobType.DENOISE_PREDICT: [JobType.DENOISE_TRAIN, JobType.TS_RECONSTRUCT],
