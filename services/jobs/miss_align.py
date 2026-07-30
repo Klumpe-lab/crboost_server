@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from typing import ClassVar, Dict, List, Set, Tuple
 from pydantic import Field
 
@@ -6,6 +7,9 @@ from services.jobs._base import AbstractJobParams
 from services.models_base import JobType, JobCategory, MissAlignSchedule
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 from services.computing.slurm_service import SlurmConfig
+from services.configs.config_service import get_config_service
+
+logger = logging.getLogger(__name__)
 
 
 # ── Macro-iteration presets ───────────────────────────────────────────────────
@@ -88,12 +92,35 @@ class MissAlignParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = True
 
+    CONFIG_PREAMBLE: ClassVar[str] = (
+        "**Learned alignment refinement (experimental).** Unlike the other steps, this is **one training "
+        "job over _all_ your tilt-series at once**, not a per-tilt-series array. It trains a small 3-D CNN to "
+        "score reconstruction quality, then nudges each series' geometry to maximise that score — repeated "
+        "over a coarse→fine schedule of *macro-iterations*.\n\n"
+        "**Why it can be slow.** Cost grows with **(tilt-series × macro-iterations)**, all inside a single "
+        "job. Rough rule of thumb: beyond **~10 tomograms on the _default_ schedule** the estimate approaches "
+        "a typical 8-hour queue wall-time limit (the _fast_ schedule roughly doubles that headroom). The "
+        "requested wall-time is auto-capped to your queue's limit, so a large dataset can hit the cap and "
+        "stop mid-run.\n\n"
+        "**If it runs out of wall-time, just re-run this job.** It checkpoints **once per macro-iteration** "
+        "and resumes from the last checkpoint (you lose at most one iteration's work). Automatic chained "
+        "re-submission — splitting a long run across several jobs for you — is **planned (work in progress)**; "
+        "for now the resume is manual (re-run).\n\n"
+        "**Faster on big datasets (planned, WIP): train-then-infer.** The tool can *train* a model on a small "
+        "**representative subset** of tilt-series, then **apply** it to align the rest without retraining "
+        "(`infer`) — much cheaper. **Trade-off:** the model only ever saw the subset, so on a heterogeneous "
+        "dataset a subset-trained model may align some series worse than a full joint run. Not wired up yet.\n\n"
+        "**Schedules:** *fast* = 2 iterations (quick sanity pass) · *default* = 4 (balanced) · "
+        "*thorough* = 8 (best quality, slowest)."
+    )
+
     USER_PARAMS: ClassVar[Set[str]] = {
         "iteration_preset",
         "max_epochs_per_iteration",
         "batch_size",
         "patch_size",
         "pool_size",
+        "num_gpus",
         "prepare_stacks_apix",
     }
 
@@ -139,6 +166,15 @@ class MissAlignParams(AbstractJobParams):
         description="Subtomogram pool size. Single-trainer constraint: pool_size >= 2*batch_size "
         "(enforced in the driver; violation raises).",
     )
+    num_gpus: int = Field(
+        default=1,
+        ge=1,
+        le=4,
+        description="GPUs to allocate (single node). 1 = training and the reconstruction pool share "
+        "one card. >=2 dedicates GPU 0 to training and the remaining GPU(s) to reconstruction so they "
+        "run concurrently (roughly linear speedup) — at the cost of a longer queue, and the selected "
+        "partition node must actually have this many GPUs.",
+    )
     prepare_stacks_apix: float = Field(
         default=0.0,
         ge=0.0,
@@ -160,9 +196,28 @@ class MissAlignParams(AbstractJobParams):
     def get_input_requirements() -> Dict[str, str]:
         return {"align": "aligntiltsWarp"}
 
+    @staticmethod
+    def _qos_safe_cap_minutes() -> int:
+        """Partition QOS-safe walltime ceiling in minutes.
+
+        The site declares its QOS MaxWallDurationPerJob indirectly via the supervisor
+        default walltime (config/conf.yaml sets it `<= the QOS MaxWall for this partition`).
+        missAlign runs on the same GPU partition, so that value is the ceiling any single
+        job can request. Returns 0 when unavailable -> no clamp."""
+        try:
+            return _hms_to_minutes(get_config_service().supervisor_slurm_defaults.time)
+        except Exception:
+            return 0
+
     def _scaled_walltime(self, base_time: str) -> str:
         """Scale `base_time` by n_selected_ts x n_macro_iterations, floored at `base_time`
-        and capped. Returns `base_time` unchanged when either count is unknown/zero."""
+        and capped. Returns `base_time` unchanged when either count is unknown/zero.
+
+        The estimate is additionally clamped to the partition's QOS-safe ceiling: without
+        it a large dataset scales past the QOS MaxWallDurationPerJob and `sbatch` rejects
+        the WHOLE chain with QOSMaxWallDurationPerJobLimit (a single failed submit aborts
+        pipeline start). We clamp + warn rather than fail: an over-long dataset then trips
+        the in-job watchdog instead of never launching, which the user can act on."""
         n_ts = getattr(self._project_state, "import_selected_tilt_series", 0) or 0
         n_iters = len(MISS_ALIGN_SCHEDULES.get(self.iteration_preset, []))
         if n_ts <= 0 or n_iters <= 0:
@@ -170,6 +225,18 @@ class MissAlignParams(AbstractJobParams):
         minutes = _WALLTIME_BASE_MIN + _WALLTIME_PER_TS_ITER_MIN * n_ts * n_iters
         minutes = max(minutes, _hms_to_minutes(base_time))  # never below today's profile/default
         minutes = min(minutes, _WALLTIME_CAP_MIN)
+        qos_cap = self._qos_safe_cap_minutes()
+        if qos_cap and minutes > qos_cap:
+            logger.warning(
+                "missAlign: scaled walltime %s (%d TS x %d iters) exceeds the QOS-safe ceiling %s; "
+                "clamping so the job submits. If it hits the in-job watchdog, use the FAST schedule, "
+                "pin an explicit `time` override, or split the run into fewer tilt-series.",
+                _minutes_to_hms(minutes),
+                n_ts,
+                n_iters,
+                _minutes_to_hms(qos_cap),
+            )
+            minutes = qos_cap
         return _minutes_to_hms(minutes)
 
     def get_effective_slurm_config(self) -> SlurmConfig:
@@ -178,4 +245,8 @@ class MissAlignParams(AbstractJobParams):
         cfg = super().get_effective_slurm_config()
         if "time" not in self.slurm_overrides:
             cfg.time = self._scaled_walltime(cfg.time)
+        # num_gpus is the single source of truth for the GPU count so the driver's train/recon
+        # device split has the cards it maps to. Respect an explicit gres override (SLURM tab).
+        if "gres" not in self.slurm_overrides:
+            cfg.gres = f"gpu:{self.num_gpus}"
         return cfg

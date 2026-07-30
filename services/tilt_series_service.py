@@ -225,6 +225,69 @@ def write_tilt_series(ts_data: TiltSeriesData, output_path: str | Path, subfolde
     logger.info("Wrote tilt series to %s (%d tilts, %d series)", output_path, len(df), len(ts_df))
 
 
+def drop_tilts_from_tomostar(src_dir: str | Path, out_dir: str | Path, bad_movie_stems: set[str]) -> tuple[int, int]:
+    """Copy every ``*.tomostar`` from ``src_dir`` to ``out_dir``, dropping the
+    loop rows whose ``_wrpMovieName`` basename stem is in ``bad_movie_stems``.
+
+    This is the mechanism that lets the tilt-filter run *before* alignment: the
+    WarpTools tomostar (one file per tilt-series, one row per tilt) is what
+    ts_aretomo/ts_ctf/ts_reconstruct actually read, so trimming rows here
+    propagates the cut through the whole downstream chain natively.
+
+    Kept rows are copied verbatim (original whitespace + the same relative
+    ``_wrpMovieName`` paths), so alignment's absolute-path staging resolves them
+    exactly as it does for the tsImport tomostar. Match is by ``Path(name).stem``
+    so a ``foo_EER.eer`` movie matches the ``foo_EER`` key the DL emits (the
+    fs-motion star's ``rlnMicrographMovieName`` stem). Returns (kept, dropped).
+    """
+    src_dir = Path(src_dir)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    total_kept = total_dropped = 0
+    for star in sorted(src_dir.glob("*.tomostar")):
+        raw = star.read_text()
+        lines = raw.splitlines()
+
+        col_names: list[str] = []
+        data_start: Optional[int] = None
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if s.startswith("_"):
+                col_names.append(s.split()[0])
+            elif s and not s.startswith(("data_", "loop_", "#")) and col_names:
+                data_start = i
+                break
+
+        # Unexpected format (no loop / no movie column) -> copy verbatim rather
+        # than silently mangle it. The filter is best-effort; alignment still
+        # reads the untrimmed tomostar in that case.
+        if data_start is None or "_wrpMovieName" not in col_names:
+            (out_dir / star.name).write_text(raw)
+            continue
+
+        movie_i = col_names.index("_wrpMovieName")
+        header = lines[:data_start]
+        kept_rows: list[str] = []
+        for line in lines[data_start:]:
+            toks = line.split()
+            if not toks:
+                continue
+            if len(toks) <= movie_i:
+                kept_rows.append(line)  # malformed row -> keep, don't guess
+                continue
+            if Path(toks[movie_i]).stem in bad_movie_stems:
+                total_dropped += 1
+            else:
+                kept_rows.append(line)
+                total_kept += 1
+
+        (out_dir / star.name).write_text("\n".join(header + kept_rows) + "\n")
+
+    logger.info("Tomostar trim: kept %d, dropped %d tilts across %s", total_kept, total_dropped, out_dir)
+    return total_kept, total_dropped
+
+
 def get_label_summary(ts_data: TiltSeriesData) -> Dict[str, int]:
     """Return counts of good/bad/unlabeled tilts."""
     df = ts_data.all_tilts_df
@@ -239,11 +302,7 @@ def get_label_summary(ts_data: TiltSeriesData) -> Dict[str, int]:
 
 
 def generate_tilt_thumbnails(
-    ts_ctf_star: str | Path,
-    project_path: str | Path,
-    png_dir: str | Path,
-    progress_cb=None,
-    target_size: int = 384,
+    ts_ctf_star: str | Path, project_path: str | Path, png_dir: str | Path, progress_cb=None, target_size: int = 384
 ) -> int:
     """Synchronously generate PNG thumbnails for every tilt referenced by a
     ts_ctf star file. Returns the number of source MRC images processed.

@@ -11,6 +11,7 @@ from typing import Callable, Dict, List, Optional, Set
 
 from nicegui import ui
 
+from services.models_base import JobType
 from ui.job_plugins._field_styles import (
     field_grid,
     toggle_row,
@@ -99,8 +100,10 @@ def render_species_badge(job_model, project_path: Optional[str]):
         return
 
     with ui.row().classes("items-center gap-2").style("margin-bottom: 6px;"):
-        ui.label("Particle").style(f"{SANS} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
-                                   "letter-spacing: 0.06em; text-transform: uppercase;")
+        ui.label("Particle").style(
+            f"{SANS} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
+            "letter-spacing: 0.06em; text-transform: uppercase;"
+        )
         with ui.element("div").style(
             f"display: inline-flex; align-items: center; "
             f"background: {species.color}18; border: 1px solid {species.color}55; "
@@ -109,9 +112,58 @@ def render_species_badge(job_model, project_path: Optional[str]):
             ui.label(species.name).style(f"font-size: 10px; color: {species.color}; font-weight: 600;")
 
 
+def render_denoise_inheritance(job_model, project_path: Optional[str]):
+    """Read-only row for denoise-predict: the denoiser (cryoCARE / IsoNet) and its deconv
+    setting are inherited from the denoise-train job — predict has no independent setting,
+    so a train/predict mismatch is impossible. Shows the resolved method when available."""
+    method = None
+    if project_path:
+        try:
+            from services.project_state import get_project_state_for
+
+            state = get_project_state_for(project_path)
+            method, _ = job_model.inherited_from_train(state)
+        except Exception:
+            method = None
+
+    label = method.value if method is not None else "set in denoise-train"
+    with ui.row().classes("items-center gap-2").style("margin-bottom: 8px;"):
+        ui.label("Denoiser").style(
+            f"{SANS} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
+            "letter-spacing: 0.06em; text-transform: uppercase;"
+        )
+        with (
+            ui.element("div")
+            .style(
+                "display: inline-flex; align-items: center; background: #f3e8ff; "
+                "border: 1px solid #e9d5ff; border-radius: 999px; padding: 1px 8px;"
+            )
+            .tooltip("Inherited from the denoise-train job — set the method there; predict follows it automatically.")
+        ):
+            ui.label(label).style("font-size: 10px; color: #6b21a8; font-weight: 600;")
+        ui.label("inherited from denoise-train").style(f"{SANS} font-size: 9px; color: {CLR_SUBLABEL};")
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────────
+
+
+def render_config_preamble(job_model):
+    """Collapsible 'How this job works' panel from the param class's CONFIG_PREAMBLE
+    (markdown). No-op when the class defines no preamble."""
+    text = (getattr(job_model, "CONFIG_PREAMBLE", "") or "").strip()
+    if not text:
+        return
+    with (
+        ui.expansion("How this job works", icon="info")
+        .props("dense")
+        .classes("w-full")
+        .style("border: 1px solid #e9d5ff; border-radius: 5px; background: #faf5ff; margin-bottom: 8px;")
+    ) as exp:
+        exp.props('header-class="text-[11px] font-semibold text-purple-800"')
+        with ui.column().classes("w-full").style("padding: 2px 12px 8px;"):
+            ui.markdown(text).classes("cb-preamble").style("font-size: 11px; line-height: 1.5; color: #334155;")
 
 
 def render_default_params(
@@ -135,8 +187,11 @@ def render_default_params(
         with ui.column().classes("w-full gap-1").style("margin-bottom: 8px;"):
             for name in groups["paths"]:
                 path_row(
-                    _label_for(name), job_model, name,
-                    is_frozen=is_frozen, save_handler=save_handler,
+                    _label_for(name),
+                    job_model,
+                    name,
+                    is_frozen=is_frozen,
+                    save_handler=save_handler,
                     hint=_get_description(job_model, name),
                 )
 
@@ -151,23 +206,37 @@ def render_default_params(
                 hint = _get_description(job_model, name)
 
                 if is_enum_type(field_type):
-                    enum_field(_label_for(name), job_model, name, field_type,
-                               is_frozen=is_frozen, save_handler=save_handler, hint=hint)
+                    enum_field(
+                        _label_for(name),
+                        job_model,
+                        name,
+                        field_type,
+                        is_frozen=is_frozen,
+                        save_handler=save_handler,
+                        hint=hint,
+                    )
                 elif isinstance(value, (int, float)) or value is None:
-                    numeric_field(_label_for(name), job_model, name,
-                                  is_frozen=is_frozen, save_handler=save_handler, hint=hint)
+                    numeric_field(
+                        _label_for(name), job_model, name, is_frozen=is_frozen, save_handler=save_handler, hint=hint
+                    )
                 else:
-                    text_field(_label_for(name), job_model, name,
-                               is_frozen=is_frozen, save_handler=save_handler, hint=hint)
+                    text_field(
+                        _label_for(name), job_model, name, is_frozen=is_frozen, save_handler=save_handler, hint=hint
+                    )
 
     # Toggles wrap into their own row beneath.
     if groups["toggle"]:
         with ui.element("div").style("margin-top: 6px; width: 100%;"):
             with toggle_row():
                 for name in groups["toggle"]:
-                    toggle_field(_label_for(name), job_model, name,
-                                 is_frozen=is_frozen, save_handler=save_handler,
-                                 hint=_get_description(job_model, name))
+                    toggle_field(
+                        _label_for(name),
+                        job_model,
+                        name,
+                        is_frozen=is_frozen,
+                        save_handler=save_handler,
+                        hint=_get_description(job_model, name),
+                    )
 
 
 def render_default_params_card(
@@ -178,6 +247,9 @@ def render_default_params_card(
     project_path = str(ui_mgr.project_path) if ui_mgr and ui_mgr.project_path else None
 
     render_species_badge(job_model, project_path)
+    render_config_preamble(job_model)
+    if job_type == JobType.DENOISE_PREDICT:
+        render_denoise_inheritance(job_model, project_path)
     render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
 
 

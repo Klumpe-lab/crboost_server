@@ -17,11 +17,11 @@ from nicegui import ui
 MONO = "font-family: 'IBM Plex Mono', monospace;"
 SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 
-CLR_LABEL = "#64748b"      # slate-500
-CLR_VALUE = "#1e293b"      # slate-800
-CLR_HEADER = "#475569"     # slate-600
-CLR_SUBLABEL = "#94a3b8"   # slate-400
-CLR_BORDER = "#e2e8f0"     # slate-200
+CLR_LABEL = "#64748b"  # slate-500
+CLR_VALUE = "#1e293b"  # slate-800
+CLR_HEADER = "#475569"  # slate-600
+CLR_SUBLABEL = "#94a3b8"  # slate-400
+CLR_BORDER = "#e2e8f0"  # slate-200
 
 # Single label column width applied across Parameters / I/O / SLURM so
 # labels line up vertically when the user scans down a section card. Was
@@ -35,21 +35,12 @@ LABEL_STYLE = (
     "line-height: 1.4; flex-shrink: 0; white-space: nowrap; "
     f"width: {LABEL_W}px;"
 )
-VALUE_WRAP_STYLE = (
-    f"{MONO} font-size: 11px; color: {CLR_VALUE}; "
-    "flex: 1 1 0; min-width: 0;"
-)
-VALUE_WRAP_NARROW = (
-    f"{MONO} font-size: 11px; color: {CLR_VALUE}; "
-    "flex: 0 0 auto; max-width: 96px;"
-)
+VALUE_WRAP_STYLE = f"{MONO} font-size: 11px; color: {CLR_VALUE}; flex: 1 1 0; min-width: 0;"
+VALUE_WRAP_NARROW = f"{MONO} font-size: 11px; color: {CLR_VALUE}; flex: 0 0 auto; max-width: 96px;"
 HELPER_STYLE = f"{SANS} font-size: 9px; color: {CLR_SUBLABEL};"
 SUFFIX_STYLE = f"{SANS} font-size: 9px; color: {CLR_SUBLABEL}; flex-shrink: 0;"
 
-ROW_STYLE = (
-    "display: flex; align-items: baseline; gap: 8px; width: 100%; "
-    "min-width: 0; min-height: 22px; padding: 1px 0;"
-)
+ROW_STYLE = "display: flex; align-items: baseline; gap: 8px; width: 100%; min-width: 0; min-height: 19px; padding: 0;"
 
 # Legacy alias kept for any callers that still reference it directly.
 PATH_LABEL_W = LABEL_W
@@ -65,10 +56,7 @@ SECTION_HEADER_STYLE = (
 )
 SECTION_HEADER_FIRST_STYLE = SECTION_HEADER_STYLE.replace("margin: 8px 0 4px 0", "margin: 0 0 4px 0")
 
-GROUP_STYLE = (
-    "width: 100%; border: 1px solid #eef2f6; border-radius: 4px; "
-    "padding: 6px 8px 8px; margin-top: 6px;"
-)
+GROUP_STYLE = "width: 100%; border: 1px solid #eef2f6; border-radius: 4px; padding: 6px 8px 8px; margin-top: 6px;"
 GROUP_MUTED_STYLE = GROUP_STYLE + " background: #fafbfc;"
 
 LABEL_PATH_STYLE = LABEL_STYLE  # path labels share the same column width now
@@ -87,10 +75,15 @@ def section_rule():
 # ── Containers ──────────────────────────────────────────────────────────────
 @contextmanager
 def field_grid():
-    """Vertical stack of field rows. Name kept for backwards compat with callers
-    that pre-date the layout pivot."""
+    """Auto-packing multi-column grid of field rows. Fields flow into as many
+    ~300px columns as the width allows (typically 2-4), so short numeric/enum
+    fields no longer leave the right half of the panel empty, and the section
+    is far shorter vertically. Path fields stay full-width in their own column
+    (they are rendered outside field_grid); section headers sit above each grid.
+    Name kept for backwards compat with callers pre-dating the layout pivot."""
     el = ui.element("div").style(
-        "display: flex; flex-direction: column; gap: 2px; width: 100%;"
+        "display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); "
+        "column-gap: 18px; row-gap: 2px; width: 100%; align-items: start;"
     )
     with el:
         yield el
@@ -117,8 +110,7 @@ def toggle_row():
 _INPUT_PROPS_BASE = "dense borderless hide-bottom-space"
 # Style applied to the inner <input> via Quasar's input-style prop.
 _INPUT_INNER_STYLE = (
-    "font-family: 'IBM Plex Mono', monospace; font-size: 11px; "
-    "color: #1e293b; padding: 1px 2px; min-height: 0;"
+    "font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #1e293b; padding: 1px 2px; min-height: 0;"
 )
 _INPUT_INNER_FROZEN = _INPUT_INNER_STYLE.replace("color: #1e293b", "color: #94a3b8")
 
@@ -140,10 +132,16 @@ def _label(text: str, hint: Optional[str], *, path_width: bool = False):
 
 
 def text_field(
-    label: str, job_model, attr: str, *,
-    is_frozen: bool, save_handler: Callable,
-    hint: Optional[str] = None, suffix: str = "",
-    narrow: bool = False, on_change: bool = True,
+    label: str,
+    job_model,
+    attr: str,
+    *,
+    is_frozen: bool,
+    save_handler: Callable,
+    hint: Optional[str] = None,
+    suffix: str = "",
+    narrow: bool = False,
+    on_change: bool = True,
 ):
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint)
@@ -160,10 +158,17 @@ def text_field(
 
 
 def numeric_field(
-    label: str, job_model, attr: str, *,
-    is_frozen: bool, save_handler: Callable,
-    hint: Optional[str] = None, suffix: str = "",
-    fmt: str = "%.4g", narrow: bool = True, on_change: bool = True,
+    label: str,
+    job_model,
+    attr: str,
+    *,
+    is_frozen: bool,
+    save_handler: Callable,
+    hint: Optional[str] = None,
+    suffix: str = "",
+    fmt: str = "%.4g",
+    narrow: bool = True,
+    on_change: bool = True,
 ):
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint)
@@ -181,16 +186,18 @@ def numeric_field(
 
 
 def enum_field(
-    label: str, job_model, attr: str, enum_type, *,
-    is_frozen: bool, save_handler: Callable,
-    hint: Optional[str] = None,
+    label: str, job_model, attr: str, enum_type, *, is_frozen: bool, save_handler: Callable, hint: Optional[str] = None
 ):
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint)
         options = [e.value for e in enum_type]
         sel = ui.select(options=options, value=getattr(job_model, attr)).bind_value(job_model, attr)
+        # `.cb-select` (themed in ui/main_ui.py) gives a clean 1px-bordered box and
+        # a themed popup instead of the default Quasar Material underline/float.
         sel.props(_INPUT_PROPS_BASE)
-        sel.style(VALUE_WRAP_STYLE)
+        sel.props('popup-content-class="cb-select-popup"')
+        sel.classes("cb-select")
+        sel.style("flex: 1 1 0; min-width: 0;")
         if is_frozen:
             sel.disable()
         else:
@@ -199,9 +206,7 @@ def enum_field(
 
 
 def toggle_field(
-    label: str, job_model, attr: str, *,
-    is_frozen: bool, save_handler: Callable,
-    hint: Optional[str] = None,
+    label: str, job_model, attr: str, *, is_frozen: bool, save_handler: Callable, hint: Optional[str] = None
 ):
     cb = ui.checkbox(label).bind_value(job_model, attr).props("dense size=xs")
     cb.style(f"{SANS} font-size: 10px; color: {CLR_HEADER};")
@@ -215,9 +220,14 @@ def toggle_field(
 
 
 def path_row(
-    label: str, job_model, attr: str, *,
-    is_frozen: bool, save_handler: Callable,
-    hint: Optional[str] = None, on_change: bool = True,
+    label: str,
+    job_model,
+    attr: str,
+    *,
+    is_frozen: bool,
+    save_handler: Callable,
+    hint: Optional[str] = None,
+    on_change: bool = True,
 ):
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint, path_width=True)

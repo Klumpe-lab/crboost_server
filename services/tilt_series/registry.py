@@ -162,6 +162,21 @@ class TiltSeriesRegistry:
         ts.tomogram.outputs[output.job_instance_id] = output
         self._dirty_ts.add(ts_id)
 
+    def set_excluded(self, ts_id: str, excluded: bool, *, reason: str | None = None) -> None:
+        """Mark/unmark a tilt-series as excluded from processing (forward-only).
+
+        Mutates in memory + marks dirty; the caller persists via
+        save()/save_async(). Undo is just `set_excluded(ts_id, False)`.
+        """
+        ts = self.get_tilt_series(ts_id)
+        ts.is_excluded = excluded
+        ts.exclusion_reason = reason if excluded else None
+        self._dirty_ts.add(ts_id)
+
+    def excluded_ids(self) -> Set[str]:
+        """The set of TS ids the user has excluded from processing."""
+        return {ts.id for ts in self._tilt_series.values() if ts.is_excluded}
+
     # ── Validation ─────────────────────────────────────────────────────────
 
     def assert_complete(self, job_instance_id: str, expected_ts_ids: Set[str]) -> None:

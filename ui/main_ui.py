@@ -2,8 +2,6 @@
 Main UI router.
 """
 
-import asyncio
-
 from nicegui import ui, Client, app
 
 from backend import CryoBoostBackend
@@ -84,6 +82,64 @@ def create_ui_router(backend: CryoBoostBackend):
                 from { transform: rotate(0deg); }
                 to   { transform: rotate(360deg); }
             }
+
+            /* ── Config + I/O dropdowns ──────────────────────────────────
+               Clean 1px slate-bordered box + themed popup, replacing the
+               default Quasar Material underline/float look. Applied via the
+               .cb-select class in ui/job_plugins/_field_styles.py (config
+               parameter selects) and ui/pipeline_builder/io_config_component.py
+               (I/O source menus + their popups). */
+            .cb-select .q-field__control {
+                min-height: 24px; padding: 0 6px;
+                border: 1px solid #e2e8f0; border-radius: 4px;
+                background: #fff; transition: border-color .12s ease;
+            }
+            .cb-select .q-field__control:hover { border-color: #cbd5e1; }
+            .cb-select.q-field--focused .q-field__control { border-color: #94a3b8; }
+            .cb-select .q-field__control:before,
+            .cb-select .q-field__control:after { display: none !important; }
+            .cb-select .q-field__native,
+            .cb-select .q-field__input {
+                font-family: 'IBM Plex Sans', sans-serif; font-size: 11px;
+                color: #1e293b; padding: 0; line-height: 22px;
+            }
+            .cb-select .q-field__marginal,
+            .cb-select .q-field__append { height: 22px; }
+            .cb-select .q-field__append .q-icon { font-size: 16px; color: #94a3b8; }
+            .cb-select.q-field--disabled .q-field__control { background: #f8fafc; }
+
+            .cb-select-popup {
+                border: 1px solid #e2e8f0; border-radius: 5px;
+                box-shadow: 0 6px 18px rgba(15,23,42,.10);
+            }
+            .cb-select-popup .q-item {
+                min-height: 26px; padding: 3px 10px;
+                font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; color: #334155;
+            }
+            .cb-select-popup .q-item:hover { background: #f1f5f9; }
+            .cb-select-popup .q-item.q-manual-focusable--focused,
+            .cb-select-popup .q-item--active { background: #eef2f6; color: #1e293b; }
+
+            /* I/O source selector (custom button + menu of status-dot rows) */
+            .cb-io-src:hover { border-color: #cbd5e1 !important; }
+            /* Clear hover feedback on each candidate row in the source dropdown. */
+            .cb-io-menu-item { transition: background .1s ease; }
+            .cb-io-menu-item:hover { background: #e2e8f0; }
+
+            /* Draggable divider between the job roster and the params/main area.
+               A thin transparent grab-zone with a subtle line that lights up on
+               hover/drag; resize logic is client-side JS (workspace_page). */
+            .cb-roster-resizer {
+                width: 6px; flex-shrink: 0; height: 100%; cursor: col-resize;
+                background: transparent; position: relative; z-index: 21;
+            }
+            .cb-roster-resizer::after {
+                content: ''; position: absolute; left: 50%; top: 0;
+                transform: translateX(-50%); width: 1px; height: 100%;
+                background: transparent; transition: background .12s ease, width .12s ease;
+            }
+            .cb-roster-resizer:hover::after,
+            .cb-roster-resizer.dragging::after { background: #93c5fd; width: 2px; }
         </style>
     """)
 
@@ -114,6 +170,9 @@ def create_ui_router(backend: CryoBoostBackend):
             .classes("w-full bg-gray-50 px-6 py-3")
             .style("height: 100%; overflow-y: auto; box-sizing: border-box;")
         ):
+            from ui.landing_status_strip import mount_landing_status_strip
+
+            mount_landing_status_strip(backend)
             build_data_import_panel(backend, callbacks)
 
         # Mount the background-task tray here too so tasks still in flight

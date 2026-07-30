@@ -288,5 +288,11 @@ def _render_inline_log(job_dir: Path, task_idx: int) -> None:
 
 def _render_placeholder(message: str) -> None:
     with ui.column().classes("w-full h-full items-center justify-center text-gray-400 gap-2"):
-        ui.icon("hourglass_empty", size="48px")
+        # Braille spinner (CSS-driven via cb-braille-rotate in ui/main_ui.py) rather than a
+        # static hourglass — it reads as "in progress" and needs no server tick.
+        ui.html(
+            '<span class="cb-braille-spin" style="display:inline-block;font-size:38px;line-height:1;'
+            'color:#94a3b8;transform-origin:50% 50%;animation:cb-braille-rotate 1.1s linear infinite;">⠋</span>',
+            sanitize=False,
+        )
         ui.label(message).style("font-size: 13px;")

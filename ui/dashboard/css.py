@@ -868,11 +868,23 @@ _CB_CSS = """
 .cb-strip-scroll { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; }
 .cb-strip-cols { display: flex; flex-direction: row; width: max-content; }
 .cb-strip-col {
-    flex: 0 0 62px; display: flex; flex-direction: column;
+    flex: 0 0 62px; display: flex; flex-direction: column; position: relative;
     border-right: 1px solid #f1f5f9; cursor: pointer;
 }
 .cb-strip-col:hover { background: #f8fafc; }
 .cb-strip-col.selected { background: #eef2ff; box-shadow: inset 0 0 0 1.5px #6366f1; }
+/* Excluded-from-processing TS: muted, but header + restore toggle stay crisp so
+   the undo is always reachable (dim the data cells, not the whole column). */
+.cb-strip-col.excluded { background: repeating-linear-gradient(45deg, #f8fafc, #f8fafc 4px, #eef1f4 4px, #eef1f4 8px); }
+.cb-strip-col.excluded .cb-strip-colhead { text-decoration: line-through; color: #94a3b8; }
+.cb-strip-col.excluded .cb-strip-cell { opacity: 0.3; }
+.cb-strip-excl {
+    position: absolute; top: 0; right: 0; font-size: 12px; line-height: 1;
+    color: #94a3b8; cursor: pointer; opacity: 0; transition: opacity .12s; z-index: 3;
+}
+.cb-strip-col:hover .cb-strip-excl { opacity: 0.6; }
+.cb-strip-excl:hover { color: #dc2626; opacity: 1; }
+.cb-strip-excl.on { opacity: 1; color: #b45309; }
 .cb-strip-colhead {
     height: 26px; display: flex; align-items: center; justify-content: center;
     font-size: 9px; color: #475569; font-weight: 600; white-space: nowrap; overflow: hidden;

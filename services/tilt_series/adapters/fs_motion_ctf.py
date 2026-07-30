@@ -98,7 +98,9 @@ class FsMotionCtfIngestAdapter:
                 f"(sample): {sample}{suffix}"
             )
 
-    def emit_star(self, input_star_path: Path, output_star_path: Path, project_root: Path) -> None:
+    def emit_star(
+        self, input_star_path: Path, output_star_path: Path, project_root: Path, *, excluded_ids: set[str] | None = None
+    ) -> None:
         """Write the hierarchical STAR (global block + per-TS STARs) consumed by
         the ts_alignment job.
 
@@ -118,9 +120,14 @@ class FsMotionCtfIngestAdapter:
         in_star_dir = input_star_path.parent
         out_ts_df = in_ts_df.copy()
 
+        excluded = {str(t) for t in (excluded_ids or ())}
         unresolved: List[str] = []
         for _, ts_row in in_ts_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
+            # Muted TS: intentionally not ingested — drop from output, don't
+            # treat the missing registry output as a per-TS failure.
+            if ts_id in excluded:
+                continue
             per_ts_rel = ts_row["rlnTomoTiltSeriesStarFile"]
             per_ts_in = self._resolve_per_ts_path(per_ts_rel, in_star_dir, project_root)
             if per_ts_in is None:
@@ -146,6 +153,9 @@ class FsMotionCtfIngestAdapter:
                 "fs_motion_and_ctf emit_star: " + str(len(unresolved)) + " per-TS problem(s):\n  - "
                 + "\n  - ".join(unresolved)
             )
+
+        if excluded:
+            out_ts_df = out_ts_df[~out_ts_df["rlnTomoName"].astype(str).isin(excluded)].reset_index(drop=True)
 
         # Rewrite per-TS paths in the global block to point to the new tilt_dir.
         out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(

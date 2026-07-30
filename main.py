@@ -155,6 +155,10 @@ if __name__ in {"__main__", "__mp_main__"}:
 
     args     = parser.parse_args()
     setup_logging(debug=args.debug)
+    # Expose the bind port to the running app (the status strip on the landing
+    # page surfaces it); setup_app() runs before uvicorn so an env var is the
+    # simplest single source of truth.
+    os.environ["CRBOOST_PORT"] = str(args.port)
     app      = setup_app()
     local_ip = get_local_ip()
     hostname = socket.gethostname()

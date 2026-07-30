@@ -103,6 +103,7 @@ class TsCtfIngestAdapter:
         output_star_path: Path,
         *,
         preserve_subfolder: str = "tilt_series",
+        excluded_ids: set[str] | None = None,
     ) -> None:
         """Write the RELION-compatible hierarchical STAR for the downstream job.
 
@@ -129,9 +130,14 @@ class TsCtfIngestAdapter:
             lambda x: f"{preserve_subfolder}/{Path(x).name}"
         )
 
+        excluded = {str(t) for t in (excluded_ids or ())}
         unresolved: List[str] = []
         for _, ts_row in in_ts_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
+            # Muted TS: intentionally not ingested — drop from output, don't
+            # treat the missing registry output as a per-TS failure.
+            if ts_id in excluded:
+                continue
             per_ts_rel = ts_row["rlnTomoTiltSeriesStarFile"]
             per_ts_in = (in_star_dir / per_ts_rel).resolve()
             if not per_ts_in.exists():
@@ -175,6 +181,9 @@ class TsCtfIngestAdapter:
             if self.job_instance_id in ts.outputs
         }
         out_ts_df["rlnTomoHand"] = out_ts_df["rlnTomoName"].map(hand_map).fillna(1).astype(int)
+
+        if excluded:
+            out_ts_df = out_ts_df[~out_ts_df["rlnTomoName"].astype(str).isin(excluded)].reset_index(drop=True)
 
         self.starfile_service.write({"global": out_ts_df}, output_star_path)
         logger.info("tsCtf: wrote output STAR to %s", output_star_path)

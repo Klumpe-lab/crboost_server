@@ -214,6 +214,16 @@ class TiltSeries(BaseModel):
     is_filtered_out: bool = False
     filter_reason: Optional[str] = None
 
+    # User-driven "exclude from processing" (forward-only mute). When True,
+    # every per-TS job supervisor pre-writes a `.skip` marker for this TS so it
+    # is never dispatched and never aggregated, and the dashboard subtracts it
+    # from "expected". Distinct from is_filtered_out (which is the frame-level
+    # tilt-filter concept). Undo = set back to False; the effect applies on the
+    # next run. On-disk STARs are never rewritten — exclusion is a dispatch +
+    # aggregation gate, not a data mutation.
+    is_excluded: bool = False
+    exclusion_reason: Optional[str] = None
+
     # ── derived views ──────────────────────────────────────────────────────
 
     @property

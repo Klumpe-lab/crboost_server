@@ -33,6 +33,7 @@ server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import (
+    apply_exclusions,
     collect_task_results,
     install_cancel_handler,
     preflight_registry,
@@ -254,6 +255,10 @@ def run_supervisor_mode():
             )
             per_task_cfg = per_task_cfg.model_copy(update={"mem": bumped_mem, "time": bumped_time})
 
+        # Honor user "exclude from processing": pre-skip excluded TS so they are
+        # never dispatched and count as settled (not failures) in aggregation.
+        excluded_ts = apply_exclusions(job_dir, project_path, tomo_names)
+
         array_job_id = submit_array_job(
             job_dir=job_dir,
             project_path=project_path,
@@ -278,26 +283,19 @@ def run_supervisor_mode():
         if results.missing:
             print(f"[SUPERVISOR] MISSING tomograms: {results.missing}", flush=True)
 
-        # Match template matching's partial-tolerance: one bad tomogram must not
-        # deadlock extraction for the healthy rest. The glob-based aggregation
-        # below naturally skips tomograms that produced no *_particles.star, and
-        # the per-TS .fail markers stay on disk for the dashboard. Only a total
-        # wipeout is fatal. Mirrors drivers/ts_alignment.py.
-        if not results.all_succeeded and not results.ok:
+        if not results.all_succeeded:
             (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (no tomograms succeeded)", flush=True)
+            print("[SUPERVISOR] Marking job as FAILED (some tomograms did not succeed)", flush=True)
             sys.exit(1)
-        excluded = sorted(results.failed + results.missing)
-        if excluded:
-            print(
-                f"[SUPERVISOR] PARTIAL SUCCESS: carrying {len(results.ok)} tomogram(s) forward, "
-                f"excluding {len(excluded)}/{len(tomo_names)} that did not succeed: {excluded}",
-                flush=True,
-            )
 
         # ---- Aggregate per-tomogram particle lists ----
         candidates_star = job_dir / "candidates.star"
         star_files = sorted(local_tm_results.glob("*_particles.star"))
+        # Drop any per-TS particle files for excluded tilt-series (a prior run
+        # may have left them on disk; the muted TS must not re-enter the merge).
+        if excluded_ts:
+            excluded_set = set(excluded_ts)
+            star_files = [f for f in star_files if f.name[: -len("_particles.star")] not in excluded_set]
         if not star_files:
             raise RuntimeError("No *_particles.star files produced by tasks")
         if len(star_files) == 1:

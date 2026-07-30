@@ -443,7 +443,15 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         # tick mid-click would tear down the column under the click.
         journey, ts_names = _collect_dashboard_journey(state, project_path)
         species_journey = _collect_species_journey(state, project_path)
-        sig = (_journey_signature(journey, species_journey, ts_names), selected["ts"])
+        try:
+            from services.tilt_series import get_registry_for
+
+            excluded_ids = set(get_registry_for(project_path).excluded_ids())
+        except Exception:
+            excluded_ids = set()
+        # Fold the exclusion set into the signature so toggling a TS forces a
+        # rebuild (the journey data itself doesn't change until the next run).
+        sig = (_journey_signature(journey, species_journey, ts_names), selected["ts"], frozenset(excluded_ids))
         if col_els and sig == _strip_sig["sig"]:
             return
         _strip_sig["sig"] = sig
@@ -459,8 +467,35 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
                 recon_mrc_map=recon_mrc,
                 on_select=select_ts,
                 info_popover=_render_ts_info_popover,
+                excluded_ids=excluded_ids,
+                on_toggle_exclude=toggle_exclude,
             )
         )
+
+    async def toggle_exclude(ts: str) -> None:
+        # Forward-only mute: flip the registry flag + persist. The effect (drivers
+        # pre-skip this TS) lands on the next run; the strip mutes it immediately.
+        # Guard against emptying the set — excluding the last active TS would
+        # hand every downstream supervisor an empty input and deadlock the run.
+        from services.tilt_series import get_registry_for
+
+        reg = get_registry_for(project_path)
+        if not reg.has_tilt_series(ts):
+            ui.notify(f"{ts} isn't in the tilt-series registry — reload the project first.", type="warning")
+            return
+        currently = reg.get_tilt_series(ts).is_excluded
+        if not currently:
+            active = [t for t in reg.tilt_series_ids() if not reg.get_tilt_series(t).is_excluded]
+            if len(active) <= 1:
+                ui.notify("Can't exclude the last remaining tilt-series.", type="warning")
+                return
+        reg.set_excluded(ts, not currently, reason="excluded via dashboard" if not currently else None)
+        await reg.save_async()
+        ui.notify(
+            f"{ts}: {'excluded — will be skipped on the next run' if not currently else 'restored to processing'}",
+            type="info",
+        )
+        render_strip()
 
     async def select_ts(ts: str) -> None:
         # Instant feedback: move the column highlight + paint a spinner now and
@@ -1125,7 +1160,11 @@ _HINT_ALIGN_ANGLES = (
 
 
 def _render_ctf_motion_plots(
-    df: pd.DataFrame, *, show_motion: bool = True, frameseries_dir: Optional[Path] = None
+    df: pd.DataFrame,
+    *,
+    show_motion: bool = True,
+    frameseries_dir: Optional[Path] = None,
+    dl_by_frame: Optional[dict] = None,
 ) -> None:
     """Defocus + astigmatism (always plotted as scatter, since each tilt is an
     independent estimate). CTF max-resolution / FOM / motion are gated on
@@ -1139,6 +1178,10 @@ def _render_ctf_motion_plots(
     `docs/preprocessing-metrics-inventory.md` §4."""
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
     cd = _per_tilt_customdata(df)
+    if dl_by_frame:
+        # Append the tilt-filter verdict (keep/drop + prob) as customdata[2] so each
+        # per-tilt point's hover shows what the tilt-filter thought of that tilt.
+        cd = [row + [dl_by_frame.get(row[1], "—")] for row in cd]
 
     # Real per-tilt CTF-fit resolution + motion live in the WarpTools frameseries
     # XML, not the star (the star columns are 1e-6 / 'None' placeholders). Read
@@ -1562,11 +1605,19 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
             )
         if r_stats["n"]:
             strip_rows.append(("CTF res", f"{r_stats['median']:.1f} Å (worst {r_stats['max']:.1f})"))
+
+        # Tilt-filter per-tilt verdict (keep/drop + DL probability): summarised in the
+        # strip and surfaced on each plot point's hover below. Silent no-op if the
+        # tilt-filter job hasn't run for this TS.
+        dl_by_frame = _tilt_filter_verdict_by_frame(project_state, project_path, ts_name)
+        if dl_by_frame:
+            n_keep = sum(1 for v in dl_by_frame.values() if v.startswith("keep"))
+            strip_rows.append(("DL keep", f"{n_keep}/{len(dl_by_frame)}"))
         _stat_strip(strip_rows)
 
         # Skip the motion plot here — TS CTF doesn't change per-tilt motion;
         # that's already shown in the FS Motion/CTF section above.
-        _render_ctf_motion_plots(df, show_motion=False)
+        _render_ctf_motion_plots(df, show_motion=False, dl_by_frame=dl_by_frame or None)
 
         with ui.expansion("Job parameters").classes("w-full text-[10px]").props("dense"):
             with ui.element("div").classes("cb-datadump-grid"):
@@ -1596,6 +1647,28 @@ def _resolve_tilt_filter_dir(project_state, project_path: Path) -> Optional[Path
     if (standalone / "tiltseries_labeled.star").exists() or (standalone / "tiltseries_filtered.star").exists():
         return standalone
     return None
+
+
+def _tilt_filter_verdict_by_frame(project_state, project_path: Path, ts_name: str) -> dict[str, str]:
+    """{frame_basename: "keep (p=0.92)" | "drop (p=0.12)"} from the tilt-filter labeled
+    star for this TS, so per-tilt CTF plots can show the DL verdict alongside each tilt.
+    Empty dict when the tilt-filter job hasn't run for this TS."""
+    filter_dir = _resolve_tilt_filter_dir(project_state, project_path)
+    if filter_dir is None:
+        return {}
+    lab = _read_per_tilt_df(filter_dir / "tilt_series_labeled" / f"{ts_name}.star")
+    if lab is None or "cryoBoostDlLabel" not in lab.columns or "rlnMicrographMovieName" not in lab.columns:
+        return {}
+    out: dict[str, str] = {}
+    for _, row in lab.iterrows():
+        base = Path(str(row["rlnMicrographMovieName"])).name
+        keep = str(row.get("cryoBoostDlLabel", "")).strip().lower() == "good"
+        try:
+            pstr = f" (p={float(row['cryoBoostDlProbability']):.2f})"
+        except (TypeError, ValueError, KeyError):
+            pstr = ""
+        out[base] = ("keep" if keep else "drop") + pstr
+    return out
 
 
 def _read_per_tilt_frame_names(per_tilt_star: Path) -> list[str]:
@@ -2094,10 +2167,23 @@ _AUTO_KICKED_DENOISE_SLAB: set[str] = set()
 _SELECTED_DENOISE_METHOD: dict[str, str] = {}
 
 
-def _denoise_method_label(job_model, instance_id: str) -> str:
+def _denoise_method_label(job_model, instance_id: str, project_state=None) -> str:
     """Human label for a denoisepredict job's method ('cryoCARE', 'IsoNet', …),
-    falling back to the instance_id when the field is absent."""
-    m = getattr(job_model, "denoise_method", None)
+    falling back to the instance_id when the field is absent.
+
+    Predict INHERITS its method from denoise-train at run time and never persists it back,
+    so the stored `denoise_method` is the cryoCARE default even when IsoNet actually ran.
+    Prefer the same inherited value the driver/job-tab use, then the stored field."""
+    m = None
+    if project_state is not None:
+        inherit = getattr(job_model, "inherited_from_train", None)
+        if callable(inherit):
+            try:
+                m = inherit(project_state)[0]
+            except Exception:
+                m = None
+    if m is None:
+        m = getattr(job_model, "denoise_method", None)
     return getattr(m, "value", None) or (str(m) if m else instance_id)
 
 
@@ -2142,7 +2228,7 @@ def _available_denoise_methods_for_ts(project_state, project_path: Path, ts_name
             continue
         mrc = _resolve_denoised_mrc_for_job(job_dir, project_path, ts_name)
         if mrc is not None:
-            found.append((_denoise_method_label(jm, iid), iid, job_dir, mrc))
+            found.append((_denoise_method_label(jm, iid, project_state), iid, job_dir, mrc))
     label_counts: dict[str, int] = {}
     for lbl, *_ in found:
         label_counts[lbl] = label_counts.get(lbl, 0) + 1
