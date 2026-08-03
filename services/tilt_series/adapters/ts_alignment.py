@@ -525,12 +525,21 @@ class TsAlignmentIngestAdapter:
                 tilt_df[col] = float("nan")
 
         skipped = 0
+        filtered_idx: List[int] = []
         for idx, row in tilt_df.iterrows():
             movie_name = row["rlnMicrographMovieName"]
             try:
                 frame = ts.frame_by_filename(movie_name)
             except KeyError:
                 errors.append(f"row {idx}: movie {movie_name!r} not in registry TS {ts.id}")
+                continue
+
+            # Tilt-filter verdict: drop the row so the emitted STAR matches the
+            # trimmed tomostar. A filtered tilt was never aligned (absent from the
+            # trimmed tomostar the aligner read) so it would otherwise carry NaN
+            # geometry into the particle stage.
+            if frame.is_filtered_out:
+                filtered_idx.append(idx)
                 continue
 
             aln = by_frame_id.get(frame.id)
@@ -544,6 +553,12 @@ class TsAlignmentIngestAdapter:
             tilt_df.at[idx, "rlnTomoXShiftAngst"] = aln.x_shift_angstrom
             tilt_df.at[idx, "rlnTomoYShiftAngst"] = aln.y_shift_angstrom
 
+        if filtered_idx:
+            tilt_df = tilt_df.drop(index=filtered_idx).reset_index(drop=True)
+            logger.info(
+                "tsAlignment: TS %s: dropped %d tilt-filtered row(s) from output STAR",
+                ts.id, len(filtered_idx),
+            )
         if skipped > 0:
             logger.info(
                 "tsAlignment: TS %s: %d/%d rows left un-aligned (WarpTools ts_import dropped them from tomostar)",

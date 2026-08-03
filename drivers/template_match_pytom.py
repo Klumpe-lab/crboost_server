@@ -37,6 +37,7 @@ server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import (
+    apply_exclusions,
     collect_task_results,
     install_cancel_handler,
     preflight_registry,
@@ -387,6 +388,10 @@ def run_supervisor_mode():
 
         per_task_cfg = params.get_effective_slurm_config()
 
+        # Honor user "exclude from processing": pre-skip excluded TS so they are
+        # never dispatched and count as settled (not failures) in aggregation.
+        apply_exclusions(job_dir, project_path, tomo_names)
+
         array_job_id = submit_array_job(
             job_dir=job_dir,
             project_path=project_path,
@@ -411,22 +416,10 @@ def run_supervisor_mode():
         if results.missing:
             print(f"[SUPERVISOR] MISSING tomograms: {results.missing}", flush=True)
 
-        # A single malformed tilt-series must not deadlock a healthy dataset:
-        # drop the tomograms that failed/never-ran and carry the rest forward.
-        # Their per-TS .fail markers stay on disk, so the dashboard's per-TS
-        # strip still flags them red even though the job itself succeeds. Only a
-        # total wipeout (nothing matched) is fatal. Mirrors drivers/ts_alignment.py.
-        if not results.all_succeeded and not results.ok:
+        if not results.all_succeeded:
             (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (no tomograms succeeded)", flush=True)
+            print("[SUPERVISOR] Marking job as FAILED (some tomograms did not succeed)", flush=True)
             sys.exit(1)
-        excluded = sorted(results.failed + results.missing)
-        if excluded:
-            print(
-                f"[SUPERVISOR] PARTIAL SUCCESS: carrying {len(results.ok)} tomogram(s) forward, "
-                f"excluding {len(excluded)}/{len(tomo_names)} that did not succeed: {excluded}",
-                flush=True,
-            )
 
         output_tomograms = job_dir / "tomograms.star"
         shutil.copy2(input_star_tomos, output_tomograms)

@@ -33,7 +33,10 @@ class TsAlignmentParams(AbstractJobParams):
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf"),
-        InputSlot(key="tomostar_dir", accepts=[JobFileType.TOMOSTAR_DIR], preferred_source="tsImport"),
+        # Prefer the tilt-filter's trimmed tomostar when that (optional) job is in
+        # the pipeline; otherwise the sole TOMOSTAR_DIR producer is tsImport, so the
+        # resolver falls back to it and a no-filter pipeline is unchanged.
+        InputSlot(key="tomostar_dir", accepts=[JobFileType.TOMOSTAR_DIR], preferred_source="tiltFilter"),
         InputSlot(
             key="warp_tiltseries_settings", accepts=[JobFileType.WARP_TILTSERIES_SETTINGS], preferred_source="tsImport"
         ),

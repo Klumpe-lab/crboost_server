@@ -52,6 +52,7 @@ from drivers.array_job_base import (
     STATUS_DIR_NAME,
     collect_task_results,
     install_cancel_handler,
+    load_excluded_ts,
     preflight_registry,
     read_manifest,
     submit_array_job,
@@ -195,13 +196,23 @@ def run_supervisor_mode():
         with_picks_set = set(ts_with_picks)
         empty_ts = [t for t in ts_names if t not in with_picks_set]
 
+        # Honor user "exclude from processing": excluded TS are muted — never
+        # staged, dispatched, or merged. They get a .skip marker (like empty TS)
+        # so they stay visible in the manifest/strip but count as settled.
+        excluded_set = load_excluded_ts(project_path)
+        excluded_ts = [t for t in ts_names if t in excluded_set]
+        ts_with_picks = [t for t in ts_with_picks if t not in excluded_set]
+
         print(
             f"[SUPERVISOR] {len(ts_with_picks)} TS with picks to extract; "
-            f"{len(empty_ts)} empty TS will be marked SKIP (no upstream candidates)",
+            f"{len(empty_ts)} empty TS will be marked SKIP (no upstream candidates); "
+            f"{len(excluded_ts)} excluded from processing",
             flush=True,
         )
         if empty_ts:
             print(f"[SUPERVISOR] Empty TS (skipped): {empty_ts}", flush=True)
+        if excluded_ts:
+            print(f"[SUPERVISOR] Excluded TS (skipped): {excluded_ts}", flush=True)
 
         # Clear stale .skip markers, then pre-write fresh ones for the
         # currently-empty TS. submit_array_job's sparse-array logic treats
@@ -212,7 +223,11 @@ def run_supervisor_mode():
             for f in status_dir.glob("*.skip"):
                 f.unlink()
         for ts in empty_ts:
+            if ts in excluded_set:
+                continue
             write_skip_status(status_dir, ts, reason="no candidates above template-matching threshold")
+        for ts in excluded_ts:
+            write_skip_status(status_dir, ts, reason="excluded from processing")
 
         # Stage per-TS optimisation sets ONLY for the TS that have picks.
         # Skipped TS never get a staging dir — no task will run for them.

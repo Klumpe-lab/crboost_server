@@ -24,6 +24,7 @@ server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import (
+    apply_exclusions,
     collect_task_results,
     copy_tomostar_with_absolute_paths,
     install_cancel_handler,
@@ -241,6 +242,10 @@ def run_supervisor_mode():
         preflight_registry(project_path, ts_names, job_name="ts_alignment")
 
         per_task_cfg = params.get_effective_slurm_config()
+
+        # Honor user "exclude from processing": pre-skip excluded TS so they are
+        # never dispatched and count as settled (not failures) in aggregation.
+        apply_exclusions(job_dir, project_path, ts_names)
 
         array_job_id = submit_array_job(
             job_dir=job_dir,

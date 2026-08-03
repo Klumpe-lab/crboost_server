@@ -37,6 +37,7 @@ sys.path.insert(0, str(server_dir))
 import starfile
 
 from drivers.array_job_base import (
+    apply_exclusions,
     collect_task_results,
     install_cancel_handler,
     read_manifest,
@@ -279,6 +280,25 @@ def aggregate_output_star(
     print(f"[SUPERVISOR] Wrote denoised STAR with {len(out_df)} tomogram(s): {out_path}", flush=True)
 
 
+def _apply_inherited_method(project_state, params, tag: str) -> None:
+    """Override denoise_method + isonet_deconv from the denoisetrain job that produced the
+    model, so predict always runs what the model was trained as (never a stale/default that
+    disagrees). Best-effort; prepare_isonet_model's tar-structure check stays the final guard."""
+    try:
+        method, deconv = params.inherited_from_train(project_state)
+    except Exception as e:
+        print(f"{tag} WARN: could not inherit denoise method from train: {e}", file=sys.stderr, flush=True)
+        return
+    if method is not None and method != params.denoise_method:
+        print(
+            f"{tag} Inheriting denoise_method={method.value} from denoise-train (was {params.denoise_method.value})",
+            flush=True,
+        )
+        params.denoise_method = method
+    if deconv is not None:
+        params.isonet_deconv = deconv
+
+
 def run_supervisor_mode():
     try:
         (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
@@ -290,6 +310,7 @@ def run_supervisor_mode():
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
+    _apply_inherited_method(project_state, params, "[SUPERVISOR]")
     print(f"[SUPERVISOR] CWD (job dir): {job_dir}", flush=True)
     try:
         paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
@@ -326,6 +347,9 @@ def run_supervisor_mode():
             print(f"[SUPERVISOR] Staged IsoNet model: {model_pt}", flush=True)
 
         per_task_cfg = params.get_effective_slurm_config()
+        # Honor user "exclude from processing": pre-skip excluded TS so they are
+        # never dispatched and count as settled (not failures) in aggregation.
+        apply_exclusions(job_dir, project_path, ts_names)
         array_job_id = submit_array_job(
             job_dir=job_dir,
             project_path=project_path,
@@ -387,6 +411,7 @@ def run_task_mode(array_idx: int):
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
+    _apply_inherited_method(project_state, params, f"[TASK {array_idx}]")
     status_dir = job_dir / STATUS_DIR_NAME
     ts_name = None
     try:
@@ -429,8 +454,17 @@ def run_task_mode(array_idx: int):
             if not model_pt:
                 raise RuntimeError("Manifest missing isonet_model_pt (supervisor did not stage the IsoNet model)")
             run_isonet_predict_task(
-                params, job_dir, additional_binds, Path(model_pt),
-                full_path, even_path, odd_path, output_dir, out_mrc, ts_name, array_idx
+                params,
+                job_dir,
+                additional_binds,
+                Path(model_pt),
+                full_path,
+                even_path,
+                odd_path,
+                output_dir,
+                out_mrc,
+                ts_name,
+                array_idx,
             )
         else:
             if not even_path.exists() or not odd_path.exists():

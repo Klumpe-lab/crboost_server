@@ -4,12 +4,9 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Tuple, TYPE_CHECKING
+from typing import Dict, List, Optional, Any, Callable, Tuple
 from pydantic import BaseModel, Field, ConfigDict
-from services.project_state import JobType, JobStatus
-
-if TYPE_CHECKING:
-    from nicegui.element import Element
+from services.project_state import JobType
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +31,9 @@ class DataImportFormState(BaseModel):
     movies_glob: str = ""
     mdocs_glob: str = ""
     import_prefix: str = ""
+    # Optional project-wide gain reference file, chosen at setup. Threaded into
+    # detected_params -> ProjectState.acquisition.gain_reference_path.
+    gain_reference_path: str = ""
 
     movies_valid: bool = False
     mdocs_valid: bool = False
@@ -147,10 +147,10 @@ PIPELINE_ORDER: List[JobType] = [
     JobType.IMPORT_MOVIES,
     JobType.FS_MOTION_CTF,
     JobType.TS_IMPORT,
+    JobType.TILT_FILTER,
     JobType.TS_ALIGNMENT,
     JobType.MISS_ALIGN,
     JobType.TS_CTF,
-    JobType.TILT_FILTER,
     JobType.TS_RECONSTRUCT,
     JobType.DENOISE_TRAIN,
     JobType.DENOISE_PREDICT,
@@ -517,6 +517,7 @@ class UIStateManager:
         movies_glob: Optional[str] = None,
         mdocs_glob: Optional[str] = None,
         import_prefix: Optional[str] = None,
+        gain_reference_path: Optional[str] = None,
         movies_valid: Optional[bool] = None,
         mdocs_valid: Optional[bool] = None,
         is_aggregation: Optional[bool] = None,
@@ -534,6 +535,8 @@ class UIStateManager:
             di.mdocs_glob = mdocs_glob
         if import_prefix is not None:
             di.import_prefix = import_prefix
+        if gain_reference_path is not None:
+            di.gain_reference_path = gain_reference_path
         if movies_valid is not None:
             di.movies_valid = movies_valid
         if mdocs_valid is not None:

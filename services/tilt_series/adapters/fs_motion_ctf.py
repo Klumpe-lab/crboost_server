@@ -44,6 +44,16 @@ logger = logging.getLogger(__name__)
 _LEGACY_MOTION_PLACEHOLDER = 0.000001
 
 
+def _pos_float(v: Optional[str]) -> Optional[float]:
+    """Coerce a WarpTools XML attribute to a positive float, else None. Matches
+    frameseries_quality._positive_float (non-positive/unparseable → not real)."""
+    try:
+        f = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
 class FsMotionCtfIngestAdapter:
     def __init__(
         self,
@@ -98,7 +108,9 @@ class FsMotionCtfIngestAdapter:
                 f"(sample): {sample}{suffix}"
             )
 
-    def emit_star(self, input_star_path: Path, output_star_path: Path, project_root: Path) -> None:
+    def emit_star(
+        self, input_star_path: Path, output_star_path: Path, project_root: Path, *, excluded_ids: set[str] | None = None
+    ) -> None:
         """Write the hierarchical STAR (global block + per-TS STARs) consumed by
         the ts_alignment job.
 
@@ -118,9 +130,14 @@ class FsMotionCtfIngestAdapter:
         in_star_dir = input_star_path.parent
         out_ts_df = in_ts_df.copy()
 
+        excluded = {str(t) for t in (excluded_ids or ())}
         unresolved: List[str] = []
         for _, ts_row in in_ts_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
+            # Muted TS: intentionally not ingested — drop from output, don't
+            # treat the missing registry output as a per-TS failure.
+            if ts_id in excluded:
+                continue
             per_ts_rel = ts_row["rlnTomoTiltSeriesStarFile"]
             per_ts_in = self._resolve_per_ts_path(per_ts_rel, in_star_dir, project_root)
             if per_ts_in is None:
@@ -147,6 +164,9 @@ class FsMotionCtfIngestAdapter:
                 + "\n  - ".join(unresolved)
             )
 
+        if excluded:
+            out_ts_df = out_ts_df[~out_ts_df["rlnTomoName"].astype(str).isin(excluded)].reset_index(drop=True)
+
         # Rewrite per-TS paths in the global block to point to the new tilt_dir.
         out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(
             lambda name: f"tilt_series/{name}.star"
@@ -170,6 +190,11 @@ class FsMotionCtfIngestAdapter:
         defocus_angle = float(ctf.find(".//Param[@Name='DefocusAngle']").get("Value"))
         defocus_delta = float(ctf.find(".//Param[@Name='DefocusDelta']").get("Value"))
 
+        # Real QC values — root <Movie> attributes, not in the <CTF> block. The
+        # RELION star writes 1e-6 placeholders for these; the registry keeps the truth.
+        ctf_resolution = _pos_float(root.get("CTFResolutionEstimate"))
+        mean_frame_movement = _pos_float(root.get("MeanFrameMovement"))
+
         # Legacy quirk: fs_motion writes U == V and stuffs delta into astigmatism.
         # Replicated exactly to preserve on-disk STAR layout (byte-for-byte
         # compat with the pre-refactor writer).
@@ -189,6 +214,8 @@ class FsMotionCtfIngestAdapter:
             defocus_v_angstrom=defocus_v,
             defocus_angle=defocus_angle,
             ctf_astigmatism=astig,
+            ctf_resolution=ctf_resolution,
+            mean_frame_movement=mean_frame_movement,
             warp_xml_path=xml_path,
         )
 

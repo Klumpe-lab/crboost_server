@@ -10,6 +10,47 @@ from ui.species_workbench_panel import build_species_workbench_panel
 from ui.ui_state import get_ui_state_manager
 
 
+# Client-side resize for the job-roster panel: drag the divider, clamp to a
+# sane range, and persist the width in localStorage so it survives reloads. A
+# MutationObserver mirrors the roster's display onto the handle so the divider
+# hides with the roster in journey mode. Idempotent (guarded by data-wired).
+_ROSTER_RESIZER_JS = """
+(function(){
+  const roster = document.getElementById('cb-roster-panel');
+  const handle = document.getElementById('cb-roster-resizer');
+  if(!roster || !handle || handle.dataset.wired) return;
+  handle.dataset.wired = '1';
+  const MINW = 240, MAXW = 720;
+  const clamp = (w) => Math.min(MAXW, Math.max(MINW, w));
+  const apply = (w) => { roster.style.width = w+'px'; roster.style.minWidth = w+'px'; };
+  try { const s = localStorage.getItem('cbRosterW'); if(s) apply(clamp(parseInt(s,10))); } catch(e){}
+  let dragging=false, startX=0, startW=0;
+  handle.addEventListener('mousedown', (e)=>{
+    dragging=true; startX=e.clientX; startW=roster.getBoundingClientRect().width;
+    handle.classList.add('dragging');
+    document.body.style.cursor='col-resize'; document.body.style.userSelect='none';
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e)=>{
+    if(!dragging) return;
+    apply(clamp(Math.round(startW + (e.clientX - startX))));
+  });
+  window.addEventListener('mouseup', ()=>{
+    if(!dragging) return;
+    dragging=false; handle.classList.remove('dragging');
+    document.body.style.cursor=''; document.body.style.userSelect='';
+    try { localStorage.setItem('cbRosterW', String(Math.round(roster.getBoundingClientRect().width))); } catch(e){}
+  });
+  try {
+    const obs = new MutationObserver(()=>{
+      handle.style.display = (getComputedStyle(roster).display === 'none') ? 'none' : 'block';
+    });
+    obs.observe(roster, {attributes:true, attributeFilter:['style']});
+  } catch(e){}
+})();
+"""
+
+
 def build_workspace_page(backend: CryoBoostBackend):
     ui_mgr = get_ui_state_manager()
     ui_mgr.prepare_for_page_rebuild()
@@ -129,12 +170,21 @@ def build_workspace_page(backend: CryoBoostBackend):
             "border-right: 1px solid #e2e8f0;"
         )
 
-        roster_panel = ui.element("div").style(
-            "width: 300px; min-width: 300px; height: 100%; flex-shrink: 0; "
-            "background: #ffffff; border-right: 1px solid #e5e7eb; "
-            "overflow-y: auto; overflow-x: hidden; "
-            "flex-direction: column; gap: 0; display: flex;"
+        roster_panel = (
+            ui.element("div")
+            .props("id=cb-roster-panel")
+            .style(
+                "width: 340px; min-width: 340px; height: 100%; flex-shrink: 0; "
+                "background: #ffffff; border-right: 1px solid #e5e7eb; "
+                "overflow-y: auto; overflow-x: hidden; "
+                "flex-direction: column; gap: 0; display: flex;"
+            )
         )
+
+        # Draggable divider between the job roster and the params/main area.
+        # Resize + persistence is client-side JS (see _ROSTER_RESIZER_JS) so the
+        # drag is smooth and survives reloads via localStorage.
+        ui.element("div").props("id=cb-roster-resizer").classes("cb-roster-resizer")
 
         main_area = ui.element("div").style(
             "flex: 1; min-width: 0; height: 100%; overflow: hidden; display: flex; flex-direction: row; gap: 0;"
@@ -177,3 +227,6 @@ def build_workspace_page(backend: CryoBoostBackend):
     mount_background_task_tray(
         project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None
     )
+
+    # Wire the roster resizer once the DOM for this page exists on the client.
+    ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS), once=True)

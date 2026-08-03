@@ -50,6 +50,7 @@ def main():
             apply_labels,
             filter_good_tilts,
             write_tilt_series,
+            drop_tilts_from_tomostar,
         )
         from filterTilts.image_processor import ImageProcessor
         from filterTilts.deepLearning.model_loader import ModelLoader
@@ -100,17 +101,57 @@ def main():
         write_tilt_series(good_data, filtered_path, "tilt_series_filtered")
         print(f"[DRIVER] Wrote filtered star: {filtered_path} ({good_data.num_tilts} good tilts)", flush=True)
 
-        # Step 8: Symlink warp_tiltseries dir from upstream
-        input_processing = job_model.paths.get("input_processing", "")
-        if input_processing:
-            warp_ts_link = job_dir / "warp_tiltseries"
-            if not warp_ts_link.exists():
-                source = Path(input_processing)
-                if not source.is_absolute():
-                    source = project_path / input_processing
-                if source.exists():
-                    warp_ts_link.symlink_to(source)
-                    print(f"[DRIVER] Symlinked warp_tiltseries -> {source}", flush=True)
+        # Step 8: Apply the cut to the tomostar — the functional output. Alignment
+        # reads the tomostar (not the star), so trimming its rows here is what makes
+        # the filter actually filter alignment/CTF/reconstruct. The labeled/filtered
+        # stars above remain for the dashboard's keep/drop panel.
+        df = ts_data.all_tilts_df
+        bad_stems = set(df.loc[df["cryoBoostDlLabel"] != "good", "cryoBoostKey"].tolist())
+
+        src_tomostar = job_model.paths.get("input_tomostar", "")
+        if not src_tomostar:
+            raise ValueError("No input tomostar directory resolved (input_tomostar)")
+        src_tomostar_abs = Path(src_tomostar)
+        if not src_tomostar_abs.is_absolute():
+            src_tomostar_abs = project_path / src_tomostar
+        if not src_tomostar_abs.is_dir():
+            raise FileNotFoundError(f"Input tomostar directory does not exist: {src_tomostar_abs}")
+
+        out_tomostar = job_model.paths.get("output_tomostar", "") or str(job_dir / "tomostar")
+        out_tomostar_abs = Path(out_tomostar)
+        if not out_tomostar_abs.is_absolute():
+            out_tomostar_abs = project_path / out_tomostar
+
+        kept, dropped = drop_tilts_from_tomostar(src_tomostar_abs, out_tomostar_abs, bad_stems)
+        print(f"[DRIVER] Trimmed tomostar -> {out_tomostar_abs} (kept {kept}, dropped {dropped})", flush=True)
+
+        # Step 9 (Stage 2): record the per-tilt verdict in the registry so it stays the
+        # authoritative source of truth (the tomostar trim above is the functional cut;
+        # dashboard/stars still carry it too until Stage 3 migrates consumers). Frame.id
+        # is the raw-movie stem == cryoBoostKey, so we can stamp by key. Best-effort:
+        # unknown stems (empty / pre-registry project) are skipped, and any registry
+        # failure only warns — it must never fail a filter that already trimmed the tomostar.
+        try:
+            from services.tilt_series import get_registry_for
+
+            registry = get_registry_for(project_path)
+            if registry.tilt_series_ids():
+                verdicts = dict(zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good")))
+                stamped = 0
+                for stem, is_filt in verdicts.items():
+                    try:
+                        registry.set_frame_filtered(
+                            str(stem), bool(is_filt), reason="DL tilt-filter" if is_filt else None
+                        )
+                        stamped += 1
+                    except KeyError:
+                        pass
+                registry.save()
+                print(f"[DRIVER] Stamped tilt-filter verdict on {stamped} registry frames", flush=True)
+            else:
+                print("[DRIVER] Registry empty — skipped filter-flag stamp (tomostar trim already applied)", flush=True)
+        except Exception as e:
+            print(f"[DRIVER] WARNING: registry filter-flag stamp skipped ({e})", flush=True)
 
         success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)

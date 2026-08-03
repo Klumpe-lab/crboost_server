@@ -318,7 +318,26 @@ class PathResolutionService:
             }.get(c.execution_status, 4)
             return (species_rank, status_order, -c.relion_job_number, c.instance_path)
 
-        return sorted(candidates, key=sort_key)
+        ordered = sorted(candidates, key=sort_key)
+
+        # Collapse candidates that share a source_key. A single producing job can
+        # expose several outputs of the SAME JobFileType — e.g. subtomo extraction
+        # emits both a raw optimisation_set.star and its curated `_filtered`
+        # sibling. They map to the identical override key (jobtype:instance_path),
+        # so listing both as separate rows produces confusing duplicate entries
+        # with identical labels ("Subtomo Extraction #2 (job017)" twice). Keep one
+        # row per source_key, preferring the `prefer_if_exists` (curated) sibling
+        # so it matches what _resolve_override / the auto-scorer actually pick.
+        deduped: List[OutputCandidate] = []
+        pos_by_key: Dict[str, int] = {}
+        for c in ordered:
+            key = c.source_key
+            if key not in pos_by_key:
+                pos_by_key[key] = len(deduped)
+                deduped.append(c)
+            elif c.prefer_if_exists and not deduped[pos_by_key[key]].prefer_if_exists:
+                deduped[pos_by_key[key]] = c
+        return deduped
 
     def get_input_schema_for_job(self, job_type: JobType) -> List[InputSlot]:
         """Expose input schema for UI rendering."""
@@ -465,12 +484,19 @@ class PathResolutionService:
 
         job_type_str, instance_path = override_key.split(":", 1)
 
-        for accepted_type in slot.accepts:
-            for candidate in index.get(accepted_type, []):
-                if candidate.producer_job_type.value == job_type_str and candidate.instance_path == instance_path:
-                    return candidate
-
-        return None
+        matches = [
+            candidate
+            for accepted_type in slot.accepts
+            for candidate in index.get(accepted_type, [])
+            if candidate.producer_job_type.value == job_type_str and candidate.instance_path == instance_path
+        ]
+        if not matches:
+            return None
+        # A producer may expose both a raw output and a curated `prefer_if_exists`
+        # sibling of the same type under one source_key (e.g. optimisation_set vs
+        # optimisation_set_filtered). Honor the curated one — matches the auto
+        # scorer (_choose_candidate_for_slot) and the UI dropdown's collapsed row.
+        return next((m for m in matches if m.prefer_if_exists), matches[0])
 
     # -------------------------------------------------------------------------
     # Indexing producers
