@@ -170,7 +170,7 @@ apptainer build --fakeroot --nv relion5.0_tomo.sif container_defs/relion5.0_tomo
 apptainer build fakeroot --nv cryocare.sif container_defs/cryocare.def
 
 # Build Warp+AreTomo container
-apptainer build --fakeroot --nv warp_aretomo.sif container_defs/warp_aretomo1.0.0_cuda11.8_glibc2.31.def
+apptainer build --fakeroot --nv warp_aretomo.sif container_defs/warp_2.0.0dev36_aretomo1.0.0_cuda11.8_glibc2.31.def
 ```
 
 ## 6. Update SLURM Template
