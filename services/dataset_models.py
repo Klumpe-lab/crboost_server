@@ -23,6 +23,7 @@ class TiltInfo(BaseModel):
     frame_filename: str
     frame_path: Optional[Path] = None
     mdoc_stats: Dict[str, float] = Field(default_factory=dict)
+    date_time: Optional[str] = None  # raw mdoc DateTime string (mdoc_stats is float-only)
 
 
 class TiltSeriesInfo(BaseModel):

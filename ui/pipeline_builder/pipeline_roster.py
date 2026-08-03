@@ -8,7 +8,7 @@ from services.project_state import JobType, get_project_state
 
 from ui.components.reactive import FingerprintedView
 from ui.styles import MONO, SANS as FONT
-from ui.status_indicator import BoundStatusDot
+from ui.status_indicator import BoundStatusDot, _running_spinner_html
 from ui.ui_state import get_job_display_name, get_instance_display_name, instance_id_to_job_type
 from ui.pipeline_builder.pipeline_constants import (
     PHASE_JOBS,
@@ -159,9 +159,9 @@ class RosterWidget(FingerprintedView):
     click target in the sidebar would be torn down and rebuilt on each
     tick, dropping in-flight clicks and resetting hover state.
 
-    Row spinners (the braille glyph that shows up for RUNNING jobs) are
-    pure CSS now — `.cb-braille-spin` defined in ui/main_ui.py. There is
-    no server-side spinner tick anymore.
+    Row "working" indicators for RUNNING jobs are a self-contained inline
+    SVG/SMIL pulsating dot (ui/status_indicator._running_spinner_html) — no
+    server-side spinner tick, and no stylesheet dependency.
     """
 
     def __init__(self, panel: "PipelineBuilderPanel"):
@@ -189,7 +189,7 @@ class RosterWidget(FingerprintedView):
 
     def _status_widget(self, instance_id: str):
         from services.project_state import get_project_state
-        from ui.status_indicator import _dot_html
+        from ui.status_indicator import _dot_html, _running_spinner_html
 
         job_model = get_project_state().jobs.get(instance_id)
         if not job_model:
@@ -198,18 +198,9 @@ class RosterWidget(FingerprintedView):
 
         def _content(status, jm=job_model):
             if status == JobStatus.RUNNING:
-                # CSS-driven spinner. @keyframes cb-braille-rotate is defined
-                # in ui/main_ui.py; the animation property is INLINE here so
-                # specificity / cache issues with the .cb-braille-spin class
-                # can't disable the rotation. The class is kept for any
-                # selector that wants to find these elements (e.g. devtools).
-                return (
-                    '<span class="cb-row-spinner cb-braille-spin" '
-                    "style=\"display:inline-block;font-family:'IBM Plex Mono',monospace;"
-                    "font-size:13px;color:#3b82f6;line-height:1;flex-shrink:0;"
-                    'transform-origin:50% 50%;animation:cb-braille-rotate 1.1s linear infinite;">'
-                    "⠋</span>"
-                )
+                # Pulsating dot for RUNNING jobs — self-contained inline SVG/SMIL
+                # (no stylesheet dependency; see _running_spinner_html).
+                return _running_spinner_html(14, "#3b82f6")
             return _dot_html(status, is_orphaned=jm.is_orphaned)
 
         ui.html("", sanitize=False, tag="span").bind_content_from(job_model, "execution_status", backward=_content)
@@ -1373,17 +1364,11 @@ class RosterWidget(FingerprintedView):
                         "width: 16px; height: 16px; display: flex; pointer-events: none;"
                     )
 
-                # CSS-driven braille spinner. @keyframes cb-braille-rotate is
-                # defined in ui/main_ui.py; the animation is inline so it
-                # can't be silently disabled by cached/conflicting CSS.
+                # Pulsating dot (self-contained inline SVG/SMIL; see _running_spinner_html).
                 ui.html(
-                    '<div style="width:100%;margin-top:2px;text-align:center;">'
-                    '<span class="cb-sidebar-spinner cb-braille-spin" '
-                    "style=\"display:inline-block;font-family:'IBM Plex Mono',monospace;"
-                    "font-size:18px;color:#3b82f6;line-height:1;"
-                    'transform-origin:50% 50%;animation:cb-braille-rotate 1.1s linear infinite;">'
-                    "⠋</span>"
-                    "</div>",
+                    '<div style="width:100%;margin-top:4px;display:flex;justify-content:center;">'
+                    + _running_spinner_html(20, "#3b82f6")
+                    + "</div>",
                     sanitize=False,
                 )
 
@@ -1412,9 +1397,9 @@ class RosterWidget(FingerprintedView):
 
     # ── Status label ──────────────────────────────────────────────────────────
 
-    # Row + sidebar spinners are CSS animations (.cb-braille-spin in main_ui.py);
-    # there is no server-driven advance() loop. The previous 0.17 s ui.timer +
-    # ui.run_javascript broadcast lived here.
+    # Row + sidebar "working" indicators are self-contained inline SVG/SMIL
+    # (_running_spinner_html); there is no server-driven advance() loop. The
+    # previous 0.17 s ui.timer + ui.run_javascript broadcast lived here.
 
     def update_status_label(self, overview: Dict):
         el = self._refs.get("status_label")
@@ -1434,7 +1419,7 @@ class RosterWidget(FingerprintedView):
         queued_jobs = (overview or {}).get("queued_jobs") or []
         if queued_jobs:
             max_pending = max((q.get("pending_secs", 0) for q in queued_jobs), default=0)
-            text += f"\n⏳ {len(queued_jobs)} in SLURM queue"
+            text += f"\n{len(queued_jobs)} in SLURM queue"
             if max_pending >= 60:
                 text += f"\n{max_pending // 60}m for nodes"
         el.set_text(text)

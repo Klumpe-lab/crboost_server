@@ -150,7 +150,11 @@ def build_config(params: MissAlignParams, training_directory: Path) -> dict:
             "warmup_steps": 500,
             "multistep_lr_scheduler": {"milestones": [5, 15], "gamma": 0.5},
         },
-        "data_loading": {"batch_size": params.batch_size, "patch_size": params.patch_size, "steps_per_epoch": 1000},
+        "data_loading": {
+            "batch_size": params.batch_size,
+            "patch_size": params.patch_size,
+            "steps_per_epoch": params.steps_per_epoch,
+        },
         "shift_generation": {
             "trajectory_probability": 0.5,
             "trajectory_max_shift": 10.0,
@@ -270,15 +274,34 @@ def main():
         # and point TORCHINDUCTOR_CACHE_DIR at the job dir so torch skips default_cache_dir() entirely
         # (and keeps its compile cache writable + isolated).
         username = os.environ.get("USER") or getpass.getuser()
-        # dataloaders-per-trainer == PyTorch DataLoader workers. At 1 the GPU starves waiting on
-        # the CPU-side pool sampler (Lightning warns "num_workers ... may be a bottleneck") — the
-        # dominant slowdown in practice. Use the CPUs SLURM actually allocated (minus headroom for
-        # the trainer main process + the recon worker), capped by the tool's pool constraint
-        # pool//n_partitions >= 2*batch_size (docs §4) so it never raises at datamodule construction.
+        # dataloaders-per-trainer == PyTorch DataLoader workers. At 1 the GPU starves waiting on the
+        # CPU-side pool sampler (Lightning warns "num_workers ... may be a bottleneck") — the dominant
+        # slowdown in practice. dataloader_workers=0 auto-scales to the allocated CPUs (minus headroom
+        # for the trainer main process + recon worker); a positive value pins it. Either way it is
+        # clamped to the tool's pool constraint pool//n_partitions >= 2*batch_size (docs §4) so it never
+        # raises at datamodule construction; oversubscribing the allocated CPUs is warned, not clamped.
         cpus = int(os.environ.get("SLURM_CPUS_PER_TASK") or 1)
         max_loaders_by_pool = params.pool_size // (2 * params.batch_size)
-        n_dataloaders = max(1, min(cpus - 2, max_loaders_by_pool)) if cpus > 2 else 1
-        print(f"[DRIVER] dataloaders-per-trainer={n_dataloaders} (cpus={cpus}, cap={max_loaders_by_pool})", flush=True)
+        if params.dataloader_workers > 0:
+            n_dataloaders = min(params.dataloader_workers, max_loaders_by_pool)
+            if params.dataloader_workers > max_loaders_by_pool:
+                print(
+                    f"[DRIVER] WARNING: dataloader_workers={params.dataloader_workers} exceeds the pool cap "
+                    f"{max_loaders_by_pool} (pool_size//(2*batch_size)); clamped to {n_dataloaders}. "
+                    f"Raise pool_size to use more workers.",
+                    flush=True,
+                )
+            if n_dataloaders > cpus:
+                print(
+                    f"[DRIVER] WARNING: {n_dataloaders} dataloader workers > {cpus} allocated CPUs — "
+                    f"oversubscription may SLOW loading. Raise cpus_per_task to match.",
+                    flush=True,
+                )
+            mode = "pinned"
+        else:
+            n_dataloaders = max(1, min(cpus - 2, max_loaders_by_pool)) if cpus > 2 else 1
+            mode = "auto"
+        print(f"[DRIVER] dataloaders={n_dataloaders} ({mode}, cpus={cpus}, cap={max_loaders_by_pool})", flush=True)
         # GPU device split. Map the allocated GPUs (0..N-1): GPU 0 -> training, the rest -> the
         # reconstruction pool, so recon and training run on SEPARATE cards instead of contending for
         # one (docs §4). A single GPU keeps the shared 0/0 mode. Driven by the num_gpus job param

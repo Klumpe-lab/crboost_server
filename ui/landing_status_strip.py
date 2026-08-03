@@ -18,7 +18,9 @@ import asyncio
 import getpass
 import logging
 import os
+import re
 import socket
+from collections import defaultdict
 from typing import Any, Optional
 
 from nicegui import ui
@@ -46,24 +48,49 @@ CLR_NEUTRAL = "#94a3b8"
 
 _REFRESH_SEC = 15.0
 
-# Dark interactive popover (click a dot to open) — matches the IO-tab hover panel.
+# Light popover (opens on hover, closes on leave) — same gray/blue palette as the rest of the UI.
 _POPOVER_STYLE = (
-    "background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 10px 12px; "
-    "box-shadow: 0 8px 24px rgba(0,0,0,0.30);"
+    "background: #ffffff; color: #334155; border: 1px solid #e2e8f0; border-radius: 10px; "
+    "padding: 12px 14px; box-shadow: 0 10px 30px rgba(15,23,42,0.12);"
 )
-_POP_TITLE = f"{FONT} font-size: 11px; font-weight: 700; color: #f8fafc;"
-_POP_DESC = f"{FONT} font-size: 10px; color: #94a3b8; line-height: 1.35;"
-_POP_CHIP = f"{MONO} font-size: 9px; color: #cbd5e1; background: #1e293b; border-radius: 4px; padding: 1px 6px;"
-_POP_PATH = f"{MONO} font-size: 10px; color: #cbd5e1; word-break: break-all;"
+_POP_TITLE = f"{FONT} font-size: 12px; font-weight: 700; color: {CLR_HEADING};"
+_POP_LABEL = (
+    f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
+    "letter-spacing: 0.06em; text-transform: uppercase;"
+)
+_POP_DESC = f"{FONT} font-size: 10px; color: {CLR_LABEL}; line-height: 1.4;"
+_POP_VAL = f"{MONO} font-size: 10.5px; color: {CLR_HEADING};"
+_POP_CHIP = (
+    f"{MONO} font-size: 9.5px; color: {CLR_LABEL}; background: #f1f5f9; "
+    "border: 1px solid #e2e8f0; border-radius: 4px; padding: 1px 6px;"
+)
+_POP_PATH = f"{MONO} font-size: 10px; color: {CLR_HEADING}; word-break: break-all;"
+
+# Exact commands behind each section, surfaced as an info tooltip so the data is auditable.
+_CMD_PARTITIONS = 'sinfo -o "%P|%a|%D|%l|%m|%c|%G" --noheader'
+_CMD_NODES = 'sinfo -N -o "%N|%P|%T|%c|%m|%G|%f" --noheader'
+_CMD_QOS = (
+    "sacctmgr -nP show assoc user=$USER format=QOS,DefaultQOS  |  "
+    "sacctmgr -nP show qos format=Name,MaxWall,MaxTRESPerJob,MaxTRESPerUser"
+)
 
 
 def _pop_copy_row(text: str) -> None:
-    """A mono command/path line on the dark popover with a copy icon."""
+    """A mono command/path line with a copy icon, on the light popover."""
     with ui.row().classes("items-center").style(
-        "gap: 6px; background: #1e293b; border-radius: 5px; padding: 4px 6px; margin-top: 3px; width: 100%;"
+        "gap: 6px; background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 5px; "
+        "padding: 4px 6px; margin-top: 3px; width: 100%;"
     ):
         ui.label(text).style(_POP_PATH + " flex: 1 1 0; min-width: 0;")
-        copy_button(text, tooltip="Copy", color="#93c5fd")
+        copy_button(text, tooltip="Copy", color=CLR_ACCENT)
+
+
+def _section_header(title: str, command: str) -> None:
+    """A section label with a right-aligned terminal icon whose tooltip is the exact command."""
+    with ui.row().classes("items-center").style("gap: 6px; width: 100%; margin-top: 9px; margin-bottom: 2px;"):
+        ui.label(title).style(_POP_LABEL)
+        ui.element("div").style("flex: 1;")
+        ui.icon("terminal", size="13px").style(f"color: {CLR_SUBLABEL}; cursor: help;").tooltip(command)
 
 
 def _server_port() -> str:
@@ -81,8 +108,14 @@ class _StatusState:
         self.cont_n_ok = 0
         self.cont_n_total = 0
         self.cont_missing: list[str] = []
-        self.slurm_part_details: list[str] = []  # e.g. ["g ×16 A100", "c ×40"]
         self.has_override = False
+        # Cluster layout (sinfo): per partition -> (name, max_time, nodes, cpu_only, gpu_groups)
+        # where gpu_groups = ((gpus_per_node, gpu_type, feature, node_count), ...). Hashable for signature().
+        self.cluster: tuple = ()
+        # QOS (sacctmgr): per-QOS table rows (name, is_default, wall_human, gpus_job_human).
+        self.qos_probed = False
+        self.qos_rows: tuple = ()
+        self.qos_default_wall = ""  # human wall for the default QOS, e.g. "8:00:00" / "no limit"
 
 
 class LandingStatusStrip(FingerprintedView):
@@ -97,7 +130,10 @@ class LandingStatusStrip(FingerprintedView):
             s.checked,
             s.slurm_ok,
             s.slurm_partitions,
-            tuple(s.slurm_part_details),
+            s.cluster,
+            s.qos_probed,
+            s.qos_rows,
+            s.qos_default_wall,
             s.cont_all_ok,
             s.cont_n_ok,
             s.cont_n_total,
@@ -108,25 +144,72 @@ class LandingStatusStrip(FingerprintedView):
         """Probe SLURM + container existence off the event loop, then re-render
         (signature-gated, so no DOM churn unless something moved)."""
         s = self.state
+        # Partitions (cluster-wide) + per-node GPU inventory, aggregated into GPU-type groups so a
+        # heterogeneous GPU partition (e.g. CBE's `g` = mixed V100/RTX/A100 nodes) reads clearly.
         try:
             parts = await self.backend.slurm_service.get_partitions_info()
             s.slurm_ok = len(parts) > 0
             s.slurm_partitions = len(parts)
-            details = []
+            nodes = await self.backend.slurm_service.get_nodes_info()
+            # sinfo's PARTITION summary emits one line per node-state, so its %D is a per-state
+            # subset (that's the "g · 1 node" bug). Derive per-partition totals from the NODE list
+            # (one row per node), which is authoritative: node count, GPU-type groups, and the modal
+            # CPU/mem spec (so cpu-only partitions get details too).
+            part_names: dict = defaultdict(set)
+            gpu_by_part: dict = defaultdict(lambda: defaultdict(int))
+            spec_by_part: dict = defaultdict(lambda: defaultdict(int))  # (cpus, mem_gb) -> node count
+            for n in nodes:
+                part_names[n.partition].add(n.name)
+                mem_gb = round(n.memory_mb / 1024) if n.memory_mb else 0
+                spec_by_part[n.partition][(n.cpus or 0, mem_gb)] += 1
+                if n.gpus:  # include GPU nodes even when gres is untyped (gpu:N) — feature is the hint
+                    feat = next((f for f in (n.features or []) if re.fullmatch(r"g\d+", f)), "")
+                    gpu_by_part[n.partition][(n.gpus, n.gpu_type or "GPU", feat)] += 1
+            cluster = []
             for p in parts:
-                nodes = getattr(p, "nodes", 0) or 0
-                gpu_n = getattr(p, "available_gpus", 0) or 0
-                gpu_t = getattr(p, "gpu_type", None)
-                tag = f"{p.name} ×{nodes}"
-                if gpu_n:
-                    tag += f" {gpu_t or 'gpu'}"
-                details.append(tag)
-            s.slurm_part_details = details
+                grp = gpu_by_part.get(p.name, {})
+                gpu_groups = tuple(
+                    sorted(((g, t, f, c) for (g, t, f), c in grp.items()), key=lambda x: (-x[3], x[1]))
+                )
+                total_nodes = len(part_names.get(p.name, ())) or (getattr(p, "nodes", 0) or 0)
+                specs = spec_by_part.get(p.name, {})
+                spec = max(specs.items(), key=lambda kv: kv[1])[0] if specs else (0, 0)  # modal (cpus, mem_gb)
+                # Partition TimeLimit is often "infinite" with the real per-job wall enforced by QOS
+                # (see the QOS section) — don't surface a misleading "max infinite".
+                mx = (getattr(p, "max_time", "") or "").strip()
+                if mx.lower() in ("infinite", "unlimited", "n/a", ""):
+                    mx = ""
+                cluster.append((p.name, mx, total_nodes, not gpu_groups, gpu_groups, spec))
+            # GPU partitions first, then by node count.
+            cluster.sort(key=lambda c: (c[3], -c[2]))
+            s.cluster = tuple(cluster)
         except Exception as e:
             logger.info("SLURM probe failed: %s", e)
             s.slurm_ok = False
             s.slurm_partitions = 0
-            s.slurm_part_details = []
+            s.cluster = ()
+
+        # QOS: what the *user* is allowed per job (partitions are cluster-wide; QOS is per-user).
+        try:
+            qos = await self.backend.slurm_service.get_user_qos_limits()
+            rows = []
+            for q in qos:
+                raw = (q.max_wall or "").strip()
+                wall = "no limit" if (raw == "" or raw.upper() in ("UNLIMITED", "NONE")) else raw
+                # A per-job GPU cap only means something when it's a real ceiling; a node here has
+                # <=8 GPUs, so anything above ~16 is effectively "no per-job cap" and just confuses.
+                gpus_job = str(q.max_gpus_per_job) if 0 < q.max_gpus_per_job <= 16 else "—"
+                rows.append((q.name, q.is_default, wall, gpus_job))
+                if q.is_default:
+                    s.qos_default_wall = wall
+            if not s.qos_default_wall and rows:  # no explicit default flagged: show the first
+                s.qos_default_wall = rows[0][2]
+            s.qos_rows = tuple(rows)
+            s.qos_probed = True
+        except Exception as e:
+            logger.info("QOS probe failed: %s", e)
+            s.qos_probed = False
+            s.qos_rows = ()
 
         try:
             cs = get_config_service()
@@ -239,13 +322,26 @@ class LandingStatusStrip(FingerprintedView):
             val_extra = "border-bottom: 1px dotted #94a3b8;" if popover else ""
             ui.label(value).style(f"{MONO} font-size: 10px; color: {CLR_LABEL}; {val_extra}")
             if popover is not None:
-                menu = ui.menu().props('no-parent-event anchor="bottom left" self="top left"').style(_POPOVER_STYLE)
+                # Keep the QMenu itself transparent/chromeless and render the light card as a child
+                # div — styling the QMenu directly leaves Quasar's white wrapper + its own shadow
+                # showing behind the rounded corners.
+                menu = (
+                    ui.menu()
+                    .props('no-parent-event anchor="bottom left" self="top left"')
+                    .style("background: transparent; box-shadow: none; overflow: visible;")
+                )
                 with menu:
-                    popover()
-                # Hover OR click opens it; it stays open (interactive — you can
-                # select/copy inside) and closes on click-away.
+                    with ui.element("div").style(_POPOVER_STYLE):
+                        popover()
+                # Hover-card behaviour: open on hover/click, and close when the pointer leaves BOTH
+                # the trigger and the popover (so it doesn't linger). Re-opening on the menu's own
+                # mouseenter keeps it alive while you move into it to select/copy. (Esc / click-away
+                # also close it — Quasar default.)
                 item.on("mouseenter", lambda m=menu: m.open())
                 item.on("click", lambda m=menu: m.open())
+                item.on("mouseleave", lambda m=menu: m.close())
+                menu.on("mouseenter", lambda m=menu: m.open())
+                menu.on("mouseleave", lambda m=menu: m.close())
         if popover is None and tip:
             item.tooltip(tip)
 
@@ -267,16 +363,77 @@ class LandingStatusStrip(FingerprintedView):
             qsub = str(get_config_service().crboost_root / "config" / "qsub.sh")
         except Exception:
             qsub = "config/qsub.sh"
-        with ui.column().style("gap: 3px; min-width: 340px; max-width: 620px;"):
-            ui.label("SLURM").style(_POP_TITLE)
-            if s.slurm_ok:
-                ui.label(f"{s.slurm_partitions} partition(s) reachable via sinfo:").style(_POP_DESC)
-                with ui.row().style("flex-wrap: wrap; gap: 4px; margin: 3px 0;"):
-                    for tag in s.slurm_part_details[:32]:
-                        ui.label(tag).style(_POP_CHIP)
-            else:
+        divider = "height: 1px; background: #e2e8f0; margin: 8px 0 2px; width: 100%;"
+        # Hide the GPUS/JOB column when no QOS actually caps GPUs per job (all "—") — else it's noise.
+        show_gpu_col = any(r[3] != "—" for r in s.qos_rows)
+        qos_cols = "1fr 104px 66px" if show_gpu_col else "1fr 104px"
+        qos_grid = f"display: grid; grid-template-columns: {qos_cols}; gap: 8px; width: 100%; align-items: baseline;"
+        gpu_grid = (
+            "display: grid; grid-template-columns: 82px 66px 1fr; gap: 8px; width: 100%; "
+            "padding-left: 10px; align-items: baseline;"
+        )
+
+        with ui.column().style("gap: 2px; min-width: 400px; max-width: 600px;"):
+            ui.label(f"Cluster · {HOSTNAME}").style(_POP_TITLE)
+
+            # ── Partitions & GPUs (cluster-wide) ──────────────────────────────
+            _section_header("Partitions & GPUs", f"{_CMD_PARTITIONS}   |   {_CMD_NODES}")
+            if not s.slurm_ok:
                 ui.label("sinfo returned nothing — SLURM may be unavailable on this host.").style(_POP_DESC)
-            ui.label("Submission template used for every job:").style(_POP_DESC + " margin-top: 4px;")
+            elif not s.cluster:
+                ui.label("No partitions reported.").style(_POP_DESC)
+            else:
+                for name, max_time, nodes, cpu_only, gpu_groups, spec in s.cluster[:12]:
+                    with ui.column().style("gap: 2px; width: 100%; margin-bottom: 3px;"):
+                        with ui.row().classes("items-baseline").style("gap: 6px; width: 100%;"):
+                            ui.label(name).style(_POP_VAL + " font-weight: 700;")
+                            cpus, _mem_gb = spec
+                            meta = f"{nodes} node{'s' if nodes != 1 else ''}"
+                            if cpus:
+                                meta += f"  ·  {cpus} cores"
+                            if max_time:
+                                meta += f"  ·  max {max_time}"
+                            if cpu_only:
+                                meta += "  ·  cpu-only"
+                            ui.label(meta).style(_POP_DESC)
+                        for gpn, gtype, feat, cnt in gpu_groups:
+                            with ui.element("div").style(gpu_grid):
+                                ui.label(f"{gpn}× {gtype.upper()}").style(_POP_VAL)
+                                ui.label(f"{cnt} node{'s' if cnt != 1 else ''}").style(_POP_DESC)
+                                if feat:
+                                    ui.label(feat).style(_POP_CHIP).tooltip(f"request with --constraint={feat}")
+                                else:
+                                    ui.label("").style(_POP_DESC)
+
+            # ── Your QOS (per-user limits) ────────────────────────────────────
+            ui.element("div").style(divider)
+            _section_header("Your QOS  ·  ★ = default", _CMD_QOS)
+            if not s.qos_probed:
+                ui.label("probing…").style(_POP_DESC)
+            elif not s.qos_rows:
+                ui.label("sacctmgr returned no QOS for your user.").style(_POP_DESC)
+            else:
+                with ui.element("div").style(qos_grid):
+                    ui.label("QOS").style(_POP_LABEL)
+                    ui.label("MAX WALL/JOB").style(_POP_LABEL)
+                    if show_gpu_col:
+                        ui.label("GPUS/JOB").style(_POP_LABEL)
+                for qname, is_def, wall, gpus_job in s.qos_rows[:16]:
+                    with ui.element("div").style(qos_grid):
+                        ui.label(f"★ {qname}" if is_def else qname).style(
+                            _POP_VAL + (" font-weight: 700;" if is_def else "")
+                        )
+                        ui.label(wall).style(_POP_VAL)
+                        if show_gpu_col:
+                            ui.label(gpus_job).style(_POP_VAL)
+                if s.qos_default_wall:
+                    ui.label(f"Your default QOS (★) caps a single job at {s.qos_default_wall}.").style(
+                        _POP_DESC + " margin-top: 4px;"
+                    )
+
+            # ── Submission template ───────────────────────────────────────────
+            ui.element("div").style(divider)
+            _section_header("Submission template", f"cat {qsub}")
             _pop_copy_row(qsub)
 
 

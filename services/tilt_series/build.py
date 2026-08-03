@@ -72,11 +72,17 @@ def _build_one_ts(ts_info: TiltSeriesInfo, *, project_prefix: str) -> TiltSeries
         frame_id = Path(tilt.frame_filename).stem
 
         # Prefer mdoc-reported pre-exposure if present; else accumulate.
-        pre_exposure = _coerce_float(tilt.mdoc_stats.get("PriorRecordDose"))
+        # NB: mdoc_stats keys the value under "prior_dose" (dataset_parsing_service),
+        # NOT the raw mdoc key "PriorRecordDose" — the earlier lookup used the raw key
+        # and so silently always fell through to the cumulative sum. PriorRecordDose is
+        # authoritative (SerialEM's own pre-exposure record, correct for dose-symmetric /
+        # variable-dose ordering); the cumsum assumes constant dose_per_tilt. This now
+        # matches the legacy build_from_mdocs path, which already reads PriorRecordDose.
+        pre_exposure = _coerce_float(tilt.mdoc_stats.get("prior_dose"))
         if pre_exposure is None:
             pre_exposure = cumulative
 
-        acq_time = _parse_mdoc_datetime(tilt.mdoc_stats.get("DateTime"))
+        acq_time = _parse_mdoc_datetime(tilt.date_time)
 
         frames.append(
             Frame(
@@ -88,6 +94,7 @@ def _build_one_ts(ts_info: TiltSeriesInfo, *, project_prefix: str) -> TiltSeries
                 nominal_tilt_angle_deg=tilt.tilt_angle,
                 pre_exposure_e_per_a2=pre_exposure,
                 acquisition_time=acq_time,
+                **_acq_kwargs_from_stats(tilt.mdoc_stats),
             )
         )
         cumulative += dose_per_tilt
@@ -176,6 +183,7 @@ def build_from_mdocs(
                     nominal_tilt_angle_deg=_coerce_float(sec.get("TiltAngle")) or 0.0,
                     pre_exposure_e_per_a2=pre_exposure,
                     acquisition_time=_parse_mdoc_datetime(sec.get("DateTime")),
+                    **_acq_kwargs_from_raw_section(sec),
                 )
             )
             cumulative += dose_per_tilt
@@ -206,6 +214,50 @@ def _coerce_float(v) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _acq_kwargs_from_stats(stats: dict) -> dict:
+    """Map already-parsed mdoc_stats (snake_case keys from dataset_parsing_service)
+    onto Frame acquisition-field kwargs. Absent keys → None."""
+    return {
+        "exposure_dose_e_per_a2": stats.get("exposure_dose"),
+        "dose_rate": stats.get("dose_rate"),
+        "exposure_time_s": stats.get("exposure_time"),
+        "defocus_um": stats.get("defocus"),
+        "min_intensity": stats.get("min_intensity"),
+        "mean_intensity": stats.get("mean_intensity"),
+        "max_intensity": stats.get("max_intensity"),
+        "image_shift_x": stats.get("image_shift_x"),
+        "image_shift_y": stats.get("image_shift_y"),
+    }
+
+
+def _acq_kwargs_from_raw_section(sec: dict) -> dict:
+    """Same acquisition kwargs, parsed directly from a raw mdoc ZValue section —
+    the legacy build_from_mdocs path never goes through mdoc_stats. Mirrors the
+    field ordering in dataset_parsing_service._build_tilt_info (MinMaxMean =
+    min/max/mean; ImageShift = x/y)."""
+    kw = {
+        "exposure_dose_e_per_a2": _coerce_float(sec.get("ExposureDose")),
+        "dose_rate": _coerce_float(sec.get("DoseRate")),
+        "exposure_time_s": _coerce_float(sec.get("ExposureTime")),
+        "defocus_um": _coerce_float(sec.get("Defocus")),
+        "min_intensity": None,
+        "mean_intensity": None,
+        "max_intensity": None,
+        "image_shift_x": None,
+        "image_shift_y": None,
+    }
+    mmm = str(sec.get("MinMaxMean", "")).split()
+    if len(mmm) >= 3:
+        kw["min_intensity"] = _coerce_float(mmm[0])
+        kw["max_intensity"] = _coerce_float(mmm[1])
+        kw["mean_intensity"] = _coerce_float(mmm[2])
+    ish = str(sec.get("ImageShift", "")).split()
+    if len(ish) >= 2:
+        kw["image_shift_x"] = _coerce_float(ish[0])
+        kw["image_shift_y"] = _coerce_float(ish[1])
+    return kw
 
 
 def _parse_mdoc_datetime(raw) -> Optional[datetime]:

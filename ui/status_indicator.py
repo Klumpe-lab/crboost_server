@@ -32,6 +32,27 @@ _BADGE_STYLES = {
 }
 
 
+def _running_spinner_html(size_px: int = 14, color: str = "#3b82f6") -> str:
+    """A self-contained pulsating dot shown next to RUNNING jobs.
+
+    Inline SVG with SMIL <animate>: the shape AND the motion live in the
+    markup, so it needs no @keyframes, no CSS class, no ::before — nothing
+    from the (Python-injected, and apparently cache-stale) stylesheet. Every
+    earlier CSS-based spinner silently rendered nothing on these
+    v-html-injected spans; this one can't, because there is no stylesheet in
+    the loop. If SMIL were ever unavailable the circle still paints, just
+    static — so the worst case is a visible dot, never a blank.
+    """
+    return (
+        f'<svg width="{size_px}" height="{size_px}" viewBox="0 0 24 24" '
+        'style="display:inline-block;vertical-align:middle;flex-shrink:0;overflow:visible;">'
+        f'<circle cx="12" cy="12" r="5" fill="{color}">'
+        '<animate attributeName="r" values="4;9;4" dur="1.1s" repeatCount="indefinite"/>'
+        '<animate attributeName="opacity" values="1;0.3;1" dur="1.1s" repeatCount="indefinite"/>'
+        "</circle></svg>"
+    )
+
+
 def _dot_html(status: JobStatus, is_orphaned: bool = False) -> str:
     if is_orphaned:
         color = "#f97316"

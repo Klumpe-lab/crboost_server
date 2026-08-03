@@ -251,7 +251,7 @@ class DatasetParsingService:
         return TiltInfo(
             z_value=z_value, tilt_angle=tilt_angle,
             frame_filename=frame_filename, frame_path=frame_path,
-            mdoc_stats=mdoc_stats,
+            mdoc_stats=mdoc_stats, date_time=section.get("DateTime"),
         )
 
     def _extract_acquisition_params(self, mdoc_data: Dict) -> Dict:
