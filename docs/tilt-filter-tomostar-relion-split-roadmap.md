@@ -1,7 +1,17 @@
 # Tilt-filter placement, tomostar/RELION split, and the three-representation duplication
 
-**Status:** Stage 1 **BUILT 2026-07-30** (code-clean via ruff + py_compile, PENDING
-RUNTIME). Stages 2–3 and §5 remain planning. Originally written 2026-07-29 from a
+**▶ NEXT SESSION (Stage 3) START HERE:** the tilt-filter move is **RUNTIME-VERIFIED**
+(the compute honors the cut) and **the `emit_star` ghost-tilt gap is now CLOSED and
+RUNTIME-VERIFIED** (2026-07-31 on `copiatest_postfilter`, all 16 TS — see §4 "THE GAP →
+FIXED"): the `tsAlignment` + `tsCtf` ingest adapters drop `is_filtered_out` frames when
+emitting per-tilt STARs, so the RELION stars now match the trimmed tomostar (per-TS counts
+30/34/36/39/40 all matched, zero NaN-alignment rows) and the particle stage no longer
+ingests ghost rows. The remaining work is the broader §5 collapse (registry-authoritative +
+lazy star emit), whose two gates are (a) de-star-ify the IO graph and (b) main-process
+registry freshness for the dashboard.
+
+**Status:** Stage 1 **BUILT + RUNTIME-VERIFIED 2026-07-30** (`copiatest_postfilter`; compute
+honors the cut, one `emit_star` gap open — see §4). Stage 2A built. Stages 2B/3 + §5 remain. Originally written 2026-07-29 from a
 read-through of the preprocessing drivers + `services/tilt_series/`; the mechanics
 below were re-verified against the live source before building (see §4/§6). Companion
 to [`docs/architecture.md`](architecture.md) and the TS-registry refactor notes.
@@ -206,17 +216,109 @@ PENDING RUNTIME). The 9 edits:
   dropped for a TS) — alignment already tolerates per-TS failure, but confirm it degrades
   cleanly.
 
-**Stage 2 — centralize in the registry (Option B groundwork).** NOT built.
-- Add `Frame.is_filtered_out` + `filter_reason` to `services/tilt_series/models.py`;
-  the filter stamps it (in addition to trimming the tomostar). **Gotcha found
-  2026-07-30:** `TiltSeries` *already* has an `is_filtered_out` field whose own comment
-  calls it "the frame-level tilt-filter concept" — but it's at TS scope, so it can't
-  express a per-tilt cut. It's a mislabeled placeholder; the real flag belongs on
-  `Frame` (per-tilt). Don't reuse the TS-level one.
-- Stamping requires the driver to load → mutate → `registry.save()` the per-TS JSON
-  (adapters already write the registry from drivers, so the access pattern exists).
-- Dashboard "dropped tilts" + emitted stars read the flag instead of diffing
-  labeled-vs-filtered stars.
+**Stage 1 RUNTIME FIX 1 — the interactive UI panel (2026-07-30, code-clean PENDING
+RUNTIME).** First real-project run (`copiatest`) surfaced that the backend rewiring
+above wasn't enough: `tiltFilter` is `IS_INTERACTIVE`, so it does NOT run via the SLURM
+driver in the normal flow — the **UI panel** (`ui/tilt_filter_panel.py`) is the executor
+(gallery → manual/DL labelling → commit). That panel was still 100% wired to the old
+post-CTF design and stayed stuck on "Run the pipeline through TS CTF first." Fixes:
+- **Accessibility:** both panel entry points now resolve the **fsMotion star**
+  (`_find_fs_motion_star`) instead of `_find_ts_ctf_star`; the DL sees identical averages.
+  Waiting message updated.
+- **Commit produces the real output:** a shared `_finalize_pipeline_output()` runs at
+  BOTH commit paths (DL-assisted + manual `_save`). It trims the tsImport tomostar
+  (`_find_tsimport_tomostar_dir`) → `TiltFilter/tomostar/`, sets
+  `job_model.paths["output_tomostar"]`, stamps the registry, and drops the stale
+  `output_star`/`output_processing` sets. The manual path never dispatches the driver, so
+  the trim MUST live in the UI too.
+- **Resolver wiring for a job with no deployed dir:** the committed interactive job has
+  `relion_job_name=None`, so alignment resolves its tomostar via the producer's cached
+  `paths["output_tomostar"]` — confirmed at `path_resolution_service._get_producer_output_path`
+  (cached-paths fallback) + the SUCCEEDED-only gate for interactive producers.
+- **Absolute movie paths (`drop_tilts_from_tomostar`):** the trimmed tomostar is written
+  with absolute `_wrpMovieName` — the interactive filter writes to `TiltFilter/` (depth 2)
+  vs the driver's `External/jobNNN/` (depth 3), so verbatim `../../` paths would break.
+  Validated on `copiatest`: the absolute form is byte-identical to what alignment's
+  existing `copy_tomostar_with_absolute_paths` already computes (`_wrpMovieName` is a
+  WarpTools logical ref — the real `.eer` lives in `frames/`, not `warp_frameseries/`).
+
+**Stage 1 RUNTIME VERIFIED + one real gap found (2026-07-30, project `copiatest_postfilter`).**
+End-to-end run import→fsMotion→tsImport→**tiltFilter (interactive, committed)**→align→
+tsCtf→reconstruct, all SUCCEEDED. Confirmed working:
+- tsImport auto-injected; alignment's `tomostar_dir` **auto-resolved to `TiltFilter/tomostar`**
+  (the trimmed set) with **no source_override** — the preferred-source + cached-`paths`
+  fallback works exactly as designed.
+- The **compute honored the cut**: full tomostar 652 tilts → trimmed 613; alignment
+  *staged and processed* the trimmed set (job004/tomostar = 39 for Position_10 vs 41 full;
+  the per-TS Warp XML has 39 tilts), and the 16 reconstructed tomograms are built from it.
+  Registry stamped 43 `is_filtered_out` frames (656 total → 613 kept).
+- Absolute movie paths in the staged tomostar resolved correctly.
+
+**THE GAP (matters for the particle stage): the `emit_star` adapters serialize *every*
+registry frame regardless of `is_filtered_out`, so `aligned_tilt_series.star` and
+`ts_ctf_tilt_series.star` carry the dropped tilts as "ghost" rows** (real CTF from
+fsMotion, but `<NA>` for every alignment column — XTilt/YTilt/ZRot/shifts — since they
+were never aligned; they are the highest-tilt frames). Because Stage 1 reverted
+tsReconstruct/templateMatch to read the tsCtf star, **the particle stage would now ingest
+these ghost NA-alignment rows** — a partial regression vs the old design, which fed a
+clean filtered star. The tomograms themselves are fine (built from the XMLs). Fix =
+make the alignment + ctf `emit_star` exclude `is_filtered_out` frames.
+
+**→ FIXED + RUNTIME-VERIFIED (2026-07-31 on `copiatest_postfilter`, all 16 TS via a
+non-destructive emit_star re-run: every emitted per-TS star matched its trimmed-tomostar
+row count — 30/34/36/39/40, varying per TS — with 0 `<NA>` alignment rows, on BOTH the
+`aligned` and `ts_ctf` outputs. The tsCtf pass was fed the OLD un-trimmed 41-row aligned
+star as input, so it also proves the defensive drop works on an unfiltered input.)** Both
+`_apply_alignment_to_tilt_df`
+(`adapters/ts_alignment.py`) and `_apply_ctf_to_tilt_df` (`adapters/ts_ctf.py`) now drop
+the per-tilt row when the resolved `Frame.is_filtered_out` is `True` (collecting the row
+indices during the existing resolve loop, then `tilt_df.drop(index=...).reset_index()`
+before the DataFrame is written). Placed *before* the alignment/CTF overlay so filtered
+rows never receive columns. The `all_tilts.star` sidecar and per-TS `tilt_series/*.star`
+inherit the trim (they're built from the post-drop DataFrame). The `tsCtf` drop is
+defensive — its input is `tsAlignment`'s already-trimmed output — but correct if `tsCtf`
+ever reads an unfiltered star. **No-filter pipelines are unaffected:** `is_filtered_out`
+defaults `False`, so `filtered_idx` is empty and output is byte-identical. Not blocked by
+the freshness issue: the adapter runs in-driver with a registry loaded fresh from disk.
+`ruff check` clean, `py_compile` clean. **Runtime check:** on `copiatest_postfilter`,
+confirm `aligned_tilt_series.star`/`ts_ctf_tilt_series.star` per-TS blocks now carry 613
+(not 656/652) rows with no `<NA>` alignment rows, and the particle stage sees a clean list.
+
+**IMPORTANT correction to the §5 freshness note:** making `emit_star` respect the flag is
+**NOT blocked** by main-process registry staleness — adapters run *inside the driver
+process*, which loads the registry fresh from disk (the filter, running earlier, already
+persisted the flags). Only the **dashboard reading the flag live** is blocked by the
+cached-singleton staleness. So Stage 2B splits: (i) `emit_star` respects the flag —
+feasible now, needed for particle-stage correctness; (ii) dashboard-reads-flag — still
+gated on freshness, cosmetic.
+
+**Stage 2 — centralize in the registry (Option B groundwork). ✅ PART A BUILT
+2026-07-30** (code-clean, PENDING RUNTIME); part B deliberately deferred to Stage 3
+(see the freshness blocker below).
+- **Built (A) — the registry is now the authoritative record of the filter verdict:**
+  - `Frame.is_filtered_out` + `filter_reason` added to `services/tilt_series/models.py`
+    (additive; old registry JSONs load fine via defaults; `REGISTRY_SCHEMA_VERSION`
+    bumped `1.0 → 1.1`). This is the correctly-scoped **per-tilt** flag. **Gotcha
+    confirmed:** `TiltSeries` *already* had an `is_filtered_out` field whose comment
+    calls it "the frame-level tilt-filter concept" but sits at TS scope — a mislabeled
+    placeholder; we did NOT reuse it, the real flag lives on `Frame`.
+  - `registry.set_frame_filtered(frame_id, filtered, reason=)` +
+    `filtered_out_frame_ids()` added (mirror `set_excluded`/`excluded_ids`).
+  - `drivers/tilt_filter.py` stamps every processed tilt's verdict (good→False,
+    bad→True, so re-runs are idempotent), keyed by `Frame.id == cryoBoostKey` (raw-movie
+    stem), then `registry.save()`. Best-effort: unknown stems / empty registry are
+    skipped and any registry error only warns — it must never fail a filter that already
+    trimmed the tomostar.
+- **Deferred (B) — consumers read the flag instead of diffing labeled/filtered stars.**
+  NOT built, and this is the honest reason: the dashboard reads all *driver-produced*
+  per-tilt data from **stars fresh off disk**, never from the registry singleton —
+  because the tilt-filter (like every driver) runs in a **separate process**, so after
+  it `save()`s the registry the main server's cached `get_registry_for()` instance is
+  **stale until reload**. (`excluded_ids` is safe only because the *main* process owns
+  it.) Wiring the dashboard to read a driver-written flag live would show stale data.
+  So part B is folded into Stage 3, which must solve main-process registry freshness
+  holistically. Until then the dashboard keeps its (working, fresh) labeled/filtered
+  star diff, and the flag is a correct on-disk record + the Stage 3 prerequisite.
 
 **Stage 3 — registry-authoritative tomostar (optional, gated on §5).**
 - Emit the tomostar from the registry (or always post-trim it by the flag), retiring
@@ -295,10 +397,22 @@ up to three copies of the same per-tilt truth that can drift.
 5. Migration story for existing on-disk projects (stars present, registry maybe
    absent → "reload to backfill from mdocs").
 
+**Second blocker found while building Stage 2 (2026-07-30) — main-process registry
+freshness.** Drivers run in separate SLURM processes and mutate the *on-disk* registry
+(`registry.save()`); the main server holds a **cached** `get_registry_for()` singleton
+that is not refreshed when a driver writes. That's exactly why the dashboard reads all
+driver-produced per-tilt data from **stars** (fresh off disk) and only touches the
+registry for **main-process-owned** state (`excluded_ids`). So before *any* consumer
+(dashboard, lazy star emit) can trust the registry as the live source, Stage 3 must add
+a refresh path — reload the affected TS sidecars from disk when a job completes / on
+render — being careful not to clobber live in-memory state (cf.
+[[feedback_inmemory_state_authoritative]]). This is a real second gate alongside the
+IO-graph re-key; neither is huge, but the collapse needs both.
+
 **Recommendation to open with:** option (ii) is the principled end state and now looks
 **cheaper than the original writeup implied** — the IO-graph re-key is localized to
 `path_resolution_service`, and Q1/Q3 show the registry is already the de-facto producer
-(one motion-data backfill is the only real data gap). Still scope it as its own
-investigation, but it is no longer gated on a scary "touch every schema" refactor. In
-the meantime, Stage 2 above (filter state in the registry) is the cheap down-payment
-that reduces drift without touching the IO graph.
+(one motion-data backfill is the only real data gap). The two gates are (a) de-star-ify
+the IO graph and (b) solve main-process registry freshness (above). Scope it as its own
+investigation, but it is no longer gated on a scary "touch every schema" refactor.
+Stage 2A (built) already put the filter verdict in the registry as the down-payment.

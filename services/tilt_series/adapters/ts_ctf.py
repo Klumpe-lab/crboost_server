@@ -302,12 +302,21 @@ class TsCtfIngestAdapter:
             return tilt_df, errors
 
         skipped = 0
+        filtered_idx: List[int] = []
         for idx, row in tilt_df.iterrows():
             movie_name = row["rlnMicrographMovieName"]
             try:
                 frame = ts.frame_by_filename(movie_name)
             except KeyError:
                 errors.append(f"row {idx}: movie {movie_name!r} not in registry TS {ts.id}")
+                continue
+
+            # Tilt-filter verdict: drop the row so the emitted STAR matches the
+            # trimmed tomostar and the particle stage never ingests a filtered-out
+            # tilt. (Usually already absent — the aligned input STAR dropped it —
+            # so this is defensive when tsCtf reads an unfiltered input.)
+            if frame.is_filtered_out:
+                filtered_idx.append(idx)
                 continue
 
             ctf = by_frame_id.get(frame.id)
@@ -321,6 +330,12 @@ class TsCtfIngestAdapter:
             tilt_df.at[idx, "rlnCtfAstigmatism"] = ctf.ctf_astigmatism
             tilt_df.at[idx, "rlnTomoHand"] = hand
 
+        if filtered_idx:
+            tilt_df = tilt_df.drop(index=filtered_idx).reset_index(drop=True)
+            logger.info(
+                "tsCtf: TS %s: dropped %d tilt-filtered row(s) from output STAR",
+                ts.id, len(filtered_idx),
+            )
         if skipped > 0:
             logger.info(
                 "tsCtf: TS %s: %d/%d rows retain fs_motion per-frame defocus (ts_import filtered these from tomostar)",

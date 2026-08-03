@@ -125,6 +125,34 @@ def main():
         kept, dropped = drop_tilts_from_tomostar(src_tomostar_abs, out_tomostar_abs, bad_stems)
         print(f"[DRIVER] Trimmed tomostar -> {out_tomostar_abs} (kept {kept}, dropped {dropped})", flush=True)
 
+        # Step 9 (Stage 2): record the per-tilt verdict in the registry so it stays the
+        # authoritative source of truth (the tomostar trim above is the functional cut;
+        # dashboard/stars still carry it too until Stage 3 migrates consumers). Frame.id
+        # is the raw-movie stem == cryoBoostKey, so we can stamp by key. Best-effort:
+        # unknown stems (empty / pre-registry project) are skipped, and any registry
+        # failure only warns — it must never fail a filter that already trimmed the tomostar.
+        try:
+            from services.tilt_series import get_registry_for
+
+            registry = get_registry_for(project_path)
+            if registry.tilt_series_ids():
+                verdicts = dict(zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good")))
+                stamped = 0
+                for stem, is_filt in verdicts.items():
+                    try:
+                        registry.set_frame_filtered(
+                            str(stem), bool(is_filt), reason="DL tilt-filter" if is_filt else None
+                        )
+                        stamped += 1
+                    except KeyError:
+                        pass
+                registry.save()
+                print(f"[DRIVER] Stamped tilt-filter verdict on {stamped} registry frames", flush=True)
+            else:
+                print("[DRIVER] Registry empty — skipped filter-flag stamp (tomostar trim already applied)", flush=True)
+        except Exception as e:
+            print(f"[DRIVER] WARNING: registry filter-flag stamp skipped ({e})", flush=True)
+
         success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
 

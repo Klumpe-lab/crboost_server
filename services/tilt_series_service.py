@@ -278,9 +278,17 @@ def drop_tilts_from_tomostar(src_dir: str | Path, out_dir: str | Path, bad_movie
                 continue
             if Path(toks[movie_i]).stem in bad_movie_stems:
                 total_dropped += 1
-            else:
-                kept_rows.append(line)
-                total_kept += 1
+                continue
+            # Absolutize the movie path so the trimmed tomostar resolves no matter
+            # where it is written — the driver puts it under External/jobNNN/ (same
+            # depth as tsImport), but the interactive filter writes to TiltFilter/ at
+            # a different depth, which would otherwise break the `../../` movie paths.
+            # Alignment's tomostar copy leaves already-absolute paths untouched.
+            mv = toks[movie_i]
+            if not Path(mv).is_absolute():
+                toks[movie_i] = str((src_dir / mv).resolve())
+            kept_rows.append("  ".join(toks))
+            total_kept += 1
 
         (out_dir / star.name).write_text("\n".join(header + kept_rows) + "\n")
 

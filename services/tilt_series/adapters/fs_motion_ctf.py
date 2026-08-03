@@ -44,6 +44,16 @@ logger = logging.getLogger(__name__)
 _LEGACY_MOTION_PLACEHOLDER = 0.000001
 
 
+def _pos_float(v: Optional[str]) -> Optional[float]:
+    """Coerce a WarpTools XML attribute to a positive float, else None. Matches
+    frameseries_quality._positive_float (non-positive/unparseable → not real)."""
+    try:
+        f = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
 class FsMotionCtfIngestAdapter:
     def __init__(
         self,
@@ -180,6 +190,11 @@ class FsMotionCtfIngestAdapter:
         defocus_angle = float(ctf.find(".//Param[@Name='DefocusAngle']").get("Value"))
         defocus_delta = float(ctf.find(".//Param[@Name='DefocusDelta']").get("Value"))
 
+        # Real QC values — root <Movie> attributes, not in the <CTF> block. The
+        # RELION star writes 1e-6 placeholders for these; the registry keeps the truth.
+        ctf_resolution = _pos_float(root.get("CTFResolutionEstimate"))
+        mean_frame_movement = _pos_float(root.get("MeanFrameMovement"))
+
         # Legacy quirk: fs_motion writes U == V and stuffs delta into astigmatism.
         # Replicated exactly to preserve on-disk STAR layout (byte-for-byte
         # compat with the pre-refactor writer).
@@ -199,6 +214,8 @@ class FsMotionCtfIngestAdapter:
             defocus_v_angstrom=defocus_v,
             defocus_angle=defocus_angle,
             ctf_astigmatism=astig,
+            ctf_resolution=ctf_resolution,
+            mean_frame_movement=mean_frame_movement,
             warp_xml_path=xml_path,
         )
 

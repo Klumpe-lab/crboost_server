@@ -70,18 +70,12 @@ def create_ui_router(backend: CryoBoostBackend):
             .pulse-failed    { animation: cb-pulse 1.4s ease-in-out infinite; }
             .pulse-orphaned  { animation: cb-pulse 1.6s ease-in-out infinite; }
 
-            /* Braille-glyph spinner, server-tick-free. The braille glyph is
-               emitted as the element's text content (so it shows even on the
-               oldest browsers); CSS rotates the glyph in place. The
-               `animation` property is also set inline on the elements
-               themselves (see pipeline_roster._status_widget) so CSS-class
-               specificity issues or cached stylesheets can't disable the
-               spin. Replaces the prior 0.17 s ui.timer + ui.run_javascript
-               broadcast — see ui/components/reactive.py. */
-            @keyframes cb-braille-rotate {
-                from { transform: rotate(0deg); }
-                to   { transform: rotate(360deg); }
-            }
+            /* The RUNNING-job "working" indicator is a self-contained inline
+               SVG/SMIL pulsating dot (ui/status_indicator._running_spinner_html)
+               — no @keyframes here, because CSS-based spinners (glyph rotate,
+               ::before content-cycle, class-animated dots) kept rendering blank
+               on the v-html-injected roster spans, most likely a cache-stale
+               Python-injected stylesheet. SVG carries its own animation. */
 
             /* ── Config + I/O dropdowns ──────────────────────────────────
                Clean 1px slate-bordered box + themed popup, replacing the

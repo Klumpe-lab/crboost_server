@@ -22,6 +22,7 @@ from services.models_base import JobStatus
 from services.project_state import get_project_state, get_state_service
 from services.tilt_series_service import (
     apply_labels,
+    drop_tilts_from_tomostar,
     filter_good_tilts,
     generate_tilt_thumbnails,
     get_label_summary,
@@ -139,6 +140,99 @@ def _find_fs_motion_warp_dir(project_path):
     return None
 
 
+def _find_fs_motion_star(project_path):
+    """Locate the fs-motion job's output star (`fs_motion_and_ctf.star`). Since the
+    tilt filter moved upstream (before alignment), this is the per-tilt star the DL
+    classifies — it lists the same motion-corrected averages (rlnMicrographName) the
+    old ts_ctf star did, so the classifier sees identical images."""
+    state = get_project_state()
+    if not state:
+        return None
+    for _iid, jm in state.jobs.items():
+        if jm.job_type and jm.job_type.value == "fsMotionAndCtf" and jm.execution_status == JobStatus.SUCCEEDED:
+            star = jm.paths.get("output_star")
+            if star:
+                p = Path(star) if Path(star).is_absolute() else project_path / star
+                if p.exists():
+                    return p
+            if jm.relion_job_name:
+                p = project_path / jm.relion_job_name.rstrip("/") / "fs_motion_and_ctf.star"
+                if p.exists():
+                    return p
+    return None
+
+
+def _find_tsimport_tomostar_dir(project_path):
+    """Locate the tsImport job's `tomostar/` directory — the source the tilt filter
+    trims (dropping bad-tilt rows) so alignment/CTF/reconstruct inherit the cut."""
+    state = get_project_state()
+    if not state:
+        return None
+    for _iid, jm in state.jobs.items():
+        if jm.job_type and jm.job_type.value == "tsImport" and jm.execution_status == JobStatus.SUCCEEDED:
+            d = jm.paths.get("tomostar_dir")
+            if d:
+                p = Path(d) if Path(d).is_absolute() else project_path / d
+                if p.is_dir():
+                    return p
+            if jm.relion_job_name:
+                p = project_path / jm.relion_job_name.rstrip("/") / "tomostar"
+                if p.is_dir():
+                    return p
+    return None
+
+
+async def _finalize_pipeline_output(job_model, ts_data, project_path) -> bool:
+    """Produce the tilt filter's real pipeline output — a trimmed tomostar with the
+    dropped tilts removed — that alignment/CTF/reconstruct consume. Runs at commit for
+    BOTH the DL-assisted and manual-labelling paths (the SLURM driver only runs for the
+    DL pass; manual labelling never dispatches it, so the trim must live here too).
+
+    Sets `job_model.paths['output_tomostar']` so the path resolver wires alignment to
+    it even though this interactive job has no deployed job dir (the resolver falls back
+    to the producer's cached paths for SUCCEEDED interactive jobs). Also stamps the
+    per-tilt verdict into the registry (authoritative record). The labeled/filtered
+    stars the callers write remain for the dashboard's keep/drop panel."""
+    src_tomostar = _find_tsimport_tomostar_dir(project_path)
+    if src_tomostar is None:
+        ui.notify("Cannot finalize: tsImport tomostar not found (run Import + TS Import first).", type="negative")
+        return False
+
+    df = ts_data.all_tilts_df
+    has_labels = "cryoBoostDlLabel" in df.columns and "cryoBoostKey" in df.columns
+    bad_stems = set(df.loc[df["cryoBoostDlLabel"] != "good", "cryoBoostKey"].tolist()) if has_labels else set()
+
+    out_tomostar = project_path / "TiltFilter" / "tomostar"
+    kept, dropped = await asyncio.to_thread(drop_tilts_from_tomostar, src_tomostar, out_tomostar, bad_stems)
+
+    job_model.paths["output_tomostar"] = str(out_tomostar)
+    # Drop stale slots from the pre-move design so the resolver never wires them.
+    job_model.paths.pop("output_star", None)
+    job_model.paths.pop("output_processing", None)
+
+    # Registry stamp — authoritative record; best-effort, never blocks the commit.
+    try:
+        from services.tilt_series import get_registry_for
+
+        registry = get_registry_for(project_path)
+        if registry.tilt_series_ids() and has_labels:
+            for stem, is_filt in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good")):
+                try:
+                    registry.set_frame_filtered(str(stem), bool(is_filt), reason="tilt-filter" if is_filt else None)
+                except KeyError:
+                    pass
+            await asyncio.to_thread(registry.save)
+    except Exception as e:
+        logger.warning("tilt-filter registry stamp skipped: %s", e)
+
+    ui.notify(
+        f"Filter committed: {kept} tilts kept, {dropped} dropped — alignment will use the trimmed tomostar.",
+        type="positive",
+        timeout=5000,
+    )
+    return True
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # MAIN PANEL
 # ═════════════════════════════════════════════════════════════════════════════
@@ -176,21 +270,21 @@ def build_tilt_filter_panel(backend) -> None:
 
     with ui.scroll_area().classes("w-full flex-1"):
         with ui.column().classes("w-full gap-2 p-3"):
-            ts_ctf_star = _find_ts_ctf_star(project_path)
+            source_star = _find_fs_motion_star(project_path)
 
             # ── Metadata (hidden) ──
             mc = ui.column().classes("w-full gap-0.5").style(f"{SEC} display: none;")
             meta_ref["el"] = mc
             with mc:
-                if ts_ctf_star:
-                    _meta_row("Source star", str(ts_ctf_star))
+                if source_star:
+                    _meta_row("Source star", str(source_star))
                 state = get_project_state()
                 pd_str = state.tilt_filter_png_dir if state else None
                 if pd_str:
                     _meta_row("Thumbnails", pd_str)
                 _meta_row("Project", str(project_path))
 
-            if not ts_ctf_star:
+            if not source_star:
                 _render_waiting()
                 return
 
@@ -207,9 +301,9 @@ def build_tilt_filter_panel(backend) -> None:
 
             if not has_pngs:
                 with gallery_c:
-                    _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c)
+                    _render_generate(source_star, project_path, png_dir, gallery_c, stats_c)
             else:
-                _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c)
+                _build_gallery(source_star, project_path, png_dir, gallery_c, stats_c)
 
 
 def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_mgr, save_handler) -> None:
@@ -221,9 +315,9 @@ def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_m
 
     with ui.scroll_area().classes("w-full flex-1"):
         with ui.column().classes("w-full gap-2 p-3"):
-            ts_ctf_star = _find_ts_ctf_star(project_path)
+            source_star = _find_fs_motion_star(project_path)
 
-            if not ts_ctf_star:
+            if not source_star:
                 _render_waiting()
                 return
 
@@ -249,16 +343,16 @@ def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_m
 
             if not has_pngs:
                 with gallery_c:
-                    _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+                    _render_generate(source_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
             else:
-                _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
+                _build_gallery(source_star, project_path, png_dir, gallery_c, stats_c, job_model=job_model)
 
 
 def _render_waiting():
     with ui.column().classes("w-full items-center justify-center gap-2 py-12"):
         ui.icon("hourglass_empty", size="48px").style(f"color: {CLR_GHOST};")
-        ui.label("Run the pipeline through TS CTF first.").style(f"{FONT} font-size: 12px; color: {CLR_LABEL};")
-        ui.label("The tilt filter auto-detects completed CTF results.").style(
+        ui.label("Run motion correction (fsMotion) first.").style(f"{FONT} font-size: 12px; color: {CLR_LABEL};")
+        ui.label("The tilt filter reads the motion-corrected tilt images.").style(
             f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
         )
 
@@ -403,8 +497,9 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             labeled_p = out_dir / "tiltseries_labeled.star"
                             await asyncio.to_thread(write_tilt_series, ts_data, labeled_p, "tilt_series_labeled")
 
+                            # Produce the real pipeline output (trimmed tomostar) + wire it.
+                            await _finalize_pipeline_output(job_model, ts_data, project_path)
                             job_model.execution_status = JobStatus.SUCCEEDED
-                            job_model.paths["output_star"] = str(filtered_p)
                             if state:
                                 state.mark_dirty()
                                 await get_state_service().save_project()
@@ -414,12 +509,12 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             )
 
                             # Refresh gallery if containers available
-                            ts_ctf_star = _find_ts_ctf_star(project_path)
-                            if gallery_c is not None and stats_c is not None and ts_ctf_star:
+                            source_star = _find_fs_motion_star(project_path)
+                            if gallery_c is not None and stats_c is not None and source_star:
                                 gallery_c.clear()
                                 with gallery_c:
                                     _build_gallery(
-                                        ts_ctf_star,
+                                        source_star,
                                         project_path,
                                         png_dir or (project_path / "TiltFilter" / "png"),
                                         gallery_c,
@@ -681,9 +776,10 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
             # Persist labels and mark job complete
             if job_model is not None:
                 job_model.tilt_labels = dict(labels)
+                # Produce the real pipeline output (trimmed tomostar) + wire it so
+                # alignment consumes the manual cut, not just the display stars.
+                await _finalize_pipeline_output(job_model, ts_data, project_path)
                 job_model.execution_status = JobStatus.SUCCEEDED
-                job_model.paths["output_star"] = str(filtered_p)
-                job_model.paths["output_processing"] = job_model.paths.get("input_processing", "")
             if state:
                 state.tilt_filter_labels = labels
                 state.mark_dirty()
