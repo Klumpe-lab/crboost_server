@@ -183,36 +183,37 @@ class PipelineDeletionService:
         # Normalize job path (ensure trailing slash)
         job_name = job_path.rstrip("/") + "/"
         
-        # 1. Load pipeline graph
+        # 1. Load the pipeline graph and decide whether this job is actually tracked in it.
+        #    With the afterok orchestrator active (now the default for every project —
+        #    conf.yaml use_afterok_orchestrator: true) jobs live only in ProjectState, so
+        #    default_pipeline.star is commonly absent, process-less, or simply does not list
+        #    this job. All three mean "no graph row to prune" — the job dir still has to go
+        #    to Trash, but there is nothing to remove from the star.
+        #
+        #    The old code raised a hard "Pipeline has no jobs" the moment the process table
+        #    was empty, which is the *normal* state for an afterok project. That failed every
+        #    delete on its first attempt; the retry only "succeeded" because the caller had
+        #    already dropped the instance from state, so the second call short-circuited.
         graph = self.load_pipeline_graph(project_dir)
-        if graph is None:
-            return DeletionResult(
-                success=False,
-                error="Could not load default_pipeline.star"
-            )
-        
-        # 2. Verify job exists
-        if graph.processes.empty:
-            return DeletionResult(
-                success=False,
-                error="Pipeline has no jobs"
-            )
-        
-        job_mask = graph.processes["rlnPipeLineProcessName"] == job_name
-        if not job_mask.any():
-            # Afterok-orchestrator jobs live only in ProjectState, never in default_pipeline.star,
-            # so there is no graph row to prune — but the job dir must still go to Trash. Leaving it
-            # orphaned confuses job-number allocation and makes the roster re-render the now-stateless
-            # instance as a ghost "scheduled" (yellow) entry. Do just the filesystem move and report
-            # success, not a spurious "not found" failure that strands the caller in a partial delete.
+        job_in_star = (
+            graph is not None
+            and not graph.processes.empty
+            and (graph.processes["rlnPipeLineProcessName"] == job_name).any()
+        )
+        if not job_in_star:
+            # Just move the dir to Trash. Leaving it behind confuses job-number allocation and
+            # makes the roster re-render the now-stateless instance as a ghost "scheduled"
+            # (yellow) entry, instead of a spurious failure that strands a partial delete.
             moved = self._move_job_dir_to_trash(project_dir, job_name)
             return DeletionResult(
                 success=True,
                 deleted_jobs=[job_name],
-                message=f"Deleted {job_name} (afterok job; absent from default_pipeline.star)."
+                message=f"Deleted {job_name} (not tracked in default_pipeline.star)."
                 + ("" if moved else " No job directory on disk."),
             )
-        
+
+        job_mask = graph.processes["rlnPipeLineProcessName"] == job_name
+
         # 3. Find downstream dependents (for warning)
         downstream_jobs = graph.get_downstream_jobs(job_name)
         

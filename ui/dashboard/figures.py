@@ -353,10 +353,19 @@ def _build_per_tilt_chart(
         }
         if customdata is not None:
             trace["customdata"] = customdata
+            # Optional 3rd customdata field = tilt-filter verdict (keep/drop + prob).
+            # Surfaced only when the caller supplies it (the per-tilt CTF plots), so
+            # every metric point also carries what the tilt-filter thought of that tilt.
+            dl_line = (
+                "<br><span style='font-size:9px;color:#6366f1'>tilt-filter: %{customdata[2]}</span>"
+                if customdata and len(customdata[0]) >= 3
+                else ""
+            )
             trace["hovertemplate"] = (
                 f"<b>{s['name']}</b>: %{{y:.3g}}{y_unit}"
                 "<br>Tilt #%{customdata[0]} · %{x:.2f}°"
                 "<br><span style='font-size:9px;color:#94a3b8'>%{customdata[1]}</span>"
+                f"{dl_line}"
                 "<extra></extra>"
             )
         else:

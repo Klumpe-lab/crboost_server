@@ -120,7 +120,7 @@ class TsReconstructIngestAdapter:
                 f"tsReconstruct ingest failed for {len(problems)} tilt-series:\n  - {detail}"
             )
 
-    def emit_star(self, input_star_path: Path, output_star_path: Path) -> None:
+    def emit_star(self, input_star_path: Path, output_star_path: Path, *, excluded_ids: set[str] | None = None) -> None:
         """Write `tomograms.star` — the single-block global STAR that carries
         reconstruction paths + pixel size + binning for downstream job types.
 
@@ -136,9 +136,14 @@ class TsReconstructIngestAdapter:
         in_star_dir = input_star_path.parent
         out_ts_df = in_ts_df.copy()
 
+        excluded = {str(t) for t in (excluded_ids or ())}
         problems: List[str] = []
         for idx, row in out_ts_df.iterrows():
             ts_id = str(row["rlnTomoName"])
+            # Muted TS: intentionally not ingested — drop from output, don't
+            # treat the missing registry output as a per-TS failure.
+            if ts_id in excluded:
+                continue
             if not self.registry.has_tilt_series(ts_id):
                 problems.append(f"{ts_id}: not in registry")
                 continue
@@ -174,6 +179,9 @@ class TsReconstructIngestAdapter:
                 f"tsReconstruct emit_star: {len(problems)} problem(s):\n  - "
                 + "\n  - ".join(problems)
             )
+
+        if excluded:
+            out_ts_df = out_ts_df[~out_ts_df["rlnTomoName"].astype(str).isin(excluded)].reset_index(drop=True)
 
         output_star_path.parent.mkdir(parents=True, exist_ok=True)
         self.starfile_service.write({"global": out_ts_df}, output_star_path)

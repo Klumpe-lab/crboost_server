@@ -207,6 +207,61 @@ def collect_task_results(job_dir: Path, ts_names: List[str]) -> ArrayResults:
 
 
 # ----------------------------------------------------------------------
+# User-driven "exclude from processing" (forward-only mute)
+# ----------------------------------------------------------------------
+
+
+def load_excluded_ts(project_path: Path) -> set:
+    """Return the set of TS ids the user has marked excluded-from-processing.
+
+    Registry-backed. Late import so task mode stays light. Never raises — a
+    registry read failure degrades to "nothing excluded" (the job runs on
+    everything, which is the safe direction) with a warning.
+    """
+    try:
+        from services.tilt_series import get_registry_for
+
+        return set(get_registry_for(project_path).excluded_ids())
+    except Exception as e:
+        print(f"[SUPERVISOR] WARN: could not load TS exclusion set: {e}", flush=True)
+        return set()
+
+
+def apply_exclusions(job_dir: Path, project_path: Path, ts_names: List[str]) -> List[str]:
+    """Pre-mark user-excluded tilt-series as `.skip` so the array never
+    dispatches them and `collect_task_results` counts them as settled (not
+    failures or missing).
+
+    Call this right before `submit_array_job`. Any excluded TS gets its stale
+    `.ok`/`.fail` markers cleared first so it carries exactly one status file
+    (double-marking would break the `ok + skip == len(ts_names)` tally). The
+    manifest still lists ALL ts_names, so the excluded TS stays visible in the
+    per-TS strip as a deliberate skip rather than vanishing.
+
+    Forward-only: on-disk STARs are untouched. Returns the excluded names
+    (subset of ts_names) so callers can also drop them from glob/merge-based
+    aggregation.
+    """
+    excluded_set = load_excluded_ts(project_path)
+    excluded = [t for t in ts_names if t in excluded_set]
+    if excluded:
+        status_dir = job_dir / STATUS_DIR_NAME
+        status_dir.mkdir(parents=True, exist_ok=True)
+        for t in excluded:
+            for suffix in ("ok", "fail"):
+                stale = status_dir / f"{t}.{suffix}"
+                if stale.exists():
+                    stale.unlink()
+            write_skip_status(status_dir, t, reason="excluded from processing")
+        print(
+            f"[SUPERVISOR] Excluded {len(excluded)}/{len(ts_names)} tilt-series from processing "
+            f"(pre-marked skip): {excluded}",
+            flush=True,
+        )
+    return excluded
+
+
+# ----------------------------------------------------------------------
 # Registry preflight — fail loud at dispatch instead of after the subjobs
 # ----------------------------------------------------------------------
 

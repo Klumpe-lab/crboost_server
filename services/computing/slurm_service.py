@@ -121,6 +121,58 @@ class UserJob:
     stdout_path: str = ""  # %o -- path to stdout file, contains job dir
 
 
+@dataclass
+class QosLimit:
+    """One QOS available to the user, with the per-job limits we surface/enforce."""
+
+    name: str
+    is_default: bool  # the QOS a job gets when it doesn't ask for one — its MaxWall is the real cap
+    max_wall: str  # raw MaxWallDurationPerJob, e.g. "08:00:00" ("" = no limit)
+    max_wall_minutes: int  # parsed; _QOS_UNLIMITED = no limit, 0 = unknown/unparseable
+    max_gpus_per_job: int  # from MaxTRESPerJob gres/gpu=N (0 = unset)
+    max_gpus_per_user: int  # from MaxTRESPerUser gres/gpu=N (0 = unset)
+
+
+# Cached QOS MaxWall (minutes) for the running user, populated by SlurmService.get_user_qos_limits()
+# (e.g. the landing-page probe). Read SYNCHRONOUSLY by walltime estimators that can't await — the
+# preferred source for miss_align's QOS-safe cap. Convention: >0 a real per-job wall limit,
+# _QOS_UNLIMITED = QOS sets no wall limit, 0 = not yet probed / query failed (callers fall back).
+_QOS_UNLIMITED = 100_000
+_qos_maxwall_cache_min = 0
+
+
+def get_cached_qos_maxwall_minutes() -> int:
+    """The running user's effective (default-QOS) MaxWallDurationPerJob in minutes as last probed:
+    >0 a real limit, _QOS_UNLIMITED = no limit, 0 = unknown (not probed / sacctmgr unavailable)."""
+    return _qos_maxwall_cache_min
+
+
+def _slurm_walltime_to_minutes(t: str) -> int:
+    """Parse a SLURM/sacctmgr walltime ('HH:MM:SS', 'D-HH:MM:SS', 'MM:SS') to whole minutes.
+    Returns _QOS_UNLIMITED for an explicit no-limit ('', 'UNLIMITED', 'NONE', '-1'); 0 if unparseable."""
+    s = (t or "").strip()
+    if s == "" or s.upper() in ("UNLIMITED", "NONE", "-1"):
+        return _QOS_UNLIMITED
+    try:
+        days, hms = s.split("-", 1) if "-" in s else ("0", s)
+        parts = [int(p) for p in hms.split(":")]
+        if len(parts) == 3:
+            h, m, sec = parts
+        elif len(parts) == 2:
+            h, m, sec = 0, parts[0], parts[1]
+        else:
+            return 0
+        return int(days) * 1440 + h * 60 + m + (1 if sec else 0)
+    except (ValueError, IndexError):
+        return 0
+
+
+def _gpu_from_tres(tres: str) -> int:
+    """Extract the gres/gpu=N count from a SLURM TRES string (0 if absent)."""
+    m = re.search(r"gres/gpu=(\d+)", tres or "")
+    return int(m.group(1)) if m else 0
+
+
 def normalize_slurm_ids(job_ids: List[str]) -> List[str]:
     """
     Deduplicate SLURM job IDs by normalizing array task IDs to their parent.
@@ -223,6 +275,81 @@ class SlurmService:
         self._cache[cache_key] = partitions
         self._cache_timestamp[cache_key] = datetime.now()
         return partitions
+
+    async def get_user_qos_limits(self, force_refresh: bool = False) -> List[QosLimit]:
+        """The QOS(es) available to this user and their per-job limits, via sacctmgr. Also refreshes
+        the module-level `_qos_maxwall_cache_min` with the DEFAULT QOS's MaxWall (the limit a job
+        without an explicit --qos actually hits) so sync walltime estimators can read it. Returns []
+        (and leaves the cache untouched) when sacctmgr is unavailable — never raises."""
+        global _qos_maxwall_cache_min
+        cache_key = "qos_limits"
+        if not force_refresh and self._is_cache_valid(cache_key):
+            return self._cache[cache_key]
+
+        # 1. QOS names for this user + the DefaultQOS (the effective one when a job asks for none).
+        ok, out, err = await self._run_command(
+            ["sacctmgr", "-nP", "show", "assoc", f"user={self.username}", "format=QOS,DefaultQOS"]
+        )
+        qos_names: list[str] = []
+        default_qos = ""
+        if ok:
+            seen: set[str] = set()
+            for line in out.strip().split("\n"):
+                fields = line.split("|")
+                if not fields or not fields[0].strip():
+                    continue
+                for q in fields[0].split(","):
+                    q = q.strip()
+                    if q and q not in seen:
+                        seen.add(q)
+                        qos_names.append(q)
+                if len(fields) > 1 and fields[1].strip() and not default_qos:
+                    default_qos = fields[1].strip()
+        if not qos_names:
+            logger.info("get_user_qos_limits: no QOS for %s (sacctmgr: %s)", self.username, (err or "").strip())
+            self._cache[cache_key] = []
+            self._cache_timestamp[cache_key] = datetime.now()
+            return []
+
+        # 2. Per-QOS limits. Query ALL QOS and filter to the user's set in Python — sacctmgr's
+        #    positional name filter varies across versions, but the columnar `-nP` output is stable.
+        wanted = set(qos_names)
+        ok2, out2, _ = await self._run_command(
+            ["sacctmgr", "-nP", "show", "qos", "format=Name,MaxWall,MaxTRESPerJob,MaxTRESPerUser"]
+        )
+        limits: List[QosLimit] = []
+        if ok2:
+            for line in out2.strip().split("\n"):
+                f = line.split("|")
+                if len(f) < 4 or not f[0].strip():
+                    continue
+                name = f[0].strip()
+                if name not in wanted:
+                    continue
+                limits.append(
+                    QosLimit(
+                        name=name,
+                        is_default=(name == default_qos),
+                        max_wall=f[1].strip(),
+                        max_wall_minutes=_slurm_walltime_to_minutes(f[1].strip()),
+                        max_gpus_per_job=_gpu_from_tres(f[2]),
+                        max_gpus_per_user=_gpu_from_tres(f[3]),
+                    )
+                )
+
+        # Cache the effective per-job wall cap: the default QOS's MaxWall if we found it, else the
+        # largest real limit across the user's QOS (optimistic, but empirically what jobs get here).
+        default_wall = next((q.max_wall_minutes for q in limits if q.is_default and q.max_wall_minutes > 0), 0)
+        if default_wall > 0:
+            _qos_maxwall_cache_min = default_wall
+        else:
+            walls = [q.max_wall_minutes for q in limits if q.max_wall_minutes > 0]
+            if walls:
+                _qos_maxwall_cache_min = max(walls)
+
+        self._cache[cache_key] = limits
+        self._cache_timestamp[cache_key] = datetime.now()
+        return limits
 
     async def get_nodes_info(self, partition: Optional[str] = None, force_refresh: bool = False) -> List[SlurmNode]:
         cache_key = f"nodes_{partition or 'all'}"

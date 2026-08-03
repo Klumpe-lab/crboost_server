@@ -17,11 +17,9 @@ class TsReconstructParams(AbstractJobParams):
     USER_PARAMS: ClassVar[Set[str]] = {"rescale_angpixs", "halfmap_frames", "deconv", "perdevice", "array_throttle"}
 
     INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
-        InputSlot(
-            key="input_star",
-            accepts=[JobFileType.FILTERED_TILT_SERIES_STAR, JobFileType.TS_CTF_TILT_SERIES_STAR],
-            preferred_source="tiltFilter",
-        ),
+        # The tilt cut now propagates natively (tiltFilter trims the tomostar
+        # upstream of alignment), so tsCtf's star already contains only kept tilts.
+        InputSlot(key="input_star", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
         # input_processing must come from tsCtf (the canonical producer of the per-TS XMLs
         # with motion + alignment + CTF metadata). tiltFilter only filters STAR rows; it
         # does not modify the XMLs and its OUTPUT_SCHEMA's warp_tiltseries entry is a

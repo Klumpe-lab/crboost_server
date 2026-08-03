@@ -1,0 +1,50 @@
+Bootstrap: docker
+From: nvidia/cuda:12.1.0-devel-ubuntu22.04
+
+%post
+    # 1. System Dependencies
+    apt-get update && apt-get install -y \
+        build-essential \
+        git \
+        wget \
+        curl \
+        vim \
+    && rm -rf /var/lib/apt/lists/*
+
+    # 2. Install Miniforge (Mamba)
+    wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh -O /tmp/miniforge.sh
+    bash /tmp/miniforge.sh -b -p /opt/conda
+    rm /tmp/miniforge.sh
+
+    # 3. Clone the Repository
+    cd /opt
+    git clone https://github.com/IsoNet-cryoET/IsoNet2.git
+    cd IsoNet2
+
+    # 4. Fix the lazy-loader version conflict before creating env
+    sed -i 's/lazy-loader==0.3/lazy-loader>=0.4/' isonet2_environment.yml
+
+    # 5. Create Conda Environment
+    . /opt/conda/etc/profile.d/conda.sh
+    mamba env create -f isonet2_environment.yml
+
+    # 6. Make script executable (correct path!)
+    chmod +x /opt/IsoNet2/IsoNet/bin/isonet.py
+
+%environment
+    export ISONET_HOME=/opt/IsoNet2
+    export PATH=/opt/conda/envs/isonet2_environment/bin:$PATH
+    export PATH=$ISONET_HOME/IsoNet/bin:$PATH
+    export PYTHONPATH=$ISONET_HOME:$PYTHONPATH
+
+%runscript
+    if [ $# -eq 0 ]; then
+        exec isonet.py --help
+    else
+        exec isonet.py "$@"
+    fi
+
+%labels
+    Author User
+    Version 1.0
+    Description IsoNet2 CLI Container (CUDA 12.1)

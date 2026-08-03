@@ -75,6 +75,11 @@ class AbstractJobParams(BaseModel):
     # consumers depend on nothing. See pipeline_orchestrator_service._submit_chain.
     RUNS_INLINE: ClassVar[bool] = False
 
+    # Optional markdown blurb rendered at the top of the config tab (a collapsible
+    # "How this job works" panel). Use it for jobs whose behaviour or resource cost
+    # is non-obvious. Empty = no panel.
+    CONFIG_PREAMBLE: ClassVar[str] = ""
+
     # ------------------------------------------------------------------
     # Phase 1c: USER_PARAMS whitelist.
     #

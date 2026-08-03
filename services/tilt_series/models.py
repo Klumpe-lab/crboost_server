@@ -63,6 +63,13 @@ class FsMotionCtfFrameOutput(_OutputBase):
     defocus_angle: float
     ctf_astigmatism: float
 
+    # Real per-frame QC values that live ONLY as root attributes of the Warp
+    # per-movie XML (the RELION star writes 1e-6 placeholders for these). Optional
+    # because legacy registries lack them and a movie may fail to fit. See
+    # services/tilt_series/frameseries_quality.py for the placeholder-trap context.
+    ctf_resolution: Optional[float] = None       # CTFResolutionEstimate (Å; lower = better)
+    mean_frame_movement: Optional[float] = None  # MeanFrameMovement (beam-induced motion; Warp units)
+
     warp_xml_path: Path
 
 
@@ -171,8 +178,30 @@ class Frame(BaseModel):
     pre_exposure_e_per_a2: float = 0.0
     acquisition_time: Optional[datetime] = None
 
+    # ── Raw per-tilt acquisition metadata (captured verbatim from the mdoc at
+    # import). Optional: legacy registries and non-SerialEM imports may lack them.
+    # QC + provenance only — not consumed by compute. Values are the mdoc's own,
+    # not re-derived (units per the mdoc convention noted).
+    exposure_dose_e_per_a2: Optional[float] = None  # mdoc ExposureDose
+    dose_rate: Optional[float] = None               # mdoc DoseRate (verbatim)
+    exposure_time_s: Optional[float] = None         # mdoc ExposureTime
+    defocus_um: Optional[float] = None              # mdoc Defocus (measured; distinct from TargetDefocus)
+    min_intensity: Optional[float] = None           # mdoc MinMaxMean[0] (dark-tilt detector signal)
+    mean_intensity: Optional[float] = None          # mdoc MinMaxMean[2]
+    max_intensity: Optional[float] = None           # mdoc MinMaxMean[1]
+    image_shift_x: Optional[float] = None           # mdoc ImageShift X
+    image_shift_y: Optional[float] = None           # mdoc ImageShift Y
+
     # Per-job artifacts, keyed by job instance_id
     outputs: Dict[str, FrameOutput] = Field(default_factory=dict)
+
+    # Tilt-filter verdict (per-tilt), stamped by the tiltFilter job. The functional
+    # cut is the trimmed tomostar it writes; this is the authoritative *record* in the
+    # registry (re-stamped on every filter re-run). This is the real frame-level
+    # "filtered out" concept — distinct from TS-level TiltSeries.is_excluded (user
+    # mute) and from the mislabeled TS-level TiltSeries.is_filtered_out placeholder.
+    is_filtered_out: bool = False
+    filter_reason: Optional[str] = None
 
 
 class Tomogram(BaseModel):
@@ -213,6 +242,16 @@ class TiltSeries(BaseModel):
     is_selected: bool = True
     is_filtered_out: bool = False
     filter_reason: Optional[str] = None
+
+    # User-driven "exclude from processing" (forward-only mute). When True,
+    # every per-TS job supervisor pre-writes a `.skip` marker for this TS so it
+    # is never dispatched and never aggregated, and the dashboard subtracts it
+    # from "expected". Distinct from is_filtered_out (which is the frame-level
+    # tilt-filter concept). Undo = set back to False; the effect applies on the
+    # next run. On-disk STARs are never rewritten — exclusion is a dispatch +
+    # aggregation gate, not a data mutation.
+    is_excluded: bool = False
+    exclusion_reason: Optional[str] = None
 
     # ── derived views ──────────────────────────────────────────────────────
 

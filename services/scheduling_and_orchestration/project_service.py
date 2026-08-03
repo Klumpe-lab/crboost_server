@@ -425,6 +425,12 @@ class ProjectService:
                     state.acquisition.dose_per_tilt = detected_params["dose_per_tilt"]
                 if "tilt_axis_degrees" in detected_params:
                     state.acquisition.tilt_axis_degrees = detected_params["tilt_axis_degrees"]
+                # Gain reference is user-supplied at setup (not auto-detectable from
+                # mdocs). Only set when non-empty so we never stamp a blank over a
+                # value that could arrive later; the drivers read it via
+                # job.gain_path -> acquisition.gain_reference_path.
+                if detected_params.get("gain_reference_path"):
+                    state.acquisition.gain_reference_path = detected_params["gain_reference_path"]
                 state.update_modified()
             elif mdocs_glob:
                 # Fallback: re-parse mdocs (legacy path / no overview available).
