@@ -136,12 +136,15 @@ def main():
 
             registry = get_registry_for(project_path)
             if registry.tilt_series_ids():
-                verdicts = dict(zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good")))
+                verdicts = zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), df["cryoBoostDlProbability"])
                 stamped = 0
-                for stem, is_filt in verdicts.items():
+                for stem, is_filt, prob in verdicts:
                     try:
                         registry.set_frame_filtered(
-                            str(stem), bool(is_filt), reason="DL tilt-filter" if is_filt else None
+                            str(stem),
+                            bool(is_filt),
+                            reason="DL tilt-filter" if is_filt else None,
+                            probability=float(prob) if prob is not None else None,
                         )
                         stamped += 1
                     except KeyError:

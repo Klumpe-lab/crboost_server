@@ -1,6 +1,7 @@
 # Registry consolidation — make the TiltSeriesRegistry the store
 
-**Status:** SCOPING (recon complete 2026-07-31; scope narrowed by user steer 2026-07-31). Companion to
+**Status:** Phase 1 (registry backfill) code-complete 2026-08-03 — 1a/1b runtime-verified, 1c/1d built +
+behavior-verified PENDING RUNTIME. Next: Phase 2+3 (freshness → dashboard-on-registry). Companion to
 [`tilt-filter-tomostar-relion-split-roadmap.md`](tilt-filter-tomostar-relion-split-roadmap.md)
 (the §5 "collapse the RELION track" question this doc answers concretely) and
 [`preprocessing-metrics-inventory.md`](preprocessing-metrics-inventory.md) (the placeholder-trap catalog).
@@ -183,12 +184,22 @@ no behavior change. Bumps `REGISTRY_SCHEMA_VERSION` minor per sub-step.
   via a local positive-float coercion, right where it already parses the XML. Schema note folded into
   1.2. *(Deferred: per-tilt-series CTF-res from the tsCtf XML, and the PS1D/motion-track curves — kept
   file-referenced per open Q 5.)*
-- **1c — Tilt-filter probability:** persist `cryoBoostDlProbability` alongside the existing boolean
-  verdict (Frame field or a small filter output).
-- **1d — Denoise (tomogram-scoped, the last preprocessing step):** add `DenoisePredictTomogramOutput`
-  (denoised MRC path + method + model origin) via `attach_tomogram_output`, and a minimal project-scope
-  pointer for the denoise-train model. **Stop here** — template-matching onward is the future particle
-  registry, out of scope for this effort.
+- **1c — Tilt-filter probability. ✅ BUILT 2026-08-03 (code-clean, model round-trip verified, PENDING
+  RUNTIME).** Added `Frame.filter_probability: Optional[float]` (the DL `cryoBoostDlProbability`, verbatim,
+  alongside the boolean verdict). `set_frame_filtered` takes an optional `probability` kwarg (stored when
+  provided; omitting it preserves any prior score). Stamped at both call sites: `drivers/tilt_filter.py`
+  (zips in `cryoBoostDlProbability`) and `ui/tilt_filter_panel.py` finalize (column-guarded). Schema 1.2→1.3.
+- **1d — Denoise (tomogram-scoped, the last preprocessing step). ✅ BUILT 2026-08-03 (code-clean, union
+  discriminator + serialization round-trip verified, PENDING RUNTIME).** Added `DenoisePredictTomogramOutput`
+  (`denoised_mrc` + `denoise_method` Literal["cryoCARE","IsoNet"] + `model_path` as the model origin) to the
+  `TomogramOutput` union + exports. Attached from `drivers/denoise_predict.py` via a best-effort
+  `stamp_denoise_registry()` helper called in the **supervisor** after `aggregate_output_star` (single-threaded
+  — never in the parallel array tasks, which would race on the shared registry JSON; mirrors the tilt-filter
+  stamp's warn-never-fail contract). Schema note folded into 1.3. **Deferred (Open Decision #1):** the separate
+  project-scope pointer for the denoise-**train** global model — predict already resolves the model via the IO
+  resolver + `inherited_from_train`, and each `DenoisePredictTomogramOutput.model_path` already records which
+  archive produced each tomogram, so a new project-scope store would be speculative until §6 Q1 is decided.
+  **Stop here** — template-matching onward is the future particle registry, out of scope for this effort.
 
 **Phase 2 — Freshness (Gate 1).** Build `refresh_from_disk()` + merge + mtime-gating + triggers. Its
 first consumer is Phase 3.
@@ -243,41 +254,38 @@ everything after. **✅ DONE 2026-07-31 (code-clean, PENDING RUNTIME) — see §
 
 ---
 
-## 8. Next-session handoff (2026-07-31)
+## 8. Next-session handoff (2026-08-03)
 
-**State:** Phase 0 verified. Phase 1a + 1b + the `pre_exposure` key-fix are **BUILT + RUNTIME-VERIFIED
-2026-07-31** on `copiatest_postfilter` (16 TS; acq fields sane min≤mean≤max, `acquisition_time` now
-populated = DateTime bug fixed; `ctf_resolution`=6.9Å + `mean_frame_movement`=1.23 real from XML).
-Only un-exercised bit: `pre_exposure` on a mid-stack frame (frame[0]=0 for both code paths) — eyeball a
-mid frame vs the mdoc `PriorRecordDose` if you want ocular proof. 7 files touched:
-`services/tilt_series/models.py` (Frame acq fields + `FsMotionCtfFrameOutput.ctf_resolution`/
-`mean_frame_movement`), `services/dataset_models.py` (`TiltInfo.date_time`),
-`services/configs/dataset_parsing_service.py` (extract `DateTime`),
-`services/tilt_series/build.py` (populate both paths + `pre_exposure` key-fix + 2 helpers),
-`services/tilt_series/registry.py` (schema 1.1→1.2),
-`services/tilt_series/adapters/fs_motion_ctf.py` (populate XML QC).
+**State: Phase 1 is code-complete.** Phase 0 verified. Phase 1a + 1b + the `pre_exposure` key-fix are
+**BUILT + RUNTIME-VERIFIED 2026-07-31** on `copiatest_postfilter`. Phase 1c + 1d are **BUILT + behavior-
+verified (pydantic round-trip / union discriminator / `set_frame_filtered` probability semantics)
+2026-08-03, PENDING RUNTIME** on a real denoise/tilt-filter run.
 
-**FIRST THING NEXT SESSION — runtime-verify 1a/1b.** No auto-reload + no pandas in the Claude sandbox,
-so the user runs it. Harness: `/users/artem.kushner/verify_registry_backfill.py` (build a fresh
-registry from `copiatest_postfilter` mdocs → assert acq fields + non-null `acquisition_time`; re-ingest
-fs-motion → assert `ctf_resolution`/`mean_frame_movement` non-null). OR: reload a project in the UI and
-grep `registry/tilt_series/*.json` for `exposure_dose_e_per_a2` + `acquisition_time`. **Watch the
-`pre_exposure` change** — on dose-symmetric data `pre_exposure` will now differ from the old cumulative
-(it prefers `PriorRecordDose`); confirm that's the intended, more-correct value on a real dataset.
+**1c/1d files touched (2026-08-03), 6 total:**
+- `services/tilt_series/models.py` — `Frame.filter_probability`; new `DenoisePredictTomogramOutput` added
+  to the `TomogramOutput` union.
+- `services/tilt_series/registry.py` — `set_frame_filtered(..., probability=None)`; schema 1.2→1.3.
+- `services/tilt_series/__init__.py` — export `DenoisePredictTomogramOutput`.
+- `drivers/tilt_filter.py` — stamp probability (zips in `cryoBoostDlProbability`).
+- `ui/tilt_filter_panel.py` — stamp probability in finalize (column-guarded).
+- `drivers/denoise_predict.py` — `stamp_denoise_registry()` best-effort helper, called in the supervisor
+  after `aggregate_output_star`.
 
-**THEN, remaining Phase 1:**
-- **1c — tilt-filter probability:** persist `cryoBoostDlProbability` (currently only the boolean
-  `is_filtered_out` is in the registry). Add a `Frame.filter_probability: Optional[float]` (or a small
-  filter output) and stamp it in `drivers/tilt_filter.py` + `ui/tilt_filter_panel.py` right where
-  `set_frame_filtered` is already called.
-- **1d — denoise-predict tomogram output (LAST preprocessing step; particle stage is OUT — future
-  particle registry):** add `DenoisePredictTomogramOutput` (denoised MRC path + method + model origin),
-  attach via `attach_tomogram_output` from `drivers/denoise_predict.py`. A minimal project-scope pointer
-  for the denoise-train global model (path + method) so predict can resolve it.
+**FIRST THING NEXT SESSION — runtime-verify 1c/1d.** No auto-reload + no pandas in the Claude sandbox, so
+the user runs it. (1) 1c: run the tilt-filter (or commit via the keep/drop panel), then grep
+`registry/tilt_series/*.json` for `filter_probability` — expect a float per tilt matching the star's
+`cryoBoostDlProbability`. (2) 1d: run denoise-predict, then grep the same sidecars for
+`"output_type": "denoise_predict"` under `tomogram.outputs` — expect `denoised_mrc` / `denoise_method` /
+`model_path` per denoised TS. Both stamps are best-effort (warn-never-fail); confirm the supervisor log
+prints `Stamped denoise output on N registry tomogram(s)` / `Stamped tilt-filter verdict on N ...`.
 
 **THEN Phases 2→5** (see §5): freshness (`refresh_from_disk` merge, preserve `is_excluded`, mtime-gated)
 → dashboard `per_tilt_view` accessor + panel-by-panel migration (start TS-align) → swap preprocessing
-enum-reads to `registry.tilt_series_ids()` → preprocessing stars emit-only.
+enum-reads to `registry.tilt_series_ids()` → preprocessing stars emit-only. Phase 2+3 are the recommended
+next pair — freshness earns itself via the dashboard win.
 
-**Open decisions still to make** (see §6): job-scoped output home for denoise-train; migration
-(forward-only vs backfill-on-load) for old on-disk projects that predate 1a/1b; curves persist-vs-file-ref.
+**Open decisions still to make** (see §6): (Q1) job-scoped output home for the denoise-**train** global
+model — **deferred in 1d, not built**; predict already resolves the model without it and each
+`DenoisePredictTomogramOutput.model_path` records provenance per tomogram, so decide whether a project-scope
+`job_outputs` store is worth adding before building it. (Q4) migration (forward-only vs backfill-on-load) for
+old on-disk projects that predate 1a–1d. (Q5) curves persist-vs-file-ref.

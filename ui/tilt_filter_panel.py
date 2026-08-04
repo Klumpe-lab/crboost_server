@@ -216,9 +216,15 @@ async def _finalize_pipeline_output(job_model, ts_data, project_path) -> bool:
 
         registry = get_registry_for(project_path)
         if registry.tilt_series_ids() and has_labels:
-            for stem, is_filt in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good")):
+            probs = df["cryoBoostDlProbability"] if "cryoBoostDlProbability" in df.columns else [None] * len(df)
+            for stem, is_filt, prob in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), probs):
                 try:
-                    registry.set_frame_filtered(str(stem), bool(is_filt), reason="tilt-filter" if is_filt else None)
+                    registry.set_frame_filtered(
+                        str(stem),
+                        bool(is_filt),
+                        reason="tilt-filter" if is_filt else None,
+                        probability=float(prob) if prob is not None else None,
+                    )
                 except KeyError:
                     pass
             await asyncio.to_thread(registry.save)

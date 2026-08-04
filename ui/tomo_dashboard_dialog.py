@@ -245,6 +245,7 @@ _DASHBOARD_PANEL_KEYS: list[tuple[str, str]] = [
     ("tilt_filter", "Tilt-filter"),
     ("ts_align", "TS-align"),
     ("ts_ctf", "TS-CTF"),
+    ("tilt_qc", "Tilt-QC"),
     ("reconstruct", "Reconstruct"),
     ("particles", "Particles"),
 ]
@@ -791,6 +792,7 @@ def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, re
         ("tilt_filter", _render_tilt_filter_section),
         ("ts_align", _render_ts_alignment_section),
         ("ts_ctf", _render_ts_ctf_section),
+        ("tilt_qc", _render_tilt_qc_section),
         ("reconstruct", _render_reconstruct_section),
     )
     for key, emit in section_emitters:
@@ -1156,6 +1158,12 @@ _HINT_SHIFT = (
 _HINT_ALIGN_ANGLES = (
     "Refined per-tilt rotational corrections. X tilt − nominal = how far the refit moved the stage tilt; "
     "Y tilt and Z rot are the secondary tilt-axis and in-plane rotation."
+)
+_HINT_THROUGHFOCUS = (
+    "Mean per-tilt CTF defocus ((U+V)/2) vs stage tilt, sorted by angle — the through-focus curve. "
+    "A clean tilt-series traces a smooth trend; scatter or a kink at high tilt flags bad CTF fits. "
+    "The dotted line is a linear fit; its slope sign is a handedness cue (ties to the TomoHand / 412 "
+    "defocus-sign issue)."
 )
 
 
@@ -1624,6 +1632,127 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
                 for k, v in param_rows:
                     ui.label(k).classes("cb-datadump-key")
                     ui.label(str(v)).classes("cb-datadump-val")
+    return True
+
+
+# --- Tilt QC (through-focus + alignment difficulty) ---------------------------
+
+
+def _linear_slope_intercept(xs: list, ys: list) -> tuple:
+    """OLS slope + intercept over paired (x, y), skipping None entries. Returns
+    (slope, intercept) or (None, None) for < 2 points or zero x-variance.
+    numpy-free (the dashboard venv has no numpy)."""
+    pts = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
+    n = len(pts)
+    if n < 2:
+        return None, None
+    mx = sum(x for x, _ in pts) / n
+    my = sum(y for _, y in pts) / n
+    den = sum((x - mx) ** 2 for x, _ in pts)
+    if den == 0:
+        return None, None
+    slope = sum((x - mx) * (y - my) for x, y in pts) / den
+    return slope, my - slope * mx
+
+
+def _defocus_source_df(project_state, project_path: Path, ts_name: str):
+    """The per-tilt star carrying real per-tilt defocus — prefer TS CTF
+    (post-alignment, most refined), fall back to FS Motion/CTF. Returns
+    (df, source_label) or (None, None)."""
+    for jt, label in ((JobType.TS_CTF, "tsCtf"), (JobType.FS_MOTION_CTF, "fsMotion")):
+        found = _find_job_by_type(project_state, jt)
+        if not found:
+            continue
+        jd = _job_dir_for(found[0], found[1], project_path)
+        if jd is None:
+            continue
+        df = _read_per_tilt_df(_per_tilt_star_path(jd, ts_name))
+        if df is not None and "rlnDefocusU" in df.columns:
+            return df, label
+    return None, None
+
+
+def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
+    """Tomo-native per-tilt QC (roadmap ③): the defocus through-focus curve
+    (with a linear-fit handedness slope cue) beside shift-magnitude-vs-tilt
+    (per-TS max = the headline alignment-difficulty number). Both read existing
+    per-tilt stars — no new plumbing. No-op if neither CTF nor alignment has run
+    for this TS."""
+    def_df, def_src = _defocus_source_df(project_state, project_path, ts_name)
+
+    align_df = None
+    align = _find_job_by_type(project_state, JobType.TS_ALIGNMENT)
+    if align:
+        ajd = _job_dir_for(align[0], align[1], project_path)
+        if ajd is not None:
+            align_df = _read_per_tilt_df(_per_tilt_star_path(ajd, ts_name))
+
+    # Defocus (µm) mean per tilt, sorted by tilt angle so the through-focus trend
+    # reads as a curve (the star is acquisition-ordered).
+    def_tilts = def_mean = def_fit = None
+    slope = None
+    if def_df is not None and "rlnTomoNominalStageTiltAngle" in def_df.columns:
+        raw_t = _safe_floats(def_df["rlnTomoNominalStageTiltAngle"])
+        du = _safe_floats(def_df["rlnDefocusU"])
+        dv = _safe_floats(def_df["rlnDefocusV"]) if "rlnDefocusV" in def_df.columns else du
+        mean_um = [((u + v) / 2.0) / 1.0e4 if u is not None and v is not None else None for u, v in zip(du, dv)]
+        pairs = sorted([(t, m) for t, m in zip(raw_t, mean_um) if t is not None and m is not None], key=lambda p: p[0])
+        if pairs:
+            def_tilts = [p[0] for p in pairs]
+            def_mean = [p[1] for p in pairs]
+            slope, intercept = _linear_slope_intercept(def_tilts, def_mean)
+            if slope is not None:
+                def_fit = [intercept + slope * t for t in def_tilts]
+
+    # Shift magnitude (Å) per tilt (same math as the alignment section; surfaced
+    # here as the headline alignment-difficulty number alongside defocus).
+    sh_tilts = sh_mag = None
+    if align_df is not None and {"rlnTomoXShiftAngst", "rlnTomoYShiftAngst"}.issubset(align_df.columns):
+        sh_tilts = _safe_floats(align_df["rlnTomoNominalStageTiltAngle"])
+        xs = _safe_floats(align_df["rlnTomoXShiftAngst"])
+        ys = _safe_floats(align_df["rlnTomoYShiftAngst"])
+        mag = [(x * x + y * y) ** 0.5 if x is not None and y is not None else None for x, y in zip(xs, ys)]
+        sh_mag = mag if _is_meaningful_series(mag) else None
+
+    if def_mean is None and sh_mag is None:
+        return False
+
+    with ui.element("div").classes("cb-section-card w-full") as card:
+        card._props["data-section"] = "tilt_qc"
+        with ui.element("div").classes("cb-section-card-header"):
+            ui.icon("insights", size="14px").classes("text-indigo-600")
+            ui.label("Tilt QC").classes("cb-section-title")
+            ui.space()
+            ui.label("through-focus + alignment difficulty").classes("cb-metric-strip")
+
+        strip_rows: list[tuple[str, str]] = []
+        if def_mean is not None:
+            d_stats = _stats(def_mean)
+            strip_rows.append(("defocus median", f"{d_stats['median']:.2f} µm ({def_src})"))
+            if slope is not None:
+                trend = "rises" if slope > 0 else "falls" if slope < 0 else "flat"
+                strip_rows.append(("defocus trend", f"{slope:+.3f} µm/° ({trend} with +tilt)"))
+        if sh_mag is not None:
+            m_stats = _stats([v for v in sh_mag if v is not None])
+            strip_rows.append(("|shift| max / median", f"{m_stats['max']:.1f} / {m_stats['median']:.1f} Å"))
+        if strip_rows:
+            _stat_strip(strip_rows)
+
+        with ui.element("div").classes("cb-plot-row"):
+            if def_mean is not None:
+                series = [{"name": "mean defocus", "y": def_mean, "color": _DEFOCUS_U_COLOR, "marker_size": 7}]
+                if def_fit is not None:
+                    series.append({"name": "trend", "y": def_fit, "color": "#94a3b8", "mode": "lines", "dash": "dot"})
+                fig = _build_per_tilt_chart(def_tilts, series, y_label="defocus (µm)", y_unit=" µm")
+                _plot_cell("Defocus vs tilt (through-focus)", fig, hint=_HINT_THROUGHFOCUS)
+            if sh_mag is not None:
+                fig = _build_per_tilt_chart(
+                    sh_tilts,
+                    [{"name": "|shift|", "y": sh_mag, "color": "#1d4ed8", "marker_size": 7}],
+                    y_label="shift (Å)",
+                    y_unit=" Å",
+                )
+                _plot_cell("Shift magnitude vs tilt", fig, hint=_HINT_SHIFT)
     return True
 
 

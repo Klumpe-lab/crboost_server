@@ -280,6 +280,53 @@ def aggregate_output_star(
     print(f"[SUPERVISOR] Wrote denoised STAR with {len(out_df)} tomogram(s): {out_path}", flush=True)
 
 
+def stamp_denoise_registry(
+    project_path: Path,
+    job_dir: Path,
+    instance_id: str,
+    params: DenoisePredictParams,
+    ok_ts_names: List[str],
+    tomo_basenames: Dict[str, str],
+    output_dir: Path,
+    model_path: Path,
+) -> None:
+    """Record each denoised tomogram in the registry (denoise is the last tomogram-scoped
+    preprocessing step). Done here in the single-threaded supervisor — never in the parallel
+    array tasks, which would race on the shared registry JSON. Best-effort: an empty or
+    pre-registry project is skipped, unknown TS are skipped, and any failure only warns — it
+    must never fail a job that already produced denoised tomograms."""
+    try:
+        from services.tilt_series import DenoisePredictTomogramOutput, get_registry_for
+
+        registry = get_registry_for(project_path)
+        if not registry.tilt_series_ids():
+            print("[SUPERVISOR] Registry empty — skipped denoise output stamp", flush=True)
+            return
+        stamped = 0
+        for ts in ok_ts_names:
+            basename = tomo_basenames.get(ts)
+            if not basename:
+                continue
+            try:
+                registry.attach_tomogram_output(
+                    ts,
+                    DenoisePredictTomogramOutput(
+                        job_instance_id=instance_id,
+                        job_dir=job_dir,
+                        denoised_mrc=output_dir / basename,
+                        denoise_method=params.denoise_method.value,
+                        model_path=model_path,
+                    ),
+                )
+                stamped += 1
+            except KeyError:
+                pass
+        registry.save()
+        print(f"[SUPERVISOR] Stamped denoise output on {stamped} registry tomogram(s)", flush=True)
+    except Exception as e:
+        print(f"[SUPERVISOR] WARNING: denoise registry stamp skipped ({e})", flush=True)
+
+
 def _apply_inherited_method(project_state, params, tag: str) -> None:
     """Override denoise_method + isonet_deconv from the denoisetrain job that produced the
     model, so predict always runs what the model was trained as (never a stale/default that
@@ -383,6 +430,16 @@ def run_supervisor_mode():
             print("[SUPERVISOR] WARN: no tomograms denoised (all filtered out?); writing empty STAR", flush=True)
         aggregate_output_star(
             paths["input_star"], job_dir, paths["output_dir"], project_path, results.ok, tomo_basenames
+        )
+        stamp_denoise_registry(
+            project_path,
+            job_dir,
+            instance_id,
+            params,
+            results.ok,
+            tomo_basenames,
+            paths["output_dir"],
+            paths["model_path"],
         )
 
         (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()

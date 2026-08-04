@@ -19,8 +19,8 @@ who explicitly wanted honesty about what each number means and what's real vs pl
 | — | **Inventory doc** — every readout, meaning, tooltip, real-vs-placeholder, viz | ✅ landed (`docs/preprocessing-metrics-inventory.md`) |
 | ① | **Fix 3 dead panels** — CTF-res + motion sourced from frameseries XML, not placeholders | ✅ code-clean (ruff E+F), **runtime-pending** |
 | ② | **Tilt-filter preview overlay** — real CTF-res + motion chips (replaced the `0.0px` placeholder) | ✅ code-clean, **runtime-pending** |
-| ③ | Defocus-vs-tilt + shift-magnitude panel | ⬜ next |
-| ④ | PS1D CTF-fit overlay + tilt scrubber | ⬜ |
+| ③ | Defocus-vs-tilt + shift-magnitude panel | ✅ code-clean (ruff E+F, format), **runtime-pending** (2026-08-03) |
+| ④ | PS1D CTF-fit overlay + tilt scrubber | ⬜ next |
 | ⑤ | Exposure-curation scatter across tilt-series (the declutter centerpiece) | ⬜ (needs multi-TS data) |
 
 **Landed code (① + ②):**
@@ -40,14 +40,22 @@ who explicitly wanted honesty about what each number means and what's real vs pl
 
 ## Next build items (detail)
 
-### ③ Defocus-vs-tilt + shift-magnitude panel  *(all-real, no new plumbing — do first)*
-A tomo-native panel with no SPA analog. Two linked plots:
-- **Defocus vs tilt angle** — `rlnDefocusU/V` per tilt (real in both fsMotion and tsCTF stars). Expect a
-  smooth through-focus curve; scatter/discontinuity at high tilt flags bad fits. The *slope sign* is a
-  handedness cue (ties to the 412 issue). For the tsCTF `GridCTF` source, **join by movie filename, not row
-  index** — GridCTF is tilt-angle-ordered, the star is acquisition-ordered (inventory §3.3).
-- **Shift magnitude vs tilt** — `√(rlnTomoXShiftAngst² + YShiftAngst²)`, already computed in
-  `_render_alignment_plots`; the per-TS max is a headline QC number. Spikes = hard-to-align tilts.
+### ③ Defocus-vs-tilt + shift-magnitude panel  ✅ *BUILT 2026-08-03 (code-clean, runtime-pending)*
+A tomo-native panel with no SPA analog. New per-TS section **"Tilt QC"** (panel key `tilt_qc`, toggleable,
+renders after TS-CTF and before Reconstruct) in `ui/tomo_dashboard_dialog.py`:
+- **Defocus vs tilt angle** — mean per-tilt defocus `((U+V)/2)` from the per-tilt star, **sorted by tilt
+  angle** so the through-focus trend reads as a curve, with a **numpy-free OLS fit line** (dotted). The fit
+  **slope sign is surfaced in the stat strip** (`defocus trend +x.xxx µm/° (rises/falls with +tilt)`) as the
+  handedness cue (ties to the 412 / TomoHand issue). Source preference: **tsCTF per-tilt star → fsMotion**
+  fallback (`_defocus_source_df`). *Reads the per-tilt star directly (already tilt-angle-paired per row), so
+  the GridCTF filename-join caveat doesn't apply — no new plumbing.*
+- **Shift magnitude vs tilt** — `√(rlnTomoXShiftAngst² + YShiftAngst²)` from the alignment per-tilt star;
+  per-TS **max / median** in the stat strip as the headline alignment-difficulty number.
+- No-op (returns False) when neither CTF nor alignment has run for the TS. Helpers: `_linear_slope_intercept`,
+  `_defocus_source_df`, `_render_tilt_qc_section`; hint `_HINT_THROUGHFOCUS`.
+- **Runtime-pending:** user restarts `python main.py` + hard-reloads; eyeball the Tilt QC panel on a TS that
+  has both CTF + alignment (e.g. `try2_after_pixShift`), confirm the through-focus curve + slope readout and
+  the shift plot render, and that the `Tilt-QC` checkbox in the Panels row toggles it.
 
 ### ④ PS1D CTF-fit overlay + tilt scrubber  *(needs a curve parser)*
 CryoSPARC's signature diagnostic. Extend `frameseries_quality.py` (or a sibling) to parse the `<PS1D>`,
