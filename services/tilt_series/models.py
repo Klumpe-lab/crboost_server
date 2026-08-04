@@ -151,7 +151,23 @@ class TsReconstructTomogramOutput(_OutputBase):
     size_z: int
 
 
-TomogramOutput = Annotated[Union[TsReconstructTomogramOutput], Field(discriminator="output_type")]
+class DenoisePredictTomogramOutput(_OutputBase):
+    """Result of denoise_predict for one tomogram (the last tomogram-scoped
+    preprocessing step). Records the denoised volume, which denoiser produced it,
+    and the model archive used — provenance for the tomogram the particle stage
+    picks against."""
+
+    output_type: Literal["denoise_predict"] = "denoise_predict"
+
+    denoised_mrc: Path
+    denoise_method: Literal["cryoCARE", "IsoNet"]  # matches DenoiseMethod.value
+    model_path: Path  # the trained-model archive this prediction consumed
+
+
+TomogramOutput = Annotated[
+    Union[TsReconstructTomogramOutput, DenoisePredictTomogramOutput],
+    Field(discriminator="output_type"),
+]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -202,6 +218,10 @@ class Frame(BaseModel):
     # mute) and from the mislabeled TS-level TiltSeries.is_filtered_out placeholder.
     is_filtered_out: bool = False
     filter_reason: Optional[str] = None
+    # The DL classifier's `cryoBoostDlProbability` for this tilt (verbatim from the
+    # filter pass; lower ⇒ more likely to be dropped). Persisted alongside the boolean
+    # verdict so the dashboard/keep-drop panel can read the score from the registry.
+    filter_probability: Optional[float] = None
 
 
 class Tomogram(BaseModel):
