@@ -7,6 +7,7 @@ See project_ts_registry_refactor memory for the staged plan.
 """
 
 from services.tilt_series.models import (
+    DenoisePredictTomogramOutput,
     Frame,
     FrameOutput,
     FsMotionCtfFrameOutput,
@@ -27,6 +28,7 @@ from services.tilt_series.registry import (
 )
 
 __all__ = [
+    "DenoisePredictTomogramOutput",
     "Frame",
     "FrameOutput",
     "FsMotionCtfFrameOutput",
