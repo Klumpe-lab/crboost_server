@@ -43,7 +43,9 @@ logger = logging.getLogger(__name__)
 #         exposure_time, defocus, intensities, image_shift) captured from mdoc;
 #         additive FsMotionCtfFrameOutput.ctf_resolution / mean_frame_movement
 #         (real QC values from the Warp XML, formerly star placeholders).
-REGISTRY_SCHEMA_VERSION = (1, 2)
+# (1, 3): additive Frame.filter_probability (DL tilt-filter score alongside the
+#         boolean verdict); additive DenoisePredictTomogramOutput tomogram output.
+REGISTRY_SCHEMA_VERSION = (1, 3)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -182,18 +184,24 @@ class TiltSeriesRegistry:
         """The set of TS ids the user has excluded from processing."""
         return {ts.id for ts in self._tilt_series.values() if ts.is_excluded}
 
-    def set_frame_filtered(self, frame_id: str, filtered: bool, *, reason: str | None = None) -> None:
+    def set_frame_filtered(
+        self, frame_id: str, filtered: bool, *, reason: str | None = None, probability: float | None = None
+    ) -> None:
         """Record the tilt-filter's per-frame verdict (forward-only; re-stamped on
         every filter re-run). The functional cut is the trimmed tomostar the filter
-        writes — this keeps the registry authoritative. Mutates in memory + marks the
-        parent TS dirty; the caller persists via save()/save_async(). Raises KeyError
-        if the frame is unknown (caller decides whether that's fatal)."""
+        writes — this keeps the registry authoritative. `probability` is the DL
+        classifier score for the tilt (stored when provided; an omitted value leaves
+        any prior score untouched). Mutates in memory + marks the parent TS dirty; the
+        caller persists via save()/save_async(). Raises KeyError if the frame is
+        unknown (caller decides whether that's fatal)."""
         ts = self._frame_index.get(frame_id)
         if ts is None:
             raise KeyError(f"No frame with id {frame_id!r} in registry")
         frame = ts.frame_by_id(frame_id)
         frame.is_filtered_out = filtered
         frame.filter_reason = reason if filtered else None
+        if probability is not None:
+            frame.filter_probability = probability
         self._dirty_ts.add(ts.id)
 
     def filtered_out_frame_ids(self) -> Set[str]:
