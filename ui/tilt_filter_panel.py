@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import re
 import urllib.parse
 from pathlib import Path
 
@@ -19,6 +18,7 @@ from nicegui import ui
 
 from backend import get_backend
 from services.models_base import JobStatus
+from services.tilt_series.build import parse_position
 from services.project_state import get_state_service
 from ui.current_project import current_project_state
 from services.jobs.tilt_filter import finalize_pipeline_output
@@ -50,8 +50,6 @@ CARD = (
     f"background: white; border-radius: 6px; border: 1px solid {CLR_BORDER}; box-shadow: 0 1px 2px rgba(15,23,42,0.04);"
 )
 SEC = f"border: 1px solid {CLR_BORDER}; border-radius: 5px; padding: 6px 8px; background: #f8fafc;"
-
-_POS_RE = re.compile(r"Position_(\d+)(?:_(\d+))?")
 
 
 # ── Tiny helpers ─────────────────────────────────────────────────────────────
@@ -101,10 +99,11 @@ def _meta_row(label, value):
 
 def _parse_pos_beam(ts_name: str):
     """Extract (position, beam) from a tilt-series name like Position_9 or Position_9_2."""
-    m = _POS_RE.search(ts_name)
-    if m:
-        return int(m.group(1)), int(m.group(2)) if m.group(2) else 1
-    return None, None
+    parsed = parse_position(ts_name)
+    if parsed is None:
+        return None, None
+    stage, beam = parsed
+    return stage, beam or 1
 
 
 def _find_ts_ctf_star(project_path):

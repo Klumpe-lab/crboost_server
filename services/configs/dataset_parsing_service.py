@@ -9,17 +9,15 @@ Each mdoc's ZValue sections provide the definitive frame-to-tilt-series associat
 import glob
 import logging
 import os
-import re
 from collections import defaultdict
 from pathlib import Path
 from collections.abc import Callable
 
 from services.configs.mdoc_service import get_mdoc_service
 from services.dataset_models import AcquisitionSummary, DatasetOverview, StagePositionInfo, TiltInfo, TiltSeriesInfo
+from services.tilt_series.build import parse_position
 
 logger = logging.getLogger(__name__)
-
-MDOC_FILENAME_RE = re.compile(r"^Position_(\d+)(?:_(\d+))?\.mdoc$")
 
 
 class DatasetParsingService:
@@ -117,20 +115,22 @@ class DatasetParsingService:
 
     def _parse_mdoc_filename(self, mdoc_name: str) -> tuple[int, int] | None:
         """
-        Extract (stage_position, beam_position) from mdoc filename.
+        Extract (stage_position, beam_position) from mdoc filename via the
+        canonical Position parser.
 
         'Position_10.mdoc'   -> (10, 1)
         'Position_10_2.mdoc' -> (10, 2)
-        'Position_10_3.mdoc' -> (10, 3)
+        'prefix_Position_10.mdoc' -> (10, 1)  (prefixed names accepted)
 
-        Returns None if the filename doesn't match the expected pattern.
+        Returns None if the filename doesn't end in Position_{stage}[_{beam}].mdoc.
         """
-        m = MDOC_FILENAME_RE.match(mdoc_name)
-        if not m:
+        if not mdoc_name.endswith(".mdoc"):
             return None
-        stage = int(m.group(1))
-        beam = int(m.group(2)) if m.group(2) else 1
-        return (stage, beam)
+        parsed = parse_position(mdoc_name[: -len(".mdoc")])
+        if parsed is None:
+            return None
+        stage, beam = parsed
+        return (stage, beam or 1)
 
     def _resolve_frames_directory(self, mdoc_files: list[Path], frames_dir: str | None) -> Path | None:
         """
