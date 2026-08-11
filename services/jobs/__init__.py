@@ -23,28 +23,15 @@ from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.jobs.reconstruct_particle import ReconstructParticleParams
 from services.jobs.class3d import Class3DParams
 
+from collections.abc import Mapping
+
+from services.jobs.spec import PARAM_CLASS_BY_TYPE
 from services.models_base import JobType
 
 
-def jobtype_paramclass() -> dict[JobType, type[AbstractJobParams]]:
-    """Registry mapping JobType to its parameter class."""
-    return {
-        JobType.IMPORT_MOVIES: ImportMoviesParams,
-        JobType.FS_MOTION_CTF: FsMotionCtfParams,
-        JobType.TS_IMPORT: TsImportParams,
-        JobType.TS_ALIGNMENT: TsAlignmentParams,
-        JobType.MISS_ALIGN: MissAlignParams,
-        JobType.TS_CTF: TsCtfParams,
-        JobType.TILT_FILTER: TiltFilterParams,
-        JobType.TS_RECONSTRUCT: TsReconstructParams,
-        JobType.DENOISE_TRAIN: DenoiseTrainParams,
-        JobType.DENOISE_PREDICT: DenoisePredictParams,
-        JobType.TEMPLATE_MATCH_PYTOM: TemplateMatchPytomParams,
-        JobType.TEMPLATE_EXTRACT_PYTOM: CandidateExtractPytomParams,
-        JobType.SUBTOMO_EXTRACTION: SubtomoExtractionParams,
-        JobType.RECONSTRUCT_PARTICLE: ReconstructParticleParams,
-        JobType.CLASS3D: Class3DParams,
-    }
+def jobtype_paramclass() -> Mapping[JobType, type[AbstractJobParams]]:
+    """Registry mapping JobType to its parameter class (read-only view, built once in services.jobs.spec)."""
+    return PARAM_CLASS_BY_TYPE
 
 
 __all__ = [

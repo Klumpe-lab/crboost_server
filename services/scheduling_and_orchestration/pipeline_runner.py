@@ -595,8 +595,8 @@ class PipelineRunnerService:
         live_queued_keys: set = set()
         for iid, job_model in state.jobs.items():
             # IMPORT_MOVIES is a local pre-step; TS_IMPORT is a silently-injected
-            # prerequisite of TS_ALIGNMENT (see pipeline_builder_panel._PREREQUISITES).
-            # Neither appears in the user-visible roster (PHASE_JOBS), so both
+            # prerequisite of TS_ALIGNMENT (JobSpec.prerequisite in services/jobs/spec.py).
+            # Neither appears in the user-visible roster (TS_IMPORT has phase=None), so both
             # must be excluded to keep the counter denominator aligned with the UI.
             if job_model.job_type in (JobType.IMPORT_MOVIES, JobType.TS_IMPORT):
                 continue

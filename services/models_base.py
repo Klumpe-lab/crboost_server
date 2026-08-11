@@ -86,7 +86,7 @@ class JobType(str, Enum):
     # Synthetic source: not a real pipeline job. Used by PathResolutionService to
     # surface <project>/MergedSources/optimisation_set.star as a producer candidate
     # for input_optimisation slots in aggregation projects. Never appears in
-    # state.jobs, jobtype_paramclass, or PIPELINE_ORDER.
+    # state.jobs, jobtype_paramclass, or services.jobs.spec.JOB_SPECS.
     MERGED_SOURCES = "mergedSources"
 
     @classmethod
