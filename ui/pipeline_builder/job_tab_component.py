@@ -11,13 +11,8 @@ from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
 from ui.status_indicator import BoundStatusDot
-from ui.ui_state import (
-    UIStateManager,
-    MonitorTab,
-    get_job_display_name,
-    get_instance_display_name,
-    instance_id_to_job_type,
-)
+from services.models_base import instance_id_to_job_type
+from ui.ui_state import UIStateManager, MonitorTab, get_job_display_name, get_instance_display_name
 from ui.pipeline_builder.config_tab import render_config_tab, is_job_frozen
 from ui.pipeline_builder.io_tab import render_io_tab
 from ui.pipeline_builder.slurm_tab import render_slurm_tab

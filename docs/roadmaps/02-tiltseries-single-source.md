@@ -114,6 +114,22 @@ projects whose registries lack outputs (anything run pre-adapter) show a loud, h
 per the never-fail-silently rule); the star/XML read helpers are deleted with their consumers.
 Legacy projects re-earn dashboard data by re-running jobs, not by backfill.
 
+## Stage 1 record (done 2026-08-11; py_compile + check_boundaries clean, boot owed)
+
+`InstanceId` landed in `services/models_base.py`: `split()` (lenient `(base, suffix)` — the only
+place the `__` separator exists), `parse()` (strict, ValueError on unknown JobType),
+`matches(raw, jt)`, `__str__` re-encode. `instance_id_to_job_type` moved here from `ui/ui_state.py`
+(3 importers re-pointed). `split_species_id` + the ONE `resolve_species` also live here —
+models_base is dependency-free, so no circular-import risk (dashboard_data imports
+preview_orchestrator top-level, which disqualified it as the canonical home; it keeps `as X`
+re-exports for its consumers). Deleted: `template_metadata.resolve_species_from_job`,
+`aggregation_authoritative._species_id_for_job`. One deliberate semantic alignment: the latter
+used to return a numeric/ghost suffix as a species id (`subtomoExtraction__2` → `"2"`, making
+numbered instances unmatchable in `_instance_for_species`); it now falls through the chain like
+the other two copies always did. All ~19 split sites converted, including the encoder
+(`next_instance_id` builds ids via `str(InstanceId(...))`). `parity_harness.py` left as-is
+(transient stage-0 tool). Edge: empty suffix (`"tm__"`) now decodes as None, not `""`.
+
 ## Stages
 
 1. **`InstanceId` value object** (`services/models_base.py`): frozen dataclass with

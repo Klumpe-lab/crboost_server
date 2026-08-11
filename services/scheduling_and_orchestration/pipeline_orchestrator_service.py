@@ -11,6 +11,7 @@ from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
 from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS
 from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
+from services.models_base import InstanceId
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus
 from typing import TYPE_CHECKING
 
@@ -153,9 +154,8 @@ class PipelineOrchestratorService:
         for _i, instance_id in enumerate(instances_to_run):
             job_model = state.jobs.get(instance_id)
             if not job_model:
-                base_type_str = instance_id.split("__")[0]
                 try:
-                    job_type = JobType(base_type_str)
+                    job_type = InstanceId.parse(instance_id).job_type
                 except ValueError:
                     report_lines.append(f"[{instance_id}] UNKNOWN JOB TYPE, skipping")
                     continue
@@ -284,9 +284,8 @@ class PipelineOrchestratorService:
         for instance_id in instances_to_run:
             job_model = state.jobs.get(instance_id)
             if not job_model:
-                base_type_str = instance_id.split("__")[0]
                 try:
-                    job_type = JobType(base_type_str)
+                    job_type = InstanceId.parse(instance_id).job_type
                 except ValueError:
                     return {"success": False, "error": f"Unknown job type for instance '{instance_id}'"}
                 template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"

@@ -22,7 +22,7 @@ from collections.abc import Callable
 from nicegui import ui
 
 from services.io_slots import JobFileType
-from services.models_base import JobType, JobStatus
+from services.models_base import InstanceId, JobType, JobStatus
 from services.path_resolution_service import PathResolutionService, InputSlotValidation
 from backend import get_backend
 from services.project_state import get_project_state_for
@@ -173,9 +173,8 @@ def _candidate_name(c) -> str:
         return c.label
     base = get_job_display_name(JobType(c.producer_job_type.value))
     iid = getattr(c, "producer_instance_id", "") or ""
-    parts = iid.split("__", 1)
-    if len(parts) > 1:
-        suffix = parts[1]
+    suffix = InstanceId.split(iid)[1]
+    if suffix is not None:
         base = f"{base} #{suffix}" if suffix.isdigit() else f"{base} · {suffix}"
     folder = _short_instance_label(c.instance_path or "")
     # Species suffix disambiguates same-type producers wired to different species

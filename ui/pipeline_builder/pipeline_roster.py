@@ -10,7 +10,8 @@ from ui.current_project import current_project_state
 from ui.components.reactive import FingerprintedView
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
-from ui.ui_state import get_job_display_name, get_instance_display_name, instance_id_to_job_type
+from services.models_base import InstanceId, instance_id_to_job_type
+from ui.ui_state import get_job_display_name, get_instance_display_name
 from ui.pipeline_builder.pipeline_constants import (
     PHASE_JOBS,
     PHASE_META,
@@ -382,9 +383,8 @@ class RosterWidget(FingerprintedView):
             job_folder = relion_job_name.rstrip("/").split("/")[-1]
             display_text = f"{base_name} ({job_folder})"
         else:
-            parts = instance_id.split("__", 1)
-            if len(parts) > 1:
-                suffix = parts[1]
+            suffix = InstanceId.split(instance_id)[1]
+            if suffix is not None:
                 display_text = f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
             else:
                 display_text = base_name
@@ -1413,7 +1413,7 @@ class RosterWidget(FingerprintedView):
         # from PHASE_JOBS / roster). Mirror that filter on the fallback so the
         # first paint -- before the first overview poll returns -- doesn't inflate.
         _hidden = {JobType.IMPORT_MOVIES.value, JobType.TS_IMPORT.value}
-        visible_selected = sum(1 for iid in self.panel.ui_mgr.selected_jobs if iid.split("__")[0] not in _hidden)
+        visible_selected = sum(1 for iid in self.panel.ui_mgr.selected_jobs if InstanceId.split(iid)[0] not in _hidden)
         total = overview.get("total", visible_selected) if overview else visible_selected
         text = f"{done}/{total}"
         # Surface SLURM queue waits so a long pending time reads as a cluster
