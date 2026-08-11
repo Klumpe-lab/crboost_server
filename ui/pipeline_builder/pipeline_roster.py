@@ -1039,13 +1039,20 @@ class RosterWidget(FingerprintedView):
     def _render_dataset_ts_expansion(self, state) -> None:
         """Collapsible per-tilt-series table living on the Dataset row.
 
-        Replaces the old fixed-height, nested-scrollbar TS table.
+        Rows come from the TiltSeriesRegistry (roadmap 02 stage 4) — the
+        ProjectState mirror it used to read is gone. Pre-registry projects
+        simply have no expansion (counts in the header still render).
         """
-        ts_details = state.import_tilt_series_details
-        if not ts_details:
+        from services.tilt_series import get_registry_for
+
+        try:
+            all_ts = list(get_registry_for(state.project_path).all_tilt_series())
+        except Exception:
+            all_ts = []
+        if not all_ts:
             return
-        selected_ts = [td for td in ts_details if td.selected]
-        excluded_ts = [td for td in ts_details if not td.selected]
+        selected_ts = [t for t in all_ts if t.is_selected]
+        excluded_ts = [t for t in all_ts if not t.is_selected]
         sel = state.import_selected_tilt_series
         tot = state.import_total_tilt_series
         header_text = f"{sel} of {tot} tilt-series"
@@ -1080,7 +1087,7 @@ class RosterWidget(FingerprintedView):
                 ):
                     _ts_cell(str(td.stage_position), "#64748b")
                     _ts_cell(str(td.beam_position), "#64748b")
-                    _ts_cell(str(td.tilt_count), "#64748b")
+                    _ts_cell(str(td.frame_count), "#64748b")
                     _ts_cell(
                         td.mdoc_filename, "#94a3b8", extra="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                     )

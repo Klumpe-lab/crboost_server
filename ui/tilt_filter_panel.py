@@ -428,8 +428,6 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                                     if key:
                                         new_labels[key] = label
                                 job_model.tilt_labels = new_labels
-                                if state:
-                                    state.tilt_filter_labels = new_labels
 
                             # Write filtered output for downstream
                             good_data = filter_good_tilts(ts_data)
@@ -554,10 +552,9 @@ def _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_m
 
 def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model=None):
     state = current_project_state()
-    if job_model is not None:
-        labels = dict(job_model.tilt_labels) if job_model.tilt_labels else {}
-    else:
-        labels = dict(state.tilt_filter_labels) if state else {}
+    # job_model.tilt_labels is the durable label store (the ProjectState
+    # tilt_filter_labels mirror is gone — roadmap 02 stage 4).
+    labels = dict(job_model.tilt_labels) if job_model is not None and job_model.tilt_labels else {}
 
     if labels:
         apply_labels(ts_data, labels)
@@ -724,7 +721,6 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
                 _notify_finalize(await finalize_pipeline_output(state, job_model, ts_data, project_path))
                 job_model.execution_status = JobStatus.SUCCEEDED
             if state:
-                state.tilt_filter_labels = labels
                 state.mark_dirty()
                 await get_backend().save_project(project_path)
 
@@ -755,7 +751,6 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
         if job_model is not None:
             job_model.tilt_labels = dict(labels)
         if state:
-            state.tilt_filter_labels = labels
             state.mark_dirty()
         _refresh_stats()
         # Bulk-update all visible cards via JS — no full re-render needed
@@ -901,10 +896,9 @@ def _attach_grid_click_handler(html_el, labels, full_df, ts_data, refresh_stats,
                 f"{'display: none' if n_bad_now == 0 else ''};"
             )
 
-            st = current_project_state()
-            if st:
-                st.tilt_filter_labels = labels
-                st.mark_dirty()
+            # Clicks mutate the shared in-memory `labels` dict; Save persists it
+            # to job_model.tilt_labels (the per-click ProjectState mirror write
+            # went away with roadmap 02 stage 4).
             refresh_stats()
 
     html_el.on(

@@ -676,6 +676,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         if overview and not (di.is_aggregation or di.is_particle_only):
             selected_ts = overview.get_selected_tilt_series()
             selected_mdoc_paths = [str(ts.mdoc_path) for ts in selected_ts]
+            # Scalar counts only — per-position/per-TS details and per-tilt mdoc
+            # stats live in the TiltSeriesRegistry (roadmap 02 stage 4), not in
+            # a ProjectState mirror.
             import_summary = {
                 "total_positions": len(overview.positions),
                 "selected_positions": sum(1 for p in overview.positions if p.selected),
@@ -683,29 +686,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 "selected_tilt_series": overview.selected_tilt_series,
                 "source_directory": overview.source_directory or "",
                 "frame_extension": overview.frame_extension or "",
-                "position_details": [
-                    {
-                        "stage_position": p.stage_position,
-                        "beam_count": p.beam_count,
-                        "tilt_count": p.total_tilts,
-                        "selected": p.selected,
-                    }
-                    for p in overview.positions
-                ],
-                "tilt_series_details": [
-                    {
-                        "stage_position": ts.stage_position,
-                        "beam_position": ts.beam_position,
-                        "tilt_count": ts.tilt_count,
-                        "selected": ts.selected,
-                        "mdoc_filename": ts.mdoc_filename,
-                    }
-                    for p in overview.positions
-                    for ts in p.tilt_series
-                ],
-                "tilt_metadata": {
-                    Path(t.frame_filename).stem: t.mdoc_stats for ts in selected_ts for t in ts.tilts if t.mdoc_stats
-                },
             }
             sel_summary = overview.selected_acquisition_summary()
             detected_params = {}
