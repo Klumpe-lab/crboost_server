@@ -4,14 +4,14 @@ Derived from `docs/architecture-assessment-2026-08-10.md` (full audit with file:
 the maintainer's feedback on it. Each roadmap is independently executable; suggested order below, but
 only 00 blocks anything else.
 
-| # | Roadmap | Theme | Risk |
-|---|---|---|---|
-| 00 | [deletions-and-lint](00-deletions-and-lint.md) | Delete dead code, tighten ruff, fix 3 tiny bugs | none (pure deletion, verified) |
-| 01 | [service-boundary](01-service-boundary.md) | Facade becomes real; QC/visualization processing gets its own home; undo the services→ui inversion | low (mechanical moves) |
-| 02 | [tiltseries-single-source](02-tiltseries-single-source.md) | Consolidate on the TiltSeriesRegistry; kill regex re-derivation; typed InstanceId | medium (parity-gated) |
-| 03 | [errors-and-results](03-errors-and-results.md) | One lightweight result/error idiom + lucid logging | low |
-| 04 | [driver-consolidation](04-driver-consolidation.md) | ArrayDriver template, ToolCommand, one status protocol | medium (behavior-preserving by construction, per-driver rollout) |
-| 05 | [per-ts-top-up](05-per-ts-top-up.md) | Re-run one failed/skipped tilt-series without recomputing the job or its downstream chain | medium (capability gap; index-shift hazard gates the cascade stage) |
+| # | Roadmap | Theme | Risk | Status |
+|---|---|---|---|---|
+| 00 | [deletions-and-lint](00-deletions-and-lint.md) | Delete dead code, tighten ruff, fix 3 tiny bugs | none (pure deletion, verified) | **complete** — all 5 stages landed + committed 2026-08-11 |
+| 01 | [service-boundary](01-service-boundary.md) | Facade becomes real; QC/visualization processing gets its own home; undo the services→ui inversion | low (mechanical moves) | in progress — stages 0–2 done, stage 3 scoped (2026-08-11) |
+| 02 | [tiltseries-single-source](02-tiltseries-single-source.md) | Consolidate on the TiltSeriesRegistry; kill regex re-derivation; typed InstanceId | medium (parity-gated) | not started |
+| 03 | [errors-and-results](03-errors-and-results.md) | One lightweight result/error idiom + lucid logging | low | not started |
+| 04 | [driver-consolidation](04-driver-consolidation.md) | ArrayDriver template, ToolCommand, one status protocol | medium (behavior-preserving by construction, per-driver rollout) | not started |
+| 05 | [per-ts-top-up](05-per-ts-top-up.md) | Re-run one failed/skipped tilt-series without recomputing the job or its downstream chain | medium (capability gap; index-shift hazard gates the cascade stage) | not started |
 
 **05 is not from the audit.** 00–04 derive from `docs/architecture-assessment-2026-08-10.md`; 05 comes
 from a reproduced production failure in `/groups/klumpe/crboost_data/deadcode_test` (2026-08-11) and

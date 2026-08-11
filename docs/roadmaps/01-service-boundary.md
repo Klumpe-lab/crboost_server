@@ -116,17 +116,98 @@ Two deviations:
   (scratchpad script: every internal `from X import name` checked against X's definitions) now passes;
   lesson for stage 7's import-linter: re-exports must use `as X` or `__all__`.
 
+## Stage 2 record (executed 2026-08-11)
+
+Landed as planned: the whole curation band (19 methods + `_CURATION_LIVE_STATES` + the three
+`__init__` state fields, 876 lines) moved verbatim to `services/curation/session_service.py`;
+`backend.py` keeps 15 same-named typed delegators (the 4 `_`-private helpers moved without
+delegation — grep confirmed zero external callers, including of the state dicts). backend.py
+1817 → 1064 lines. Notes:
+
+- **The service takes explicit deps** (`server_dir`, `username`, `slurm_service` — the shared
+  instance, preserving squeue-cache behavior; config via `get_config_service()`), NOT a backend
+  back-reference: the band touched nothing else on `self`, so the new service is born conforming
+  to Q1's "services never require the facade" rule. Lazy `services.visualization` imports kept
+  lazy, verbatim.
+- One line of pre-existing format drift rode along (`stop_curation_session`'s signature fits on
+  one 120-char line); `ruff format` applied to both touched files only.
+- One stale comment repointed (`ui/curation_session_dialog.py` referenced `backend._curation_loaded`);
+  `artiax_bridge.py`'s `backend.send_chimerax_command` docstring mentions stay true via the delegator.
+- Verification ceiling this session was ruff only (`/software` unmounted → venv python is a dangling
+  symlink; lint + format + F821/F401 clean). Runtime check owed: boot + curation session launch +
+  swap/save round-trip.
+
+## Stage 3 scope record (gathered 2026-08-11, read-only)
+
+Ordering is forced by the dependency chain `pixel_sanity → data → task_utils`: land as three commits
+3a → 3b → 3c (each runnable).
+
+**3a — `ui/components/task_utils.py` → `services/array_tasks.py`.** 153 lines, pure stdlib
+(json/re/pathlib), zero nicegui — moves wholesale. Facts:
+
+- Callers to repoint (5 files, 7 sites — 3 are pipeline_roster function-LOCAL imports, the
+  lint-dodging kind): `aggregation_merge_card:35`, `array_task_tracker:27` (8 names, some `as _x`
+  aliased), `pipeline_roster` :116 :133 :587, `dashboard/data.py:23`.
+- Constants: task_utils HARDCODES `".task_manifest.json"` (:94) / `".task_status"` (:113) as
+  literals; the named constants live only in `drivers/array_job_base.py:44-45`. Single-source:
+  `array_tasks.py` defines `MANIFEST_FILENAME`/`STATUS_DIR_NAME` (and uses them);
+  `array_job_base.py` replaces its literals with `from services.array_tasks import MANIFEST_FILENAME
+  as MANIFEST_FILENAME, ...` — the as-X re-export is LOAD-BEARING (8 drivers import
+  `STATUS_DIR_NAME` *from array_job_base*; stage-1 F401 lesson). Import direction is already proven:
+  array_job_base sys.path-bootstraps and imports `services.*` on compute nodes today.
+- Roadmap-04 coordination resolved: TaskStatusStore has NOT landed → stage 3 owns the constants.
+  The `read_manifest`/`scan_statuses` duplication vs array_job_base's own manifest/status functions
+  stays — that dedup IS TaskStatusStore, not this stage.
+
+**3b — `ui/dashboard/data.py` → `services/dashboard_data.py`.** 709 lines; the one stage-3 move that
+is not purely mechanical. Facts:
+
+- Two UI deps: task_utils (fixed by 3a) and `current_project_state` ×4 — those 4 sites are the real
+  work: `_job_dir_for` (:131, `state.job_path_mapping` fallback despite taking explicit
+  `project_path`) gains an explicit `state` param → ~12 dialog call sites + 2 internal callers
+  thread it; `has_any_previews_rendered()` gains `state` (sole caller `pipeline_roster:1535-1537`
+  fetches and passes).
+- **SURPRISE — `has_any_extract_jobs` + `has_any_dashboard_data` are DEAD** (repo-wide grep:
+  definitions only) → delete, don't move (re-verify at execution).
+- Public-API rename (drop `_`) covers exactly the cross-module surface: the dialog's 17-name import
+  (:58) + strip's 2 (`_PREP_STAGES`, `_position_label`) + pixel_sanity's 5 (union ≈ 19 names;
+  constants upcase → `SPECIES_OVERLAY_COLORS`, `PREP_STAGES`). Confirmed internal-only (keep `_`):
+  `_PILL_STAGES`, `_PICK_LIST_GLYPH`, `_ARRAY_STAGE_OUTPUT_STAR` (stage-6 table candidate), and the
+  per-TS status helpers.
+- `aggregation_authoritative.py` :14 :55 :71 docstrings cite `ui.dashboard.data._job_dir_for` /
+  `._resolve_species` → repoint the text to `services.dashboard_data`.
+- `data.py`'s `services.tilt_series.build._infer_position` import becomes services→services (fine
+  as-is; renaming that private is not this stage's fight).
+- Shim: `ui/dashboard/data.py` re-exports the NEW names under the OLD `_names` for one release.
+
+**3c — `ui/dashboard/pixel_sanity.py:33-437` → `services/pixel_chain.py`.** Facts:
+
+- Pure band = 5 defs (`_read_template_apix_box`, `_parse_tomo_dimensions`, `_scale_tomo_dims`,
+  `_compute_pixel_chain(project_state)` — state already explicit, `_apply_sanity_rules`); band greps
+  CLEAN of nicegui/render-side names (`_fmt*`, `_UNIVERSAL_STAGE_KEYS`, `ui.`) → split line at
+  :437/438 confirmed. Band's only cross-deps: 5 dashboard_data names (hence 3b first) +
+  `services.templating.template_metadata` (already services).
+- Renderers + `_fmt_*` + `_UNIVERSAL_STAGE_KEYS` + `_group_rows_by_species` stay in
+  `ui/dashboard/pixel_sanity.py`; dialog repoint (:77): compute/apply from `services.pixel_chain`,
+  de-prefixed `render_pixel_sanity_table` from `ui.dashboard.pixel_sanity`. Shim for moved names.
+
+Runtime checklist (3a–3c together): boot; open an array-history project (`projects/pos9_10` or
+`try2_after_pixShift`); roster per-TS chips (task_utils path); Journey dashboard sidebar strip +
+pills (data path); pixel-sanity table with warnings (pixel_chain path); one array-job submit if
+convenient (array_job_base import change).
+
 ## Stages (each committable)
 
-1. **Undo the inversion.** Add `ui/current_project.py` with `current_project_state()` (tab-context
+1. **Undo the inversion.** *(DONE 2026-08-11 — record above.)* Add `ui/current_project.py` with `current_project_state()` (tab-context
    resolve → `get_project_state_for`); repoint the 61 UI call sites; convert the 4 backend/service
    `.state` uses to explicit `state_for(path)`; delete `get_project_state()` and the
    `StateService.state` property from `services/`. Blank-state fallback lives on in the UI wrapper
    only (landing page legitimately has no project).
-2. **Extract `CurationSessionService`** (`backend.py:536-1412` → `services/curation/session_service.py`).
-   Pure move: the facade keeps same-named delegating methods (UI callers unchanged). The session
-   registry file, ssh/REST plumbing, and save/load logic move wholesale.
-3. **Move the UI-resident services** (pure moves with thin re-export shims for one release):
+2. **Extract `CurationSessionService`** *(DONE 2026-08-11 — record above.)* (`backend.py:536-1412` →
+   `services/curation/session_service.py`). Pure move: the facade keeps same-named delegating methods
+   (UI callers unchanged). The session registry file, ssh/REST plumbing, and save/load logic move wholesale.
+3. **Move the UI-resident services** *(scoped — see Stage 3 scope record above)* (pure moves with thin
+   re-export shims for one release):
    - `ui/dashboard/data.py` → `services/dashboard_data.py` (the collectors; `ui/dashboard/` keeps
      rendering only). Drop the `_`-prefixes on what is now a public API.
    - `ui/dashboard/pixel_sanity.py:34-437` → `services/pixel_chain.py`; renderers stay.

@@ -1,5 +1,8 @@
 # Roadmap 00 — Deletions, lint floor, and three tiny bug fixes
 
+**Status: COMPLETE — all 5 stages landed + committed 2026-08-11** (details in the architecture-assessment
+memory trail; `ruff check` clean repo-wide, runtime checklist below remains the user's step).
+
 ## Before → After
 
 **Before:** ~2,400 lines of verified-dead code ride along in the repo: a superseded metadata
