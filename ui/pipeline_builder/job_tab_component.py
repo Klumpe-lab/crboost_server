@@ -5,7 +5,8 @@ from collections.abc import Callable
 
 from nicegui import ui
 
-from services.project_state import JobStatus, JobType, get_state_service
+from backend import get_backend
+from services.project_state import JobStatus, JobType
 from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
@@ -31,28 +32,21 @@ logger = logging.getLogger(__name__)
 _EXPERIMENTAL_JOB_TYPES = {JobType.MISS_ALIGN}
 
 
-class DebouncedSaver:
-    def __init__(self, delay: float = 1.0):
-        self._delay = delay
-        self._task: asyncio.Task | None = None
-
-    def trigger(self):
-        if self._task and not self._task.done():
-            self._task.cancel()
-        self._task = asyncio.create_task(self._delayed_save())
-
-    async def _delayed_save(self):
-        try:
-            await asyncio.sleep(self._delay)
-            await get_state_service().save_project()
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.info("Debounced save failed: %s", e)
-
-
 def create_save_handler() -> Callable:
-    return DebouncedSaver(delay=1.0).trigger
+    """Debounced save for config-field handlers: each call re-arms a 1 s
+    trailing-edge save of the current project via the facade (which coalesces
+    per project path)."""
+
+    def _trigger() -> None:
+        bk = get_backend()
+        if bk is None:
+            return
+        try:
+            asyncio.create_task(bk.save_project(current_project_state().project_path, debounce_s=1.0))
+        except RuntimeError:
+            logger.info("Debounced save skipped — no running event loop")
+
+    return _trigger
 
 
 def _build_tab_list(job_type: JobType):
@@ -401,7 +395,7 @@ def _handle_delete(
                 del state.jobs[instance_id]
                 state.job_path_mapping.pop(instance_id, None)
                 state.mark_dirty()
-                asyncio.create_task(get_state_service().save_project())
+                asyncio.create_task(get_backend().save_project(state.project_path))
             ui.notify("Tilt filter removed. Labels preserved.", type="info")
             remove_cb(instance_id)
         return

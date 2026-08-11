@@ -1210,47 +1210,19 @@ class StateService:
         except Exception:
             return False
 
-    # in StateService.save_project(), replace the final save call:
-
-    async def save_project(
-        self, save_path: Path | None = None, project_path: Path | None = None, force: bool = False
-    ):
+    async def save_project(self, project_path: Path, *, force: bool = False):
+        """Persist the registered ProjectState for `project_path` (skipped when
+        the state isn't dirty, unless `force`). Explicit path only — UI-triggered
+        saves go through backend.save_project (roadmap 01 stage 4)."""
         async with self._save_lock:
-            if project_path:
-                state = get_project_state_for(project_path)
-            else:
-                # Tab-context fallback for legacy bare save_project() calls from UI
-                # handlers. The LAST services→ui inversion; roadmap 01 stage 4 moves
-                # persistence behind the facade with an explicit path and deletes
-                # this branch. Without client context this resolves to nothing and
-                # the save is silently skipped — background tasks MUST pass
-                # project_path (see docs/roadmaps/01-service-boundary.md).
-                state = None
-                try:
-                    from ui.ui_state import get_ui_state_manager
-
-                    ui_mgr = get_ui_state_manager()
-                    if ui_mgr.project_path:
-                        state = get_project_state_for(ui_mgr.project_path)
-                except RuntimeError:
-                    pass
-                if state is None:
-                    logger.warning("save_project() without project_path and no tab context -- skipping save")
-                    return
-
-            if save_path:
-                target_path = save_path
-            elif state.project_path:
-                target_path = state.project_path / "project_params.json"
-            else:
+            state = get_project_state_for(project_path)
+            if not state.project_path:
+                logger.warning("save_project: state for %s has no project_path — nothing saved", project_path)
                 return
-
-            loop = asyncio.get_event_loop()
-            if force:
+            target_path = state.project_path / "project_params.json"
+            if force or state.is_dirty:
+                loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, state.save, target_path)
-            else:
-                if state.is_dirty:
-                    await loop.run_in_executor(None, state.save, target_path)
 
 
 _state_service_instance: StateService | None = None

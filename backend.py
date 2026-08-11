@@ -59,6 +59,8 @@ class CryoBoostBackend:
         self.curation_service = CurationSessionService(
             server_dir=self.server_dir, username=self.username, slurm_service=self.slurm_service
         )
+        # Pending debounced saves, keyed by project path — see save_project().
+        self._pending_saves: dict[str, asyncio.Task] = {}
 
     def registry_for(self, project_path: Path) -> TiltSeriesRegistry:
         """TiltSeriesRegistry for a project. Lazily loaded from sidecar JSON
@@ -79,6 +81,41 @@ class CryoBoostBackend:
 
     async def delete_job(self, job_name: str, project_path: Path, instance_id: str | None = None) -> dict[str, Any]:
         return await self.project_service.delete_job(job_name, project_path=project_path, instance_id=instance_id)
+
+    async def save_project(
+        self, project_path: Path | str | None, *, force: bool = False, debounce_s: float | None = None
+    ) -> None:
+        """Persist a project's ProjectState to its project_params.json (explicit
+        path only). `force` writes even when the state isn't marked dirty.
+
+        With `debounce_s`, calls coalesce per project on a trailing edge: each
+        call re-arms the timer and one save runs `debounce_s` after the last
+        call. This is the hot-path policy (merge-card checkboxes at 0.4 s,
+        config fields at 1.0 s) — a full save is ~hundreds of ms on a real
+        project, too slow to run inline on every click/keystroke."""
+        if not project_path:
+            logger.warning("backend.save_project called without a project_path — nothing saved")
+            return
+        path = Path(project_path)
+        if debounce_s is None:
+            await self.state_service.save_project(project_path=path, force=force)
+            return
+        key = str(path)
+        pending = self._pending_saves.get(key)
+        if pending and not pending.done():
+            pending.cancel()
+
+        async def _delayed() -> None:
+            try:
+                await asyncio.sleep(debounce_s)
+            except asyncio.CancelledError:
+                return
+            try:
+                await self.state_service.save_project(project_path=path, force=force)
+            except Exception as e:
+                logger.warning("Debounced save for %s failed: %s", path, e)
+
+        self._pending_saves[key] = asyncio.create_task(_delayed())
 
     async def submit_tilt_filter_dl(self, project_path: Path, instance_id: str) -> dict[str, Any]:
         """Submit the tilt filter DL driver as a standalone SLURM job."""

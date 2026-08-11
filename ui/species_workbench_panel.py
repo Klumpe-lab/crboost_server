@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from nicegui import ui
 
-from services.project_state import get_project_state_for, get_state_service
+from services.project_state import get_project_state_for
 from ui.ui_state import get_ui_state_manager
 
 
@@ -150,7 +150,7 @@ def build_species_workbench_panel(backend) -> None:
         state = get_project_state_for(project_path)
         species = state.add_species(name)
         (project_path / "templates" / species.id).mkdir(parents=True, exist_ok=True)
-        await get_state_service().save_project(project_path=project_path)
+        await backend.save_project(project_path)
         _switch_species(species.id)
 
     # ── Layout ────────────────────────────────────────────────────────────────
