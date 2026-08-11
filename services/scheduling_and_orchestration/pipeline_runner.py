@@ -4,7 +4,7 @@ import os
 import time
 import pandas as pd
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any
 from typing import TYPE_CHECKING
 
 from services.models_base import JobType
@@ -13,7 +13,6 @@ from services.scheduling_and_orchestration.pipeline_orchestrator_service import 
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
-    from services.project_state import ProjectState
 
 logger = logging.getLogger(__name__)
 
@@ -50,16 +49,16 @@ class PipelineRunnerService:
 
     def __init__(self, backend_instance: "CryoBoostBackend"):
         self.backend = backend_instance
-        self._active_processes: Dict[Path, asyncio.subprocess.Process] = {}
-        self._stdout_log_paths: Dict[Path, Path] = {}
-        self._stderr_log_paths: Dict[Path, Path] = {}
+        self._active_processes: dict[Path, asyncio.subprocess.Process] = {}
+        self._stdout_log_paths: dict[Path, Path] = {}
+        self._stderr_log_paths: dict[Path, Path] = {}
         # P1.B afterok reconciler: first-absent monotonic time per supervisor slurm_id, for the
         # grace window that concludes a marker-less vanished job FAILED (see reconcile_afterok).
-        self._afterok_absent_since: Dict[str, float] = {}
+        self._afterok_absent_since: dict[str, float] = {}
         # Retry monitors bypass the schemer but still count as pipeline activity —
         # tracked here so is_active() reports true and sync_all_jobs doesn't clear
         # pipeline_active out from under a running retry.
-        self._retry_monitors: Dict[Path, asyncio.Task] = {}
+        self._retry_monitors: dict[Path, asyncio.Task] = {}
         # First-seen monotonic time per instance_id that is currently QUEUED in
         # SLURM, so the UI can show how long a job has been waiting for cluster
         # nodes (a long pending time reads as a cluster wait, not a hung
@@ -67,7 +66,7 @@ class PipelineRunnerService:
         # only — resets on server restart, which is fine: the queue-wait context
         # is ephemeral. Keyed "<project_path>::<instance_id>" to stay correct
         # across multiple loaded projects sharing this singleton.
-        self._queued_since: Dict[str, float] = {}
+        self._queued_since: dict[str, float] = {}
         self.job_resolver = JobTypeResolver(backend_instance.pipeline_orchestrator.star_handler)
 
     def is_active(self, project_path: Path) -> bool:
@@ -78,7 +77,7 @@ class PipelineRunnerService:
     # Status sync
     # -------------------------------------------------------------------------
 
-    async def sync_all_jobs(self, project_path: str) -> Dict[str, bool]:
+    async def sync_all_jobs(self, project_path: str) -> dict[str, bool]:
         # Orchestrator rework (P1.A): afterok-orchestrator projects do NOT use
         # default_pipeline.star as their status source. Running the schemer-oriented
         # reconcile below against one would wipe submit_chain's slurm_job_id /
@@ -96,7 +95,7 @@ class PipelineRunnerService:
         processes = data.get("pipeline_processes", pd.DataFrame())
 
         star_patched = False
-        failed_job_paths: List[str] = []
+        failed_job_paths: list[str] = []
         already_failed_in_star = False
         if not processes.empty and "rlnPipeLineProcessStatusLabel" in processes.columns:
             for idx, row in processes.iterrows():
@@ -127,7 +126,7 @@ class PipelineRunnerService:
                 data["pipeline_processes"] = processes
                 star_handler.write(data, pipeline_star)
 
-        changes: Dict[str, bool] = {}
+        changes: dict[str, bool] = {}
         state = self.backend.state_service.state_for(Path(project_path))
         project_root = Path(project_path)
 
@@ -213,7 +212,7 @@ class PipelineRunnerService:
             except Exception as e:
                 logger.info("Could not persist pipeline_active reset: %s", e)
 
-        path_to_instance: Dict[str, str] = {}
+        path_to_instance: dict[str, str] = {}
 
         for iid, model in state.jobs.items():
             rjn = getattr(model, "relion_job_name", None)
@@ -239,7 +238,7 @@ class PipelineRunnerService:
                 except ValueError:
                     pass
 
-        type_instance_count: Dict[str, int] = {}
+        type_instance_count: dict[str, int] = {}
         for iid in state.jobs:
             base = iid.split("__")[0]
             type_instance_count[base] = type_instance_count.get(base, 0) + 1
@@ -357,7 +356,7 @@ class PipelineRunnerService:
 
         return changes
 
-    def _resolve_afterok_job_dir(self, job_model, project_path: Path) -> Optional[Path]:
+    def _resolve_afterok_job_dir(self, job_model, project_path: Path) -> Path | None:
         """job_dir for an afterok job: the resolved paths['job_dir'] if present, else
         project_path / relion_job_name (the submit_chain-allocated External/jobNNN)."""
         jd = job_model.paths.get("job_dir") if getattr(job_model, "paths", None) else None
@@ -368,7 +367,7 @@ class PipelineRunnerService:
             return project_path / rjn.rstrip("/")
         return None
 
-    def _afterok_refine_running(self, job_dir: Optional[Path]) -> JobStatus:
+    def _afterok_refine_running(self, job_dir: Path | None) -> JobStatus:
         """B1 refinement for a supervisor squeue reports as RUNNING: it writes .task_manifest.json
         BEFORE sbatching its child array, so 'supervisor RUNNING' with no started child is still
         queued work; a child task_*.out is the real RUNNING signal. A single-shot (no-manifest)
@@ -377,7 +376,7 @@ class PipelineRunnerService:
             return JobStatus.RUNNING if any(job_dir.glob("task_*.out")) else JobStatus.QUEUED
         return JobStatus.RUNNING
 
-    async def reconcile_afterok(self, project_path: str) -> Dict[str, bool]:
+    async def reconcile_afterok(self, project_path: str) -> dict[str, bool]:
         """P1.B: status reconciler for afterok-orchestrator projects (the monitor dispatches
         these here instead of sync_all_jobs, which stays guarded off for them). Per NON-TERMINAL
         tracked job (submit_chain set slurm_job_id), in order of authority:
@@ -407,8 +406,8 @@ class PipelineRunnerService:
             if getattr(jm, "slurm_job_id", None) and jm.execution_status not in (JobStatus.SUCCEEDED, JobStatus.FAILED)
         }
 
-        changes: Dict[str, bool] = {}
-        pending: Dict[str, List[str]] = {}  # slurm_id -> [instance_ids] lacking a terminal sentinel
+        changes: dict[str, bool] = {}
+        pending: dict[str, list[str]] = {}  # slurm_id -> [instance_ids] lacking a terminal sentinel
 
         # Pass 1 -- disk sentinels (authoritative, cheapest, no SLURM call).
         for iid, jm in tracked.items():
@@ -427,7 +426,7 @@ class PipelineRunnerService:
                 pending.setdefault(str(jm.slurm_job_id), []).append(iid)
 
         # Pass 2 -- SLURM for jobs without a terminal sentinel.
-        to_scancel: List[str] = []
+        to_scancel: list[str] = []
         if pending:
             now = time.monotonic()
             queued = await self.backend.slurm_service.query_jobs_by_ids(list(pending.keys()))
@@ -525,7 +524,7 @@ class PipelineRunnerService:
                 return
 
             star_rel = (getattr(job_model, "paths", {}) or {}).get("output_star")
-            ts_ctf_star: Optional[Path] = None
+            ts_ctf_star: Path | None = None
             if star_rel:
                 p = Path(star_rel) if Path(star_rel).is_absolute() else proj_path / star_rel
                 if p.exists():
@@ -592,7 +591,7 @@ class PipelineRunnerService:
 
         now = time.monotonic()
         total = succeeded = running = failed = scheduled = queued = 0
-        queued_jobs: List[Dict[str, Any]] = []
+        queued_jobs: list[dict[str, Any]] = []
         live_queued_keys: set = set()
         for iid, job_model in state.jobs.items():
             # IMPORT_MOVIES is a local pre-step; TS_IMPORT is a silently-injected
@@ -655,7 +654,7 @@ class PipelineRunnerService:
         for key in [k for k in self._queued_since if k.startswith(prefix) and k not in live_keys]:
             self._queued_since.pop(key, None)
 
-    async def get_job_logs(self, project_path: str, job_name: str) -> Dict[str, str]:
+    async def get_job_logs(self, project_path: str, job_name: str) -> dict[str, str]:
         job_path = Path(project_path) / job_name.rstrip("/")
         logs = {"stdout": "", "stderr": "", "exists": False, "path": str(job_path)}
 
@@ -668,7 +667,7 @@ class PipelineRunnerService:
         out_file = job_path / "run.out"
         if out_file.exists():
             try:
-                with open(out_file, "r", encoding="utf-8") as f:
+                with open(out_file, encoding="utf-8") as f:
                     logs["stdout"] = f.read()
             except Exception as e:
                 logs["stdout"] = f"Error reading run.out: {e}"
@@ -678,7 +677,7 @@ class PipelineRunnerService:
         err_file = job_path / "run.err"
         if err_file.exists():
             try:
-                with open(err_file, "r", encoding="utf-8") as f:
+                with open(err_file, encoding="utf-8") as f:
                     logs["stderr"] = f.read()
             except Exception as e:
                 logs["stderr"] = f"Error reading run.err: {e}"
@@ -687,7 +686,7 @@ class PipelineRunnerService:
 
         return logs
 
-    def get_schemer_logs(self, project_path: Path) -> Dict[str, str]:
+    def get_schemer_logs(self, project_path: Path) -> dict[str, str]:
         resolved = project_path.resolve()
         logs = {"stdout": "", "stderr": "", "running": resolved in self._active_processes}
 
@@ -696,28 +695,28 @@ class PipelineRunnerService:
 
         if stdout_path and stdout_path.exists():
             try:
-                with open(stdout_path, "r") as f:
+                with open(stdout_path) as f:
                     logs["stdout"] = f.read()
             except Exception as e:
                 logs["stdout"] = f"Error reading log: {e}"
 
         if stderr_path and stderr_path.exists():
             try:
-                with open(stderr_path, "r") as f:
+                with open(stderr_path) as f:
                     logs["stderr"] = f.read()
             except Exception as e:
                 logs["stderr"] = f"Error reading log: {e}"
 
         return logs
 
-    def get_sbatch_errors(self, project_path: Path) -> List[str]:
+    def get_sbatch_errors(self, project_path: Path) -> list[str]:
         resolved = project_path.resolve()
         stderr_path = self._stderr_log_paths.get(resolved)
         if not stderr_path or not stderr_path.exists():
             return []
         errors = []
         try:
-            with open(stderr_path, "r") as f:
+            with open(stderr_path) as f:
                 for line in f:
                     if "sbatch: error:" in line:
                         errors.append(line.strip())
@@ -729,14 +728,14 @@ class PipelineRunnerService:
     # Schemer process management
     # -------------------------------------------------------------------------
 
-    async def run_generated_scheme(self, project_dir: Path, scheme_name: str, bind_paths: List[str]) -> Dict[str, Any]:
+    async def run_generated_scheme(self, project_dir: Path, scheme_name: str, bind_paths: list[str]) -> dict[str, Any]:
         return await self._run_relion_schemer(
             project_dir=project_dir, scheme_name=scheme_name, additional_bind_paths=bind_paths
         )
 
     async def _run_relion_schemer(
-        self, project_dir: Path, scheme_name: str, additional_bind_paths: List[str]
-    ) -> Dict[str, Any]:
+        self, project_dir: Path, scheme_name: str, additional_bind_paths: list[str]
+    ) -> dict[str, Any]:
         try:
             state = self.backend.state_service.state_for(project_dir)
 
@@ -759,12 +758,12 @@ class PipelineRunnerService:
                 try:
                     # 30s was too tight: on a shared filesystem the apptainer
                     # cold-start + relion first-run can push past that easily.
-                    stdout, stderr = await asyncio.wait_for(init_process.communicate(), timeout=180.0)
+                    _stdout, stderr = await asyncio.wait_for(init_process.communicate(), timeout=180.0)
                     if init_process.returncode != 0:
                         logger.info("Relion init failed: %s", stderr.decode())
                         return {"success": False, "error": f"Failed to initialize Relion project: {stderr.decode()}"}
                     logger.info("Relion project initialized successfully")
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.info("Relion init timed out")
                     init_process.kill()
                     await init_process.wait()
@@ -860,8 +859,8 @@ class PipelineRunnerService:
     # -------------------------------------------------------------------------
 
     async def launch_retries(
-        self, project_dir: Path, retry_instance_ids: List[str], on_success_fresh_ids: List[str]
-    ) -> Dict[str, Any]:
+        self, project_dir: Path, retry_instance_ids: list[str], on_success_fresh_ids: list[str]
+    ) -> dict[str, Any]:
         """
         Re-sbatch the supervisor script of each failed job in place. Register an
         async monitor that waits for RELION_JOB_EXIT_{SUCCESS,FAILURE} markers,
@@ -875,7 +874,7 @@ class PipelineRunnerService:
                 "message": "Pipeline is already running. Wait for it to complete or cancel it first.",
             }
 
-        prepared: List[tuple] = []  # (instance_id, job_dir, script_path)
+        prepared: list[tuple] = []  # (instance_id, job_dir, script_path)
         for iid in retry_instance_ids:
             job_model = state.jobs.get(iid)
             if not job_model:
@@ -935,8 +934,8 @@ class PipelineRunnerService:
     async def _monitor_retries_and_handoff(
         self,
         project_dir: Path,
-        retry_dirs: List[tuple],  # [(instance_id, job_dir), ...]
-        on_success_fresh_ids: List[str],
+        retry_dirs: list[tuple],  # [(instance_id, job_dir), ...]
+        on_success_fresh_ids: list[str],
     ) -> None:
         resolved = project_dir.resolve()
         poll_interval = 5.0
@@ -1054,7 +1053,7 @@ class PipelineRunnerService:
             logger.warning("Could not patch %s status to %s: %s", job_path, new_status, e)
 
     async def _sbatch_script(
-        self, script_path: Path, cwd: Path, dependency_after_ids: Optional[List[str]] = None
+        self, script_path: Path, cwd: Path, dependency_after_ids: list[str] | None = None
     ) -> str:
         """sbatch in an env stripped of SLURM_*/SBATCH_* so the submission
         doesn't inherit any parent job context. Returns the SLURM job ID.
@@ -1078,7 +1077,7 @@ class PipelineRunnerService:
         # "Submitted batch job 12345"
         return stdout.strip().split()[-1]
 
-    async def submit_supervisor(self, script_path: Path, cwd: Path, after_ids: Optional[List[str]] = None) -> str:
+    async def submit_supervisor(self, script_path: Path, cwd: Path, after_ids: list[str] | None = None) -> str:
         """Public seam for the afterok orchestrator (P1.A): sbatch one supervisor
         script, optionally gated on its producers' supervisor job ids via afterok.
         Returns the SLURM job id. Thin wrapper over _sbatch_script."""
@@ -1106,7 +1105,7 @@ class PipelineRunnerService:
                 logger.info("Pipeline failed or was interrupted (code %s)", return_code)
                 try:
                     if stderr_log.exists():
-                        with open(stderr_log, "r") as f:
+                        with open(stderr_log) as f:
                             lines = f.readlines()
                             if lines:
                                 logger.info("Last stderr lines:")
@@ -1173,7 +1172,7 @@ class PipelineRunnerService:
             else:
                 logger.info("Old schemer PID %s cleaned up, new pipeline already running -- skipping state reset", pid)
 
-    async def stop_pipeline(self, project_path: Path) -> Dict[str, Any]:
+    async def stop_pipeline(self, project_path: Path) -> dict[str, Any]:
         resolved = project_path.resolve()
         process = self._active_processes.get(resolved)
         if not process:
@@ -1187,7 +1186,7 @@ class PipelineRunnerService:
             try:
                 await asyncio.wait_for(process.wait(), timeout=10.0)
                 return {"success": True, "message": f"Pipeline stopped (PID {pid})"}
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.info("Schemer didn't respond to SIGTERM, sending SIGKILL")
                 process.kill()
                 await process.wait()
@@ -1195,7 +1194,7 @@ class PipelineRunnerService:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def stop_and_cleanup(self, project_dir: Path, slurm_job_ids: List[str]) -> Dict[str, Any]:
+    async def stop_and_cleanup(self, project_dir: Path, slurm_job_ids: list[str]) -> dict[str, Any]:
         """
         Full stop sequence:
         1. Terminate the schemer process
@@ -1239,7 +1238,7 @@ class PipelineRunnerService:
                 process.terminate()
                 try:
                     await asyncio.wait_for(process.wait(), timeout=10.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     logger.info("Schemer didn't respond to SIGTERM, sending SIGKILL")
                     process.kill()
                     await process.wait()
@@ -1358,7 +1357,7 @@ class PipelineRunnerService:
 
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
-    async def cancel_job(self, project_dir: Path, instance_id: str) -> Dict[str, Any]:
+    async def cancel_job(self, project_dir: Path, instance_id: str) -> dict[str, Any]:
         from services.computing.slurm_service import normalize_slurm_ids
 
         state = self.backend.state_service.state_for(project_dir)

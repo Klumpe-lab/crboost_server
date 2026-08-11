@@ -26,7 +26,6 @@ import json
 import logging
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Optional
 
 from nicegui import context, ui
 
@@ -58,7 +57,7 @@ def _copy_js(text: str) -> str:
     return "navigator.clipboard.writeText(" + json.dumps(text) + ")"
 
 
-async def open_curation_control_center(backend, project_path: Optional[Path], *, bundle: Optional[dict] = None) -> None:
+async def open_curation_control_center(backend, project_path: Path | None, *, bundle: dict | None = None) -> None:
     """Open the curation control center.
 
     ``bundle`` (from ``backend.prepare_curation_bundle``) ties the panel to one

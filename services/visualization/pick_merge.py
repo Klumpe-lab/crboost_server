@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -43,7 +43,7 @@ def type_priority(list_type: str) -> int:
     return _TYPE_PRIORITY.get(str(list_type), 9)
 
 
-def _particles_block(star_path: Path) -> Optional[tuple[str, pd.DataFrame]]:
+def _particles_block(star_path: Path) -> tuple[str, pd.DataFrame] | None:
     """(block_key, DataFrame) of the first block carrying the centered-Å columns."""
     data = starfile.read(Path(star_path), always_dict=True)
     for k, v in data.items():
@@ -92,7 +92,7 @@ def merge_lists_to_star(sources: Sequence[dict], tomo_name: str, out_star: Path)
     out_star.parent.mkdir(parents=True, exist_ok=True)
     starfile.write({"particles": df}, out_star, overwrite=True)
     logger.info("Merged %d lists -> %s (%d picks) for %s", len(arrs), out_star, len(df), tomo_name)
-    return {"count": int(len(df)), "out_star": str(out_star), "n_sources": int(len(arrs))}
+    return {"count": len(df), "out_star": str(out_star), "n_sources": len(arrs)}
 
 
 def _greedy_drop_mask(coords: np.ndarray, radius: float) -> np.ndarray:
@@ -148,7 +148,7 @@ def clash_stats_star(star_path: Path, tomo_name: str, radius: float) -> dict:
     return clash_stats_coords(read_centered_coords(Path(star_path), tomo_name), radius)
 
 
-def deduplicate_star(star_path: Path, tomo_name: str, radius: float, out_star: Optional[Path] = None) -> dict:
+def deduplicate_star(star_path: Path, tomo_name: str, radius: float, out_star: Path | None = None) -> dict:
     """Greedy radius dedup a centered-Å star in place (or to `out_star`), keeping
     earlier (higher-priority) rows. Preserves all columns + non-particle blocks.
     Returns ``{n_before, n_removed, n_after, out_star}``."""
@@ -174,7 +174,7 @@ def deduplicate_star(star_path: Path, tomo_name: str, radius: float, out_star: O
     n_removed = int(dropped.sum())
     logger.info("Dedup %s at %.1f A: removed %d, kept %d", star_path, radius, n_removed, len(kept))
     return {
-        "n_before": int(len(this)),
+        "n_before": len(this),
         "n_removed": n_removed,
         "n_after": int(len(this) - n_removed),
         "out_star": str(target),

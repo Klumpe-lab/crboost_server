@@ -28,7 +28,6 @@ import shutil
 import sys
 import traceback
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 import starfile
@@ -79,7 +78,7 @@ def _resolve_star_path(base_dir: Path, p: str) -> Path:
 
 def generate_legacy_text_files(
     tiltseries_global_star: Path, output_dir: Path
-) -> Dict[str, Dict[str, Path]]:
+) -> dict[str, dict[str, Path]]:
     """
     Replicate old CryoBoost's generatePytomInputFiles: extract tilt angles,
     defocus (in um), and dose from per-tilt star files into plain text files
@@ -96,7 +95,7 @@ def generate_legacy_text_files(
     for d in (tlt_dir, def_dir, dose_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    result: Dict[str, Dict[str, Path]] = {}
+    result: dict[str, dict[str, Path]] = {}
     for _, row in ts_df.iterrows():
         name = str(row["rlnTomoName"])
         ts_star = _resolve_star_path(ts_base, str(row["rlnTomoTiltSeriesStarFile"]))
@@ -163,7 +162,7 @@ def make_pytom_tomograms_star(
     return out_star
 
 
-def get_gpu_split(requested_split: str) -> List[str]:
+def get_gpu_split(requested_split: str) -> list[str]:
     if requested_split in ["auto", "None", ""]:
         return ["2", "2", "1"]
     return requested_split.split(":")
@@ -192,9 +191,9 @@ def build_pytom_base_cmd(
     template_file: Path,
     mask_file: Path,
     tm_results_dir: Path,
-    gpu_ids: List[str],
-    angle_list_file: Optional[Path] = None,
-) -> List[str]:
+    gpu_ids: list[str],
+    angle_list_file: Path | None = None,
+) -> list[str]:
     """The per-task base command before per-tomogram args are appended.
 
     Symmetry routing:
@@ -216,8 +215,8 @@ def build_pytom_base_cmd(
         "--amplitude-contrast", str(state.microscope.amplitude_contrast),
         "--per-tilt-weighting",
         "--log", "debug",
-        "-g",
-    ] + gpu_ids
+        "-g", *gpu_ids,
+    ]
 
     sym = str(params.symmetry) if params.symmetry else "C1"
     if angle_list_file is not None:
@@ -228,7 +227,7 @@ def build_pytom_base_cmd(
             base_cmd.extend(["--z-axis-rotational-symmetry", sym[1:]])
 
     if params.gpu_split != "None":
-        base_cmd.extend(["-s"] + get_gpu_split(params.gpu_split))
+        base_cmd.extend(["-s", *get_gpu_split(params.gpu_split)])
     if params.spectral_whitening:
         base_cmd.append("--spectral-whitening")
     if getattr(params, "random_phase_correction", False):
@@ -266,7 +265,7 @@ def main():
 
 def run_supervisor_mode():
     try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(
+        (_state, params, context, job_dir, project_path, _job_type) = get_driver_context(
             TemplateMatchPytomParams
         )
     except Exception as e:
@@ -312,10 +311,9 @@ def run_supervisor_mode():
         preflight_registry(project_path, tomo_names, job_name="template_match_pytom")
 
         # Prepare per-tomogram inputs ONCE so tasks don't each re-parse STARs.
-        legacy_files: Dict[str, Dict[str, Path]] = {}
         if LEGACY_TEXT_INPUT:
             print("[SUPERVISOR] LEGACY MODE: generating text files for pytom 0.10", flush=True)
-            legacy_files = generate_legacy_text_files(
+            generate_legacy_text_files(
                 tiltseries_global_star=input_star_ts, output_dir=job_dir
             )
         else:
@@ -343,7 +341,7 @@ def run_supervisor_mode():
 
         # Build per-tomogram metadata for the manifest — tasks use this to
         # avoid re-reading the tomograms STAR.
-        raw_tomo_paths: Dict[str, str] = {}
+        raw_tomo_paths: dict[str, str] = {}
         for _, row in tomo_df.iterrows():
             name = str(row["rlnTomoName"])
             raw_tomo_paths[name] = str(row["rlnTomoReconstructedTomogram"])
@@ -353,7 +351,7 @@ def run_supervisor_mode():
         # Generate once at supervisor start so all array tasks reuse the same
         # file; tasks rebuild build_pytom_base_cmd per-tomo but the angle file
         # is shared.
-        angle_list_path: Optional[Path] = None
+        angle_list_path: Path | None = None
         sym = str(params.symmetry) if params.symmetry else "C1"
         from services.templating.angle_lists import (
             needs_angle_list,
@@ -443,7 +441,7 @@ def run_supervisor_mode():
 
 def run_task_mode(array_idx: int):
     try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(
+        (state, params, context, job_dir, project_path, _job_type) = get_driver_context(
             TemplateMatchPytomParams
         )
     except Exception as e:
@@ -472,7 +470,7 @@ def run_task_mode(array_idx: int):
         use_legacy = bool(manifest.get("legacy_text_input", True))
         patched_tomograms_star = manifest.get("patched_tomograms_star")
 
-        paths = {k: Path(v) for k, v in context["paths"].items()}
+        {k: Path(v) for k, v in context["paths"].items()}
         additional_binds = list(context.get("additional_binds", []))
         additional_binds.append(str(template_file.parent.resolve()))
         additional_binds.append(str(mask_file.parent.resolve()))

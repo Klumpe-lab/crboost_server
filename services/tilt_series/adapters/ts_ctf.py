@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from collections.abc import Iterable
 
 import pandas as pd
 
@@ -57,7 +57,7 @@ class TsCtfIngestAdapter:
         *,
         job_instance_id: str = "tsCTF",
         warp_folder: str = "warp_tiltseries",
-        starfile_service: Optional[StarfileService] = None,
+        starfile_service: StarfileService | None = None,
     ):
         self.registry = registry
         self.job_dir = Path(job_dir)
@@ -131,7 +131,7 @@ class TsCtfIngestAdapter:
         )
 
         excluded = {str(t) for t in (excluded_ids or ())}
-        unresolved: List[str] = []
+        unresolved: list[str] = []
         for _, ts_row in in_ts_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
             # Muted TS: intentionally not ingested — drop from output, don't
@@ -201,9 +201,9 @@ class TsCtfIngestAdapter:
         # cryoBoostKey in parser output == movie filename with _EER.eer/.tif/.eer
         # stripped (see WarpXmlParser._parse_tilt_series_xml). We resolve via
         # the TS's `frame_by_filename`, which tolerates stem vs full filename.
-        per_frame: List[TsCtfPerFrameCtf] = []
-        missing: List[str] = []
-        ambiguous: List[str] = []
+        per_frame: list[TsCtfPerFrameCtf] = []
+        missing: list[str] = []
+        ambiguous: list[str] = []
         are_inverted = bool(warp_df["are_angles_inverted"].iloc[0])
 
         for _, row in warp_df.iterrows():
@@ -227,7 +227,7 @@ class TsCtfIngestAdapter:
                 )
             )
 
-        problems: List[str] = []
+        problems: list[str] = []
         if missing:
             sample = missing[:5]
             suffix = "..." if len(missing) > 5 else ""
@@ -241,7 +241,7 @@ class TsCtfIngestAdapter:
 
         # Dedup guard: two warp rows keying onto the same frame_id would
         # silently cause one to overwrite the other downstream. Surface it.
-        ids_seen: Dict[str, int] = {}
+        ids_seen: dict[str, int] = {}
         for p in per_frame:
             ids_seen[p.frame_id] = ids_seen.get(p.frame_id, 0) + 1
         dups = [fid for fid, n in ids_seen.items() if n > 1]
@@ -256,7 +256,7 @@ class TsCtfIngestAdapter:
             per_frame=per_frame,
         )
 
-    def _resolve_frame(self, ts: TiltSeries, warp_key: str) -> Optional[Frame]:
+    def _resolve_frame(self, ts: TiltSeries, warp_key: str) -> Frame | None:
         """Map a WarpXmlParser cryoBoostKey to a Frame in `ts`. The key has
         already had `_EER.eer`/`.eer`/`.tif` stripped; frames in the registry
         are keyed by stem and filename. Try stem match first (the common
@@ -282,7 +282,7 @@ class TsCtfIngestAdapter:
         ts: TiltSeries,
         ctf_output: TsCtfTiltSeriesOutput,
         tilt_df: pd.DataFrame,
-    ) -> tuple[pd.DataFrame, List[str]]:
+    ) -> tuple[pd.DataFrame, list[str]]:
         """Overlay per-frame CTF values onto the input tilt-DataFrame.
 
         Resolution goes: tilt_row['rlnMicrographMovieName'] → filename stem →
@@ -293,7 +293,7 @@ class TsCtfIngestAdapter:
         per-frame defocus values that `fs_motion_and_ctf` wrote. Matches legacy
         CryoBoost behavior; downstream WarpTools uses the tomostar as the
         authoritative frame set, so these rows are cosmetic."""
-        errors: List[str] = []
+        errors: list[str] = []
         by_frame_id = {p.frame_id: p for p in ctf_output.per_frame}
         hand = -1 if ctf_output.are_angles_inverted else 1
 
@@ -302,7 +302,7 @@ class TsCtfIngestAdapter:
             return tilt_df, errors
 
         skipped = 0
-        filtered_idx: List[int] = []
+        filtered_idx: list[int] = []
         for idx, row in tilt_df.iterrows():
             movie_name = row["rlnMicrographMovieName"]
             try:

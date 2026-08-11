@@ -23,7 +23,6 @@ import shlex
 import sys
 import traceback
 from pathlib import Path
-from typing import List
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
@@ -55,7 +54,7 @@ from services.tilt_series.adapters import TsReconstructIngestAdapter
 DRIVER_SCRIPT = Path(__file__).resolve()
 
 
-def read_tilt_series_names_from_input_star(input_star: Path) -> List[str]:
+def read_tilt_series_names_from_input_star(input_star: Path) -> list[str]:
     """Sorted list of TS names from the input STAR's `global` block."""
     star_data = StarfileService().read(input_star)
     df = star_data.get("global")
@@ -109,7 +108,7 @@ def main():
 
 def run_supervisor_mode():
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (_project_state, params, local_params_data, job_dir, project_path, _job_type) = get_driver_context(
             TsReconstructParams
         )
     except Exception as e:
@@ -209,7 +208,7 @@ def run_supervisor_mode():
 
 def run_task_mode(array_idx: int):
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (_project_state, params, local_params_data, job_dir, _project_path, _job_type) = get_driver_context(
             TsReconstructParams
         )
     except Exception as e:

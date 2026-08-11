@@ -18,7 +18,6 @@ import shutil
 import sys
 import traceback
 from pathlib import Path
-from typing import List
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
@@ -51,7 +50,7 @@ DRIVER_SCRIPT = Path(__file__).resolve()
 # ----------------------------------------------------------------------
 
 
-def enumerate_tomostar_names(tomostar_dir: Path) -> List[str]:
+def enumerate_tomostar_names(tomostar_dir: Path) -> list[str]:
     """Get sorted TS names from the tomostar directory."""
     files = sorted(tomostar_dir.glob("*.tomostar"))
     return [f.stem for f in files]
@@ -201,7 +200,7 @@ def main():
 
 def run_supervisor_mode():
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (_project_state, params, local_params_data, job_dir, project_path, _job_type) = get_driver_context(
             TsAlignmentParams
         )
     except Exception as e:
@@ -343,7 +342,7 @@ def run_supervisor_mode():
 
 def run_task_mode(array_idx: int):
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (_project_state, params, local_params_data, job_dir, _project_path, _job_type) = get_driver_context(
             TsAlignmentParams
         )
     except Exception as e:

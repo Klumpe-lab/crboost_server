@@ -1,8 +1,20 @@
 line-length = 120
-exclude = ["venv", ".git", ".nicegui"]
+target-version = "py311"
+exclude = ["venv", ".git", ".nicegui", "docs/attic"]
 
 [lint]
-select = ["E", "F"]
+select = ["E", "F", "UP", "B", "RUF"]
+ignore = [
+    # Deferred, not endorsed:
+    "RUF006", # dangling asyncio tasks — needs a task-registry design, per-area roadmaps
+    "UP042",  # str+Enum → StrEnum changes str(x); migrate per-area with tests, not mechanically
+]
+# Intentional scientific typography in UI strings/docstrings (×, σ, –, −, ∪, ⋃, curly quotes)
+allowed-confusables = ["×", "σ", "–", "−", "∪", "⋃", "’", "‘"]
+
+[lint.per-file-ignores]
+"drivers/*" = ["E402"]  # sys.path bootstrap must precede package imports
+"services/job_models.py" = ["F401"]  # backwards-compat re-export shim
 
 [format]
 skip-magic-trailing-comma = true

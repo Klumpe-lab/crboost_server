@@ -23,7 +23,6 @@ than a hard fail (see drivers/subtomo_extraction.py).
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 from nicegui import ui
 
@@ -254,7 +253,7 @@ def _resolve_upstream_paths(job_model):
     return job_dir, None
 
 
-def _check_upstream_particles(particles_path: Path) -> Optional[str]:
+def _check_upstream_particles(particles_path: Path) -> str | None:
     """Return 'empty' if the upstream particles file has zero rows in its
     data_particles block, 'has_picks' if it has any rows, or None if we
     couldn't read it (in which case we silently skip the banner — better to
@@ -274,7 +273,7 @@ def _check_upstream_particles(particles_path: Path) -> Optional[str]:
         return None
 
 
-def _read_skip_sentinel(job_dir: Optional[Path]) -> Optional[str]:
+def _read_skip_sentinel(job_dir: Path | None) -> str | None:
     """Return the `message` field of `.skipped_no_candidates.json` if the
     driver already wrote one, else None."""
     if job_dir is None:
@@ -313,7 +312,7 @@ def _render_box_vs_diameter_warning(container, state, species, job_model) -> Non
     box_ang = bx * eff_px
     ratio = box_ang / float(diameter)
 
-    level: Optional[str] = None
+    level: str | None = None
     msg = ""
     if ratio < 1.5:
         level = "error"
@@ -345,7 +344,7 @@ def _render_box_vs_diameter_warning(container, state, species, job_model) -> Non
                 ).classes("text-[11px] text-gray-500 font-mono")
 
 
-def _native_pixel_size(state) -> Optional[float]:
+def _native_pixel_size(state) -> float | None:
     mic = getattr(state, "microscope", None)
     if mic is None:
         return None

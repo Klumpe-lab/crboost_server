@@ -29,7 +29,6 @@ import sys
 import tarfile
 import traceback
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
@@ -76,13 +75,13 @@ def _global_block(data):
     return None, data
 
 
-def read_tomo_map(input_star: Path) -> Tuple[List[str], Dict[str, str]]:
+def read_tomo_map(input_star: Path) -> tuple[list[str], dict[str, str]]:
     """Return (sorted ts_names, {ts_name: reconstructed-tomogram basename}) from the
     reconstruct tomograms.star. The array maps index N -> ts_names[N]; the basename map
     lets each task resolve its even/odd halves without re-parsing the whole STAR."""
     _, df = _global_block(starfile.read(input_star))
-    ts_names: List[str] = []
-    tomo_basenames: Dict[str, str] = {}
+    ts_names: list[str] = []
+    tomo_basenames: dict[str, str] = {}
     for _, row in df.iterrows():
         ts = str(row["rlnTomoName"])
         tomo_basenames[ts] = Path(str(row[TOMO_COL])).name
@@ -247,8 +246,8 @@ def aggregate_output_star(
     job_dir: Path,
     output_dir: Path,
     project_path: Path,
-    ok_ts_names: List[str],
-    tomo_basenames: Dict[str, str],
+    ok_ts_names: list[str],
+    tomo_basenames: dict[str, str],
 ) -> None:
     """Build job_dir/tomograms.star from the reconstruct STAR, keeping only rows whose tomogram
     was denoised (.ok), with TOMO_COL repointed at output_dir/<basename> and the now-stale
@@ -285,8 +284,8 @@ def stamp_denoise_registry(
     job_dir: Path,
     instance_id: str,
     params: DenoisePredictParams,
-    ok_ts_names: List[str],
-    tomo_basenames: Dict[str, str],
+    ok_ts_names: list[str],
+    tomo_basenames: dict[str, str],
     output_dir: Path,
     model_path: Path,
 ) -> None:
@@ -348,7 +347,7 @@ def _apply_inherited_method(project_state, params, tag: str) -> None:
 
 def run_supervisor_mode():
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (project_state, params, local_params_data, job_dir, project_path, _job_type) = get_driver_context(
             DenoisePredictParams
         )
     except Exception as e:
@@ -460,7 +459,7 @@ def run_supervisor_mode():
 
 def run_task_mode(array_idx: int):
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (project_state, params, local_params_data, job_dir, _project_path, _job_type) = get_driver_context(
             DenoisePredictParams
         )
     except Exception as e:

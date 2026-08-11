@@ -26,7 +26,7 @@ def main():
     print("--- SLURM JOB START (Reconstruct Particle) ---", flush=True)
 
     try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(ReconstructParticleParams)
+        (_state, params, context, job_dir, _project_path, _job_type) = get_driver_context(ReconstructParticleParams)
     except Exception as e:
         print(f"[DRIVER] BOOTSTRAP ERROR: {e}", file=sys.stderr)
         sys.exit(1)

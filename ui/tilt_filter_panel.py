@@ -14,7 +14,6 @@ import logging
 import re
 import urllib.parse
 from pathlib import Path
-from typing import Dict
 
 from nicegui import ui
 
@@ -217,7 +216,7 @@ async def _finalize_pipeline_output(job_model, ts_data, project_path) -> bool:
         registry = get_registry_for(project_path)
         if registry.tilt_series_ids() and has_labels:
             probs = df["cryoBoostDlProbability"] if "cryoBoostDlProbability" in df.columns else [None] * len(df)
-            for stem, is_filt, prob in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), probs):
+            for stem, is_filt, prob in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), probs, strict=False):
                 try:
                     registry.set_frame_filtered(
                         str(stem),
@@ -629,7 +628,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
         ts_data.all_tilts_df["cryoBoostDlProbability"] = 1.0
 
     df = ts_data.all_tilts_df
-    png_map: Dict[str, Path] = {f.stem: f for f in sorted(png_dir.glob("*.png"))}
+    png_map: dict[str, Path] = {f.stem: f for f in sorted(png_dir.glob("*.png"))}
     df["_png"] = df["cryoBoostKey"].map(lambda k: str(png_map.get(k, "")))
     # Unique row ID for DOM identification (cryoBoostKey can have duplicates)
     df["_row_id"] = [f"r{i}" for i in range(len(df))]
@@ -665,7 +664,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
 
     # ── Build position → tilt-series hierarchy ──
     ts_names = sorted(df["rlnTomoName"].unique().tolist())
-    hierarchy: Dict[int, list] = {}
+    hierarchy: dict[int, list] = {}
     for tn in ts_names:
         pos, beam = _parse_pos_beam(tn)
         pos_key = pos if pos is not None else 0
@@ -706,7 +705,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
     # ── Groups ──
     group_c = ui.column().classes("w-full gap-1")
     # Track which groups are expanded by ts_name so we can preserve across re-renders
-    expand_state: Dict[str, bool] = {}
+    expand_state: dict[str, bool] = {}
 
     def _sort_ts_df(ts_df):
         s = view_opts["sort"]

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
@@ -61,7 +61,7 @@ class TsAlignmentIngestAdapter:
         job_instance_id: str = "tsAlignment",
         warp_folder: str = "warp_tiltseries",
         tomostar_folder: str = "tomostar",
-        starfile_service: Optional[StarfileService] = None,
+        starfile_service: StarfileService | None = None,
     ):
         self.registry = registry
         self.job_dir = Path(job_dir)
@@ -79,7 +79,7 @@ class TsAlignmentIngestAdapter:
         alignment_method: AlignmentMethod,
         *,
         alignment_angpix: float = 0.0,
-    ) -> List[str]:
+    ) -> list[str]:
         """Populate the registry with per-TS alignment outputs.
 
         `alignment_angpix` is the binned-stack pixel size used for shift
@@ -111,8 +111,8 @@ class TsAlignmentIngestAdapter:
                 f"Reload the project to backfill the registry from mdocs."
             )
 
-        problems: Dict[str, str] = {}
-        ingested: List[str] = []
+        problems: dict[str, str] = {}
+        ingested: list[str] = []
         for ts_id in expected:
             ts = self.registry.get_tilt_series(ts_id)
             try:
@@ -176,9 +176,9 @@ class TsAlignmentIngestAdapter:
         )
         frame_angpix = float(in_ts_df[pixel_size_col].iloc[0]) if pixel_size_col else 1.35
 
-        all_tilts_list: List[pd.DataFrame] = []
-        problems: Dict[str, str] = {}
-        emitted: List[str] = []
+        all_tilts_list: list[pd.DataFrame] = []
+        problems: dict[str, str] = {}
+        emitted: list[str] = []
         for _, ts_row in in_ts_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
             # Strict identity: rlnTomoName MUST equal the tilt_series STAR stem
@@ -298,8 +298,8 @@ class TsAlignmentIngestAdapter:
                 f"({len(aln_data)}) for TS {ts.id}"
             )
 
-        per_frame: List[TsAlignmentPerFrame] = []
-        unresolved: List[str] = []
+        per_frame: list[TsAlignmentPerFrame] = []
+        unresolved: list[str] = []
         for i, tomo_row in tomostar_df.iterrows():
             movie_name = str(tomo_row["wrpMovieName"])
             try:
@@ -346,7 +346,7 @@ class TsAlignmentIngestAdapter:
 
     def _parse_alignment_files(
         self, ts_tiltstack: Path, alignment_method: AlignmentMethod
-    ) -> Tuple[Optional[np.ndarray], Optional[Path], Optional[Path], Optional[Path]]:
+    ) -> tuple[np.ndarray | None, Path | None, Path | None, Path | None]:
         """Locate + parse the alignment output for one TS. Returns
         (aln_data, aln_file_path, xf_file_path, tlt_file_path)."""
         if alignment_method == AlignmentMethod.ARETOMO:
@@ -374,7 +374,7 @@ class TsAlignmentIngestAdapter:
         raise RuntimeError(f"alignment method {alignment_method} not implemented")
 
     @staticmethod
-    def _read_aretomo_aln(aln_file: Path) -> Optional[np.ndarray]:
+    def _read_aretomo_aln(aln_file: Path) -> np.ndarray | None:
         data = []
         with open(aln_file) as f:
             for line in f:
@@ -392,7 +392,7 @@ class TsAlignmentIngestAdapter:
         return np.array(data)
 
     @staticmethod
-    def _read_imod_xf_tlt(xf_file: Path, tlt_file: Path) -> Optional[np.ndarray]:
+    def _read_imod_xf_tlt(xf_file: Path, tlt_file: Path) -> np.ndarray | None:
         df1 = pd.read_csv(xf_file, delim_whitespace=True, header=None, names=["m1", "m2", "m3", "m4", "tx", "ty"])
         df2 = pd.read_csv(tlt_file, delim_whitespace=True, header=None, names=["tilt_angle"])
         combined = pd.concat([df1, df2], axis=1)
@@ -460,7 +460,7 @@ class TsAlignmentIngestAdapter:
             if self.tiltstack_dir.is_dir() else set()
         )
 
-        mismatches: List[str] = []
+        mismatches: list[str] = []
         if tomostar_stems != tiltstack_stems:
             mismatches.append(
                 f"tomostar vs tiltstack: only-tomostar={sorted(tomostar_stems - tiltstack_stems)}, "
@@ -483,7 +483,7 @@ class TsAlignmentIngestAdapter:
 
     def _resolve_per_ts_path(
         self, per_ts_rel: str, in_star_dir: Path, project_root: Path
-    ) -> Optional[Path]:
+    ) -> Path | None:
         for base in (in_star_dir, project_root):
             cand = (base / per_ts_rel).resolve()
             if cand.exists():
@@ -499,7 +499,7 @@ class TsAlignmentIngestAdapter:
         ts: TiltSeries,
         aln_output: TsAlignmentTiltSeriesOutput,
         tilt_df: pd.DataFrame,
-    ) -> Tuple[pd.DataFrame, List[str]]:
+    ) -> tuple[pd.DataFrame, list[str]]:
         """Overlay the five alignment columns onto the per-TS tilt DataFrame.
 
         Resolution: tilt_row['rlnMicrographMovieName'] → Frame via
@@ -513,7 +513,7 @@ class TsAlignmentIngestAdapter:
         over the tomostar and left unmatched STAR rows un-overlaid. Downstream
         WarpTools treats the tomostar as the authoritative frame set, so those
         NaN rows are cosmetic and never processed by ts_ctf/ts_reconstruct."""
-        errors: List[str] = []
+        errors: list[str] = []
         by_frame_id = {p.frame_id: p for p in aln_output.per_frame}
 
         if "rlnMicrographMovieName" not in tilt_df.columns:
@@ -525,7 +525,7 @@ class TsAlignmentIngestAdapter:
                 tilt_df[col] = float("nan")
 
         skipped = 0
-        filtered_idx: List[int] = []
+        filtered_idx: list[int] = []
         for idx, row in tilt_df.iterrows():
             movie_name = row["rlnMicrographMovieName"]
             try:

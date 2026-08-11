@@ -1,7 +1,7 @@
 """Authoritative-list → optimisation_set resolution + per-species enumeration.
 
 Read-only foundation for seamless cross-tomo/cross-project aggregation
-(``services/visualization/LIST_EXTRACTION_AND_AGGREGATION.md`` §8.1–8.2): for each
+(``docs/LIST_EXTRACTION_AND_AGGREGATION.md`` §8.1–8.2): for each
 ``(species, tomo)`` it resolves the ONE authoritative pick list to a concrete
 ``optimisation_set`` handle plus its DERIVED extraction state, so an aggregator can see —
 without rendering the dashboard — exactly which authoritative lists are extracted, stale,
@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
 
 from services.models_base import JobType, ListExtractionState
 from services.visualization import picks_filter
@@ -42,16 +41,16 @@ class AuthoritativeHandle:
     slug: str  # the authoritative slug ('auto' default, or a workbench list slug)
     kind: str  # 'auto' | 'filtered' | 'workbench' | 'dangling' (slug with no PickList)
     extraction_state: ListExtractionState
-    optset_path: Optional[str]  # optimisation_set to forward (may be stale), or None if unresolved
-    kept: Optional[int]  # kept / extracted count for this tomo
-    total: Optional[int]  # total picks for this tomo (for 'kept/total')
-    notes: List[str] = field(default_factory=list)
+    optset_path: str | None  # optimisation_set to forward (may be stale), or None if unresolved
+    kept: int | None  # kept / extracted count for this tomo
+    total: int | None  # total picks for this tomo (for 'kept/total')
+    notes: list[str] = field(default_factory=list)
 
 
 # ── headless job-dir / species resolution (no UI, no client-context global) ──────────────
 
 
-def _species_id_for_job(state, instance_id: str, job_model) -> Optional[str]:
+def _species_id_for_job(state, instance_id: str, job_model) -> str | None:
     """species_id a per-particle job attaches to — headless re-implementation of
     ``ui.dashboard.data._resolve_species``'s id resolution: ``instance_id`` '__suffix',
     else ``job_model.species_id``, else the single-species fallback."""
@@ -67,7 +66,7 @@ def _species_id_for_job(state, instance_id: str, job_model) -> Optional[str]:
     return None
 
 
-def _job_dir(state, instance_id: str, job_model, project_path: Path) -> Optional[Path]:
+def _job_dir(state, instance_id: str, job_model, project_path: Path) -> Path | None:
     """Resolve a job's dir from the EXPLICIT state (``relion_job_name``, then
     ``job_path_mapping``). Unlike ``ui.dashboard.data._job_dir_for`` this never reads the
     client-context global ``get_project_state()``, so it is correct off the event loop."""
@@ -84,7 +83,7 @@ def _job_dir(state, instance_id: str, job_model, project_path: Path) -> Optional
     return None
 
 
-def _instance_for_species(state, species_id: str, job_type) -> Optional[tuple]:
+def _instance_for_species(state, species_id: str, job_type) -> tuple | None:
     """The (instance_id, job_model) of the first job of ``job_type`` attached to this
     species, or None."""
     for iid, jm in state.jobs.items():
@@ -95,20 +94,20 @@ def _instance_for_species(state, species_id: str, job_type) -> Optional[tuple]:
     return None
 
 
-def _candidate_instance_for_species(state, species_id: str) -> Optional[tuple]:
+def _candidate_instance_for_species(state, species_id: str) -> tuple | None:
     """The TEMPLATE_EXTRACT_PYTOM (candidate-extract) instance for this species — its job
     dir holds the ``optimisation_set.star`` whose ``candidates.star`` schema a per-list
     extraction mirrors."""
     return _instance_for_species(state, species_id, JobType.TEMPLATE_EXTRACT_PYTOM)
 
 
-def _subtomo_instance_for_species(state, species_id: str) -> Optional[tuple]:
+def _subtomo_instance_for_species(state, species_id: str) -> tuple | None:
     """The SUBTOMO_EXTRACTION instance for this species — its job model carries the
     box/bin/crop a per-list extraction must match; its dir holds the 'auto' optset."""
     return _instance_for_species(state, species_id, JobType.SUBTOMO_EXTRACTION)
 
 
-def subtomo_job_dir_for_species(state, species_id: str, project_path: Path) -> Optional[Path]:
+def subtomo_job_dir_for_species(state, species_id: str, project_path: Path) -> Path | None:
     """The ``SUBTOMO_EXTRACTION`` job dir attached to this species — the source of the
     'auto' authoritative ``optimisation_set`` and the per-tomo curation accounting."""
     inst = _subtomo_instance_for_species(state, species_id)
@@ -124,8 +123,8 @@ def resolve_authoritative_optset(
     tomo_name: str,
     slug: str,
     *,
-    subtomo_job_dir: Optional[Path] = None,
-    auto_curation: Optional[dict] = None,
+    subtomo_job_dir: Path | None = None,
+    auto_curation: dict | None = None,
 ) -> AuthoritativeHandle:
     """Resolve one ``(species, tomo)``'s authoritative list to a forwarding handle.
 
@@ -140,7 +139,7 @@ def resolve_authoritative_optset(
     ``auto_curation`` is an optional ``{kept, total, reviewed}`` for this tomo (from
     ``load_tomo_curation``) so a batch enumerator doesn't re-read the subtomo job per tomo.
     """
-    notes: List[str] = []
+    notes: list[str] = []
 
     if slug in ("auto", "filtered"):
         kind = slug
@@ -190,7 +189,7 @@ def resolve_authoritative_optset(
     )
 
 
-def enumerate_authoritative(state, project_path: Path, species_id: str) -> List[AuthoritativeHandle]:
+def enumerate_authoritative(state, project_path: Path, species_id: str) -> list[AuthoritativeHandle]:
     """Every ``(species, tomo)``'s authoritative list resolved to a handle + extraction
     state — the read-only basis for the aggregation gate (doc §8.1). The tomo universe is
     the subtomo job's tomograms (``load_tomo_curation``) ∪ every tomo with a persisted
@@ -210,7 +209,7 @@ def enumerate_authoritative(state, project_path: Path, species_id: str) -> List[
         if pl.species_id == species_id:
             tomo_names.add(pl.tomo_name)
 
-    out: List[AuthoritativeHandle] = []
+    out: list[AuthoritativeHandle] = []
     for tomo_name in sorted(tomo_names):
         slug = state.get_authoritative_slug(species_id, tomo_name)
         out.append(
@@ -229,7 +228,7 @@ def enumerate_authoritative(state, project_path: Path, species_id: str) -> List[
 # ── extraction inputs + the §8.3 gate ────────────────────────────────────────────────────
 
 
-def extract_inputs_for_list(state, project_path: Path, species_id: str, pl) -> Optional[dict]:
+def extract_inputs_for_list(state, project_path: Path, species_id: str, pl) -> dict | None:
     """Resolve everything ``backend.extract_pick_list`` needs for ONE workbench pick list:
     the species candidate ``optimisation_set.star`` (TEMPLATE_EXTRACT_PYTOM job — its
     ``candidates.star`` schema is mirrored), the consumed list star (prefer
@@ -295,9 +294,9 @@ class GateReport:
       PickList (the user must re-choose). The gate must NOT silently proceed past these.
     """
 
-    ready: List[AuthoritativeHandle] = field(default_factory=list)
-    pending: List[AuthoritativeHandle] = field(default_factory=list)
-    blocked: List[AuthoritativeHandle] = field(default_factory=list)
+    ready: list[AuthoritativeHandle] = field(default_factory=list)
+    pending: list[AuthoritativeHandle] = field(default_factory=list)
+    blocked: list[AuthoritativeHandle] = field(default_factory=list)
 
     @property
     def can_proceed(self) -> bool:
@@ -315,7 +314,7 @@ class GateReport:
         }
 
 
-def compute_gate_report(handles: List[AuthoritativeHandle]) -> GateReport:
+def compute_gate_report(handles: list[AuthoritativeHandle]) -> GateReport:
     """Classify enumerated handles into ready / pending / blocked (see ``GateReport``).
     Pure — no disk, no submission."""
     report = GateReport()

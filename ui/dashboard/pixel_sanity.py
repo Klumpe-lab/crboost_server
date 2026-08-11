@@ -11,7 +11,6 @@ annotates them, ``_render_pixel_sanity_table`` draws them. Extracted from
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 from nicegui import ui
 
@@ -31,12 +30,12 @@ from ui.dashboard.data import (
 # helper here as a thin tuple shim so existing callsites don't change.
 
 
-def _read_template_apix_box(template_path: str) -> tuple[Optional[float], Optional[int]]:
+def _read_template_apix_box(template_path: str) -> tuple[float | None, int | None]:
     info = read_template_header(template_path)
     return info.apix_ang, info.box_px
 
 
-def _parse_tomo_dimensions(s: str) -> Optional[tuple[int, int, int]]:
+def _parse_tomo_dimensions(s: str) -> tuple[int, int, int] | None:
     """`'4096x4096x2048'` → `(4096, 4096, 2048)`. Returns None on parse failure.
     Native-pixel-size dimensions as written into TsAlignmentParams.tomo_dimensions."""
     if not s:
@@ -54,7 +53,7 @@ def _scale_tomo_dims(native_dims: tuple[int, int, int], native_px: float, target
     if target_px <= 0 or native_px <= 0:
         return native_dims
     f = native_px / target_px
-    return (int(round(native_dims[0] * f)), int(round(native_dims[1] * f)), int(round(native_dims[2] * f)))
+    return (round(native_dims[0] * f), round(native_dims[1] * f), round(native_dims[2] * f))
 
 
 def _compute_pixel_chain(project_state) -> list[dict]:
@@ -129,9 +128,9 @@ def _compute_pixel_chain(project_state) -> list[dict]:
 
     # ---- Alignment (rescale + native-px tomo dims) ----
     ali = _find_job_by_type(project_state, JobType.TS_ALIGNMENT)
-    aligned_px: Optional[float] = None
-    aligned_dims_native: Optional[tuple[int, int, int]] = None
-    aligned_dims_at_align_px: Optional[tuple[int, int, int]] = None
+    aligned_px: float | None = None
+    aligned_dims_native: tuple[int, int, int] | None = None
+    aligned_dims_at_align_px: tuple[int, int, int] | None = None
     if ali:
         ali_iid, ali_jm = ali
         v = float(getattr(ali_jm, "rescale_angpixs", 0.0) or 0.0)
@@ -172,8 +171,8 @@ def _compute_pixel_chain(project_state) -> list[dict]:
 
     # ---- Reconstruct (rescale to recon_px) ----
     rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
-    recon_px: Optional[float] = None
-    recon_dims: Optional[tuple[int, int, int]] = None
+    recon_px: float | None = None
+    recon_dims: tuple[int, int, int] | None = None
     if rec:
         rec_iid, rec_jm = rec
         v = float(getattr(rec_jm, "rescale_angpixs", 0.0) or 0.0)
@@ -234,7 +233,7 @@ def _compute_pixel_chain(project_state) -> list[dict]:
         )
 
     # ---- Candidate Extract (one row per species) ----
-    candidate_diameter_by_species: dict[Optional[str], list[tuple[str, float]]] = {}
+    candidate_diameter_by_species: dict[str | None, list[tuple[str, float]]] = {}
     for ce_iid, ce_jm in _candidate_extract_instances(project_state):
         species, species_id = _resolve_species(project_state, ce_jm, ce_iid)
         # Particle diameter: prefer species.diameter_ang (v2 source of truth);
@@ -287,7 +286,7 @@ def _compute_pixel_chain(project_state) -> list[dict]:
         if binning != 1.0:
             notes.append(f"bin={binning:g}")
         # Surface candidate diameter cross-link for sanity rule
-        diameter_for_species: Optional[float] = None
+        diameter_for_species: float | None = None
         items = candidate_diameter_by_species.get(species_id) or []
         if items:
             diameter_for_species = items[0][1]
@@ -318,7 +317,7 @@ def _apply_sanity_rules(rows: list[dict]) -> None:
     and the dict key matches a column id from `_PIXEL_COLUMNS` (so the icon
     attaches to the offending cell).
     """
-    recon_px: Optional[float] = None
+    recon_px: float | None = None
     for r in rows:
         if r["stage_key"] == "recon":
             recon_px = r["px_size_ang"]
@@ -326,7 +325,7 @@ def _apply_sanity_rules(rows: list[dict]) -> None:
 
     # Particle diameter consistency across candidate-extract instances of
     # the same species
-    by_species: dict[Optional[str], list[dict]] = {}
+    by_species: dict[str | None, list[dict]] = {}
     for r in rows:
         if r["stage_key"] == "pick" and r.get("particle_diameter_ang"):
             by_species.setdefault(r.get("species_id"), []).append(r)
@@ -436,21 +435,21 @@ def _apply_sanity_rules(rows: list[dict]) -> None:
 # --- Sanity-table renderers --------------------------------------------------
 
 
-def _fmt_px(v: Optional[float]) -> str:
+def _fmt_px(v: float | None) -> str:
     return "—" if not v else f"{v:g}"
 
 
-def _fmt_dims_px(d: Optional[tuple]) -> str:
+def _fmt_dims_px(d: tuple | None) -> str:
     if d is None:
         return "—"
     parts = [str(x) for x in d if x is not None]
     return " × ".join(parts) if parts else "—"
 
 
-def _fmt_dims_ang(d: Optional[tuple], px: Optional[float]) -> str:
+def _fmt_dims_ang(d: tuple | None, px: float | None) -> str:
     if d is None or not px:
         return "—"
-    vals = [int(round(x * px)) for x in d if x is not None]
+    vals = [round(x * px) for x in d if x is not None]
     return " × ".join(f"{v:,}" for v in vals) if vals else "—"
 
 
@@ -484,7 +483,7 @@ def _fmt_particle(r: dict) -> str:
     return f"{d:g} Å"
 
 
-def _pixel_cell(text: str, warning: Optional[tuple[str, str]] = None, *, notes: bool = False) -> None:
+def _pixel_cell(text: str, warning: tuple[str, str] | None = None, *, notes: bool = False) -> None:
     cls = "cb-pixel-cell"
     if notes:
         cls += " cb-pixel-notes"
@@ -616,13 +615,13 @@ def _render_pixel_header_cells() -> None:
                 ui.icon("info_outline", size="11px").classes("cb-pixel-warn-icon").tooltip(hint)
 
 
-def _group_rows_by_species(rows: list[dict]) -> tuple[list[dict], list[tuple[Optional[str], list[dict]]]]:
+def _group_rows_by_species(rows: list[dict]) -> tuple[list[dict], list[tuple[str | None, list[dict]]]]:
     """Split into (universal_rows, [(species_id, species_rows), ...]).
     Universal stages share one table; per-species stages each get their own
     sub-table so multi-species projects stay readable."""
     universal: list[dict] = []
-    by_species: dict[Optional[str], list[dict]] = {}
-    species_order: list[Optional[str]] = []
+    by_species: dict[str | None, list[dict]] = {}
+    species_order: list[str | None] = []
     for r in rows:
         if r["stage_key"] in _UNIVERSAL_STAGE_KEYS:
             universal.append(r)

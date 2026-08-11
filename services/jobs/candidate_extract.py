@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, ClassVar, Dict, List, Set, Tuple
+from typing import Any, ClassVar
 from pydantic import Field, model_validator
 
 from services.computing.slurm_service import SlurmConfig
@@ -14,7 +14,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS: ClassVar[Set[str]] = {
+    USER_PARAMS: ClassVar[set[str]] = {
         "particle_diameter_ang",
         "max_num_particles",
         "cutoff_method",
@@ -26,7 +26,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
         "array_throttle",
     }
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_tm_job", accepts=[JobFileType.TM_RESULTS_DIR], preferred_source="templatematching"),
         InputSlot(
             key="input_tomograms",
@@ -35,7 +35,7 @@ class CandidateExtractPytomParams(AbstractJobParams):
             required=True,
         ),
     ]
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_star", produces=JobFileType.CANDIDATES_STAR, path_template="candidates.star"),
         OutputSlot(
             key="optimisation_set", produces=JobFileType.OPTIMISATION_SET_STAR, path_template="optimisation_set.star"
@@ -63,7 +63,8 @@ class CandidateExtractPytomParams(AbstractJobParams):
     )
     expected_false_positives: float = Field(
         default=1.0,
-        description="Expected false positives per tomogram (FALSE_POSITIVES strategy). Strict=1, moderate=10, loose=100.",
+        description="Expected false positives per tomogram (FALSE_POSITIVES strategy). "
+        "Strict=1, moderate=10, loose=100.",
     )
 
     @model_validator(mode="before")
@@ -112,11 +113,11 @@ class CandidateExtractPytomParams(AbstractJobParams):
         default=16, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram candidate extraction"
     )
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_tm_job = self.paths.get("input_tm_job", "")
         return [("in_mic", str(input_tm_job))]
 
-    def _get_queue_options(self) -> List[Tuple[str, str]]:
+    def _get_queue_options(self) -> list[tuple[str, str]]:
         """
         Override: extract's parent sbatch is a lightweight CPU-only supervisor
         that enumerates tomograms, submits a per-tomogram SLURM array, polls,
@@ -143,5 +144,5 @@ class CandidateExtractPytomParams(AbstractJobParams):
         return "pytom"
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"tm_job": "templatematching"}

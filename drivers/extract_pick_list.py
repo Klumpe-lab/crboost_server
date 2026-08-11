@@ -28,9 +28,9 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from drivers.driver_base import run_command  # noqa: E402
-from services.computing.container_service import get_container_service  # noqa: E402
-from services.visualization.list_extraction import build_list_optset, write_extracted_optset  # noqa: E402
+from drivers.driver_base import run_command
+from services.computing.container_service import get_container_service
+from services.visualization.list_extraction import build_list_optset, write_extracted_optset
 
 
 def _build_subtomo_cmd(optset: Path, out_run: Path, args) -> str:

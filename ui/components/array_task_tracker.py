@@ -21,7 +21,6 @@ Register as an extra tab via the plugin system:
 """
 
 from pathlib import Path
-from typing import Dict, List
 
 from nicegui import ui
 
@@ -143,7 +142,7 @@ def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
 # ── Internals ──
 
 
-def _update_summary(container: ui.row, statuses: Dict[str, str], item_label: str) -> None:
+def _update_summary(container: ui.row, statuses: dict[str, str], item_label: str) -> None:
     n_ok = sum(1 for s in statuses.values() if s == _OK)
     n_fail = sum(1 for s in statuses.values() if s == _FAIL)
     n_running = sum(1 for s in statuses.values() if s == _RUNNING)
@@ -169,7 +168,7 @@ def _update_summary(container: ui.row, statuses: Dict[str, str], item_label: str
         ui.html(html, sanitize=False)
 
 
-def _update_progress(bar: ui.linear_progress, statuses: Dict[str, str]) -> None:
+def _update_progress(bar: ui.linear_progress, statuses: dict[str, str]) -> None:
     total = len(statuses)
     if total == 0:
         bar.set_value(0)
@@ -185,12 +184,12 @@ def _update_progress(bar: ui.linear_progress, statuses: Dict[str, str]) -> None:
 
 
 def _build_task_rows(
-    display_order: List[str],
-    item_to_task_idx: Dict[str, int],
+    display_order: list[str],
+    item_to_task_idx: dict[str, int],
     job_dir: Path,
     instance_id: str,
     focus_target: str | None,
-) -> Dict[str, dict]:
+) -> dict[str, dict]:
     """Build all expansion rows ONCE. Returns {name: {icon, label, expansion, bg_style}} refs.
 
     Rows are rendered in `display_order`. The task-output file for each row
@@ -198,7 +197,7 @@ def _build_task_rows(
     ids are tied to the manifest order.
     """
     display_names = shorten_ts_names(display_order)
-    row_widgets: Dict[str, dict] = {}
+    row_widgets: dict[str, dict] = {}
     for name in display_order:
         icon_name, icon_color, bg_color = _CHIP[_PENDING]
         short_name = display_names.get(name, name)
@@ -230,7 +229,7 @@ def _build_task_rows(
     return row_widgets
 
 
-def _apply_statuses_to_rows(row_widgets: Dict[str, dict], statuses: Dict[str, str]) -> None:
+def _apply_statuses_to_rows(row_widgets: dict[str, dict], statuses: dict[str, str]) -> None:
     """Update icon, label text, and background color on existing rows without rebuilding."""
     for name, widgets in row_widgets.items():
         status = statuses.get(name, _PENDING)

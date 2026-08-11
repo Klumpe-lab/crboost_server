@@ -23,7 +23,7 @@ except ImportError as e:
 
 
 def main():
-    project_state, job_model, context_data, job_dir, project_path, job_type = get_driver_context(TiltFilterParams)
+    _project_state, job_model, _context_data, job_dir, project_path, _job_type = get_driver_context(TiltFilterParams)
 
     success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
     failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
@@ -136,7 +136,9 @@ def main():
 
             registry = get_registry_for(project_path)
             if registry.tilt_series_ids():
-                verdicts = zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), df["cryoBoostDlProbability"])
+                verdicts = zip(
+                    df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), df["cryoBoostDlProbability"], strict=False
+                )
                 stamped = 0
                 for stem, is_filt, prob in verdicts:
                     try:

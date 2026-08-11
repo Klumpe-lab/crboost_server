@@ -13,7 +13,6 @@ from __future__ import annotations
 import logging
 import urllib.parse
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
@@ -57,7 +56,7 @@ _PICK_LIST_GLYPH = {
 }
 
 
-def _find_job_by_type(project_state, jt: JobType) -> Optional[tuple[str, object]]:
+def _find_job_by_type(project_state, jt: JobType) -> tuple[str, object] | None:
     """Return (instance_id, job_model) for the first job matching this type,
     or None. The match accepts either `job_model.job_type == jt` or an
     `instance_id` whose base prefix matches `jt.value` (covers `__species`
@@ -68,7 +67,7 @@ def _find_job_by_type(project_state, jt: JobType) -> Optional[tuple[str, object]
     return None
 
 
-def _split_species_id(instance_id: str) -> Optional[str]:
+def _split_species_id(instance_id: str) -> str | None:
     """`templatematching__ribosome` → `ribosome`; bare instance_id → None."""
     parts = instance_id.split("__", 1)
     return parts[1] if len(parts) > 1 else None
@@ -123,7 +122,7 @@ def _subtomo_extract_instances(state) -> list[tuple[str, object]]:
     return sorted(out, key=lambda kv: kv[0])
 
 
-def _job_dir_for(instance_id: str, job_model, project_path: Path) -> Optional[Path]:
+def _job_dir_for(instance_id: str, job_model, project_path: Path) -> Path | None:
     rjn = getattr(job_model, "relion_job_name", None)
     if rjn:
         d = project_path / rjn.rstrip("/")
@@ -138,7 +137,7 @@ def _job_dir_for(instance_id: str, job_model, project_path: Path) -> Optional[Pa
     return None
 
 
-def _read_tomograms_table(tomograms_star: Path) -> Optional[pd.DataFrame]:
+def _read_tomograms_table(tomograms_star: Path) -> pd.DataFrame | None:
     if not tomograms_star.exists():
         return None
     try:
@@ -153,7 +152,7 @@ def _read_tomograms_table(tomograms_star: Path) -> Optional[pd.DataFrame]:
     return None
 
 
-def _resolve_volume_for_3dmod(tomo_row: pd.Series, project_path: Path) -> Optional[Path]:
+def _resolve_volume_for_3dmod(tomo_row: pd.Series, project_path: Path) -> Path | None:
     if "rlnTomoReconstructedTomogram" not in tomo_row.index:
         return None
     p = Path(str(tomo_row["rlnTomoReconstructedTomogram"]))
@@ -223,7 +222,7 @@ def has_any_dashboard_data() -> bool:
 
 
 # (key, label, JobType for array stages, or None for synthetic stages handled below).
-_PILL_STAGES: list[tuple[str, str, Optional[JobType]]] = [
+_PILL_STAGES: list[tuple[str, str, JobType | None]] = [
     ("fs_ctf", "FS/CTF", JobType.FS_MOTION_CTF),
     ("align", "Align", JobType.TS_ALIGNMENT),
     ("ctf", "CTF", JobType.TS_CTF),
@@ -310,7 +309,7 @@ def _array_stage_status(project_path: Path, jm) -> tuple[list[str], dict[str, st
     return items, {ts: coarse for ts in items}
 
 
-def _job_running_or_failed(jm) -> Optional[str]:
+def _job_running_or_failed(jm) -> str | None:
     """For non-array jobs, derive a coarse status from execution_status. Returns
     'running' / 'fail' / None (None means "fall back to per-TS data check")."""
     es = getattr(jm, "execution_status", None)
@@ -435,7 +434,7 @@ def _read_subtomo_extracted_ts(job_dir: Path) -> set[str]:
         return set()
 
 
-def _subtomo_extract_status_per_ts(job_dir: Path, jm, expected_ts: Optional[set[str]] = None) -> dict[str, str]:
+def _subtomo_extract_status_per_ts(job_dir: Path, jm, expected_ts: set[str] | None = None) -> dict[str, str]:
     """Bucket per-TS status for the subtomo-extraction job.
 
     Two layouts are supported, in priority order:

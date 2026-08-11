@@ -2,7 +2,8 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Callable, List, Optional
+from typing import ClassVar
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -35,12 +36,12 @@ class PipelineBuilderPanel:
     def __init__(
         self,
         backend: CryoBoostBackend,
-        callbacks: Dict[str, Callable],
+        callbacks: dict[str, Callable],
         primary_sidebar=None,
         roster_panel=None,
-        toggle_workbench: Optional[Callable] = None,
-        ensure_pipeline_mode: Optional[Callable] = None,
-        toggle_journey: Optional[Callable] = None,
+        toggle_workbench: Callable | None = None,
+        ensure_pipeline_mode: Callable | None = None,
+        toggle_journey: Callable | None = None,
     ):
         self.backend = backend
         self.callbacks = callbacks
@@ -53,8 +54,8 @@ class PipelineBuilderPanel:
         self.ui_mgr = get_ui_state_manager()
         self.state_service = get_state_service()
 
-        self._job_content_containers: Dict[str, object] = {}
-        self._content_wrapper_ref: Dict[str, object] = {}
+        self._job_content_containers: dict[str, object] = {}
+        self._content_wrapper_ref: dict[str, object] = {}
 
         self.roster = RosterWidget(self)
         self.poller = StatusPoller(self)
@@ -251,7 +252,7 @@ class PipelineBuilderPanel:
     # ── Job/instance management ───────────────────────────────────────────────
 
     def add_instance_to_pipeline(
-        self, job_type: JobType, instance_id: Optional[str] = None, species_id: Optional[str] = None
+        self, job_type: JobType, instance_id: str | None = None, species_id: str | None = None
     ):
         if self.ui_mgr.is_running:
             return
@@ -386,7 +387,7 @@ class PipelineBuilderPanel:
 
     # Job types that require a prerequisite job to exist in the pipeline.
     # When adding the key job type, the value job type is auto-added if missing.
-    _PREREQUISITES: Dict[JobType, JobType] = {
+    _PREREQUISITES: ClassVar[dict[JobType, JobType]] = {
         JobType.TS_ALIGNMENT: JobType.TS_IMPORT,
         JobType.TILT_FILTER: JobType.TS_IMPORT,
     }
@@ -412,7 +413,7 @@ class PipelineBuilderPanel:
         state.ensure_job_initialized(prereq, instance_id=prereq_id, template_path=star if star.exists() else None)
 
     @staticmethod
-    def _find_existing_interactive(job_type: JobType, state) -> Optional[str]:
+    def _find_existing_interactive(job_type: JobType, state) -> str | None:
         """Return existing instance_id for a singleton interactive job, or None."""
         from services.jobs import jobtype_paramclass
 
@@ -574,12 +575,12 @@ class PipelineBuilderPanel:
 
 def build_pipeline_builder_panel(
     backend: CryoBoostBackend,
-    callbacks: Dict[str, Callable],
+    callbacks: dict[str, Callable],
     primary_sidebar=None,
     roster_panel=None,
-    toggle_workbench: Optional[Callable] = None,
-    ensure_pipeline_mode: Optional[Callable] = None,
-    toggle_journey: Optional[Callable] = None,
+    toggle_workbench: Callable | None = None,
+    ensure_pipeline_mode: Callable | None = None,
+    toggle_journey: Callable | None = None,
 ) -> None:
     panel = PipelineBuilderPanel(
         backend=backend,

@@ -6,7 +6,6 @@ import traceback
 import json
 from services.computing.container_service import get_container_service
 import starfile
-import math
 
 # Direct imports for validation since we are inside the container
 try:
@@ -26,7 +25,7 @@ try:
     from drivers.driver_base import get_driver_context, run_command
     from services.job_models import DenoiseTrainParams
     from services.models_base import DenoiseMethod, IsoNetRefineMethod
-except ImportError as e:
+except ImportError:
     print("FATAL: Could not import services.", file=sys.stderr)
     sys.exit(1)
 
@@ -55,7 +54,7 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
 
     tomo_df = starfile.read(input_star)
     if isinstance(tomo_df, dict):
-        tomo_df = tomo_df.get("global", list(tomo_df.values())[0])
+        tomo_df = tomo_df.get("global", next(iter(tomo_df.values())))
     if not (
         "rlnTomoReconstructedTomogramHalf1" in tomo_df.columns
         and "rlnTomoReconstructedTomogramHalf2" in tomo_df.columns
@@ -232,7 +231,7 @@ def main():
     print("--- SLURM JOB START ---", flush=True)
 
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (_project_state, params, local_params_data, job_dir, project_path, _job_type) = get_driver_context(
             DenoiseTrainParams
         )
     except Exception as e:
@@ -264,7 +263,7 @@ def main():
 
         tomo_df = starfile.read(input_star)
         if isinstance(tomo_df, dict):
-            tomo_df = list(tomo_df.values())[0]
+            tomo_df = next(iter(tomo_df.values()))
 
         target_even = []
         target_odd = []
@@ -331,7 +330,8 @@ def main():
         safe_norm_samples = min(2000, training_set_size)
 
         print(
-            f"[DRIVER] Config: Total Patches={total_extracted_patches} | Train Set={training_set_size} | Norm Samples={safe_norm_samples}"
+            f"[DRIVER] Config: Total Patches={total_extracted_patches} | "
+            f"Train Set={training_set_size} | Norm Samples={safe_norm_samples}"
         )
 
         config_json_path = job_dir / "train_config.json"

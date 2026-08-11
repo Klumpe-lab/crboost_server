@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Set, Tuple
+from typing import ClassVar
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams, SymmetryGroup
@@ -16,7 +16,7 @@ class Class3DParams(AbstractJobParams):
     job_type       : JobType               = Field(default=JobType.CLASS3D)
     JOB_CATEGORY   : ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str]         = "relion.external"
-    USER_PARAMS    : ClassVar[Set[str]]    = {
+    USER_PARAMS    : ClassVar[set[str]]    = {
         "n_classes",
         "n_iterations",
         "tau_fudge",
@@ -42,13 +42,13 @@ class Class3DParams(AbstractJobParams):
         "pad",
         "dont_combine_weights_via_disc",
     }
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(
             key="input_optimisation", accepts=[JobFileType.OPTIMISATION_SET_STAR], preferred_source="subtomoExtraction"
         ),
         InputSlot(key="input_reference", accepts=[JobFileType.REFERENCE_MAP], preferred_source="reconstructParticle"),
     ]
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(
             key="output_optimisation",
             produces=JobFileType.OPTIMISATION_SET_STAR,
@@ -57,7 +57,9 @@ class Class3DParams(AbstractJobParams):
     ]
 
     # Classification
-    n_classes   : int   = Field(default=1, ge=1, description="Number of classes (1 for initial alignment, >1 for sorting)")
+    n_classes   : int   = Field(
+        default=1, ge=1, description="Number of classes (1 for initial alignment, >1 for sorting)"
+    )
     n_iterations: int   = Field(default=15, ge=1, description="Number of iterations")
     tau_fudge   : float = Field(default=1.0, description="Regularisation parameter (-1 = auto)")
 
@@ -65,7 +67,9 @@ class Class3DParams(AbstractJobParams):
     healpix_order: int   = Field(default=3, ge=1, le=6, description="Angular sampling (2=15deg, 3=7.5deg, 4=3.75deg)")
     offset_range : int   = Field(default=5, ge=0, description="Translational search range (Angstroms)")
     offset_step  : int   = Field(default=2, ge=1, description="Translational search step (Angstroms)")
-    sigma_ang    : float = Field(default=-1.0, description="Local angular search sigma in degrees (-1 = no local search)")
+    sigma_ang    : float = Field(
+        default=-1.0, description="Local angular search sigma in degrees (-1 = no local search)"
+    )
     oversampling : int   = Field(default=1, ge=0, description="Oversampling order")
 
     # Symmetry / filtering
@@ -87,8 +91,12 @@ class Class3DParams(AbstractJobParams):
     do_ctf                        : bool = Field(default=True, description="Apply CTF correction")
     do_norm                       : bool = Field(default=True, description="Normalise particle images")
     do_scale                      : bool = Field(default=True, description="Correct for intensity scale differences")
-    dont_combine_weights_via_disc: bool  = Field(default=True, description="Keep combination of weights in memory (faster, needs more RAM)")
-    pad                          : int   = Field(default=2, ge=1, description="Padding factor for Fourier transforms (2 = standard)")
+    dont_combine_weights_via_disc: bool  = Field(
+        default=True, description="Keep combination of weights in memory (faster, needs more RAM)"
+    )
+    pad                          : int   = Field(
+        default=2, ge=1, description="Padding factor for Fourier transforms (2 = standard)"
+    )
 
     # Computation
     use_gpu       : bool = Field(default=True, description="Use GPU acceleration")
@@ -107,7 +115,7 @@ class Class3DParams(AbstractJobParams):
                 "preset": SlurmPreset.CUSTOM.value,
             }
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_opt = self.paths.get("input_optimisation", "")
         input_ref = self.paths.get("input_reference", "")
         return [("in_optimisation", str(input_opt)), ("in_3dref", str(input_ref))]
@@ -119,5 +127,5 @@ class Class3DParams(AbstractJobParams):
         return "relion"
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"optimisation_set": "subtomoExtraction", "reference": "reconstructParticle"}

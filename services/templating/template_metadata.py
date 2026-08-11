@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, NamedTuple, Optional, Tuple
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -33,22 +33,22 @@ class TemplateHeader(NamedTuple):
     state ("is this template at std≈1 like the ellipsoid, or near zero?").
     """
 
-    apix_ang: Optional[float]
-    box_px: Optional[int]
-    nx: Optional[int]
-    ny: Optional[int]
-    nz: Optional[int]
-    dmin: Optional[float] = None
-    dmax: Optional[float] = None
-    dmean: Optional[float] = None
-    rms: Optional[float] = None
+    apix_ang: float | None
+    box_px: int | None
+    nx: int | None
+    ny: int | None
+    nz: int | None
+    dmin: float | None = None
+    dmax: float | None = None
+    dmean: float | None = None
+    rms: float | None = None
 
     @classmethod
-    def empty(cls) -> "TemplateHeader":
+    def empty(cls) -> TemplateHeader:
         return cls(None, None, None, None, None, None, None, None, None)
 
 
-_HEADER_CACHE: Dict[Tuple[str, int], TemplateHeader] = {}
+_HEADER_CACHE: dict[tuple[str, int], TemplateHeader] = {}
 
 
 def read_template_header(template_path: str) -> TemplateHeader:
@@ -145,7 +145,7 @@ def get_selected_mask(species):
     return get_sel() if callable(get_sel) else None
 
 
-def resolve_species_from_job(state, job_model, instance_id: Optional[str] = None):
+def resolve_species_from_job(state, job_model, instance_id: str | None = None):
     """Find the ParticleSpecies a per-particle job is attached to, using
     three fallbacks in order:
 

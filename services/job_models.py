@@ -7,7 +7,7 @@ This module re-exports everything so existing ``from services.job_models import 
 continues to work.
 """
 
-from services.jobs import (  # noqa: F401
+from services.jobs import (
     AbstractJobParams,
     CandidateExtractPytomParams,
     Class3DParams,
@@ -22,6 +22,7 @@ from services.jobs import (  # noqa: F401
     SymmetryGroup,
     TemplateMatchPytomParams,
     TemplateWorkbenchState,
+    TiltFilterParams,
     TsAlignmentParams,
     TsCtfParams,
     TsImportParams,

@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -23,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 def write_picks_data(
     pick_coords_xyz: np.ndarray,
-    scores: Optional[np.ndarray],
-    score_field: Optional[str],
+    scores: np.ndarray | None,
+    score_field: str | None,
     tomo_dims_xyz: tuple,
     out_path: Path,
 ) -> dict:
@@ -69,7 +68,7 @@ def write_picks_data(
     return {"json_path": str(out_path), "n": len(picks)}
 
 
-def _z_percentile(coords: np.ndarray) -> Optional[np.ndarray]:
+def _z_percentile(coords: np.ndarray) -> np.ndarray | None:
     n = len(coords)
     if n <= 1:
         return None
@@ -78,7 +77,7 @@ def _z_percentile(coords: np.ndarray) -> Optional[np.ndarray]:
     return (ranks.astype(float) / (n - 1)) * 100.0
 
 
-def _nearest_neighbor_distances(coords: np.ndarray, chunk: int = 256) -> Optional[np.ndarray]:
+def _nearest_neighbor_distances(coords: np.ndarray, chunk: int = 256) -> np.ndarray | None:
     """Per-pick distance to nearest other pick (3D, in pixels).
 
     O(N^2) but chunked so peak memory stays bounded — for typical hundreds of
@@ -122,7 +121,7 @@ def is_output_stale(target: Path, sources) -> bool:
 
 def render_xz_slab_preview(
     mrc_path: Path, out_path: Path, *, max_dim: int = 1024, slab_byte_budget: int = 50 * 1024 * 1024
-) -> Optional[Path]:
+) -> Path | None:
     """Render an X/Z preview PNG by averaging a central Y-slab of the tomogram.
 
     Reads only the central few Y-slices via mmap so the byte cost is bounded
@@ -184,8 +183,8 @@ def render_xz_slab_preview(
     h, w = u8.shape
     if max(h, w) > max_dim:
         scale = max_dim / float(max(h, w))
-        new_w = max(1, int(round(w * scale)))
-        new_h = max(1, int(round(h * scale)))
+        new_w = max(1, round(w * scale))
+        new_h = max(1, round(h * scale))
         img = img.resize((new_w, new_h), Image.LANCZOS)
     img.save(str(out_path), format="PNG", optimize=True)
     return out_path
@@ -193,7 +192,7 @@ def render_xz_slab_preview(
 
 def render_xy_slab_preview(
     mrc_path: Path, out_path: Path, *, max_dim: int = 1024, slab_byte_budget: int = 50 * 1024 * 1024
-) -> Optional[Path]:
+) -> Path | None:
     """Render an X/Y top-down preview PNG by averaging a central Z-slab.
 
     Bytewise mirror of `render_xz_slab_preview` — same percentile clip, same
@@ -257,8 +256,8 @@ def render_xy_slab_preview(
     h, w = u8.shape
     if max(h, w) > max_dim:
         scale = max_dim / float(max(h, w))
-        new_w = max(1, int(round(w * scale)))
-        new_h = max(1, int(round(h * scale)))
+        new_w = max(1, round(w * scale))
+        new_h = max(1, round(h * scale))
         img = img.resize((new_w, new_h), Image.LANCZOS)
     img.save(str(out_path), format="PNG", optimize=True)
     return out_path
@@ -282,9 +281,9 @@ def render_pick_cutouts_atlas(
     *,
     tile_px: int = 192,
     cols: int = 8,
-    filters: Optional[list] = None,
-    apix_hint: Optional[float] = None,
-) -> Optional[dict]:
+    filters: list | None = None,
+    apix_hint: float | None = None,
+) -> dict | None:
     """Build sprite-atlas PNG(s) + index JSON(s) of per-pick subtomo thumbnails —
     one per display-filter preset (see services/visualization/cutout_filters.py).
 
@@ -313,7 +312,7 @@ def render_pick_cutouts_atlas(
     # the read fails) plus a precise failure reason, and the header pixel size.
     frames: list = []
     fail_info: list = []
-    apix_header: Optional[float] = None
+    apix_header: float | None = None
     for info in pick_to_mrcs:
         if info is None:
             frames.append(None)
@@ -343,8 +342,8 @@ def render_pick_cutouts_atlas(
 
 
 def _load_subtomo_mean_frame(
-    mrcs_path: Path, visible_frames: Optional[list]
-) -> tuple[Optional[np.ndarray], Optional[str], Optional[float]]:
+    mrcs_path: Path, visible_frames: list | None
+) -> tuple[np.ndarray | None, str | None, float | None]:
     """Read one .mrcs → (mean-frame float32 array, error, apix).
 
     The mean frame (across visible frames only) is pre-normalization; `apix` is
@@ -390,7 +389,7 @@ def _load_subtomo_mean_frame(
 
 def extract_pick_subvolume(
     tomo_mrc_path: Path, x_px: int, y_px: int, z_px: int, half_box_px: int, out_path: Path
-) -> Optional[Path]:
+) -> Path | None:
     """Extract a small 3D cube around a pick from a reconstructed tomogram → MRC.
 
     Used by the gallery's "open in 3dmod" handoff: rather than the user
@@ -448,7 +447,7 @@ def extract_pick_subvolume(
     return out_path
 
 
-def render_template_thumb(template_path: Path, out_path: Path, *, tile_px: int = 192) -> Optional[Path]:
+def render_template_thumb(template_path: Path, out_path: Path, *, tile_px: int = 192) -> Path | None:
     """Render a central X/Y slice of the template volume as a single thumbnail PNG.
 
     The template lives in its own intensity regime — `relion_tomo_subtomo`'s

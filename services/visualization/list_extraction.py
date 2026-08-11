@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Optional, Tuple
 
 import pandas as pd
 import starfile
@@ -35,7 +34,7 @@ import starfile
 CENTERED_COLS = ["rlnCenteredCoordinateXAngst", "rlnCenteredCoordinateYAngst", "rlnCenteredCoordinateZAngst"]
 
 
-def _parse_optimisation_set(opt_path: Path) -> Tuple[Path, Path]:
+def _parse_optimisation_set(opt_path: Path) -> tuple[Path, Path]:
     """(particles_star, tomograms_star) from an optimisation_set.star, resolving
     relative paths against the optset's dir. Mirrors drivers/subtomo_merge.py so
     we read the candidate optset the same way the driver does."""
@@ -102,7 +101,7 @@ def write_extracted_optset(out_run_dir: Path, tomograms_star: Path) -> Path:
     return optset
 
 
-def _find_particles_block(star_dict: dict) -> Optional[str]:
+def _find_particles_block(star_dict: dict) -> str | None:
     """Key of the block carrying per-particle rows (``rlnTomoName`` + a centered
     coord), preferring one that also has coords; never the data_optics block
     (optics groups have no ``rlnTomoName``)."""

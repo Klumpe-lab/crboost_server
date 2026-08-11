@@ -1,7 +1,7 @@
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 from nicegui import ui
 from services.models_base import JobStatus
 from services.project_state import JobType, get_project_state
@@ -63,7 +63,7 @@ def _inject_svg_color(svg: str, color: str) -> str:
     return svg
 
 
-def _resolve_array_job_dir(job_model, project_path: Optional[Path] = None) -> Optional[Path]:
+def _resolve_array_job_dir(job_model, project_path: Path | None = None) -> Path | None:
     """Resolve job directory for an array job model."""
     if not job_model:
         return None
@@ -81,7 +81,7 @@ def _resolve_array_job_dir(job_model, project_path: Optional[Path] = None) -> Op
     return None
 
 
-def _get_array_progress(job_model, project_path: Optional[Path] = None) -> Optional[Tuple[int, int, int, int]]:
+def _get_array_progress(job_model, project_path: Path | None = None) -> tuple[int, int, int, int] | None:
     """Return (n_done, n_failed, n_total, n_running) for array jobs, or None.
 
     n_done    = settled tasks (.ok + .fail)
@@ -107,15 +107,16 @@ def _get_array_progress(job_model, project_path: Optional[Path] = None) -> Optio
     if not items:
         return None
 
-    status_dir = job_dir / ".task_status"
-    n_ok = 0
-    n_fail = 0
-    if status_dir.is_dir():
-        for p in status_dir.iterdir():
-            if p.suffix == ".ok":
-                n_ok += 1
-            elif p.suffix == ".fail":
-                n_fail += 1
+    # Resolve one status PER MANIFEST ITEM rather than counting marker files: an
+    # item can carry both `.ok` and `.fail` (an orphan task from a superseded
+    # submission writing over a settled item), and counting files then reports a
+    # failure on a job that succeeded — the red badge stays lit after a good
+    # rerun. `.ok` wins, matching scan_statuses() used by the per-TS sub-rows.
+    from ui.components.task_utils import scan_statuses
+
+    statuses = scan_statuses(job_dir, items)
+    n_ok = sum(1 for s in statuses.values() if s == "ok")
+    n_fail = sum(1 for s in statuses.values() if s == "fail")
     # SLURM creates task_<idx>.out the moment a child task starts running, so the
     # count of started-but-unsettled tasks is the honest "running now" signal.
     n_started = sum(1 for _ in job_dir.glob("task_*.out"))
@@ -125,8 +126,8 @@ def _get_array_progress(job_model, project_path: Optional[Path] = None) -> Optio
 
 
 def _get_array_ts_statuses(
-    job_model, project_path: Optional[Path] = None
-) -> Optional[Tuple[List[str], Dict[str, str], Dict[str, str]]]:
+    job_model, project_path: Path | None = None
+) -> tuple[list[str], dict[str, str], dict[str, str]] | None:
     """Return (items, statuses, display_names) for per-TS sub-rows, or None."""
     from ui.components.task_utils import shorten_ts_names, scan_statuses
 
@@ -167,22 +168,22 @@ class RosterWidget(FingerprintedView):
     def __init__(self, panel: "PipelineBuilderPanel"):
         super().__init__()
         self.panel = panel
-        self._flash_phase: Optional[str] = None
+        self._flash_phase: str | None = None
         self._roster_visible: bool = True
-        self._roster_phase: Optional[str] = None
+        self._roster_phase: str | None = None
         # Which workspace view is showing (pipeline / workbench / journey).
         # Drives the nav-icon highlight; set by workspace _switch_to via
         # set_active_mode. Starts "pipeline" (the default view at load).
         self._active_mode: str = "pipeline"
-        self._refs: Dict = {}
+        self._refs: dict = {}
         # Per-instance expansion state for per-TS sub-rows, persisted across
         # roster refreshes (status_poller refreshes the roster every few seconds
         # and would otherwise collapse rows the user had opened).
-        self._expanded_instances: Dict[str, bool] = {}
+        self._expanded_instances: dict[str, bool] = {}
         # Per-tick cache of array job state. Populated by signature(), read by
         # render(). Keyed by instance_id. Avoids redundant disk reads per tick.
-        self._array_progress_cache: Dict[str, Optional[Tuple[int, int, int]]] = {}
-        self._array_ts_cache: Dict[str, Optional[Tuple[List[str], Dict[str, str], Dict[str, str]]]] = {}
+        self._array_progress_cache: dict[str, tuple[int, int, int] | None] = {}
+        self._array_ts_cache: dict[str, tuple[list[str], dict[str, str], dict[str, str]] | None] = {}
 
     def _get_container(self) -> Any:
         return self.panel.roster_panel
@@ -564,12 +565,12 @@ class RosterWidget(FingerprintedView):
     def _render_ts_sub_rows(
         self,
         instance_id: str,
-        items: List[str],
-        statuses: Dict[str, str],
-        display_names: Dict[str, str],
+        items: list[str],
+        statuses: dict[str, str],
+        display_names: dict[str, str],
         indent: int,
         expanded: bool = False,
-        job_dir: Optional[Path] = None,
+        job_dir: Path | None = None,
     ):
         """Render the collapsible per-tilt-series status list under an array job.
 
@@ -1106,8 +1107,8 @@ class RosterWidget(FingerprintedView):
         # rather than capturing the value avoids stale closures when the
         # auto-refresh fires.
         current_base = {"path": base_path}
-        history_refs: Dict = {"container": None, "visible": False, "dropdown": None, "path_input": None}
-        overview_ref: Dict = {"comp": None}
+        history_refs: dict = {"container": None, "visible": False, "dropdown": None, "path_input": None}
+        overview_ref: dict = {"comp": None}
 
         # ── switch handler ────────────────────────────────────────────────────
 
@@ -1211,7 +1212,7 @@ class RosterWidget(FingerprintedView):
                     _render_history()
         # ── selected-project preview (left pane) ─────────────────────────────
         selected_ref = {"path": current_path_str}
-        left_refs: Dict = {"container": None}
+        left_refs: dict = {"container": None}
 
         async def _load_left(path_str):
             left = left_refs.get("container")
@@ -1401,7 +1402,7 @@ class RosterWidget(FingerprintedView):
     # (_running_spinner_html); there is no server-driven advance() loop. The
     # previous 0.17 s ui.timer + ui.run_javascript broadcast lived here.
 
-    def update_status_label(self, overview: Dict):
+    def update_status_label(self, overview: dict):
         el = self._refs.get("status_label")
         if el is None:
             return
@@ -1599,7 +1600,7 @@ class RosterWidget(FingerprintedView):
             self._refs[ref_key] = container
         return container
 
-    def _info_popup_btn(self, icon_name: str, title: str, rows: list, icon_color: str = None):
+    def _info_popup_btn(self, icon_name: str, title: str, rows: list, icon_color: str | None = None):
         color = icon_color or SB_MUTE
         btn = (
             ui.button(icon=icon_name)

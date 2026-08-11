@@ -22,7 +22,6 @@ import shutil
 import sys
 import traceback
 from pathlib import Path
-from typing import Dict, List
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
@@ -54,7 +53,7 @@ DRIVER_SCRIPT = Path(__file__).resolve()
 # ----------------------------------------------------------------------
 
 
-def read_ts_frame_mapping(input_star: Path, project_root: Path) -> Dict[str, List[str]]:
+def read_ts_frame_mapping(input_star: Path, project_root: Path) -> dict[str, list[str]]:
     """
     Parse the import STAR to build a mapping: ts_name → [frame_filename, ...].
 
@@ -71,7 +70,7 @@ def read_ts_frame_mapping(input_star: Path, project_root: Path) -> Dict[str, Lis
         return {}
 
     input_star_dir = input_star.parent
-    mapping: Dict[str, List[str]] = {}
+    mapping: dict[str, list[str]] = {}
 
     for _, row in global_df.iterrows():
         ts_name = str(row["rlnTomoName"])
@@ -193,7 +192,7 @@ def detect_frame_extension(frames_dir: Path) -> str:
     return "*.eer"
 
 
-def stage_fs_environment(job_dir: Path, ts_name: str, frame_filenames: List[str], project_frames_dir: Path) -> Path:
+def stage_fs_environment(job_dir: Path, ts_name: str, frame_filenames: list[str], project_frames_dir: Path) -> Path:
     """
     Build a per-TS staging directory with only this TS's frames symlinked.
 
@@ -279,7 +278,7 @@ def main():
 
 def run_supervisor_mode():
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (_project_state, params, local_params_data, job_dir, project_path, _job_type) = get_driver_context(
             FsMotionCtfParams
         )
     except Exception as e:
@@ -398,7 +397,7 @@ def run_supervisor_mode():
 
 def run_task_mode(array_idx: int):
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (_project_state, params, local_params_data, job_dir, project_path, _job_type) = get_driver_context(
             FsMotionCtfParams
         )
     except Exception as e:

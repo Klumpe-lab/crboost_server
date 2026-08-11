@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
+from collections.abc import Sequence
 
 import pandas as pd
 import starfile
@@ -48,7 +49,7 @@ def _find_optimisation_set_in_dir(d: Path) -> Path:
     return hits[0]
 
 
-def _parse_optimisation_set(opt_path: Path) -> Tuple[Path, Path]:
+def _parse_optimisation_set(opt_path: Path) -> tuple[Path, Path]:
     """
     Parse optimisation_set.star.  Handles both:
       - RELION key-value format (data_ block with _rlnTomo... keys)
@@ -98,7 +99,7 @@ def _parse_optimisation_set(opt_path: Path) -> Tuple[Path, Path]:
     return (_resolve_path(particles, base=base), _resolve_path(tomograms, base=base))
 
 
-def _find_df_block(star_dict: Dict[str, Any], required_cols: Sequence[str]) -> pd.DataFrame:
+def _find_df_block(star_dict: dict[str, Any], required_cols: Sequence[str]) -> pd.DataFrame:
     req = set(required_cols)
     for v in star_dict.values():
         if isinstance(v, pd.DataFrame) and req.issubset(set(v.columns)):
@@ -111,7 +112,7 @@ _PARTICLES_REQUIRED_COLS = ["rlnTomoName", "rlnImageName", "rlnOpticsGroup"]
 
 def _read_particles_star(
     particles_star: Path, *, allow_empty_particles: bool = False
-) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any]]:
     """Returns (optics_df, particles_df, general_kv).
 
     When `allow_empty_particles=True` and the file has no `data_particles`
@@ -123,13 +124,13 @@ def _read_particles_star(
 
     try:
         optics_df = _find_df_block(d, required_cols=["rlnVoltage", "rlnSphericalAberration", "rlnAmplitudeContrast"])
-    except KeyError:
+    except KeyError as e:
         block_summary = {k: list(v.columns) if isinstance(v, pd.DataFrame) else type(v).__name__ for k, v in d.items()}
         raise KeyError(
             f"No optics block found in {particles_star}\n"
             f"Blocks present: {block_summary}\n"
             f"This usually means the source path points at a non-extraction particles file (e.g. TM candidates)."
-        )
+        ) from e
 
     try:
         particles_df = _find_df_block(d, required_cols=_PARTICLES_REQUIRED_COLS)
@@ -138,7 +139,7 @@ def _read_particles_star(
             raise
         particles_df = pd.DataFrame(columns=_PARTICLES_REQUIRED_COLS)
 
-    general_kv: Dict[str, Any] = {}
+    general_kv: dict[str, Any] = {}
     for v in d.values():
         if isinstance(v, dict) and "rlnTomoSubTomosAre2DStacks" in v:
             general_kv["rlnTomoSubTomosAre2DStacks"] = v["rlnTomoSubTomosAre2DStacks"]
@@ -148,7 +149,7 @@ def _read_particles_star(
 
 def _read_input_particles_lenient(
     particles_star: Path,
-) -> Tuple[pd.DataFrame, Optional[pd.DataFrame], Dict[str, Any]]:
+) -> tuple[pd.DataFrame, pd.DataFrame | None, dict[str, Any]]:
     """Read an upstream particles file used as input to subtomo extraction.
 
     Accepts both TM-style candidate stars (single `data_particles` block,
@@ -166,7 +167,7 @@ def _read_input_particles_lenient(
     except KeyError:
         optics_df = None
 
-    general_kv: Dict[str, Any] = {}
+    general_kv: dict[str, Any] = {}
     for v in d.values():
         if isinstance(v, dict) and "rlnTomoSubTomosAre2DStacks" in v:
             general_kv["rlnTomoSubTomosAre2DStacks"] = v["rlnTomoSubTomosAre2DStacks"]
@@ -193,8 +194,8 @@ def write_optimisation_set(path: Path, *, particles_star: Path, tomograms_star: 
             "",
             "data_",
             "",
-            f"_rlnTomoParticlesFile            {str(particles_star.resolve())}",
-            f"_rlnTomoTomogramsFile            {str(tomograms_star.resolve())}",
+            f"_rlnTomoParticlesFile            {particles_star.resolve()!s}",
+            f"_rlnTomoTomogramsFile            {tomograms_star.resolve()!s}",
             "",
         ]
     )
@@ -222,9 +223,9 @@ def _write_loop_block(f, block_name: str, df: pd.DataFrame) -> None:
 def _write_particles_star(
     out_path: Path,
     *,
-    optics_df: Optional[pd.DataFrame],
+    optics_df: pd.DataFrame | None,
     particles_df: pd.DataFrame,
-    general_kv: Optional[Dict[str, Any]] = None,
+    general_kv: dict[str, Any] | None = None,
 ) -> None:
     # `optics_df=None` (or empty) is valid: TM-candidate-style inputs have
     # no optics block and relion_tomo_subtomo sources optics from
@@ -281,10 +282,10 @@ class SourceResolved:
     particles_star: Path
     tomograms_star: Path
     n_particles: int
-    tomo_names: List[str]
-    box_size: Optional[int] = None
-    pixel_size: Optional[float] = None
-    binning: Optional[float] = None
+    tomo_names: list[str]
+    box_size: int | None = None
+    pixel_size: float | None = None
+    binning: float | None = None
 
 
 def _optics_scalar(optics_df: pd.DataFrame, col: str):
@@ -311,9 +312,9 @@ def _resolve_source_to_optset(source: str) -> Path:
 @dataclass
 class _NormSource:
     path: str  # curated optimisation_set (filtered-if-exists), or a directory
-    tomos: Optional[List[str]] = None  # included rlnTomoName values; None = all
-    original_path: Optional[str] = None  # original optimisation_set, for overrides
-    original_tomos: Optional[List[str]] = None  # tomos to take from the original
+    tomos: list[str] | None = None  # included rlnTomoName values; None = all
+    original_path: str | None = None  # original optimisation_set, for overrides
+    original_tomos: list[str] | None = None  # tomos to take from the original
 
 
 def _normalize_source(source) -> _NormSource:
@@ -346,8 +347,8 @@ def _normalize_source(source) -> _NormSource:
 
 
 def merge_optimisation_sets_into_jobdir(
-    *, job_dir: Path, additional_sources: List[str], strict: bool = True, allow_no_primary: bool = False
-) -> Dict[str, Any]:
+    *, job_dir: Path, additional_sources: list[str], strict: bool = True, allow_no_primary: bool = False
+) -> dict[str, Any]:
     """
     Merges the primary job_dir's optimisation_set.star with additional sources.
 
@@ -397,18 +398,18 @@ def merge_optimisation_sets_into_jobdir(
                 print(f"[MERGE] Backed up {name} -> {backup.name}")
 
     # ---- Collect all sources (primary + additional) ----
-    all_sources: List[Tuple[Path, _NormSource]] = []
+    all_sources: list[tuple[Path, _NormSource]] = []
     if has_primary:
         all_sources.append((primary_optset.resolve(), _NormSource(path=str(primary_optset))))
     for s in additional_sources:
         ns = _normalize_source(s)
         all_sources.append((_resolve_source_to_optset(ns.path), ns))
 
-    resolved_sources: List[SourceResolved] = []
-    all_optics: List[pd.DataFrame] = []
-    all_particles: List[pd.DataFrame] = []
-    all_tomograms: List[pd.DataFrame] = []
-    primary_general_kv: Dict[str, Any] = {}
+    resolved_sources: list[SourceResolved] = []
+    all_optics: list[pd.DataFrame] = []
+    all_particles: list[pd.DataFrame] = []
+    all_tomograms: list[pd.DataFrame] = []
+    primary_general_kv: dict[str, Any] = {}
 
     for opt, ns in all_sources:
         p_star, t_star = _parse_optimisation_set(opt)
@@ -578,7 +579,8 @@ def merge_optimisation_sets_into_jobdir(
     }
     out_summary.write_text(json.dumps(summary, indent=2))
     print(
-        f"[MERGE] Done. {len(particles_merged)} particles, {len(tomos_merged)} tomograms from {len(resolved_sources)} sources."
+        f"[MERGE] Done. {len(particles_merged)} particles, {len(tomos_merged)} tomograms "
+        f"from {len(resolved_sources)} sources."
     )
 
     return summary

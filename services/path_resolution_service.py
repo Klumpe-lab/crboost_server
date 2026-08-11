@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
+from collections.abc import Sequence
 
 from services.io_slots import InputSlot, OutputSlot, JobFileType, ResolvedInput, ResolvedOutput, ResolvedManifest
 
-from services.job_models import TemplateMatchPytomParams
 from services.models_base import JobType, JobStatus
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ class OutputCandidate:
     execution_status: JobStatus
     relion_job_number: int  # 0 if unknown
 
-    species_id: Optional[str] = None  # propagated from producing job model
+    species_id: str | None = None  # propagated from producing job model
 
     # OutputSlot.prefer_if_exists — carried through so the scorer can tier-boost
     # opt-in artifacts (e.g. user-curated filtered files) over same-producer
@@ -39,7 +39,7 @@ class OutputCandidate:
     # Friendly label for synthetic (non-job) producers — e.g. "Merged sources —
     # <name>". When set, the UI dropdown shows this verbatim instead of the
     # derived "instance_path (jobtype)" form. None for ordinary job producers.
-    label: Optional[str] = None
+    label: str | None = None
 
     @property
     def source_key(self) -> str:
@@ -67,9 +67,9 @@ class InputSlotValidation:
 
     slot_key: str
     is_valid: bool
-    source_key: Optional[str]
-    resolved_path: Optional[str]
-    error_message: Optional[str] = None
+    source_key: str | None
+    resolved_path: str | None
+    error_message: str | None = None
     file_exists: bool = False
     is_user_override: bool = False
     awaiting_upstream: bool = False
@@ -86,10 +86,10 @@ class PathResolutionService:
     and species-aware scoring.
     """
 
-    def __init__(self, state: "ProjectState", active_instance_ids: Optional[set] = None):
+    def __init__(self, state: ProjectState, active_instance_ids: set | None = None):
         self.state = state
         self._active_instance_ids = active_instance_ids
-        self._output_index: Optional[Dict[JobFileType, List[OutputCandidate]]] = None
+        self._output_index: dict[JobFileType, list[OutputCandidate]] | None = None
 
     # -------------------------------------------------------------------------
     # Public API
@@ -98,11 +98,11 @@ class PathResolutionService:
     def resolve_all_paths(
         self,
         job_type: JobType,
-        job_model: "AbstractJobParams",
+        job_model: AbstractJobParams,
         job_dir: Path,
-        instance_id: Optional[str] = None,
+        instance_id: str | None = None,
         return_manifest: bool = False,
-    ) -> Dict[str, Any] | Tuple[Dict[str, Any], ResolvedManifest]:
+    ) -> dict[str, Any] | tuple[dict[str, Any], ResolvedManifest]:
         """
         Resolve inputs + outputs using schemas and return a dict compatible with job_model.paths.
         Respects source_overrides from job_model and species-aware scoring.
@@ -119,17 +119,17 @@ class PathResolutionService:
             return paths, manifest
         return paths
 
-    def resolve_outputs(self, job_type: JobType, job_dir: Path) -> List[ResolvedOutput]:
+    def resolve_outputs(self, job_type: JobType, job_dir: Path) -> list[ResolvedOutput]:
         schema = self._get_output_schema(job_type)
-        resolved: List[ResolvedOutput] = []
+        resolved: list[ResolvedOutput] = []
         for slot in schema:
             resolved_path = str((job_dir / slot.path_template).resolve())
             resolved.append(ResolvedOutput(output_key=slot.key, produces=slot.produces, path=resolved_path))
         return resolved
 
     def resolve_inputs(
-        self, job_type: JobType, job_model: "AbstractJobParams", consumer_instance_id: Optional[str] = None
-    ) -> List[ResolvedInput]:
+        self, job_type: JobType, job_model: AbstractJobParams, consumer_instance_id: str | None = None
+    ) -> list[ResolvedInput]:
         """
         Resolve inputs for target job. Checks source_overrides first, then falls
         back to species-aware automatic selection.
@@ -142,8 +142,8 @@ class PathResolutionService:
         overrides = getattr(job_model, "source_overrides", {}) or {}
         consumer_species_id = getattr(job_model, "species_id", None)
 
-        resolved_inputs: List[ResolvedInput] = []
-        missing_required: List[str] = []
+        resolved_inputs: list[ResolvedInput] = []
+        missing_required: list[str] = []
 
         for slot in input_schema:
             chosen = None
@@ -209,7 +209,7 @@ class PathResolutionService:
 
         return resolved_inputs
 
-    def resolve_edges(self, instance_ids: Optional[Sequence[str]] = None) -> List[Tuple[str, str]]:
+    def resolve_edges(self, instance_ids: Sequence[str] | None = None) -> list[tuple[str, str]]:
         """
         Derive the producer->consumer dependency edges of the pipeline DAG.
 
@@ -235,7 +235,7 @@ class PathResolutionService:
         """
         consumers = list(instance_ids) if instance_ids is not None else list(self.state.jobs.keys())
         index = self._build_output_index()
-        edges: List[Tuple[str, str]] = []
+        edges: list[tuple[str, str]] = []
         seen: set = set()
 
         for consumer_id in consumers:
@@ -285,9 +285,9 @@ class PathResolutionService:
         self,
         job_type: JobType,
         slot_key: str,
-        consumer_species_id: Optional[str] = None,
-        consumer_instance_id: Optional[str] = None,
-    ) -> List[OutputCandidate]:
+        consumer_species_id: str | None = None,
+        consumer_instance_id: str | None = None,
+    ) -> list[OutputCandidate]:
         """
         Get all valid candidates for a specific input slot, sorted with
         species-matched candidates first. Unmatched candidates are included
@@ -307,7 +307,7 @@ class PathResolutionService:
         if consumer_instance_id is not None:
             candidates = [c for c in candidates if c.producer_instance_id != consumer_instance_id]
 
-        def sort_key(c: OutputCandidate) -> Tuple[int, int, int, str]:
+        def sort_key(c: OutputCandidate) -> tuple[int, int, int, str]:
             # Lower value = sorted earlier
             species_rank = 0 if (consumer_species_id and c.species_id == consumer_species_id) else 1
             status_order = {
@@ -328,8 +328,8 @@ class PathResolutionService:
         # with identical labels ("Subtomo Extraction #2 (job017)" twice). Keep one
         # row per source_key, preferring the `prefer_if_exists` (curated) sibling
         # so it matches what _resolve_override / the auto-scorer actually pick.
-        deduped: List[OutputCandidate] = []
-        pos_by_key: Dict[str, int] = {}
+        deduped: list[OutputCandidate] = []
+        pos_by_key: dict[str, int] = {}
         for c in ordered:
             key = c.source_key
             if key not in pos_by_key:
@@ -339,21 +339,21 @@ class PathResolutionService:
                 deduped[pos_by_key[key]] = c
         return deduped
 
-    def get_input_schema_for_job(self, job_type: JobType) -> List[InputSlot]:
+    def get_input_schema_for_job(self, job_type: JobType) -> list[InputSlot]:
         """Expose input schema for UI rendering."""
         return self._get_input_schema(job_type)
 
-    def get_output_schema_for_job(self, job_type: JobType) -> List[OutputSlot]:
+    def get_output_schema_for_job(self, job_type: JobType) -> list[OutputSlot]:
         """Expose output schema for UI rendering."""
         return self._get_output_schema(job_type)
 
     def validate_input_slot(
         self,
         job_type: JobType,
-        job_model: "AbstractJobParams",
+        job_model: AbstractJobParams,
         slot_key: str,
         check_filesystem: bool = True,
-        consumer_instance_id: Optional[str] = None,
+        consumer_instance_id: str | None = None,
     ) -> InputSlotValidation:
         """
         Validate a single input slot's current configuration.
@@ -456,8 +456,8 @@ class PathResolutionService:
         )
 
     def validate_all_inputs(
-        self, job_type: JobType, job_model: "AbstractJobParams", check_filesystem: bool = True
-    ) -> List[InputSlotValidation]:
+        self, job_type: JobType, job_model: AbstractJobParams, check_filesystem: bool = True
+    ) -> list[InputSlotValidation]:
         """Validate all input slots for a job."""
         input_schema = self._get_input_schema(job_type)
         return [self.validate_input_slot(job_type, job_model, slot.key, check_filesystem) for slot in input_schema]
@@ -467,8 +467,8 @@ class PathResolutionService:
     # -------------------------------------------------------------------------
 
     def _resolve_override(
-        self, slot: InputSlot, override_key: str, index: Dict[JobFileType, List[OutputCandidate]]
-    ) -> Optional[OutputCandidate]:
+        self, slot: InputSlot, override_key: str, index: dict[JobFileType, list[OutputCandidate]]
+    ) -> OutputCandidate | None:
         """
         Resolve a user override to a candidate.
 
@@ -502,12 +502,12 @@ class PathResolutionService:
     # Indexing producers
     # -------------------------------------------------------------------------
 
-    def _build_output_index(self) -> Dict[JobFileType, List[OutputCandidate]]:
+    def _build_output_index(self) -> dict[JobFileType, list[OutputCandidate]]:
         if self._output_index is not None:
             return self._output_index
 
         project_root = self._project_root()
-        index: Dict[JobFileType, List[OutputCandidate]] = {t: [] for t in JobFileType}
+        index: dict[JobFileType, list[OutputCandidate]] = {t: [] for t in JobFileType}
 
         for instance_id, producer_model in self.state.jobs.items():
             producer_job_type = producer_model.job_type
@@ -577,7 +577,7 @@ class PathResolutionService:
         return index
 
     def _add_merged_sources_candidates(
-        self, index: Dict[JobFileType, List[OutputCandidate]], project_root: Path
+        self, index: dict[JobFileType, list[OutputCandidate]], project_root: Path
     ) -> None:
         # The merged optimisation_set.star is a project-level resource produced by
         # the aggregation merge card, not a pipeline job. Surface the ACTIVE merge's
@@ -610,7 +610,7 @@ class PathResolutionService:
         )
 
     def _add_imported_tomograms_candidates(
-        self, index: Dict[JobFileType, List[OutputCandidate]], project_root: Path
+        self, index: dict[JobFileType, list[OutputCandidate]], project_root: Path
     ) -> None:
         # Imported tomograms (PARTICLES-header utility) are a project-level artifact,
         # not a pipeline job. Surface the committed tomograms.star as a synthetic
@@ -641,7 +641,7 @@ class PathResolutionService:
             )
         )
 
-    def _get_instance_path(self, instance_id: str, job_model: "AbstractJobParams") -> str:
+    def _get_instance_path(self, instance_id: str, job_model: AbstractJobParams) -> str:
         relion_job_name = getattr(job_model, "relion_job_name", None)
         if relion_job_name:
             return relion_job_name.rstrip("/")
@@ -659,10 +659,10 @@ class PathResolutionService:
         self,
         instance_id: str,
         producer_job_type: JobType,
-        producer_model: "AbstractJobParams",
+        producer_model: AbstractJobParams,
         slot: OutputSlot,
         project_root: Path,
-    ) -> Optional[str]:
+    ) -> str | None:
         # Prefer relion_job_name + path_template over the cached producer paths dict.
         # The cached dict is a schedule-time snapshot which drifts when the relion
         # schemer allocates a different job number than the orchestrator predicted;
@@ -706,10 +706,10 @@ class PathResolutionService:
     def _choose_candidate_for_slot(
         self,
         slot: InputSlot,
-        index: Dict[JobFileType, List[OutputCandidate]],
-        consumer_species_id: Optional[str] = None,
-        consumer_instance_id: Optional[str] = None,
-    ) -> Optional[OutputCandidate]:
+        index: dict[JobFileType, list[OutputCandidate]],
+        consumer_species_id: str | None = None,
+        consumer_instance_id: str | None = None,
+    ) -> OutputCandidate | None:
         """
         Find best candidate among accepted types using deterministic scoring.
 
@@ -725,7 +725,7 @@ class PathResolutionService:
         in-flight output once sync_all_jobs has set its relion_job_name, because
         the scoring prefers higher job numbers before SUCCEEDED status.
         """
-        candidates: List[OutputCandidate] = []
+        candidates: list[OutputCandidate] = []
         for t in slot.accepts:
             candidates.extend(index.get(t, []))
 
@@ -737,7 +737,7 @@ class PathResolutionService:
 
         preferred_job_type = self._parse_preferred_source(slot.preferred_source)
 
-        def score(c: OutputCandidate) -> Tuple[int, int, int, int, int]:
+        def score(c: OutputCandidate) -> tuple[int, int, int, int, int]:
             succeeded = 1 if c.execution_status == JobStatus.SUCCEEDED else 0
             # Species match only counts if the candidate has actually run.
             # This prevents a job's own pending output from circularly winning
@@ -755,7 +755,7 @@ class PathResolutionService:
 
         return max(candidates, key=lambda c: (score(c), c.producer_job_type.value, c.producer_output_key, c.path))
 
-    def _parse_preferred_source(self, preferred: Optional[str]) -> Optional[JobType]:
+    def _parse_preferred_source(self, preferred: str | None) -> JobType | None:
         if not preferred:
             return None
         try:
@@ -767,14 +767,14 @@ class PathResolutionService:
     # Schema access
     # -------------------------------------------------------------------------
 
-    def _get_input_schema(self, job_type: JobType) -> List[InputSlot]:
+    def _get_input_schema(self, job_type: JobType) -> list[InputSlot]:
         from services.job_models import jobtype_paramclass
 
         cls = jobtype_paramclass().get(job_type)
         schema = getattr(cls, "INPUT_SCHEMA", None) if cls else None
         return list(schema) if schema else []
 
-    def _get_output_schema(self, job_type: JobType) -> List[OutputSlot]:
+    def _get_output_schema(self, job_type: JobType) -> list[OutputSlot]:
         from services.job_models import jobtype_paramclass
 
         cls = jobtype_paramclass().get(job_type)
@@ -792,9 +792,9 @@ class PathResolutionService:
 # -----------------------------------------------------------------------------
 
 
-def get_context_paths(job_type: JobType, job_model: "AbstractJobParams", job_dir: Path) -> Dict[str, str]:
+def get_context_paths(job_type: JobType, job_model: AbstractJobParams, job_dir: Path) -> dict[str, str]:
     project_root = job_model.project_root
-    paths: Dict[str, str] = {"job_dir": str(job_dir), "project_root": str(project_root)}
+    paths: dict[str, str] = {"job_dir": str(job_dir), "project_root": str(project_root)}
 
     if job_type in [JobType.IMPORT_MOVIES, JobType.FS_MOTION_CTF, JobType.TS_IMPORT]:
         paths["mdoc_dir"] = str(project_root / "mdoc")

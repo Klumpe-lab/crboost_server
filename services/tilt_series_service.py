@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -18,7 +17,7 @@ from services.configs.starfile_service import StarfileService
 
 logger = logging.getLogger(__name__)
 
-_starfile_svc: Optional[StarfileService] = None
+_starfile_svc: StarfileService | None = None
 
 
 def _get_starfile_service() -> StarfileService:
@@ -50,7 +49,7 @@ class TiltSeriesData:
         return len(self.all_tilts_df)
 
     @property
-    def tilt_series_names(self) -> List[str]:
+    def tilt_series_names(self) -> list[str]:
         return sorted(self.all_tilts_df["rlnTomoName"].unique().tolist())
 
 
@@ -130,7 +129,7 @@ def load_tilt_series(star_path: str | Path, project_root: str | Path) -> TiltSer
     return TiltSeriesData(all_tilts_df, tilt_series_df, num_ts_cols)
 
 
-def get_tilt_image_paths(ts_data: TiltSeriesData, project_root: str | Path) -> List[str]:
+def get_tilt_image_paths(ts_data: TiltSeriesData, project_root: str | Path) -> list[str]:
     """Return absolute paths to all tilt MRC images."""
     project_root = str(project_root).rstrip("/") + "/"
     col = "rlnMicrographName" if "rlnMicrographName" in ts_data.all_tilts_df.columns else "rlnMicrographMovieName"
@@ -143,7 +142,7 @@ def get_tilt_image_paths(ts_data: TiltSeriesData, project_root: str | Path) -> L
     return paths
 
 
-def apply_labels(ts_data: TiltSeriesData, labels: Dict[str, str]) -> TiltSeriesData:
+def apply_labels(ts_data: TiltSeriesData, labels: dict[str, str]) -> TiltSeriesData:
     """
     Apply good/bad labels to tilts. Labels dict is keyed by cryoBoostKey.
 
@@ -250,7 +249,7 @@ def drop_tilts_from_tomostar(src_dir: str | Path, out_dir: str | Path, bad_movie
         lines = raw.splitlines()
 
         col_names: list[str] = []
-        data_start: Optional[int] = None
+        data_start: int | None = None
         for i, line in enumerate(lines):
             s = line.strip()
             if s.startswith("_"):
@@ -296,7 +295,7 @@ def drop_tilts_from_tomostar(src_dir: str | Path, out_dir: str | Path, bad_movie
     return total_kept, total_dropped
 
 
-def get_label_summary(ts_data: TiltSeriesData) -> Dict[str, int]:
+def get_label_summary(ts_data: TiltSeriesData) -> dict[str, int]:
     """Return counts of good/bad/unlabeled tilts."""
     df = ts_data.all_tilts_df
     total = len(df)

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from collections.abc import Callable
 
 from services.models_base import JobType
 
@@ -40,14 +40,14 @@ class ExtraTab:
 @dataclass
 class JobPlugin:
     # (job_type, job_model, is_frozen, save_handler, *, ui_mgr, backend) -> None
-    render_params: Optional[Callable] = None
-    extra_tabs: List[ExtraTab] = field(default_factory=list)
+    render_params: Callable | None = None
+    extra_tabs: list[ExtraTab] = field(default_factory=list)
     # Full-panel renderer replaces the entire tab chrome.
     # Signature: (job_type, instance_id, job_model, backend, ui_mgr, save_handler) -> None
-    render_full_panel: Optional[Callable] = None
+    render_full_panel: Callable | None = None
 
 
-_REGISTRY: Dict[JobType, JobPlugin] = {}
+_REGISTRY: dict[JobType, JobPlugin] = {}
 
 
 def _ensure(job_type: JobType) -> JobPlugin:
@@ -87,17 +87,17 @@ def register_full_panel_renderer(job_type: JobType):
     return decorator
 
 
-def get_full_panel_renderer(job_type: JobType) -> Optional[Callable]:
+def get_full_panel_renderer(job_type: JobType) -> Callable | None:
     plugin = _REGISTRY.get(job_type)
     return plugin.render_full_panel if plugin else None
 
 
-def get_params_renderer(job_type: JobType) -> Optional[Callable]:
+def get_params_renderer(job_type: JobType) -> Callable | None:
     plugin = _REGISTRY.get(job_type)
     return plugin.render_params if plugin else None
 
 
-def get_extra_tabs(job_type: JobType) -> List[ExtraTab]:
+def get_extra_tabs(job_type: JobType) -> list[ExtraTab]:
     plugin = _REGISTRY.get(job_type)
     return plugin.extra_tabs if plugin else []
 

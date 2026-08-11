@@ -1,10 +1,9 @@
-from typing import Dict, List, Set
 from services.project_state import JobType
 
 PHASE_PREPROCESSING = "preprocessing"
 PHASE_PARTICLES = "particles"
 
-PHASE_JOBS: Dict[str, List[JobType]] = {
+PHASE_JOBS: dict[str, list[JobType]] = {
     PHASE_PREPROCESSING: [
         JobType.IMPORT_MOVIES,
         JobType.FS_MOTION_CTF,
@@ -25,21 +24,21 @@ PHASE_JOBS: Dict[str, List[JobType]] = {
     ],
 }
 
-PHASE_META: Dict[str, tuple] = {
+PHASE_META: dict[str, tuple] = {
     PHASE_PREPROCESSING: ("layers.svg", "Preprocessing", "Import → Denoise"),
     PHASE_PARTICLES: (
-        '<svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.49991 0.877075C3.84222 0.877075 0.877075 3.84222 0.877075 7.49991C0.877075 11.1576 3.84222 14.1227 7.49991 14.1227C11.1576 14.1227 14.1227 11.1576 14.1227 7.49991C14.1227 3.84222 11.1576 0.877075 7.49991 0.877075ZM1.82708 7.49991C1.82708 4.36689 4.36689 1.82707 7.49991 1.82707C10.6329 1.82707 13.1727 4.36689 13.1727 7.49991C13.1727 10.6329 10.6329 13.1727 7.49991 13.1727C4.36689 13.1727 1.82708 10.6329 1.82708 7.49991ZM8.37287 7.50006C8.37287 7.98196 7.98221 8.37263 7.5003 8.37263C7.01839 8.37263 6.62773 7.98196 6.62773 7.50006C6.62773 7.01815 7.01839 6.62748 7.5003 6.62748C7.98221 6.62748 8.37287 7.01815 8.37287 7.50006ZM9.32287 7.50006C9.32287 8.50664 8.50688 9.32263 7.5003 9.32263C6.49372 9.32263 5.67773 8.50664 5.67773 7.50006C5.67773 6.49348 6.49372 5.67748 7.5003 5.67748C8.50688 5.67748 9.32287 6.49348 9.32287 7.50006Z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"></path></svg>',
+        '<svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M7.49991 0.877075C3.84222 0.877075 0.877075 3.84222 0.877075 7.49991C0.877075 11.1576 3.84222 14.1227 7.49991 14.1227C11.1576 14.1227 14.1227 11.1576 14.1227 7.49991C14.1227 3.84222 11.1576 0.877075 7.49991 0.877075ZM1.82708 7.49991C1.82708 4.36689 4.36689 1.82707 7.49991 1.82707C10.6329 1.82707 13.1727 4.36689 13.1727 7.49991C13.1727 10.6329 10.6329 13.1727 7.49991 13.1727C4.36689 13.1727 1.82708 10.6329 1.82708 7.49991ZM8.37287 7.50006C8.37287 7.98196 7.98221 8.37263 7.5003 8.37263C7.01839 8.37263 6.62773 7.98196 6.62773 7.50006C6.62773 7.01815 7.01839 6.62748 7.5003 6.62748C7.98221 6.62748 8.37287 7.01815 8.37287 7.50006ZM9.32287 7.50006C9.32287 8.50664 8.50688 9.32263 7.5003 9.32263C6.49372 9.32263 5.67773 8.50664 5.67773 7.50006C5.67773 6.49348 6.49372 5.67748 7.5003 5.67748C8.50688 5.67748 9.32287 6.49348 9.32287 7.50006Z" fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"></path></svg>',  # noqa: E501 -- inline icon path data
         "Particles",
         "Template Match → Class3D",
     ),
 }
 
-ROSTER_ANCHOR: Dict[str, str] = {
+ROSTER_ANCHOR: dict[str, str] = {
     PHASE_PREPROCESSING: "roster-anchor-preprocessing",
     PHASE_PARTICLES: "roster-anchor-particles",
 }
 
-JOB_DEPENDENCIES: Dict[JobType, List[JobType]] = {
+JOB_DEPENDENCIES: dict[JobType, list[JobType]] = {
     JobType.IMPORT_MOVIES: [],
     JobType.FS_MOTION_CTF: [JobType.IMPORT_MOVIES],
     JobType.TS_ALIGNMENT: [JobType.FS_MOTION_CTF],
@@ -68,7 +67,7 @@ SB_ACT = "#475569"
 SB_ABG = "#f1f5f9"
 
 
-def missing_deps(job_type: JobType, selected_instance_ids: Set[str]) -> List[JobType]:
+def missing_deps(job_type: JobType, selected_instance_ids: set[str]) -> list[JobType]:
     def type_present(jt: JobType) -> bool:
         prefix = jt.value
         return any(s == prefix or s.startswith(prefix + "__") for s in selected_instance_ids)
@@ -81,7 +80,7 @@ def missing_deps(job_type: JobType, selected_instance_ids: Set[str]) -> List[Job
     return [d for d in JOB_DEPENDENCIES.get(job_type, []) if not type_present(d)]
 
 
-def next_instance_id(job_type: JobType, existing_ui_ids: List[str], state_keys: List[str]) -> str:
+def next_instance_id(job_type: JobType, existing_ui_ids: list[str], state_keys: list[str]) -> str:
     taken = set(existing_ui_ids) | set(state_keys)
     base = job_type.value
     if base not in taken:

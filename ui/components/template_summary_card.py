@@ -12,7 +12,7 @@ mask via `species.get_selected_template()` / `species.get_selected_mask()`.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -33,7 +33,7 @@ _VALUE_DIM_CLASS = "text-xs text-gray-400 italic"
 def render_template_summary_card(
     species,
     *,
-    on_edit: Optional[Callable[[], None]] = None,
+    on_edit: Callable[[], None] | None = None,
     compact: bool = False,
 ) -> None:
     """Render a compact read-only metadata card for one species.

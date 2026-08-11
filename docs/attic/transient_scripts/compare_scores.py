@@ -84,8 +84,8 @@ if __name__ == "__main__":
     # project_name = "fsmotion_2x2_1_cusesum"
     project_name = "all_together"
 
-    a_scores = "/users/artem.kushner/dev/crboost_server/projects/{}/External/job009/tmResults/{}_Position_1_scores.mrc".format(project_name,project_name)
-    a_job    = "/users/artem.kushner/dev/crboost_server/projects/{}/External/job009/tmResults/{}_Position_1_job.json".format(project_name, project_name)
+    a_scores = f"/users/artem.kushner/dev/crboost_server/projects/{project_name}/External/job009/tmResults/{project_name}_Position_1_scores.mrc"
+    a_job    = f"/users/artem.kushner/dev/crboost_server/projects/{project_name}/External/job009/tmResults/{project_name}_Position_1_job.json"
 
     b_scores = "/groups/klumpe/software/Setup/Testing/test1/run12/External/job006/tmResults/Position_1_11.80Apx_scores.mrc"
     b_job    = "/groups/klumpe/software/Setup/Testing/test1/run12/External/job006/tmResults/Position_1_11.80Apx_job.json"

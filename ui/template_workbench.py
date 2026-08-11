@@ -36,7 +36,6 @@ import os
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import mrcfile
 from fastapi.responses import FileResponse, HTMLResponse
@@ -158,8 +157,8 @@ class TemplateWorkbench:
         self._iframe_id = f"molstar-frame-{species_id}"
         self._molstar_event_name = f"molstar_event_{species_id}"
 
-        self.project_raw_apix: Optional[float] = None
-        self.project_tomo_apix: Optional[float] = None
+        self.project_raw_apix: float | None = None
+        self.project_tomo_apix: float | None = None
 
         # Persisted on species.workbench_ui
         self.auto_box: bool = True
@@ -168,22 +167,22 @@ class TemplateWorkbench:
         # Per-flow generation form state (not persisted)
         self.shape_pixel_size: float = 10.0
         self.shape_box_size: int = 96
-        self.shape_lowpass: Optional[float] = None
+        self.shape_lowpass: float | None = None
 
         self.pdb_pixel_size: float = 10.0
         self.pdb_box_size: int = 96
-        self.pdb_lowpass: Optional[float] = None
+        self.pdb_lowpass: float | None = None
         self.pdb_input_val: str = ""
 
         self.emdb_pixel_size: float = 10.0
         self.emdb_box_size: int = 96
-        self.emdb_lowpass: Optional[float] = None
+        self.emdb_lowpass: float | None = None
         self.emdb_input_val: str = ""
 
         # Edit-current action forms
         self.resample_target_apix: float = 10.0
         self.resample_target_box: int = 96
-        self.resample_lowpass: Optional[float] = None
+        self.resample_lowpass: float | None = None
         self.lowpass_target: float = 30.0
 
         # Mask form
@@ -196,7 +195,7 @@ class TemplateWorkbench:
 
         # Spherical-mask form. Diameter defaulted from species.diameter_ang
         # at render time (UI can still override). Soft edge in pixels.
-        self.sphere_diameter_ang: Optional[float] = None
+        self.sphere_diameter_ang: float | None = None
         self.sphere_soft_edge: float = 5.0
 
         # Viewer state
@@ -226,18 +225,18 @@ class TemplateWorkbench:
         #     reconcile.
         self._pending_loads: list[dict] = []
         self._pending_load_seq: int = 0
-        self._pending_loads_container: Optional[ui.element] = None
+        self._pending_loads_container: ui.element | None = None
 
         # UI refs
-        self._templates_card_container: Optional[ui.element] = None
-        self._masks_card_container: Optional[ui.element] = None
-        self._edit_container: Optional[ui.element] = None
+        self._templates_card_container: ui.element | None = None
+        self._masks_card_container: ui.element | None = None
+        self._edit_container: ui.element | None = None
         self._mask_source_label = None
-        self._molstar_panel: Optional[ui.element] = None
-        self._slice_panel: Optional[ui.element] = None
-        self._slice_controller: Optional[TemplateViewerController] = None
-        self._session_list_container: Optional[ui.element] = None
-        self._log_container: Optional[ui.element] = None
+        self._molstar_panel: ui.element | None = None
+        self._slice_panel: ui.element | None = None
+        self._slice_controller: TemplateViewerController | None = None
+        self._session_list_container: ui.element | None = None
+        self._log_container: ui.element | None = None
         self.client = None
 
         self._load_project_parameters()
@@ -251,7 +250,7 @@ class TemplateWorkbench:
     # SPECIES / STATE ACCESS
     # ==================================================================
 
-    def _get_species(self) -> Optional[ParticleSpecies]:
+    def _get_species(self) -> ParticleSpecies | None:
         state = get_project_state_for(Path(self.project_path))
         return state.get_species(self.species_id)
 
@@ -329,8 +328,8 @@ class TemplateWorkbench:
         polarity: str,
         source: str,
         *,
-        lowpass: Optional[float] = None,
-        imported_from: Optional[str] = None,
+        lowpass: float | None = None,
+        imported_from: str | None = None,
         notes: str = "",
     ) -> str:
         """Append a ParticleTemplate (or replace in-place if a registered
@@ -761,7 +760,7 @@ class TemplateWorkbench:
         self._log("Viewer reset")
 
     def _load_to_viewer(
-        self, file_path: str, *, polarity: Optional[str] = None, kind: str = "template"
+        self, file_path: str, *, polarity: str | None = None, kind: str = "template"
     ) -> None:
         """Explicit user-requested load. Triggered by the eye icon on
         template / mask cards.
@@ -1171,7 +1170,7 @@ class TemplateWorkbench:
         ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(value)})")
         ui.notify("Path copied", type="info", position="bottom", timeout=1200)
 
-    def _format_stats_line(self, h) -> Optional[tuple[str, str]]:
+    def _format_stats_line(self, h) -> tuple[str, str] | None:
         """Return (label, color) for a min/max/σ chip line. None if the
         header doesn't carry stats (file unreadable / pre-v3 file).
 
@@ -1206,7 +1205,7 @@ class TemplateWorkbench:
             else:
                 chip.tooltip("Unusual σ — values may not be σ-normalized")
 
-    def _format_header_summary(self, h, lowpass: Optional[float]) -> str:
+    def _format_header_summary(self, h, lowpass: float | None) -> str:
         parts: list[str] = []
         if h.apix_ang:
             parts.append(f"{h.apix_ang:.3g} Å/px")
@@ -1216,7 +1215,7 @@ class TemplateWorkbench:
             parts.append(f"lp {lowpass:g}Å")
         return " · ".join(parts) if parts else "header unreadable"
 
-    def _format_file_size(self, file_path: str) -> Optional[tuple[str, str]]:
+    def _format_file_size(self, file_path: str) -> tuple[str, str] | None:
         """Return (human-readable size, css color). Gray under half the
         warn threshold, orange between half and full, red above. Used to
         warn the user before they ask molstar to load a giant volume."""
@@ -1264,7 +1263,7 @@ class TemplateWorkbench:
             f"padding: 1px 5px; border-radius: 3px; letter-spacing: 0.5px;"
         )
 
-    def _method_chip(self, method: Optional[str]) -> None:
+    def _method_chip(self, method: str | None) -> None:
         palette = {
             "spherical": ("#e9d5ff", "#581c87"),
             "cylindrical": ("#e9d5ff", "#581c87"),
@@ -1855,7 +1854,7 @@ class TemplateWorkbench:
         ).submit(_run, on_complete=_on_complete)
 
     def _register_polarity_pair(
-        self, res: dict, *, source: str, lowpass: Optional[float], select_new_white: bool = True
+        self, res: dict, *, source: str, lowpass: float | None, select_new_white: bool = True
     ) -> None:
         """Register a (white, black) pair from a generation result.
 
@@ -1869,7 +1868,7 @@ class TemplateWorkbench:
         white = res.get("path_white")
         black = res.get("path_black")
         appended: list[str] = []
-        new_white_id: Optional[str] = None
+        new_white_id: str | None = None
         for path, pol in ((white, "white"), (black, "black")):
             if path and os.path.exists(path):
                 tid = self._append_template(path, pol, source, lowpass=lowpass)
@@ -2221,7 +2220,7 @@ class TemplateWorkbench:
         # Canonical mask path: <stem>_sphere_d<diameter>_s<soft>.mrc. Idempotent
         # for identical inputs (overwritten by template_service).
         base = Path(sel.template_path).stem.replace("_white", "").replace("_black", "")
-        out_name = f"{base}_sphere_d{int(round(diameter))}_s{int(round(soft))}.mrc"
+        out_name = f"{base}_sphere_d{round(diameter)}_s{round(soft)}.mrc"
         output_path = os.path.join(self.output_folder, out_name)
         self._log(f"Sphere d={diameter:g}Å soft={soft:g}px apix={apix_ang:.3g} box={box_px}")
         self.masking_active = True

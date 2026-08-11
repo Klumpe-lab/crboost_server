@@ -221,7 +221,8 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
             ui.element("div")
             .classes("w-full bg-gray-900")
             .style(
-                "height: calc(80vh - 100px); overflow: auto; display: flex; align-items: center; justify-content: center;"
+                "height: calc(80vh - 100px); overflow: auto; display: flex; "
+                "align-items: center; justify-content: center;"
             )
         ):
             img = ui.image(data_uri).style(
@@ -230,7 +231,7 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
 
     def _render_text_preview(file_path: Path):
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(file_path, encoding="utf-8", errors="ignore") as f:
                 content = f.read(50000)
             with ui.scroll_area().classes("w-full").style("flex: 1 1 0%; min-height: 0;"):
                 ui.code(content).classes("w-full text-xs p-3")
@@ -310,7 +311,7 @@ def render_files_tab(job_type: JobType, job_model, ui_mgr: UIStateManager):
 def view_file_dialog(file_path: Path):
     """Simple file content viewer dialog."""
     try:
-        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+        with open(file_path, encoding="utf-8", errors="ignore") as f:
             content = f.read(50000)
         with ui.dialog() as dialog, ui.card().classes("w-[70vw] max-w-4xl"):
             with ui.row().classes("w-full items-center justify-between mb-2"):

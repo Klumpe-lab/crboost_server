@@ -146,7 +146,7 @@ def build_ctf_command(params: TsCtfParams) -> str:
         f"--range_high {params.range_max} "
         f"--defocus_min {params.defocus_min} "
         f"--defocus_max {params.defocus_max} "
-        f"--voltage {int(round(params.voltage))} "
+        f"--voltage {round(params.voltage)} "
         f"--cs {params.spherical_aberration} "
         f"--amplitude {params.amplitude_contrast} "
         f"--perdevice {params.perdevice}"
@@ -179,7 +179,7 @@ def main():
 
 def run_supervisor_mode():
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(TsCtfParams)
+        (_project_state, params, local_params_data, job_dir, project_path, _job_type) = get_driver_context(TsCtfParams)
     except Exception as e:
         fail_dir = Path.cwd()
         (fail_dir / "RELION_JOB_EXIT_FAILURE").touch()
@@ -325,7 +325,7 @@ def run_supervisor_mode():
 
 def run_task_mode(array_idx: int):
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(TsCtfParams)
+        (_project_state, params, local_params_data, job_dir, _project_path, _job_type) = get_driver_context(TsCtfParams)
     except Exception as e:
         print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)

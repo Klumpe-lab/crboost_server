@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, List, Set, Tuple
+from typing import ClassVar
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams
@@ -14,10 +14,10 @@ class ImportMoviesParams(AbstractJobParams):
     IS_CONTINUE: ClassVar[bool] = True
     RUNS_INLINE: ClassVar[bool] = True  # tilt_series.star written inline (Option B); see _submit_chain
 
-    USER_PARAMS: ClassVar[Set[str]] = {"optics_group_name", "do_at_most"}
+    USER_PARAMS: ClassVar[set[str]] = {"optics_group_name", "do_at_most"}
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = []
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = []
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_star", produces=JobFileType.TILT_SERIES_STAR, path_template="tilt_series.star")
     ]
 
@@ -25,7 +25,7 @@ class ImportMoviesParams(AbstractJobParams):
     optics_group_name: str = "opticsGroup1"
     do_at_most: int = Field(default=-1)
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         """Import uses relative paths - RELION runs from project root."""
         frames_dir = self.frames_dir
         if frames_dir.exists():
@@ -64,7 +64,7 @@ class ImportMoviesParams(AbstractJobParams):
             ("flip_tiltseries_hand", "Yes" if self.acquisition.invert_defocus_hand else "No"),
         ]
 
-    def _get_queue_options(self) -> List[Tuple[str, str]]:
+    def _get_queue_options(self) -> list[tuple[str, str]]:
         """Import jobs defaults to local run, but includes correct keys for consistency."""
         slurm_config = self.get_effective_slurm_config()
 
