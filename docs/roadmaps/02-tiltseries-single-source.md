@@ -149,6 +149,42 @@ stage 3 deliberately: no current display site holds a TiltSeries entity — they
 strings from manifests/stars — so the field-read switch lands with each dashboard-on-registry
 section, not as a stage-2 mechanical change.
 
+## Stage 3 record (code-complete 2026-08-11; runtime check owed — one sitting, no pipeline runs)
+
+All six sections switched in one pass (user-approved fast path; data equivalence was already
+proven by the stage-0 harness runs, so the per-section runtime gate collapsed to one final check).
+
+- **Commit 0 — registry freshness**: drivers ingest on compute nodes, so the server's cached
+  `get_registry_for` instance went stale after every run (and a stale server-side mute save could
+  clobber driver-written outputs). `TiltSeriesRegistry` now records the index.json mtime at load;
+  `get_registry_for` reloads a fresh instance when the on-disk index changed (never discarding
+  unsaved in-memory changes). One stat per call.
+- **Registry adapters** (`services/dashboard_data.py`): `fsm_registry_df` / `tsctf_registry_df` /
+  `alignment_registry_df` build per-tilt DataFrames with the SAME rln column names the stars
+  carried, so every plot/hover/stat helper is unchanged; fsm adds `cbCtfResolution`/
+  `cbMeanFrameMovement` (real XML-sourced QC — the render path no longer reads Warp XMLs).
+  Plus `filter_verdicts_from_registry`, `filter_kept_dropped_from_registry`,
+  `denoised_mrc_from_registry`, `warp_hand_from_registry`, `registry_ts_for`.
+- **Sections**: fs-motion, alignment, ts-ctf (+ the Tilt-QC composite via `_defocus_source_df`),
+  tilt-filter (gate = registry verdict stamps, not star dirs), denoise method selector, TomoHand
+  chip (now shows THREE authorities: config intention, Import-star declaration, and the
+  registry's Warp-applied `ts_defocus_hand` — disagreement upgrades the chip to error).
+  Gap marker: `_render_registry_gap` — "running → lands at completion" vs "predates registry
+  ingest → re-run" (amber). Never a silent star fallback.
+- **Deleted from the dialog**: `_read_per_tilt_df`, `_per_tilt_star_path`,
+  `_resolve_tilt_filter_dir`, `_tilt_filter_verdict_by_frame`, `_read_per_tilt_frame_names`,
+  `_read_per_tilt_kept_dropped`, `_resolve_denoised_mrc_for_job`, both `quality_series` XML
+  reads. The parity harness now owns its star-reader copies (it stays the independent audit).
+  `_read_tomohand_from_import_star` survives (the Import star is that fact's only source).
+- **Signature**: `_tilt_filter_sig_for_ts` (star mtimes) → `_registry_sig` (index.json mtime) —
+  one stat covers every migrated section's change detection.
+- **Known granularity change**: drivers ingest in the supervisor's aggregation step, so per-TS
+  results appear at job COMPLETION, not per-array-task as the incremental stars did. The
+  running-state marker says so. Mid-run incremental display can return later via per-task ingest.
+- **Deliberately NOT migrated**: journey status pills / task manifests (status, not TS facts),
+  recon section's tomograms.star read + `recon_mrc_map` (not in the six-section scope),
+  tsCtf star's placeholder-ridden "CTF res" strip row (dropped — the registry has no such fact).
+
 ## Stages
 
 1. **`InstanceId` value object** (`services/models_base.py`): frozen dataclass with

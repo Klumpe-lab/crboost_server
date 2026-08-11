@@ -57,10 +57,15 @@ from ui.dashboard.figures import (
 )
 from services.dashboard_data import (
     SPECIES_OVERLAY_COLORS,
+    alignment_registry_df,
     candidate_extract_instances,
     collect_dashboard_journey,
     collect_species_journey,
+    denoised_mrc_from_registry,
+    filter_kept_dropped_from_registry,
+    filter_verdicts_from_registry,
     find_job_by_type,
+    fsm_registry_df,
     glyph_for,
     job_dir_for,
     journey_signature,
@@ -72,7 +77,9 @@ from services.dashboard_data import (
     resolve_volume_for_3dmod,
     split_species_id,
     template_match_instances,
+    tsctf_registry_df,
     vis_asset_url,
+    warp_hand_from_registry,
 )
 from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
 from ui.dashboard.pixel_sanity import render_pixel_sanity_table
@@ -139,29 +146,6 @@ def _read_picks_json(path: Path) -> dict:
 # ---------------------------------------------------------------------------
 # Per-tilt star helpers (for FS Motion/CTF, TS Align, TS CTF, Tilt Filter)
 # ---------------------------------------------------------------------------
-
-
-def _read_per_tilt_df(per_tilt_star_path: Path) -> pd.DataFrame | None:
-    """Load the per-TS tilt block from a per-tilt star file. Each per-tilt
-    star has one data block named after the TS, with one row per tilt."""
-    if not per_tilt_star_path.exists():
-        return None
-    try:
-        import starfile
-
-        data = starfile.read(per_tilt_star_path, always_dict=True)
-        for v in data.values():
-            if isinstance(v, pd.DataFrame) and "rlnTomoNominalStageTiltAngle" in v.columns:
-                return v
-    except Exception as e:
-        logger.warning("Could not read per-tilt star %s: %s", per_tilt_star_path, e)
-    return None
-
-
-def _per_tilt_star_path(job_dir: Path, ts_name: str) -> Path:
-    """Convention used by FS Motion/CTF, TS Align, TS CTF — per-tilt star
-    sits at ``<job_dir>/tilt_series/<ts_name>.star``."""
-    return job_dir / "tilt_series" / f"{ts_name}.star"
 
 
 # Atlas-index parse cache (P3): path -> (mtime, meta). The cutout sheet re-reads
@@ -375,22 +359,17 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             return ()
         return tuple(sorted(out))
 
-    def _tilt_filter_sig_for_ts(ts: str) -> tuple:
-        # Per-ts labeled/filtered star mtimes for the tilt-filter section. NOT a
-        # journey pill stage, so journey_signature can't see it; and the
-        # standalone TiltFilter tool has no job (→ no status), so job_states below
-        # can't see it either. Reuses the section's own resolver + path layout so
-        # a re-run OR an in-place rewrite moves the sig. Scoped to the selected ts.
-        fdir = _resolve_tilt_filter_dir(state, project_path)
-        if fdir is None:
-            return ()
-        out: list[tuple[str, int]] = []
-        for sub in ("tilt_series_labeled", "tilt_series_filtered"):
-            try:
-                out.append((sub, int((fdir / sub / f"{ts}.star").stat().st_mtime)))
-            except OSError:
-                out.append((sub, 0))
-        return tuple(out)
+    def _registry_sig() -> tuple:
+        # Every migrated section (fs-motion, alignment, ts-ctf, tilt-filter,
+        # denoise path) reads the TiltSeriesRegistry; its index.json mtime moves
+        # whenever a driver ingests outputs or the filter re-stamps verdicts —
+        # exactly the events that must rebuild the pane. One stat per tick.
+        from services.tilt_series import get_registry_for
+
+        try:
+            return ("registry", int(get_registry_for(project_path).index_path.stat().st_mtime))
+        except Exception:
+            return ("registry", 0)
 
     def _main_signature() -> tuple:
         # FingerprintedView discipline for the main pane (mirrors render_strip).
@@ -417,7 +396,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             ts,
             journey_signature(journey, species_journey, [ts]),
             job_states,
-            _tilt_filter_sig_for_ts(ts),
+            _registry_sig(),
             tuple(sorted(_hidden_dashboard_panels())),
             _CURATION_SESSION_LIVE.get("on", False),
             _curation_sig_for_ts(ts),
@@ -994,6 +973,25 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
             f"convention is -1 (invert_defocus_hand=True)."
         )
 
+    # Third authority (registry): the hand Warp ACTUALLY applied (ts_defocus_hand,
+    # recorded by the tsCtf ingest). The Import star is the declared intention;
+    # this is what the data got — disagreement is a real chirality finding.
+    warp_hand = warp_hand_from_registry(project_state, project_path)
+    if warp_hand == 0:
+        if status == "ok":
+            status = "warn"
+        tooltip += " Registry: Warp applied DIFFERENT hands across tilt-series (mixed runs?) — verify per-TS."
+    elif warp_hand is not None:
+        if warp_hand != config_hand and status != "error":
+            status = "error"
+            value = f"{warp_hand:+d}"
+            tooltip += (
+                f" Registry: Warp applied ts_defocus_hand {warp_hand:+d} — this DISAGREES with the "
+                f"declared {config_hand:+d}; downstream defocus signs came from Warp's value."
+            )
+        else:
+            tooltip += f" Registry: Warp applied ts_defocus_hand {warp_hand:+d}."
+
     with ui.element("div").classes("cb-chip-strip"):
         _render_chip("TomoHand", value, status=status, tooltip=tooltip, icon="compare_arrows")
 
@@ -1123,6 +1121,28 @@ def _plot_cell(label: str, fig: dict, *, height_px: int = 220, wide: bool = Fals
         ui.plotly(fig).style(f"width: 100%; height: {height_px}px;")
 
 
+def _render_registry_gap(ts_name: str, status_label: str, param_rows: list[tuple[str, str]] | None = None) -> None:
+    """Loud, honest placeholder when the registry has no data for a job+TS.
+    Stage-0 decision: consumers are registry-only — a run that predates registry
+    ingest shows this marker and re-earns its dashboard data by re-running;
+    there is no silent star fallback."""
+    running = status_label.lower() in ("running", "queued", "scheduled")
+    if running:
+        ui.label("Job is running — per-tilt results land in the registry when it completes.").classes(
+            "cb-section-placeholder"
+        )
+    else:
+        ui.label(
+            f"No registry data for {ts_name} — this run predates registry ingest. "
+            "Re-run the job to populate it (per-tilt stars are no longer read)."
+        ).classes("cb-section-placeholder text-amber-700")
+    if param_rows:
+        with ui.element("div").classes("cb-datadump-grid"):
+            for k, v in param_rows:
+                ui.label(k).classes("cb-datadump-key")
+                ui.label(str(v)).classes("cb-datadump-val")
+
+
 def _per_tilt_customdata(df: pd.DataFrame) -> list[list]:
     """Build [[tilt_index, frame_basename], ...] customdata so plot hovers
     can name the specific tilt instead of just its angle."""
@@ -1172,7 +1192,8 @@ def _render_ctf_motion_plots(
     df: pd.DataFrame,
     *,
     show_motion: bool = True,
-    frameseries_dir: Path | None = None,
+    ctf_res: list | None = None,
+    motion: list | None = None,
     dl_by_frame: dict | None = None,
 ) -> None:
     """Defocus + astigmatism (always plotted as scatter, since each tilt is an
@@ -1181,10 +1202,9 @@ def _render_ctf_motion_plots(
     write `1e-6` placeholders for those columns — see
     `project_warp_relion_star_placeholders.md`.
 
-    When `frameseries_dir` (the FS-motion job's `warp_frameseries` folder) is
-    given, the CTF-resolution and motion panels read the REAL per-tilt values
-    from the WarpTools XML instead of the placeholder star columns — see
-    `docs/preprocessing-metrics-inventory.md` §4."""
+    `ctf_res` / `motion` are the REAL per-tilt series (registry QC fields,
+    XML-sourced at ingest) — the star fallback columns only render for
+    non-WarpTools exports that populate them for real."""
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
     cd = _per_tilt_customdata(df)
     if dl_by_frame:
@@ -1192,15 +1212,8 @@ def _render_ctf_motion_plots(
         # per-tilt point's hover shows what the tilt-filter thought of that tilt.
         cd = [[*row, dl_by_frame.get(row[1], "—")] for row in cd]
 
-    # Real per-tilt CTF-fit resolution + motion live in the WarpTools frameseries
-    # XML, not the star (the star columns are 1e-6 / 'None' placeholders). Read
-    # them once here so the CTF-res + motion panels show real data.
-    xml_res: list | None = None
-    xml_motion: list | None = None
-    if frameseries_dir is not None and "rlnMicrographMovieName" in df.columns:
-        from services.tilt_series.frameseries_quality import quality_series
-
-        xml_res, xml_motion = quality_series(frameseries_dir, df["rlnMicrographMovieName"].tolist())
+    xml_res: list | None = ctf_res
+    xml_motion: list | None = motion
 
     has_def = "rlnDefocusU" in df.columns and "rlnDefocusV" in df.columns
     has_astig = "rlnCtfAstigmatism" in df.columns
@@ -1412,7 +1425,7 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         )
         return True
 
-    df = _read_per_tilt_df(_per_tilt_star_path(job_dir, ts_name))
+    df = fsm_registry_df(project_path, instance_id, ts_name)
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "fs_motion_ctf"
         card._props["data-instance"] = instance_id
@@ -1426,28 +1439,18 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
                 ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
 
         if df is None:
-            ui.label(f"No per-tilt star at tilt_series/{ts_name}.star yet.").classes("cb-section-placeholder")
-            with ui.element("div").classes("cb-datadump-grid"):
-                for k, v in param_rows:
-                    ui.label(k).classes("cb-datadump-key")
-                    ui.label(str(v)).classes("cb-datadump-val")
+            _render_registry_gap(ts_name, status_label, param_rows)
             return True
 
-        # Real CTF-fit resolution + motion come from the frameseries XML, not the
-        # placeholder star columns (rlnCtfMaxResolution / rlnAccumMotion* = 1e-6).
-        fs_warp_dir = job_dir / "warp_frameseries"
-        ctf_res: list = []
-        motion_total: list = []
-        if "rlnMicrographMovieName" in df.columns:
-            from services.tilt_series.frameseries_quality import quality_series
-
-            r_xml, m_xml = quality_series(fs_warp_dir, df["rlnMicrographMovieName"].tolist())
-            ctf_res = [v for v in r_xml if v is not None]
-            motion_total = [v for v in m_xml if v is not None]
+        # Real CTF-fit resolution + motion: registry QC fields (XML-sourced at
+        # ingest); the star's rlnCtfMaxResolution / rlnAccumMotion* were 1e-6
+        # placeholders, which is why these never came from star columns.
+        ctf_res_series = _safe_floats(df["cbCtfResolution"])
+        motion_series = _safe_floats(df["cbMeanFrameMovement"])
         defocus_um = [v / 1.0e4 for v in _safe_floats(df.get("rlnDefocusU", [])) if v is not None]
         d_stats = _stats(defocus_um)
-        r_stats = _stats(ctf_res)
-        m_stats = _stats(motion_total)
+        r_stats = _stats([v for v in ctf_res_series if v is not None])
+        m_stats = _stats([v for v in motion_series if v is not None])
         strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
         if d_stats["n"]:
             strip_rows.append(
@@ -1459,7 +1462,7 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
             strip_rows.append(("motion (max)", f"{m_stats['max']:.2f}"))
         _stat_strip(strip_rows)
 
-        _render_ctf_motion_plots(df, show_motion=True, frameseries_dir=fs_warp_dir)
+        _render_ctf_motion_plots(df, show_motion=True, ctf_res=ctf_res_series, motion=motion_series)
 
         with ui.expansion("Job parameters").classes("w-full text-[10px]").props("dense"):
             with ui.element("div").classes("cb-datadump-grid"):
@@ -1507,7 +1510,7 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
         )
         return True
 
-    df = _read_per_tilt_df(_per_tilt_star_path(job_dir, ts_name))
+    df = alignment_registry_df(project_path, instance_id, ts_name)
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "ts_alignment"
         card._props["data-instance"] = instance_id
@@ -1521,11 +1524,7 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
                 ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
 
         if df is None:
-            ui.label(f"No per-tilt star at tilt_series/{ts_name}.star yet.").classes("cb-section-placeholder")
-            with ui.element("div").classes("cb-datadump-grid"):
-                for k, v in param_rows:
-                    ui.label(k).classes("cb-datadump-key")
-                    ui.label(str(v)).classes("cb-datadump-val")
+            _render_registry_gap(ts_name, status_label, param_rows)
             return True
 
         # Stat strip: max shift magnitude + tilt-axis residual range
@@ -1590,7 +1589,7 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
         )
         return True
 
-    df = _read_per_tilt_df(_per_tilt_star_path(job_dir, ts_name))
+    df = tsctf_registry_df(project_path, instance_id, ts_name)
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "ts_ctf"
         card._props["data-instance"] = instance_id
@@ -1604,29 +1603,21 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
                 ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
 
         if df is None:
-            ui.label(f"No per-tilt star at tilt_series/{ts_name}.star yet.").classes("cb-section-placeholder")
-            with ui.element("div").classes("cb-datadump-grid"):
-                for k, v in param_rows:
-                    ui.label(k).classes("cb-datadump-key")
-                    ui.label(str(v)).classes("cb-datadump-val")
+            _render_registry_gap(ts_name, status_label, param_rows)
             return True
 
         defocus_um = [v / 1.0e4 for v in _safe_floats(df.get("rlnDefocusU", [])) if v is not None]
-        ctf_res = [v for v in _safe_floats(df.get("rlnCtfMaxResolution", [])) if v is not None]
         d_stats = _stats(defocus_um)
-        r_stats = _stats(ctf_res)
         strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
         if d_stats["n"]:
             strip_rows.append(
                 ("defocus", f"{d_stats['median']:.2f} µm (range {d_stats['min']:.2f}–{d_stats['max']:.2f})")
             )
-        if r_stats["n"]:
-            strip_rows.append(("CTF res", f"{r_stats['median']:.1f} Å (worst {r_stats['max']:.1f})"))
 
         # Tilt-filter per-tilt verdict (keep/drop + DL probability): summarised in the
         # strip and surfaced on each plot point's hover below. Silent no-op if the
-        # tilt-filter job hasn't run for this TS.
-        dl_by_frame = _tilt_filter_verdict_by_frame(project_state, project_path, ts_name)
+        # tilt-filter job hasn't stamped this TS.
+        dl_by_frame = filter_verdicts_from_registry(project_path, ts_name)
         if dl_by_frame:
             n_keep = sum(1 for v in dl_by_frame.values() if v.startswith("keep"))
             strip_rows.append(("DL keep", f"{n_keep}/{len(dl_by_frame)}"))
@@ -1665,17 +1656,17 @@ def _linear_slope_intercept(xs: list, ys: list) -> tuple:
 
 
 def _defocus_source_df(project_state, project_path: Path, ts_name: str):
-    """The per-tilt star carrying real per-tilt defocus — prefer TS CTF
-    (post-alignment, most refined), fall back to FS Motion/CTF. Returns
+    """The per-tilt defocus source — prefer TS CTF (post-alignment, most
+    refined), fall back to FS Motion/CTF. Registry reads. Returns
     (df, source_label) or (None, None)."""
-    for jt, label in ((JobType.TS_CTF, "tsCtf"), (JobType.FS_MOTION_CTF, "fsMotion")):
+    for jt, label, reader in (
+        (JobType.TS_CTF, "tsCtf", tsctf_registry_df),
+        (JobType.FS_MOTION_CTF, "fsMotion", fsm_registry_df),
+    ):
         found = find_job_by_type(project_state, jt)
         if not found:
             continue
-        jd = job_dir_for(project_state, found[0], found[1], project_path)
-        if jd is None:
-            continue
-        df = _read_per_tilt_df(_per_tilt_star_path(jd, ts_name))
+        df = reader(project_path, found[0], ts_name)
         if df is not None and "rlnDefocusU" in df.columns:
             return df, label
     return None, None
@@ -1692,9 +1683,7 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
     align_df = None
     align = find_job_by_type(project_state, JobType.TS_ALIGNMENT)
     if align:
-        ajd = job_dir_for(project_state, align[0], align[1], project_path)
-        if ajd is not None:
-            align_df = _read_per_tilt_df(_per_tilt_star_path(ajd, ts_name))
+        align_df = alignment_registry_df(project_path, align[0], ts_name)
 
     # Defocus (µm) mean per tilt, sorted by tilt angle so the through-focus trend
     # reads as a curve (the star is acquisition-ordered).
@@ -1776,95 +1765,16 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
 # --- Tilt Filter --------------------------------------------------------------
 
 
-def _resolve_tilt_filter_dir(project_state, project_path: Path) -> Path | None:
-    """Return the directory containing tiltseries_filtered.star and
-    tiltseries_labeled.star — supports both pipeline-job tilt filtering
-    (TILT_FILTER) and the standalone TiltFilter tool that writes to
-    `<project_root>/TiltFilter/`."""
-    found = find_job_by_type(project_state, JobType.TILT_FILTER)
-    if found:
-        instance_id, jm = found
-        jd = job_dir_for(project_state, instance_id, jm, project_path)
-        if jd is not None:
-            cand = jd / "filtered"
-            if (cand / "tiltseries_labeled.star").exists() or (cand / "tiltseries_filtered.star").exists():
-                return cand
-    standalone = project_path / "TiltFilter"
-    if (standalone / "tiltseries_labeled.star").exists() or (standalone / "tiltseries_filtered.star").exists():
-        return standalone
-    return None
-
-
-def _tilt_filter_verdict_by_frame(project_state, project_path: Path, ts_name: str) -> dict[str, str]:
-    """{frame_basename: "keep (p=0.92)" | "drop (p=0.12)"} from the tilt-filter labeled
-    star for this TS, so per-tilt CTF plots can show the DL verdict alongside each tilt.
-    Empty dict when the tilt-filter job hasn't run for this TS."""
-    filter_dir = _resolve_tilt_filter_dir(project_state, project_path)
-    if filter_dir is None:
-        return {}
-    lab = _read_per_tilt_df(filter_dir / "tilt_series_labeled" / f"{ts_name}.star")
-    if lab is None or "cryoBoostDlLabel" not in lab.columns or "rlnMicrographMovieName" not in lab.columns:
-        return {}
-    out: dict[str, str] = {}
-    for _, row in lab.iterrows():
-        base = Path(str(row["rlnMicrographMovieName"])).name
-        keep = str(row.get("cryoBoostDlLabel", "")).strip().lower() == "good"
-        try:
-            pstr = f" (p={float(row['cryoBoostDlProbability']):.2f})"
-        except (TypeError, ValueError, KeyError):
-            pstr = ""
-        out[base] = ("keep" if keep else "drop") + pstr
-    return out
-
-
-def _read_per_tilt_frame_names(per_tilt_star: Path) -> list[str]:
-    df = _read_per_tilt_df(per_tilt_star)
-    if df is None or "rlnMicrographMovieName" not in df.columns:
-        return []
-    return [str(v) for v in df["rlnMicrographMovieName"].tolist()]
-
-
-def _read_per_tilt_kept_dropped(filter_dir: Path, ts_name: str) -> dict | None:
-    """Diff labeled vs filtered per-tilt star to compute kept and dropped rows.
-
-    Returns a dict with keys: n_labeled, n_kept, dropped (list of dicts with
-    `index`, `tilt_angle`, `frame`). None if the labeled file is missing."""
-    labeled_p = filter_dir / "tilt_series_labeled" / f"{ts_name}.star"
-    filtered_p = filter_dir / "tilt_series_filtered" / f"{ts_name}.star"
-    labeled_df = _read_per_tilt_df(labeled_p)
-    if labeled_df is None:
-        return None
-    kept_frames: set[str] = set()
-    if filtered_p.exists():
-        kept_frames = set(_read_per_tilt_frame_names(filtered_p))
-    n_labeled = len(labeled_df)
-    dropped: list[dict] = []
-    if "rlnMicrographMovieName" in labeled_df.columns and kept_frames:
-        for i, row in labeled_df.iterrows():
-            frame = str(row["rlnMicrographMovieName"])
-            if frame in kept_frames:
-                continue
-            tilt_angle = None
-            if "rlnTomoNominalStageTiltAngle" in labeled_df.columns:
-                try:
-                    tilt_angle = float(row["rlnTomoNominalStageTiltAngle"])
-                except (TypeError, ValueError):
-                    tilt_angle = None
-            dropped.append({"index": int(i), "tilt_angle": tilt_angle, "frame": Path(frame).name})
-    n_kept = n_labeled - len(dropped) if kept_frames else n_labeled
-    return {"n_labeled": n_labeled, "n_kept": n_kept, "dropped": dropped, "labeled_df": labeled_df}
-
-
 def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    """Per-TS tilt-filter diagnostics. Renders for either:
-      - a TILT_FILTER pipeline job (uses its `filtered/` subdir), or
-      - the standalone TiltFilter tool output at `<project_root>/TiltFilter/`.
-    Skips silently when neither is present."""
-    filter_dir = _resolve_tilt_filter_dir(project_state, project_path)
-    if filter_dir is None:
-        return False
+    """Per-TS tilt-filter diagnostics, from the registry's per-frame verdicts
+    (stamped by both the DL and manual filter paths). Renders when a
+    TILT_FILTER job exists or when this TS carries stamped verdicts; a run
+    that predates verdict stamping shows the registry-gap marker."""
+    info = filter_kept_dropped_from_registry(project_path, ts_name)
 
     job_found = find_job_by_type(project_state, JobType.TILT_FILTER)
+    if job_found is None and info is None:
+        return False
     instance_id = job_found[0] if job_found else "TiltFilter (standalone)"
     jm = job_found[1] if job_found else None
 
@@ -1872,7 +1782,6 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
     if jm is not None:
         metric_parts = [f"model {jm.model_name}", f"thresh {jm.prob_threshold:g}", f"action {jm.prob_action}"]
 
-    info = _read_per_tilt_kept_dropped(filter_dir, ts_name)
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "tilt_filter"
         card._props["data-instance"] = instance_id
@@ -1889,7 +1798,8 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
                     ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
 
         if info is None:
-            ui.label(f"No labeled tilt list for {ts_name} in {filter_dir}").classes("cb-section-placeholder")
+            status_label = getattr(jm.execution_status, "value", str(jm.execution_status)) if jm is not None else ""
+            _render_registry_gap(ts_name, status_label)
             return True
 
         n_labeled = info["n_labeled"]
@@ -2333,30 +2243,6 @@ def _denoise_method_label(job_model, instance_id: str, project_state=None) -> st
     return getattr(m, "value", None) or (str(m) if m else instance_id)
 
 
-def _resolve_denoised_mrc_for_job(job_dir: Path, project_path: Path, ts_name: str) -> Path | None:
-    """Denoised-tomogram MRC for one denoisepredict job + TS, or None. Prefers the
-    job's aggregated tomograms.star (rlnTomoReconstructedTomogram); falls back to the
-    per-tomogram file under denoised/ so results surface as the SLURM array lands
-    them, before the final star is written at job end."""
-    tomo_df = read_tomograms_table(job_dir / "tomograms.star")
-    if tomo_df is not None and "rlnTomoName" in tomo_df.columns:
-        match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
-        if not match.empty:
-            mrc = resolve_volume_for_3dmod(match.iloc[0], project_path)
-            if mrc:
-                return Path(mrc)
-    dn_dir = job_dir / "denoised"
-    if dn_dir.is_dir():
-        # Per-tomo file is "<ts_name>_<apix>Apx.mrc"; the tail after "<ts_name>_"
-        # must be just "<apix>Apx" (no extra underscore) so Position_1 doesn't match
-        # Position_1_2's file.
-        for f in sorted(dn_dir.glob(f"{ts_name}_*Apx.mrc")):
-            tail = f.stem[len(ts_name) + 1 :]
-            if tail.endswith("Apx") and tail[:-3].replace(".", "", 1).isdigit():
-                return f
-    return None
-
-
 def _available_denoise_methods_for_ts(project_state, project_path: Path, ts_name: str) -> list[tuple[str, Path, Path]]:
     """(method_label, job_dir, denoised_mrc) for every denoisepredict job that has a
     denoised volume for this TS, ordered by label. When two jobs share a method the
@@ -2371,7 +2257,7 @@ def _available_denoise_methods_for_ts(project_state, project_path: Path, ts_name
         job_dir = job_dir_for(project_state, iid, jm, project_path)
         if not job_dir:
             continue
-        mrc = _resolve_denoised_mrc_for_job(job_dir, project_path, ts_name)
+        mrc = denoised_mrc_from_registry(project_path, iid, ts_name)
         if mrc is not None:
             found.append((_denoise_method_label(jm, iid, project_state), iid, job_dir, mrc))
     label_counts: dict[str, int] = {}
