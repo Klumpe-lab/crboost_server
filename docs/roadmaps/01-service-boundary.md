@@ -284,6 +284,59 @@ All three strays landed; repo-wide ruff clean. Notes:
   wiring), DL commit if reachable, merge → consumers auto-wired, per-list Extract button (tray
   tracks; count + extracted state land), and one `extract_authoritative_pending` batch run.
 
+## Stage 6 record (executed 2026-08-11)
+
+Landed as three committable chunks: **6a** add `services/jobs/spec.py` (additive), **6b** convert all
+readers (behavior-preserving), **6c** quarantined behavior fix (see below). Repo-wide ruff clean.
+Scope facts + deviations:
+
+- **The 8 tables were actually 10.** Gathering found two driver tables the audit's list missed, both
+  in `pipeline_orchestrator_service.py`: the forward `driver_map` (`_build_fn_exe`, was :509) and
+  `JobTypeResolver.DRIVER_TO_JOBTYPE` (was :814). Both now derive from `JobSpec.driver` — this is the
+  "driver module" field the stage sketch wanted.
+- **SURPRISE — real desync bug found in gathering: `DRIVER_TO_JOBTYPE` was missing `tilt_filter.py`**
+  while the forward map had it, so `get_job_type_from_path` on a tiltFilter job dir returned `None`.
+  The derived reverse map includes it → quarantined as its own commit (6c) with a loud comment at the
+  definition. Runtime-verify: reconciliation over a project containing a tiltFilter job.
+- Design decisions: execution flags (`IS_INTERACTIVE`, `JOB_CATEGORY`, ...) STAY on the param class —
+  `JobSpec` is topology + identity only. `phase=None` encodes "hidden from roster" (tsImport).
+  `MERGED_SOURCES` gets no spec row (synthetic, per its enum comment); `spec.display_name()` carries a
+  `_SYNTHETIC_DISPLAY_NAMES` fallback for it. `plugins` is a tuple of `ui.job_plugins` module
+  *basenames* (pure data — services still import no ui code); `_load_plugins` derives its module list
+  from the specs. The plugin `_REGISTRY` dict itself survives (it holds UI callables, populated by
+  decorators) — what died is the hand-maintained module list.
+- Old names kept as derived views where readers were plentiful: `PHASE_JOBS` (3 files) is now a
+  comprehension over `JOB_SPECS` in `pipeline_constants`; `PIPELINE_ORDER` moved to spec.py as a
+  tuple; ui_state's `get_job_order`/`get_job_display_name`/`get_ordered_jobs` became thin wrappers
+  (23+ call sites unchanged). Deleted outright: `JOB_DISPLAY_NAMES`, `JOB_DEPENDENCIES`,
+  `_PREREQUISITES`, `_ARRAY_STAGE_OUTPUT_STAR`, both hand driver maps, the plugin module hand-list.
+- `jobtype_paramclass()` keeps its signature but returns the module-level `PARAM_CLASS_BY_TYPE`
+  `MappingProxyType` (per-call rebuild gone). All 8 call sites verified `.get()`-only readers —
+  mutation would now raise, which is correct.
+- Row-by-row equivalence verified against every old table before deletion (order, display strings,
+  dep tuples incl. `DENOISE_PREDICT`'s (train, reconstruct) order, prereqs, stars, driver names,
+  plugin-module set). Plugin module *import order* changed (spec order vs the old hand-list order) —
+  safe because no two modules register the same slot for the same job type (checked).
+- Process lessons applied: multi-line-aware greps (`grep -A`) confirmed no continuation-line imports
+  of deleted names (pipeline_roster's multi-line `pipeline_constants` import was exactly that shape,
+  all its names survive); no signature changes were made anywhere. `PHASE_PREPROCESSING`/
+  `PHASE_PARTICLES` moved to spec.py and are re-imported by `pipeline_constants` — F401-autofix-safe
+  because both are *used* there (PHASE_JOBS comprehension, PHASE_META keys), not bare re-exports.
+- **Verification ceiling this session: ruff + grep ONLY** — no python interpreter at all
+  (`/software` unmounted → venv symlink dangling, no system python). py_compile is still owed along
+  with runtime. Pre-existing format drift in `pipeline_runner.py` observed, not formatted (untouched
+  lines).
+- Stage 7 enforcement target added by this stage: new code must read `services/jobs/spec.py`, not
+  re-grow per-concern tables; consider a lint ban on new module-level `dict[JobType, ...]` literals
+  outside spec.py.
+
+Runtime checklist: boot (spec import chain + plugin auto-load); roster renders both phases with
+correct order/names; add tsAlignment or tiltFilter to a fresh pipeline (prerequisite auto-add of
+tsImport); add-button dependency gating tooltips; job tab custom renderers (fs-motion, template
+match) + Tasks tabs (array types); Journey per-TS pills on a legacy no-manifest job (array star
+fallback); deploy a scheme (driver command build); reconciliation of an existing project WITH a
+tiltFilter job (6c behavior change: its dir now resolves to a job type instead of None).
+
 ## Stages (each committable)
 
 1. **Undo the inversion.** *(DONE 2026-08-11 — record above.)* Add `ui/current_project.py` with `current_project_state()` (tab-context
@@ -312,7 +365,7 @@ All three strays landed; repo-wide ruff clean. Notes:
    `backend.extract_pick_list` path; `ui/aggregation_merge_card.py:117 apply_aggregation_overrides` →
    `services/aggregation_authoritative.py` (note: `path_resolution_service.py:590` has a comment
    depending on this function's behavior — read it first).
-6. **One `JobSpec` table.** Frozen dataclass per job type (param class, display name, phase,
+6. **One `JobSpec` table.** *(DONE 2026-08-11 — record above.)* Frozen dataclass per job type (param class, display name, phase,
    dependencies, plugin, driver module) in `services/jobs/spec.py`, replacing the 8 unsynchronized
    tables (`jobtype_paramclass` + `PIPELINE_ORDER` + `JOB_DISPLAY_NAMES` + `PHASE_JOBS` +
    `JOB_DEPENDENCIES` + `_PREREQUISITES` + `_ARRAY_STAGE_OUTPUT_STAR` + plugin `_REGISTRY`).
