@@ -24,7 +24,7 @@ from pathlib import Path
 
 from nicegui import ui
 
-from ui.components.task_utils import (
+from services.array_tasks import (
     shorten_ts_names,
     sort_ts_by_position,
     ts_anchor_id,

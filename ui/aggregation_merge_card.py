@@ -32,7 +32,7 @@ from services.project_state import (
     AggregationSource,
 )
 from ui.current_project import current_project_state
-from ui.components.task_utils import ts_position_sort_key, ts_pretty_name
+from services.array_tasks import ts_position_sort_key, ts_pretty_name
 from ui.local_file_picker import local_file_picker
 from ui.projects_overview import avatar_color
 
