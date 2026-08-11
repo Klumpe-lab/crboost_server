@@ -69,6 +69,11 @@ class TiltSeriesRegistry:
         self._dirty_ts: set[str] = set()
         self._dirty_index: bool = False
         self._save_lock = asyncio.Lock()
+        # index.json mtime observed at load time. Drivers ingest on compute
+        # nodes and save to disk; the server's cached instance detects that via
+        # is_stale_on_disk() and get_registry_for() reloads. None = loaded with
+        # no index on disk (empty/pre-registry project).
+        self._loaded_index_mtime_ns: int | None = None
 
     # ── Paths ──────────────────────────────────────────────────────────────
 
@@ -245,10 +250,22 @@ class TiltSeriesRegistry:
 
     # ── Persistence ────────────────────────────────────────────────────────
 
+    def has_unsaved_changes(self) -> bool:
+        return bool(self._dirty_ts) or self._dirty_index
+
+    def is_stale_on_disk(self) -> bool:
+        """True when the on-disk index has changed since this instance loaded —
+        i.e. another process (a driver's supervisor ingest) wrote the registry."""
+        try:
+            return self.index_path.stat().st_mtime_ns != self._loaded_index_mtime_ns
+        except FileNotFoundError:
+            return self._loaded_index_mtime_ns is not None
+
     def load(self) -> None:
         """Load all TS from on-disk sidecars. Safe to call on a fresh registry."""
         if not self.index_path.exists():
             logger.debug("No registry index at %s; starting empty", self.index_path)
+            self._loaded_index_mtime_ns = None
             return
 
         try:
@@ -283,6 +300,10 @@ class TiltSeriesRegistry:
                 logger.warning("Failed to load TS sidecar %s: %s", ts_path, e)
 
         logger.info("Loaded %d tilt-series from %s", loaded, self.registry_dir)
+        try:
+            self._loaded_index_mtime_ns = self.index_path.stat().st_mtime_ns
+        except FileNotFoundError:
+            self._loaded_index_mtime_ns = None
         self._dirty_ts.clear()
         self._dirty_index = False
 
@@ -305,6 +326,10 @@ class TiltSeriesRegistry:
                 "frame_count": self.frame_count(),
             }
             self._atomic_write(self.index_path, json.dumps(index, indent=2))
+            try:
+                self._loaded_index_mtime_ns = self.index_path.stat().st_mtime_ns
+            except FileNotFoundError:
+                pass
 
         self._dirty_ts.clear()
         self._dirty_index = False
@@ -390,14 +415,22 @@ def get_registry_for(project_path: Path) -> TiltSeriesRegistry:
     """Get or lazily load the registry for a project directory.
 
     First access triggers a disk load (if registry/ exists) or returns an
-    empty registry. Subsequent calls return the same in-memory instance.
-    """
+    empty registry. Subsequent calls return the same in-memory instance —
+    unless the on-disk index changed under it (a driver's supervisor ingested
+    outputs on a compute node), in which case a fresh instance is loaded and
+    cached. A cached instance with unsaved in-memory changes is never
+    discarded (its own save() lands first; the next call picks up both)."""
     resolved = project_path.resolve()
     reg = _registries.get(resolved)
     if reg is None:
         reg = TiltSeriesRegistry(resolved)
         reg.load()
         _registries[resolved] = reg
+    elif reg.is_stale_on_disk() and not reg.has_unsaved_changes():
+        fresh = TiltSeriesRegistry(resolved)
+        fresh.load()
+        _registries[resolved] = fresh
+        return fresh
     return reg
 
 
