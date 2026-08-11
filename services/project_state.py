@@ -16,6 +16,10 @@ from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny, field_valida
 
 from services.models_base import (
     JobType,
+    # Re-exports: many modules import these via services.project_state.
+    # The `as X` alias marks them as intentional so autofixes don't strip them.
+    JobCategory as JobCategory,
+    JobStatus as JobStatus,
     PickListType,
     ListExtractionState,
     MicroscopeParams,
@@ -1146,43 +1150,11 @@ def remove_project_state(project_path: Path):
     _project_states.pop(project_path.resolve(), None)
 
 
-def get_project_state() -> ProjectState:
-    """Convenience for UI code: resolves project_path from the current
-    browser tab's UIStateManager.
-
-    Falls back to a detached blank ProjectState if no project is loaded
-    yet (landing page before create/load). This means all existing
-    get_project_state() callsites in UI code work unchanged.
-    """
-    try:
-        from ui.ui_state import get_ui_state_manager
-
-        ui_mgr = get_ui_state_manager()
-        if ui_mgr.project_path:
-            return get_project_state_for(ui_mgr.project_path)
-    except RuntimeError:
-        # No client connection (background task, server startup, etc.)
-        pass
-    return ProjectState()
-
-
-def set_project_state(new_state: ProjectState):
-    """Legacy setter -- routes into the registry if the state has a project_path,
-    otherwise falls back to replacing the tab-context entry."""
-    if new_state.project_path:
-        set_project_state_for(new_state.project_path, new_state)
-    else:
-        # Pre-creation state (landing page). Just park it in the registry
-        # under a sentinel key; get_project_state() won't find it via
-        # tab context anyway, and it'll be replaced once a real path exists.
-        pass
-
-
 class StateService:
     """Manages persistence of ProjectState to disk.
 
-    - UI code accesses .state (resolves via tab context)
-    - Backend code with an explicit path uses .state_for(path)
+    - Backend/service code uses .state_for(path) — always an explicit path.
+    - UI code resolves tab context via ui/current_project.py, never here.
     - save_project is serialized with an asyncio.Lock
     """
 
@@ -1192,11 +1164,6 @@ class StateService:
     def state_for(self, project_path: Path) -> ProjectState:
         """Explicit accessor for backend/service code that has a path."""
         return get_project_state_for(project_path)
-
-    @property
-    def state(self) -> ProjectState:
-        """Tab-context accessor. Backend code should prefer state_for(path)."""
-        return get_project_state()
 
     async def update_from_mdoc(self, mdocs_glob: str, project_path: Path | None = None):
         from services.configs.mdoc_service import get_mdoc_service
@@ -1226,9 +1193,6 @@ class StateService:
             s.acquisition.tilt_axis_degrees = mdoc_data["tilt_axis_angle"]
         s.update_modified()
 
-    async def ensure_job_initialized(self, job_type: JobType, template_path: Path | None = None):
-        self.state.ensure_job_initialized(job_type, template_path)
-
     async def load_project(self, project_json_path: Path):
         try:
             project_path = project_json_path.parent.resolve()
@@ -1255,7 +1219,24 @@ class StateService:
             if project_path:
                 state = get_project_state_for(project_path)
             else:
-                state = get_project_state()
+                # Tab-context fallback for legacy bare save_project() calls from UI
+                # handlers. The LAST services→ui inversion; roadmap 01 stage 4 moves
+                # persistence behind the facade with an explicit path and deletes
+                # this branch. Without client context this resolves to nothing and
+                # the save is silently skipped — background tasks MUST pass
+                # project_path (see docs/roadmaps/01-service-boundary.md).
+                state = None
+                try:
+                    from ui.ui_state import get_ui_state_manager
+
+                    ui_mgr = get_ui_state_manager()
+                    if ui_mgr.project_path:
+                        state = get_project_state_for(ui_mgr.project_path)
+                except RuntimeError:
+                    pass
+                if state is None:
+                    logger.warning("save_project() without project_path and no tab context -- skipping save")
+                    return
 
             if save_path:
                 target_path = save_path
