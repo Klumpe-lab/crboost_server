@@ -10,10 +10,10 @@ is switched to registry reads:
     DIFF       → adapter bug (registry wrong) OR star wrong — decide per fact
     reg-only   → registry richer than stars (evidence for the switch; record it)
 
-Deliberately imports the DASHBOARD'S OWN reader functions (ui.tomo_dashboard_dialog
-helpers, services.dashboard_data, frameseries_quality) rather than re-implementing
-them — parity is only meaningful against the real read paths. Read-only: never
-writes to the project.
+Originally imported the dashboard's own reader functions; since roadmap-02
+stage 3 the dashboard reads the registry, so the star readers now live HERE
+(harness-owned copies below) and this script is the independent star-vs-registry
+audit. Read-only: never writes to the project.
 
 Usage:
     venv/bin/python parity_harness.py projects/try2_after_pixShift
@@ -29,20 +29,106 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from services.dashboard_data import find_job_by_type, job_dir_for, read_tomograms_table
+import pandas as pd
+
+from services.dashboard_data import find_job_by_type, job_dir_for, read_tomograms_table, resolve_volume_for_3dmod
 from services.models_base import JobType
 from services.project_state import get_project_state_for
 from services.tilt_series.build import infer_position
 from services.tilt_series.frameseries_quality import WARP_FRAMESERIES_DIR, read_frame_quality
 from services.tilt_series.registry import TiltSeriesRegistry
-from ui.tomo_dashboard_dialog import (
-    _per_tilt_star_path,
-    _read_per_tilt_df,
-    _read_per_tilt_kept_dropped,
-    _read_tomohand_from_import_star,
-    _resolve_denoised_mrc_for_job,
-    _resolve_tilt_filter_dir,
-)
+from ui.tomo_dashboard_dialog import _read_tomohand_from_import_star
+
+# ── Star readers (harness-owned) ─────────────────────────────────────────────
+# These were the dashboard's own readers until roadmap-02 stage 3 switched the
+# dashboard to registry reads and deleted them from ui.tomo_dashboard_dialog.
+# The harness keeps its own copies so it remains an INDEPENDENT star-vs-registry
+# audit (the star side must not read through the registry).
+
+
+def _read_per_tilt_df(per_tilt_star_path: Path) -> pd.DataFrame | None:
+    if not per_tilt_star_path.exists():
+        return None
+    try:
+        import starfile
+
+        data = starfile.read(per_tilt_star_path, always_dict=True)
+        for v in data.values():
+            if isinstance(v, pd.DataFrame) and "rlnTomoNominalStageTiltAngle" in v.columns:
+                return v
+    except Exception as e:
+        print(f"  (could not read per-tilt star {per_tilt_star_path}: {e})")
+    return None
+
+
+def _per_tilt_star_path(job_dir: Path, ts_name: str) -> Path:
+    return job_dir / "tilt_series" / f"{ts_name}.star"
+
+
+def _resolve_tilt_filter_dir(project_state, project_path: Path) -> Path | None:
+    found = find_job_by_type(project_state, JobType.TILT_FILTER)
+    if found:
+        jd = job_dir_for(project_state, found[0], found[1], project_path)
+        if jd is not None:
+            cand = jd / "filtered"
+            if (cand / "tiltseries_labeled.star").exists() or (cand / "tiltseries_filtered.star").exists():
+                return cand
+    standalone = project_path / "TiltFilter"
+    if (standalone / "tiltseries_labeled.star").exists() or (standalone / "tiltseries_filtered.star").exists():
+        return standalone
+    return None
+
+
+def _read_per_tilt_frame_names(per_tilt_star: Path) -> list[str]:
+    df = _read_per_tilt_df(per_tilt_star)
+    if df is None or "rlnMicrographMovieName" not in df.columns:
+        return []
+    return [str(v) for v in df["rlnMicrographMovieName"].tolist()]
+
+
+def _read_per_tilt_kept_dropped(filter_dir: Path, ts_name: str) -> dict | None:
+    labeled_p = filter_dir / "tilt_series_labeled" / f"{ts_name}.star"
+    filtered_p = filter_dir / "tilt_series_filtered" / f"{ts_name}.star"
+    labeled_df = _read_per_tilt_df(labeled_p)
+    if labeled_df is None:
+        return None
+    kept_frames: set[str] = set()
+    if filtered_p.exists():
+        kept_frames = set(_read_per_tilt_frame_names(filtered_p))
+    n_labeled = len(labeled_df)
+    dropped: list[dict] = []
+    if "rlnMicrographMovieName" in labeled_df.columns and kept_frames:
+        for i, row in labeled_df.iterrows():
+            frame = str(row["rlnMicrographMovieName"])
+            if frame in kept_frames:
+                continue
+            tilt_angle = None
+            if "rlnTomoNominalStageTiltAngle" in labeled_df.columns:
+                try:
+                    tilt_angle = float(row["rlnTomoNominalStageTiltAngle"])
+                except (TypeError, ValueError):
+                    tilt_angle = None
+            dropped.append({"index": int(i), "tilt_angle": tilt_angle, "frame": Path(frame).name})
+    n_kept = n_labeled - len(dropped) if kept_frames else n_labeled
+    return {"n_labeled": n_labeled, "n_kept": n_kept, "dropped": dropped, "labeled_df": labeled_df}
+
+
+def _resolve_denoised_mrc_for_job(job_dir: Path, project_path: Path, ts_name: str) -> Path | None:
+    tomo_df = read_tomograms_table(job_dir / "tomograms.star")
+    if tomo_df is not None and "rlnTomoName" in tomo_df.columns:
+        match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
+        if not match.empty:
+            mrc = resolve_volume_for_3dmod(match.iloc[0], project_path)
+            if mrc:
+                return Path(mrc)
+    dn_dir = job_dir / "denoised"
+    if dn_dir.is_dir():
+        for f in sorted(dn_dir.glob(f"{ts_name}_*Apx.mrc")):
+            tail = f.stem[len(ts_name) + 1 :]
+            if tail.endswith("Apx") and tail[:-3].replace(".", "", 1).isdigit():
+                return f
+    return None
+
 
 # (fact, ts_id, item, star_value, registry_value, status)
 Row = tuple[str, str, str, str, str, str]
