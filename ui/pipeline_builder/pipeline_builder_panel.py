@@ -16,7 +16,8 @@ from ui.current_project import current_project_state
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, next_instance_id
 from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
-from ui.ui_state import get_ui_state_manager, get_job_display_name, instance_id_to_job_type
+from services.models_base import InstanceId, instance_id_to_job_type
+from ui.ui_state import get_ui_state_manager, get_job_display_name
 from ui.pipeline_builder.job_tab_component import render_job_tab
 
 logger = logging.getLogger(__name__)
@@ -198,8 +199,8 @@ class PipelineBuilderPanel:
                 )
 
     def invalidate_tm_tabs(self):
-        tm_prefix = JobType.TEMPLATE_MATCH_PYTOM.value
-        stale = [iid for iid in list(self._job_content_containers.keys()) if iid.split("__")[0] == tm_prefix]
+        tm_type = JobType.TEMPLATE_MATCH_PYTOM
+        stale = [iid for iid in list(self._job_content_containers.keys()) if InstanceId.matches(iid, tm_type)]
         for iid in stale:
             container = self._job_content_containers.pop(iid, None)
             if container:
@@ -209,7 +210,7 @@ class PipelineBuilderPanel:
                     pass
 
         active = self.ui_mgr.active_instance_id
-        if active and active.split("__")[0] == tm_prefix:
+        if active and InstanceId.matches(active, tm_type):
             self._ensure_job_rendered(active)
             for iid, c in self._job_content_containers.items():
                 c.set_visibility(iid == active)
@@ -350,7 +351,7 @@ class PipelineBuilderPanel:
     def _cleanup_stale_overrides_for_instance(self, instance_id: str):
         state = current_project_state()
         removed_model = state.jobs.get(instance_id)
-        job_type_str = instance_id.split("__")[0]
+        job_type_str = InstanceId.split(instance_id)[0]
 
         refs_to_clean: set = set()
         if removed_model:

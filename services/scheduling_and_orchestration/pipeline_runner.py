@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from typing import TYPE_CHECKING
 
-from services.models_base import JobType
+from services.models_base import InstanceId, JobType
 from services.project_state import JobStatus
 from services.scheduling_and_orchestration.pipeline_orchestrator_service import JobTypeResolver
 
@@ -240,7 +240,7 @@ class PipelineRunnerService:
 
         type_instance_count: dict[str, int] = {}
         for iid in state.jobs:
-            base = iid.split("__")[0]
+            base = InstanceId.split(iid)[0]
             type_instance_count[base] = type_instance_count.get(base, 0) + 1
 
         found_instances: set = set()

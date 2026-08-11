@@ -34,7 +34,7 @@ import pandas as pd
 from nicegui import app, context, ui
 
 from services.configs.user_prefs_service import get_prefs_service
-from services.models_base import JobStatus, JobType, ListExtractionState, PickListType
+from services.models_base import InstanceId, JobStatus, JobType, ListExtractionState, PickListType
 from services.project_state import PickList, get_state_service
 from ui.current_project import current_project_state
 from services.visualization.imod_vis import generate_candidate_vis
@@ -2363,9 +2363,8 @@ def _available_denoise_methods_for_ts(project_state, project_path: Path, ts_name
     label is suffixed with the instance_id to keep selector keys unique/stable."""
     found: list[tuple[str, str, Path, Path]] = []  # (label, iid, job_dir, mrc)
     for iid, jm in (project_state.jobs or {}).items():
-        is_dn = (
-            getattr(jm, "job_type", None) == JobType.DENOISE_PREDICT
-            or iid.split("__")[0] == JobType.DENOISE_PREDICT.value
+        is_dn = getattr(jm, "job_type", None) == JobType.DENOISE_PREDICT or InstanceId.matches(
+            iid, JobType.DENOISE_PREDICT
         )
         if not is_dn:
             continue

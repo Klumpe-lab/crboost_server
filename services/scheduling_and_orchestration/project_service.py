@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from services.configs.mdoc_service import get_mdoc_service
 from services.configs.starfile_service import StarfileService
+from services.models_base import InstanceId
 from services.project_state import (
     JobType,
     get_state_service,
@@ -138,11 +139,7 @@ class ProjectService:
                 instances_to_remove = (
                     [instance_id]
                     if instance_id
-                    else [
-                        iid
-                        for iid in list(state.jobs.keys())
-                        if iid == job_type.value or iid.startswith(job_type.value + "__")
-                    ]
+                    else [iid for iid in list(state.jobs.keys()) if InstanceId.matches(iid, job_type)]
                 )
                 for iid in instances_to_remove:
                     state.jobs.pop(iid, None)
@@ -166,11 +163,7 @@ class ProjectService:
             if instance_id:
                 instances_to_remove = [instance_id]
             else:
-                instances_to_remove = [
-                    iid
-                    for iid in list(state.jobs.keys())
-                    if iid == job_type.value or iid.startswith(job_type.value + "__")
-                ]
+                instances_to_remove = [iid for iid in list(state.jobs.keys()) if InstanceId.matches(iid, job_type)]
             for iid in instances_to_remove:
                 state.jobs.pop(iid, None)
                 state.job_path_mapping.pop(iid, None)
@@ -489,10 +482,7 @@ class ProjectService:
                     logger.warning("Registry construction failed for %s: %s", project_dir, e)
 
             # 4. Save Project State (project_params.json) — includes import summary
-            params_json_path = project_dir / "project_params.json"
-            await self.backend.state_service.save_project(
-                save_path=params_json_path, project_path=project_dir, force=True
-            )
+            await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
             # 5. Initialize Relion (Create default_pipeline.star)
             logger.info("Initializing Relion project...")

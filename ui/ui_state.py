@@ -8,6 +8,7 @@ from typing import Any
 from collections.abc import Callable
 from pydantic import BaseModel, Field, ConfigDict
 from services.jobs.spec import PIPELINE_ORDER, display_name
+from services.models_base import InstanceId, instance_id_to_job_type
 from services.project_state import JobType
 
 logger = logging.getLogger(__name__)
@@ -160,18 +161,7 @@ def get_ordered_jobs() -> list[JobType]:
     return list(PIPELINE_ORDER)
 
 
-# ── Instance ID helpers ───────────────────────────────────────────────────────
-
-
-def instance_id_to_job_type(instance_id: str) -> JobType:
-    """Extract JobType from an instance_id.
-
-    'templatematching'          -> JobType.TEMPLATE_MATCH_PYTOM
-    'templatematching__2'       -> JobType.TEMPLATE_MATCH_PYTOM
-    'templatematching__ribosome'-> JobType.TEMPLATE_MATCH_PYTOM
-    """
-    base = instance_id.split("__")[0]
-    return JobType(base)
+# ── Instance ID helpers (decoding lives in services.models_base.InstanceId) ──
 
 
 def get_instance_order(instance_id: str) -> tuple:
@@ -180,11 +170,10 @@ def get_instance_order(instance_id: str) -> tuple:
         type_order = get_job_order(instance_id_to_job_type(instance_id))
     except ValueError:
         type_order = 999
-    parts = instance_id.split("__", 1)
-    if len(parts) == 1:
+    suffix = InstanceId.split(instance_id)[1]
+    if suffix is None:
         # base instance always sorts before any suffixed variant
         return (type_order, 0, "")
-    suffix = parts[1]
     try:
         return (type_order, int(suffix), "")
     except ValueError:
@@ -197,8 +186,7 @@ def get_instance_display_name(instance_id: str, job_model=None) -> str:
         if label:
             return label
 
-    parts = instance_id.split("__", 1)
-    base = parts[0]
+    base, suffix = InstanceId.split(instance_id)
 
     try:
         base_name = display_name(JobType(base))
@@ -213,10 +201,9 @@ def get_instance_display_name(instance_id: str, job_model=None) -> str:
             return f"{base_name} ({job_dir})"
 
     # Not yet run — fall back to instance_id suffix
-    if len(parts) == 1:
+    if suffix is None:
         return base_name
 
-    suffix = parts[1]
     if suffix.isdigit():
         return f"{base_name} #{suffix}"
     return f"{base_name} ({suffix})"
@@ -329,8 +316,7 @@ class UIStateManager:
 
     def get_instances_for_type(self, job_type: JobType) -> list[str]:
         """All selected instance_ids for a given job type, in pipeline order."""
-        prefix = job_type.value
-        return [s for s in self._state.selected_jobs if s == prefix or s.startswith(prefix + "__")]
+        return [s for s in self._state.selected_jobs if InstanceId.matches(s, job_type)]
 
     def is_job_type_selected(self, job_type: JobType) -> bool:
         return len(self.get_instances_for_type(job_type)) > 0
