@@ -1,27 +1,10 @@
+from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, PHASE_PARTICLES, PHASE_PREPROCESSING
 from services.project_state import JobType
 
-PHASE_PREPROCESSING = "preprocessing"
-PHASE_PARTICLES = "particles"
-
+# Derived view of services.jobs.spec — phase membership and order come from the
+# JOB_SPECS table (specs with phase=None, e.g. tsImport, are roster-hidden).
 PHASE_JOBS: dict[str, list[JobType]] = {
-    PHASE_PREPROCESSING: [
-        JobType.IMPORT_MOVIES,
-        JobType.FS_MOTION_CTF,
-        JobType.TILT_FILTER,
-        JobType.TS_ALIGNMENT,
-        JobType.MISS_ALIGN,
-        JobType.TS_CTF,
-        JobType.TS_RECONSTRUCT,
-        JobType.DENOISE_TRAIN,
-        JobType.DENOISE_PREDICT,
-    ],
-    PHASE_PARTICLES: [
-        JobType.TEMPLATE_MATCH_PYTOM,
-        JobType.TEMPLATE_EXTRACT_PYTOM,
-        JobType.SUBTOMO_EXTRACTION,
-        JobType.RECONSTRUCT_PARTICLE,
-        JobType.CLASS3D,
-    ],
+    phase: [s.job_type for s in JOB_SPECS if s.phase == phase] for phase in (PHASE_PREPROCESSING, PHASE_PARTICLES)
 }
 
 PHASE_META: dict[str, tuple] = {
@@ -36,29 +19,6 @@ PHASE_META: dict[str, tuple] = {
 ROSTER_ANCHOR: dict[str, str] = {
     PHASE_PREPROCESSING: "roster-anchor-preprocessing",
     PHASE_PARTICLES: "roster-anchor-particles",
-}
-
-JOB_DEPENDENCIES: dict[JobType, list[JobType]] = {
-    JobType.IMPORT_MOVIES: [],
-    JobType.FS_MOTION_CTF: [JobType.IMPORT_MOVIES],
-    JobType.TS_ALIGNMENT: [JobType.FS_MOTION_CTF],
-    # Optional insertable refinement: requires alignment, but tsCtf does NOT require it
-    # (tsCtf stays gated on TS_ALIGNMENT so the common no-missAlign pipeline is unchanged).
-    JobType.MISS_ALIGN: [JobType.TS_ALIGNMENT],
-    JobType.TS_CTF: [JobType.TS_ALIGNMENT],
-    # Optional insertable filter: runs after tsImport (its tomostar prerequisite is
-    # auto-added via _PREREQUISITES) and reads the fs-motion star for the DL pass.
-    # Gated positionally in the scheme before alignment; alignment does NOT declare a
-    # dep on it, so a no-filter pipeline is unchanged (mirrors MISS_ALIGN above).
-    JobType.TILT_FILTER: [JobType.FS_MOTION_CTF],
-    JobType.TS_RECONSTRUCT: [JobType.TS_CTF],
-    JobType.DENOISE_TRAIN: [JobType.TS_RECONSTRUCT],
-    JobType.DENOISE_PREDICT: [JobType.DENOISE_TRAIN, JobType.TS_RECONSTRUCT],
-    JobType.TEMPLATE_MATCH_PYTOM: [JobType.TS_CTF],
-    JobType.TEMPLATE_EXTRACT_PYTOM: [JobType.TEMPLATE_MATCH_PYTOM],
-    JobType.SUBTOMO_EXTRACTION: [JobType.TEMPLATE_EXTRACT_PYTOM],
-    JobType.RECONSTRUCT_PARTICLE: [JobType.SUBTOMO_EXTRACTION],
-    JobType.CLASS3D: [JobType.RECONSTRUCT_PARTICLE],
 }
 
 SB_SEP = "#e2e8f0"
@@ -77,7 +37,9 @@ def missing_deps(job_type: JobType, selected_instance_ids: set[str]) -> list[Job
             return []
         return [JobType.TS_RECONSTRUCT]
 
-    return [d for d in JOB_DEPENDENCIES.get(job_type, []) if not type_present(d)]
+    spec = JOB_SPEC_BY_TYPE.get(job_type)
+    deps = spec.dependencies if spec else ()
+    return [d for d in deps if not type_present(d)]
 
 
 def next_instance_id(job_type: JobType, existing_ui_ids: list[str], state_keys: list[str]) -> str:

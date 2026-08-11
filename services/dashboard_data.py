@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 from services.array_tasks import read_manifest, resolve_job_dir, scan_statuses
+from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobStatus, JobType, PickListType
 from services.tilt_series.build import _infer_position
 from services.visualization.preview_orchestrator import read_preview_manifest
@@ -209,19 +210,6 @@ _PILL_STAGES: list[tuple[str, str, JobType | None]] = [
 PREP_STAGES = _PILL_STAGES[:4]
 
 
-# Legacy-job fallback: when `.task_manifest.json` is absent, derive the TS
-# list from the stage's primary output star (which lists every TS the job
-# touched) and apply a coarse job-level status to all of them. Lets pre-
-# array-tracker projects show real "ok" pills instead of being stuck on
-# "pending" for stages that actually finished.
-_ARRAY_STAGE_OUTPUT_STAR: dict[JobType, str] = {
-    JobType.FS_MOTION_CTF: "fs_motion_and_ctf.star",
-    JobType.TS_ALIGNMENT: "aligned_tilt_series.star",
-    JobType.TS_CTF: "ts_ctf_tilt_series.star",
-    JobType.TS_RECONSTRUCT: "tomograms.star",
-}
-
-
 def _ts_names_from_star(p: Path) -> list[str]:
     """Return the rlnTomoName column from the first DataFrame in a star file."""
     if not p.exists():
@@ -266,7 +254,8 @@ def _array_stage_status(project_path: Path, jm) -> tuple[list[str], dict[str, st
             return list(items), scan_statuses(job_dir, items)
 
     jt = getattr(jm, "job_type", None)
-    primary = _ARRAY_STAGE_OUTPUT_STAR.get(jt)
+    spec = JOB_SPEC_BY_TYPE.get(jt)
+    primary = spec.array_output_star if spec else None
     candidates: list[Path] = []
     if primary:
         candidates.append(job_dir / primary)

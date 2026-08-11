@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from collections.abc import Callable
 from pydantic import BaseModel, Field, ConfigDict
+from services.jobs.spec import PIPELINE_ORDER, display_name
 from services.project_state import JobType
 
 logger = logging.getLogger(__name__)
@@ -142,59 +143,21 @@ class PanelWidgetRefs:
         self.status_indicator = None
 
 
-# ── Pipeline ordering ─────────────────────────────────────────────────────────
+# ── Pipeline ordering (all data lives in services.jobs.spec) ──────────────────
 
-PIPELINE_ORDER: list[JobType] = [
-    JobType.IMPORT_MOVIES,
-    JobType.FS_MOTION_CTF,
-    JobType.TS_IMPORT,
-    JobType.TILT_FILTER,
-    JobType.TS_ALIGNMENT,
-    JobType.MISS_ALIGN,
-    JobType.TS_CTF,
-    JobType.TS_RECONSTRUCT,
-    JobType.DENOISE_TRAIN,
-    JobType.DENOISE_PREDICT,
-    JobType.TEMPLATE_MATCH_PYTOM,
-    JobType.TEMPLATE_EXTRACT_PYTOM,
-    JobType.SUBTOMO_EXTRACTION,
-    JobType.RECONSTRUCT_PARTICLE,
-    JobType.CLASS3D,
-]
-
-JOB_DISPLAY_NAMES: dict[JobType, str] = {
-    JobType.IMPORT_MOVIES: "Import",
-    JobType.FS_MOTION_CTF: "Motion & CTF",
-    JobType.TS_IMPORT: "TS Import",
-    JobType.TS_ALIGNMENT: "Alignment",
-    JobType.MISS_ALIGN: "Miss Align",
-    JobType.TS_CTF: "TS CTF",
-    JobType.TILT_FILTER: "Tilt Filter",
-    JobType.TS_RECONSTRUCT: "Reconstruct",
-    JobType.DENOISE_TRAIN: "Denoise Train",
-    JobType.DENOISE_PREDICT: "Denoise Predict",
-    JobType.TEMPLATE_MATCH_PYTOM: "Template Match",
-    JobType.TEMPLATE_EXTRACT_PYTOM: "Template Extract",
-    JobType.SUBTOMO_EXTRACTION: "Subtomo Extraction",
-    JobType.RECONSTRUCT_PARTICLE: "Reconstruct Particle",
-    JobType.CLASS3D: "Class 3D",
-    JobType.MERGED_SOURCES: "Merged Sources",
-}
+_JOB_ORDER: dict[JobType, int] = {jt: i for i, jt in enumerate(PIPELINE_ORDER)}
 
 
 def get_job_order(job_type: JobType) -> int:
-    try:
-        return PIPELINE_ORDER.index(job_type)
-    except ValueError:
-        return 999
+    return _JOB_ORDER.get(job_type, 999)
 
 
 def get_job_display_name(job_type: JobType) -> str:
-    return JOB_DISPLAY_NAMES.get(job_type, job_type.value)
+    return display_name(job_type)
 
 
 def get_ordered_jobs() -> list[JobType]:
-    return PIPELINE_ORDER.copy()
+    return list(PIPELINE_ORDER)
 
 
 # ── Instance ID helpers ───────────────────────────────────────────────────────
@@ -238,7 +201,7 @@ def get_instance_display_name(instance_id: str, job_model=None) -> str:
     base = parts[0]
 
     try:
-        base_name = JOB_DISPLAY_NAMES.get(JobType(base), base)
+        base_name = display_name(JobType(base))
     except ValueError:
         base_name = base
 

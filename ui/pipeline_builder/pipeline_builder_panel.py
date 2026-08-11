@@ -2,12 +2,12 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import ClassVar
 from collections.abc import Callable
 
 from nicegui import ui
 
 from backend import CryoBoostBackend
+from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobStatus
 from services.project_state import JobType
 
@@ -385,16 +385,10 @@ class PipelineBuilderPanel:
             asyncio.create_task(self.backend.save_project(self.ui_mgr.project_path))
         self.rebuild_pipeline_ui()
 
-    # Job types that require a prerequisite job to exist in the pipeline.
-    # When adding the key job type, the value job type is auto-added if missing.
-    _PREREQUISITES: ClassVar[dict[JobType, JobType]] = {
-        JobType.TS_ALIGNMENT: JobType.TS_IMPORT,
-        JobType.TILT_FILTER: JobType.TS_IMPORT,
-    }
-
     def _ensure_prerequisites(self, job_type: JobType, state):
-        """Auto-add prerequisite jobs that this job type depends on."""
-        prereq = self._PREREQUISITES.get(job_type)
+        """Auto-add prerequisite jobs that this job type depends on (JobSpec.prerequisite)."""
+        spec = JOB_SPEC_BY_TYPE.get(job_type)
+        prereq = spec.prerequisite if spec else None
         if prereq is None:
             return
 
