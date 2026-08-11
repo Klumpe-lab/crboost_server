@@ -422,14 +422,29 @@ class PipelineBuilderPanel:
 
     @staticmethod
     def _restore_interactive_state(job_type: JobType, instance_id: str, state):
-        """Restore persisted labels/state when re-creating an interactive job."""
+        """Restore persisted labels/state when re-creating an interactive job.
+        Labels come from the registry's per-frame filter verdicts (the last
+        filter run stamped them) — the ProjectState tilt_filter_labels mirror
+        is gone (roadmap 02 stage 4)."""
         if job_type != JobType.TILT_FILTER:
             return
         job_model = state.jobs.get(instance_id)
         if not job_model:
             return
-        if state.tilt_filter_labels:
-            job_model.tilt_labels = dict(state.tilt_filter_labels)
+        from services.tilt_series import get_registry_for
+
+        try:
+            reg = get_registry_for(state.project_path)
+        except Exception:
+            return
+        labels = {
+            f.id: ("bad" if f.is_filtered_out else "good")
+            for ts in reg.all_tilt_series()
+            for f in ts.frames
+            if f.is_filtered_out or f.filter_probability is not None
+        }
+        if labels:
+            job_model.tilt_labels = labels
             job_model.execution_status = JobStatus.SUCCEEDED
             # Restore output paths if the filtered star already exists on disk
             filtered_p = state.project_path / "TiltFilter" / "tiltseries_filtered.star"

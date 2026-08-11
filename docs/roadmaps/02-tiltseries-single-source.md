@@ -185,6 +185,28 @@ proven by the stage-0 harness runs, so the per-section runtime gate collapsed to
   recon section's tomograms.star read + `recon_mrc_map` (not in the six-section scope),
   tsCtf star's placeholder-ridden "CTF res" strip row (dropped — the registry has no such fact).
 
+## Stage 4 record (code-complete 2026-08-11; runtime check owed)
+
+The `ProjectState` TS mirror is gone: `tilt_metadata` (was write-only — dead),
+`import_position_details` (write-only — dead), `import_tilt_series_details`,
+`tilt_filter_labels`, and the `ImportPositionSummary`/`ImportTiltSeriesSummary` models.
+Migration is forward-only exactly as planned: the hand-rolled loader now ignores the old JSON
+keys, and the next save drops them (on-disk JSON untouched until then).
+
+Re-pointed consumers:
+- Roster's Dataset TS expansion → `get_registry_for(...).all_tilt_series()`
+  (stage/beam/frame_count/mdoc_filename; selected split via `TiltSeries.is_selected`).
+  Pre-registry projects just lose the expansion; the header counts still render.
+- Tilt-filter panel: `job_model.tilt_labels` is the ONLY label store. Per-click persistence of
+  unsaved labels went away with the mirror (clicks mutate the shared in-memory dict; Save
+  persists) — acceptable, Save is the explicit action.
+- `_restore_interactive_state` (re-creating the TILT_FILTER job) rebuilds labels from the
+  registry's per-frame verdict stamps (`Frame.id` == cryoBoostKey) instead of the mirror.
+
+Kept deliberately: the scalar `import_total_*`/`import_selected_*` counts — the registry only
+holds *imported* TS, so "12 of 14" totals can't be derived from it; the scalars stay the record
+of the import-time selection. `tilt_filter_png_dir` stays (thumbnail cache pointer, not TS data).
+
 ## Stages
 
 1. **`InstanceId` value object** (`services/models_base.py`): frozen dataclass with

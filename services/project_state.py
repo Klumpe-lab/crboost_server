@@ -224,25 +224,6 @@ class ParticleSpecies(BaseModel):
         return next((m for m in self.masks if m.id == mask_id), None)
 
 
-class ImportPositionSummary(BaseModel):
-    """Per-position summary persisted at project creation."""
-
-    stage_position: int
-    beam_count: int = 1
-    tilt_count: int = 0
-    selected: bool = True
-
-
-class ImportTiltSeriesSummary(BaseModel):
-    """Per-tilt-series record persisted at project creation."""
-
-    stage_position: int
-    beam_position: int
-    tilt_count: int = 0
-    selected: bool = True
-    mdoc_filename: str = ""
-
-
 def _migrate_v1_to_v2(data: dict[str, Any]) -> None:
     """Idempotent v1→v2 migration. Mutates `data` in place.
 
@@ -673,14 +654,11 @@ class ProjectState(BaseModel):
     import_selected_tilt_series: int = 0
     import_source_directory: str = ""
     import_frame_extension: str = ""
-    import_position_details: list[ImportPositionSummary] = Field(default_factory=list)
-    import_tilt_series_details: list[ImportTiltSeriesSummary] = Field(default_factory=list)
-
-    # Per-tilt MDOC metadata, keyed by frame filename stem (= cryoBoostKey)
-    tilt_metadata: dict[str, dict[str, float]] = Field(default_factory=dict)
-
-    # Tilt filtering (standalone tool, not a pipeline job)
-    tilt_filter_labels: dict[str, str] = Field(default_factory=dict)
+    # Per-TS/per-tilt import details + filter labels used to be mirrored here
+    # (import_position_details / import_tilt_series_details / tilt_metadata /
+    # tilt_filter_labels); the TiltSeriesRegistry is the single source now
+    # (roadmap 02 stage 4). Old JSON keys are ignored on load and dropped on
+    # the next save (forward-only migration).
     tilt_filter_png_dir: str | None = None
 
     _dirty: bool = PrivateAttr(default=False)
@@ -1051,23 +1029,10 @@ class ProjectState(BaseModel):
         project_state.import_selected_tilt_series = data.get("import_selected_tilt_series", 0)
         project_state.import_source_directory = data.get("import_source_directory", "")
         project_state.import_frame_extension = data.get("import_frame_extension", "")
-        try:
-            project_state.import_position_details = [
-                ImportPositionSummary(**pd) for pd in data.get("import_position_details", [])
-            ]
-            project_state.import_tilt_series_details = [
-                ImportTiltSeriesSummary(**td) for td in data.get("import_tilt_series_details", [])
-            ]
-        except Exception as e:
-            logger.warning("Could not load import details: %s", e)
-            project_state.import_position_details = []
-            project_state.import_tilt_series_details = []
+        # import_position_details / import_tilt_series_details / tilt_metadata /
+        # tilt_filter_labels keys from older projects are deliberately ignored —
+        # the TiltSeriesRegistry is the single source (dropped on next save).
 
-        # Restore per-tilt MDOC metadata
-        project_state.tilt_metadata = data.get("tilt_metadata", {})
-
-        # Restore tilt filter state
-        project_state.tilt_filter_labels = data.get("tilt_filter_labels", {})
         project_state.tilt_filter_png_dir = data.get("tilt_filter_png_dir")
 
         param_class_map = jobtype_paramclass()

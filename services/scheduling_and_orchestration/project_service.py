@@ -373,12 +373,7 @@ class ProjectService:
 
             import getpass
             from services.project_nickname import nickname_for
-            from services.project_state import (
-                ProjectState,
-                ImportPositionSummary,
-                ImportTiltSeriesSummary,
-                SHARED_OWNER,
-            )
+            from services.project_state import ProjectState, SHARED_OWNER
 
             state = ProjectState()
             state.project_name = project_name
@@ -436,17 +431,9 @@ class ProjectService:
                 state.import_selected_tilt_series = import_summary.get("selected_tilt_series", 0)
                 state.import_source_directory = import_summary.get("source_directory", "")
                 state.import_frame_extension = import_summary.get("frame_extension", "")
-                position_details = import_summary.get("position_details", [])
-                state.import_position_details = [
-                    pd if isinstance(pd, ImportPositionSummary) else ImportPositionSummary(**pd)
-                    for pd in position_details
-                ]
-                ts_details = import_summary.get("tilt_series_details", [])
-                state.import_tilt_series_details = [
-                    td if isinstance(td, ImportTiltSeriesSummary) else ImportTiltSeriesSummary(**td)
-                    for td in ts_details
-                ]
-                state.tilt_metadata = import_summary.get("tilt_metadata", {})
+                # Per-position/per-TS details + tilt_metadata are NOT mirrored
+                # into ProjectState anymore — the TiltSeriesRegistry built below
+                # is the single source (roadmap 02 stage 4).
 
             # Create Dirs & Import Data (runs blocking I/O in thread pool)
             import_prefix = f"{project_name}_"
