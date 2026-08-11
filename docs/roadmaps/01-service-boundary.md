@@ -69,6 +69,53 @@ stays open.
 - Confirm no NiceGUI dependency in `ui/dashboard/data.py` and `ui/dashboard/pixel_sanity.py:34-437`
   (audit says none; re-verify at move time — a stray `ui.notify` would need extracting first).
 
+## Stage 0 record (gathered 2026-08-11, sandbox grep)
+
+- **Zero-arg `get_project_state()` call sites** (post-roadmap-00 tree): 9 UI files —
+  `aggregation_merge_card.py` ×15, `tomo_dashboard_dialog.py` ×11, `tilt_filter_panel.py` ×10,
+  `io_config_component.py` ×11, `dashboard/data.py` ×4, `job_tab_component.py` ×3 (+1 local import),
+  `status_indicator.py` ×2, `pipeline_roster.py` ×1 (+1 local import), `config_tab.py` ×1.
+  Zero calls in `services/` outside `project_state.py` (the two `aggregation_authoritative.py`
+  mentions are warning docstrings).
+- **SURPRISE — 3 of the audit's 4 backend `.state` conversions are dead code:**
+  `backend.get_job_parameters` (:1646), `backend.update_job_parameters` (:1674), and
+  `backend.get_initial_parameters` (:1757) have **zero callers repo-wide** → deleted in stage 1
+  instead of converted. Only `project_service.delete_job:120` is live (2 UI callers via
+  `backend.delete_job`) → takes explicit `project_path` threaded from the UI callers.
+- **SURPRISE — `set_project_state` (project_state.py:1169) has zero callers** → deleted in stage 1.
+- **SURPRISE — 6 additional `.state` property uses in UI files** the audit didn't count:
+  `pipeline_builder_panel.py` :260,:351,:378,:601 and `pipeline_roster.py` :221,:377 → repointed to
+  the UI wrapper in stage 1.
+- **`save_project` UI call sites: now 22, not 28** (tree moved since audit): tomo_dashboard_dialog ×7,
+  tilt_filter_panel ×5, pipeline_builder_panel ×4, job_tab_component ×2, io_config_component ×2,
+  template_workbench ×1, species_workbench_panel ×1. Classification deferred to stage 4.
+- **NiceGUI check for stage 3:** `ui/dashboard/data.py` clean (no nicegui import; UI deps are only
+  `task_utils` + the accessor stage 1 replaces). `ui/dashboard/pixel_sanity.py` imports nicegui at
+  module top — the :34-437 pure band must be split from the renderers at move time as the audit said.
+- **ui→services import matrix** (import statements per file, top offenders): tomo_dashboard_dialog 27,
+  pipeline_roster 10, aggregation_merge_card 7, pipeline_builder_panel 6, tilt_filter_panel 5,
+  dashboard/data.py 5, io_config_component 4, job_plugins/template_match 4,
+  job_plugins/candidate_extract 4, data_import_panel 4; 39 files total import services directly.
+
+## Stage 1 record (executed 2026-08-11)
+
+Landed as planned (ui/current_project.py, 9 files repointed, 6 `.state` property uses repointed,
+`delete_job` takes explicit `project_path` threaded from both UI callers, dead
+`get_job_parameters`/`update_job_parameters`/`get_initial_parameters`/`set_project_state`/
+`StateService.ensure_job_initialized` deleted, `get_project_state()` + `StateService.state` deleted).
+Two deviations:
+
+- **`StateService.save_project`'s no-path branch kept a contained tab-context resolve** (lazy
+  `ui.ui_state` import inside the method, loudly commented): 22 UI sites still call bare
+  `save_project()` and migrating them is stage 4's job. This is now the LAST services→ui inversion;
+  stage 4 deletes it. Behavior change vs before: a path-less save with no client context now logs a
+  warning instead of silently no-opping against a blank state (same net effect, visible).
+- **Roadmap-00 fallout found during this stage:** ruff's F401 autofix had stripped load-bearing
+  *re-exports* (`JobCategory`, `JobStatus`) from `services/project_state.py` — ImportError on boot.
+  Restored with the `as X` redundant-alias idiom (autofix-proof). A repo-wide import-resolution sweep
+  (scratchpad script: every internal `from X import name` checked against X's definitions) now passes;
+  lesson for stage 7's import-linter: re-exports must use `as X` or `__all__`.
+
 ## Stages (each committable)
 
 1. **Undo the inversion.** Add `ui/current_project.py` with `current_project_state()` (tab-context
