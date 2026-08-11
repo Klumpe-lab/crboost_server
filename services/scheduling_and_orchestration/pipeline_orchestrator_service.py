@@ -9,6 +9,7 @@ from services.computing.slurm_service import normalize_slurm_ids
 from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
+from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS
 from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus
 from typing import TYPE_CHECKING
@@ -506,24 +507,8 @@ class PipelineOrchestratorService:
         if job_type == JobType.IMPORT_MOVIES:
             return self._build_import_command(job_model)
 
-        driver_map = {
-            JobType.FS_MOTION_CTF: "fs_motion_and_ctf.py",
-            JobType.TS_IMPORT: "ts_import.py",
-            JobType.TS_ALIGNMENT: "ts_alignment.py",
-            JobType.MISS_ALIGN: "miss_align.py",
-            JobType.TS_CTF: "ts_ctf.py",
-            JobType.TILT_FILTER: "tilt_filter.py",
-            JobType.TS_RECONSTRUCT: "ts_reconstruct.py",
-            JobType.DENOISE_TRAIN: "denoise_train.py",
-            JobType.DENOISE_PREDICT: "denoise_predict.py",
-            JobType.TEMPLATE_MATCH_PYTOM: "template_match_pytom.py",
-            JobType.TEMPLATE_EXTRACT_PYTOM: "extract_candidates_pytom.py",
-            JobType.SUBTOMO_EXTRACTION: "subtomo_extraction.py",
-            JobType.RECONSTRUCT_PARTICLE: "reconstruct_particle.py",
-            JobType.CLASS3D: "class3d.py",
-        }
-
-        script = driver_map.get(job_type)
+        spec = JOB_SPEC_BY_TYPE.get(job_type)
+        script = spec.driver if spec else None
         if not script:
             return "echo 'Unknown Driver'; exit 1"
 
@@ -811,20 +796,11 @@ class PipelineOrchestratorService:
 
 
 class JobTypeResolver:
+    # Reverse of JobSpec.driver. BEHAVIOR CHANGE vs the old hand-table (stage 6c,
+    # 2026-08-11): tilt_filter.py is now included — the hand-table omitted it, so
+    # tiltFilter job dirs resolved to None here.
     DRIVER_TO_JOBTYPE: ClassVar[dict[str, str]] = {
-        "fs_motion_and_ctf.py": "fsMotionAndCtf",
-        "ts_import.py": "tsImport",
-        "ts_alignment.py": "aligntiltsWarp",
-        "miss_align.py": "missAlign",
-        "ts_ctf.py": "tsCtf",
-        "ts_reconstruct.py": "tsReconstruct",
-        "denoise_train.py": "denoisetrain",
-        "denoise_predict.py": "denoisepredict",
-        "template_match_pytom.py": "templatematching",
-        "extract_candidates_pytom.py": "tmextractcand",
-        "subtomo_extraction.py": "subtomoExtraction",
-        "reconstruct_particle.py": "reconstructParticle",
-        "class3d.py": "class3d",
+        s.driver: s.job_type.value for s in JOB_SPECS if s.driver is not None
     }
 
     def __init__(self, star_handler: StarfileService):
