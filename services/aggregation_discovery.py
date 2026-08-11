@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from collections.abc import Iterable
 
-from services.models_base import JobType
+from services.models_base import JobType, split_species_id
 
 logger = logging.getLogger(__name__)
 
@@ -110,12 +110,13 @@ def _scan_project(proj_dir: Path, seen_optsets: set) -> list[SubtomoCandidate]:
         seen_optsets.add(key)
 
         # Resolve the species this subtomo job belongs to, mirroring
-        # tomo_dashboard's _resolve_species: instance_id "__" suffix → job's
+        # services.models_base.resolve_species (dict-based here because jobs are
+        # raw JSON dicts, not models): instance_id "__" suffix → job's
         # species_id field → single-species fallback. A bare/numbered instance
         # (e.g. "subtomoExtraction__2") has no real species in the suffix, so we
         # fall through rather than show "2".
         sp = None
-        sid = instance_id.split("__", 1)[1] if "__" in instance_id else None
+        sid = split_species_id(instance_id)
         if sid and sid in species_by_id:
             sp = species_by_id[sid]
         if sp is None:

@@ -16,7 +16,9 @@ import pandas as pd
 
 from services.array_tasks import read_manifest, resolve_job_dir, scan_statuses
 from services.jobs.spec import JOB_SPEC_BY_TYPE
-from services.models_base import JobStatus, JobType, PickListType
+from services.models_base import InstanceId, JobStatus, JobType, PickListType
+from services.models_base import resolve_species as resolve_species
+from services.models_base import split_species_id as split_species_id
 from services.tilt_series.build import _infer_position
 from services.visualization.preview_orchestrator import read_preview_manifest
 
@@ -60,39 +62,9 @@ def find_job_by_type(project_state, jt: JobType) -> tuple[str, object] | None:
     `instance_id` whose base prefix matches `jt.value` (covers `__species`
     instances)."""
     for iid, jm in (project_state.jobs or {}).items():
-        if getattr(jm, "job_type", None) == jt or iid.split("__")[0] == jt.value:
+        if getattr(jm, "job_type", None) == jt or InstanceId.matches(iid, jt):
             return iid, jm
     return None
-
-
-def split_species_id(instance_id: str) -> str | None:
-    """`templatematching__ribosome` → `ribosome`; bare instance_id → None."""
-    parts = instance_id.split("__", 1)
-    return parts[1] if len(parts) > 1 else None
-
-
-def resolve_species(state, job_model, instance_id: str):
-    """Find the ParticleSpecies a per-particle job is attached to. Tries:
-    1. `instance_id` suffix (`templatematching__ribosome` → `ribosome`).
-    2. `job_model.species_id` field (set even when instance_id is bare).
-    3. Single-species fallback: if exactly one species exists in the
-       project, attribute the job to it.
-    Returns (species or None, species_id or None)."""
-    sid = split_species_id(instance_id)
-    if sid:
-        sp = state.get_species(sid)
-        if sp:
-            return sp, sid
-    sid2 = getattr(job_model, "species_id", None)
-    if sid2:
-        sp = state.get_species(sid2)
-        if sp:
-            return sp, sid2
-        return None, sid2
-    if len(state.species_registry) == 1:
-        sp = state.species_registry[0]
-        return sp, sp.id
-    return None, None
 
 
 def glyph_for(list_type: PickListType) -> str:
@@ -476,7 +448,7 @@ def collect_dashboard_journey(project_state, project_path: Path) -> tuple[dict[s
         if jt is None:
             continue
         for iid, jm in (project_state.jobs or {}).items():
-            if getattr(jm, "job_type", None) != jt and iid.split("__")[0] != jt.value:
+            if getattr(jm, "job_type", None) != jt and not InstanceId.matches(iid, jt):
                 continue
             items, statuses = _array_stage_status(project_path, jm)
             if not items:

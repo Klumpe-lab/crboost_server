@@ -143,38 +143,3 @@ def get_selected_mask(species):
         return None
     get_sel = getattr(species, "get_selected_mask", None)
     return get_sel() if callable(get_sel) else None
-
-
-def resolve_species_from_job(state, job_model, instance_id: str | None = None):
-    """Find the ParticleSpecies a per-particle job is attached to, using
-    three fallbacks in order:
-
-    1. instance_id suffix (`templatematching__ribosome` -> `ribosome`).
-    2. job_model.species_id field (set even when instance_id is bare).
-    3. Single-species fallback: if exactly one species exists in the
-       project, attribute the job to it.
-
-    Returns (species or None, species_id or None). Mirrors the logic
-    that ui/tomo_dashboard_dialog.py:_resolve_species uses; consolidated
-    here so job-config plugins can reuse it without duplicating the
-    fallback chain."""
-    if instance_id:
-        parts = instance_id.split("__", 1)
-        if len(parts) > 1:
-            sid = parts[1]
-            sp = state.get_species(sid) if hasattr(state, "get_species") else None
-            if sp is not None:
-                return sp, sid
-
-    sid2 = getattr(job_model, "species_id", None)
-    if sid2:
-        sp = state.get_species(sid2) if hasattr(state, "get_species") else None
-        if sp is not None:
-            return sp, sid2
-        return None, sid2
-
-    registry = getattr(state, "species_registry", None) or []
-    if len(registry) == 1:
-        sp = registry[0]
-        return sp, sp.id
-    return None, None

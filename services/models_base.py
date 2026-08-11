@@ -1,5 +1,6 @@
 # services/models_base.py
 from __future__ import annotations
+from dataclasses import dataclass
 from enum import Enum
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -96,6 +97,89 @@ class JobType(str, Enum):
         except ValueError:
             valid = [e.value for e in cls]
             raise ValueError(f"Unknown job type '{value}'. Valid types: {valid}") from None
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceId:
+    """Typed form of the job instance-id grammar: ``{job_type}`` or
+    ``{job_type}__{suffix}``, where the suffix is a species id
+    (``templatematching__ribosome``) or a numeric disambiguator
+    (``templatematching__2``). This class is the ONE place the ``__``
+    separator is known; nothing else may hand-split an instance id."""
+
+    job_type: JobType
+    species_id: str | None = None
+
+    @staticmethod
+    def split(raw: str) -> tuple[str, str | None]:
+        """Lenient ``(base, suffix)`` decode; suffix is None for bare ids.
+        Use when the base may not be a valid JobType (display of unknown ids)."""
+        base, _, suffix = raw.partition("__")
+        return base, (suffix or None)
+
+    @classmethod
+    def parse(cls, raw: str) -> InstanceId:
+        """Strict decode; raises ValueError when the base is not a JobType."""
+        base, suffix = cls.split(raw)
+        return cls(JobType(base), suffix)
+
+    @classmethod
+    def matches(cls, raw: str, job_type: JobType) -> bool:
+        """True when ``raw`` is an instance of ``job_type`` (bare or suffixed)."""
+        return cls.split(raw)[0] == job_type.value
+
+    def __str__(self) -> str:
+        if self.species_id is None:
+            return self.job_type.value
+        return f"{self.job_type.value}__{self.species_id}"
+
+
+def instance_id_to_job_type(instance_id: str) -> JobType:
+    """Extract JobType from an instance_id.
+
+    'templatematching'          -> JobType.TEMPLATE_MATCH_PYTOM
+    'templatematching__2'       -> JobType.TEMPLATE_MATCH_PYTOM
+    'templatematching__ribosome'-> JobType.TEMPLATE_MATCH_PYTOM
+    """
+    return InstanceId.parse(instance_id).job_type
+
+
+def split_species_id(instance_id: str) -> str | None:
+    """`templatematching__ribosome` → `ribosome`; bare instance_id → None."""
+    return InstanceId.split(instance_id)[1]
+
+
+def resolve_species(state, job_model, instance_id: str | None = None):
+    """Find the ParticleSpecies a per-particle job is attached to, using
+    three fallbacks in order:
+
+    1. `instance_id` suffix (`templatematching__ribosome` → `ribosome`),
+       accepted only when it names a species that exists in the registry
+       (a numeric disambiguator like `subtomoExtraction__2` falls through).
+    2. `job_model.species_id` field (set even when instance_id is bare).
+    3. Single-species fallback: if exactly one species exists in the
+       project, attribute the job to it.
+
+    Returns (species or None, species_id or None). THE canonical chain —
+    formerly triplicated across dashboard_data / template_metadata /
+    aggregation_authoritative."""
+    if instance_id:
+        sid = split_species_id(instance_id)
+        if sid:
+            sp = state.get_species(sid) if hasattr(state, "get_species") else None
+            if sp is not None:
+                return sp, sid
+    sid2 = getattr(job_model, "species_id", None)
+    if sid2:
+        sp = state.get_species(sid2) if hasattr(state, "get_species") else None
+        if sp is not None:
+            return sp, sid2
+        return None, sid2
+    registry = getattr(state, "species_registry", None) or []
+    if len(registry) == 1:
+        sp = registry[0]
+        return sp, sp.id
+    return None, None
 
 
 class PickListType(str, Enum):
