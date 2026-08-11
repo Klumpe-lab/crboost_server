@@ -113,7 +113,7 @@ def _get_array_progress(job_model, project_path: Path | None = None) -> tuple[in
     # submission writing over a settled item), and counting files then reports a
     # failure on a job that succeeded — the red badge stays lit after a good
     # rerun. `.ok` wins, matching scan_statuses() used by the per-TS sub-rows.
-    from ui.components.task_utils import scan_statuses
+    from services.array_tasks import scan_statuses
 
     statuses = scan_statuses(job_dir, items)
     n_ok = sum(1 for s in statuses.values() if s == "ok")
@@ -130,7 +130,7 @@ def _get_array_ts_statuses(
     job_model, project_path: Path | None = None
 ) -> tuple[list[str], dict[str, str], dict[str, str]] | None:
     """Return (items, statuses, display_names) for per-TS sub-rows, or None."""
-    from ui.components.task_utils import shorten_ts_names, scan_statuses
+    from services.array_tasks import shorten_ts_names, scan_statuses
 
     job_dir = _resolve_array_job_dir(job_model, project_path)
     if job_dir is None:
@@ -584,7 +584,7 @@ class RosterWidget(FingerprintedView):
         to the matching entry there — no pop-up dialog, nothing to get auto-closed
         by a background refresh.
         """
-        from ui.components.task_utils import sort_ts_by_position
+        from services.array_tasks import sort_ts_by_position
 
         _TS_COLORS = {"ok": "#16a34a", "fail": "#dc2626", "running": "#2563eb", "pending": "#d1d5db"}
         _TS_ICONS = {"ok": "check_circle", "fail": "error", "running": "sync", "pending": "radio_button_unchecked"}
@@ -1532,9 +1532,9 @@ class RosterWidget(FingerprintedView):
         anchor in the sidebar instead of a button that pops in and out as
         jobs run.
         """
-        from ui.dashboard.data import has_any_previews_rendered
+        from services.dashboard_data import has_any_previews_rendered
 
-        rendered = has_any_previews_rendered()
+        rendered = has_any_previews_rendered(current_project_state())
         svg = self._load_svg(_TOMO_DASHBOARD_SVG).replace("currentColor", SB_MUTE)
 
         container = (

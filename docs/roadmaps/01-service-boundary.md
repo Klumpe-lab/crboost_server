@@ -196,6 +196,31 @@ Runtime checklist (3a–3c together): boot; open an array-history project (`proj
 pills (data path); pixel-sanity table with warnings (pixel_chain path); one array-job submit if
 convenient (array_job_base import change).
 
+## Stage 3 record (executed 2026-08-11)
+
+Landed as scoped; repo-wide ruff clean, zero old-path imports left. Sizes: `services/array_tasks.py`
+158, `services/dashboard_data.py` 682, `services/pixel_chain.py` 430; shims: `task_utils.py` 18,
+`data.py` 50; `pixel_sanity.py` down to 267 (renderers only). Execution notes:
+
+- **data.py had 2 MORE function-local task_utils imports (:455-456)** the scope's site count missed —
+  caught by the post-edit grep sweep (9 sites, not 7). Reinforces stage 7's case: local imports dodge
+  every static count.
+- Dead `has_any_extract_jobs`/`has_any_dashboard_data` re-verified dead → deleted, not moved.
+- All 12 dialog `job_dir_for` sites sat inside functions already holding `project_state` → threading
+  was purely mechanical; no new accessor fetches anywhere. `has_any_previews_rendered(state)`'s one
+  caller (roster) passes `current_project_state()` at the UI edge.
+- `aggregation_authoritative`'s `_job_dir`/`_species_id_for_job` docstrings repointed; note their
+  headless re-implementations could now collapse into `services.dashboard_data.job_dir_for`/
+  `resolve_species` (both sides are headless now) — left for a deliberate later pass, not a move.
+- Shims: `task_utils` (same-name `as X`), `data.py` (old `_names` via `__all__` re-export),
+  `pixel_sanity` (re-exports + old-name alias for the renamed renderer). Delete after one release;
+  stage 7's import-linter should ban importing them from new code.
+- Pre-existing format drift observed (NOT formatted — not this change's lines): dialog (4 hunks),
+  roster, merge_card, array_job_base. All new/rewritten files are format-clean.
+- **Commit partition: 3a alone is committable; 3b+3c must land as ONE commit** — `job_dir_for`'s
+  signature change breaks an unmodified dialog at runtime (shim can't paper over an arity change),
+  and the dialog carries 3b and 3c imports together.
+
 ## Stages (each committable)
 
 1. **Undo the inversion.** *(DONE 2026-08-11 — record above.)* Add `ui/current_project.py` with `current_project_state()` (tab-context
@@ -206,8 +231,8 @@ convenient (array_job_base import change).
 2. **Extract `CurationSessionService`** *(DONE 2026-08-11 — record above.)* (`backend.py:536-1412` →
    `services/curation/session_service.py`). Pure move: the facade keeps same-named delegating methods
    (UI callers unchanged). The session registry file, ssh/REST plumbing, and save/load logic move wholesale.
-3. **Move the UI-resident services** *(scoped — see Stage 3 scope record above)* (pure moves with thin
-   re-export shims for one release):
+3. **Move the UI-resident services** *(DONE 2026-08-11 — scope + execution records above)* (pure moves
+   with thin re-export shims for one release):
    - `ui/dashboard/data.py` → `services/dashboard_data.py` (the collectors; `ui/dashboard/` keeps
      rendering only). Drop the `_`-prefixes on what is now a public API.
    - `ui/dashboard/pixel_sanity.py:34-437` → `services/pixel_chain.py`; renderers stay.

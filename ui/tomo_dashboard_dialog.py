@@ -55,26 +55,27 @@ from ui.dashboard.figures import (
     _safe_floats,
     _stats,
 )
-from ui.dashboard.data import (
-    _SPECIES_OVERLAY_COLORS,
-    _candidate_extract_instances,
-    _collect_dashboard_journey,
-    _collect_species_journey,
-    _find_job_by_type,
-    _glyph_for,
-    _job_dir_for,
-    _journey_signature,
-    _matching_subtomo_instance,
-    _position_label,
-    _read_tomograms_table,
-    _recon_mrc_map,
-    _resolve_species,
-    _resolve_volume_for_3dmod,
-    _split_species_id,
-    _template_match_instances,
-    _vis_asset_url,
+from services.dashboard_data import (
+    SPECIES_OVERLAY_COLORS,
+    candidate_extract_instances,
+    collect_dashboard_journey,
+    collect_species_journey,
+    find_job_by_type,
+    glyph_for,
+    job_dir_for,
+    journey_signature,
+    matching_subtomo_instance,
+    position_label,
+    read_tomograms_table,
+    recon_mrc_map,
+    resolve_species,
+    resolve_volume_for_3dmod,
+    split_species_id,
+    template_match_instances,
+    vis_asset_url,
 )
-from ui.dashboard.pixel_sanity import _apply_sanity_rules, _compute_pixel_chain, _render_pixel_sanity_table
+from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
+from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.dashboard.strip import build_strip
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ _curation_flight = SingleFlight()
 
 
 # Default overlay color per workbench-authored list type, chosen to sit apart from
-# the per-species auto palette (_SPECIES_OVERLAY_COLORS) so a manual/imported/merged
+# the per-species auto palette (SPECIES_OVERLAY_COLORS) so a manual/imported/merged
 # layer reads as a distinct lane over the same tomogram. Persisted onto the PickList
 # at creation (PickList.color), so this is only the seed — retuning it here doesn't
 # restyle already-registered lists.
@@ -324,7 +325,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         return
 
     project_path = Path(state.project_path)
-    _, ts_names0 = _collect_dashboard_journey(state, project_path)
+    _, ts_names0 = collect_dashboard_journey(state, project_path)
     selected = {"ts": ts_names0[0] if ts_names0 else None}
 
     # Per-mount auto-kick dedup. Cleared on build so a reload after the user
@@ -376,7 +377,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
 
     def _tilt_filter_sig_for_ts(ts: str) -> tuple:
         # Per-ts labeled/filtered star mtimes for the tilt-filter section. NOT a
-        # journey pill stage, so _journey_signature can't see it; and the
+        # journey pill stage, so journey_signature can't see it; and the
         # standalone TiltFilter tool has no job (→ no status), so job_states below
         # can't see it either. Reuses the section's own resolver + path layout so
         # a re-run OR an in-place rewrite moves the sig. Scoped to the selected ts.
@@ -402,8 +403,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         ts = selected["ts"]
         if ts is None:
             return ("__no_ts__",)
-        journey, _ts_names = _collect_dashboard_journey(state, project_path)
-        species_journey = _collect_species_journey(state, project_path)
+        journey, _ts_names = collect_dashboard_journey(state, project_path)
+        species_journey = collect_species_journey(state, project_path)
         # The journey sig only covers the 4 prep pill stages + per-species picks;
         # sections like tilt_filter / dataset read job state it never sees. Fold in
         # every job's execution_status (section-agnostic, cheap in-memory scan —
@@ -414,7 +415,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         )
         return (
             ts,
-            _journey_signature(journey, species_journey, [ts]),
+            journey_signature(journey, species_journey, [ts]),
             job_states,
             _tilt_filter_sig_for_ts(ts),
             tuple(sorted(_hidden_dashboard_panels())),
@@ -442,8 +443,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         # calls refresh_all on every background-task tick, but we only rebuild
         # when the journey data OR the selection actually changed — otherwise a
         # tick mid-click would tear down the column under the click.
-        journey, ts_names = _collect_dashboard_journey(state, project_path)
-        species_journey = _collect_species_journey(state, project_path)
+        journey, ts_names = collect_dashboard_journey(state, project_path)
+        species_journey = collect_species_journey(state, project_path)
         try:
             from services.tilt_series import get_registry_for
 
@@ -452,11 +453,11 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             excluded_ids = set()
         # Fold the exclusion set into the signature so toggling a TS forces a
         # rebuild (the journey data itself doesn't change until the next run).
-        sig = (_journey_signature(journey, species_journey, ts_names), selected["ts"], frozenset(excluded_ids))
+        sig = (journey_signature(journey, species_journey, ts_names), selected["ts"], frozenset(excluded_ids))
         if col_els and sig == _strip_sig["sig"]:
             return
         _strip_sig["sig"] = sig
-        recon_mrc = _recon_mrc_map(state, project_path)
+        recon_mrc = recon_mrc_map(state, project_path)
         col_els.clear()
         col_els.update(
             build_strip(
@@ -922,7 +923,7 @@ def _find_import_job(project_state) -> tuple[str, object] | None:
     """Locate the Import (relion.importtomo) job. The dataset chip needs it
     to cross-check the in-memory `invert_defocus_hand` against the actual
     `_rlnTomoHand` Import wrote into `tilt_series.star`."""
-    return _find_job_by_type(project_state, JobType.IMPORT_MOVIES)
+    return find_job_by_type(project_state, JobType.IMPORT_MOVIES)
 
 
 def _render_stage0_chips(project_state, project_path: Path) -> None:
@@ -940,7 +941,7 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
     disk_hand: int | None = None
     imp = _find_import_job(project_state)
     if imp:
-        imp_dir = _job_dir_for(imp[0], imp[1], project_path)
+        imp_dir = job_dir_for(project_state, imp[0], imp[1], project_path)
         if imp_dir:
             disk_hand = _read_tomohand_from_import_star(imp_dir / "tilt_series.star")
 
@@ -1034,8 +1035,8 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
     if acq.invert_defocus_hand:
         rows.append(("invert defocus hand", "yes"))
 
-    pixel_rows = _compute_pixel_chain(project_state)
-    _apply_sanity_rules(pixel_rows)
+    pixel_rows = compute_pixel_chain(project_state)
+    apply_sanity_rules(pixel_rows)
 
     collapsed = _dataset_collapsed()
     with ui.element("div").classes("cb-section-card w-full") as card:
@@ -1062,7 +1063,7 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
                 for k, v in rows:
                     ui.label(k).classes("cb-datadump-key")
                     ui.label("—" if v is None or v == "" else str(v)).classes("cb-datadump-val")
-            _render_pixel_sanity_table(pixel_rows)
+            render_pixel_sanity_table(pixel_rows)
 
         def _toggle_dataset(_=None, _body=body, _caret=caret) -> None:
             svc = get_prefs_service()
@@ -1377,11 +1378,11 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
 
 
 def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    found = _find_job_by_type(project_state, JobType.FS_MOTION_CTF)
+    found = find_job_by_type(project_state, JobType.FS_MOTION_CTF)
     if not found:
         return False
     instance_id, jm = found
-    job_dir = _job_dir_for(instance_id, jm, project_path)
+    job_dir = job_dir_for(project_state, instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
     metric_parts = [f"motion {jm.m_grid}", f"bfac {jm.m_bfac}", f"ctf {jm.c_range_min_max} Å", f"win {jm.c_window}"]
     param_rows = [
@@ -1469,11 +1470,11 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
 
 
 def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    found = _find_job_by_type(project_state, JobType.TS_ALIGNMENT)
+    found = find_job_by_type(project_state, JobType.TS_ALIGNMENT)
     if not found:
         return False
     instance_id, jm = found
-    job_dir = _job_dir_for(instance_id, jm, project_path)
+    job_dir = job_dir_for(project_state, instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
     method = getattr(jm.alignment_method, "value", str(jm.alignment_method))
     metric_parts = [
@@ -1555,11 +1556,11 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
 
 
 def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    found = _find_job_by_type(project_state, JobType.TS_CTF)
+    found = find_job_by_type(project_state, JobType.TS_CTF)
     if not found:
         return False
     instance_id, jm = found
-    job_dir = _job_dir_for(instance_id, jm, project_path)
+    job_dir = job_dir_for(project_state, instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
     metric_parts = [
         f"defocus {jm.defocus_min_max} µm",
@@ -1668,10 +1669,10 @@ def _defocus_source_df(project_state, project_path: Path, ts_name: str):
     (post-alignment, most refined), fall back to FS Motion/CTF. Returns
     (df, source_label) or (None, None)."""
     for jt, label in ((JobType.TS_CTF, "tsCtf"), (JobType.FS_MOTION_CTF, "fsMotion")):
-        found = _find_job_by_type(project_state, jt)
+        found = find_job_by_type(project_state, jt)
         if not found:
             continue
-        jd = _job_dir_for(found[0], found[1], project_path)
+        jd = job_dir_for(project_state, found[0], found[1], project_path)
         if jd is None:
             continue
         df = _read_per_tilt_df(_per_tilt_star_path(jd, ts_name))
@@ -1689,9 +1690,9 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
     def_df, def_src = _defocus_source_df(project_state, project_path, ts_name)
 
     align_df = None
-    align = _find_job_by_type(project_state, JobType.TS_ALIGNMENT)
+    align = find_job_by_type(project_state, JobType.TS_ALIGNMENT)
     if align:
-        ajd = _job_dir_for(align[0], align[1], project_path)
+        ajd = job_dir_for(project_state, align[0], align[1], project_path)
         if ajd is not None:
             align_df = _read_per_tilt_df(_per_tilt_star_path(ajd, ts_name))
 
@@ -1780,10 +1781,10 @@ def _resolve_tilt_filter_dir(project_state, project_path: Path) -> Path | None:
     tiltseries_labeled.star — supports both pipeline-job tilt filtering
     (TILT_FILTER) and the standalone TiltFilter tool that writes to
     `<project_root>/TiltFilter/`."""
-    found = _find_job_by_type(project_state, JobType.TILT_FILTER)
+    found = find_job_by_type(project_state, JobType.TILT_FILTER)
     if found:
         instance_id, jm = found
-        jd = _job_dir_for(instance_id, jm, project_path)
+        jd = job_dir_for(project_state, instance_id, jm, project_path)
         if jd is not None:
             cand = jd / "filtered"
             if (cand / "tiltseries_labeled.star").exists() or (cand / "tiltseries_filtered.star").exists():
@@ -1863,7 +1864,7 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
     if filter_dir is None:
         return False
 
-    job_found = _find_job_by_type(project_state, JobType.TILT_FILTER)
+    job_found = find_job_by_type(project_state, JobType.TILT_FILTER)
     instance_id = job_found[0] if job_found else "TiltFilter (standalone)"
     jm = job_found[1] if job_found else None
 
@@ -2039,21 +2040,21 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
     """Per-TS Reconstruct card. Currently surfaces tomogram polarity; the
     WarpTools PNG + X/Z slab + 3dmod copy command are still hosted in the
     Candidate Extract section (Slice B refactor pending)."""
-    rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
+    rec = find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
     if not rec:
         return False
     rec_iid, rec_jm = rec
-    job_dir = _job_dir_for(rec_iid, rec_jm, project_path)
+    job_dir = job_dir_for(project_state, rec_iid, rec_jm, project_path)
     if not job_dir:
         return False
-    tomo_df = _read_tomograms_table(job_dir / "tomograms.star")
+    tomo_df = read_tomograms_table(job_dir / "tomograms.star")
     if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
         return False
     row = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
     if row.empty:
         return False
     tomo_row = row.iloc[0]
-    mrc_path = _resolve_volume_for_3dmod(tomo_row, project_path)
+    mrc_path = resolve_volume_for_3dmod(tomo_row, project_path)
 
     metric_parts: list[str] = []
     rescale = float(getattr(rec_jm, "rescale_angpixs", 0.0) or 0.0)
@@ -2177,7 +2178,7 @@ def _render_recon_big_preview(
             if png_path and png_path.exists():
                 with ui.element("div").classes("cb-recon-preview"):
                     ui.html(
-                        f"<img src='{_vis_asset_url(str(png_path))}' alt='{ts_name} WarpTools recon' />", sanitize=False
+                        f"<img src='{vis_asset_url(str(png_path))}' alt='{ts_name} WarpTools recon' />", sanitize=False
                     )
                 ui.label(f"WarpTools · {png_path.name}").classes("cb-recon-preview-caption")
             else:
@@ -2204,7 +2205,7 @@ def _render_recon_big_preview(
                 if dn_png is not None:
                     with ui.element("div").classes("cb-recon-preview"):
                         ui.html(
-                            f"<img src='{_vis_asset_url(str(dn_png))}' alt='{ts_name} {selected} denoised' />",
+                            f"<img src='{vis_asset_url(str(dn_png))}' alt='{ts_name} {selected} denoised' />",
                             sanitize=False,
                         )
                     ui.label(f"{selected} · denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
@@ -2302,7 +2303,7 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
 # same renderer + percentile pipeline as the recon slab — background-built and cached
 # under the denoise job's vis/slabs. The denoised tomograms.star repoints
 # rlnTomoReconstructedTomogram at the denoised volume, so the recon volume resolver
-# (_resolve_volume_for_3dmod) works unchanged.
+# (resolve_volume_for_3dmod) works unchanged.
 _AUTO_KICKED_DENOISE_SLAB: set[str] = set()
 
 # Which denoise method's slab the user is currently viewing, keyed by project path.
@@ -2337,11 +2338,11 @@ def _resolve_denoised_mrc_for_job(job_dir: Path, project_path: Path, ts_name: st
     job's aggregated tomograms.star (rlnTomoReconstructedTomogram); falls back to the
     per-tomogram file under denoised/ so results surface as the SLURM array lands
     them, before the final star is written at job end."""
-    tomo_df = _read_tomograms_table(job_dir / "tomograms.star")
+    tomo_df = read_tomograms_table(job_dir / "tomograms.star")
     if tomo_df is not None and "rlnTomoName" in tomo_df.columns:
         match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
         if not match.empty:
-            mrc = _resolve_volume_for_3dmod(match.iloc[0], project_path)
+            mrc = resolve_volume_for_3dmod(match.iloc[0], project_path)
             if mrc:
                 return Path(mrc)
     dn_dir = job_dir / "denoised"
@@ -2368,7 +2369,7 @@ def _available_denoise_methods_for_ts(project_state, project_path: Path, ts_name
         )
         if not is_dn:
             continue
-        job_dir = _job_dir_for(iid, jm, project_path)
+        job_dir = job_dir_for(project_state, iid, jm, project_path)
         if not job_dir:
             continue
         mrc = _resolve_denoised_mrc_for_job(job_dir, project_path, ts_name)
@@ -2640,7 +2641,7 @@ def _render_list_cutout_sheet(
         return
     cols = int(atlas_meta.get("cols", 8))
     rows = int(atlas_meta.get("rows", 1))
-    atlas_url = _vis_asset_url(atlas_path)
+    atlas_url = vis_asset_url(atlas_path)
     tile = 96
     bg_w, bg_h = cols * tile, rows * tile
     all_idx = sorted(int(k) for k in index.keys())
@@ -2885,7 +2886,7 @@ def _render_list_cutout_sheet(
     def _on_list_select(key: str) -> None:
         # Swap each tile's background-image to the chosen variant atlas, in place —
         # no rebuild, so the keep/drop handlers and dot sync survive the switch.
-        url = _vis_asset_url(str(keyed_path(Path(atlas_path), key)))
+        url = vis_asset_url(str(keyed_path(Path(atlas_path), key)))
         for t in tiles.values():
             try:
                 t.style(add=f"background-image: url({url});")
@@ -3312,9 +3313,9 @@ def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -
 
     Falls back to the project-level imported tomograms.star (PARTICLES-header import
     utility) for data-less / particle-only projects, which have no TS_RECONSTRUCT job."""
-    rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
+    rec = find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
     if rec:
-        recon_job_dir = _job_dir_for(rec[0], rec[1], project_path)
+        recon_job_dir = job_dir_for(project_state, rec[0], rec[1], project_path)
         if not recon_job_dir:
             return None, None
         star_path = recon_job_dir / "tomograms.star"
@@ -3324,13 +3325,13 @@ def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -
             return None, None
         star_path = Path(imported)
         recon_job_dir = star_path.parent
-    tomo_df = _read_tomograms_table(star_path)
+    tomo_df = read_tomograms_table(star_path)
     if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
         return recon_job_dir, None
     match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
     if match.empty:
         return recon_job_dir, None
-    mrc = _resolve_volume_for_3dmod(match.iloc[0], project_path)
+    mrc = resolve_volume_for_3dmod(match.iloc[0], project_path)
     return recon_job_dir, (Path(mrc) if mrc else None)
 
 
@@ -3382,7 +3383,7 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                 "label": sp["label"],
                 "list_type": PickListType.AUTO,
                 "color": sp["color"],
-                "shape": _glyph_for(PickListType.AUTO),
+                "shape": glyph_for(PickListType.AUTO),
                 "picks": auto_picks,
                 "dims": sp["dims"],
                 "visible": True,
@@ -3435,7 +3436,7 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                     "label": pl.label or pl.slug,
                     "list_type": pl.list_type,
                     "color": pl.color,
-                    "shape": _glyph_for(pl.list_type),
+                    "shape": glyph_for(pl.list_type),
                     "picks": picks,
                     "dims": dims,
                     "visible": pl.visible,
@@ -3452,8 +3453,8 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
     with everything the Particles section needs (row, manifest, entry, picks,
     color, lists). Drives both the shared canvas overlay and the per-species tabs."""
     out: list[dict] = []
-    for idx, (iid, jm) in enumerate(_candidate_extract_instances(project_state)):
-        job_dir = _job_dir_for(iid, jm, project_path)
+    for idx, (iid, jm) in enumerate(candidate_extract_instances(project_state)):
+        job_dir = job_dir_for(project_state, iid, jm, project_path)
         if not job_dir:
             continue
         ce_rows = _collect_tomo_rows_for_instance(job_dir, project_path)
@@ -3467,13 +3468,13 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
         manifest = read_preview_manifest(job_dir) or {}
         entry = (manifest.get("tomograms") or {}).get(ts_name) or {}
         picks_data = _read_picks_json(Path(entry["picks_json"])) if entry.get("picks_json") else {}
-        label = (manifest.get("template") or {}).get("species_name") or _split_species_id(iid) or iid
+        label = (manifest.get("template") or {}).get("species_name") or split_species_id(iid) or iid
         # Resolve the subtomo job for THIS species (by species_id) so the
         # gallery's save-filter writes into the right job — the old lex-greatest
         # heuristic mis-targeted every species at one subtomo job.
-        _, species_id = _resolve_species(project_state, jm, iid)
-        sub_match = _matching_subtomo_instance(project_state, species_id)
-        subtomo_job_dir = _job_dir_for(sub_match[0], sub_match[1], project_path) if sub_match else None
+        _, species_id = resolve_species(project_state, jm, iid)
+        sub_match = matching_subtomo_instance(project_state, species_id)
+        subtomo_job_dir = job_dir_for(project_state, sub_match[0], sub_match[1], project_path) if sub_match else None
         # Auto list's curated kept count (the subtomo-gallery keep/drop), read off the
         # cheap reviewed sidecar so the table shows kept/total for auto like the rest.
         auto_kept_count = None
@@ -3500,7 +3501,7 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
             "manifest": manifest,
             "entry": entry,
             "label": str(label),
-            "color": _SPECIES_OVERLAY_COLORS[idx % len(_SPECIES_OVERLAY_COLORS)],
+            "color": SPECIES_OVERLAY_COLORS[idx % len(SPECIES_OVERLAY_COLORS)],
             "picks": picks_data.get("picks") or [],
             "dims": picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1],
         }
@@ -3597,7 +3598,7 @@ def _render_imported_species_row(sp_obj, project_state, ts_name: str) -> None:
     P2.2 adds the canvas overlay, which is what actually needs apix + dims."""
     color = (
         getattr(sp_obj, "color", "")
-        or _SPECIES_OVERLAY_COLORS[sum(map(ord, str(sp_obj.id))) % len(_SPECIES_OVERLAY_COLORS)]
+        or SPECIES_OVERLAY_COLORS[sum(map(ord, str(sp_obj.id))) % len(SPECIES_OVERLAY_COLORS)]
     )
     lists = project_state.get_pick_lists(sp_obj.id, ts_name)
     with ui.element("div").style("display:flex; gap:10px; align-items:center; padding:3px 2px; font-size:11px;"):
@@ -3623,7 +3624,7 @@ def _render_imported_particles_section(
     imported_star = project_state.imported_tomograms_star_path()
     if not imported_star:
         return False
-    tomo_df = _read_tomograms_table(Path(imported_star))
+    tomo_df = read_tomograms_table(Path(imported_star))
     if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
         return False
     match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
@@ -3834,7 +3835,7 @@ def _render_particles_canvas(
     if not with_picks:
         # Recon slab exists but nothing picked yet — clean slab, no overlay.
         with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style(f"max-height: {_SLAB_MAX_VH}vh;"):
-            ui.image(_vis_asset_url(str(xy_png)))
+            ui.image(vis_asset_url(str(xy_png)))
         return layer_ids
 
     dims = with_picks[0]["dims"]
@@ -3859,7 +3860,7 @@ def _render_particles_canvas(
         xy_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
         xy_host.style(f"aspect-ratio: {x_dim}/{y_dim};")
         with xy_host:
-            ui.image(_vis_asset_url(str(xy_png)))
+            ui.image(vis_asset_url(str(xy_png)))
             for sp in with_picks:
                 for lst in sp["lists"]:
                     lid = f"cb-pl-{nonce}-{sp['idx']}-{lst['slug']}-xy"
@@ -3876,7 +3877,7 @@ def _render_particles_canvas(
             xz_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
             xz_host.style(f"aspect-ratio: {x_dim}/{z_dim}; margin-top: 6px;")
             with xz_host:
-                ui.image(_vis_asset_url(str(xz_png)))
+                ui.image(vis_asset_url(str(xz_png)))
                 for sp in with_picks:
                     for lst in sp["lists"]:
                         lid = f"cb-pl-{nonce}-{sp['idx']}-{lst['slug']}-xz"
@@ -3895,7 +3896,7 @@ def _tm_essentials_for_species(sp: dict) -> dict:
     species (by species_id) and pull the interpretive essentials shown in the
     tab header: matched TM instance id, angular search θ, and symmetry."""
     state = current_project_state()
-    species, species_id = _resolve_species(state, sp["jm"], sp["iid"])
+    species, species_id = resolve_species(state, sp["jm"], sp["iid"])
     info: dict = {
         "species": species,
         "species_id": species_id,
@@ -3904,8 +3905,8 @@ def _tm_essentials_for_species(sp: dict) -> dict:
         "theta": None,
         "sym": None,
     }
-    for tm_iid, tm_jm in _template_match_instances(state):
-        _, tm_sid = _resolve_species(state, tm_jm, tm_iid)
+    for tm_iid, tm_jm in template_match_instances(state):
+        _, tm_sid = resolve_species(state, tm_jm, tm_iid)
         if tm_sid == species_id:
             info["tm_iid"], info["tm_jm"] = tm_iid, tm_jm
             info["theta"] = getattr(tm_jm, "angular_search", None)
@@ -4372,7 +4373,7 @@ def _render_species_tab_body(
                 "label": sp.get("label") or "auto",
                 "list_type": PickListType.AUTO,
                 "color": sp.get("color") or "#6366f1",
-                "shape": _glyph_for(PickListType.AUTO),
+                "shape": glyph_for(PickListType.AUTO),
                 "picks": sp.get("picks") or [],
                 "dims": sp.get("dims") or [1, 1, 1],
                 "visible": True,
@@ -4849,7 +4850,7 @@ def _render_zero_picks_empty_state(manifest: dict, species_name: str | None) -> 
     with ui.element("div").classes("cb-empty"):
         with ui.row().classes("items-center gap-4 justify-center w-full flex-wrap"):
             if thumb_path:
-                ui.image(_vis_asset_url(thumb_path)).style("width: 96px; height: 96px;").classes(
+                ui.image(vis_asset_url(thumb_path)).style("width: 96px; height: 96px;").classes(
                     "rounded border border-gray-200 bg-gray-50 object-contain"
                 )
             with ui.column().classes("gap-1 items-start"):
@@ -4915,7 +4916,7 @@ def _render_reference_strip(
     """
     template_block = (manifest or {}).get("template") if isinstance(manifest, dict) else None
     template_thumb_path = template_block.get("thumb_path") if template_block else None
-    template_url = _vis_asset_url(template_thumb_path) if template_thumb_path else None
+    template_url = vis_asset_url(template_thumb_path) if template_thumb_path else None
 
     available = sorted((int(k) for k in cutout_index.keys()), reverse=True)
     worst_n = min(4, len(available))
@@ -5115,7 +5116,7 @@ def _render_gallery_body(
     tomo_dims = picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1]
     pixel_size_ang = entry.get("pixel_size_ang")
 
-    atlas_url = _vis_asset_url(entry["cutout_atlas"])
+    atlas_url = vis_asset_url(entry["cutout_atlas"])
     cols = int(atlas_meta.get("cols", 8))
     rows = int(atlas_meta.get("rows", 1))
     cutout_index = atlas_meta.get("index", {})
@@ -5136,8 +5137,8 @@ def _render_gallery_body(
     def _variant_atlas_url(key: str) -> str:
         v = cutout_variants.get(key)
         if v and v.get("atlas"):
-            return _vis_asset_url(v["atlas"])
-        return _vis_asset_url(entry["cutout_atlas"])
+            return vis_asset_url(v["atlas"])
+        return vis_asset_url(entry["cutout_atlas"])
 
     def _on_filter_select(key: str) -> None:
         # Swap the atlas the tiles + noise-reference tiles point at, then re-render
@@ -5933,7 +5934,7 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict) -> Non
     tomo_dims = tuple(picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1])
     score_field = manifest.get("score_field")
     pixel_size_ang = entry.get("pixel_size_ang")
-    xz_url = _vis_asset_url(entry["xz_preview"]) if entry.get("xz_preview") else None
+    xz_url = vis_asset_url(entry["xz_preview"]) if entry.get("xz_preview") else None
 
     x_dim, y_dim, z_dim = (max(int(d), 1) for d in tomo_dims)
     xy_aspect = min(2.5, max(0.5, x_dim / y_dim))
@@ -6101,7 +6102,7 @@ def _update_hover_card(e, picks: list, pixel_size_ang, labels: dict) -> None:
 
 def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[dict]:
     tomograms_star = job_dir / "tomograms.star"
-    tomo_df = _read_tomograms_table(tomograms_star)
+    tomo_df = read_tomograms_table(tomograms_star)
     manifest = read_preview_manifest(job_dir) or {}
     tomo_entries = manifest.get("tomograms") or {}
     summary = manifest.get("summary") or {}
@@ -6116,7 +6117,7 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
     rows: list[dict] = []
     if tomo_df is None:
         for tomo_name, entry in tomo_entries.items():
-            label, (stage, beam) = _position_label(tomo_name)
+            label, (stage, beam) = position_label(tomo_name)
             mod_path = job_dir / "vis" / "imodPartRad" / f"coords_{tomo_name}.mod"
             rows.append(
                 {
@@ -6134,7 +6135,7 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
                 }
             )
         for tomo_name in zero_picks - set(tomo_entries.keys()):
-            label, (stage, beam) = _position_label(tomo_name)
+            label, (stage, beam) = position_label(tomo_name)
             mod_path = job_dir / "vis" / "imodPartRad" / f"coords_{tomo_name}.mod"
             rows.append(
                 {
@@ -6154,9 +6155,9 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
     else:
         for _, tomo_row in tomo_df.iterrows():
             tomo_name = str(tomo_row["rlnTomoName"])
-            label, (stage, beam) = _position_label(tomo_name)
+            label, (stage, beam) = position_label(tomo_name)
             entry = tomo_entries.get(tomo_name) or {}
-            vol_path = _resolve_volume_for_3dmod(tomo_row, project_path)
+            vol_path = resolve_volume_for_3dmod(tomo_row, project_path)
             mod_path = job_dir / "vis" / "imodPartRad" / f"coords_{tomo_name}.mod"
             if tomo_name in missing_volume and not entry.get("picks_json"):
                 status = "missing-volume"
