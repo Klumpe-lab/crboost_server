@@ -323,6 +323,48 @@ class CryoBoostBackend:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def extract_pick_list_and_wait(
+        self,
+        project_path: Path,
+        candidate_optset: Path,
+        list_star: Path,
+        tomo_name: str,
+        species_id: str,
+        slug: str,
+        *,
+        timeout_s: int = 3600,
+        **params: Any,
+    ) -> dict[str, Any]:
+        """Submit ONE per-list extraction (``extract_pick_list``), await its out dir,
+        and on success record ``PickList.mark_extracted`` + persist — the single-list
+        counterpart of ``extract_authoritative_pending``. RUN INSIDE A BackgroundTask
+        (polls up to ``timeout_s``; persists by explicit path — no client context
+        needed). Returns {"success", "count"} or {"success": False, "error"}."""
+        project_path = Path(project_path)
+        res = await self.extract_pick_list(
+            project_path, candidate_optset, list_star, tomo_name, species_id, slug, **params
+        )
+        if not res.get("success"):
+            return res
+        out_dir = res["out_dir"]
+        results = await self._await_extraction_outdirs([out_dir], timeout_s)
+        r = results.get(out_dir)
+        if r is None:
+            return {"success": False, "error": "extraction still running — check the SLURM job / tray"}
+        status, data = r
+        if status == "failed":
+            err = data.get("error") or "extraction job failed — see run.err in the list's out dir"
+            return {"success": False, "error": err}
+        if not data.get("ok"):
+            return {"success": False, "error": data.get("error") or "extraction produced no usable result"}
+        state = self.state_service.state_for(project_path)
+        pl = state.get_pick_list(slug, species_id, tomo_name)
+        if pl is not None:
+            pl.mark_extracted(data["optimisation_set"], int(data.get("count", 0)))
+            state.mark_dirty()
+            await self.state_service.save_project(project_path=project_path, force=True)
+        return {"success": True, "count": int(data.get("count", 0))}
+
     async def get_authoritative_extraction_status(self, project_path: Path, species_id: str) -> list[dict[str, Any]]:
         """Read-only: per-(species, tomo) authoritative-list extraction status — the
         aggregation gate's input (see docs/LIST_EXTRACTION_AND_AGGREGATION.md
@@ -439,7 +481,8 @@ class CryoBoostBackend:
         """Poll each per-list extraction out dir (RELION_JOB_EXIT_* + result.json) until all
         resolve or ``timeout_s`` elapses. Returns {out_dir: ("done"|"failed", data)} for the
         resolved ones (an out dir absent from the result = still running). Disk scans run off
-        the event loop. Mirrors the per-list watcher in tomo_dashboard_dialog._handle_extract_list."""
+        the event loop. The ONE extraction watcher — both the batch path
+        (extract_authoritative_pending) and the per-list path (extract_pick_list_and_wait) use it."""
         import json as _json
 
         pending = set(out_dirs)

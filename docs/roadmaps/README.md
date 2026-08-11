@@ -7,7 +7,7 @@ only 00 blocks anything else.
 | # | Roadmap | Theme | Risk | Status |
 |---|---|---|---|---|
 | 00 | [deletions-and-lint](00-deletions-and-lint.md) | Delete dead code, tighten ruff, fix 3 tiny bugs | none (pure deletion, verified) | **complete** — all 5 stages landed + committed 2026-08-11 |
-| 01 | [service-boundary](01-service-boundary.md) | Facade becomes real; QC/visualization processing gets its own home; undo the services→ui inversion | low (mechanical moves) | in progress — stages 0–4 done (2026-08-11); next: stage 5 job-lifecycle strays |
+| 01 | [service-boundary](01-service-boundary.md) | Facade becomes real; QC/visualization processing gets its own home; undo the services→ui inversion | low (mechanical moves) | in progress — stages 0–5 done (2026-08-11); next: stage 6 JobSpec table (fresh session recommended), then stage 7 enforcement |
 | 02 | [tiltseries-single-source](02-tiltseries-single-source.md) | Consolidate on the TiltSeriesRegistry; kill regex re-derivation; typed InstanceId | medium (parity-gated) | not started |
 | 03 | [errors-and-results](03-errors-and-results.md) | One lightweight result/error idiom + lucid logging | low | not started |
 | 04 | [driver-consolidation](04-driver-consolidation.md) | ArrayDriver template, ToolCommand, one status protocol | medium (behavior-preserving by construction, per-driver rollout) | not started |

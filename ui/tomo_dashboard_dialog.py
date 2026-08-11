@@ -2957,11 +2957,10 @@ def _render_list_extraction_bar(sp: dict, lst: dict, project_path: Path, refresh
 
 async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh) -> None:
     """Submit + track a per-list subtomo extraction (Slice C). Resolves the species'
-    candidate optset + this list's curated star + the species subtomo params, fires
-    ``backend.extract_pick_list``, watches the out dir for completion (the qsub wrapper's
-    ``RELION_JOB_EXIT_*`` markers + the driver's ``result.json``), and records
-    ``PickList.mark_extracted`` on success. SingleFlight-guarded; the watch runs in a
-    BackgroundTask (no client context → persist by explicit ``project_path``, the W2 lesson)."""
+    candidate optset + this list's curated star + the species subtomo params, then fires
+    ``backend.extract_pick_list_and_wait`` (submit + await the out dir + record
+    ``PickList.mark_extracted`` + persist). SingleFlight-guarded; the wait runs in a
+    BackgroundTask (the backend persists by explicit ``project_path``, the W2 lesson)."""
     from backend import get_backend
     from services.visualization import picks_filter
 
@@ -3000,53 +2999,10 @@ async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh)
         )
 
         async def _run(progress_cb):
-            progress_cb(0, 0, "submitting extraction…")
-            res = await backend.extract_pick_list(
+            progress_cb(0, 0, "extracting subtomograms…")
+            return await backend.extract_pick_list_and_wait(
                 project_path, candidate_optset, Path(list_star), tomo_name, species_id, slug, **params
             )
-            if not res.get("success"):
-                return res
-            out_dir = Path(res["out_dir"])
-
-            def _poll() -> tuple:
-                import json as _json
-
-                rj = out_dir / "result.json"
-                if (out_dir / "RELION_JOB_EXIT_FAILURE").exists():
-                    try:
-                        return ("failed", _json.loads(rj.read_text()) if rj.exists() else {})
-                    except Exception:
-                        return ("failed", {})
-                if (out_dir / "RELION_JOB_EXIT_SUCCESS").exists() or rj.exists():
-                    try:
-                        return ("done", _json.loads(rj.read_text()) if rj.exists() else {})
-                    except Exception:
-                        return ("done", {})
-                return ("running", {})
-
-            data: dict = {}
-            for _ in range(360):  # ~60 min at a 10 s cadence
-                status, d = await asyncio.to_thread(_poll)
-                if status == "failed":
-                    err = d.get("error") or "extraction job failed — see run.err in the list's out dir"
-                    return {"success": False, "error": err}
-                if status == "done":
-                    data = d
-                    break
-                progress_cb(0, 0, "extracting subtomograms…")
-                await asyncio.sleep(10)
-            else:
-                return {"success": False, "error": "extraction still running — check the SLURM job / tray"}
-            if not data.get("ok"):
-                return {"success": False, "error": data.get("error") or "extraction produced no usable result"}
-            st = get_state_service().state_for(project_path)
-            pl = st.get_pick_list(slug, species_id, tomo_name)
-            if pl is not None:
-                pl.mark_extracted(data["optimisation_set"], int(data.get("count", 0)))
-                from backend import get_backend
-
-                await get_backend().save_project(project_path, force=True)
-            return {"success": True, "count": int(data.get("count", 0))}
 
         from ui.background_task import BackgroundTask
 

@@ -26,6 +26,7 @@ from pathlib import Path
 from nicegui import ui, run
 
 from backend import get_backend
+from services.aggregation_authoritative import apply_aggregation_overrides
 from services.project_state import (
     MERGED_DIR_NAME,
     AggregationMerge,
@@ -101,82 +102,6 @@ def _persist_state() -> None:
         asyncio.create_task(bk.save_project(state.project_path, force=True, debounce_s=0.4))
     except RuntimeError:
         state.save()  # no loop (shouldn't happen from a handler) — save inline
-
-
-def apply_aggregation_overrides(state) -> int:
-    """For aggregation projects with a completed merge, point every consumer
-    job's input_optimisation slot at the active merged optimisation_set.star.
-    Idempotent. Returns count of jobs updated.
-
-    Wires via the synthetic merged-sources producer's `source_key` (not a bare
-    `manual:` path) so the IO-config dropdown shows "Merged sources — <name>"
-    selected and the merged optset resolves like any normal producer.
-
-    Writes `source_overrides[slot]` (the resolver key — the single source of
-    truth: the driver's path is re-resolved from it at deploy). Also pre-populates
-    `paths[slot]` for pre-deploy UI display only; that value is discarded and
-    rebuilt by resolve_all_paths at deploy, so it never reaches the driver.
-
-    Also clears stale `is_orphaned` / `missing_inputs` markers since they
-    were written before the override existed.
-
-    Called from three sites:
-      - When a new RP/Class3D/Refine3D is added in an aggregation project.
-      - After a successful merge (retro-wires already-added consumers).
-      - On every workspace render (idempotent self-heal for jobs that pre-date
-        either of the above hooks).
-    """
-    from services.io_slots import JobFileType
-    from services.models_base import JobType
-
-    if not getattr(state, "is_aggregation", False):
-        return 0
-    optset = active_merged_optset(state)
-    if optset is None or not optset.exists():
-        log.debug("apply_aggregation_overrides: no active merged optset")
-        return 0
-
-    optset_str = str(optset)
-    # source_key of the synthetic merged-sources candidate (path_resolution_service.
-    # _add_merged_sources_candidates). instance_path is shared via ProjectState so the
-    # two always agree; the `or` mirrors the candidate's same fallback defensively.
-    instance_path = state.active_merged_optset_instance_path() or MERGED_DIR_NAME
-    override_value = f"{JobType.MERGED_SOURCES.value}:{instance_path}"
-    updated = 0
-    for instance_id, job_model in state.jobs.items():
-        schema = getattr(type(job_model), "INPUT_SCHEMA", None) or []
-        slot_keys = [
-            s.key for s in schema if s.accepts and JobFileType.OPTIMISATION_SET_STAR in s.accepts
-        ]
-        if not slot_keys:
-            continue
-        if getattr(job_model, "source_overrides", None) is None:
-            job_model.source_overrides = {}
-        if getattr(job_model, "paths", None) is None:
-            job_model.paths = {}
-        changed = False
-        for k in slot_keys:
-            if job_model.source_overrides.get(k) != override_value:
-                job_model.source_overrides[k] = override_value
-                changed = True
-            # Pre-populate paths so the driver finds the optset even if path
-            # resolution at deploy time somehow loses the override.
-            if job_model.paths.get(k) != optset_str:
-                job_model.paths[k] = optset_str
-                changed = True
-        # Clear stale orphan markers — they were written before the override
-        # existed and would otherwise stick around forever.
-        if changed:
-            if getattr(job_model, "is_orphaned", False):
-                job_model.is_orphaned = False
-            if getattr(job_model, "missing_inputs", None):
-                job_model.missing_inputs = []
-            updated += 1
-            log.info(
-                "apply_aggregation_overrides: wired %s slots %s -> %s",
-                instance_id, slot_keys, optset_str,
-            )
-    return updated
 
 
 def has_merged_outputs() -> bool:

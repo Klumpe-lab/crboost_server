@@ -238,7 +238,13 @@ Facts + deviations:
   (`create_save_handler` now returns a facade-backed trigger). Facade coalesces per *project* where
   the old savers coalesced per widget — strictly fewer writes, same end state.
 - `StateService.save_project` → `(project_path, *, force=False)`: the tab-context resolve (the LAST
-  services→ui inversion) is DELETED, and the dead `save_path` param went with it (zero callers).
+  services→ui inversion) is DELETED, and the `save_path` param went with it. **Runtime break caught
+  by the user (project creation TypeError): `save_path` was NOT zero-caller** —
+  `project_service.initialize_new_project:493` passed it on a continuation line, invisible to the
+  single-line grep the "dead" verdict came from. The call was redundant (it also passed
+  `project_path`, and both the registry and init set `state.project_path`, so the derived target is
+  the identical file) → call site fixed. **Lesson (stage 6+ must apply): when changing a signature,
+  audit call sites with `grep -A`/AST — kwargs live on continuation lines.**
   Path-less/blank states log a warning instead of silently returning.
 - The 13 bare sites all had a path in reach: 12 in scope (params/`self.ui_mgr.project_path`/in-scope
   `state`), 1 via the state they'd just fetched. `force` semantics preserved per site;
@@ -250,6 +256,33 @@ Facts + deviations:
 - Runtime check owed: species edit save, merge-card checkbox burst (one write ~0.4 s after the last
   click), config-field edit burst (~1 s), tilt-filter manual label save, run-pipeline (force save),
   dedup/authoritative-list toggles in the dashboard.
+
+## Stage 5 record (executed 2026-08-11)
+
+All three strays landed; repo-wide ruff clean. Notes:
+
+- **5a** `_finalize_pipeline_output` + `_find_tsimport_tomostar_dir` →
+  `services/jobs/tilt_filter.py` as `finalize_pipeline_output(state, job_model, ts_data,
+  project_path)` returning `{"success", "error", "kept", "dropped"}`. The two `ui.notify` calls
+  stayed panel-side (`_notify_finalize`, byte-identical messages); the helper's hidden
+  `current_project_state()` call became an explicit `state` param (one more accessor purged from
+  logic). Callers' ignore-return control flow preserved.
+- **5c** `apply_aggregation_overrides` → `services/aggregation_authoritative.py` (module docstring
+  amended: read-only + ONE mutator, deliberately placed as the write-side twin of the resolution
+  logic). The card's thin `active_merged_optset` wrapper inlined to `state.active_merged_optset()`;
+  lazy imports promoted to module level (`JobFileType`, `MERGED_DIR_NAME` — no cycle). 4 callers
+  repointed. `path_resolution_service.py:590`'s comment names the function without a module → still
+  true.
+- **5b** the dialog's 48-line submit/poll/record closure → `backend.extract_pick_list_and_wait`
+  (submit via `extract_pick_list`, await via the existing `_await_extraction_outdirs`, record
+  `mark_extracted` + persist). The watcher's "mirrors the dialog" docstring is retired — it is now
+  the ONE watcher for both the batch and per-list paths. Two knowingly-accepted micro-changes: the
+  tray subtitle no longer flashes "submitting extraction…" before "extracting subtomograms…"
+  (sub-second phase), and `mark_dirty()` is now called before the force-save (equivalent under
+  force; matches the batch path).
+- Runtime check owed: tilt-filter manual-label commit (trimmed tomostar + commit toast + alignment
+  wiring), DL commit if reachable, merge → consumers auto-wired, per-list Extract button (tray
+  tracks; count + extracted state land), and one `extract_authoritative_pending` batch run.
 
 ## Stages (each committable)
 
@@ -273,7 +306,7 @@ Facts + deviations:
    `backend.save_project(project_path, *, force=False, debounce=False)` embodying the card's debounce
    policy; migrate the 28 UI call sites; make direct `save_project` imports from `ui/` a lint error
    (see enforcement below).
-5. **Job-lifecycle strays out of UI:** `ui/tilt_filter_panel.py:185 _finalize_pipeline_output` →
+5. **Job-lifecycle strays out of UI:** *(DONE 2026-08-11 — record above.)* `ui/tilt_filter_panel.py:185 _finalize_pipeline_output` →
    `services/jobs/tilt_filter.py` (the manual-label path is the job's real output producer);
    `ui/tomo_dashboard_dialog.py:2939 _handle_extract_list`'s poll-loop body → the existing
    `backend.extract_pick_list` path; `ui/aggregation_merge_card.py:117 apply_aggregation_overrides` →
