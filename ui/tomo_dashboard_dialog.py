@@ -2733,10 +2733,13 @@ def _render_list_cutout_sheet(
                     logger.exception("keep/drop auto-commit failed for %s", star_path)
                     break
                 fc = None if kept == total else kept
-                pl = current_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
+                st = current_project_state()
+                pl = st.get_pick_list(lst["slug"], species_id, tomo_name)
                 if pl is not None and pl.filtered_count != fc:
                     pl.filtered_count = fc
-                    await get_state_service().save_project(force=True)
+                    from backend import get_backend
+
+                    await get_backend().save_project(st.project_path, force=True)
                 lst["filtered_count"] = fc
                 _update_count_cell(total, fc)
                 if not commit["dirty"]:
@@ -3040,7 +3043,9 @@ async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh)
             pl = st.get_pick_list(slug, species_id, tomo_name)
             if pl is not None:
                 pl.mark_extracted(data["optimisation_set"], int(data.get("count", 0)))
-                await get_state_service().save_project(project_path=project_path, force=True)
+                from backend import get_backend
+
+                await get_backend().save_project(project_path, force=True)
             return {"success": True, "count": int(data.get("count", 0))}
 
         from ui.background_task import BackgroundTask
@@ -3249,7 +3254,7 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
                 state_obj.mark_dirty()
                 # AWAIT (force) so the dedup'd count lands on disk — a fire-and-forget
                 # create_task gets GC'd before it runs (same bug as the manual-list save).
-                await get_state_service().save_project(force=True)
+                await backend.save_project(project_path, force=True)
             ui.notify(
                 f"Removed {res.get('n_removed', 0)} overlapping picks · {res.get('n_after', 0)} kept", type="positive"
             )
@@ -4122,7 +4127,9 @@ async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: st
             created_by=result.get("created_by", ""),
         )
     )
-    await get_state_service().save_project(project_path=project_path, force=True)
+    from backend import get_backend
+
+    await get_backend().save_project(project_path, force=True)
     return int(result.get("count", 0))
 
 
@@ -4609,7 +4616,7 @@ def _render_list_rail(
         # Persist by explicit project_path (not the client-context default) so the
         # merged list survives a restart even if this runs without a resolvable
         # client state — the same contract the manual-list persist proved out (P4).
-        await get_state_service().save_project(project_path=project_path, force=True)
+        await backend.save_project(project_path, force=True)
         _MERGE_SELECT[key] = set()  # consumed
         _SELECTED_LIST_SLUG[key] = slug  # land on the new merge
         ui.notify(f"Created '{raw_name}' — {res.get('count', 0)} picks from {len(chosen)} lists", type="positive")
@@ -4625,7 +4632,9 @@ def _render_list_rail(
             return
         st = current_project_state()
         st.set_authoritative_slug(species_id, tomo_name, slug)
-        await get_state_service().save_project(force=True)
+        from backend import get_backend
+
+        await get_backend().save_project(project_path, force=True)
         auth_state["slug"] = slug
         for s, ic in auth_icons.items():
             if ic is None:

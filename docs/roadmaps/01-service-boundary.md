@@ -221,6 +221,36 @@ Landed as scoped; repo-wide ruff clean, zero old-path imports left. Sizes: `serv
   signature change breaks an unmodified dialog at runtime (shim can't paper over an arity change),
   and the dialog carries 3b and 3c imports together.
 
+## Stage 4 record (executed 2026-08-11)
+
+Landed; repo-wide ruff clean; zero `StateService`-direct saves left in `ui/` (20 facade calls).
+Facts + deviations:
+
+- **The audit's premise was stale in a good way:** no module-level `save_project` imports existed —
+  all 22 UI sites called the `StateService` method (13 bare/tab-resolve, 9 explicit-path). So stage
+  7's enforcement target is `get_state_service().save_project`-style *calls* in `ui/` (AST check),
+  not a banned-import — recorded here for stage 7.
+- `backend.save_project(project_path, *, force=False, debounce_s=None)` added; per-project
+  trailing-edge coalescing via `_pending_saves`. **Deviation from the sketch:** `debounce_s: float`
+  instead of `debounce: bool` — there were TWO debouncers with different windows (merge-card
+  checkboxes 0.4 s, `job_tab_component.DebouncedSaver` config fields 1.0 s); a bool would have
+  collapsed one policy into the other. Both migrated; `DebouncedSaver` deleted
+  (`create_save_handler` now returns a facade-backed trigger). Facade coalesces per *project* where
+  the old savers coalesced per widget — strictly fewer writes, same end state.
+- `StateService.save_project` → `(project_path, *, force=False)`: the tab-context resolve (the LAST
+  services→ui inversion) is DELETED, and the dead `save_path` param went with it (zero callers).
+  Path-less/blank states log a warning instead of silently returning.
+- The 13 bare sites all had a path in reach: 12 in scope (params/`self.ui_mgr.project_path`/in-scope
+  `state`), 1 via the state they'd just fetched. `force` semantics preserved per site;
+  `_persist_state` uses `force=True` because `update_modified()` does not mark dirty.
+- One wrong scope inference caught by ruff F821 (dialog `_set_authoritative` has `project_path` but
+  not `backend` in scope) → local `get_backend` import, matching the dialog's function-local idiom.
+- `pipeline_builder_panel.state_service` attribute deleted; `get_state_service` imports trimmed in 5
+  files (still legitimately imported where `state_for()` is used — that's read access, not persistence).
+- Runtime check owed: species edit save, merge-card checkbox burst (one write ~0.4 s after the last
+  click), config-field edit burst (~1 s), tilt-filter manual label save, run-pipeline (force save),
+  dedup/authoritative-list toggles in the dashboard.
+
 ## Stages (each committable)
 
 1. **Undo the inversion.** *(DONE 2026-08-11 — record above.)* Add `ui/current_project.py` with `current_project_state()` (tab-context
@@ -239,9 +269,10 @@ Landed as scoped; repo-wide ruff clean, zero old-path imports left. Sizes: `serv
    - `ui/components/task_utils.py` → `services/array_tasks.py`, single-sourcing
      `MANIFEST_FILENAME`/`STATUS_DIR_NAME` with `drivers/array_job_base.py` (coordinate with
      Roadmap 04's `TaskStatusStore` — whichever lands first owns the constants).
-4. **Persistence through the facade.** Add `backend.save_project(project_path, *, force=False,
-   debounce=False)` embodying the card's debounce policy; migrate the 28 UI call sites; make direct
-   `save_project` imports from `ui/` a lint error (see enforcement below).
+4. **Persistence through the facade.** *(DONE 2026-08-11 — record above.)* Add
+   `backend.save_project(project_path, *, force=False, debounce=False)` embodying the card's debounce
+   policy; migrate the 28 UI call sites; make direct `save_project` imports from `ui/` a lint error
+   (see enforcement below).
 5. **Job-lifecycle strays out of UI:** `ui/tilt_filter_panel.py:185 _finalize_pipeline_output` →
    `services/jobs/tilt_filter.py` (the manual-label path is the job's real output producer);
    `ui/tomo_dashboard_dialog.py:2939 _handle_extract_list`'s poll-loop body → the existing

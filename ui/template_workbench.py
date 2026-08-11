@@ -47,7 +47,6 @@ from services.project_state import (
     ParticleTemplate,
     TemplateMask,
     get_project_state_for,
-    get_state_service,
     sidecar_ensure,
 )
 from services.templating.template_metadata import read_template_header
@@ -263,7 +262,7 @@ class TemplateWorkbench:
         state.mark_dirty()
 
     async def _save_state(self) -> None:
-        await get_state_service().save_project(project_path=Path(self.project_path))
+        await self.backend.save_project(Path(self.project_path))
 
     def _save_workbench_ui(self) -> None:
         def _apply(sp: ParticleSpecies) -> None:

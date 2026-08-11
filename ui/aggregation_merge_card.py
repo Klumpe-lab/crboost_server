@@ -25,6 +25,7 @@ from pathlib import Path
 
 from nicegui import ui, run
 
+from backend import get_backend
 from services.project_state import (
     MERGED_DIR_NAME,
     AggregationMerge,
@@ -84,33 +85,22 @@ def _slugify(name: str, existing: set) -> str:
     return slug
 
 
-_pending_save_task = None
-
-
 def _persist_state() -> None:
     """Persist deferred + off the event loop. A full ProjectState.save() does a
     model_dump of every job/species + a JSON disk write (~hundreds of ms on a
-    real project), so doing it inline made each checkbox click hang. Debounce
-    rapid toggles and run the write in a thread."""
-    global _pending_save_task
+    real project), so doing it inline made each checkbox click hang. Debounced
+    (0.4 s trailing edge, coalesced per project) via the facade; force=True
+    because update_modified() doesn't mark the state dirty."""
     state = current_project_state()
     state.update_modified()
+    bk = get_backend()
+    if bk is None:
+        state.save()  # pre-backend startup edge — save inline
+        return
     try:
-        loop = asyncio.get_event_loop()
+        asyncio.create_task(bk.save_project(state.project_path, force=True, debounce_s=0.4))
     except RuntimeError:
         state.save()  # no loop (shouldn't happen from a handler) — save inline
-        return
-    if _pending_save_task and not _pending_save_task.done():
-        _pending_save_task.cancel()
-    _pending_save_task = loop.create_task(_debounced_save(state))
-
-
-async def _debounced_save(state) -> None:
-    try:
-        await asyncio.sleep(0.4)
-    except asyncio.CancelledError:
-        return
-    await run.io_bound(state.save)
 
 
 def apply_aggregation_overrides(state) -> int:

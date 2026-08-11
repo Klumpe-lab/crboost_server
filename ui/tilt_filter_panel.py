@@ -17,6 +17,7 @@ from pathlib import Path
 
 from nicegui import ui
 
+from backend import get_backend
 from services.models_base import JobStatus
 from services.project_state import get_state_service
 from ui.current_project import current_project_state
@@ -416,7 +417,7 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                     state = current_project_state()
                     if state:
                         state.mark_dirty()
-                        await get_state_service().save_project()
+                        await backend.save_project(project_path)
 
                     status_row.clear()
                     with status_row:
@@ -467,7 +468,7 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             job_model.execution_status = JobStatus.FAILED
                             if state:
                                 state.mark_dirty()
-                                await get_state_service().save_project()
+                                await backend.save_project(project_path)
                             return
 
                     # Success — reload labels into gallery
@@ -508,7 +509,7 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             job_model.execution_status = JobStatus.SUCCEEDED
                             if state:
                                 state.mark_dirty()
-                                await get_state_service().save_project()
+                                await backend.save_project(project_path)
 
                             ui.notify(
                                 f"DL filter applied: {good_data.num_tilts} good tilts", type="positive", timeout=5000
@@ -581,7 +582,7 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job
                     st = get_state_service().state_for(project_path)
                     st.tilt_filter_png_dir = str(png_dir)
                     st.mark_dirty()
-                    await get_state_service().save_project(project_path=project_path, force=True)
+                    await get_backend().save_project(project_path, force=True)
                 return f"{n} thumbnails generated"
 
             status_lbl.text = "Running — gallery will appear here when complete."
@@ -789,7 +790,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
             if state:
                 state.tilt_filter_labels = labels
                 state.mark_dirty()
-                await get_state_service().save_project()
+                await get_backend().save_project(project_path)
 
             sm = get_label_summary(ts_data)
             ui.notify(f"Saved: {sm['good']} good, {sm['bad']} bad", type="positive", timeout=4000)

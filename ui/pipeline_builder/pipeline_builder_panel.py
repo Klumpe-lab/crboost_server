@@ -9,7 +9,7 @@ from nicegui import ui
 
 from backend import CryoBoostBackend
 from services.models_base import JobStatus
-from services.project_state import JobType, get_state_service
+from services.project_state import JobType
 
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
@@ -53,7 +53,6 @@ class PipelineBuilderPanel:
         self.toggle_journey = toggle_journey
 
         self.ui_mgr = get_ui_state_manager()
-        self.state_service = get_state_service()
 
         self._job_content_containers: dict[str, object] = {}
         self._content_wrapper_ref: dict[str, object] = {}
@@ -343,7 +342,7 @@ class PipelineBuilderPanel:
         apply_aggregation_overrides(state)
 
         if self.ui_mgr.is_project_created:
-            asyncio.create_task(self.state_service.save_project())
+            asyncio.create_task(self.backend.save_project(self.ui_mgr.project_path))
 
         self.ui_mgr.set_active_instance(instance_id)
         self.rebuild_pipeline_ui()
@@ -383,7 +382,7 @@ class PipelineBuilderPanel:
             state.job_path_mapping.pop(instance_id, None)
 
         if self.ui_mgr.is_project_created:
-            asyncio.create_task(self.state_service.save_project())
+            asyncio.create_task(self.backend.save_project(self.ui_mgr.project_path))
         self.rebuild_pipeline_ui()
 
     # Job types that require a prerequisite job to exist in the pipeline.
@@ -496,7 +495,7 @@ class PipelineBuilderPanel:
             _safe_notify("Create a project first", type="warning")
             return
 
-        await self.state_service.save_project(force=True)
+        await self.backend.save_project(self.ui_mgr.project_path, force=True)
 
         try:
             result = await self.backend.start_pipeline(
@@ -606,7 +605,7 @@ def build_pipeline_builder_panel(
         # "empty input" symptom.
         import asyncio as _asyncio
 
-        _asyncio.create_task(panel.state_service.save_project())
+        _asyncio.create_task(panel.backend.save_project(panel.ui_mgr.project_path))
 
     # Must be created in the current NiceGUI rendering context before
     # panel.build() is called, since rebuild_pipeline_ui writes into it.

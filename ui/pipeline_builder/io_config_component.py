@@ -24,7 +24,8 @@ from nicegui import ui
 from services.io_slots import JobFileType
 from services.models_base import JobType, JobStatus
 from services.path_resolution_service import PathResolutionService, InputSlotValidation
-from services.project_state import get_state_service, get_project_state_for
+from backend import get_backend
+from services.project_state import get_project_state_for
 from ui.current_project import current_project_state
 from ui.ui_state import get_job_display_name
 from ui.utils import snake_to_title
@@ -309,7 +310,7 @@ class IOConfigComponent:
         project_path = state.project_path
         state.acquisition.gain_reference_path = value or None
         state.mark_dirty()
-        await get_state_service().save_project(project_path=project_path)
+        await get_backend().save_project(project_path)
         if self._gain_container is not None:
             self._gain_container.clear()
             with self._gain_container:
@@ -676,7 +677,7 @@ class IOConfigComponent:
         # The source-override handlers mutate job_model.source_overrides in place,
         # which bypasses ProjectState's dirty tracking — so force the write or the
         # user's source pick / manual path silently vanishes on the next load.
-        await get_state_service().save_project(project_path=project_path, force=True)
+        await get_backend().save_project(project_path, force=True)
         container = self._slot_containers.get(slot.key)
         job_model = None
         if container:
