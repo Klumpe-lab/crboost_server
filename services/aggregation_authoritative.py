@@ -11,8 +11,8 @@ PURE / HEADLESS by design:
   - Takes an EXPLICIT ``ProjectState`` (never the tab-context accessor), so it is correct
     inside a background task / CLI with no NiceGUI client context (the W2 lesson).
   - Resolves job dirs from the passed state's ``relion_job_name`` / ``job_path_mapping``
-    rather than ``ui.dashboard.data._job_dir_for`` (which reads the client-context global
-    and would see a blank state off the event loop).
+    via a local copy of ``services.dashboard_data.job_dir_for`` (kept from when that
+    helper still read the client-context global; both are headless now).
   - Imports NO UI module.
 
 This is steps 1–2 of the build order; the gate / auto-extract / roll-up (§8.3+) build on it.
@@ -52,7 +52,7 @@ class AuthoritativeHandle:
 
 def _species_id_for_job(state, instance_id: str, job_model) -> str | None:
     """species_id a per-particle job attaches to — headless re-implementation of
-    ``ui.dashboard.data._resolve_species``'s id resolution: ``instance_id`` '__suffix',
+    ``services.dashboard_data.resolve_species``'s id resolution: ``instance_id`` '__suffix',
     else ``job_model.species_id``, else the single-species fallback."""
     suffix = instance_id.split("__", 1)
     if len(suffix) > 1 and suffix[1]:
@@ -68,8 +68,8 @@ def _species_id_for_job(state, instance_id: str, job_model) -> str | None:
 
 def _job_dir(state, instance_id: str, job_model, project_path: Path) -> Path | None:
     """Resolve a job's dir from the EXPLICIT state (``relion_job_name``, then
-    ``job_path_mapping``). Unlike ``ui.dashboard.data._job_dir_for`` this never reads the
-    client-context tab accessor (``ui.current_project.current_project_state``), so it is correct off the event loop."""
+    ``job_path_mapping``). Local copy of ``services.dashboard_data.job_dir_for`` from when
+    that helper still read the client-context tab accessor (both are headless now)."""
     rjn = getattr(job_model, "relion_job_name", None)
     if rjn:
         d = project_path / str(rjn).rstrip("/")
