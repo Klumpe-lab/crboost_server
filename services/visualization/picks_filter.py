@@ -35,7 +35,6 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
@@ -53,7 +52,7 @@ PARTICLES_FILTERED_NAME = "particles_filtered.star"
 REVIEWED_SIDECAR_NAME = "curation_reviewed.json"
 
 
-def _read_candidates_for_ts(candidates_star: Path, ts_name: str) -> Optional[pd.DataFrame]:
+def _read_candidates_for_ts(candidates_star: Path, ts_name: str) -> pd.DataFrame | None:
     """Read candidates.star, filter to one TS, sort by score-desc to match
     the gallery's pick_idx order. Returns None if the star is missing or
     the score column isn't present."""
@@ -88,7 +87,7 @@ def _read_candidates_for_ts(candidates_star: Path, ts_name: str) -> Optional[pd.
 
 def derive_keep_state_for_ts(
     subtomo_job_dir: Path, candidate_extract_job_dir: Path, ts_name: str, n_picks_for_ts: int
-) -> Optional[set[int]]:
+) -> set[int] | None:
     """Look up which pick_idx values are currently kept in the filtered file.
 
     Returns:
@@ -256,11 +255,11 @@ def save_filtered_picks_for_ts(
     out_opt.write_text("\n".join(out_lines) + "\n")
 
     # Mark this TS reviewed (+ record kept count) for the roster's review column.
-    _update_reviewed_sidecar(subtomo_job_dir, ts_name, int(len(df_this_ts_kept)))
+    _update_reviewed_sidecar(subtomo_job_dir, ts_name, len(df_this_ts_kept))
 
     return {
-        "kept_for_ts": int(len(df_this_ts_kept)),
-        "total_kept": int(len(df_combined)),
+        "kept_for_ts": len(df_this_ts_kept),
+        "total_kept": len(df_combined),
         "filtered_path": str(out_particles),
         "optset_path": str(out_opt),
     }
@@ -428,7 +427,7 @@ def filtered_list_path(source_star: Path) -> Path:
     return source_star.with_name(f"{source_star.stem}_filtered.star")
 
 
-def save_filtered_list(source_star: Path, dropped_indices: set[int], out_star: Optional[Path] = None) -> dict:
+def save_filtered_list(source_star: Path, dropped_indices: set[int], out_star: Path | None = None) -> dict:
     """Write the source list MINUS the dropped rows. `dropped_indices` are 0-based
     ROW positions the user discarded; EVERY other row is kept — including any pick
     with no gallery tile (e.g. an out-of-bounds recon cutout), so a save never
@@ -447,10 +446,10 @@ def save_filtered_list(source_star: Path, dropped_indices: set[int], out_star: O
     kept_positions = [i for i in range(len(df)) if i not in drop]
     data[key] = df.iloc[kept_positions].reset_index(drop=True)
     starfile.write(data, out_star, overwrite=True)
-    return {"kept": len(kept_positions), "dropped": len(drop), "total": int(len(df)), "filtered_path": str(out_star)}
+    return {"kept": len(kept_positions), "dropped": len(drop), "total": len(df), "filtered_path": str(out_star)}
 
 
-def derive_keep_state_for_list(source_star: Path, filtered_star: Optional[Path] = None) -> Optional[set[int]]:
+def derive_keep_state_for_list(source_star: Path, filtered_star: Path | None = None) -> set[int] | None:
     """Which row indices of `source_star` survive in its `_filtered` star, matched
     by centered-Å coord (robust to row reordering). None when no filtered file
     exists (= all rows implicitly kept); a (possibly empty) set otherwise."""
@@ -509,7 +508,7 @@ def sync_filtered_count(pl) -> bool:
     return False
 
 
-def discard_filtered_list(source_star: Path, filtered_star: Optional[Path] = None) -> bool:
+def discard_filtered_list(source_star: Path, filtered_star: Path | None = None) -> bool:
     """Delete a list's `_filtered` star (revert to all-kept). True if removed."""
     filtered_star = Path(filtered_star) if filtered_star is not None else filtered_list_path(Path(source_star))
     if filtered_star.exists():

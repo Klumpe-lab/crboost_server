@@ -22,7 +22,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, Iterable, List, Set
+from collections.abc import Iterable
 
 from services.tilt_series.models import (
     Frame,
@@ -61,12 +61,12 @@ class TiltSeriesRegistry:
 
     def __init__(self, project_path: Path):
         self.project_path = project_path.resolve()
-        self._tilt_series: Dict[str, TiltSeries] = {}
+        self._tilt_series: dict[str, TiltSeries] = {}
         # Fast reverse indexes rebuilt on mutation/load. Kept in sync with
         # _tilt_series; never set directly from outside.
-        self._frame_index: Dict[str, TiltSeries] = {}       # frame_id → TS
-        self._filename_index: Dict[str, Frame] = {}         # raw_filename → Frame
-        self._dirty_ts: Set[str] = set()
+        self._frame_index: dict[str, TiltSeries] = {}       # frame_id → TS
+        self._filename_index: dict[str, Frame] = {}         # raw_filename → Frame
+        self._dirty_ts: set[str] = set()
         self._dirty_index: bool = False
         self._save_lock = asyncio.Lock()
 
@@ -101,7 +101,7 @@ class TiltSeriesRegistry:
     def all_tilt_series(self) -> Iterable[TiltSeries]:
         return self._tilt_series.values()
 
-    def tilt_series_ids(self) -> List[str]:
+    def tilt_series_ids(self) -> list[str]:
         return sorted(self._tilt_series)
 
     def get_frame(self, frame_id: str) -> Frame:
@@ -180,7 +180,7 @@ class TiltSeriesRegistry:
         ts.exclusion_reason = reason if excluded else None
         self._dirty_ts.add(ts_id)
 
-    def excluded_ids(self) -> Set[str]:
+    def excluded_ids(self) -> set[str]:
         """The set of TS ids the user has excluded from processing."""
         return {ts.id for ts in self._tilt_series.values() if ts.is_excluded}
 
@@ -204,17 +204,17 @@ class TiltSeriesRegistry:
             frame.filter_probability = probability
         self._dirty_ts.add(ts.id)
 
-    def filtered_out_frame_ids(self) -> Set[str]:
+    def filtered_out_frame_ids(self) -> set[str]:
         """The set of frame ids the tilt-filter has marked filtered-out."""
         return {f.id for ts in self._tilt_series.values() for f in ts.frames if f.is_filtered_out}
 
     # ── Validation ─────────────────────────────────────────────────────────
 
-    def assert_complete(self, job_instance_id: str, expected_ts_ids: Set[str]) -> None:
+    def assert_complete(self, job_instance_id: str, expected_ts_ids: set[str]) -> None:
         """Raise if any of `expected_ts_ids` lacks an output for `job_instance_id`
         at either TS or per-frame scope."""
-        missing_ts: List[str] = []
-        missing_frames: List[str] = []
+        missing_ts: list[str] = []
+        missing_frames: list[str] = []
 
         for ts_id in sorted(expected_ts_ids):
             if ts_id not in self._tilt_series:
@@ -232,7 +232,7 @@ class TiltSeriesRegistry:
             if missing:
                 missing_frames.append(f"{ts_id}: missing on frames {missing[:5]}{'...' if len(missing) > 5 else ''}")
 
-        problems: List[str] = []
+        problems: list[str] = []
         if missing_ts:
             problems.append(f"TS not registered: {missing_ts}")
         if missing_frames:
@@ -325,7 +325,7 @@ class TiltSeriesRegistry:
         for name in stale_names:
             self._filename_index.pop(name, None)
 
-        seen_ids: Set[str] = set()
+        seen_ids: set[str] = set()
         for f in ts.frames:
             if f.id in seen_ids:
                 raise ValueError(f"Duplicate frame id {f.id!r} in TS {ts.id}")
@@ -350,10 +350,10 @@ class TiltSeriesRegistry:
 
     # ── Sanity ─────────────────────────────────────────────────────────────
 
-    def sanity_check(self) -> List[str]:
+    def sanity_check(self) -> list[str]:
         """Return a list of integrity problems; empty means the registry is consistent."""
-        problems: List[str] = []
-        seen_frame_ids: Set[str] = set()
+        problems: list[str] = []
+        seen_frame_ids: set[str] = set()
         for ts in self._tilt_series.values():
             if ts.id != ts.mdoc_filename.rsplit(".", 1)[0]:
                 problems.append(
@@ -383,7 +383,7 @@ class TiltSeriesRegistry:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-_registries: Dict[Path, TiltSeriesRegistry] = {}
+_registries: dict[Path, TiltSeriesRegistry] = {}
 
 
 def get_registry_for(project_path: Path) -> TiltSeriesRegistry:

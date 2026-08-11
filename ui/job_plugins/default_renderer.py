@@ -7,7 +7,7 @@ auto-packing CSS grid, no underline-only inputs, font sizes congruent with
 the toolbar / pipeline roster.
 """
 
-from typing import Callable, Dict, List, Optional, Set
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -25,7 +25,7 @@ from ui.job_plugins._field_styles import (
     CLR_SUBLABEL,
 )
 
-BASE_FIELDS: Set[str] = {
+BASE_FIELDS: set[str] = {
     "execution_status",
     "relion_job_name",
     "relion_job_number",
@@ -42,7 +42,7 @@ BASE_FIELDS: Set[str] = {
 }
 
 
-def _get_description(job_model, param_name: str) -> Optional[str]:
+def _get_description(job_model, param_name: str) -> str | None:
     field_info = job_model.model_fields.get(param_name)
     if field_info and field_info.description:
         return field_info.description
@@ -54,8 +54,8 @@ def _is_pathlike(name: str) -> bool:
     return any(k in n for k in ("path", "dir", "glob", "pattern", "file", "folder"))
 
 
-def _classify_fields(job_model, field_names: Set[str]) -> Dict[str, List[str]]:
-    groups: Dict[str, List[str]] = {"paths": [], "numeric": [], "text": [], "enum": [], "toggle": []}
+def _classify_fields(job_model, field_names: set[str]) -> dict[str, list[str]]:
+    groups: dict[str, list[str]] = {"paths": [], "numeric": [], "text": [], "enum": [], "toggle": []}
 
     for name in sorted(field_names):
         value = getattr(job_model, name)
@@ -82,7 +82,7 @@ def _classify_fields(job_model, field_names: Set[str]) -> Dict[str, List[str]]:
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def render_species_badge(job_model, project_path: Optional[str]):
+def render_species_badge(job_model, project_path: str | None):
     """Read-only species pill shown at the top of any particle-phase job config."""
     species_id = getattr(job_model, "species_id", None)
     if not species_id or not project_path:
@@ -112,7 +112,7 @@ def render_species_badge(job_model, project_path: Optional[str]):
             ui.label(species.name).style(f"font-size: 10px; color: {species.color}; font-weight: 600;")
 
 
-def render_denoise_inheritance(job_model, project_path: Optional[str]):
+def render_denoise_inheritance(job_model, project_path: str | None):
     """Read-only row for denoise-predict: the denoiser (cryoCARE / IsoNet) and its deconv
     setting are inherited from the denoise-train job — predict has no independent setting,
     so a train/predict mismatch is impossible. Shows the resolved method when available."""
@@ -167,7 +167,7 @@ def render_config_preamble(job_model):
 
 
 def render_default_params(
-    job_type, job_model, is_frozen: bool, save_handler: Callable, exclude: Optional[Set[str]] = None, **_ctx
+    job_type, job_model, is_frozen: bool, save_handler: Callable, exclude: set[str] | None = None, **_ctx
 ):
     """Render all job-specific fields, grouped by type."""
     user_params = getattr(job_model, "USER_PARAMS", set())
@@ -240,7 +240,7 @@ def render_default_params(
 
 
 def render_default_params_card(
-    job_type, job_model, is_frozen: bool, save_handler: Callable, exclude: Optional[Set[str]] = None, **_ctx
+    job_type, job_model, is_frozen: bool, save_handler: Callable, exclude: set[str] | None = None, **_ctx
 ):
     """render_default_params with an optional species badge prefix."""
     ui_mgr = _ctx.get("ui_mgr")

@@ -15,7 +15,7 @@ model and can still be applied programmatically, but no longer have UI.
 """
 
 import math
-from typing import Callable
+from collections.abc import Callable
 
 from nicegui import ui
 

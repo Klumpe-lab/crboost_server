@@ -17,7 +17,7 @@ ruff only (no runtime test in this venv — see reference_hpc_env).
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -96,12 +96,12 @@ def build_strip(
     journey: dict,
     species_journey: dict,
     ts_names: list,
-    selected_ts: Optional[str],
+    selected_ts: str | None,
     recon_mrc_map: dict,
     on_select: Callable[[str], object],
-    info_popover: Optional[Callable] = None,
-    excluded_ids: Optional[set] = None,
-    on_toggle_exclude: Optional[Callable[[str], object]] = None,
+    info_popover: Callable | None = None,
+    excluded_ids: set | None = None,
+    on_toggle_exclude: Callable[[str], object] | None = None,
 ) -> dict:
     """Build the heatmap strip into ``container``; return ``{ts: column element}``
     so the caller can move the selection highlight without a full rebuild.

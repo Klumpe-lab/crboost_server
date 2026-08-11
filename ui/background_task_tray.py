@@ -21,7 +21,8 @@ per active task — negligible.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Hashable, Optional
+from typing import Any
+from collections.abc import Callable, Hashable
 
 from nicegui import ui
 
@@ -43,7 +44,7 @@ class _BackgroundTaskTray(FingerprintedView):
     DOM churn on every workspace tab.
     """
 
-    def __init__(self, container: Any, project_path_provider: Callable[[], Optional[str]]) -> None:
+    def __init__(self, container: Any, project_path_provider: Callable[[], str | None]) -> None:
         super().__init__(container)
         self._project_path_provider = project_path_provider
         # Cached for render() — populated by signature() each tick.
@@ -73,7 +74,7 @@ class _BackgroundTaskTray(FingerprintedView):
             _render_task_card(task, self.refresh)
 
 
-def mount_background_task_tray(project_path_provider: Callable[[], Optional[str]]) -> None:
+def mount_background_task_tray(project_path_provider: Callable[[], str | None]) -> None:
     """Mount a floating tray at the page root. `project_path_provider` is
     re-evaluated on every refresh so the tray follows project switches
     without rebuilding."""

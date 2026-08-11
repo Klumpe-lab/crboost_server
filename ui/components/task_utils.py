@@ -8,7 +8,6 @@ Used by array_task_tracker.py and the Tomogram Dashboard's journey collector
 import json
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
 
 _POSITION_RE = re.compile(r"Position_(\d+)(?:_(\d+))?$")
 
@@ -30,7 +29,7 @@ def ts_display_name(raw_name: str) -> str:
     return raw_name
 
 
-def shorten_ts_names(items: List[str]) -> Dict[str, str]:
+def shorten_ts_names(items: list[str]) -> dict[str, str]:
     """Map raw TS names to display names using Position_{stage}_{beam} scheme."""
     return {name: ts_display_name(name) for name in items}
 
@@ -60,7 +59,7 @@ def ts_position_sort_key(raw_name: str):
     return (0, stage, beam, raw_name)
 
 
-def sort_ts_by_position(items: List[str]) -> List[str]:
+def sort_ts_by_position(items: list[str]) -> list[str]:
     """Return items ordered by (stage, beam) ascending."""
     return sorted(items, key=ts_position_sort_key)
 
@@ -90,7 +89,7 @@ def escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def read_manifest(job_dir: Path) -> Optional[dict]:
+def read_manifest(job_dir: Path) -> dict | None:
     """Read .task_manifest.json from a job directory."""
     manifest_path = job_dir / ".task_manifest.json"
     if not manifest_path.exists():
@@ -101,7 +100,7 @@ def read_manifest(job_dir: Path) -> Optional[dict]:
         return None
 
 
-def scan_statuses(job_dir: Path, items: List[str]) -> Dict[str, str]:
+def scan_statuses(job_dir: Path, items: list[str]) -> dict[str, str]:
     """Scan .task_status/ dir and return {item_name: status_string}.
 
     Uses task_{idx}.out existence to distinguish running vs pending:
@@ -124,7 +123,7 @@ def scan_statuses(job_dir: Path, items: List[str]) -> Dict[str, str]:
             elif p.suffix == ".skip":
                 skip_set.add(p.stem)
 
-    statuses: Dict[str, str] = {}
+    statuses: dict[str, str] = {}
     for idx, name in enumerate(items):
         if name in ok_set:
             statuses[name] = "ok"
@@ -139,7 +138,7 @@ def scan_statuses(job_dir: Path, items: List[str]) -> Dict[str, str]:
     return statuses
 
 
-def resolve_job_dir(job_model, project_path: Optional[Path] = None) -> Optional[Path]:
+def resolve_job_dir(job_model, project_path: Path | None = None) -> Path | None:
     """Resolve the on-disk job directory from a job model."""
     stored = (job_model.paths or {}).get("job_dir")
     if stored:

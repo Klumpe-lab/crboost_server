@@ -15,7 +15,7 @@ Mapping to our RELION-5 centered-Å convention (see :mod:`services.visualization
 
 Because we own both directions and exchange in ArtiaX's corner-Å (= voxel*px) space, the ``N/2``
 centering term cancels in any our→ArtiaX→our round trip regardless of the half-voxel parity
-ambiguity. See ``services/visualization/ARTIAX_BRIDGE_PLAN.md``.
+ambiguity. See ``docs/ARTIAX_BRIDGE_PLAN.md``.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import argparse
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
@@ -79,7 +79,7 @@ def _find_table(star_path: Path, required_col: str) -> pd.DataFrame:
     raise ValueError(f"No table with column {required_col!r} in {star_path}")
 
 
-def frame_for_tomo(tomograms_star: Path, tomo_name: str, project_root: Optional[Path] = None) -> TomoFrame:
+def frame_for_tomo(tomograms_star: Path, tomo_name: str, project_root: Path | None = None) -> TomoFrame:
     tomo_df = _find_table(Path(tomograms_star), "rlnTomoName")
     rows = tomo_df[tomo_df["rlnTomoName"] == tomo_name]
     if rows.empty:
@@ -88,7 +88,7 @@ def frame_for_tomo(tomograms_star: Path, tomo_name: str, project_root: Optional[
 
 
 def export_tomo_picks_to_coords(
-    candidates_star: Path, tomograms_star: Path, tomo_name: str, out_path: Path, project_root: Optional[Path] = None
+    candidates_star: Path, tomograms_star: Path, tomo_name: str, out_path: Path, project_root: Path | None = None
 ) -> int:
     """Write our picks for one tomogram to an ArtiaX ``.coords`` file. Returns the pick count."""
     parts = _find_table(Path(candidates_star), "rlnTomoName")
@@ -101,7 +101,7 @@ def export_tomo_picks_to_coords(
 
 
 def import_coords_to_centered_star(
-    coords_path: Path, tomograms_star: Path, tomo_name: str, out_star: Path, project_root: Optional[Path] = None
+    coords_path: Path, tomograms_star: Path, tomo_name: str, out_star: Path, project_root: Path | None = None
 ) -> int:
     """Ingest an ArtiaX ``.coords`` (manual picks) → a RELION-5 centered-Å particles
     star for one tomogram. The inverse of :func:`export_tomo_picks_to_coords`, using
@@ -171,7 +171,7 @@ def curation_dir(project_root, tomo_name: str, *, species_id: str = "", species_
     return Path(project_root) / "Curation" / sp_slug / _safe_slug(tomo_name)
 
 
-def session_chimerax_commands(recon_mrc, auto_coords: Optional[Path] = None) -> list[str]:
+def session_chimerax_commands(recon_mrc, auto_coords: Path | None = None) -> list[str]:
     """The ChimeraX command lines that load a tomogram + our picks into ArtiaX.
 
     This is the single source of the load backbone: the ``.cxc`` bakes these in for
@@ -187,7 +187,7 @@ def session_chimerax_commands(recon_mrc, auto_coords: Optional[Path] = None) -> 
 
 
 def swap_chimerax_commands(
-    recon_mrc, pick_file=None, *, clear: bool = True, force_apix: Optional[float] = None, cwd=None
+    recon_mrc, pick_file=None, *, clear: bool = True, force_apix: float | None = None, cwd=None
 ) -> list[str]:
     """The in-session "swap to this tomogram" command sequence — what crboost POSTs
     over the REST channel (see ``backend.send_chimerax_command``) to load a new
@@ -218,14 +218,14 @@ def swap_chimerax_commands(
 
 def build_session_cxc(
     recon_mrc,
-    auto_coords: Optional[Path] = None,
+    auto_coords: Path | None = None,
     *,
     tomo_name: str = "",
     species: str = "",
-    pixel_size: Optional[float] = None,
-    tomo_size: Optional[Sequence[int]] = None,
-    manual_coords: Optional[Path] = None,
-    window_size: Optional[Sequence[int]] = None,
+    pixel_size: float | None = None,
+    tomo_size: Sequence[int] | None = None,
+    manual_coords: Path | None = None,
+    window_size: Sequence[int] | None = None,
 ) -> str:
     """Build a ChimeraX startup ``.cxc`` that preloads one tomogram + our picks in ArtiaX.
 
@@ -263,8 +263,8 @@ def prepare_curation_bundle(
     *,
     species: str = "",
     coords_label: str = "auto",
-    project_root: Optional[Path] = None,
-    window_size: Optional[Sequence[int]] = None,
+    project_root: Path | None = None,
+    window_size: Sequence[int] | None = None,
 ) -> dict:
     """Materialize everything a ChimeraX/ArtiaX session needs to open one
     tomogram preloaded with a reference pick list.

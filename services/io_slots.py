@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
+from collections.abc import Sequence
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
@@ -100,11 +101,11 @@ class InputSlot(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     key: str = Field(..., description="Logical input name used in job_model.paths")
-    accepts: List[JobFileType] = Field(..., min_length=1)
+    accepts: list[JobFileType] = Field(..., min_length=1)
     required: bool = Field(default=True)
 
     # Preference knobs (used by resolver later)
-    preferred_source: Optional[str] = Field(
+    preferred_source: str | None = Field(
         default=None, description="JobType string (or later: job instance id) preferred as source if available"
     )
 
@@ -140,7 +141,7 @@ class ResolvedInput(BaseModel):
 
     # Identity of the producing job
     source_job_type: str
-    source_instance_id: Optional[str] = None  # future-proof
+    source_instance_id: str | None = None  # future-proof
 
     # Identity of what output we used
     source_output_key: str
@@ -171,12 +172,12 @@ class ResolvedManifest(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
     job_type: str
-    instance_id: Optional[str] = None
+    instance_id: str | None = None
 
-    inputs: List[ResolvedInput] = Field(default_factory=list)
-    outputs: List[ResolvedOutput] = Field(default_factory=list)
+    inputs: list[ResolvedInput] = Field(default_factory=list)
+    outputs: list[ResolvedOutput] = Field(default_factory=list)
 
-    def as_paths_dict(self) -> Dict[str, Any]:
+    def as_paths_dict(self) -> dict[str, Any]:
         """
         Convert to the eventual job_model.paths payload.
 
@@ -187,7 +188,7 @@ class ResolvedManifest(BaseModel):
           driver needs to read the upstream file at startup; it will copy/produce
           its own output version during execution.
         """
-        d: Dict[str, Any] = {}
+        d: dict[str, Any] = {}
         for ri in self.inputs:
             d[ri.input_key] = ri.path
         for ro in self.outputs:
@@ -208,11 +209,11 @@ class ResolvedManifest(BaseModel):
 
 def validate_schema_uniqueness(
     input_schema: Sequence[InputSlot], output_schema: Sequence[OutputSlot]
-) -> Tuple[bool, List[str]]:
+) -> tuple[bool, list[str]]:
     """
     Pure helper you can use in tests to catch typos early.
     """
-    errors: List[str] = []
+    errors: list[str] = []
 
     in_keys = [s.key for s in input_schema]
     out_keys = [s.key for s in output_schema]

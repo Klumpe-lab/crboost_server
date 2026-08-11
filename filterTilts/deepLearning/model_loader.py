@@ -95,7 +95,8 @@ class ModelLoader:
                 self.model_architecture = MODEL_REGISTRY[self.model_path.stem]
                 print(f"Using architecture from filename: {self.model_architecture}")
             else:
-                # If the name of the model architecture is not found, or just weights are saved, use default architecture
+                # If the name of the model architecture is not found, or just weights are saved,
+                # use default architecture
                 self.model_architecture = 'SmallSimpleCNN'
                 print(f"WARNING: No architecture found in checkpoint dict, using default: {self.model_architecture}")
         else:
@@ -130,7 +131,9 @@ class ModelLoader:
             allocated = torch.cuda.memory_allocated(self.gpu) / 1024**3
             reserved = torch.cuda.memory_reserved(self.gpu) / 1024**3
             total = torch.cuda.get_device_properties(self.gpu).total_memory / 1024**3
-            print(f"GPU {self.gpu} memory: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved, {total:.2f} GB total")
+            print(
+                f"GPU {self.gpu} memory: {allocated:.2f} GB allocated, {reserved:.2f} GB reserved, {total:.2f} GB total"
+            )
         
         # Load checkpoint to CPU
         checkpoint = torch.load(self.model_path, map_location='cpu')
@@ -175,7 +178,7 @@ class ModelLoader:
         
         except RuntimeError as e:
             if "out of memory" in str(e):
-                print(f"\n⚠ GPU OUT OF MEMORY!")
+                print("\n⚠ GPU OUT OF MEMORY!")
                 print(f"Original device: {self.device}")
                 print("Falling back to CPU...")
                 
@@ -185,7 +188,7 @@ class ModelLoader:
                 
                 self.device = torch.device('cpu')
                 self.model.to(self.device)
-                print(f"✓ Model moved to CPU")
+                print("✓ Model moved to CPU")
             else:
                 raise e
         

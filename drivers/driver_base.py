@@ -8,9 +8,10 @@ Refactored for Single Source of Truth architecture.
 import subprocess
 import sys
 import os
+import time
 import argparse
 from pathlib import Path
-from typing import Tuple, Type, TypeVar
+from typing import TypeVar
 
 # Add server root to path to import services
 server_dir = Path(__file__).parent.parent
@@ -19,7 +20,7 @@ sys.path.append(str(server_dir))
 try:
     from services.project_state import ProjectState, AbstractJobParams, JobType
 except ImportError as e:
-    print(f"FATAL: driver_base could not import services. Check PYTHONPATH.", file=sys.stderr)
+    print("FATAL: driver_base could not import services. Check PYTHONPATH.", file=sys.stderr)
     print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
     print(f"Error: {e}", file=sys.stderr)
     sys.exit(1)
@@ -41,7 +42,7 @@ def load_project_state(project_path: Path) -> ProjectState:
 T = TypeVar("T", bound=AbstractJobParams)
 
 
-def get_driver_context(expected_type: Type[T] = None) -> Tuple[ProjectState, T, dict, Path, Path, JobType]:
+def get_driver_context(expected_type: type[T] | None = None) -> tuple[ProjectState, T, dict, Path, Path, JobType]:
     """
     Primary bootstrap function for all drivers.
     Identity is now derived from --instance_id rather than --job_type,
@@ -146,6 +147,12 @@ def get_driver_context(expected_type: Type[T] = None) -> Tuple[ProjectState, T, 
     )
 
 
+# Seconds of complete silence from a tool before run_command treats it as hung.
+# Generous on purpose: WarpTools/pytom go quiet during finalization, and killing a
+# working-but-quiet tool is far worse than waiting out a real hang a bit longer.
+IDLE_TIMEOUT_DEFAULT = 45 * 60
+
+
 def _derive_watchdog_timeout() -> int:
     """
     Seconds of wall-clock budget for run_command's watchdog.
@@ -203,22 +210,36 @@ def _derive_watchdog_timeout() -> int:
     return 8 * 60 * 60  # 8h fallback
 
 
-def run_command(command: str, cwd: Path, timeout: int = None):
+def run_command(command: str, cwd: Path, timeout: int | None = None, idle_timeout: int = IDLE_TIMEOUT_DEFAULT):
     """
     Run a shell command, stream output, and check for errors.
 
-    If timeout is set (seconds), the process tree is killed after that many
-    seconds of wall-clock time. When unset, the watchdog budget is derived
-    from SLURM walltime env vars (see _derive_watchdog_timeout), falling back
-    to 8 hours. The watchdog exists to kill orphaned container processes that
-    hold a SLURM slot after a tool crash -- SLURM itself enforces --time, so
-    the fallback only needs to exceed the longest legitimate tool runtime.
+    Two independent watchdogs, because "hung" and "slow" are different failures
+    and only one of them used to be caught:
+
+      timeout (total wall-clock) -- derived from SLURM walltime at 90% (see
+        _derive_watchdog_timeout) when unset. This does NOT save the job: a run
+        that trips it was going to exceed --time anyway. What it buys is that WE
+        kill it rather than SLURM, so the driver still gets to write a .fail
+        marker and log a reason instead of vanishing mid-line.
+
+      idle_timeout (seconds with ZERO output) -- the one that actually targets
+        the documented hazard: a tool crashes, an orphaned child keeps the stdout
+        pipe open, and the readline loop below blocks forever on a pipe that will
+        never EOF. Total-runtime alone is a poor detector for that, because it
+        scales with the allocation: under the 14-day g_long QOS a process hung in
+        its first minute would sit on a GPU for ~12 days before the 90% mark.
+        Inactivity catches it in `idle_timeout` regardless of allocation size.
+
+    Set idle_timeout=0 to disable inactivity checking for a legitimately silent
+    tool. It is capped at the total budget, since outliving that is meaningless.
     """
     import signal
     import threading
 
     if timeout is None:
         timeout = _derive_watchdog_timeout()
+    idle_timeout = min(idle_timeout, timeout) if idle_timeout else 0
 
     process = subprocess.Popen(
         command,
@@ -231,21 +252,28 @@ def run_command(command: str, cwd: Path, timeout: int = None):
         start_new_session=True,
     )
 
-    # Watchdog: kill the entire process group if it exceeds the timeout.
-    # This handles the case where a tool crashes but orphaned child processes
-    # keep the stdout pipe open, blocking the readline loop forever.
+    # Watchdog: kill the entire process group on total-time or inactivity breach.
     done = threading.Event()
+    started = time.monotonic()
+    last_output = [started]  # list so the reader loop below can rebind it
 
-    def _watchdog():
-        if done.wait(timeout):
-            return  # process finished before timeout
-        # Timeout expired — kill the process group
+    def _kill(reason: str):
         if process.poll() is None:
-            print(f"\n[run_command] TIMEOUT after {timeout}s — killing process group", flush=True)
+            print(f"\n[run_command] {reason} — killing process group", flush=True)
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except OSError:
                 pass
+
+    def _watchdog():
+        poll = min(30, idle_timeout) if idle_timeout else timeout
+        while not done.wait(poll):
+            now = time.monotonic()
+            if now - started > timeout:
+                return _kill(f"TIMEOUT after {timeout}s")
+            idle = now - last_output[0]
+            if idle_timeout and idle > idle_timeout:
+                return _kill(f"NO OUTPUT for {int(idle)}s (idle limit {idle_timeout}s)")
 
     watchdog = threading.Thread(target=_watchdog, daemon=True)
     watchdog.start()
@@ -253,6 +281,7 @@ def run_command(command: str, cwd: Path, timeout: int = None):
     print("--- CONTAINER OUTPUT ---", flush=True)
     if process.stdout:
         for line in iter(process.stdout.readline, ""):
+            last_output[0] = time.monotonic()
             print(line, end="", flush=True)
 
     process.wait()
@@ -268,7 +297,7 @@ def run_command_with_retries(
     attempts: int = 3,
     retry_delay: int = 10,
     label: str = "command",
-    timeout: int = None,
+    timeout: int | None = None,
 ):
     """
     Run `command` via run_command(), retrying on a non-zero exit up to `attempts`
@@ -313,7 +342,7 @@ def diagnose_stale_producer(path: Path) -> str:
     (e.g. alignment) ends up pointed at an empty stub dir (job003) instead of
     the real producer output (job004). Returns "" when nothing useful is found.
 
-    See services/scheduling_and_orchestration/ORCHESTRATOR_ROADMAP.md.
+    See docs/ORCHESTRATOR_ROADMAP.md.
     """
     try:
         name = path.name
@@ -340,7 +369,7 @@ def diagnose_stale_producer(path: Path) -> str:
             f"\n  ↳ LIKELY CAUSE: stale job-number mapping after an aborted+redeployed scheme run —"
             f" the predicted External/jobNNN drifted behind RELION's actual assignment, so this job"
             f" points at an empty stub ({job_dir.name}) instead of the real producer output."
-            f"\n     See services/scheduling_and_orchestration/ORCHESTRATOR_ROADMAP.md (job-number off-by-one)."
+            f"\n     See docs/ORCHESTRATOR_ROADMAP.md (job-number off-by-one)."
         )
     except Exception:
         return ""

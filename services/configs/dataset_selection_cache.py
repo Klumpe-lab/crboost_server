@@ -10,7 +10,6 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
 
 from services.dataset_models import DatasetOverview
 
@@ -20,7 +19,7 @@ _CACHE_PATH = Path.home() / ".crboost" / "dataset_selections.json"
 MAX_CACHED_DATASETS = 50
 
 
-def _load_cache() -> Dict:
+def _load_cache() -> dict:
     if not _CACHE_PATH.exists():
         return {}
     try:
@@ -31,7 +30,7 @@ def _load_cache() -> Dict:
         return {}
 
 
-def _save_cache(cache: Dict):
+def _save_cache(cache: dict):
     try:
         _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_CACHE_PATH, "w") as f:
@@ -95,7 +94,7 @@ def apply_selections(mdocs_glob: str, overview: DatasetOverview) -> bool:
     return False
 
 
-def get_saved_timestamp(mdocs_glob: str) -> Optional[str]:
+def get_saved_timestamp(mdocs_glob: str) -> str | None:
     """Return the ISO timestamp of the last saved selection for this dataset, or None."""
     if not mdocs_glob:
         return None

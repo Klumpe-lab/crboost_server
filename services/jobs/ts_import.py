@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Set, Tuple
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -23,15 +23,15 @@ class TsImportParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS: ClassVar[Set[str]] = {"mdoc_pattern", "min_intensity", "do_at_most", "tomo_dimensions"}
+    USER_PARAMS: ClassVar[set[str]] = {"mdoc_pattern", "min_intensity", "do_at_most", "tomo_dimensions"}
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf"),
         InputSlot(
             key="input_processing", accepts=[JobFileType.WARP_FRAMESERIES_DIR], preferred_source="fsMotionAndCtf"
         ),
     ]
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="tomostar_dir", produces=JobFileType.TOMOSTAR_DIR, path_template="tomostar/", is_dir=True),
         OutputSlot(
             key="warp_tiltseries_settings",
@@ -58,11 +58,11 @@ class TsImportParams(AbstractJobParams):
     do_at_most: int = Field(default=-1)
     tomo_dimensions: str = Field(default="4096x4096x2048")
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
 
-    def _get_queue_options(self) -> List[Tuple[str, str]]:
+    def _get_queue_options(self) -> list[tuple[str, str]]:
         """
         ts_import is lightweight metadata assembly — no GPU needed.
         Use the supervisor SLURM config (minimal resources).
@@ -86,5 +86,5 @@ class TsImportParams(AbstractJobParams):
         return "warptools"
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"motion": "fsMotionAndCtf"}

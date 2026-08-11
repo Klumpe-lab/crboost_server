@@ -1,5 +1,5 @@
 # ui/pipeline_builder/config_tab.py
-from typing import Callable
+from collections.abc import Callable
 
 from services.project_state import JobStatus, JobType, get_project_state
 from ui.job_plugins import get_params_renderer

@@ -98,7 +98,9 @@ def main():
     print("[DRIVER] ts_import driver started.", flush=True)
 
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(TsImportParams)
+        (_project_state, params, local_params_data, job_dir, _project_path, job_type) = get_driver_context(
+            TsImportParams
+        )
     except Exception as e:
         job_dir = Path.cwd()
         (job_dir / "RELION_JOB_EXIT_FAILURE").touch()

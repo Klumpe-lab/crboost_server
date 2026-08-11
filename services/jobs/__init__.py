@@ -24,10 +24,9 @@ from services.jobs.reconstruct_particle import ReconstructParticleParams
 from services.jobs.class3d import Class3DParams
 
 from services.models_base import JobType
-from typing import Dict, Type
 
 
-def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
+def jobtype_paramclass() -> dict[JobType, type[AbstractJobParams]]:
     """Registry mapping JobType to its parameter class."""
     return {
         JobType.IMPORT_MOVIES: ImportMoviesParams,
@@ -50,23 +49,23 @@ def jobtype_paramclass() -> Dict[JobType, Type[AbstractJobParams]]:
 
 __all__ = [
     "AbstractJobParams",
-    "ExtractionCutoffMethod",
-    "SymmetryGroup",
-    "TemplateWorkbenchState",
-    "ImportMoviesParams",
-    "FsMotionCtfParams",
-    "TsImportParams",
-    "TsAlignmentParams",
-    "MissAlignParams",
-    "TsCtfParams",
-    "TiltFilterParams",
-    "TsReconstructParams",
-    "DenoiseTrainParams",
-    "DenoisePredictParams",
-    "TemplateMatchPytomParams",
     "CandidateExtractPytomParams",
-    "SubtomoExtractionParams",
-    "ReconstructParticleParams",
     "Class3DParams",
+    "DenoisePredictParams",
+    "DenoiseTrainParams",
+    "ExtractionCutoffMethod",
+    "FsMotionCtfParams",
+    "ImportMoviesParams",
+    "MissAlignParams",
+    "ReconstructParticleParams",
+    "SubtomoExtractionParams",
+    "SymmetryGroup",
+    "TemplateMatchPytomParams",
+    "TemplateWorkbenchState",
+    "TiltFilterParams",
+    "TsAlignmentParams",
+    "TsCtfParams",
+    "TsImportParams",
+    "TsReconstructParams",
     "jobtype_paramclass",
 ]

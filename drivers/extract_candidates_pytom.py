@@ -24,7 +24,6 @@ import shutil
 import sys
 import traceback
 from pathlib import Path
-from typing import List
 
 import pandas as pd
 import starfile
@@ -62,7 +61,7 @@ def get_pixel_size_from_star(tomograms_star: Path) -> float:
     try:
         data = starfile.read(tomograms_star)
         if isinstance(data, dict):
-            df = list(data.values())[0]
+            df = next(iter(data.values()))
         else:
             df = data
         ts_pixs = float(df["rlnTomoTiltSeriesPixelSize"].iloc[0])
@@ -102,7 +101,7 @@ def cleanup_tomo_names(candidates_star: Path, apix_fallback: float) -> int:
         return 0
 
 
-def build_extract_base_cmd(params: CandidateExtractPytomParams, apix: float) -> List[str]:
+def build_extract_base_cmd(params: CandidateExtractPytomParams, apix: float) -> list[str]:
     base_cmd = [
         "pytom_extract_candidates.py",
         "-n", str(params.max_num_particles),
@@ -132,7 +131,7 @@ def stage_upstream_tm_results(upstream: Path, local: Path) -> int:
         if target.exists():
             continue
         if f.suffix == ".json":
-            with open(f, "r") as src:
+            with open(f) as src:
                 data = json.load(src)
             data["output_dir"] = str(local)
             with open(target, "w") as dst:
@@ -177,7 +176,7 @@ def main():
 
 def run_supervisor_mode():
     try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(
+        (state, params, context, job_dir, project_path, _job_type) = get_driver_context(
             CandidateExtractPytomParams
         )
     except Exception as e:
@@ -226,7 +225,7 @@ def run_supervisor_mode():
             raise RuntimeError(f"No *_job.json files found under {local_tm_results}")
 
         suffix = "_job.json"
-        tomo_names: List[str] = sorted(j.name[: -len(suffix)] for j in job_jsons)
+        tomo_names: list[str] = sorted(j.name[: -len(suffix)] for j in job_jsons)
         print(f"[SUPERVISOR] Found {len(tomo_names)} tomograms to extract", flush=True)
 
         preflight_registry(project_path, tomo_names, job_name="extract_candidates_pytom")
@@ -390,7 +389,7 @@ def run_supervisor_mode():
 
 def run_task_mode(array_idx: int):
     try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(
+        (_state, params, context, job_dir, _project_path, _job_type) = get_driver_context(
             CandidateExtractPytomParams
         )
     except Exception as e:
@@ -423,7 +422,7 @@ def run_task_mode(array_idx: int):
             sys.exit(0)
 
         base_cmd = build_extract_base_cmd(params, apix)
-        cmd = base_cmd + ["-j", str(job_json)]
+        cmd = [*base_cmd, "-j", str(job_json)]
         cmd_str = " ".join(cmd)
         print(f"[TASK {array_idx}] Command: {cmd_str}", flush=True)
 

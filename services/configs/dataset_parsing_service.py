@@ -12,7 +12,7 @@ import os
 import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
 
 from services.configs.mdoc_service import get_mdoc_service
 from services.dataset_models import AcquisitionSummary, DatasetOverview, StagePositionInfo, TiltInfo, TiltSeriesInfo
@@ -31,8 +31,8 @@ class DatasetParsingService:
     def parse_dataset(
         self,
         mdocs_glob: str,
-        frames_dir: Optional[str] = None,
-        progress_cb: Optional[Callable[[int, int], None]] = None,
+        frames_dir: str | None = None,
+        progress_cb: Callable[[int, int], None] | None = None,
     ) -> DatasetOverview:
         """
         Parse all mdoc files matching the glob and associate with frame files.
@@ -55,8 +55,8 @@ class DatasetParsingService:
         resolved_frames_dir = self._resolve_frames_directory(mdoc_paths, frames_dir)
         frame_ext = self._detect_frame_extension(resolved_frames_dir)
 
-        warnings: List[str] = []
-        tilt_series_list: List[TiltSeriesInfo] = []
+        warnings: list[str] = []
+        tilt_series_list: list[TiltSeriesInfo] = []
 
         total_mdocs = len(mdoc_paths)
         if progress_cb:
@@ -76,7 +76,7 @@ class DatasetParsingService:
                 warnings.append(f"Failed to parse {mdoc_path.name}: {e}")
                 continue
 
-            tilts: List[TiltInfo] = []
+            tilts: list[TiltInfo] = []
             for section in mdoc_data["data"]:
                 tilt = self._build_tilt_info(section, resolved_frames_dir)
                 if tilt is not None:
@@ -115,7 +115,7 @@ class DatasetParsingService:
             acquisition_summary=acq_summary,
         )
 
-    def _parse_mdoc_filename(self, mdoc_name: str) -> Optional[Tuple[int, int]]:
+    def _parse_mdoc_filename(self, mdoc_name: str) -> tuple[int, int] | None:
         """
         Extract (stage_position, beam_position) from mdoc filename.
 
@@ -132,7 +132,7 @@ class DatasetParsingService:
         beam = int(m.group(2)) if m.group(2) else 1
         return (stage, beam)
 
-    def _resolve_frames_directory(self, mdoc_files: List[Path], frames_dir: Optional[str]) -> Optional[Path]:
+    def _resolve_frames_directory(self, mdoc_files: list[Path], frames_dir: str | None) -> Path | None:
         """
         Determine where frame files are located.
 
@@ -173,7 +173,7 @@ class DatasetParsingService:
 
         return None
 
-    def _detect_frame_extension(self, frames_dir: Optional[Path]) -> str:
+    def _detect_frame_extension(self, frames_dir: Path | None) -> str:
         if not frames_dir or not frames_dir.exists():
             return ""
         for ext in [".eer", ".tiff", ".tif", ".mrc"]:
@@ -181,7 +181,7 @@ class DatasetParsingService:
                 return ext
         return ""
 
-    def _build_tilt_info(self, section: Dict, frames_dir: Optional[Path]) -> Optional[TiltInfo]:
+    def _build_tilt_info(self, section: dict, frames_dir: Path | None) -> TiltInfo | None:
         """Build a TiltInfo from a parsed mdoc ZValue section."""
         z_value_str = section.get("ZValue")
         if z_value_str is None:
@@ -214,7 +214,7 @@ class DatasetParsingService:
                 frame_path = candidate.resolve()
 
         # Extract numeric MDOC stats for per-tilt metadata registry
-        mdoc_stats: Dict[str, float] = {}
+        mdoc_stats: dict[str, float] = {}
         mmm = section.get("MinMaxMean", "")
         if mmm:
             parts = mmm.split()
@@ -254,15 +254,15 @@ class DatasetParsingService:
             mdoc_stats=mdoc_stats, date_time=section.get("DateTime"),
         )
 
-    def _extract_acquisition_params(self, mdoc_data: Dict) -> Dict:
+    def _extract_acquisition_params(self, mdoc_data: dict) -> dict:
         """Extract acquisition parameters from an mdoc's header and first ZValue section."""
-        result: Dict = {}
+        result: dict = {}
         header_text = mdoc_data.get("header", "")
         sections = mdoc_data.get("data", [])
         first = sections[0] if sections else {}
 
         # Parse header key=value lines
-        header_kv: Dict[str, str] = {}
+        header_kv: dict[str, str] = {}
         for line in header_text.split("\n"):
             if "=" in line:
                 k, v = line.split("=", 1)
@@ -307,7 +307,7 @@ class DatasetParsingService:
 
         return result
 
-    def _build_acquisition_summary(self, tilt_series_list: List[TiltSeriesInfo]) -> AcquisitionSummary:
+    def _build_acquisition_summary(self, tilt_series_list: list[TiltSeriesInfo]) -> AcquisitionSummary:
         """Collect unique acquisition parameter values across all tilt-series."""
         pxs: set = set()
         vs: set = set()
@@ -336,9 +336,9 @@ class DatasetParsingService:
             angle_ranges=sorted(ars),
         )
 
-    def _aggregate_to_positions(self, tilt_series_list: List[TiltSeriesInfo]) -> List[StagePositionInfo]:
+    def _aggregate_to_positions(self, tilt_series_list: list[TiltSeriesInfo]) -> list[StagePositionInfo]:
         """Group tilt-series by stage_position, sort by position number."""
-        groups: Dict[int, List[TiltSeriesInfo]] = defaultdict(list)
+        groups: dict[int, list[TiltSeriesInfo]] = defaultdict(list)
         for ts in tilt_series_list:
             groups[ts.stage_position].append(ts)
 
@@ -349,7 +349,7 @@ class DatasetParsingService:
         return positions
 
 
-_dataset_parsing_service: Optional[DatasetParsingService] = None
+_dataset_parsing_service: DatasetParsingService | None = None
 
 
 def get_dataset_parsing_service() -> DatasetParsingService:

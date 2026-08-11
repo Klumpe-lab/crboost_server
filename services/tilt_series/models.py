@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Dict, List, Literal, Optional, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -67,13 +67,13 @@ class FsMotionCtfFrameOutput(_OutputBase):
     # per-movie XML (the RELION star writes 1e-6 placeholders for these). Optional
     # because legacy registries lack them and a movie may fail to fit. See
     # services/tilt_series/frameseries_quality.py for the placeholder-trap context.
-    ctf_resolution: Optional[float] = None       # CTFResolutionEstimate (Å; lower = better)
-    mean_frame_movement: Optional[float] = None  # MeanFrameMovement (beam-induced motion; Warp units)
+    ctf_resolution: float | None = None       # CTFResolutionEstimate (Å; lower = better)
+    mean_frame_movement: float | None = None  # MeanFrameMovement (beam-induced motion; Warp units)
 
     warp_xml_path: Path
 
 
-FrameOutput = Annotated[Union[FsMotionCtfFrameOutput], Field(discriminator="output_type")]
+FrameOutput = Annotated[FsMotionCtfFrameOutput, Field(discriminator="output_type")]
 
 
 # ── TiltSeries outputs ───────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ class TsCtfTiltSeriesOutput(_OutputBase):
 
     warp_xml_path: Path
     are_angles_inverted: bool  # maps to rlnTomoHand = -1 (True) or +1 (False)
-    per_frame: List[TsCtfPerFrameCtf] = Field(default_factory=list)
+    per_frame: list[TsCtfPerFrameCtf] = Field(default_factory=list)
 
 
 class TsAlignmentPerFrame(BaseModel):
@@ -121,14 +121,14 @@ class TsAlignmentTiltSeriesOutput(_OutputBase):
 
     alignment_method: Literal["aretomo", "imod"]
     alignment_angpix: float
-    aln_file: Optional[Path] = None  # AreTomo .st.aln
-    xf_file: Optional[Path] = None   # IMOD .xf
-    tlt_file: Optional[Path] = None  # IMOD .tlt
-    per_frame: List[TsAlignmentPerFrame] = Field(default_factory=list)
+    aln_file: Path | None = None  # AreTomo .st.aln
+    xf_file: Path | None = None   # IMOD .xf
+    tlt_file: Path | None = None  # IMOD .tlt
+    per_frame: list[TsAlignmentPerFrame] = Field(default_factory=list)
 
 
 TiltSeriesOutput = Annotated[
-    Union[TsCtfTiltSeriesOutput, TsAlignmentTiltSeriesOutput],
+    TsCtfTiltSeriesOutput | TsAlignmentTiltSeriesOutput,
     Field(discriminator="output_type"),
 ]
 
@@ -165,7 +165,7 @@ class DenoisePredictTomogramOutput(_OutputBase):
 
 
 TomogramOutput = Annotated[
-    Union[TsReconstructTomogramOutput, DenoisePredictTomogramOutput],
+    TsReconstructTomogramOutput | DenoisePredictTomogramOutput,
     Field(discriminator="output_type"),
 ]
 
@@ -192,24 +192,24 @@ class Frame(BaseModel):
     tilt_index: int                # 0-based, matches Warp's <Node Z=...>
     nominal_tilt_angle_deg: float
     pre_exposure_e_per_a2: float = 0.0
-    acquisition_time: Optional[datetime] = None
+    acquisition_time: datetime | None = None
 
     # ── Raw per-tilt acquisition metadata (captured verbatim from the mdoc at
     # import). Optional: legacy registries and non-SerialEM imports may lack them.
     # QC + provenance only — not consumed by compute. Values are the mdoc's own,
     # not re-derived (units per the mdoc convention noted).
-    exposure_dose_e_per_a2: Optional[float] = None  # mdoc ExposureDose
-    dose_rate: Optional[float] = None               # mdoc DoseRate (verbatim)
-    exposure_time_s: Optional[float] = None         # mdoc ExposureTime
-    defocus_um: Optional[float] = None              # mdoc Defocus (measured; distinct from TargetDefocus)
-    min_intensity: Optional[float] = None           # mdoc MinMaxMean[0] (dark-tilt detector signal)
-    mean_intensity: Optional[float] = None          # mdoc MinMaxMean[2]
-    max_intensity: Optional[float] = None           # mdoc MinMaxMean[1]
-    image_shift_x: Optional[float] = None           # mdoc ImageShift X
-    image_shift_y: Optional[float] = None           # mdoc ImageShift Y
+    exposure_dose_e_per_a2: float | None = None  # mdoc ExposureDose
+    dose_rate: float | None = None               # mdoc DoseRate (verbatim)
+    exposure_time_s: float | None = None         # mdoc ExposureTime
+    defocus_um: float | None = None              # mdoc Defocus (measured; distinct from TargetDefocus)
+    min_intensity: float | None = None           # mdoc MinMaxMean[0] (dark-tilt detector signal)
+    mean_intensity: float | None = None          # mdoc MinMaxMean[2]
+    max_intensity: float | None = None           # mdoc MinMaxMean[1]
+    image_shift_x: float | None = None           # mdoc ImageShift X
+    image_shift_y: float | None = None           # mdoc ImageShift Y
 
     # Per-job artifacts, keyed by job instance_id
-    outputs: Dict[str, FrameOutput] = Field(default_factory=dict)
+    outputs: dict[str, FrameOutput] = Field(default_factory=dict)
 
     # Tilt-filter verdict (per-tilt), stamped by the tiltFilter job. The functional
     # cut is the trimmed tomostar it writes; this is the authoritative *record* in the
@@ -217,11 +217,11 @@ class Frame(BaseModel):
     # "filtered out" concept — distinct from TS-level TiltSeries.is_excluded (user
     # mute) and from the mislabeled TS-level TiltSeries.is_filtered_out placeholder.
     is_filtered_out: bool = False
-    filter_reason: Optional[str] = None
+    filter_reason: str | None = None
     # The DL classifier's `cryoBoostDlProbability` for this tilt (verbatim from the
     # filter pass; lower ⇒ more likely to be dropped). Persisted alongside the boolean
     # verdict so the dashboard/keep-drop panel can read the score from the registry.
-    filter_probability: Optional[float] = None
+    filter_probability: float | None = None
 
 
 class Tomogram(BaseModel):
@@ -233,7 +233,7 @@ class Tomogram(BaseModel):
 
     id: str
     tilt_series_id: str
-    outputs: Dict[str, TomogramOutput] = Field(default_factory=dict)
+    outputs: dict[str, TomogramOutput] = Field(default_factory=dict)
 
 
 class TiltSeries(BaseModel):
@@ -252,16 +252,16 @@ class TiltSeries(BaseModel):
     stage_position: int
     beam_position: int
 
-    frames: List[Frame] = Field(default_factory=list)
-    tomogram: Optional[Tomogram] = None
+    frames: list[Frame] = Field(default_factory=list)
+    tomogram: Tomogram | None = None
 
     # Per-job artifacts at the TS scope, keyed by job instance_id
-    outputs: Dict[str, TiltSeriesOutput] = Field(default_factory=dict)
+    outputs: dict[str, TiltSeriesOutput] = Field(default_factory=dict)
 
     # Provenance / filter state
     is_selected: bool = True
     is_filtered_out: bool = False
-    filter_reason: Optional[str] = None
+    filter_reason: str | None = None
 
     # User-driven "exclude from processing" (forward-only mute). When True,
     # every per-TS job supervisor pre-writes a `.skip` marker for this TS so it
@@ -271,7 +271,7 @@ class TiltSeries(BaseModel):
     # next run. On-disk STARs are never rewritten — exclusion is a dispatch +
     # aggregation gate, not a data mutation.
     is_excluded: bool = False
-    exclusion_reason: Optional[str] = None
+    exclusion_reason: str | None = None
 
     # ── derived views ──────────────────────────────────────────────────────
 

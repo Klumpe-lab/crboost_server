@@ -1,6 +1,6 @@
 from __future__ import annotations
 from enum import Enum
-from typing import ClassVar, Dict, List, Set, Tuple
+from typing import ClassVar
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams, SymmetryGroup
@@ -27,7 +27,7 @@ class ReconstructParticleParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS: ClassVar[Set[str]] = {
+    USER_PARAMS: ClassVar[set[str]] = {
         "box_size",
         "crop_size",
         "symmetry",
@@ -48,12 +48,12 @@ class ReconstructParticleParams(AbstractJobParams):
         "other_args",
     }
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(
             key="input_optimisation", accepts=[JobFileType.OPTIMISATION_SET_STAR], preferred_source="subtomoExtraction"
         )
     ]
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_map", produces=JobFileType.REFERENCE_MAP, path_template="merged.mrc")
     ]
 
@@ -89,7 +89,7 @@ class ReconstructParticleParams(AbstractJobParams):
     # Free-form passthrough for obscure flags (--no_psf, --margin, --mem, ...)
     other_args: str = Field(default="", description="Extra CLI flags appended verbatim to the relion command")
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_opt = self.paths.get("input_optimisation", "")
         return [("in_optimisation", str(input_opt))]
 
@@ -100,5 +100,5 @@ class ReconstructParticleParams(AbstractJobParams):
         return "relion"
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"optimisation_set": "subtomoExtraction"}

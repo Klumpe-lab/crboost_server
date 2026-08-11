@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from collections.abc import Iterable
 
 from services.configs.starfile_service import StarfileService
 from services.tilt_series.models import TsReconstructTomogramOutput
@@ -38,7 +38,7 @@ class TsReconstructIngestAdapter:
         *,
         job_instance_id: str = "tsReconstruct",
         warp_folder: str = "warp_tiltseries",
-        starfile_service: Optional[StarfileService] = None,
+        starfile_service: StarfileService | None = None,
     ):
         self.registry = registry
         self.job_dir = Path(job_dir)
@@ -80,7 +80,7 @@ class TsReconstructIngestAdapter:
         rec_res = f"{rescale_angpixs:.2f}"
         binning = rescale_angpixs / frame_pixel_size
 
-        problems: Dict[str, str] = {}
+        problems: dict[str, str] = {}
         for ts_id in expected:
             rec_path = self.rec_dir / f"{ts_id}_{rec_res}Apx.mrc"
             half1_path = self.rec_dir / "even" / f"{ts_id}_{rec_res}Apx.mrc"
@@ -137,7 +137,7 @@ class TsReconstructIngestAdapter:
         out_ts_df = in_ts_df.copy()
 
         excluded = {str(t) for t in (excluded_ids or ())}
-        problems: List[str] = []
+        problems: list[str] = []
         for idx, row in out_ts_df.iterrows():
             ts_id = str(row["rlnTomoName"])
             # Muted TS: intentionally not ingested — drop from output, don't

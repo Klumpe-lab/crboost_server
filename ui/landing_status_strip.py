@@ -21,7 +21,7 @@ import os
 import re
 import socket
 from collections import defaultdict
-from typing import Any, Optional
+from typing import Any
 
 from nicegui import ui
 
@@ -437,7 +437,7 @@ class LandingStatusStrip(FingerprintedView):
             _pop_copy_row(qsub)
 
 
-def mount_landing_status_strip(backend) -> Optional[LandingStatusStrip]:
+def mount_landing_status_strip(backend) -> LandingStatusStrip | None:
     """Mount the strip at the current NiceGUI position. Returns the view (also
     kicks off the first async probe + the refresh timer)."""
     container = ui.element("div").classes("w-full").style("margin-bottom: 8px;")

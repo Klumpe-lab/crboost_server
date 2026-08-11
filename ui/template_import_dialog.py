@@ -18,7 +18,6 @@ import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from nicegui import ui
 
@@ -32,8 +31,8 @@ logger = logging.getLogger(__name__)
 async def open_template_import_dialog(
     project_path: str,
     species: ParticleSpecies,
-    initial_path: Optional[str] = None,
-) -> Optional[ParticleTemplate]:
+    initial_path: str | None = None,
+) -> ParticleTemplate | None:
     """Open the import dialog. Returns a populated ParticleTemplate on
     confirm (the file has already been copied into the project), or None
     on cancel. The caller writes the result to species.template and
@@ -176,7 +175,7 @@ async def open_template_import_dialog(
 
     def _render_analysis() -> None:
         refs["analysis"].clear()
-        ins: Optional[MrcInspection] = state["inspection"]
+        ins: MrcInspection | None = state["inspection"]
         with refs["analysis"]:
             if ins is None:
                 with ui.row().classes("w-full px-2 py-3 items-center gap-2"):
@@ -286,7 +285,7 @@ async def open_template_import_dialog(
                 refs["import_btn"].enable()
 
     def _confirm_import() -> None:
-        ins: Optional[MrcInspection] = state["inspection"]
+        ins: MrcInspection | None = state["inspection"]
         if ins is None:
             return
         try:
@@ -328,7 +327,7 @@ def _ingest(project_path: str, species_id: str, ins: MrcInspection, state: dict)
 
     # Parse user-supplied lowpass (free-form input — accept "30", "30.0", "30 Å", "")
     lowpass_str = (state.get("lowpass_ang") or "").strip().rstrip("Å").strip()
-    lowpass_val: Optional[float] = None
+    lowpass_val: float | None = None
     if lowpass_str:
         try:
             lowpass_val = float(lowpass_str)

@@ -1,7 +1,6 @@
 import asyncio
 import fnmatch
 from pathlib import Path
-from typing import List, Optional
 
 from nicegui import ui
 
@@ -32,10 +31,10 @@ class local_file_picker(ui.dialog):
         self,
         directory: str,
         *,
-        upper_limit: Optional[str] = ...,
+        upper_limit: str | None = ...,
         mode: str = "directory",
         multiple: bool = False,
-        glob: Optional[str] = None,
+        glob: str | None = None,
     ) -> None:
         """A navigable file/directory picker.
 
@@ -49,7 +48,7 @@ class local_file_picker(ui.dialog):
         self.mode = mode
         self.multiple = bool(multiple)
         self.glob = glob
-        self.selected_path: Optional[Path] = None
+        self.selected_path: Path | None = None
         self.selected_paths: set[str] = set()  # multi-select: absolute path strings
         self._row_checkboxes: dict[str, ui.checkbox] = {}  # current view's file checkboxes
         self.count_label = None  # select-all bar counter (multi mode)
@@ -129,7 +128,7 @@ class local_file_picker(ui.dialog):
     # ── List ─────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _scan_dir(path: Path, glob: Optional[str]) -> List[tuple]:
+    def _scan_dir(path: Path, glob: str | None) -> list[tuple]:
         """Off-loop directory scan: returns sorted (Path, is_dir, size|None) tuples with
         all stat/iterdir cost paid here (never on the event loop or in the render path).
         Files are filtered by ``glob`` (fnmatch); directories are always kept."""
@@ -137,7 +136,7 @@ class local_file_picker(ui.dialog):
             raw = [p for p in path.iterdir() if not p.name.startswith(".")]
         except (PermissionError, FileNotFoundError, OSError):
             return []
-        out: List[tuple] = []
+        out: list[tuple] = []
         for p in raw:
             try:
                 is_dir = p.is_dir()
@@ -170,7 +169,7 @@ class local_file_picker(ui.dialog):
             for item, is_dir, size in entries:
                 self._create_row(item, is_dir, size)
 
-    def _render_select_all_bar(self, files: List[Path]) -> None:
+    def _render_select_all_bar(self, files: list[Path]) -> None:
         with ui.row().classes("w-full items-center px-4 py-1 gap-2 bg-gray-50 border-b border-gray-100"):
             ui.button("Select all", on_click=lambda: self._set_paths(files, True)).props(
                 "flat dense no-caps size=sm"
@@ -196,7 +195,7 @@ class local_file_picker(ui.dialog):
             self.selected_paths.discard(path)
         self._update_count()
 
-    def _set_paths(self, files: Optional[List[Path]], value: bool) -> None:
+    def _set_paths(self, files: list[Path] | None, value: bool) -> None:
         if value and files:
             for f in files:
                 self.selected_paths.add(str(f))
@@ -206,7 +205,7 @@ class local_file_picker(ui.dialog):
             cb.value = sp in self.selected_paths
         self._update_count()
 
-    def _create_row(self, item: Path, is_dir: bool, size: Optional[int]) -> None:
+    def _create_row(self, item: Path, is_dir: bool, size: int | None) -> None:
         row = ui.row().classes("w-full items-center px-4 py-1 cursor-pointer hover:bg-blue-50 border-b border-gray-100")
         row.path = item
         row.is_dir = is_dir

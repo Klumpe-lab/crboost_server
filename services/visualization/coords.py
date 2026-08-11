@@ -3,7 +3,7 @@ tomogram voxel space.
 
 Single source of truth for the centered-Å ↔ voxel mapping. Used by the gallery
 visualization (``imod_vis``) and by the ArtiaX bridge so both share one definition
-of the convention. See ``services/visualization/ARTIAX_BRIDGE_PLAN.md``.
+of the convention. See ``docs/ARTIAX_BRIDGE_PLAN.md``.
 
 Convention (RELION-5)::
 
@@ -23,7 +23,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -40,7 +39,7 @@ def pixel_size_from_tomo_row(tomo_row: pd.Series) -> float:
     return ts_pixs * binning
 
 
-def binned_tomo_size_from_tomo_row(tomo_row: pd.Series, project_root: Optional[Path] = None) -> np.ndarray:
+def binned_tomo_size_from_tomo_row(tomo_row: pd.Series, project_root: Path | None = None) -> np.ndarray:
     """Binned (nx, ny, nz) for a tomogram.
 
     Reads the dimensions from the reconstruction MRC header (the authoritative
@@ -107,10 +106,10 @@ class TomoFrame:
     tomo_name: str
     pixel_size: float
     size: np.ndarray  # binned (nx, ny, nz)
-    recon_path: Optional[Path] = None
+    recon_path: Path | None = None
 
     @classmethod
-    def from_tomo_row(cls, tomo_row: pd.Series, project_root: Optional[Path] = None) -> "TomoFrame":
+    def from_tomo_row(cls, tomo_row: pd.Series, project_root: Path | None = None) -> TomoFrame:
         recon = tomo_row.get("rlnTomoReconstructedTomogram")
         recon_path = Path(recon) if isinstance(recon, str) and recon else None
         if recon_path is not None and not recon_path.is_absolute() and project_root is not None:

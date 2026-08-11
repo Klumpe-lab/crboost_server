@@ -12,7 +12,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from collections.abc import Iterable
 
 from services.models_base import JobType
 
@@ -26,11 +26,11 @@ class SubtomoCandidate:
     instance_id: str
     job_dir: str
     optset_path: str
-    species_label: Optional[str]  # e.g. "copia" or "Copia (viral)"; None for default instance
+    species_label: str | None  # e.g. "copia" or "Copia (viral)"; None for default instance
     is_aggregation: bool
-    n_tomograms: Optional[int]  # None if we couldn't read tomograms.star
-    species_id: Optional[str] = None
-    species_color: Optional[str] = None
+    n_tomograms: int | None  # None if we couldn't read tomograms.star
+    species_id: str | None = None
+    species_color: str | None = None
     mnemonic: str = ""
     has_filter: bool = False  # True if a curated particles_filtered.star exists
 
@@ -45,11 +45,11 @@ class TomoCuration:
 
     ts_name: str
     total: int  # picks in the original particles.star for this tomo
-    kept: Optional[int]  # picks in particles_filtered.star; None = no curation (all kept)
+    kept: int | None  # picks in particles_filtered.star; None = no curation (all kept)
     reviewed: bool  # user explicitly reviewed this TS in the curator
 
 
-def _count_tomograms(job_dir: Path) -> Optional[int]:
+def _count_tomograms(job_dir: Path) -> int | None:
     """Best-effort tomogram count from tomograms.star. None on any failure."""
     tomos = job_dir / "tomograms.star"
     if not tomos.exists():
@@ -65,13 +65,13 @@ def _count_tomograms(job_dir: Path) -> Optional[int]:
             except AttributeError:
                 continue
             if "rlnTomoName" in cols:
-                return int(len(v))
+                return len(v)
     except Exception as e:
         logger.debug("tomogram count failed for %s: %s", tomos, e)
     return None
 
 
-def _scan_project(proj_dir: Path, seen_optsets: set) -> List[SubtomoCandidate]:
+def _scan_project(proj_dir: Path, seen_optsets: set) -> list[SubtomoCandidate]:
     params_file = proj_dir / "project_params.json"
     if not params_file.exists():
         return []
@@ -90,7 +90,7 @@ def _scan_project(proj_dir: Path, seen_optsets: set) -> List[SubtomoCandidate]:
     species_list = [s for s in (data.get("species_registry") or []) if isinstance(s, dict) and s.get("id")]
     species_by_id = {s["id"]: s for s in species_list}
 
-    out: List[SubtomoCandidate] = []
+    out: list[SubtomoCandidate] = []
     for instance_id, job_data in jobs.items():
         if not isinstance(job_data, dict):
             continue
@@ -151,7 +151,7 @@ def _scan_project(proj_dir: Path, seen_optsets: set) -> List[SubtomoCandidate]:
     return out
 
 
-def discover_subtomo_optimisation_sets(base_paths: Iterable[str]) -> List[SubtomoCandidate]:
+def discover_subtomo_optimisation_sets(base_paths: Iterable[str]) -> list[SubtomoCandidate]:
     """Walk each base_path's project subdirs and return SubtomoExtraction candidates.
 
     De-duplicates by absolute optimisation_set.star path, so overlapping base
@@ -159,7 +159,7 @@ def discover_subtomo_optimisation_sets(base_paths: Iterable[str]) -> List[Subtom
     for stable display.
     """
     seen: set = set()
-    candidates: List[SubtomoCandidate] = []
+    candidates: list[SubtomoCandidate] = []
 
     for base_path in base_paths:
         if not base_path:
@@ -200,7 +200,7 @@ def _counts_by_tomo(star_path: Path) -> dict:
     return {}
 
 
-def load_tomo_curation(job_dir: str) -> List[TomoCuration]:
+def load_tomo_curation(job_dir: str) -> list[TomoCuration]:
     """Per-tomogram pick accounting for one SubtomoExtraction job dir.
 
     Lazy (called when the user expands a species node), not part of the
@@ -219,7 +219,7 @@ def load_tomo_curation(job_dir: str) -> List[TomoCuration]:
     reviewed = set(read_reviewed_counts(jd).keys())
 
     # Universe of tomo names: prefer tomograms.star, fall back to particles.
-    tomo_names: List[str] = []
+    tomo_names: list[str] = []
     tomos_star = jd / "tomograms.star"
     if tomos_star.exists():
         try:
@@ -238,7 +238,7 @@ def load_tomo_curation(job_dir: str) -> List[TomoCuration]:
     if not tomo_names:
         tomo_names = sorted(totals.keys())
 
-    out: List[TomoCuration] = []
+    out: list[TomoCuration] = []
     for tn in tomo_names:
         out.append(
             TomoCuration(

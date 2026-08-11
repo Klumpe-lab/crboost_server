@@ -11,7 +11,7 @@ import socket
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 from datetime import datetime
 
 from services.templating.template_service import TemplateService
@@ -31,10 +31,10 @@ logger = logging.getLogger(__name__)
 # The process-wide backend. main.py constructs one at startup; UI surfaces opened
 # without a threaded-through reference (e.g. the tomo dashboard, which is a function
 # module) reach it via get_backend(). Same idiom as get_config_service()/get_state_service().
-_backend_instance: Optional["CryoBoostBackend"] = None
+_backend_instance: CryoBoostBackend | None = None
 
 
-def get_backend() -> Optional["CryoBoostBackend"]:
+def get_backend() -> CryoBoostBackend | None:
     """The process-wide backend instance, or None before one is constructed."""
     return _backend_instance
 
@@ -63,9 +63,9 @@ class CryoBoostBackend:
         # session's job id → the (species, tomo) it currently has open (for save-on-swap).
         # `_curation_registry_lock` serializes the user-level registry's append/prune;
         # `_curation_swap_locks` serializes overlapping swaps into the SAME session.
-        self._curation_loaded: Dict[str, Any] = {}
+        self._curation_loaded: dict[str, Any] = {}
         self._curation_registry_lock = asyncio.Lock()
-        self._curation_swap_locks: Dict[str, asyncio.Lock] = {}
+        self._curation_swap_locks: dict[str, asyncio.Lock] = {}
 
     def registry_for(self, project_path: Path) -> TiltSeriesRegistry:
         """TiltSeriesRegistry for a project. Lazily loaded from sidecar JSON
@@ -74,7 +74,7 @@ class CryoBoostBackend:
         return get_registry_for(project_path)
 
     async def start_pipeline(
-        self, project_path: str, scheme_name: str, selected_jobs: List[str], required_paths: List[str]
+        self, project_path: str, scheme_name: str, selected_jobs: list[str], required_paths: list[str]
     ):
         """
         Unified pipeline start method.
@@ -84,10 +84,10 @@ class CryoBoostBackend:
             project_dir=Path(project_path), selected_instance_ids=selected_jobs
         )
 
-    async def delete_job(self, job_name: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
+    async def delete_job(self, job_name: str, instance_id: str | None = None) -> dict[str, Any]:
         return await self.project_service.delete_job(job_name, instance_id=instance_id)
 
-    async def submit_tilt_filter_dl(self, project_path: Path, instance_id: str) -> Dict[str, Any]:
+    async def submit_tilt_filter_dl(self, project_path: Path, instance_id: str) -> dict[str, Any]:
         """Submit the tilt filter DL driver as a standalone SLURM job."""
         from services.path_resolution_service import PathResolutionService
         from services.models_base import JobStatus
@@ -206,7 +206,7 @@ class CryoBoostBackend:
         min_frames: int = 1,
         do_stack2d: bool = True,
         do_float16: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Subtomo-extract ONE curation pick list (Slice C): submit
         ``drivers/extract_pick_list.py`` as a one-off SLURM job via ``config/qsub.sh``
         (same mechanism as ``submit_tilt_filter_dl``). Output lands in
@@ -293,9 +293,9 @@ class CryoBoostBackend:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def get_authoritative_extraction_status(self, project_path: Path, species_id: str) -> List[Dict[str, Any]]:
+    async def get_authoritative_extraction_status(self, project_path: Path, species_id: str) -> list[dict[str, Any]]:
         """Read-only: per-(species, tomo) authoritative-list extraction status — the
-        aggregation gate's input (see services/visualization/LIST_EXTRACTION_AND_AGGREGATION.md
+        aggregation gate's input (see docs/LIST_EXTRACTION_AND_AGGREGATION.md
         §8.1). Returns one dict per tomo: {species_id, tomo_name, slug, kind, extraction_state,
         optset_path, kept, total, notes}. Disk reads run off the event loop."""
         from dataclasses import asdict
@@ -305,11 +305,11 @@ class CryoBoostBackend:
         handles = await asyncio.to_thread(enumerate_authoritative, state, Path(project_path), species_id)
         return [{**asdict(h), "extraction_state": h.extraction_state.value} for h in handles]
 
-    async def get_authoritative_gate_report(self, project_path: Path, species_id: str) -> Dict[str, Any]:
+    async def get_authoritative_gate_report(self, project_path: Path, species_id: str) -> dict[str, Any]:
         """Read-only §8.3 gate: classify each (species, tomo) authoritative list as
         ready / pending (workbench NOT_EXTRACTED|STALE — extractable here) / blocked, so the
         UI/user sees exactly what must be extracted before a species roll-up. No side effects.
-        See services/visualization/LIST_EXTRACTION_AND_AGGREGATION.md §8.3."""
+        See docs/LIST_EXTRACTION_AND_AGGREGATION.md §8.3."""
         from services.aggregation_authoritative import compute_gate_report, enumerate_authoritative
 
         state = self.state_service.state_for(Path(project_path))
@@ -318,11 +318,11 @@ class CryoBoostBackend:
 
     # ── Tomogram import (PARTICLES-header utility; a project-level artifact, not a job) ──
 
-    async def list_tomogram_candidates(self, directory_or_glob: str) -> List[str]:
+    async def list_tomogram_candidates(self, directory_or_glob: str) -> list[str]:
         """Resolve a directory OR a glob to a sorted list of .mrc file paths (off the
         event loop). A bare directory lists its ``*.mrc``; a glob is expanded directly."""
 
-        def _list() -> List[str]:
+        def _list() -> list[str]:
             import glob as _glob
 
             s = str(Path(directory_or_glob).expanduser()) if directory_or_glob else ""
@@ -334,7 +334,7 @@ class CryoBoostBackend:
 
         return await asyncio.to_thread(_list)
 
-    async def probe_tomogram_metadata(self, paths: List[str]) -> List[Dict[str, Any]]:
+    async def probe_tomogram_metadata(self, paths: list[str]) -> list[dict[str, Any]]:
         """MRC header metadata (dims, voxel size, has_voxel_size) for the import preview,
         read off the event loop. Surfaces a missing voxel size so the widget can flag it
         before commit (never silently defaults apix)."""
@@ -342,7 +342,7 @@ class CryoBoostBackend:
 
         return await asyncio.to_thread(probe_mrc_metadata, [Path(p) for p in paths])
 
-    async def preview_reference_tomograms(self, reference_star: str) -> List[Dict[str, Any]]:
+    async def preview_reference_tomograms(self, reference_star: str) -> list[dict[str, Any]]:
         """Read an existing ``tomograms.star`` (off the event loop) and project its rows
         into the same preview-dict shape ``probe_tomogram_metadata`` returns, so the import
         dialog can show a review table before referencing it. Propagates the
@@ -356,12 +356,12 @@ class CryoBoostBackend:
         project_path: Path,
         *,
         mode: str = "synthesize",
-        mrc_paths: Optional[List[str]] = None,
+        mrc_paths: list[str] | None = None,
         reference_star: str = "",
         pixel_size_angstrom: float = 0.0,
         tomogram_binning: float = 1.0,
         optics_group_name: str = "opticsGroup1",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Write ``Tomograms/tomograms.star`` from the selection + record it on
         ``ProjectState.imported_tomograms``. Raises (propagated to the UI) if a selected
         MRC has no voxel size and no pixel-size override — never silently defaults apix.
@@ -405,7 +405,7 @@ class CryoBoostBackend:
         await self.state_service.save_project(project_path=project_path, force=True)
         return {"count": int(count), "star_path": str(out_abs)}
 
-    async def _await_extraction_outdirs(self, out_dirs: List[str], timeout_s: int) -> Dict[str, tuple]:
+    async def _await_extraction_outdirs(self, out_dirs: list[str], timeout_s: int) -> dict[str, tuple]:
         """Poll each per-list extraction out dir (RELION_JOB_EXIT_* + result.json) until all
         resolve or ``timeout_s`` elapses. Returns {out_dir: ("done"|"failed", data)} for the
         resolved ones (an out dir absent from the result = still running). Disk scans run off
@@ -413,12 +413,12 @@ class CryoBoostBackend:
         import json as _json
 
         pending = set(out_dirs)
-        results: Dict[str, tuple] = {}
+        results: dict[str, tuple] = {}
         if not pending:
             return results
 
-        def _scan(dirs: set) -> Dict[str, tuple]:
-            done: Dict[str, tuple] = {}
+        def _scan(dirs: set) -> dict[str, tuple]:
+            done: dict[str, tuple] = {}
             for od in dirs:
                 p = Path(od)
                 rj = p / "result.json"
@@ -447,8 +447,8 @@ class CryoBoostBackend:
         return results
 
     async def extract_authoritative_pending(
-        self, project_path: Path, species_id: str, *, only_tomos: Optional[List[str]] = None, timeout_s: int = 3600
-    ) -> Dict[str, Any]:
+        self, project_path: Path, species_id: str, *, only_tomos: list[str] | None = None, timeout_s: int = 3600
+    ) -> dict[str, Any]:
         """§8.3 auto-extract: submit per-list subtomo extraction for every WORKBENCH
         authoritative list that is NOT_EXTRACTED/STALE (optionally limited to ``only_tomos``),
         wait for completion, record ``mark_extracted``, and persist. Never touches
@@ -472,10 +472,10 @@ class CryoBoostBackend:
             keep = set(only_tomos)
             pending = [h for h in pending if h.tomo_name in keep]
 
-        submitted: List[dict] = []
-        failed: List[dict] = []
-        blocked: List[dict] = []
-        watching: List[dict] = []  # {tomo, slug, out_dir}
+        submitted: list[dict] = []
+        failed: list[dict] = []
+        blocked: list[dict] = []
+        watching: list[dict] = []  # {tomo, slug, out_dir}
         for h in pending:
             pl = state.get_pick_list(h.slug, species_id, h.tomo_name)
             inputs = extract_inputs_for_list(state, project_path, species_id, pl) if pl is not None else None
@@ -499,8 +499,8 @@ class CryoBoostBackend:
 
         results = await self._await_extraction_outdirs([w["out_dir"] for w in watching], timeout_s)
 
-        succeeded: List[dict] = []
-        still_running: List[dict] = []
+        succeeded: list[dict] = []
+        still_running: list[dict] = []
         state = self.state_service.state_for(project_path)
         changed = False
         for w in watching:
@@ -536,8 +536,8 @@ class CryoBoostBackend:
     # ── ChimeraX + ArtiaX curation session (VNC over a SLURM job) ───────────────
 
     async def launch_curation_session(
-        self, project_path: Optional[Path] = None, cxc_path: Optional[Path] = None
-    ) -> Dict[str, Any]:
+        self, project_path: Path | None = None, cxc_path: Path | None = None
+    ) -> dict[str, Any]:
         """Submit a ChimeraX+ArtiaX VNC desktop as a SLURM job (partition 'c' by
         default — software GL is enough for slice-based picking).
 
@@ -667,7 +667,7 @@ class CryoBoostBackend:
             "session_id": session_id,
         }
 
-    async def get_curation_session_info(self, session_dir: str, slurm_job_id: Optional[str] = None) -> Dict[str, Any]:
+    async def get_curation_session_info(self, session_dir: str, slurm_job_id: str | None = None) -> dict[str, Any]:
         """Poll a launched curation session. Once the job is RUNNING and has
         published session.json, returns its connection info (node/port/password/
         tunnel_cmd); otherwise reports pending/starting/ended."""
@@ -726,13 +726,13 @@ class CryoBoostBackend:
         return {"success": True, "status": "pending", "slurm_state": "submitting"}
 
     async def stop_curation_session(
-        self, slurm_job_id: Optional[str], project_path: Optional[Path] = None
-    ) -> Dict[str, Any]:
+        self, slurm_job_id: str | None, project_path: Path | None = None
+    ) -> dict[str, Any]:
         """scancel a curation session's SLURM job. With `project_path`, ALSO scancel
         every other live cb-curation job recorded for that project — so one Stop
         clears the whole zombie pile (the user may have started several), and the
         next entry sees a clean 'no session' instead of reconnecting to a wedged one."""
-        ids: List[str] = [str(slurm_job_id)] if slurm_job_id else []
+        ids: list[str] = [str(slurm_job_id)] if slurm_job_id else []
         if project_path:
             try:
                 ids.extend(await self._live_project_curation_job_ids(Path(project_path)))
@@ -743,7 +743,7 @@ class CryoBoostBackend:
             return {"success": False, "error": "no SLURM job id"}
         return await self.slurm_service.scancel_jobs(ids)
 
-    async def _live_project_curation_job_ids(self, project_path: Path) -> List[str]:
+    async def _live_project_curation_job_ids(self, project_path: Path) -> list[str]:
         """Live cb-curation SLURM job ids recorded under this project's
         `.curation_sessions/*/job.json` (squeue-derived liveness, never a stored
         bool). Shared by launch + stop housekeeping to clear zombie sessions."""
@@ -770,7 +770,7 @@ class CryoBoostBackend:
     # never trust a cached is-running flag; see project memory on the stuck-yellow bug).
     _CURATION_LIVE_STATES = ("RUNNING", "PENDING", "CONFIGURING", "SCHEDULED", "COMPLETING")
 
-    async def find_active_curation_session(self, project_path: Path) -> Optional[Dict[str, Any]]:
+    async def find_active_curation_session(self, project_path: Path) -> dict[str, Any] | None:
         """Return the project's one live curation session, or None.
 
         Scans `<project>/.curation_sessions/*/job.json`, then makes a single
@@ -801,7 +801,7 @@ class CryoBoostBackend:
             )
             if match is None:
                 continue
-            out: Dict[str, Any] = {
+            out: dict[str, Any] = {
                 "session_dir": str(sdir),
                 "slurm_job_id": match.job_id,
                 "slurm_state": match.state,
@@ -829,7 +829,7 @@ class CryoBoostBackend:
         return Path.home() / ".crboost" / "curation" / "registry.jsonl"
 
     async def _register_curation_session(
-        self, *, slurm_job_id: Optional[str], session_id: str, session_dir: Path, project_path: Optional[Path]
+        self, *, slurm_job_id: str | None, session_id: str, session_dir: Path, project_path: Path | None
     ) -> None:
         """Append a launched session to the user-level registry so find-or-reuse can
         locate it from ANY project. Best-effort — never blocks a launch. Lock-guarded
@@ -850,7 +850,7 @@ class CryoBoostBackend:
         except Exception as e:
             logger.warning("Could not register curation session %s: %s", session_id, e)
 
-    async def find_active_curation_session_any(self) -> Optional[Dict[str, Any]]:
+    async def find_active_curation_session_any(self) -> dict[str, Any] | None:
         """The user's one live curation session across ALL projects (the per-user
         reuse model), or None. Reads the registry, makes a single squeue call,
         returns the first live `cb-curation` session merged with its session.json,
@@ -858,7 +858,7 @@ class CryoBoostBackend:
         reg = self._curation_registry_file()
         if not reg.is_file():
             return None
-        entries: List[Dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
         try:
             for ln in reg.read_text().splitlines():
                 ln = ln.strip()
@@ -901,7 +901,7 @@ class CryoBoostBackend:
         if jobs and dead_dirs:
             try:
                 async with self._curation_registry_lock:
-                    fresh: List[str] = []
+                    fresh: list[str] = []
                     for ln in reg.read_text().splitlines():
                         ln = ln.strip()
                         if not ln:
@@ -921,7 +921,7 @@ class CryoBoostBackend:
 
         d, match = chosen
         sdir = Path(d["session_dir"])
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "session_dir": str(sdir),
             "slurm_job_id": match.job_id,
             "slurm_state": match.state,
@@ -936,8 +936,8 @@ class CryoBoostBackend:
         return out
 
     async def send_chimerax_command(
-        self, session_info: Dict[str, Any], command: str, *, timeout: float = 60.0
-    ) -> Dict[str, Any]:
+        self, session_info: dict[str, Any], command: str, *, timeout: float = 60.0
+    ) -> dict[str, Any]:
         """Run a ChimeraX/ArtiaX command string in a LIVE curation session.
 
         Reaches the node's loopback REST server by ssh-hopping (the headnode can ssh
@@ -983,7 +983,7 @@ class CryoBoostBackend:
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout + 15)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # wait_for cancels the await but not the OS process — reap the orphaned ssh.
             if proc is not None:
                 try:
@@ -1034,7 +1034,7 @@ class CryoBoostBackend:
             logger.debug("ChimeraX REST benign diagnostics: %s", raw[:1500])
         return {"success": ok, "error": real_err, "log_error": log_err_txt or benign_err, "raw": raw, "data": data}
 
-    async def save_session_particle_lists(self, session_info: Dict[str, Any], dest_dir: Path) -> Dict[str, Any]:
+    async def save_session_particle_lists(self, session_info: dict[str, Any], dest_dir: Path) -> dict[str, Any]:
         """Best-effort save of every ArtiaX ParticleList currently open in the live
         session to `dest_dir` as `.coords` (positions-only), so a swap's `close
         session` can't silently drop unsaved manual picks. Skips crboost's own
@@ -1061,7 +1061,7 @@ class CryoBoostBackend:
             logger.info(
                 "save_session_particle_lists: no models from 'info models' — raw: %s", (info.get("raw") or "")[:1500]
             )
-        saved: List[str] = []
+        saved: list[str] = []
         for m in model_list:
             if not isinstance(m, dict) or m.get("class") != "ParticleList":
                 continue
@@ -1077,13 +1077,13 @@ class CryoBoostBackend:
 
     async def save_curation_picks(
         self,
-        session_info: Dict[str, Any],
+        session_info: dict[str, Any],
         *,
-        project_path: Optional[Path] = None,
+        project_path: Path | None = None,
         tomo_name: str = "",
         species_id: str = "",
         species_label: str = "",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Forefront save: write every manual ParticleList open in the live session to
         the LOADED tomogram's curation dir as ``.coords``, where the dashboard prescan
         (`_auto_kick_coords_ingest`) auto-imports it as a ``manual`` pick list. crboost
@@ -1099,7 +1099,7 @@ class CryoBoostBackend:
         job_id = str((session_info or {}).get("slurm_job_id") or (session_info or {}).get("session_dir") or "")
         loaded = self._curation_loaded.get(job_id) or {}
         tomo = loaded.get("tomo_name") or tomo_name
-        dest: Optional[Path] = None
+        dest: Path | None = None
         if loaded.get("curation_dir"):
             dest = Path(loaded["curation_dir"])
         elif project_path and tomo_name:
@@ -1121,7 +1121,7 @@ class CryoBoostBackend:
 
     async def load_into_session(
         self,
-        session_info: Dict[str, Any],
+        session_info: dict[str, Any],
         project_path: Path,
         candidates_star: Path,
         tomograms_star: Path,
@@ -1129,10 +1129,10 @@ class CryoBoostBackend:
         species_label: str = "",
         *,
         species_id: str = "",
-        source_star: Optional[Path] = None,
+        source_star: Path | None = None,
         coords_label: str = "auto",
         save_first: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Swap a LIVE curation session to a new (species, tomo): clear what's open,
         then load the tomogram + its reference picks — the one-click alternative to
         copy-pasting into ChimeraX. With `save_first`, save whatever lists are
@@ -1193,7 +1193,7 @@ class CryoBoostBackend:
                 "saved": saved,
             }
 
-    def get_curation_loaded(self, session_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def get_curation_loaded(self, session_info: dict[str, Any]) -> dict[str, Any] | None:
         """What (species, tomo) the live session currently has open via the REST swap,
         or None. Keyed exactly as load_into_session records it, so a reconnecting dialog
         can show a "Currently loaded" indicator. The session is shared per-user, so this
@@ -1212,9 +1212,9 @@ class CryoBoostBackend:
         species_label: str = "",
         *,
         species_id: str = "",
-        source_star: Optional[Path] = None,
+        source_star: Path | None = None,
         coords_label: str = "auto",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Export one tomogram's picks → `.coords` and write an `open_<tomo>.cxc`
         that preloads them in ArtiaX. Returns the resolved paths + the copyable
         ChimeraX command lines (`commands`); pass `cxc_path` to
@@ -1249,7 +1249,7 @@ class CryoBoostBackend:
 
     def _discover_manual_coords(
         self, project_path: Path, tomo_name: str, *, species_id: str = "", species_label: str = ""
-    ) -> List[Path]:
+    ) -> list[Path]:
         """Saved ArtiaX `.coords` for one (species, tomo), newest first.
 
         Scans ONLY that tomogram's `curation_dir` — every `.coords` under it is THIS
@@ -1266,7 +1266,7 @@ class CryoBoostBackend:
         )
         if not d.is_dir():
             return []
-        found: List[Path] = []
+        found: list[Path] = []
         for c in d.glob("*.coords"):
             if c.name == "auto.coords" or c.name.endswith("_ref.coords"):
                 continue  # crboost's reference exports, not the user's save
@@ -1282,8 +1282,8 @@ class CryoBoostBackend:
         species_label: str = "",
         species_id: str = "",
         *,
-        coords_path: Optional[Path] = None,
-    ) -> Dict[str, Any]:
+        coords_path: Path | None = None,
+    ) -> dict[str, Any]:
         """Ingest a manually-saved ArtiaX `.coords` for one (species, tomo) back
         into the pipeline.
 
@@ -1307,7 +1307,7 @@ class CryoBoostBackend:
             chosen = Path(coords_path)
             if not chosen.exists():
                 return {"success": False, "error": f"No such .coords file: {chosen}"}
-            discovered: List[str] = [str(chosen)]
+            discovered: list[str] = [str(chosen)]
         else:
             cands = self._discover_manual_coords(
                 project_path, tomo_name, species_id=species_id, species_label=species_label
@@ -1359,9 +1359,9 @@ class CryoBoostBackend:
         species_id: str,
         species_label: str,
         tomo_name: str,
-        sources: List[Dict[str, Any]],
+        sources: list[dict[str, Any]],
         out_slug: str = "merged",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Union 2+ pick lists into one `merged` centered-Å star — NO dedup (that's
         a separate, user-triggered action). `sources` = ``[{"path", "type"}]``; the
         rows are ordered by list-type priority (curated/human before machine `auto`)
@@ -1385,7 +1385,7 @@ class CryoBoostBackend:
             return {"success": False, "error": str(e)}
         return {"success": True, **info}
 
-    async def list_clash_stats(self, star_path: Path, tomo_name: str, radius_ang: float) -> Dict[str, Any]:
+    async def list_clash_stats(self, star_path: Path, tomo_name: str, radius_ang: float) -> dict[str, Any]:
         """Overlap overview for a list at a chosen radius (Å): how many picks clash
         and how many a dedup would remove/keep. Read-only — never mutates the list."""
         from services.visualization import pick_merge
@@ -1397,7 +1397,7 @@ class CryoBoostBackend:
             return {"success": False, "error": str(e)}
         return {"success": True, **stats}
 
-    async def deduplicate_pick_list(self, star_path: Path, tomo_name: str, radius_ang: float) -> Dict[str, Any]:
+    async def deduplicate_pick_list(self, star_path: Path, tomo_name: str, radius_ang: float) -> dict[str, Any]:
         """Greedy radius-dedup a list's star in place — drop every pick within
         `radius_ang` Å of a higher-priority (earlier) pick. Rewrites the star; the
         caller updates the PickList count + (it becomes stale → re-extract)."""
@@ -1410,7 +1410,7 @@ class CryoBoostBackend:
             return {"success": False, "error": str(e)}
         return {"success": True, **info}
 
-    async def get_default_data_globs(self) -> Dict[str, str]:
+    async def get_default_data_globs(self) -> dict[str, str]:
         """Get default glob patterns from config."""
         config_service = get_config_service()
         movies, mdocs = config_service.default_data_globs
@@ -1426,7 +1426,7 @@ class CryoBoostBackend:
 
         return str(Path.home())
 
-    async def scan_for_projects(self, base_path: str) -> List[Dict[str, Any]]:
+    async def scan_for_projects(self, base_path: str) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self._scan_for_projects_sync, base_path)
 
     async def read_project_state_detached(self, project_path: str):
@@ -1439,7 +1439,7 @@ class CryoBoostBackend:
         params_file = Path(project_path) / "project_params.json"
         return await asyncio.to_thread(ProjectState.load, params_file)
 
-    def _scan_for_projects_sync(self, base_path: str) -> List[Dict[str, Any]]:
+    def _scan_for_projects_sync(self, base_path: str) -> list[dict[str, Any]]:
         projects = []
         path = Path(base_path)
 
@@ -1568,14 +1568,14 @@ class CryoBoostBackend:
         return projects
 
     @staticmethod
-    def _derive_live_status(project_dir: Path, jobs_dict: Dict[str, Any]) -> Dict[str, Any]:
+    def _derive_live_status(project_dir: Path, jobs_dict: dict[str, Any]) -> dict[str, Any]:
         """Derive pipeline status for the roster from project_params.json's
         `jobs` dict (canonical: includes tiltFilter and other non-RELION
         jobs that aren't in default_pipeline.star). Disk RELION_JOB_EXIT_*
         markers are only used to reconcile in-memory `Running` statuses
         that the schemer crashed before persisting -- otherwise the project
         state is the source of truth."""
-        out: Dict[str, Any] = {
+        out: dict[str, Any] = {
             "executed_jobs": 0,
             "succeeded": 0,
             "running_live": 0,
@@ -1643,7 +1643,7 @@ class CryoBoostBackend:
 
         return out
 
-    async def get_job_parameters(self, job_name: str) -> Dict[str, Any]:
+    async def get_job_parameters(self, job_name: str) -> dict[str, Any]:
         """Get parameters for a specific job instance, initializing if not present."""
         try:
             state = self.state_service.state
@@ -1671,7 +1671,7 @@ class CryoBoostBackend:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
-    async def update_job_parameters(self, job_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def update_job_parameters(self, job_name: str, params: dict[str, Any]) -> dict[str, Any]:
         """
         Updates parameters for a specific job instance and persists to disk.
         """
@@ -1694,7 +1694,7 @@ class CryoBoostBackend:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
-    async def get_available_jobs(self) -> List[str]:
+    async def get_available_jobs(self) -> list[str]:
         # --- FIX: Use config root instead of cwd ---
         template_path = self.config_service.crboost_root / "config" / "Schemes" / "warp_tomo_prep"
         if not template_path.is_dir():
@@ -1706,12 +1706,12 @@ class CryoBoostBackend:
         self,
         project_name: str,
         project_base_path: str,
-        selected_jobs: List[str],
+        selected_jobs: list[str],
         movies_glob: str,
         mdocs_glob: str,
-        selected_mdoc_paths: Optional[List[str]] = None,
-        import_summary: Optional[Dict[str, Any]] = None,
-        detected_params: Optional[Dict[str, Any]] = None,
+        selected_mdoc_paths: list[str] | None = None,
+        import_summary: dict[str, Any] | None = None,
+        detected_params: dict[str, Any] | None = None,
         is_aggregation: bool = False,
         shared: bool = False,
     ):
@@ -1728,7 +1728,7 @@ class CryoBoostBackend:
             shared=shared,
         )
 
-    async def transfer_project_ownership(self, project_path: Path, new_owner: Optional[str]) -> Dict[str, Any]:
+    async def transfer_project_ownership(self, project_path: Path, new_owner: str | None) -> dict[str, Any]:
         """Reassign a project's owner WITHOUT moving it on disk.
 
         `owner` is pure attribution/grouping metadata; the on-disk location and
@@ -1754,11 +1754,11 @@ class CryoBoostBackend:
             logger.error("Failed to transfer ownership of %s: %s", project_path, e)
             return {"success": False, "error": str(e)}
 
-    async def get_initial_parameters(self) -> Dict[str, Any]:
+    async def get_initial_parameters(self) -> dict[str, Any]:
         """Returns a dump of the current project state."""
         return self.state_service.state.model_dump(mode="json", exclude={"project_path"})
 
-    async def autodetect_parameters(self, mdocs_glob: str) -> Dict[str, Any]:
+    async def autodetect_parameters(self, mdocs_glob: str) -> dict[str, Any]:
         from services.configs.mdoc_service import get_mdoc_service
 
         mdoc_data = await asyncio.to_thread(get_mdoc_service().get_autodetect_params, mdocs_glob)
@@ -1774,7 +1774,7 @@ class CryoBoostBackend:
             },
         }
 
-    async def parse_dataset_overview(self, mdocs_glob: str, frames_dir: Optional[str] = None, progress_cb=None):
+    async def parse_dataset_overview(self, mdocs_glob: str, frames_dir: str | None = None, progress_cb=None):
         from services.configs.dataset_parsing_service import get_dataset_parsing_service
 
         service = get_dataset_parsing_service()
@@ -1782,7 +1782,11 @@ class CryoBoostBackend:
         return overview
 
     async def run_shell_command(
-        self, command: str, cwd: Path = None, tool_name: str = None, additional_binds: List[str] = None
+        self,
+        command: str,
+        cwd: Path | None = None,
+        tool_name: str | None = None,
+        additional_binds: list[str] | None = None,
     ):
         """Runs a shell command, optionally using specified tool's container."""
         try:
@@ -1814,7 +1818,7 @@ class CryoBoostBackend:
                 else:
                     return {"success": False, "output": stdout.decode(), "error": stderr.decode()}
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.error("Command timed out after 120 seconds: %s", final_command)
                 process.terminate()
                 await process.wait()
@@ -1828,7 +1832,7 @@ class CryoBoostBackend:
         """Gets a high-level overview and detailed statuses of all jobs."""
         return await self.pipeline_runner.get_pipeline_overview(project_path)
 
-    async def get_job_logs(self, project_path: str, job_name: str) -> Dict[str, str]:
+    async def get_job_logs(self, project_path: str, job_name: str) -> dict[str, str]:
         """Gets logs for a specific job *path* (e.g., "External/job003/")."""
         return await self.pipeline_runner.get_job_logs(project_path, job_name)
 
@@ -1849,7 +1853,7 @@ class CryoBoostBackend:
             print(f"Error getting EER frames: {e}")
             return None
 
-    async def load_existing_project(self, project_path: str) -> Dict[str, Any]:
+    async def load_existing_project(self, project_path: str) -> dict[str, Any]:
         return await self.project_service.load_project_state(project_path)
 
     async def debug_pipeline_status(self, project_path: str):
@@ -1860,7 +1864,7 @@ class CryoBoostBackend:
             return {"error": "Pipeline file not found"}
 
         try:
-            with open(pipeline_star, "r") as f:
+            with open(pipeline_star) as f:
                 content = f.read()
 
             return {"success": True, "content": content, "exists": True}

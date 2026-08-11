@@ -22,7 +22,6 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
 
 from nicegui import ui, run
 
@@ -47,25 +46,25 @@ SLATE = "#475569"
 SLATE_MUTED = "#94a3b8"
 
 
-def _merged_root() -> Optional[Path]:
+def _merged_root() -> Path | None:
     state = get_project_state()
     if state.project_path is None:
         return None
     return state.project_path / MERGED_DIR_NAME
 
 
-def _merge_dir_for(slug: str) -> Optional[Path]:
+def _merge_dir_for(slug: str) -> Path | None:
     root = _merged_root()
     return (root / slug) if root else None
 
 
-def _active_merge(state) -> Optional[AggregationMerge]:
+def _active_merge(state) -> AggregationMerge | None:
     """The merge downstream consumers use: the explicitly-active one, else the
     newest recorded merge. Thin wrapper over ProjectState.active_merge()."""
     return state.active_merge()
 
 
-def active_merged_optset(state) -> Optional[Path]:
+def active_merged_optset(state) -> Path | None:
     """Resolved optimisation_set.star of the active merge. Falls back to a
     legacy MergedSources/optimisation_set.star (pre-registry projects). Thin
     wrapper over ProjectState.active_merged_optset()."""
@@ -201,11 +200,11 @@ def has_merged_outputs() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _find_source(optset_path: str) -> Optional[AggregationSource]:
+def _find_source(optset_path: str) -> AggregationSource | None:
     return next((s for s in get_project_state().aggregation_sources if s.optset_path == optset_path), None)
 
 
-def _selected_tomos(optset_path: str, all_tomos: List[str]) -> set:
+def _selected_tomos(optset_path: str, all_tomos: list[str]) -> set:
     """Currently-selected tomo names for a source. tomo_names=None => all."""
     src = _find_source(optset_path)
     if src is None:
@@ -215,7 +214,7 @@ def _selected_tomos(optset_path: str, all_tomos: List[str]) -> set:
     return set(src.tomo_names)
 
 
-def _selection_label(src: Optional[AggregationSource], n_total: Optional[int]) -> str:
+def _selection_label(src: AggregationSource | None, n_total: int | None) -> str:
     """Compact "selected" descriptor for a (collapsed) species row."""
     if src is None:
         return ""
@@ -224,7 +223,7 @@ def _selection_label(src: Optional[AggregationSource], n_total: Optional[int]) -
     return f"{len(src.tomo_names)}{f'/{n_total}' if n_total else ''} tomos"
 
 
-def _set_species_selection(cand, selected: set, all_tomos: List[str]) -> None:
+def _set_species_selection(cand, selected: set, all_tomos: list[str]) -> None:
     """Replace the source entry for one (project, species) with the given tomo
     selection. Empty selection removes the source; full selection normalizes to
     tomo_names=None (=all). Per-tomo original overrides are preserved (pruned to
@@ -305,13 +304,13 @@ class _MergeSelector:
     def __init__(self, body: ui.element, on_change) -> None:
         self.body = body
         self.on_change = on_change  # called after any selection mutation
-        self.tree: Optional[ui.element] = None  # rebuilt subtree (filter input persists)
+        self.tree: ui.element | None = None  # rebuilt subtree (filter input persists)
         self.candidates: list = []
-        self.by_project: Dict[str, list] = {}
-        self.project_meta: Dict[str, dict] = {}
+        self.by_project: dict[str, list] = {}
+        self.project_meta: dict[str, dict] = {}
         self.expanded_projects: set = set()
         self.expanded_species: set = set()
-        self.curation: Dict[str, list] = {}  # optset_path -> List[TomoCuration]
+        self.curation: dict[str, list] = {}  # optset_path -> List[TomoCuration]
         self.filter = ""
         self.show_curated_only = False
 
@@ -553,7 +552,7 @@ class _MergeSelector:
             for t in sorted(tomos, key=lambda x: ts_position_sort_key(x.ts_name), reverse=True):
                 self._render_tomo_row(cand, t, selected, all_tomos)
 
-    def _render_tomo_row(self, cand, t, selected: set, all_tomos: List[str]) -> None:
+    def _render_tomo_row(self, cand, t, selected: set, all_tomos: list[str]) -> None:
         is_sel = t.ts_name in selected
         src = _find_source(cand.optset_path)
         use_orig = bool(src and t.ts_name in (src.original_tomos or []))
@@ -701,7 +700,7 @@ def open_aggregation_merge_dialog() -> None:
 
         selector = _MergeSelector(tree_body, on_change=lambda: _refresh_footer(footer, selector))
 
-        merge_meta: Dict[str, str] = {"name": "", "description": ""}
+        merge_meta: dict[str, str] = {"name": "", "description": ""}
 
         def _set_name(e):
             merge_meta["name"] = e.value or ""
@@ -750,10 +749,10 @@ def open_aggregation_merge_dialog() -> None:
     asyncio.create_task(selector.load())
 
 
-_DIALOG_REFS: Dict[str, object] = {}
+_DIALOG_REFS: dict[str, object] = {}
 
 
-def _refresh_footer(footer: ui.element, selector: "_MergeSelector") -> None:
+def _refresh_footer(footer: ui.element, selector: _MergeSelector) -> None:
     footer.clear()
     sources = list(get_project_state().aggregation_sources or [])
     n_sources = len(sources)
@@ -791,8 +790,9 @@ async def _pick_manual_path() -> None:
     if any(s.optset_path == chosen for s in (state.aggregation_sources or [])):
         ui.notify("Already in list", type="warning", timeout=2000)
         return
-    state.aggregation_sources = list(state.aggregation_sources or []) + [
-        AggregationSource(optset_path=chosen, project_name=Path(chosen).parent.name)
+    state.aggregation_sources = [
+        *list(state.aggregation_sources or []),
+        AggregationSource(optset_path=chosen, project_name=Path(chosen).parent.name),
     ]
     _persist_state()
     ui.notify(f"Added: {Path(chosen).name}", type="positive", timeout=1500)
@@ -845,11 +845,11 @@ def _build_merge_sources(state) -> list:
     return out
 
 
-def _metadata_warnings(sources: List[AggregationMergeSource]) -> List[str]:
+def _metadata_warnings(sources: list[AggregationMergeSource]) -> list[str]:
     """Flag acquisition params that shouldn't be co-merged but differ across
     sources. The driver hard-blocks pixel-size mismatch; box/binning are
     softer, surfaced here so the user notices."""
-    out: List[str] = []
+    out: list[str] = []
     for attr, label in (("box_size", "box size"), ("pixel_size", "pixel size"), ("binning", "binning")):
         vals = sorted({getattr(s, attr) for s in sources if getattr(s, attr) is not None})
         if len(vals) > 1:
@@ -860,14 +860,14 @@ def _metadata_warnings(sources: List[AggregationMergeSource]) -> List[str]:
 def _build_merge_record(state, slug: str, name: str, description: str, summary: dict) -> AggregationMerge:
     """Assemble the registry record from the driver summary + the per-source
     project/species labels (joined by subtomo job dir)."""
-    src_by_dir: Dict[str, AggregationSource] = {}
+    src_by_dir: dict[str, AggregationSource] = {}
     for s in state.aggregation_sources or []:
         try:
             src_by_dir[str(Path(s.optset_path).parent.resolve())] = s
         except Exception:
             pass
 
-    rows: List[AggregationMergeSource] = []
+    rows: list[AggregationMergeSource] = []
     for ss in summary.get("sources", []):
         opt = ss.get("optimisation_set") or ss.get("source_input") or ""
         jobdir = str(Path(opt).parent.resolve()) if opt else ""
@@ -922,7 +922,7 @@ async def _run_merge() -> None:
         return
 
     record = _build_merge_record(state, slug, name or slug, description, summary)
-    state.aggregation_merges = list(state.aggregation_merges or []) + [record]
+    state.aggregation_merges = [*list(state.aggregation_merges or []), record]
     state.active_merge_slug = slug  # newest becomes active
     # Wire downstream consumers to the new active optset.
     n_wired = apply_aggregation_overrides(state)

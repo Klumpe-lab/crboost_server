@@ -178,7 +178,7 @@ def main():
     print("--- SLURM JOB START (miss_align) ---", flush=True)
 
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (_project_state, params, local_params_data, job_dir, _project_path, _job_type) = get_driver_context(
             MissAlignParams
         )
     except Exception as e:

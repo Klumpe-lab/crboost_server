@@ -72,8 +72,8 @@ def _dot_html(status: JobStatus, is_orphaned: bool = False) -> str:
 def _badge_html(
     status: JobStatus,
     is_orphaned: bool = False,
-    missing_inputs: list = None,
-    slurm_job_id: str = None,
+    missing_inputs: list | None = None,
+    slurm_job_id: str | None = None,
 ) -> str:
     bg, txt = _BADGE_STYLES.get(status, ("background:#f3f4f6;", "color:#1f2937;"))
     label = status.value

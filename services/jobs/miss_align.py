@@ -1,6 +1,6 @@
 from __future__ import annotations
 import logging
-from typing import ClassVar, Dict, List, Set, Tuple
+from typing import ClassVar
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 # alignment modes: "anchoring" (iterative) | "global" (single pass) | [N, N] (local
 # NxN image-warping grid). Kept here (not in the driver) so the walltime estimate below
 # and the driver's config.yaml read the SAME schedule. Values from docs/miss-alignment.md §5.
-MISS_ALIGN_SCHEDULES: Dict[MissAlignSchedule, List[dict]] = {
+MISS_ALIGN_SCHEDULES: dict[MissAlignSchedule, list[dict]] = {
     MissAlignSchedule.FAST: [{"downsample": 2, "alignment": "anchoring"}, {"downsample": 1, "alignment": "global"}],
     MissAlignSchedule.DEFAULT: [
         {"downsample": 3, "alignment": "anchoring"},
@@ -132,7 +132,7 @@ class MissAlignParams(AbstractJobParams):
         "*thorough* = 8 (best quality, slowest)."
     )
 
-    USER_PARAMS: ClassVar[Set[str]] = {
+    USER_PARAMS: ClassVar[set[str]] = {
         "iteration_preset",
         "max_epochs_per_iteration",
         "steps_per_epoch",
@@ -144,7 +144,7 @@ class MissAlignParams(AbstractJobParams):
         "prepare_stacks_apix",
     }
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.ALIGNED_TILT_SERIES_STAR], preferred_source="aligntiltsWarp"),
         InputSlot(key="input_processing", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="aligntiltsWarp"),
         InputSlot(
@@ -153,7 +153,7 @@ class MissAlignParams(AbstractJobParams):
             preferred_source="aligntiltsWarp",
         ),
     ]
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(
             key="output_star", produces=JobFileType.ALIGNED_TILT_SERIES_STAR, path_template="aligned_tilt_series.star"
         ),
@@ -219,7 +219,7 @@ class MissAlignParams(AbstractJobParams):
         "tomostar bound). 0 = use the existing aligned tiltstack/*.st (default; the proven path).",
     )
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
 
@@ -230,7 +230,7 @@ class MissAlignParams(AbstractJobParams):
         return "miss_alignment"
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"align": "aligntiltsWarp"}
 
     @staticmethod

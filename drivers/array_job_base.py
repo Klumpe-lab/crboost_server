@@ -29,7 +29,6 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
@@ -47,7 +46,7 @@ STATUS_DIR_NAME = ".task_status"
 
 
 def write_manifest(
-    job_dir: Path, ts_names: List[str], *, ts_metadata: Optional[Dict[str, dict]] = None, extra: Optional[dict] = None
+    job_dir: Path, ts_names: list[str], *, ts_metadata: dict[str, dict] | None = None, extra: dict | None = None
 ) -> Path:
     """
     Write the task manifest that maps array indices → tilt-series names.
@@ -85,10 +84,60 @@ def update_manifest(job_dir: Path, updates: dict) -> None:
 # ----------------------------------------------------------------------
 
 
+def is_superseded_task(job_dir: Path) -> bool:
+    """True if this array task belongs to an OLDER submission than the manifest's.
+
+    A supervisor can be re-run while tasks from its previous submission are still
+    on the cluster (the old array is not scancel'd). Those orphans keep running
+    against the same job dir and, on finishing, write status for an item the new
+    run has already settled — which is how a tilt-series ends up carrying both
+    `.ok` and `.fail`, leaving the roster's red failed-count lit on a job that
+    actually succeeded.
+
+    SLURM job ids increase monotonically, so `task id < manifest id` identifies an
+    orphan unambiguously. The reverse (`task id > manifest id`) is the benign race
+    where `submit_array_job` has not yet written `array_job_id` back into the
+    manifest — that task IS current, so only a strictly-older id is rejected.
+    Anything unreadable or non-numeric (no SLURM env, hand-run driver, pre-existing
+    manifest without the key) fails open: status is written as before.
+    """
+    task_id = os.environ.get("SLURM_ARRAY_JOB_ID", "").strip()
+    if not task_id:
+        return False
+    try:
+        manifest_id = str(read_manifest(job_dir).get("array_job_id", "")).strip()
+        return int(task_id) < int(manifest_id)
+    except (OSError, ValueError, TypeError):  # JSONDecodeError is a ValueError
+        return False
+
+
 def write_status_atomic(status_dir: Path, item_name: str, ok: bool) -> None:
-    """Atomically write a per-item status file (.ok or .fail)."""
+    """Atomically write a per-item status file (.ok or .fail).
+
+    An item must end up carrying exactly ONE terminal marker, because the roster
+    tallies `.ok` and `.fail` independently: a stale `.fail` left behind by an
+    earlier attempt keeps the red failed-task badge lit forever after a
+    successful retry. So success clears any prior `.fail`/`.skip`.
+
+    Failure deliberately does NOT clear an existing `.ok`. Normal dispatch never
+    re-runs an item that already has `.ok` (see `get_previously_done`), so an
+    `.ok` present at failure time means the writer is an orphan from a superseded
+    submission and the recorded success is the trustworthy record.
+    """
+    if is_superseded_task(status_dir.parent):
+        print(
+            f"[TASK] Superseded submission (SLURM_ARRAY_JOB_ID={os.environ.get('SLURM_ARRAY_JOB_ID')}) — "
+            f"NOT writing {'ok' if ok else 'fail'} status for '{item_name}'",
+            flush=True,
+        )
+        return
+
     status_dir.mkdir(parents=True, exist_ok=True)
     suffix = "ok" if ok else "fail"
+    for stale_suffix in ("fail", "skip") if ok else ():
+        stale = status_dir / f"{item_name}.{stale_suffix}"
+        if stale.exists():
+            stale.unlink()
     target = status_dir / f"{item_name}.{suffix}"
     tmp = status_dir / f".{item_name}.{suffix}.tmp"
     tmp.write_text("")
@@ -155,10 +204,10 @@ def clean_status_dir(job_dir: Path, keep_ok: bool = False) -> Path:
 class ArrayResults:
     """Outcome of a completed SLURM array job."""
 
-    ok: List[str]
-    failed: List[str]
-    missing: List[str]
-    skipped: List[str]
+    ok: list[str]
+    failed: list[str]
+    missing: list[str]
+    skipped: list[str]
     all_succeeded: bool
 
     @property
@@ -171,7 +220,7 @@ class ArrayResults:
         return ", ".join(parts)
 
 
-def read_tilt_series_names_from_input_star(input_star: Path) -> List[str]:
+def read_tilt_series_names_from_input_star(input_star: Path) -> list[str]:
     """Sorted TS names from the input STAR's `global` block.
 
     This is the authoritative TS list for any per-TS job downstream of
@@ -188,7 +237,7 @@ def read_tilt_series_names_from_input_star(input_star: Path) -> List[str]:
     return sorted(df["rlnTomoName"].astype(str).tolist())
 
 
-def collect_task_results(job_dir: Path, ts_names: List[str]) -> ArrayResults:
+def collect_task_results(job_dir: Path, ts_names: list[str]) -> ArrayResults:
     """Read .task_status/ directory to tally per-TS outcomes.
 
     `.skip` files (intentional non-runs) are NOT failures and NOT missing —
@@ -227,7 +276,7 @@ def load_excluded_ts(project_path: Path) -> set:
         return set()
 
 
-def apply_exclusions(job_dir: Path, project_path: Path, ts_names: List[str]) -> List[str]:
+def apply_exclusions(job_dir: Path, project_path: Path, ts_names: list[str]) -> list[str]:
     """Pre-mark user-excluded tilt-series as `.skip` so the array never
     dispatches them and `collect_task_results` counts them as settled (not
     failures or missing).
@@ -266,7 +315,7 @@ def apply_exclusions(job_dir: Path, project_path: Path, ts_names: List[str]) -> 
 # ----------------------------------------------------------------------
 
 
-def preflight_registry(project_path: Path, expected_ts_names: List[str], job_name: str):
+def preflight_registry(project_path: Path, expected_ts_names: list[str], job_name: str):
     """Verify the TiltSeries registry covers every TS the supervisor is about
     to dispatch. Run this BEFORE `submit_array_job` so a mis-built registry
     surfaces in seconds rather than after the subjobs wasted cluster time
@@ -359,7 +408,7 @@ def copy_tomostar_with_absolute_paths(src: Path, dst: Path, original_dir: Path) 
 
 def stage_per_ts_environment(
     job_dir: Path, ts_name: str, input_processing: Path, settings_file: Path
-) -> Tuple[Path, Path]:
+) -> tuple[Path, Path]:
     """
     Build a per-TS staging directory so WarpTools only sees ONE tilt-series.
 
@@ -536,14 +585,14 @@ def submit_array_job(
     job_dir: Path,
     project_path: Path,
     instance_id: str,
-    ts_names: List[str],
+    ts_names: list[str],
     per_task_cfg: SlurmConfig,
     array_throttle: int,
     driver_script: Path,
     *,
-    ts_metadata: Optional[Dict[str, dict]] = None,
-    manifest_extra: Optional[dict] = None,
-) -> Optional[str]:
+    ts_metadata: dict[str, dict] | None = None,
+    manifest_extra: dict | None = None,
+) -> str | None:
     """
     Complete supervisor dispatch: write manifest, clean status dir, build + submit array.
 
@@ -572,13 +621,17 @@ def submit_array_job(
         print("[SUPERVISOR] All tilt-series already settled — nothing to submit", flush=True)
         return None
 
-    # 2. Write manifest with ALL items (keeps index→name mapping stable)
+    # 2. Cancel any still-live array from a previous submission into this same job
+    # dir before writing a new manifest over it.
+    cancel_previous_array(job_dir)
+
+    # 3. Write manifest with ALL items (keeps index→name mapping stable)
     write_manifest(job_dir, ts_names, ts_metadata=ts_metadata, extra=manifest_extra)
 
-    # 3. Clean .fail files from previous run; keep .ok files intact
+    # 4. Clean .fail files from previous run; keep .ok files intact
     clean_status_dir(job_dir, keep_ok=True)
 
-    # 4. Compute array spec: only the indices that need (re)processing
+    # 5. Compute array spec: only the indices that need (re)processing
     n_to_run = len(indices_to_run)
     throttle = max(1, min(array_throttle, n_to_run))
     if n_to_run == len(ts_names):
@@ -594,7 +647,7 @@ def submit_array_job(
         flush=True,
     )
 
-    # 4. Build and submit the array sbatch
+    # 6. Build and submit the array sbatch
     run_array_path = build_array_sbatch_script(
         template_path=server_dir / "config" / "qsub.sh",
         job_dir=job_dir,
@@ -609,10 +662,43 @@ def submit_array_job(
     array_job_id = submit_array_sbatch(run_array_path, cwd=job_dir)
     print(f"[SUPERVISOR] Array job id: {array_job_id}", flush=True)
 
-    # 5. Store the array job ID in the manifest for UI cross-reference
+    # 7. Store the array job ID in the manifest for UI cross-reference
     update_manifest(job_dir, {"array_job_id": array_job_id})
 
     return array_job_id
+
+
+def cancel_previous_array(job_dir: Path) -> str | None:
+    """scancel the array job recorded in this job dir's manifest, if still live.
+
+    Re-running a supervisor does NOT stop the previous submission's tasks — they
+    keep running against the same job dir, writing outputs into shared staging and
+    status markers for items the new run is re-processing. That is how a
+    tilt-series ends up with both `.ok` and `.fail`, and it also means two tasks
+    can be computing the same TS on two GPUs at once.
+
+    Returns the cancelled job id, or None if there was nothing to cancel.
+    """
+    try:
+        prev_id = str(read_manifest(job_dir).get("array_job_id", "")).strip()
+    except (OSError, ValueError, TypeError):
+        return None
+    if not prev_id:
+        return None
+
+    # Only cancel what is actually still queued/running — scancel on a finished
+    # job is harmless but noisy, and squeue tells us whether it is worth saying.
+    probe = subprocess.run(["squeue", "-j", prev_id, "--noheader", "-h"], capture_output=True, text=True)
+    if probe.returncode != 0 or not probe.stdout.strip():
+        return None
+
+    n_live = sum(1 for line in probe.stdout.splitlines() if line.strip())
+    print(f"[SUPERVISOR] Cancelling {n_live} live task(s) from superseded array job {prev_id}", flush=True)
+    result = subprocess.run(["scancel", prev_id], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[SUPERVISOR] WARN: scancel {prev_id} failed: {result.stderr.strip()}", flush=True)
+        return None
+    return prev_id
 
 
 def install_cancel_handler(array_job_id: str, job_dir: Path) -> None:

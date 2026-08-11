@@ -10,7 +10,6 @@ so these depend on no plotting package. Extracted from
 
 from __future__ import annotations
 
-from typing import Optional
 
 
 def _empty_fig(message: str) -> dict:
@@ -38,7 +37,7 @@ def _empty_fig(message: str) -> dict:
     }
 
 
-def _build_xy_scatter_fig(picks: list, tomo_dims_xyz: tuple, score_field: Optional[str]) -> dict:
+def _build_xy_scatter_fig(picks: list, tomo_dims_xyz: tuple, score_field: str | None) -> dict:
     x_dim, y_dim, _z_dim = tomo_dims_xyz
     # Pad the axes ~2% of each dim so edge picks (x≈0 or x≈x_dim — common in
     # cryo-ET fields) draw their full marker inside the frame; the dashed
@@ -119,7 +118,7 @@ def _build_xy_scatter_fig(picks: list, tomo_dims_xyz: tuple, score_field: Option
 
 
 def _build_xz_scatter_fig(
-    picks: list, tomo_dims_xyz: tuple, score_field: Optional[str], xz_preview_url: Optional[str] = None
+    picks: list, tomo_dims_xyz: tuple, score_field: str | None, xz_preview_url: str | None = None
 ) -> dict:
     x_dim, _y_dim, z_dim = tomo_dims_xyz
     # ~2% axis padding so edge picks draw their full marker inside the frame;
@@ -206,7 +205,7 @@ def _build_xz_scatter_fig(
     }
 
 
-def _build_score_hist_fig(picks: list, score_field: Optional[str]) -> dict:
+def _build_score_hist_fig(picks: list, score_field: str | None) -> dict:
     scores = [p.get("score") for p in picks if p.get("score") is not None]
     if not scores:
         return _empty_fig("no score column in candidates.star")
@@ -316,10 +315,10 @@ def _build_per_tilt_chart(
     *,
     x_label: str = "tilt (°)",
     y_label: str = "",
-    h_lines: Optional[list[dict]] = None,
-    customdata: Optional[list[list]] = None,
+    h_lines: list[dict] | None = None,
+    customdata: list[list] | None = None,
     y_unit: str = "",
-    y_range: Optional[tuple[float, float]] = None,
+    y_range: tuple[float, float] | None = None,
 ) -> dict:
     """Compact chart: x = tilt angle, y = one or more per-tilt metrics.
 

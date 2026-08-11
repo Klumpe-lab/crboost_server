@@ -14,7 +14,7 @@ follows the Journey/dashboard ``cb-*`` chrome (ui/dashboard/css.py). See service
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -26,7 +26,7 @@ _MONO = "font-family: ui-monospace, monospace;"
 _ACT = "color: #4f46e5;"  # indigo, for flat text actions
 
 
-def _chip(label: str, value: str, *, status: str = "neutral", tooltip: Optional[str] = None) -> None:
+def _chip(label: str, value: str, *, status: str = "neutral", tooltip: str | None = None) -> None:
     """One compact status chip (mirrors the dashboard ``_render_chip``; kept local so this
     dialog doesn't pull in the heavy tomo_dashboard_dialog module). ``status`` ∈
     {ok, warn, error, info, neutral}."""
@@ -37,7 +37,7 @@ def _chip(label: str, value: str, *, status: str = "neutral", tooltip: Optional[
             chip.tooltip(tooltip)
 
 
-def _start_dir(glob_or_path: str) -> Optional[str]:
+def _start_dir(glob_or_path: str) -> str | None:
     """Best-effort starting directory for the picker, derived from a glob/path field."""
     if not glob_or_path:
         return None
@@ -47,7 +47,7 @@ def _start_dir(glob_or_path: str) -> Optional[str]:
     return s if s and s != "." else None
 
 
-def open_tomogram_import_dialog(backend, project_path, on_done: Optional[Callable[[], None]] = None) -> None:
+def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], None] | None = None) -> None:
     """Open the tomogram-import dialog for ``project_path``. Commits via
     ``backend.commit_imported_tomograms`` and calls ``on_done`` after a successful import."""
     ensure_assets_loaded()  # the dialog can open on pages that never mounted the dashboard
@@ -196,7 +196,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Optional[Callabl
 
     # ── reference: browse / load preview ────────────────────────────────────────
 
-    async def _load_reference(ref: Optional[str] = None) -> None:
+    async def _load_reference(ref: str | None = None) -> None:
         ref = (ref if ref is not None else (ref_in.value or "")).strip()
         if not ref:
             ui.notify("Enter or browse to a tomograms.star first", type="warning")

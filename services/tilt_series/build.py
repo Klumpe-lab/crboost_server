@@ -20,7 +20,6 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
 
 from services.dataset_models import DatasetOverview, TiltSeriesInfo
 from services.tilt_series.models import Frame, TiltSeries
@@ -35,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 def build_from_dataset_overview(
     overview: DatasetOverview, *, project_prefix: str = ""
-) -> List[TiltSeries]:
+) -> list[TiltSeries]:
     """Construct TS entities from an already-parsed DatasetOverview.
 
     `project_prefix` is prepended to TS labels to match how WarpTools names the
@@ -43,7 +42,7 @@ def build_from_dataset_overview(
     `{project_name}_{ts_label}` after `ts_import`). Pass `""` to use the bare
     labels.
     """
-    out: List[TiltSeries] = []
+    out: list[TiltSeries] = []
     for pos in overview.positions:
         for ts_info in pos.tilt_series:
             if not ts_info.selected:
@@ -66,7 +65,7 @@ def _build_one_ts(ts_info: TiltSeriesInfo, *, project_prefix: str) -> TiltSeries
     cumulative = 0.0
     dose_per_tilt = ts_info.dose_per_tilt or 0.0
 
-    frames: List[Frame] = []
+    frames: list[Frame] = []
     for i, tilt in enumerate(sorted_tilts):
         frame_path = tilt.frame_path or Path(tilt.frame_filename)
         frame_id = Path(tilt.frame_filename).stem
@@ -118,9 +117,9 @@ def _build_one_ts(ts_info: TiltSeriesInfo, *, project_prefix: str) -> TiltSeries
 def build_from_mdocs(
     mdocs_glob: str,
     *,
-    frames_dir: Optional[Path] = None,
+    frames_dir: Path | None = None,
     project_prefix: str = "",
-) -> List[TiltSeries]:
+) -> list[TiltSeries]:
     """Parse mdocs directly when no DatasetOverview is available.
 
     `frames_dir` is optional; if provided, each frame's `raw_path` is resolved
@@ -135,7 +134,7 @@ def build_from_mdocs(
         logger.warning("build_from_mdocs: no mdocs matched %s", mdocs_glob)
         return []
 
-    out: List[TiltSeries] = []
+    out: list[TiltSeries] = []
     for mdoc_path in mdoc_paths:
         try:
             parsed = svc.parse_mdoc_file(mdoc_path)
@@ -156,7 +155,7 @@ def build_from_mdocs(
         sorted_sections = sorted(sections, key=lambda s: int(s.get("ZValue", 0)))
 
         cumulative = 0.0
-        frames: List[Frame] = []
+        frames: list[Frame] = []
         dose_per_tilt = _coerce_float(sorted_sections[0].get("ExposureDose")) or 0.0
 
         for i, sec in enumerate(sorted_sections):
@@ -207,7 +206,7 @@ def build_from_mdocs(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _coerce_float(v) -> Optional[float]:
+def _coerce_float(v) -> float | None:
     if v is None:
         return None
     try:
@@ -260,7 +259,7 @@ def _acq_kwargs_from_raw_section(sec: dict) -> dict:
     return kw
 
 
-def _parse_mdoc_datetime(raw) -> Optional[datetime]:
+def _parse_mdoc_datetime(raw) -> datetime | None:
     if not raw:
         return None
     # mdoc DateTime format is typically like "05-Feb-2026  17:15:24"

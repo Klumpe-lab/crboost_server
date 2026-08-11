@@ -8,7 +8,7 @@ import getpass
 import glob
 import logging
 from pathlib import Path
-from typing import Dict, Callable
+from collections.abc import Callable
 
 from nicegui import ui, app
 
@@ -56,7 +56,7 @@ def _avatar_color(key: str) -> str:
 CURRENT_USER = getpass.getuser()
 
 
-def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Callable]) -> None:
+def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Callable]) -> None:
     ui_mgr = get_ui_state_manager()
     prefs_service = get_prefs_service()
 
@@ -112,7 +112,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
     # -- Async glob validation (never blocks the event loop) ----------------
 
-    _glob_tasks: Dict[str, asyncio.Task] = {}
+    _glob_tasks: dict[str, asyncio.Task] = {}
 
     def _validate_glob_quick(pattern: str) -> tuple[bool, str]:
         """Instant syntax-only check — no filesystem I/O."""
@@ -171,7 +171,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             prev.cancel()
 
         async def _finish():
-            is_valid, count, msg = await _validate_glob_full(pattern)
+            is_valid, _count, msg = await _validate_glob_full(pattern)
             if ui_mgr.data_import.movies_glob != pattern:
                 return  # pattern changed while we were checking
             ui_mgr.update_data_import(movies_valid=is_valid)
@@ -205,7 +205,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             prev.cancel()
 
         async def _finish():
-            is_valid, count, msg = await _validate_glob_full(pattern)
+            is_valid, _count, msg = await _validate_glob_full(pattern)
             if ui_mgr.data_import.mdocs_glob != pattern:
                 return
             ui_mgr.update_data_import(mdocs_valid=is_valid)

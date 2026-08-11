@@ -53,7 +53,7 @@ TICK_INTERVAL_SEC = 3.0
 
 
 class PipelineMonitor:
-    def __init__(self, backend: "CryoBoostBackend"):
+    def __init__(self, backend: CryoBoostBackend):
         self._backend = backend
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
@@ -209,7 +209,7 @@ class PipelineMonitor:
                 logger.exception("PipelineMonitor tick failed")
             try:
                 await asyncio.wait_for(self._stopping.wait(), timeout=TICK_INTERVAL_SEC)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     async def _tick_once(self) -> None:

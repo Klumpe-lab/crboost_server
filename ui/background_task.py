@@ -36,7 +36,8 @@ background work.
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 from nicegui import ui
 
@@ -61,9 +62,9 @@ class BackgroundTask:
         self,
         *,
         title: str,
-        subtitle: Optional[str] = None,
-        dedup_key: Optional[str] = None,
-        project_path: Optional[str] = None,
+        subtitle: str | None = None,
+        dedup_key: str | None = None,
+        project_path: str | None = None,
     ) -> None:
         self.title = title
         self.subtitle = subtitle
@@ -74,8 +75,8 @@ class BackgroundTask:
         self,
         work: Callable[[ProgressCallback], Awaitable[Any]],
         *,
-        on_complete: Optional[Callable[[BackgroundTaskRecord], None]] = None,
-        on_progress: Optional[Callable[[BackgroundTaskRecord], None]] = None,
+        on_complete: Callable[[BackgroundTaskRecord], None] | None = None,
+        on_progress: Callable[[BackgroundTaskRecord], None] | None = None,
         poll_interval: float = _DEFAULT_POLL_SEC,
         show_start_toast: bool = True,
     ) -> str:
@@ -138,7 +139,7 @@ class BackgroundTask:
         return task_id
 
     @staticmethod
-    def existing(dedup_key: str) -> Optional[BackgroundTaskRecord]:
+    def existing(dedup_key: str) -> BackgroundTaskRecord | None:
         """Return the running task with this dedup_key, or None.
 
         Use on panel re-mount to detect a task submitted before navigation
@@ -153,8 +154,8 @@ class BackgroundTask:
     def attach(
         task_id: str,
         *,
-        on_complete: Optional[Callable[[BackgroundTaskRecord], None]] = None,
-        on_progress: Optional[Callable[[BackgroundTaskRecord], None]] = None,
+        on_complete: Callable[[BackgroundTaskRecord], None] | None = None,
+        on_progress: Callable[[BackgroundTaskRecord], None] | None = None,
         poll_interval: float = _DEFAULT_POLL_SEC,
     ) -> None:
         """Wire callbacks to an existing in-flight task.
@@ -166,8 +167,8 @@ class BackgroundTask:
 
 def _install_completion_timer(
     task_id: str,
-    on_complete: Optional[Callable[[BackgroundTaskRecord], None]],
-    on_progress: Optional[Callable[[BackgroundTaskRecord], None]],
+    on_complete: Callable[[BackgroundTaskRecord], None] | None,
+    on_progress: Callable[[BackgroundTaskRecord], None] | None,
     poll_interval: float,
 ) -> None:
     """Install a ui.timer that polls for `task_id`:

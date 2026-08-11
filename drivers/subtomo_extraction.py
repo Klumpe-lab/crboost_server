@@ -41,7 +41,6 @@ import shutil
 import sys
 import traceback
 from pathlib import Path
-from typing import List, Optional
 
 import pandas as pd
 
@@ -100,7 +99,7 @@ def main():
 
 def run_supervisor_mode():
     try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(SubtomoExtractionParams)
+        (_state, params, context, job_dir, project_path, _job_type) = get_driver_context(SubtomoExtractionParams)
     except Exception as e:
         (Path.cwd() / "RELION_JOB_EXIT_FAILURE").touch()
         print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
@@ -310,7 +309,7 @@ def run_supervisor_mode():
 def _stage_per_ts(
     staging_root: Path,
     ts_name: str,
-    optics_df: Optional[pd.DataFrame],
+    optics_df: pd.DataFrame | None,
     particles_df: pd.DataFrame,
     tomograms_df: pd.DataFrame,
     general_kv: dict,
@@ -342,7 +341,7 @@ def _stage_per_ts(
     # particles. Multi-optics-group projects (rare today, possible after
     # merge of multiple datasets) would otherwise carry the union into
     # every task. Skipped entirely when the input has no optics block.
-    ts_optics: Optional[pd.DataFrame] = None
+    ts_optics: pd.DataFrame | None = None
     if optics_df is not None and "rlnOpticsGroup" in ts_particles.columns:
         optics_groups = set(ts_particles["rlnOpticsGroup"].astype(str).unique())
         ts_optics = optics_df[optics_df["rlnOpticsGroup"].astype(str).isin(optics_groups)].reset_index(drop=True)
@@ -367,7 +366,7 @@ def _stage_per_ts(
 
 def run_task_mode(array_idx: int):
     try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(SubtomoExtractionParams)
+        (_state, params, context, job_dir, _project_path, _job_type) = get_driver_context(SubtomoExtractionParams)
     except Exception as e:
         print(f"[TASK {array_idx}] BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
@@ -476,7 +475,7 @@ def run_task_mode(array_idx: int):
 
 def _merge_per_ts_outputs(
     job_dir: Path,
-    ts_names: List[str],
+    ts_names: list[str],
     upstream_general_kv: dict,
     upstream_tomograms_star: Path,
 ) -> None:
@@ -491,9 +490,9 @@ def _merge_per_ts_outputs(
     final_subtomos_dir = job_dir / "Subtomograms"
     final_subtomos_dir.mkdir(parents=True, exist_ok=True)
 
-    all_optics_dfs: List[pd.DataFrame] = []
-    all_particles_dfs: List[pd.DataFrame] = []
-    empty_extracts: List[str] = []
+    all_optics_dfs: list[pd.DataFrame] = []
+    all_particles_dfs: list[pd.DataFrame] = []
+    empty_extracts: list[str] = []
 
     for ts_name in ts_names:
         task_out = job_dir / ".staging" / f"task_{ts_name}" / "out"

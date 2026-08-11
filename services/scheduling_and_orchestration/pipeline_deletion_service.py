@@ -7,7 +7,7 @@ Relion has no CLI for deletion - only GUI. We implement equivalent logic.
 import logging
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 from dataclasses import dataclass, field
 import pandas as pd
 from services.configs.starfile_service import StarfileService
@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class DeletionResult:
     success      : bool
-    deleted_jobs : List[str] = field(default_factory=list)
-    orphaned_jobs: List[str] = field(default_factory=list)
-    error        : Optional[str] = None
+    deleted_jobs : list[str] = field(default_factory=list)
+    orphaned_jobs: list[str] = field(default_factory=list)
+    error        : str | None = None
     message      : str = ""
 
 
@@ -34,14 +34,14 @@ class PipelineGraph:
     input_edges: pd.DataFrame    # pipeline_input_edges
     output_edges: pd.DataFrame   # pipeline_output_edges
     
-    def get_job_output_nodes(self, job_name: str) -> List[str]:
+    def get_job_output_nodes(self, job_name: str) -> list[str]:
         """Get all output node names for a job."""
         if self.output_edges.empty:
             return []
         mask = self.output_edges["rlnPipeLineEdgeProcess"] == job_name
         return self.output_edges.loc[mask, "rlnPipeLineEdgeToNode"].tolist()
     
-    def get_downstream_jobs(self, job_name: str) -> List[str]:
+    def get_downstream_jobs(self, job_name: str) -> list[str]:
         """Find jobs that depend on this job's outputs."""
         output_nodes = self.get_job_output_nodes(job_name)
         if not output_nodes or self.input_edges.empty:
@@ -55,7 +55,7 @@ class PipelineGraph:
         
         return list(downstream)
     
-    def get_job_status(self, job_name: str) -> Optional[str]:
+    def get_job_status(self, job_name: str) -> str | None:
         """Get the status of a job."""
         if self.processes.empty:
             return None
@@ -82,7 +82,7 @@ class PipelineDeletionService:
     def __init__(self):
         self.star_handler = StarfileService()
     
-    def load_pipeline_graph(self, project_dir: Path) -> Optional[PipelineGraph]:
+    def load_pipeline_graph(self, project_dir: Path) -> PipelineGraph | None:
         """Load the pipeline graph from default_pipeline.star."""
         pipeline_star = project_dir / "default_pipeline.star"
         if not pipeline_star.exists():
@@ -222,7 +222,9 @@ class PipelineDeletionService:
         
         # 5. Store deleted entries for audit trail
         deleted_processes = graph.processes[job_mask].copy()
-        node_mask = graph.nodes["rlnPipeLineNodeName"].isin(output_nodes) if not graph.nodes.empty else pd.Series(dtype=bool)
+        node_mask = (
+            graph.nodes["rlnPipeLineNodeName"].isin(output_nodes) if not graph.nodes.empty else pd.Series(dtype=bool)
+        )
         deleted_nodes = graph.nodes[node_mask].copy() if node_mask.any() else pd.DataFrame()
         
         # 6. Remove job from processes
@@ -282,7 +284,7 @@ class PipelineDeletionService:
         project_dir: Path, 
         job_type: JobType,
         job_resolver  # The JobTypeResolver from orchestrator
-    ) -> List[str]:
+    ) -> list[str]:
         """Find all job paths matching a given JobType."""
         graph = self.load_pipeline_graph(project_dir)
         if graph is None or graph.processes.empty:
@@ -297,7 +299,7 @@ class PipelineDeletionService:
         
         return matching_jobs
     
-    def get_orphaned_jobs(self, project_dir: Path) -> List[Tuple[str, List[str]]]:
+    def get_orphaned_jobs(self, project_dir: Path) -> list[tuple[str, list[str]]]:
         """
         Find all jobs that have broken input references.
         Returns list of (job_path, [missing_input_nodes])
@@ -331,7 +333,7 @@ class PipelineDeletionService:
         project_dir: Path,
         job_path: str,
         job_resolver=None,  # Optional: to get human-readable job types
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Preview what would happen if we delete this job.
         Returns info about downstream jobs that would be orphaned.
@@ -380,7 +382,7 @@ class PipelineDeletionService:
         }
 
 # Singleton instance
-_deletion_service: Optional[PipelineDeletionService] = None
+_deletion_service: PipelineDeletionService | None = None
 
 def get_deletion_service() -> PipelineDeletionService:
     global _deletion_service

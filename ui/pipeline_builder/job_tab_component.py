@@ -1,7 +1,7 @@
 # ui/pipeline_builder/job_tab_component.py
 import asyncio
 import logging
-from typing import Dict, Callable, Optional
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -33,7 +33,7 @@ _EXPERIMENTAL_JOB_TYPES = {JobType.MISS_ALIGN}
 class DebouncedSaver:
     def __init__(self, delay: float = 1.0):
         self._delay = delay
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
 
     def trigger(self):
         if self._task and not self._task.done():
@@ -128,7 +128,7 @@ def _render_tab_content(
 
 
 def render_job_tab(
-    job_type: JobType, instance_id: str, backend, ui_mgr: UIStateManager, callbacks: Dict[str, Callable]
+    job_type: JobType, instance_id: str, backend, ui_mgr: UIStateManager, callbacks: dict[str, Callable]
 ) -> None:
     state = get_project_state()
     job_model = state.jobs.get(instance_id)
@@ -205,7 +205,7 @@ def render_job_tab(
             )
             ui.button(
                 icon="content_copy",
-                on_click=lambda p=full_path: ui.run_javascript(f"navigator.clipboard.writeText({repr(p)})"),
+                on_click=lambda p=full_path: ui.run_javascript(f"navigator.clipboard.writeText({p!r})"),
             ).props("flat dense round size=xs").classes("text-gray-400 hover:text-gray-600").tooltip("Copy path")
 
         ui.space()
@@ -246,7 +246,7 @@ def _render_interactive_job(
     job_model,
     backend,
     ui_mgr: UIStateManager,
-    callbacks: Dict[str, Callable],
+    callbacks: dict[str, Callable],
     full_renderer: Callable,
 ):
     """Lightweight chrome for interactive tool-type jobs (no tab strip)."""
@@ -296,7 +296,7 @@ def _render_tab_switcher(
     active_tab: str,
     backend,
     ui_mgr: UIStateManager,
-    callbacks: Dict[str, Callable],
+    callbacks: dict[str, Callable],
 ):
     container.clear()
     tabs = _build_tab_list(job_type)
@@ -323,7 +323,7 @@ def _render_tab_switcher(
 
 
 def _handle_tab_switch(
-    job_type: JobType, instance_id: str, tab_key: str, backend, ui_mgr: UIStateManager, callbacks: Dict[str, Callable]
+    job_type: JobType, instance_id: str, tab_key: str, backend, ui_mgr: UIStateManager, callbacks: dict[str, Callable]
 ):
     ui_mgr.set_job_monitor_tab(instance_id, tab_key, user_initiated=True)
     widget_refs = ui_mgr.get_job_widget_refs(instance_id)
@@ -348,7 +348,7 @@ def _handle_tab_switch(
 
 
 async def _handle_stop_job(
-    job_type: JobType, instance_id: str, job_model, backend, ui_mgr: UIStateManager, callbacks: Dict[str, Callable]
+    job_type: JobType, instance_id: str, job_model, backend, ui_mgr: UIStateManager, callbacks: dict[str, Callable]
 ):
     project_path = ui_mgr.project_path
     job_dir = (project_path / job_model.relion_job_name.rstrip("/")) if job_model.relion_job_name else None
@@ -388,7 +388,7 @@ async def _handle_stop_job(
 
 
 def _handle_delete(
-    job_type: JobType, instance_id: str, job_model, backend, ui_mgr: UIStateManager, callbacks: Dict[str, Callable]
+    job_type: JobType, instance_id: str, job_model, backend, ui_mgr: UIStateManager, callbacks: dict[str, Callable]
 ):
     # Interactive jobs use the roster's custom removal flow.
     if getattr(job_model, "IS_INTERACTIVE", False):
@@ -478,7 +478,7 @@ def _handle_delete(
     dialog.open()
 
 
-def _force_status_refresh(callbacks: Dict[str, Callable]):
+def _force_status_refresh(callbacks: dict[str, Callable]):
     ui.notify("Refreshing statuses...", timeout=1)
     if "check_and_update_statuses" in callbacks:
         asyncio.create_task(callbacks["check_and_update_statuses"]())

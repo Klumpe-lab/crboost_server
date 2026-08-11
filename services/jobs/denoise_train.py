@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Set, Tuple
+from typing import ClassVar
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams
@@ -61,7 +61,7 @@ class DenoiseTrainParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = True
 
-    USER_PARAMS: ClassVar[Set[str]] = {
+    USER_PARAMS: ClassVar[set[str]] = {
         "denoise_method",
         "tomograms_for_training",
         "number_training_subvolumes",
@@ -71,10 +71,10 @@ class DenoiseTrainParams(AbstractJobParams):
         "isonet_deconv",
     }
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.TOMOGRAMS_STAR], preferred_source="tsReconstruct")
     ]
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_model", produces=JobFileType.DENOISE_MODEL_TAR, path_template="denoising_model.tar.gz")
     ]
 
@@ -101,7 +101,7 @@ class DenoiseTrainParams(AbstractJobParams):
         "you reconstructed with deconv=0. Only used when denoise_method = IsoNet.",
     )
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
         return [("in_tomoset", str(input_star))]
 
@@ -112,7 +112,7 @@ class DenoiseTrainParams(AbstractJobParams):
         return "isonet" if self.denoise_method == DenoiseMethod.ISONET else "cryocare"
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"reconstruct": "tsReconstruct"}
 
     def _scaled_train_walltime(self, base_time: str) -> str:

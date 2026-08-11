@@ -45,7 +45,8 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Hashable, Optional, Set
+from typing import Any
+from collections.abc import Hashable
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ class FingerprintedView:
         look it up dynamically.
         """
         self._container = container
-        self._last_signature: Optional[Hashable] = None
+        self._last_signature: Hashable | None = None
         self._dirty: bool = True
 
     def _get_container(self) -> Any:
@@ -155,7 +156,7 @@ class SingleFlight:
     """
 
     def __init__(self) -> None:
-        self._in_flight: Set[str] = set()
+        self._in_flight: set[str] = set()
 
     @asynccontextmanager
     async def __call__(self, key: str):

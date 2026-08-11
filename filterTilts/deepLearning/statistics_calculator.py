@@ -194,13 +194,16 @@ class FilterStatistics:
         print(f"  Total tilts (after): {self.stats['total_after']}")
         print(f"  Good tilts: {self.stats['good_count']} ({self.stats['good_percentage']:.1f}%)")
         print(f"  Bad tilts: {self.stats['bad_count']} ({self.stats['bad_percentage']:.1f}%)")
-        print(f"\nConfidence Metrics:")
+        print("\nConfidence Metrics:")
         print(f"  Mean Probability: {self.mean_prob:.4f} (should be > 0.95)")
         print(f"  Std Probability: {self.stats['std_probability']:.4f}")
         print(f"  Min/Max Probability: {self.stats['min_probability']:.4f} / {self.stats['max_probability']:.4f}")
-        print(f"  Low Confidence (<{self.prob_threshold}): {self.stats['low_confidence_count']} ({self.stats['low_confidence_percentage']:.1f}%)")
+        print(
+            f"  Low Confidence (<{self.prob_threshold}): {self.stats['low_confidence_count']} "
+            f"({self.stats['low_confidence_percentage']:.1f}%)"
+        )
         
-        print(f"\nTilt Angle Analysis:")
+        print("\nTilt Angle Analysis:")
         # Format mean angle of bad tilts
         mean_ang_bad_str = "n.d" if int(self.mean_ang_bad) == 180 else f"{self.mean_ang_bad:.1f}°"
         print(f"  Mean Angle (Good): {self.mean_ang_good:.1f}°")

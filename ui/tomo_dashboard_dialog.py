@@ -29,7 +29,6 @@ import logging
 import uuid
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 from nicegui import app, context, ui
@@ -140,7 +139,7 @@ def _read_picks_json(path: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _read_per_tilt_df(per_tilt_star_path: Path) -> Optional[pd.DataFrame]:
+def _read_per_tilt_df(per_tilt_star_path: Path) -> pd.DataFrame | None:
     """Load the per-TS tilt block from a per-tilt star file. Each per-tilt
     star has one data block named after the TS, with one row per tilt."""
     if not per_tilt_star_path.exists():
@@ -170,7 +169,7 @@ def _per_tilt_star_path(job_dir: Path, ts_name: str) -> Path:
 _ATLAS_INDEX_MEMO: dict[str, tuple[float, dict]] = {}
 
 
-def _read_atlas_index(index_path: Path) -> Optional[dict]:
+def _read_atlas_index(index_path: Path) -> dict | None:
     if not index_path or not Path(index_path).exists():
         return None
     key = str(index_path)
@@ -197,10 +196,10 @@ def _read_atlas_index(index_path: Path) -> Optional[dict]:
 # rail count (P2) and the cutout sheet's keep overlay (P3) need it, and collect runs
 # on every 4s refresh — so memoize by (source mtime, filtered mtime) to avoid
 # re-reading two stars per list per tick. None = no filter committed (all kept).
-_KEEP_STATE_MEMO: dict[str, tuple[tuple, Optional[set[int]]]] = {}
+_KEEP_STATE_MEMO: dict[str, tuple[tuple, set[int] | None]] = {}
 
 
-def _memoized_keep_state(source_star: Path) -> Optional[set[int]]:
+def _memoized_keep_state(source_star: Path) -> set[int] | None:
     """``picks_filter.derive_keep_state_for_list`` memoized by the two stars' mtimes
     so the table count and the cutout keep overlay share one read. Returns the kept
     ROW indices of ``source_star`` (None when no ``_filtered`` star exists)."""
@@ -305,7 +304,7 @@ def _build_panel_toggle_row(host, on_change) -> None:
 # ---------------------------------------------------------------------------
 
 
-def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
+def build_journey_panel(container, callbacks: dict | None = None) -> None:
     """Build the per-TS Journey dashboard embedded into ``container``.
 
     Formerly ``open_tomo_dashboard`` (a maximized dialog). De-dialoged in P1 so
@@ -714,7 +713,7 @@ def _scroll_section_into_view(section_key: str) -> None:
     )
 
 
-def _info_copy_row(key: str, value: str, copy_value: Optional[str] = None) -> None:
+def _info_copy_row(key: str, value: str, copy_value: str | None = None) -> None:
     """One key/value line in the info popover with a copy-full-value button."""
     cv = copy_value if copy_value is not None else value
     with ui.element("div").classes("cb-info-row"):
@@ -731,7 +730,7 @@ def _info_copy_row(key: str, value: str, copy_value: Optional[str] = None) -> No
         )
 
 
-def _ts_meta_line(species_list: list[dict]) -> Optional[str]:
+def _ts_meta_line(species_list: list[dict]) -> str | None:
     """Pixel size · dims line for the info popover, from the first species
     whose manifest entry carries them."""
     for sp in species_list:
@@ -747,7 +746,7 @@ def _ts_meta_line(species_list: list[dict]) -> Optional[str]:
     return None
 
 
-def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: Optional[str]) -> None:
+def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: str | None) -> None:
     """The ⓘ button → click popover: full tomo name, metadata, and the relevant
     file paths (each with a copy-full-path button). Click-opened so the copy
     buttons are actually usable (a hover tooltip dismisses as you reach them)."""
@@ -842,10 +841,10 @@ def _render_datadump_card(
     icon: str,
     title: str,
     metric_strip: str,
-    instance_id: Optional[str],
-    job_status_label: Optional[str],
+    instance_id: str | None,
+    job_status_label: str | None,
     rows: list[tuple[str, str]],
-    note: Optional[str] = None,
+    note: str | None = None,
 ) -> None:
     """Slice-C primitive section card: header + 1-line metric strip + key/value
     grid. Reused by every analytics emitter."""
@@ -879,7 +878,7 @@ def _render_datadump_card(
 
 
 def _render_chip(
-    label: str, value: str, *, status: str = "neutral", tooltip: Optional[str] = None, icon: Optional[str] = None
+    label: str, value: str, *, status: str = "neutral", tooltip: str | None = None, icon: str | None = None
 ) -> None:
     """One status chip. `status` ∈ {ok, warn, error, info, neutral}."""
     cls = f"cb-chip cb-chip-{status}"
@@ -892,7 +891,7 @@ def _render_chip(
             chip.tooltip(tooltip)
 
 
-def _read_tomohand_from_import_star(star_path: Path) -> Optional[int]:
+def _read_tomohand_from_import_star(star_path: Path) -> int | None:
     """Return `_rlnTomoHand` from an Import-job tilt_series.star, sampling the
     first data table that carries it. Returns ±1 or None on absence."""
     if not star_path.exists():
@@ -911,14 +910,14 @@ def _read_tomohand_from_import_star(star_path: Path) -> Optional[int]:
                 continue
             # Mixed values across TS are unusual but possible — surface +1/-1
             # as a magnitude (sign of the first) when uniform, else 0 sentinel.
-            uniq = sorted({int(round(x)) for x in vals})
+            uniq = sorted({round(x) for x in vals})
             if len(uniq) == 1:
                 return int(uniq[0])
             return 0  # mixed
     return None
 
 
-def _find_import_job(project_state) -> Optional[tuple[str, object]]:
+def _find_import_job(project_state) -> tuple[str, object] | None:
     """Locate the Import (relion.importtomo) job. The dataset chip needs it
     to cross-check the in-memory `invert_defocus_hand` against the actual
     `_rlnTomoHand` Import wrote into `tilt_series.star`."""
@@ -937,7 +936,7 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
     config_hand = -1 if bool(acq.invert_defocus_hand) else 1
 
     # On-disk: read tilt_series.star from the Import job, if it exists.
-    disk_hand: Optional[int] = None
+    disk_hand: int | None = None
     imp = _find_import_job(project_state)
     if imp:
         imp_dir = _job_dir_for(imp[0], imp[1], project_path)
@@ -1105,7 +1104,7 @@ def _stat_strip(rows: list[tuple[str, str]]) -> None:
                 ui.html(f"<span class='cb-stat-key'>{k}</span><span class='cb-stat-val'>{v}</span>", sanitize=False)
 
 
-def _plot_cell(label: str, fig: dict, *, height_px: int = 220, wide: bool = False, hint: Optional[str] = None) -> None:
+def _plot_cell(label: str, fig: dict, *, height_px: int = 220, wide: bool = False, hint: str | None = None) -> None:
     """One plot tile inside a `.cb-plot-row` parent. `hint` is a short tooltip
     explainer attached to the title (helps newcomers parse the metric).
 
@@ -1125,7 +1124,7 @@ def _plot_cell(label: str, fig: dict, *, height_px: int = 220, wide: bool = Fals
 def _per_tilt_customdata(df: pd.DataFrame) -> list[list]:
     """Build [[tilt_index, frame_basename], ...] customdata so plot hovers
     can name the specific tilt instead of just its angle."""
-    n = int(len(df))
+    n = len(df)
     if "rlnMicrographMovieName" in df.columns:
         bases = [Path(str(v)).name for v in df["rlnMicrographMovieName"].tolist()]
     else:
@@ -1171,8 +1170,8 @@ def _render_ctf_motion_plots(
     df: pd.DataFrame,
     *,
     show_motion: bool = True,
-    frameseries_dir: Optional[Path] = None,
-    dl_by_frame: Optional[dict] = None,
+    frameseries_dir: Path | None = None,
+    dl_by_frame: dict | None = None,
 ) -> None:
     """Defocus + astigmatism (always plotted as scatter, since each tilt is an
     independent estimate). CTF max-resolution / FOM / motion are gated on
@@ -1189,13 +1188,13 @@ def _render_ctf_motion_plots(
     if dl_by_frame:
         # Append the tilt-filter verdict (keep/drop + prob) as customdata[2] so each
         # per-tilt point's hover shows what the tilt-filter thought of that tilt.
-        cd = [row + [dl_by_frame.get(row[1], "—")] for row in cd]
+        cd = [[*row, dl_by_frame.get(row[1], "—")] for row in cd]
 
     # Real per-tilt CTF-fit resolution + motion live in the WarpTools frameseries
     # XML, not the star (the star columns are 1e-6 / 'None' placeholders). Read
     # them once here so the CTF-res + motion panels show real data.
-    xml_res: Optional[list] = None
-    xml_motion: Optional[list] = None
+    xml_res: list | None = None
+    xml_motion: list | None = None
     if frameseries_dir is not None and "rlnMicrographMovieName" in df.columns:
         from services.tilt_series.frameseries_quality import quality_series
 
@@ -1336,7 +1335,10 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
         if has_shift:
             xs = _safe_floats(df["rlnTomoXShiftAngst"])
             ys = _safe_floats(df["rlnTomoYShiftAngst"])
-            mag = [(x * x + y * y) ** 0.5 if x is not None and y is not None else None for x, y in zip(xs, ys)]
+            mag = [
+                (x * x + y * y) ** 0.5 if x is not None and y is not None else None
+                for x, y in zip(xs, ys, strict=False)
+            ]
             if _is_meaningful_series(mag):
                 fig = _build_per_tilt_chart(
                     tilts,
@@ -1354,7 +1356,10 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
             series = []
             if has_xtilt:
                 xt = _safe_floats(df["rlnTomoXTilt"])
-                resid = [val - nt if nt is not None and val is not None else None for nt, val in zip(tilts, xt)]
+                resid = [
+                    val - nt if nt is not None and val is not None else None
+                    for nt, val in zip(tilts, xt, strict=False)
+                ]
                 if _is_meaningful_series(resid):
                     series.append({"name": "X tilt − nom", "y": resid, "color": "#dc2626"})
             if has_ytilt:
@@ -1441,7 +1446,7 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         d_stats = _stats(defocus_um)
         r_stats = _stats(ctf_res)
         m_stats = _stats(motion_total)
-        strip_rows: list[tuple[str, str]] = [("tilts", str(int(len(df))))]
+        strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
         if d_stats["n"]:
             strip_rows.append(
                 ("defocus", f"{d_stats['median']:.2f} µm (Q1 {d_stats['q1']:.2f} · Q3 {d_stats['q3']:.2f})")
@@ -1524,9 +1529,11 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
         # Stat strip: max shift magnitude + tilt-axis residual range
         x_shift = _safe_floats(df.get("rlnTomoXShiftAngst", [])) if "rlnTomoXShiftAngst" in df.columns else []
         y_shift = _safe_floats(df.get("rlnTomoYShiftAngst", [])) if "rlnTomoYShiftAngst" in df.columns else []
-        mag = [(x * x + y * y) ** 0.5 for x, y in zip(x_shift, y_shift) if x is not None and y is not None]
+        mag = [
+            (x * x + y * y) ** 0.5 for x, y in zip(x_shift, y_shift, strict=False) if x is not None and y is not None
+        ]
         m_stats = _stats(mag)
-        strip_rows: list[tuple[str, str]] = [("tilts", str(int(len(df))))]
+        strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
         if m_stats["n"]:
             strip_rows.append(("|shift| max / median", f"{m_stats['max']:.1f} / {m_stats['median']:.1f} Å"))
         if "rlnTomoYTilt" in df.columns:
@@ -1606,7 +1613,7 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
         ctf_res = [v for v in _safe_floats(df.get("rlnCtfMaxResolution", [])) if v is not None]
         d_stats = _stats(defocus_um)
         r_stats = _stats(ctf_res)
-        strip_rows: list[tuple[str, str]] = [("tilts", str(int(len(df))))]
+        strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
         if d_stats["n"]:
             strip_rows.append(
                 ("defocus", f"{d_stats['median']:.2f} µm (range {d_stats['min']:.2f}–{d_stats['max']:.2f})")
@@ -1642,7 +1649,7 @@ def _linear_slope_intercept(xs: list, ys: list) -> tuple:
     """OLS slope + intercept over paired (x, y), skipping None entries. Returns
     (slope, intercept) or (None, None) for < 2 points or zero x-variance.
     numpy-free (the dashboard venv has no numpy)."""
-    pts = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
+    pts = [(x, y) for x, y in zip(xs, ys, strict=False) if x is not None and y is not None]
     n = len(pts)
     if n < 2:
         return None, None
@@ -1695,8 +1702,14 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
         raw_t = _safe_floats(def_df["rlnTomoNominalStageTiltAngle"])
         du = _safe_floats(def_df["rlnDefocusU"])
         dv = _safe_floats(def_df["rlnDefocusV"]) if "rlnDefocusV" in def_df.columns else du
-        mean_um = [((u + v) / 2.0) / 1.0e4 if u is not None and v is not None else None for u, v in zip(du, dv)]
-        pairs = sorted([(t, m) for t, m in zip(raw_t, mean_um) if t is not None and m is not None], key=lambda p: p[0])
+        mean_um = [
+            ((u + v) / 2.0) / 1.0e4 if u is not None and v is not None else None
+            for u, v in zip(du, dv, strict=False)
+        ]
+        pairs = sorted(
+            [(t, m) for t, m in zip(raw_t, mean_um, strict=False) if t is not None and m is not None],
+            key=lambda p: p[0],
+        )
         if pairs:
             def_tilts = [p[0] for p in pairs]
             def_mean = [p[1] for p in pairs]
@@ -1711,7 +1724,9 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
         sh_tilts = _safe_floats(align_df["rlnTomoNominalStageTiltAngle"])
         xs = _safe_floats(align_df["rlnTomoXShiftAngst"])
         ys = _safe_floats(align_df["rlnTomoYShiftAngst"])
-        mag = [(x * x + y * y) ** 0.5 if x is not None and y is not None else None for x, y in zip(xs, ys)]
+        mag = [
+            (x * x + y * y) ** 0.5 if x is not None and y is not None else None for x, y in zip(xs, ys, strict=False)
+        ]
         sh_mag = mag if _is_meaningful_series(mag) else None
 
     if def_mean is None and sh_mag is None:
@@ -1759,7 +1774,7 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
 # --- Tilt Filter --------------------------------------------------------------
 
 
-def _resolve_tilt_filter_dir(project_state, project_path: Path) -> Optional[Path]:
+def _resolve_tilt_filter_dir(project_state, project_path: Path) -> Path | None:
     """Return the directory containing tiltseries_filtered.star and
     tiltseries_labeled.star — supports both pipeline-job tilt filtering
     (TILT_FILTER) and the standalone TiltFilter tool that writes to
@@ -1807,7 +1822,7 @@ def _read_per_tilt_frame_names(per_tilt_star: Path) -> list[str]:
     return [str(v) for v in df["rlnMicrographMovieName"].tolist()]
 
 
-def _read_per_tilt_kept_dropped(filter_dir: Path, ts_name: str) -> Optional[dict]:
+def _read_per_tilt_kept_dropped(filter_dir: Path, ts_name: str) -> dict | None:
     """Diff labeled vs filtered per-tilt star to compute kept and dropped rows.
 
     Returns a dict with keys: n_labeled, n_kept, dropped (list of dicts with
@@ -1820,7 +1835,7 @@ def _read_per_tilt_kept_dropped(filter_dir: Path, ts_name: str) -> Optional[dict
     kept_frames: set[str] = set()
     if filtered_p.exists():
         kept_frames = set(_read_per_tilt_frame_names(filtered_p))
-    n_labeled = int(len(labeled_df))
+    n_labeled = len(labeled_df)
     dropped: list[dict] = []
     if "rlnMicrographMovieName" in labeled_df.columns and kept_frames:
         for i, row in labeled_df.iterrows():
@@ -1924,7 +1939,7 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
 _TOMO_POLARITY_CACHE: dict[tuple[str, int], dict] = {}
 
 
-def _compute_tomogram_polarity(mrc_path: Path) -> Optional[dict]:
+def _compute_tomogram_polarity(mrc_path: Path) -> dict | None:
     """Sample a center 1024×1024 Z slice from a reconstructed tomogram,
     compute %bright / %dark voxel fractions, classify polarity. Cached by
     (path, mtime). Returns None on read failure or non-3D volumes."""
@@ -1980,7 +1995,7 @@ def _compute_tomogram_polarity(mrc_path: Path) -> Optional[dict]:
     return result
 
 
-def _expected_polarity_from_templates(project_state) -> Optional[str]:
+def _expected_polarity_from_templates(project_state) -> str | None:
     """Return the consensus selected-template polarity across species
     ("white" or "black") if every species agrees, else None."""
     seen: set[str] = set()
@@ -1994,7 +2009,7 @@ def _expected_polarity_from_templates(project_state) -> Optional[str]:
     return None
 
 
-def _tomo_polarity_chip_status(polarity: str, expected: Optional[str]) -> tuple[str, str]:
+def _tomo_polarity_chip_status(polarity: str, expected: str | None) -> tuple[str, str]:
     """Return (status, hint) for the polarity chip."""
     if expected is None:
         if polarity == "symmetric":
@@ -2117,7 +2132,7 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
 
 
 def _render_recon_big_preview(
-    ts_name: str, project_state, project_path: Path, mrc_path: Optional[Path], refresh
+    ts_name: str, project_state, project_path: Path, mrc_path: Path | None, refresh
 ) -> None:
     """Side-by-side tomogram preview: the WarpTools recon PNG (left) and the
     cryoCARE/IsoNet denoised X/Y slab (right).
@@ -2141,8 +2156,8 @@ def _render_recon_big_preview(
         selected = labels[0] if labels else None
     sel = next((m for m in methods if m[0] == selected), None)
 
-    dn_png: Optional[Path] = None
-    dn_mrc: Optional[Path] = None
+    dn_png: Path | None = None
+    dn_mrc: Path | None = None
     if sel is not None:
         _, dn_job_dir, dn_mrc = sel
         _auto_kick_denoise_slab(dn_job_dir, ts_name, dn_mrc, project_path, refresh)
@@ -2316,7 +2331,7 @@ def _denoise_method_label(job_model, instance_id: str, project_state=None) -> st
     return getattr(m, "value", None) or (str(m) if m else instance_id)
 
 
-def _resolve_denoised_mrc_for_job(job_dir: Path, project_path: Path, ts_name: str) -> Optional[Path]:
+def _resolve_denoised_mrc_for_job(job_dir: Path, project_path: Path, ts_name: str) -> Path | None:
     """Denoised-tomogram MRC for one denoisepredict job + TS, or None. Prefers the
     job's aggregated tomograms.star (rlnTomoReconstructedTomogram); falls back to the
     per-tomogram file under denoised/ so results surface as the SLURM array lands
@@ -2432,7 +2447,7 @@ def _list_cutout_box_px(sp: dict) -> int:
     diameter = float(getattr(sp.get("jm"), "particle_diameter_ang", 0.0) or 0.0)
     px = (sp.get("entry") or {}).get("pixel_size_ang")
     if diameter and px and px > 0:
-        half = max(16, min(96, int(round(diameter / px))))
+        half = max(16, min(96, round(diameter / px)))
         return half * 2
     return 48
 
@@ -2523,14 +2538,14 @@ def _atlas_index_is_current(index_path: Path) -> bool:
 def _auto_kick_list_cutouts(
     recon_mrc: Path,
     picks: list,
-    star_path: Optional[str],
+    star_path: str | None,
     atlas_path: Path,
     index_path: Path,
     box_px: int,
     project_path: Path,
     refresh,
     dedup_key: str,
-    apix_hint: Optional[float] = None,
+    apix_hint: float | None = None,
 ) -> bool:
     """True if the list's recon-cutout atlas is on disk + fresh (render now); else
     kick ONE background build (mirrors `_auto_kick_recon_slabs`) and return False
@@ -2662,12 +2677,12 @@ def _render_list_cutout_sheet(
         if not layer_ids:
             return
         _run_js(
-            "(function(){var ls=%(ls)s;var d=new Set(%(d)s);ls.forEach(function(lid){"
+            f"(function(){{var ls={json.dumps(layer_ids)};"
+            f"var d=new Set({json.dumps([str(i) for i in _dropped_now()])});ls.forEach(function(lid){{"
             "var h=document.getElementById(lid);if(!h)return;"
             "h.querySelectorAll('.cb-pick-ghost[data-pick-idx]').forEach(function(g){"
             "if(d.has(g.getAttribute('data-pick-idx')))g.classList.add('cb-pick-ghost-dropped');"
             "else g.classList.remove('cb-pick-ghost-dropped');});});})();"
-            % {"ls": json.dumps(layer_ids), "d": json.dumps([str(i) for i in _dropped_now()])}
         )
 
     def _counter_txt() -> str:
@@ -2745,11 +2760,11 @@ def _render_list_cutout_sheet(
                 t.classes(add="cb-tile-dropped")
         if layer_ids:
             _run_js(
-                "(function(){var ls=%(ls)s;var idx='%(i)s';var drop=%(drop)s;ls.forEach(function(lid){"
+                "(function(){{var ls={ls};var idx='{i}';var drop={drop};ls.forEach(function(lid){{"
                 "var h=document.getElementById(lid);if(!h)return;"
-                "h.querySelectorAll('.cb-pick-ghost[data-pick-idx=\"'+idx+'\"]').forEach(function(g){"
+                "h.querySelectorAll('.cb-pick-ghost[data-pick-idx=\"'+idx+'\"]').forEach(function(g){{"
                 "if(drop)g.classList.add('cb-pick-ghost-dropped');else g.classList.remove('cb-pick-ghost-dropped');"
-                "});});})();" % {"ls": json.dumps(layer_ids), "i": i, "drop": "false" if kept else "true"}
+                "}});}});}})();".format(ls=json.dumps(layer_ids), i=i, drop="false" if kept else "true")
             )
         counter.set_text(_counter_txt())
         await _commit_loop()  # auto-save the keep/drop → persists + feeds merge/extraction
@@ -2774,89 +2789,88 @@ def _render_list_cutout_sheet(
         if not layer_ids:
             return
         _run_js(
-            """
-            setTimeout(function() {
-                var gid = %(grid)s;
-                var lids = %(layers)s;
+            f"""
+            setTimeout(function() {{
+                var gid = {json.dumps(grid_id)};
+                var lids = {json.dumps(layer_ids)};
                 if (!document.getElementById(gid)) return;
                 var root = document.getElementById(gid).closest('.cb-section-card') || document.body;
-                function getGrid() { return document.getElementById(gid); }
-                function layers() {
-                    return lids.map(function(id) { return document.getElementById(id); }).filter(Boolean);
-                }
-                function ourGhost(el) {
+                function getGrid() {{ return document.getElementById(gid); }}
+                function layers() {{
+                    return lids.map(function(id) {{ return document.getElementById(id); }}).filter(Boolean);
+                }}
+                function ourGhost(el) {{
                     var l = el.closest && el.closest('.cb-pick-layer');
                     return !!l && lids.indexOf(l.id) !== -1;
-                }
-                function ghostsFor(idx) {
+                }}
+                function ghostsFor(idx) {{
                     var out = [];
-                    layers().forEach(function(h) {
+                    layers().forEach(function(h) {{
                         h.querySelectorAll('.cb-pick-ghost[data-pick-idx="' + idx + '"]')
-                         .forEach(function(g) { out.push(g); });
-                    });
+                         .forEach(function(g) {{ out.push(g); }});
+                    }});
                     return out;
-                }
-                function clearActive() {
-                    layers().forEach(function(h) {
+                }}
+                function clearActive() {{
+                    layers().forEach(function(h) {{
                         h.querySelectorAll('.cb-pick-ghost.cb-ghost-active')
-                         .forEach(function(g) { g.classList.remove('cb-ghost-active'); });
-                    });
+                         .forEach(function(g) {{ g.classList.remove('cb-ghost-active'); }});
+                    }});
                     var gr = getGrid();
                     if (gr) gr.querySelectorAll('.cb-tile-highlight')
-                            .forEach(function(t) { t.classList.remove('cb-tile-highlight'); });
-                }
-                function isOurs(el) {
+                            .forEach(function(t) {{ t.classList.remove('cb-tile-highlight'); }});
+                }}
+                function isOurs(el) {{
                     if (!el || !el.closest) return false;
                     var gr = getGrid();
                     var t = el.closest('.cb-gallery-tile[data-pick-idx]');
                     if (t && gr && gr.contains(t)) return true;
                     var gh = el.closest('.cb-pick-ghost[data-pick-idx]');
                     return !!(gh && ourGhost(gh));
-                }
-                if (root._cbListBridge) {
+                }}
+                if (root._cbListBridge) {{
                     root.removeEventListener('mouseover', root._cbListBridge.over);
                     root.removeEventListener('mouseout', root._cbListBridge.out);
-                }
-                var over = function(e) {
+                }}
+                var over = function(e) {{
                     if (!e.target.closest) return;
                     var gr = getGrid();
                     var t = e.target.closest('.cb-gallery-tile[data-pick-idx]');
-                    if (t && gr && gr.contains(t)) {
+                    if (t && gr && gr.contains(t)) {{
                         var idx = t.getAttribute('data-pick-idx');
                         clearActive();
-                        ghostsFor(idx).forEach(function(g) { g.classList.add('cb-ghost-active'); });
+                        ghostsFor(idx).forEach(function(g) {{ g.classList.add('cb-ghost-active'); }});
                         return;
-                    }
+                    }}
                     var gh = e.target.closest('.cb-pick-ghost[data-pick-idx]');
-                    if (gh && ourGhost(gh)) {
+                    if (gh && ourGhost(gh)) {{
                         var gi = gh.getAttribute('data-pick-idx');
                         clearActive();
-                        ghostsFor(gi).forEach(function(g) { g.classList.add('cb-ghost-active'); });
+                        ghostsFor(gi).forEach(function(g) {{ g.classList.add('cb-ghost-active'); }});
                         var g2 = getGrid();
-                        if (g2) {
+                        if (g2) {{
                             var tl = g2.querySelector('.cb-gallery-tile[data-pick-idx="' + gi + '"]');
-                            if (tl) {
+                            if (tl) {{
                                 tl.classList.add('cb-tile-highlight');
                                 var tr = tl.getBoundingClientRect(), gb = g2.getBoundingClientRect();
                                 if (tr.top < gb.top || tr.bottom > gb.bottom)
-                                    tl.scrollIntoView({block: 'nearest', behavior: 'smooth'});
-                            }
-                        }
-                    }
-                };
-                var out = function(e) {
+                                    tl.scrollIntoView({{block: 'nearest', behavior: 'smooth'}});
+                            }}
+                        }}
+                    }}
+                }};
+                var out = function(e) {{
                     if (!e.target.closest) return;
                     var lv = e.target.closest('.cb-gallery-tile[data-pick-idx]') ||
                              e.target.closest('.cb-pick-ghost[data-pick-idx]');
                     if (!lv || !isOurs(lv)) return;
                     if (!isOurs(e.relatedTarget)) clearActive();
-                };
-                root._cbListBridge = {over: over, out: out};
+                }};
+                root._cbListBridge = {{over: over, out: out}};
                 root.addEventListener('mouseover', over);
                 root.addEventListener('mouseout', out);
-            }, 60);
+            }}, 60);
             """
-            % {"grid": json.dumps(grid_id), "layers": json.dumps(layer_ids)}
         )
 
     from services.visualization.cutout_filters import get_filter_presets, keyed_path
@@ -3247,7 +3261,7 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
 
 # _open_merge_dialog was removed 2026-06-11 — merging is now the co-located inline
 # merge bar built in _render_list_rail (tick 2+ pills → name → Merge), no popup.
-# See W3 in services/visualization/ARTIAX_BRIDGE_PLAN.md.
+# See W3 in docs/ARTIAX_BRIDGE_PLAN.md.
 
 
 def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id: str, shape: str = "circle"):
@@ -3292,7 +3306,7 @@ def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -> tuple[Optional[Path], Optional[Path]]:
+def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -> tuple[Path | None, Path | None]:
     """(recon_job_dir, reconstructed-tomogram MRC) for this TS, or Nones.
 
     Falls back to the project-level imported tomograms.star (PARTICLES-header import
@@ -3319,7 +3333,7 @@ def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -
     return recon_job_dir, (Path(mrc) if mrc else None)
 
 
-def _read_pick_list_voxels(star_path: Path, dims: list, pixel_size: Optional[float]) -> list[dict]:
+def _read_pick_list_voxels(star_path: Path, dims: list, pixel_size: float | None) -> list[dict]:
     """Read a centered-Å pick star → voxel-space picks ``[{i, x, y, z}]`` for the
     canvas overlay, using the binned ``dims`` + ``pixel_size`` already resolved in
     the render context (no MRC re-read per render). Returns ``[]`` if the file,
@@ -3636,7 +3650,7 @@ def _render_imported_particles_section(
 
     def _binned_dim(col: str):
         try:
-            return int(round(float(row[col]) / binning)) if col in row.index else None
+            return round(float(row[col]) / binning) if col in row.index else None
         except (TypeError, ValueError):
             return None
 
@@ -3787,8 +3801,8 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
 
 def _render_particles_canvas(
     species_data: list[dict],
-    recon_job_dir: Optional[Path],
-    mrc_path: Optional[Path],
+    recon_job_dir: Path | None,
+    mrc_path: Path | None,
     ts_name: str,
     project_path: Path,
     refresh,
@@ -4134,7 +4148,7 @@ _CURATION_SESSION_LIVE: dict = {"on": False}
 
 def _pending_save_for_tomo(
     project_path: Path, species_label: str, species_id: str, tomo_name: str
-) -> Optional[tuple[Path, float]]:
+) -> tuple[Path, float] | None:
     """The ArtiaX `.coords` save to auto-ingest for THIS (species, tomo), or None.
 
     Saves land in the per-(species,tomo) `curation_dir`, so every `.coords` under it
@@ -4330,7 +4344,7 @@ def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None
 
 
 def _render_species_tab_body(
-    sp: dict, layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster=None
+    sp: dict, layer_ids: dict | None, project_path: Path, refresh, refresh_roster=None
 ) -> None:
     """One species' tab: a horizontal pick-list rail ABOVE the gallery/detail (so
     the short rail doesn't leave dead space beside the tall gallery), with the
@@ -4469,7 +4483,7 @@ def _attach_auto_chip_tooltip(el, sp: dict, tm_info: dict) -> None:
                 ui.label("  ·  ".join(tm_bits)).classes("cb-tt-line")
 
 
-def _list_count_text(total: int, filtered_count: Optional[int]) -> str:
+def _list_count_text(total: int, filtered_count: int | None) -> str:
     """Table count cell text: 'kept/total' when a keep/drop filter is committed for
     this list, else just the total. `filtered_count` is None (no filter) or the kept
     count; equal-to-total is treated as no effective filter."""
@@ -4748,7 +4762,7 @@ def _render_list_rail(
 
 
 async def _render_list_detail(
-    sp: dict, lst: Optional[dict], layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster
+    sp: dict, lst: dict | None, layer_ids: dict | None, project_path: Path, refresh, refresh_roster
 ) -> None:
     """Detail pane for the selected rail chip: the auto list shows the status-aware
     subtomo gallery / scatter; a workbench list shows its recon cutout sheet (whose
@@ -4765,7 +4779,7 @@ async def _render_list_detail(
 
 
 def _render_species_auto_section(
-    sp: dict, layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster=None
+    sp: dict, layer_ids: dict | None, project_path: Path, refresh, refresh_roster=None
 ) -> None:
     """The status-aware AUTO (PyTOM) gallery for a species tab: the subtomo
     cutout gallery when extracted, else the scatter fallback, or an
@@ -4817,7 +4831,7 @@ def _render_species_auto_section(
     _render_picks_scatter_section(row, entry, manifest)
 
 
-def _render_zero_picks_empty_state(manifest: dict, species_name: Optional[str]) -> None:
+def _render_zero_picks_empty_state(manifest: dict, species_name: str | None) -> None:
     """Empty state for tomograms PyTOM processed but where no candidate
     exceeded the cutoff. Shows the species template + score field so users
     can tell at a glance "this species got nothing here" — distinct from the
@@ -5009,10 +5023,10 @@ def _render_peek_skeleton() -> dict:
 async def _trigger_peek_for_pick(
     pick_idx: int,
     picks: list,
-    tomo_mrc: Optional[str],
-    peek_dir: Optional[Path],
-    pixel_size_ang: Optional[float],
-    particle_diameter_ang: Optional[float],
+    tomo_mrc: str | None,
+    peek_dir: Path | None,
+    pixel_size_ang: float | None,
+    particle_diameter_ang: float | None,
     peek_refs: dict,
     state: dict,
 ) -> None:
@@ -5044,7 +5058,7 @@ async def _trigger_peek_for_pick(
     # cube) when we can't compute — works for most particles at bin 4 / bin 8.
     if pixel_size_ang and particle_diameter_ang and pixel_size_ang > 0:
         diameter_px = particle_diameter_ang / pixel_size_ang
-        half_box = int(round(diameter_px * 1.5))
+        half_box = round(diameter_px * 1.5)
     else:
         half_box = 48
     half_box = max(24, min(128, half_box))
@@ -5088,8 +5102,8 @@ def _render_gallery_body(
     gallery_id: str,
     has_xy: bool,
     has_xz: bool,
-    ce_job_dir: Optional[Path],
-    subtomo_job_dir: Optional[Path],
+    ce_job_dir: Path | None,
+    subtomo_job_dir: Path | None,
     refresh_roster=None,
 ) -> None:
     picks_json_path = entry.get("picks_json")
@@ -5179,7 +5193,7 @@ def _render_gallery_body(
     # there's no filtered file at all (= "all kept implicitly"); we materialize
     # that to a None sentinel in state so the user sees an unmarked starting
     # point, and only mutate to a concrete set once they actually click a tile.
-    initial_keep_set: Optional[set[int]] = None
+    initial_keep_set: set[int] | None = None
     if subtomo_job_dir is not None and ce_job_dir is not None and ts_name:
         try:
             initial_keep_set = picks_filter.derive_keep_state_for_ts(
@@ -5385,7 +5399,7 @@ def _render_gallery_body(
         with controls_box:
             path_row = ui.row().classes("cb-filter-path w-full items-center")
 
-        def _filtered_set_path() -> Optional[str]:
+        def _filtered_set_path() -> str | None:
             if subtomo_job_dir is None:
                 return None
             p = subtomo_job_dir / picks_filter.OPTIMISATION_SET_FILTERED_NAME
@@ -5506,12 +5520,12 @@ def _render_gallery_body(
         if not layer_ids:
             return
         js = (
-            "(function(){const ls=%(layers)s;const d=new Set(%(dropped)s);"
+            f"(function(){{const ls={json.dumps(layer_ids)};const d=new Set({json.dumps([str(i) for i in dropped])});"
             "ls.forEach(function(lid){const h=document.getElementById(lid);if(!h)return;"
             "h.querySelectorAll('.cb-pick-ghost[data-pick-idx]').forEach(function(g){"
             "if(d.has(g.getAttribute('data-pick-idx')))g.classList.add('cb-pick-ghost-dropped');"
             "else g.classList.remove('cb-pick-ghost-dropped');});});})();"
-        ) % {"layers": json.dumps(layer_ids), "dropped": json.dumps([str(i) for i in dropped])}
+        )
         try:
             _gallery_client.run_javascript(js)
         except Exception:
@@ -5738,25 +5752,25 @@ def _render_gallery_body(
         # Both directions write the hover card via JS (no Python round-trip)
         # using pick_meta pre-formatted server-side. The lone Python path
         # (tile click → persistent .selected) is unchanged.
-        bridge_js = """
-        setTimeout(function() {
-            const galleryId = %(gallery_id)s;
-            const slices = %(slices)s;
-            const meta = %(meta)s;
-            const hoverCard = document.getElementById(%(card_id)s);
+        bridge_js = f"""
+        setTimeout(function() {{
+            const galleryId = {json.dumps(gallery_id)};
+            const slices = {json.dumps(slices)};
+            const meta = {json.dumps(pick_meta)};
+            const hoverCard = document.getElementById({json.dumps(hover_card_id)});
             // Layer hosts live in the always-present left canvas column, so they
             // resolve now and stay valid across tab switches. `s.id` is the
             // .cb-pick-layer id; the marker + ghost dots are its children.
-            const wired = slices.map(function(s) {
+            const wired = slices.map(function(s) {{
                 const host = document.getElementById(s.id);
                 if (!host) return null;
-                return {
+                return {{
                     host: host,
                     marker: host.querySelector('.cb-pick-marker'),
                     picks: s.picks,
                     layerId: s.id
-                };
-            }).filter(function(x) { return x && x.marker; });
+                }};
+            }}).filter(function(x) {{ return x && x.marker; }});
             if (!wired.length) return;
 
             // Delegate on the Particles card — the common ancestor of BOTH the
@@ -5767,117 +5781,117 @@ def _render_gallery_body(
             // mount the active panel, so the old one-shot getElementById(galleryId)
             // bailed for inactive tabs and never wired their listeners.)
             const root = wired[0].host.closest('.cb-section-card') || document.body;
-            const ourLayerIds = wired.map(function(w) { return w.layerId; });
-            function getGrid() { return document.getElementById(galleryId); }
-            function ourGhost(el) {
+            const ourLayerIds = wired.map(function(w) {{ return w.layerId; }});
+            function getGrid() {{ return document.getElementById(galleryId); }}
+            function ourGhost(el) {{
                 const layer = el.closest && el.closest('.cb-pick-layer');
                 return !!layer && ourLayerIds.indexOf(layer.id) !== -1;
-            }
+            }}
 
-            function placeMarkers(idx) {
-                wired.forEach(function(w) {
+            function placeMarkers(idx) {{
+                wired.forEach(function(w) {{
                     const xy = w.picks[idx];
-                    if (!xy) { w.marker.style.opacity = '0'; return; }
-                    w.marker.style.left = (xy[0] * 100).toFixed(3) + '%%';
-                    w.marker.style.top = (xy[1] * 100).toFixed(3) + '%%';
+                    if (!xy) {{ w.marker.style.opacity = '0'; return; }}
+                    w.marker.style.left = (xy[0] * 100).toFixed(3) + '%';
+                    w.marker.style.top = (xy[1] * 100).toFixed(3) + '%';
                     w.marker.style.opacity = '1';
-                });
-            }
-            function hideMarkers() {
-                wired.forEach(function(w) { w.marker.style.opacity = '0'; });
-            }
-            function setGhostActive(idx, on) {
-                wired.forEach(function(w) {
-                    w.host.querySelectorAll('.cb-pick-ghost[data-pick-idx="' + idx + '"]').forEach(function(g) {
+                }});
+            }}
+            function hideMarkers() {{
+                wired.forEach(function(w) {{ w.marker.style.opacity = '0'; }});
+            }}
+            function setGhostActive(idx, on) {{
+                wired.forEach(function(w) {{
+                    w.host.querySelectorAll('.cb-pick-ghost[data-pick-idx="' + idx + '"]').forEach(function(g) {{
                         if (on) g.classList.add('cb-ghost-active');
                         else g.classList.remove('cb-ghost-active');
-                    });
-                });
-            }
-            function setTileHighlight(idx, on, scrollIntoView) {
+                    }});
+                }});
+            }}
+            function setTileHighlight(idx, on, scrollIntoView) {{
                 const grid = getGrid();
                 if (!grid) return;
                 const tile = grid.querySelector('.cb-gallery-tile[data-pick-idx="' + idx + '"]');
                 if (!tile) return;
                 if (on) tile.classList.add('cb-tile-highlight');
                 else tile.classList.remove('cb-tile-highlight');
-                if (on && scrollIntoView) {
+                if (on && scrollIntoView) {{
                     const tr = tile.getBoundingClientRect();
                     const gr = grid.getBoundingClientRect();
-                    if (tr.top < gr.top || tr.bottom > gr.bottom) {
-                        tile.scrollIntoView({block: 'nearest', behavior: 'smooth'});
-                    }
-                }
-            }
-            function fillHover(idx) {
+                    if (tr.top < gr.top || tr.bottom > gr.bottom) {{
+                        tile.scrollIntoView({{block: 'nearest', behavior: 'smooth'}});
+                    }}
+                }}
+            }}
+            function fillHover(idx) {{
                 if (!hoverCard) return;
-                if (idx == null) {
-                    hoverCard.querySelectorAll('.cb-hover-val').forEach(function(el) {
+                if (idx == null) {{
+                    hoverCard.querySelectorAll('.cb-hover-val').forEach(function(el) {{
                         el.textContent = '—';
-                    });
+                    }});
                     return;
-                }
+                }}
                 const m = meta[idx];
                 if (!m) return;
-                ['idx','px','ang','score','z%%-tile','nn'].forEach(function(k) {
+                ['idx','px','ang','score','z%-tile','nn'].forEach(function(k) {{
                     const sel = '.cb-hover-val[data-hover-key="' + k.replace('"','\\\\"') + '"]';
                     const el = hoverCard.querySelector(sel);
                     if (el) el.textContent = m[k] != null ? m[k] : '—';
-                });
-            }
+                }});
+            }}
             // Clear ALL active state in our scope (every active ghost + every
             // highlighted tile). Called at the start of each hover so only one
             // pick is ever active — moving tile→tile no longer accumulates
             // stuck dots (the bug: mouseout only fired on full grid-exit, so a
             // tile→tile move never deactivated the one you left).
-            function clearActive() {
-                wired.forEach(function(w) {
-                    w.host.querySelectorAll('.cb-pick-ghost.cb-ghost-active').forEach(function(g) {
+            function clearActive() {{
+                wired.forEach(function(w) {{
+                    w.host.querySelectorAll('.cb-pick-ghost.cb-ghost-active').forEach(function(g) {{
                         g.classList.remove('cb-ghost-active');
-                    });
-                });
+                    }});
+                }});
                 const grid = getGrid();
-                if (grid) grid.querySelectorAll('.cb-tile-highlight').forEach(function(t) {
+                if (grid) grid.querySelectorAll('.cb-tile-highlight').forEach(function(t) {{
                     t.classList.remove('cb-tile-highlight');
-                });
-            }
-            function isOurs(el) {
+                }});
+            }}
+            function isOurs(el) {{
                 if (!el || !el.closest) return false;
                 const grid = getGrid();
                 const tile = el.closest('.cb-gallery-tile[data-pick-idx]');
                 if (tile && grid && grid.contains(tile)) return true;
                 const gh = el.closest('.cb-pick-ghost[data-pick-idx]');
                 return !!(gh && ourGhost(gh));
-            }
+            }}
 
             // Single delegated mouseover/mouseout on the card handles BOTH
             // directions: a gallery tile (filtered to OUR grid) and a ghost dot
             // (filtered to OUR species' layers). Filtering keeps the N per-species
             // bridges on the shared card from cross-firing. Every mouseover
             // resets first so exactly one pick is active at a time.
-            root.addEventListener('mouseover', function(e) {
+            root.addEventListener('mouseover', function(e) {{
                 if (!e.target.closest) return;
                 const grid = getGrid();
                 const tile = e.target.closest('.cb-gallery-tile[data-pick-idx]');
-                if (tile && grid && grid.contains(tile)) {
+                if (tile && grid && grid.contains(tile)) {{
                     const idx = tile.getAttribute('data-pick-idx');
                     clearActive();
                     placeMarkers(idx);
                     setGhostActive(idx, true);
                     fillHover(idx);
                     return;
-                }
+                }}
                 const ghost = e.target.closest('.cb-pick-ghost[data-pick-idx]');
-                if (ghost && ourGhost(ghost)) {
+                if (ghost && ourGhost(ghost)) {{
                     const idx = ghost.getAttribute('data-pick-idx');
                     clearActive();
                     placeMarkers(idx);
                     setGhostActive(idx, true);
                     setTileHighlight(idx, true, true);
                     fillHover(idx);
-                }
-            });
-            root.addEventListener('mouseout', function(e) {
+                }}
+            }});
+            root.addEventListener('mouseout', function(e) {{
                 if (!e.target.closest) return;
                 const leaving = e.target.closest('.cb-gallery-tile[data-pick-idx]') ||
                     e.target.closest('.cb-pick-ghost[data-pick-idx]');
@@ -5885,30 +5899,25 @@ def _render_gallery_body(
                 // Only tear down when the pointer leaves our interactive area
                 // entirely; tile→tile / tile→ghost moves are handled by the next
                 // mouseover's clearActive().
-                if (!isOurs(e.relatedTarget)) {
+                if (!isOurs(e.relatedTarget)) {{
                     clearActive();
                     hideMarkers();
                     fillHover(null);
-                }
-            });
+                }}
+            }});
             // Ghost-dot click → toggle keep/drop for that pick (same as a tile).
             // Dispatched as a CustomEvent on our grid so the NiceGUI handler bound
             // to grid_container picks it up (scoped to the gallery, auto-cleaned).
-            root.addEventListener('click', function(e) {
+            root.addEventListener('click', function(e) {{
                 if (!e.target.closest) return;
                 const ghost = e.target.closest('.cb-pick-ghost[data-pick-idx]');
                 if (!ghost || !ourGhost(ghost)) return;
                 const grid = getGrid();
                 if (grid) grid.dispatchEvent(new CustomEvent('cbpicktoggle',
-                    {detail: {idx: ghost.getAttribute('data-pick-idx')}}));
-            });
-        }, 80);
-        """ % {
-            "gallery_id": json.dumps(gallery_id),
-            "slices": json.dumps(slices),
-            "meta": json.dumps(pick_meta),
-            "card_id": json.dumps(hover_card_id),
-        }
+                    {{detail: {{idx: ghost.getAttribute('data-pick-idx')}}}}));
+            }});
+        }}, 80);
+        """
         ui.run_javascript(bridge_js)
 
 
@@ -5972,7 +5981,7 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict) -> Non
                 xz_plot.on("plotly_hover", on_hover, throttle=0.08)
 
 
-def _build_pick_meta_for_js(picks: list, pixel_size_ang: Optional[float]) -> dict:
+def _build_pick_meta_for_js(picks: list, pixel_size_ang: float | None) -> dict:
     """Pre-compute per-pick formatted strings for the JS-driven hover card.
 
     Mirrors `_update_hover_card`'s formatting verbatim so the visual output

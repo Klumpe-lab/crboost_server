@@ -2,7 +2,7 @@ from __future__ import annotations
 import logging
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar, Dict, List, Optional, Self, Set, Tuple, TYPE_CHECKING
+from typing import Any, ClassVar, Self, TYPE_CHECKING
 from pydantic import BaseModel, Field
 import pandas as pd
 
@@ -31,7 +31,7 @@ class SymmetryGroup(str, Enum):
     D5 = "D5"
     D6 = "D6"
     T = "T"
-    O = "O"
+    O = "O"  # noqa: E741 -- octahedral symmetry group, canonical name
     I1 = "I1"
     I2 = "I2"
 
@@ -41,7 +41,7 @@ class TemplateWorkbenchState(BaseModel):
     box_size: int = 96
     auto_box: bool = True
     apply_lowpass: bool = False
-    template_resolution: Optional[float] = None
+    template_resolution: float | None = None
     basic_shape_def: str = "550:550:550"
     auto_infer_seed: bool = True
 
@@ -62,9 +62,9 @@ class AbstractJobParams(BaseModel):
     # Human-readable label shown in the UI roster and tab strip.
     # Backend code (orchestrator, path resolution, drivers) never reads this.
     # Set by the user or auto-generated; purely cosmetic.
-    display_label: Optional[str] = None
+    display_label: str | None = None
 
-    species_id: Optional[str] = None
+    species_id: str | None = None
     JOB_CATEGORY: ClassVar[JobCategory]
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"  # Override for native jobs
     IS_TOMO_JOB: ClassVar[bool] = True
@@ -100,32 +100,32 @@ class AbstractJobParams(BaseModel):
     # which is safe but means edits won't auto-persist -- you'll notice
     # quickly in testing.
     # ------------------------------------------------------------------
-    USER_PARAMS: ClassVar[Set[str]] = set()
+    USER_PARAMS: ClassVar[set[str]] = set()
 
     # Job execution metadata only
     execution_status: JobStatus = Field(default=JobStatus.SCHEDULED)
-    relion_job_name: Optional[str] = None
-    relion_job_number: Optional[int] = None
-    slurm_job_id: Optional[str] = None  # set when sbatch accepts the job
+    relion_job_name: str | None = None
+    relion_job_number: int | None = None
+    slurm_job_id: str | None = None  # set when sbatch accepts the job
 
     is_orphaned: bool = Field(default=False)
-    missing_inputs: List[str] = Field(default_factory=list)
+    missing_inputs: list[str] = Field(default_factory=list)
 
     # We store the resolved paths and binds here to persist them in project_params.json
-    paths: Dict[str, str] = Field(default_factory=dict)
-    additional_binds: List[str] = Field(default_factory=list)
-    slurm_overrides: Dict[str, Any] = Field(default_factory=dict)
+    paths: dict[str, str] = Field(default_factory=dict)
+    additional_binds: list[str] = Field(default_factory=list)
+    slurm_overrides: dict[str, Any] = Field(default_factory=dict)
 
     # User overrides for input slot sources
     # Maps input_slot_key -> source specification
     # Format: "jobtype:instance_path" e.g. "tsReconstruct:External/job005"
     #         or "manual:/absolute/path/to/file.star"
-    source_overrides: Dict[str, str] = Field(default_factory=dict)
+    source_overrides: dict[str, str] = Field(default_factory=dict)
     # After the ClassVar declarations, before execution_status:
-    job_type: Optional[JobType] = None
+    job_type: JobType | None = None
 
     # This is now a private attribute, not a Pydantic model field.
-    _project_state: Optional["ProjectState"] = None
+    _project_state: ProjectState | None = None
 
     def get_effective_slurm_config(self) -> SlurmConfig:
         """
@@ -242,7 +242,7 @@ class AbstractJobParams(BaseModel):
         }
 
         # 2. Build options list
-        options: List[Tuple[str, str]] = []
+        options: list[tuple[str, str]] = []
 
         if self.RELION_JOB_TYPE == "relion.external":
             options.append(("fn_exe", fn_exe))
@@ -284,7 +284,7 @@ class AbstractJobParams(BaseModel):
 
         logger.info("Generated %s", star_path)
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         """
         Override in subclasses to provide job-specific joboptions.
         Default: single input as in_mic.
@@ -292,7 +292,7 @@ class AbstractJobParams(BaseModel):
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
 
-    def _get_queue_options(self) -> List[Tuple[str, str]]:
+    def _get_queue_options(self) -> list[tuple[str, str]]:
         """Generate SLURM/queue options using paramN_value slots."""
         slurm = self.get_effective_slurm_config()
 
@@ -357,7 +357,7 @@ class AbstractJobParams(BaseModel):
         return self.acquisition.eer_fractions_per_frame or 32
 
     @property
-    def gain_path(self) -> Optional[str]:
+    def gain_path(self) -> str | None:
         return self.acquisition.gain_reference_path
 
     @property
@@ -445,21 +445,21 @@ class AbstractJobParams(BaseModel):
         return self.execution_status == JobStatus.RUNNING
 
     @staticmethod
-    def get_output_assets(job_dir: Path) -> Dict[str, Path]:
+    def get_output_assets(job_dir: Path) -> dict[str, Path]:
         raise NotImplementedError("Subclass must implement get_output_assets()")
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {}
 
     @staticmethod
     def get_input_assets(
-        job_dir: Path, project_root: Path, upstream_outputs: Dict[str, Dict[str, Path]]
-    ) -> Dict[str, Path]:
+        job_dir: Path, project_root: Path, upstream_outputs: dict[str, dict[str, Path]]
+    ) -> dict[str, Path]:
         return {"job_dir": job_dir, "project_root": project_root}
 
     @classmethod
-    def from_job_star(cls, star_path: Path) -> Optional[Self]:
+    def from_job_star(cls, star_path: Path) -> Self | None:
         return None  # Default implementation
 
     def is_driver_job(self) -> bool:

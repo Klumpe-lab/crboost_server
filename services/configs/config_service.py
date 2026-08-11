@@ -17,7 +17,7 @@ import shutil
 import yaml
 from pathlib import Path
 from pydantic import BaseModel, Field
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def _deep_diff(base: dict, new: dict) -> dict:
     return diff
 
 
-def check_path_exists(path: Optional[str]) -> bool:
+def check_path_exists(path: str | None) -> bool:
     """True if a tool path resolves. Absolute paths are stat'd; a bare command
     name (e.g. ``pymol``) is looked up on PATH."""
     if not path or not str(path).strip():
@@ -132,14 +132,14 @@ class JobResourceProfile(BaseModel):
     Keys in conf.yaml must match JobType.value strings.
     """
 
-    partition: Optional[str] = None
-    constraint: Optional[str] = None
-    nodes: Optional[int] = None
-    ntasks_per_node: Optional[int] = None
-    cpus_per_task: Optional[int] = None
-    gres: Optional[str] = None
-    mem: Optional[str] = None
-    time: Optional[str] = None
+    partition: str | None = None
+    constraint: str | None = None
+    nodes: int | None = None
+    ntasks_per_node: int | None = None
+    cpus_per_task: int | None = None
+    gres: str | None = None
+    mem: str | None = None
+    time: str | None = None
 
 
 # Backward compat alias
@@ -147,17 +147,17 @@ TsReconstructSupervisorSlurmConfig = SupervisorSlurmConfig
 
 
 class LocalConfig(BaseModel):
-    DefaultProjectBase: Optional[str] = None
-    DefaultMoviesGlob: Optional[str] = None
-    DefaultMdocsGlob: Optional[str] = None
+    DefaultProjectBase: str | None = None
+    DefaultMoviesGlob: str | None = None
+    DefaultMdocsGlob: str | None = None
 
 
 class ToolConfig(BaseModel):
     """Configuration for a specific external tool"""
 
     exec_mode: Literal["container", "binary"] = "container"
-    container_path: Optional[str] = None
-    bin_path: Optional[str] = None
+    container_path: str | None = None
+    bin_path: str | None = None
 
 
 class ProcessingDefaultsConfig(BaseModel):
@@ -173,16 +173,16 @@ class CurationConfig(BaseModel):
     the headnode the user already SSHes into to reach the crboost UI.
     """
 
-    sif_path: Optional[str] = None
+    sif_path: str | None = None
     partition: str = "c"  # CPU partition; software GL is enough for slice-based picking
-    gres: Optional[str] = None  # SLURM --gres, e.g. "gpu:1" on partition 'g'; None on CPU partitions
+    gres: str | None = None  # SLURM --gres, e.g. "gpu:1" on partition 'g'; None on CPU partitions
     vgl: bool = False  # render ChimeraX via VirtualGL (vglrun -d egl) on the GPU — needs the _GL.sif + gres
     cpus: int = 4
     mem: str = "16G"
     time: str = "08:00:00"  # must be <= the partition QOS MaxWall (0/unlimited is rejected by QOS)
     geometry: str = "1920x1080"
     chimerax_bin: str = "chimerax"
-    login_host: Optional[str] = None
+    login_host: str | None = None
     # Drive a running ChimeraX from crboost over its REST server (the worker starts
     # `remotecontrol rest` on the node's loopback; crboost POSTs via `ssh <node> curl`).
     # Enables the one-click "Load into running session" swap; off → copy-paste only.
@@ -193,17 +193,17 @@ class Config(BaseModel):
     """Root configuration model"""
 
     crboost_root: str = Field(default_factory=lambda: str(_REPO_ROOT))
-    venv_path: Optional[str] = None
+    venv_path: str | None = None
     local: LocalConfig = Field(default_factory=LocalConfig)
     slurm_defaults: SlurmDefaultsConfig = Field(default_factory=SlurmDefaultsConfig)
     # Accepts both new key "supervisor_slurm" and legacy "tsreconstruct_supervisor_slurm"
     supervisor_slurm: SupervisorSlurmConfig = Field(default_factory=SupervisorSlurmConfig)
-    tsreconstruct_supervisor_slurm: Optional[SupervisorSlurmConfig] = None
-    job_resource_profiles: Dict[str, JobResourceProfile] = Field(default_factory=dict)
+    tsreconstruct_supervisor_slurm: SupervisorSlurmConfig | None = None
+    job_resource_profiles: dict[str, JobResourceProfile] = Field(default_factory=dict)
     processing_defaults: ProcessingDefaultsConfig = Field(default_factory=ProcessingDefaultsConfig)
     curation: CurationConfig = Field(default_factory=CurationConfig)
-    tools: Dict[str, ToolConfig] = Field(default_factory=dict)
-    containers: Optional[Dict[str, str]] = None
+    tools: dict[str, ToolConfig] = Field(default_factory=dict)
+    containers: dict[str, str] | None = None
     # DEV TOGGLE (temporary): global override so every project uses the afterok orchestrator
     # (schemer-free submit + inline import) without per-project project_params.json edits. A
     # per-project `use_afterok_orchestrator: true` still wins on its own. Remove once validated.
@@ -216,7 +216,7 @@ class Config(BaseModel):
 class ConfigService:
     """Loads and provides access to static configuration"""
 
-    def __init__(self, config_path: Path = None):
+    def __init__(self, config_path: Path | None = None):
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
         self._default_path = config_path
@@ -230,7 +230,7 @@ class ConfigService:
                 f"Run 'python preflight.py' to create one from the template."
             )
 
-        with open(config_path, "r") as f:
+        with open(config_path) as f:
             base_data = yaml.safe_load(f) or {}
         self._base_data: dict = base_data
 
@@ -238,7 +238,7 @@ class ConfigService:
         override: dict = {}
         if self._override_path.exists():
             try:
-                with open(self._override_path, "r") as f:
+                with open(self._override_path) as f:
                     override = yaml.safe_load(f) or {}
                 if not isinstance(override, dict):
                     logger.warning("User config override at %s is not a mapping — ignoring", self._override_path)
@@ -274,13 +274,13 @@ class ConfigService:
         return self._config.curation
 
     @property
-    def venv_path(self) -> Optional[Path]:
+    def venv_path(self) -> Path | None:
         if self._config.venv_path:
             return Path(self._config.venv_path)
         return None
 
     @property
-    def venv_python(self) -> Optional[Path]:
+    def venv_python(self) -> Path | None:
         if self.venv_path:
             return self.venv_path / "bin" / "python3"
         return None
@@ -299,14 +299,14 @@ class ConfigService:
         return self.supervisor_slurm_defaults
 
     @property
-    def default_project_base(self) -> Optional[str]:
+    def default_project_base(self) -> str | None:
         return self._config.local.DefaultProjectBase
 
     @property
-    def default_data_globs(self) -> tuple[Optional[str], Optional[str]]:
+    def default_data_globs(self) -> tuple[str | None, str | None]:
         return (self._config.local.DefaultMoviesGlob, self._config.local.DefaultMdocsGlob)
 
-    def get_job_resource_profile(self, job_type_value: str) -> Optional[JobResourceProfile]:
+    def get_job_resource_profile(self, job_type_value: str) -> JobResourceProfile | None:
         """Return the resource profile for a job type, or None if not configured."""
         return self._config.job_resource_profiles.get(job_type_value)
 
@@ -330,7 +330,7 @@ class ConfigService:
 
         return ToolConfig(exec_mode="binary", bin_path=tool_name)
 
-    def get_tool_path(self, tool_name: str) -> Optional[str]:
+    def get_tool_path(self, tool_name: str) -> str | None:
         config = self.get_tool_config(tool_name)
         if config.exec_mode == "container":
             return config.container_path
@@ -388,11 +388,11 @@ class ConfigService:
             logger.info("Reverted to server defaults — removed %s", self._override_path)
         reset_config_service()
 
-    def container_status(self) -> Dict[str, Any]:
+    def container_status(self) -> dict[str, Any]:
         """Existence check for every configured tool path. Powers the landing
         status dot (green when all resolve, amber otherwise) and the per-row
         markers in the settings panel."""
-        tools: List[Dict[str, Any]] = []
+        tools: list[dict[str, Any]] = []
         for name, tc in self._config.tools.items():
             path = tc.container_path if tc.exec_mode == "container" else tc.bin_path
             tools.append(
@@ -403,7 +403,7 @@ class ConfigService:
         return {"all_ok": n_ok == len(tools) and len(tools) > 0, "n_ok": n_ok, "n_total": len(tools), "tools": tools}
 
 
-_config_service_instance: Optional[ConfigService] = None
+_config_service_instance: ConfigService | None = None
 
 
 def get_config_service() -> ConfigService:

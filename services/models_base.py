@@ -1,8 +1,7 @@
 # services/models_base.py
 from __future__ import annotations
 from enum import Enum
-from typing import Tuple, Optional
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class JobStatus(str, Enum):
@@ -91,12 +90,12 @@ class JobType(str, Enum):
     MERGED_SOURCES = "mergedSources"
 
     @classmethod
-    def from_string(cls, value: str) -> "JobType":
+    def from_string(cls, value: str) -> JobType:
         try:
             return cls(value)
         except ValueError:
             valid = [e.value for e in cls]
-            raise ValueError(f"Unknown job type '{value}'. Valid types: {valid}")
+            raise ValueError(f"Unknown job type '{value}'. Valid types: {valid}") from None
 
 
 class PickListType(str, Enum):
@@ -137,16 +136,16 @@ class MicroscopeParams(BaseModel):
 class AcquisitionParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
     dose_per_tilt: float = Field(default=3.0, ge=0.1, le=9.0)
-    detector_dimensions: Tuple[int, int] = (4096, 4096)
+    detector_dimensions: tuple[int, int] = (4096, 4096)
     tilt_axis_degrees: float = Field(default=-95.0, ge=-180.0, le=180.0)
-    eer_fractions_per_frame: Optional[int] = Field(default=None, ge=1, le=100)
+    eer_fractions_per_frame: int | None = Field(default=None, ge=1, le=100)
     sample_thickness_nm: float = Field(default=300.0, ge=50.0, le=2000.0)
-    gain_reference_path: Optional[str] = None
+    gain_reference_path: str | None = None
     invert_tilt_angles: bool = False
     invert_defocus_hand: bool = True
     acquisition_software: str = Field(default="SerialEM")
-    nominal_magnification: Optional[int] = None
-    spot_size: Optional[int] = None
-    camera_name: Optional[str] = None
-    binning: Optional[int] = Field(default=1, ge=1)
-    frame_dose: Optional[float] = None
+    nominal_magnification: int | None = None
+    spot_size: int | None = None
+    camera_name: str | None = None
+    binning: int | None = Field(default=1, ge=1)
+    frame_dose: float | None = None

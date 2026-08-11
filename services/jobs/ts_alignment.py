@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Set, Tuple
+from typing import ClassVar
 
 from pydantic import Field
 
@@ -15,7 +15,7 @@ class TsAlignmentParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS: ClassVar[Set[str]] = {
+    USER_PARAMS: ClassVar[set[str]] = {
         "alignment_method",
         "rescale_angpixs",
         "tomo_dimensions",
@@ -31,7 +31,7 @@ class TsAlignmentParams(AbstractJobParams):
         "array_throttle",
     }
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf"),
         # Prefer the tilt-filter's trimmed tomostar when that (optional) job is in
         # the pipeline; otherwise the sole TOMOSTAR_DIR producer is tsImport, so the
@@ -41,7 +41,7 @@ class TsAlignmentParams(AbstractJobParams):
             key="warp_tiltseries_settings", accepts=[JobFileType.WARP_TILTSERIES_SETTINGS], preferred_source="tsImport"
         ),
     ]
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(
             key="output_star", produces=JobFileType.ALIGNED_TILT_SERIES_STAR, path_template="aligned_tilt_series.star"
         ),
@@ -74,11 +74,11 @@ class TsAlignmentParams(AbstractJobParams):
         default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series alignment"
     )
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
 
-    def _get_queue_options(self) -> List[Tuple[str, str]]:
+    def _get_queue_options(self) -> list[tuple[str, str]]:
         """
         Override: alignment supervisor is a lightweight CPU-only job.
         The user-facing slurm config describes PER-TASK resources for the array.
@@ -102,5 +102,5 @@ class TsAlignmentParams(AbstractJobParams):
         return "warptools"
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"ts_import": "tsImport"}

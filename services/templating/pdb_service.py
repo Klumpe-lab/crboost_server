@@ -2,11 +2,9 @@ import os
 import json
 import asyncio
 import logging
-import subprocess
 from pathlib import Path
 import textwrap
-from typing import Dict, Any, Optional
-from Bio.PDB import MMCIFParser, MMCIFIO
+from typing import Any
 from services.computing.container_service import get_container_service
 from services.templating.template_service import normalize_white_and_negate_to_black
 
@@ -44,8 +42,8 @@ class PDBService:
     # =========================================================================
 
     async def _run_pymol_script(
-        self, script_content: str, output_dir: Path, additional_binds: list = None
-    ) -> Dict[str, Any]:
+        self, script_content: str, output_dir: Path, additional_binds: list | None = None
+    ) -> dict[str, Any]:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -92,7 +90,7 @@ class PDBService:
     # STRUCTURE METADATA
     # =========================================================================
 
-    async def get_structure_metadata(self, pdb_path: str) -> Dict[str, Any]:
+    async def get_structure_metadata(self, pdb_path: str) -> dict[str, Any]:
         """Extract metadata using PyMOL."""
         pdb_path = str(Path(pdb_path).resolve())
 
@@ -147,7 +145,7 @@ except Exception as e:
     # ALIGNMENT
     # =========================================================================
 
-    async def align_to_principal_axes(self, input_path: str, output_path: str) -> Dict[str, Any]:
+    async def align_to_principal_axes(self, input_path: str, output_path: str) -> dict[str, Any]:
         """Align structure using PyMOL."""
         input_path = str(Path(input_path).resolve())
         output_path = str(Path(output_path).resolve())
@@ -223,14 +221,14 @@ except Exception as e:
         target_apix: float,
         target_box: int,
         resolution: float = 10.0,
-        sim_apix: Optional[float] = None,
-        sim_box: Optional[int] = None,
+        sim_apix: float | None = None,
+        sim_box: int | None = None,
         mod_scale_bf: float = 1.0,
         mod_bf: float = 0.0,
         oversample: int = 2,
         num_frames: int = 7,
         num_threads: int = 25,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Simulate density map from PDB using CISTEM."""
         try:
             # CHECK: Ensure cistem is configured (binary or container)
@@ -307,7 +305,7 @@ except Exception as e:
         except Exception as e:
             import traceback
 
-            error_detail = f"Simulation error: {str(e)}\n{traceback.format_exc()}"
+            error_detail = f"Simulation error: {e!s}\n{traceback.format_exc()}"
             logger.error("✗ %s", error_detail)
             return {"success": False, "error": error_detail}
 
@@ -323,7 +321,7 @@ except Exception as e:
         oversample: int,
         num_frames: int,
         num_threads: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Prepare structure with PyMOL then run CISTEM.
         Uses absolute paths throughout - cisTEM supports this natively.
@@ -478,7 +476,7 @@ except Exception as e:
                     process.communicate(input=stdin_input.encode("utf-8")),
                     timeout=600,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.wait()
                 return {"success": False, "error": "cisTEM timeout (>600s)"}
@@ -489,7 +487,7 @@ except Exception as e:
             logger.info("✓ cisTEM completed (exit code: %s)", process.returncode)
 
             if stdout:
-                lines = [l for l in stdout.strip().split("\n") if l.strip()]
+                lines = [ln for ln in stdout.strip().split("\n") if ln.strip()]
                 if len(lines) > 30:
                     logger.info("Output (last 15 lines):")
                     for line in lines[-15:]:
@@ -543,7 +541,7 @@ except Exception as e:
         except Exception as e:
             import traceback
 
-            error = f"cisTEM execution error: {str(e)}\n{traceback.format_exc()}"
+            error = f"cisTEM execution error: {e!s}\n{traceback.format_exc()}"
             return {"success": False, "error": error}
 
 
@@ -556,7 +554,7 @@ except Exception as e:
         target_apix: float,
         target_box: int,
         resolution: float,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Process CISTEM output with Relion."""
         try:
             logger.info("Step 3/3: Template Finalization (Relion)")
@@ -602,4 +600,4 @@ except Exception as e:
         except Exception as e:
             import traceback
 
-            return {"success": False, "error": f"Processing error: {str(e)}\n{traceback.format_exc()}"}
+            return {"success": False, "error": f"Processing error: {e!s}\n{traceback.format_exc()}"}

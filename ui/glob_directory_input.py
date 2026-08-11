@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -18,7 +18,7 @@ class GlobDirectoryInput:
         self,
         extension: str,
         initial_glob: str = "",
-        on_change: Optional[Callable[[str], None]] = None,
+        on_change: Callable[[str], None] | None = None,
         placeholder: str = "",
     ) -> None:
         self.extension = extension

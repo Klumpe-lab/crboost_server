@@ -1,7 +1,7 @@
 import shutil
 import logging
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Any
 import os
 import glob
 import asyncio
@@ -35,8 +35,8 @@ class DataImportService:
         movies_glob: str,
         mdocs_glob: str,
         import_prefix: str,
-        selected_mdoc_paths: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        selected_mdoc_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Synchronous core of data import — runs in thread pool to avoid blocking the event loop."""
         try:
             frames_dir = project_dir / "frames"
@@ -97,8 +97,8 @@ class DataImportService:
         movies_glob: str,
         mdocs_glob: str,
         import_prefix: str,
-        selected_mdoc_paths: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        selected_mdoc_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Async wrapper — offloads blocking file I/O to a thread."""
         return await asyncio.to_thread(
             self._setup_project_data_sync, project_dir, movies_glob, mdocs_glob, import_prefix, selected_mdoc_paths
@@ -111,10 +111,10 @@ class ProjectService:
         self.backend = backend_instance
         self.data_importer = DataImportService()
         self.star_handler = StarfileService()
-        self.project_root: Optional[Path] = None
+        self.project_root: Path | None = None
         self.state_service = get_state_service()
 
-    async def delete_job(self, job_name: str, instance_id: Optional[str] = None) -> Dict[str, Any]:
+    async def delete_job(self, job_name: str, instance_id: str | None = None) -> dict[str, Any]:
         try:
             job_type = JobType(job_name)
             state = self.backend.state_service.state
@@ -229,7 +229,7 @@ class ProjectService:
         category = param_class.JOB_CATEGORY
         return self.project_root / category.value / f"job{job_number:03d}"
 
-    def resolve_job_paths(self, job_name: str, job_number: int, selected_jobs: List[str]) -> Dict[str, Path]:
+    def resolve_job_paths(self, job_name: str, job_number: int, selected_jobs: list[str]) -> dict[str, Path]:
         if not self.project_root:
             raise ValueError("Project root not set")
 
@@ -244,12 +244,12 @@ class ProjectService:
         upstream_outputs = {}
         input_requirements = param_class.get_input_requirements()
 
-        for logical_name, upstream_job_type_str in input_requirements.items():
+        for _logical_name, upstream_job_type_str in input_requirements.items():
             try:
                 upstream_idx = selected_jobs.index(upstream_job_type_str)
                 upstream_job_num = upstream_idx + 1
             except ValueError:
-                raise ValueError(f"{job_name} requires {upstream_job_type_str} but it's not in selected jobs")
+                raise ValueError(f"{job_name} requires {upstream_job_type_str} but it's not in selected jobs") from None
 
             upstream_job_type = JobType.from_string(upstream_job_type_str)
             upstream_param_class = param_classes.get(upstream_job_type)
@@ -271,8 +271,8 @@ class ProjectService:
         movies_glob: str,
         mdocs_glob: str,
         import_prefix: str,
-        selected_mdoc_paths: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        selected_mdoc_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Creates the project directory structure and imports the raw data."""
         try:
             project_dir.mkdir(parents=True, exist_ok=True)
@@ -291,7 +291,7 @@ class ProjectService:
 
             return {"success": True, "message": "Project directory structure created and data imported."}
         except Exception as e:
-            return {"success": False, "error": f"Failed during directory setup: {str(e)}"}
+            return {"success": False, "error": f"Failed during directory setup: {e!s}"}
 
     async def _setup_qsub_templates(self, project_dir: Path):
         """Copy qsub.sh to project root for relion_schemer to find."""
@@ -365,12 +365,12 @@ class ProjectService:
         self,
         project_name: str,
         project_base_path: str,
-        selected_jobs: List[str],
+        selected_jobs: list[str],
         movies_glob: str,
         mdocs_glob: str,
-        selected_mdoc_paths: Optional[List[str]] = None,
-        import_summary: Optional[Dict[str, Any]] = None,
-        detected_params: Optional[Dict[str, Any]] = None,
+        selected_mdoc_paths: list[str] | None = None,
+        import_summary: dict[str, Any] | None = None,
+        detected_params: dict[str, Any] | None = None,
         is_aggregation: bool = False,
         shared: bool = False,
     ):
@@ -526,7 +526,7 @@ class ProjectService:
             traceback.print_exc()
             return {"success": False, "error": str(e)}
 
-    async def load_project_state(self, project_path: str) -> Dict[str, Any]:
+    async def load_project_state(self, project_path: str) -> dict[str, Any]:
         """
         Loads a project using the new StateService.
         """
@@ -543,7 +543,7 @@ class ProjectService:
             movies_glob = ""
             mdocs_glob = ""
             try:
-                with open(params_file, "r") as f:
+                with open(params_file) as f:
                     raw_params_data = json.load(f)
 
                 data_sources = raw_params_data.get("data_sources", {})

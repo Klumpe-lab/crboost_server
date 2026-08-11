@@ -19,7 +19,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Literal
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class MrcInspection:
     nx: int
     ny: int
     nz: int
-    apix_ang: Optional[float]
+    apix_ang: float | None
     is_cube: bool
     box_px: int  # min(nx, ny, nz) -- conservative box
 
@@ -72,12 +72,12 @@ class MrcInspection:
 
     # Free-text labels from the MRC header (10 slots × 80 chars). Some tools
     # write provenance here ("RELION 16-Apr-2024", "PDB:6Z6J generated...").
-    labels: List[str] = field(default_factory=list)
+    labels: list[str] = field(default_factory=list)
 
     # Best-effort regex pulls from labels. None = no match.
-    inferred_pdb_id: Optional[str] = None
-    inferred_emdb_id: Optional[str] = None
-    inferred_tool: Optional[str] = None  # "relion", "pytom", "warptools", "chimera", "imod"
+    inferred_pdb_id: str | None = None
+    inferred_emdb_id: str | None = None
+    inferred_tool: str | None = None  # "relion", "pytom", "warptools", "chimera", "imod"
 
 
 _MRC_MODE_NAMES = {
@@ -92,7 +92,7 @@ _MRC_MODE_NAMES = {
 }
 
 
-def inspect_mrc_for_import(path: str) -> Optional[MrcInspection]:
+def inspect_mrc_for_import(path: str) -> MrcInspection | None:
     """Open an .mrc, read header + volume, run heuristics, return inspection.
 
     Returns None if the file doesn't exist or can't be opened. Logs a
@@ -210,10 +210,10 @@ def _infer_mask_likeness(volume, vmin: float, vmax: float) -> tuple[bool, float]
     return bimodal > 0.85, float(min(1.0, bimodal))
 
 
-def _read_labels(header) -> List[str]:
+def _read_labels(header) -> list[str]:
     """Pull the 10 80-char label slots from an MRC header. Returns the
     non-empty ones with leading/trailing whitespace stripped."""
-    labels: List[str] = []
+    labels: list[str] = []
     nlabl = int(getattr(header, "nlabl", 0) or 0)
     label_field = getattr(header, "label", None)
     if label_field is None:
@@ -262,20 +262,20 @@ class MaskIntrinsics:
     nx: int
     ny: int
     nz: int
-    apix_ang: Optional[float]
+    apix_ang: float | None
 
     # Equivalent-sphere diameter (Å) from the count of voxels > 0.5*dmax.
     # The "0.5 contour" is what PyTOM treats as the effective mask boundary
     # — independent of any soft edge in the mask file.
-    diameter_ang_at_half_max: Optional[float]
+    diameter_ang_at_half_max: float | None
 
     # Per-axis spatial std of the binarized (>0.5*max) volume. Isotropy is
     # min/max of these stds — 1.0 = perfectly spherical, <0.95 = clearly
     # elongated.
-    sigma_x_vox: Optional[float]
-    sigma_y_vox: Optional[float]
-    sigma_z_vox: Optional[float]
-    isotropy_ratio: Optional[float]
+    sigma_x_vox: float | None
+    sigma_y_vox: float | None
+    sigma_z_vox: float | None
+    isotropy_ratio: float | None
 
     # Center-of-mass offset (voxels) from the geometric box center.
     # >0.5 voxel = template not centered (TM uses the box center as the
@@ -292,7 +292,7 @@ class MaskIntrinsics:
 _MASK_INTRINSICS_CACHE: dict[tuple[str, int], MaskIntrinsics] = {}
 
 
-def inspect_mask_intrinsics(mask_path: str) -> Optional[MaskIntrinsics]:
+def inspect_mask_intrinsics(mask_path: str) -> MaskIntrinsics | None:
     """One-pass mask measurement. Mtime-keyed cache so repeated dashboard
     renders don't re-open the file. Returns None on missing/unreadable file."""
     if not mask_path:
@@ -386,7 +386,7 @@ def inspect_mask_intrinsics(mask_path: str) -> Optional[MaskIntrinsics]:
         return None
 
 
-def _infer_provenance(labels: List[str]) -> tuple[Optional[str], Optional[str], Optional[str]]:
+def _infer_provenance(labels: list[str]) -> tuple[str | None, str | None, str | None]:
     """Best-effort regex over concatenated header labels. Looks for PDB id,
     EMDB id, and a tool name. Each is independently optional."""
     if not labels:
@@ -397,7 +397,7 @@ def _infer_provenance(labels: List[str]) -> tuple[Optional[str], Optional[str], 
     pdb_id = pdb_match.group(1).upper() if pdb_match else None
     emdb_id = emdb_match.group(1) if emdb_match else None
     lower = text.lower()
-    tool: Optional[str] = None
+    tool: str | None = None
     for keyword, name in _TOOL_KEYWORDS:
         if keyword in lower:
             tool = name

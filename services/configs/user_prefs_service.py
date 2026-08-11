@@ -9,7 +9,7 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Any
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ class RecentPath(BaseModel):
 
     path: str
     last_used: datetime = Field(default_factory=datetime.now)
-    label: Optional[str] = None
+    label: str | None = None
 
 
 # Keep old name as alias for backward compat with stored prefs
@@ -36,19 +36,19 @@ class UserPreferences(BaseModel):
     movies_glob: str = ""
     mdocs_glob: str = ""
     show_only_mine: bool = True
-    recent_project_roots: List[RecentPath] = Field(default_factory=list)
-    recent_data_paths: List[RecentPath] = Field(default_factory=list)
+    recent_project_roots: list[RecentPath] = Field(default_factory=list)
+    recent_data_paths: list[RecentPath] = Field(default_factory=list)
 
     # Journey dashboard prefs (R2/R3) — user-level, persist across projects + TS.
     # Hidden (not visible) panel keys; absence ⇒ visible, so panels added later
     # default to shown. Dataset section starts collapsed (header + metrics only).
-    dashboard_hidden_panels: List[str] = Field(default_factory=list)
+    dashboard_hidden_panels: list[str] = Field(default_factory=list)
     dashboard_dataset_collapsed: bool = True
 
     # --- shared helpers for both MRU lists ---
 
     @staticmethod
-    def _add_to_mru(mru: List[RecentPath], path: str, label: Optional[str] = None, require_exists: bool = True) -> bool:
+    def _add_to_mru(mru: list[RecentPath], path: str, label: str | None = None, require_exists: bool = True) -> bool:
         if not path or not path.strip():
             return False
         try:
@@ -65,18 +65,18 @@ class UserPreferences(BaseModel):
         return True
 
     @staticmethod
-    def _remove_from_mru(mru: List[RecentPath], path: str):
+    def _remove_from_mru(mru: list[RecentPath], path: str):
         mru[:] = [r for r in mru if r.path != path]
 
     @staticmethod
-    def _prune_mru(mru: List[RecentPath]) -> int:
+    def _prune_mru(mru: list[RecentPath]) -> int:
         before = len(mru)
         mru[:] = [r for r in mru if Path(r.path).exists() and Path(r.path).is_dir()]
         return before - len(mru)
 
     # --- project roots ---
 
-    def add_recent_root(self, path: str, label: Optional[str] = None) -> bool:
+    def add_recent_root(self, path: str, label: str | None = None) -> bool:
         return self._add_to_mru(self.recent_project_roots, path, label)
 
     def remove_recent_root(self, path: str):
@@ -90,7 +90,7 @@ class UserPreferences(BaseModel):
 
     # --- data paths (raw frames / mdocs directories) ---
 
-    def add_recent_data_path(self, path: str, label: Optional[str] = None) -> bool:
+    def add_recent_data_path(self, path: str, label: str | None = None) -> bool:
         return self._add_to_mru(self.recent_data_paths, path, label)
 
     def remove_recent_data_path(self, path: str):
@@ -113,13 +113,13 @@ class UserPrefsService:
     STORAGE_KEY = "crboost_user_prefs"
 
     def __init__(self):
-        self._prefs: Optional[UserPreferences] = None
+        self._prefs: UserPreferences | None = None
         self._file_path = Path.home() / ".crboost" / "prefs.json"
 
     def _ensure_crboost_dir(self):
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def load_from_app_storage(self, storage: Dict[str, Any]) -> UserPreferences:
+    def load_from_app_storage(self, storage: dict[str, Any]) -> UserPreferences:
         """Load preferences from NiceGUI's app.storage.user"""
         raw = storage.get(self.STORAGE_KEY)
         if raw:
@@ -140,13 +140,13 @@ class UserPrefsService:
             self._prefs.prune_invalid_roots()
         return self._prefs
 
-    def save_to_app_storage(self, storage: Dict[str, Any]):
+    def save_to_app_storage(self, storage: dict[str, Any]):
         """Save preferences to NiceGUI's app.storage.user"""
         if self._prefs:
             storage[self.STORAGE_KEY] = self._prefs.model_dump(mode="json")
             self._save_to_file()
 
-    def clear_all(self, storage: Dict[str, Any]):
+    def clear_all(self, storage: dict[str, Any]):
         """Nuclear option: clear all prefs from both storages"""
         self._prefs = UserPreferences()
         storage[self.STORAGE_KEY] = {}
@@ -154,7 +154,7 @@ class UserPrefsService:
             self._file_path.unlink()
         logger.info("All preferences cleared")
 
-    def _load_from_file(self) -> Optional[UserPreferences]:
+    def _load_from_file(self) -> UserPreferences | None:
         """Load from ~/.crboost/prefs.json"""
         if not self._file_path.exists():
             return None
@@ -185,9 +185,9 @@ class UserPrefsService:
 
     def update_fields(
         self,
-        project_base_path: Optional[str] = None,
-        movies_glob: Optional[str] = None,
-        mdocs_glob: Optional[str] = None,
+        project_base_path: str | None = None,
+        movies_glob: str | None = None,
+        mdocs_glob: str | None = None,
     ):
         """Update basic preference fields (NOT recent_roots)"""
         if project_base_path is not None:
@@ -198,7 +198,7 @@ class UserPrefsService:
             self._prefs.mdocs_glob = mdocs_glob
 
 
-_prefs_service: Optional[UserPrefsService] = None
+_prefs_service: UserPrefsService | None = None
 
 
 def get_prefs_service() -> UserPrefsService:
