@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 from services.models_base import JobStatus, JobType, PickListType
-from services.project_state import get_project_state
+from ui.current_project import current_project_state
 from services.tilt_series.build import _infer_position
 from services.visualization.preview_orchestrator import read_preview_manifest
 from ui.components.task_utils import read_manifest, resolve_job_dir, scan_statuses
@@ -128,7 +128,7 @@ def _job_dir_for(instance_id: str, job_model, project_path: Path) -> Path | None
         d = project_path / rjn.rstrip("/")
         if d.is_dir():
             return d
-    state = get_project_state()
+    state = current_project_state()
     mapped = (state.job_path_mapping or {}).get(instance_id)
     if mapped:
         d = project_path / mapped.rstrip("/")
@@ -182,12 +182,12 @@ def _position_label(tomo_name: str) -> tuple[str, tuple[int, int]]:
 
 
 def has_any_extract_jobs() -> bool:
-    state = get_project_state()
+    state = current_project_state()
     return any(_candidate_extract_instances(state))
 
 
 def has_any_previews_rendered() -> bool:
-    state = get_project_state()
+    state = current_project_state()
     if state.project_path is None:
         return False
     for instance_id, job_model in _candidate_extract_instances(state):
@@ -202,7 +202,7 @@ def has_any_previews_rendered() -> bool:
 def has_any_dashboard_data() -> bool:
     """True when at least one array job has emitted a task manifest, i.e.
     the dashboard has any TS data to populate the sidebar with."""
-    state = get_project_state()
+    state = current_project_state()
     if state.project_path is None:
         return False
     project_path = Path(state.project_path)

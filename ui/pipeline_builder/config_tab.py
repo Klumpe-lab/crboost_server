@@ -1,14 +1,15 @@
 # ui/pipeline_builder/config_tab.py
 from collections.abc import Callable
 
-from services.project_state import JobStatus, JobType, get_project_state
+from services.project_state import JobStatus, JobType
+from ui.current_project import current_project_state
 from ui.job_plugins import get_params_renderer
 from ui.job_plugins.default_renderer import render_default_params_card
 from ui.ui_state import UIStateManager
 
 
 def is_job_frozen(instance_id: str) -> bool:
-    state = get_project_state()
+    state = current_project_state()
     job_model = state.jobs.get(instance_id)
     if not job_model:
         return False

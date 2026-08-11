@@ -8,7 +8,7 @@ import pwd
 import shlex
 import shutil
 import socket
-import traceback
+
 import uuid
 from pathlib import Path
 from typing import Any
@@ -21,7 +21,7 @@ from services.scheduling_and_orchestration.pipeline_orchestrator_service import 
 from services.computing.container_service import get_container_service
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
-from services.project_state import JobType, get_state_service
+from services.project_state import get_state_service
 from services.computing.slurm_service import SlurmService
 from services.configs.config_service import get_config_service
 from services.tilt_series import TiltSeriesRegistry, get_registry_for
@@ -84,8 +84,8 @@ class CryoBoostBackend:
             project_dir=Path(project_path), selected_instance_ids=selected_jobs
         )
 
-    async def delete_job(self, job_name: str, instance_id: str | None = None) -> dict[str, Any]:
-        return await self.project_service.delete_job(job_name, instance_id=instance_id)
+    async def delete_job(self, job_name: str, project_path: Path, instance_id: str | None = None) -> dict[str, Any]:
+        return await self.project_service.delete_job(job_name, project_path=project_path, instance_id=instance_id)
 
     async def submit_tilt_filter_dl(self, project_path: Path, instance_id: str) -> dict[str, Any]:
         """Submit the tilt filter DL driver as a standalone SLURM job."""
@@ -1643,57 +1643,6 @@ class CryoBoostBackend:
 
         return out
 
-    async def get_job_parameters(self, job_name: str) -> dict[str, Any]:
-        """Get parameters for a specific job instance, initializing if not present."""
-        try:
-            state = self.state_service.state
-
-            job_model = state.jobs.get(job_name)
-            if not job_model:
-                # instance_id not found — try to initialize as a singleton job
-                try:
-                    job_type = JobType.from_string(job_name)
-                except ValueError:
-                    return {"success": False, "error": f"Unknown job instance: {job_name}"}
-
-                logger.info("Job %s not in state, initializing from template.", job_name)
-                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
-                job_star_path = template_base / job_type.value / "job.star"
-                state.ensure_job_initialized(
-                    job_type, instance_id=job_name, template_path=job_star_path if job_star_path.exists() else None
-                )
-                job_model = state.jobs.get(job_name)
-
-            if job_model:
-                return {"success": True, "params": job_model.model_dump()}
-            else:
-                return {"success": False, "error": f"Failed to initialize job {job_name}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    async def update_job_parameters(self, job_name: str, params: dict[str, Any]) -> dict[str, Any]:
-        """
-        Updates parameters for a specific job instance and persists to disk.
-        """
-        try:
-            state = self.state_service.state
-            job_model = state.jobs.get(job_name)
-
-            if not job_model:
-                return {"success": False, "error": f"Job {job_name} not initialized"}
-
-            for key, value in params.items():
-                if hasattr(job_model, key):
-                    setattr(job_model, key, value)
-
-            await self.state_service.save_project()
-
-            return {"success": True, "params": job_model.model_dump()}
-
-        except Exception as e:
-            traceback.print_exc()
-            return {"success": False, "error": str(e)}
-
     async def get_available_jobs(self) -> list[str]:
         # --- FIX: Use config root instead of cwd ---
         template_path = self.config_service.crboost_root / "config" / "Schemes" / "warp_tomo_prep"
@@ -1753,10 +1702,6 @@ class CryoBoostBackend:
         except Exception as e:
             logger.error("Failed to transfer ownership of %s: %s", project_path, e)
             return {"success": False, "error": str(e)}
-
-    async def get_initial_parameters(self) -> dict[str, Any]:
-        """Returns a dump of the current project state."""
-        return self.state_service.state.model_dump(mode="json", exclude={"project_path"})
 
     async def autodetect_parameters(self, mdocs_glob: str) -> dict[str, Any]:
         from services.configs.mdoc_service import get_mdoc_service

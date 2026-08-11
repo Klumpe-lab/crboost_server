@@ -5,7 +5,8 @@ from collections.abc import Callable
 
 from nicegui import ui
 
-from services.project_state import JobStatus, JobType, get_project_state, get_state_service
+from services.project_state import JobStatus, JobType, get_state_service
+from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
 from ui.status_indicator import BoundStatusDot
@@ -130,7 +131,7 @@ def _render_tab_content(
 def render_job_tab(
     job_type: JobType, instance_id: str, backend, ui_mgr: UIStateManager, callbacks: dict[str, Callable]
 ) -> None:
-    state = get_project_state()
+    state = current_project_state()
     job_model = state.jobs.get(instance_id)
 
     if not job_model:
@@ -336,7 +337,7 @@ def _handle_tab_switch(
 
     content_container = widget_refs.content_container
     if content_container:
-        state = get_project_state()
+        state = current_project_state()
         job_model = state.jobs.get(instance_id)
         if job_model is None:
             return
@@ -394,9 +395,8 @@ def _handle_delete(
     if getattr(job_model, "IS_INTERACTIVE", False):
         remove_cb = callbacks.get("remove_instance_from_pipeline")
         if remove_cb:
-            from services.project_state import get_project_state
 
-            state = get_project_state()
+            state = current_project_state()
             if state and instance_id in state.jobs:
                 del state.jobs[instance_id]
                 state.job_path_mapping.pop(instance_id, None)
@@ -450,7 +450,9 @@ def _handle_delete(
                 ui.notify("Deleting job...", type="info", timeout=1500)
                 try:
                     result = await backend.delete_job(
-                        instance_id_to_job_type(instance_id).value, instance_id=instance_id
+                        instance_id_to_job_type(instance_id).value,
+                        project_path=ui_mgr.project_path,
+                        instance_id=instance_id,
                     )
                     if result.get("success"):
                         orphans = result.get("orphaned_jobs", [])

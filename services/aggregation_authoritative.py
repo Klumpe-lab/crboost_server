@@ -8,7 +8,7 @@ without rendering the dashboard — exactly which authoritative lists are extrac
 or missing before rolling them up into a species-level optimisation set.
 
 PURE / HEADLESS by design:
-  - Takes an EXPLICIT ``ProjectState`` (never ``get_project_state()``), so it is correct
+  - Takes an EXPLICIT ``ProjectState`` (never the tab-context accessor), so it is correct
     inside a background task / CLI with no NiceGUI client context (the W2 lesson).
   - Resolves job dirs from the passed state's ``relion_job_name`` / ``job_path_mapping``
     rather than ``ui.dashboard.data._job_dir_for`` (which reads the client-context global
@@ -69,7 +69,7 @@ def _species_id_for_job(state, instance_id: str, job_model) -> str | None:
 def _job_dir(state, instance_id: str, job_model, project_path: Path) -> Path | None:
     """Resolve a job's dir from the EXPLICIT state (``relion_job_name``, then
     ``job_path_mapping``). Unlike ``ui.dashboard.data._job_dir_for`` this never reads the
-    client-context global ``get_project_state()``, so it is correct off the event loop."""
+    client-context tab accessor (``ui.current_project.current_project_state``), so it is correct off the event loop."""
     rjn = getattr(job_model, "relion_job_name", None)
     if rjn:
         d = project_path / str(rjn).rstrip("/")

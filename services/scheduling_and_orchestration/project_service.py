@@ -114,14 +114,11 @@ class ProjectService:
         self.project_root: Path | None = None
         self.state_service = get_state_service()
 
-    async def delete_job(self, job_name: str, instance_id: str | None = None) -> dict[str, Any]:
+    async def delete_job(self, job_name: str, project_path: Path, instance_id: str | None = None) -> dict[str, Any]:
         try:
             job_type = JobType(job_name)
-            state = self.backend.state_service.state
-            project_dir = state.project_path
-
-            if not project_dir:
-                return {"success": False, "error": "Project not loaded"}
+            project_dir = Path(project_path)
+            state = self.backend.state_service.state_for(project_dir)
 
             deletion_service = get_deletion_service()
             job_resolver = self.backend.pipeline_orchestrator.job_resolver

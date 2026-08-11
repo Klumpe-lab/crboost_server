@@ -35,7 +35,8 @@ from nicegui import app, context, ui
 
 from services.configs.user_prefs_service import get_prefs_service
 from services.models_base import JobStatus, JobType, ListExtractionState, PickListType
-from services.project_state import PickList, get_project_state, get_state_service
+from services.project_state import PickList, get_state_service
+from ui.current_project import current_project_state
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import (
     _find_warp_tomo_preview,
@@ -314,7 +315,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     ``callbacks``, when given, receives ``on_journey_active(bool)`` so the
     workspace can pause the live-refresh timer while the journey is hidden.
     """
-    state = get_project_state()
+    state = current_project_state()
     if state.project_path is None:
         container.clear()
         with container, ui.element("div").classes("cb-empty"):
@@ -2731,7 +2732,7 @@ def _render_list_cutout_sheet(
                     logger.exception("keep/drop auto-commit failed for %s", star_path)
                     break
                 fc = None if kept == total else kept
-                pl = get_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
+                pl = current_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
                 if pl is not None and pl.filtered_count != fc:
                     pl.filtered_count = fc
                     await get_state_service().save_project(force=True)
@@ -2935,7 +2936,7 @@ def _render_list_extraction_bar(sp: dict, lst: dict, project_path: Path, refresh
     subset when present) into ``Curation/<species>/<tomo>/<slug>/``."""
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
-    pl = get_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
+    pl = current_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
     est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
     text, cls = _EXTRACTION_BADGE.get(est, ("", ""))
     with ui.row().classes("items-center gap-2 w-full").style("margin: 0 0 8px; padding-bottom: 6px;"):
@@ -3240,7 +3241,7 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
             if not res.get("success"):
                 ui.notify(f"Deduplicate failed: {res.get('error')}", type="negative")
                 return
-            state_obj = get_project_state()
+            state_obj = current_project_state()
             pl = state_obj.get_pick_list(lst["slug"], species_id, tomo_name)
             if pl is not None:
                 pl.count = int(res.get("n_after", pl.count))
@@ -3893,7 +3894,7 @@ def _tm_essentials_for_species(sp: dict) -> dict:
     """Resolve the Template-Match instance matched to this candidate-extract
     species (by species_id) and pull the interpretive essentials shown in the
     tab header: matched TM instance id, angular search θ, and symmetry."""
-    state = get_project_state()
+    state = current_project_state()
     species, species_id = _resolve_species(state, sp["jm"], sp["iid"])
     info: dict = {
         "species": species,
@@ -4101,7 +4102,7 @@ async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: st
 
     `project_path` is REQUIRED — it resolves the real registry by path. The prescan
     auto-ingest runs in a BackgroundTask with NO client/tab context, where bare
-    `get_project_state()` returns a blank throwaway; the add + save then silently
+    `current_project_state()` returns a blank throwaway; the add + save then silently
     no-opped and the manual list never surfaced (W2)."""
     # P5: label the list after the .coords file the user named in ArtiaX (its stem),
     # not a fixed "Manual (ArtiaX)". The `manual` slug stays stable for re-ingest;
@@ -4195,7 +4196,7 @@ def _auto_kick_coords_ingest(
     if key in _AUTO_INGESTED_COORDS:
         logger.info("coords-prescan[%s]: save already ingested this session (mtime %.0f)", tomo_name, mtime)
         return
-    pl = get_project_state().get_pick_list("manual", species_id, tomo_name)
+    pl = current_project_state().get_pick_list("manual", species_id, tomo_name)
     if pl is not None and pl.created_at is not None and pl.created_at.timestamp() >= mtime:
         logger.info(
             "coords-prescan[%s]: manual list already current (created %.0f ≥ save %.0f)",
@@ -4508,7 +4509,7 @@ def _render_list_rail(
     selection can re-highlight without rebuilding the table."""
     from backend import get_backend
 
-    state_obj = get_project_state()
+    state_obj = current_project_state()
     species_id = sp.get("species_id") or ""
     species_label = sp.get("label") or species_id or ""
     tomo_name = sp["row"]["tomo_name"]
@@ -4590,7 +4591,7 @@ def _render_list_rail(
         if not res.get("success"):
             ui.notify(f"Merge failed: {res.get('error')}", type="negative")
             return
-        get_project_state().add_pick_list(
+        current_project_state().add_pick_list(
             PickList(
                 slug=slug,
                 label=raw_name,
@@ -4621,7 +4622,7 @@ def _render_list_rail(
     async def _set_authoritative(slug: str) -> None:
         if slug == auth_state["slug"]:
             return
-        st = get_project_state()
+        st = current_project_state()
         st.set_authoritative_slug(species_id, tomo_name, slug)
         await get_state_service().save_project(force=True)
         auth_state["slug"] = slug
@@ -6259,7 +6260,7 @@ def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, pr
     _AUTO_KICKED_PREVIEWS.add(key)
 
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
-    state = get_project_state()
+    state = current_project_state()
 
     async def _run(progress_cb):
         import asyncio as _asyncio
@@ -6380,7 +6381,7 @@ async def _handle_generate_for_instance(
         ui.notify("candidates.star or tomograms.star missing — cannot render previews", type="negative", timeout=4000)
         return
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
-    state = get_project_state()
+    state = current_project_state()
 
     action = "Re-render all" if force else "Render missing"
     subtitle = "Bypass cache; regenerate every tomogram" if force else "Skip tomograms with a fresh manifest entry"

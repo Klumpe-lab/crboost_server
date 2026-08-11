@@ -30,8 +30,8 @@ from services.project_state import (
     AggregationMerge,
     AggregationMergeSource,
     AggregationSource,
-    get_project_state,
 )
+from ui.current_project import current_project_state
 from ui.components.task_utils import ts_position_sort_key, ts_pretty_name
 from ui.local_file_picker import local_file_picker
 from ui.projects_overview import avatar_color
@@ -47,7 +47,7 @@ SLATE_MUTED = "#94a3b8"
 
 
 def _merged_root() -> Path | None:
-    state = get_project_state()
+    state = current_project_state()
     if state.project_path is None:
         return None
     return state.project_path / MERGED_DIR_NAME
@@ -93,7 +93,7 @@ def _persist_state() -> None:
     real project), so doing it inline made each checkbox click hang. Debounce
     rapid toggles and run the write in a thread."""
     global _pending_save_task
-    state = get_project_state()
+    state = current_project_state()
     state.update_modified()
     try:
         loop = asyncio.get_event_loop()
@@ -192,7 +192,7 @@ def apply_aggregation_overrides(state) -> int:
 def has_merged_outputs() -> bool:
     """True if the current project has at least one usable merged optset. Lets
     the sidebar render a 'merged' badge without opening the dialog."""
-    return active_merged_optset(get_project_state()) is not None
+    return active_merged_optset(current_project_state()) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +201,7 @@ def has_merged_outputs() -> bool:
 
 
 def _find_source(optset_path: str) -> AggregationSource | None:
-    return next((s for s in get_project_state().aggregation_sources if s.optset_path == optset_path), None)
+    return next((s for s in current_project_state().aggregation_sources if s.optset_path == optset_path), None)
 
 
 def _selected_tomos(optset_path: str, all_tomos: list[str]) -> set:
@@ -228,7 +228,7 @@ def _set_species_selection(cand, selected: set, all_tomos: list[str]) -> None:
     selection. Empty selection removes the source; full selection normalizes to
     tomo_names=None (=all). Per-tomo original overrides are preserved (pruned to
     the tomos still selected)."""
-    state = get_project_state()
+    state = current_project_state()
     prev = _find_source(cand.optset_path)
     prev_orig = set(prev.original_tomos) if prev else set()
     srcs = [s for s in state.aggregation_sources if s.optset_path != cand.optset_path]
@@ -269,7 +269,7 @@ def _set_tomo_origin(cand, ts_name: str, use_original: bool) -> None:
 def _toggle_species_all(cand, on: bool) -> None:
     """Master toggle for a whole species: select all tomos (tomo_names=None) or
     remove the source entirely. Preserves per-tomo original overrides on select."""
-    state = get_project_state()
+    state = current_project_state()
     prev = _find_source(cand.optset_path)
     prev_orig = list(prev.original_tomos) if prev else []
     srcs = [s for s in state.aggregation_sources if s.optset_path != cand.optset_path]
@@ -331,7 +331,7 @@ class _MergeSelector:
         self.candidates = cands
         self._group()
         # Auto-expand projects that already contribute a selected source.
-        selected_paths = {s.optset_path for s in get_project_state().aggregation_sources}
+        selected_paths = {s.optset_path for s in current_project_state().aggregation_sources}
         for c in cands:
             if c.optset_path in selected_paths:
                 self.expanded_projects.add(c.project_path)
@@ -636,7 +636,7 @@ class _MergeSelector:
         projects outside the recent roots. Flat rows with a remove button so
         they don't silently vanish."""
         discovered = {c.optset_path for c in self.candidates}
-        orphans = [s for s in get_project_state().aggregation_sources if s.optset_path not in discovered]
+        orphans = [s for s in current_project_state().aggregation_sources if s.optset_path not in discovered]
         if not orphans:
             return
         with ui.column().classes("w-full gap-0 mt-2 pt-2").style("border-top: 1px dashed #e2e8f0;"):
@@ -656,7 +656,7 @@ class _MergeSelector:
                     ).classes("text-gray-400 hover:text-red-500")
 
     def _remove_orphan(self, optset_path: str) -> None:
-        state = get_project_state()
+        state = current_project_state()
         state.aggregation_sources = [s for s in state.aggregation_sources if s.optset_path != optset_path]
         _persist_state()
         self.on_change()
@@ -671,7 +671,7 @@ class _MergeSelector:
 def open_aggregation_merge_dialog() -> None:
     """Open the merge-sources dialog. Modal, scrollable. No-op if the current
     project isn't flagged as aggregation."""
-    state = get_project_state()
+    state = current_project_state()
     if not getattr(state, "is_aggregation", False):
         return
 
@@ -754,7 +754,7 @@ _DIALOG_REFS: dict[str, object] = {}
 
 def _refresh_footer(footer: ui.element, selector: _MergeSelector) -> None:
     footer.clear()
-    sources = list(get_project_state().aggregation_sources or [])
+    sources = list(current_project_state().aggregation_sources or [])
     n_sources = len(sources)
     # Total selected tomos: explicit count, or "all" sources flagged separately.
     n_all = sum(1 for s in sources if s.tomo_names is None)
@@ -780,7 +780,7 @@ def _refresh_footer(footer: ui.element, selector: _MergeSelector) -> None:
 
 
 async def _pick_manual_path() -> None:
-    state = get_project_state()
+    state = current_project_state()
     start_dir = str(state.project_path) if state.project_path else "/"
     picker = local_file_picker(start_dir, upper_limit=None, mode="directory")
     result = await picker
@@ -898,7 +898,7 @@ def _build_merge_record(state, slug: str, name: str, description: str, summary: 
 
 
 async def _run_merge() -> None:
-    state = get_project_state()
+    state = current_project_state()
     if not state.aggregation_sources:
         ui.notify("Add at least one source first.", type="warning", timeout=2500)
         return
@@ -954,7 +954,7 @@ def _refresh_registry() -> None:
 
 
 def _set_active_merge(slug: str) -> None:
-    state = get_project_state()
+    state = current_project_state()
     state.active_merge_slug = slug
     apply_aggregation_overrides(state)
     _persist_state()
@@ -963,7 +963,7 @@ def _set_active_merge(slug: str) -> None:
 
 def _render_registry(container) -> None:
     container.clear()
-    state = get_project_state()
+    state = current_project_state()
     merges = list(reversed(state.aggregation_merges or []))  # newest first
     with container:
         if not merges:

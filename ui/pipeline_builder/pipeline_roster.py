@@ -4,7 +4,8 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from nicegui import ui
 from services.models_base import JobStatus
-from services.project_state import JobType, get_project_state
+from services.project_state import JobType
+from ui.current_project import current_project_state
 
 from ui.components.reactive import FingerprintedView
 from ui.styles import MONO, SANS as FONT
@@ -189,10 +190,9 @@ class RosterWidget(FingerprintedView):
         return self.panel.roster_panel
 
     def _status_widget(self, instance_id: str):
-        from services.project_state import get_project_state
         from ui.status_indicator import _dot_html, _running_spinner_html
 
-        job_model = get_project_state().jobs.get(instance_id)
+        job_model = current_project_state().jobs.get(instance_id)
         if not job_model:
             BoundStatusDot(instance_id)
             return
@@ -218,7 +218,7 @@ class RosterWidget(FingerprintedView):
         """
         panel = self.panel
         ui_mgr = panel.ui_mgr
-        jobs = panel.state_service.state.jobs
+        jobs = current_project_state().jobs
 
         # Populate caches that render() will re-read so the two stay in lockstep.
         # (No memoization across signature+render; they touch the same files,
@@ -374,7 +374,7 @@ class RosterWidget(FingerprintedView):
 
     def _render_instance_row(self, panel, job_type, instance_id, indent=18, show_add=False):
         """Render a single job instance row — single line with icons at end."""
-        job_model = panel.state_service.state.jobs.get(instance_id)
+        job_model = current_project_state().jobs.get(instance_id)
 
         base_name = get_job_display_name(job_type)
         relion_job_name = getattr(job_model, "relion_job_name", None) if job_model else None
@@ -727,7 +727,9 @@ class RosterWidget(FingerprintedView):
                     dialog.close()
                     try:
                         result = await panel.backend.delete_job(
-                            instance_id_to_job_type(instance_id).value, instance_id=instance_id
+                            instance_id_to_job_type(instance_id).value,
+                            project_path=panel.ui_mgr.project_path,
+                            instance_id=instance_id,
                         )
                         if result.get("success"):
                             orphans = result.get("orphaned_jobs", [])
@@ -881,7 +883,7 @@ class RosterWidget(FingerprintedView):
         if panel.primary_sidebar is None:
             return
 
-        state = get_project_state()
+        state = current_project_state()
 
         with panel.primary_sidebar:
             ui.element("div").style("height: 8px;")

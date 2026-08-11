@@ -24,7 +24,8 @@ from nicegui import ui
 from services.io_slots import JobFileType
 from services.models_base import JobType, JobStatus
 from services.path_resolution_service import PathResolutionService, InputSlotValidation
-from services.project_state import get_project_state, get_state_service, get_project_state_for
+from services.project_state import get_state_service, get_project_state_for
+from ui.current_project import current_project_state
 from ui.ui_state import get_job_display_name
 from ui.utils import snake_to_title
 from ui.components.copyable import copyable_path, copy_button
@@ -207,7 +208,7 @@ class IOConfigComponent:
         self._gain_container: ui.element | None = None
 
     def render(self):
-        state = get_project_state()
+        state = current_project_state()
         job_model = state.jobs.get(self.instance_id)
         if not job_model:
             ui.label(f"Job instance '{self.instance_id}' not initialized").classes("text-red-500 italic")
@@ -234,7 +235,7 @@ class IOConfigComponent:
                 self._render_output_slots(output_schema, job_model)
 
     def _get_job_dir(self, job_model) -> tuple[Path | None, bool]:
-        state = get_project_state()
+        state = current_project_state()
         project_path = getattr(state, "project_path", None)
         if not project_path:
             return None, True
@@ -251,7 +252,7 @@ class IOConfigComponent:
     # ── Gain reference (project-wide external input) ─────────────────────────
 
     def _render_gain_row(self):
-        state = get_project_state()
+        state = current_project_state()
         gain = getattr(state.acquisition, "gain_reference_path", None)
         is_set = bool(gain and str(gain).strip() and str(gain) != "None")
         dot_color = "#10b981" if is_set else "#f59e0b"
@@ -293,7 +294,7 @@ class IOConfigComponent:
     async def _pick_gain(self):
         from ui.local_file_picker import local_file_picker
 
-        state = get_project_state()
+        state = current_project_state()
         cur = getattr(state.acquisition, "gain_reference_path", None)
         start = str(Path(cur).parent) if cur else (str(state.project_path) if state.project_path else "~")
         result = await local_file_picker(directory=start, mode="file")
@@ -304,7 +305,7 @@ class IOConfigComponent:
         await self._set_gain(None)
 
     async def _set_gain(self, value: str | None):
-        state = get_project_state()
+        state = current_project_state()
         project_path = state.project_path
         state.acquisition.gain_reference_path = value or None
         state.mark_dirty()
@@ -578,7 +579,7 @@ class IOConfigComponent:
             full_path: str = ""
             if resolved:
                 p = Path(str(resolved))
-                state = get_project_state()
+                state = current_project_state()
                 project_path = getattr(state, "project_path", None)
                 if project_path and not p.is_absolute():
                     p = project_path / p
@@ -629,7 +630,7 @@ class IOConfigComponent:
     # ── State updates ────────────────────────────────────────────────────────
 
     def _handle_source_change(self, slot, value):
-        state = get_project_state()
+        state = current_project_state()
         project_path = state.project_path
         job_model = state.jobs.get(self.instance_id)
         if not job_model:
@@ -647,7 +648,7 @@ class IOConfigComponent:
         asyncio.create_task(self._save_and_refresh(slot, project_path))
 
     def _handle_manual_path_change(self, slot, path):
-        state = get_project_state()
+        state = current_project_state()
         project_path = state.project_path
         job_model = state.jobs.get(self.instance_id)
         if not job_model:
@@ -660,7 +661,7 @@ class IOConfigComponent:
         asyncio.create_task(self._save_and_refresh(slot, project_path))
 
     def _clear_override(self, slot):
-        state = get_project_state()
+        state = current_project_state()
         project_path = state.project_path
         job_model = state.jobs.get(self.instance_id)
         if not job_model:
@@ -692,7 +693,7 @@ class IOConfigComponent:
     async def _open_file_picker(self, slot):
         from ui.local_file_picker import local_file_picker
 
-        state = get_project_state()
+        state = current_project_state()
         overrides = getattr(state.jobs.get(self.instance_id), "source_overrides", {}) or {}
         cur = overrides.get(slot.key, "")
         cur_path = cur[7:] if isinstance(cur, str) and cur.startswith("manual:") else ""
