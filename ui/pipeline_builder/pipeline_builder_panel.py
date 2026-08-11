@@ -12,6 +12,7 @@ from services.models_base import JobStatus
 from services.project_state import JobType, get_state_service
 
 from ui.components.reactive import SingleFlight
+from ui.current_project import current_project_state
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, next_instance_id
 from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
@@ -257,7 +258,7 @@ class PipelineBuilderPanel:
         if self.ui_mgr.is_running:
             return
 
-        state = self.state_service.state
+        state = current_project_state()
 
         # Interactive jobs are singletons — if one already exists, just switch to it.
         if instance_id is None:
@@ -348,7 +349,7 @@ class PipelineBuilderPanel:
         self.rebuild_pipeline_ui()
 
     def _cleanup_stale_overrides_for_instance(self, instance_id: str):
-        state = self.state_service.state
+        state = current_project_state()
         removed_model = state.jobs.get(instance_id)
         job_type_str = instance_id.split("__")[0]
 
@@ -375,7 +376,7 @@ class PipelineBuilderPanel:
         self._cleanup_stale_overrides_for_instance(instance_id)
         self._job_content_containers.pop(instance_id, None)
 
-        state = self.state_service.state
+        state = current_project_state()
         job_model = state.jobs.get(instance_id)
         if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
             del state.jobs[instance_id]
@@ -598,7 +599,7 @@ def build_pipeline_builder_panel(
     # on every workspace render — only writes when a value would actually change.
     from ui.aggregation_merge_card import apply_aggregation_overrides
 
-    n_wired = apply_aggregation_overrides(panel.state_service.state)
+    n_wired = apply_aggregation_overrides(current_project_state())
     if n_wired and panel.ui_mgr.is_project_created:
         # Persist so the wiring survives reload — otherwise we'd self-heal in
         # memory but the next reload starts cold and the user sees the same

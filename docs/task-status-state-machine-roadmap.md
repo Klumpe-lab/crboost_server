@@ -157,7 +157,16 @@ So inactivity was added as a **second, independent** watchdog (`IDLE_TIMEOUT_DEF
 zero output, capped at the total budget, `idle_timeout=0` opts out for a legitimately silent tool).
 The two catch different failures and the kill message now names which one fired.
 
-## 8. Open items
+## 8. Downstream consumer: per-TS top-up
+
+[`roadmaps/05-per-ts-top-up.md`](roadmaps/05-per-ts-top-up.md) depends on §5 phase 4 (the RUNNING
+claim). Its cascade stage grows downstream manifests, which **shifts array indices** — and everything
+still keyed by index (`task_{idx}.out`, `scan_statuses`' running inference,
+`_finalize_stopped_task_statuses`) then maps to the wrong tilt-series. Phase 4 removes the index
+dependency and is the clean unblock. That roadmap also needs the state enum this one introduces
+(specifically: whether a dropped TS is `.fail` or a distinct state).
+
+## 9. Open items
 
 - **`_finalize_stopped_task_statuses` keys off `task_{idx}.out`**, which is stale across reruns: on a
   stopped pipeline it can mark `.fail` for items never dispatched in the current submission. Low harm

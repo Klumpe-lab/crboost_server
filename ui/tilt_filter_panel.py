@@ -18,7 +18,8 @@ from pathlib import Path
 from nicegui import ui
 
 from services.models_base import JobStatus
-from services.project_state import get_project_state, get_state_service
+from services.project_state import get_state_service
+from ui.current_project import current_project_state
 from services.tilt_series_service import (
     apply_labels,
     drop_tilts_from_tomostar,
@@ -106,7 +107,7 @@ def _parse_pos_beam(ts_name: str):
 
 
 def _find_ts_ctf_star(project_path):
-    state = get_project_state()
+    state = current_project_state()
     if not state:
         return None
     for _iid, jm in state.jobs.items():
@@ -128,7 +129,7 @@ def _find_fs_motion_warp_dir(project_path):
     per-tilt WarpTools XMLs with the REAL CTF-fit resolution + motion that the
     star hides behind 1e-6 placeholders. Returns None if not found / not run.
     See docs/preprocessing-metrics-inventory.md §4."""
-    state = get_project_state()
+    state = current_project_state()
     if not state:
         return None
     for _iid, jm in state.jobs.items():
@@ -144,7 +145,7 @@ def _find_fs_motion_star(project_path):
     tilt filter moved upstream (before alignment), this is the per-tilt star the DL
     classifies — it lists the same motion-corrected averages (rlnMicrographName) the
     old ts_ctf star did, so the classifier sees identical images."""
-    state = get_project_state()
+    state = current_project_state()
     if not state:
         return None
     for _iid, jm in state.jobs.items():
@@ -164,7 +165,7 @@ def _find_fs_motion_star(project_path):
 def _find_tsimport_tomostar_dir(project_path):
     """Locate the tsImport job's `tomostar/` directory — the source the tilt filter
     trims (dropping bad-tilt rows) so alignment/CTF/reconstruct inherit the cut."""
-    state = get_project_state()
+    state = current_project_state()
     if not state:
         return None
     for _iid, jm in state.jobs.items():
@@ -283,7 +284,7 @@ def build_tilt_filter_panel(backend) -> None:
             with mc:
                 if source_star:
                     _meta_row("Source star", str(source_star))
-                state = get_project_state()
+                state = current_project_state()
                 pd_str = state.tilt_filter_png_dir if state else None
                 if pd_str:
                     _meta_row("Thumbnails", pd_str)
@@ -328,7 +329,7 @@ def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_m
 
             # ── Stats + Gallery containers (created before DL config so it can reference them) ──
             stats_c = ui.element("div").classes("w-full")
-            state = get_project_state()
+            state = current_project_state()
             pd_str = state.tilt_filter_png_dir if state else None
             png_dir = Path(pd_str) if pd_str else project_path / "TiltFilter" / "png"
             gallery_c = ui.column().classes("w-full gap-0")
@@ -412,7 +413,7 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                     job_model.prob_threshold = thresh_inp.value
                     job_model.prob_action = action_sel.value
 
-                    state = get_project_state()
+                    state = current_project_state()
                     if state:
                         state.mark_dirty()
                         await get_state_service().save_project()
@@ -573,7 +574,7 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job
             async def _run(progress_cb):
                 n = await asyncio.to_thread(generate_tilt_thumbnails, ts_ctf_star, project_path, png_dir, progress_cb)
                 # Resolve by explicit path: this runs in a BackgroundTask with no
-                # client/tab context, where bare get_project_state() returns a blank
+                # client/tab context, where bare current_project_state() returns a blank
                 # throwaway — so the assignment + path-less save silently no-opped and
                 # tilt_filter_png_dir never persisted (same class as the curation W2 bug).
                 if project_path:
@@ -615,7 +616,7 @@ def _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_m
 
 
 def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model=None):
-    state = get_project_state()
+    state = current_project_state()
     if job_model is not None:
         labels = dict(job_model.tilt_labels) if job_model.tilt_labels else {}
     else:
@@ -963,7 +964,7 @@ def _attach_grid_click_handler(html_el, labels, full_df, ts_data, refresh_stats,
                 f"{'display: none' if n_bad_now == 0 else ''};"
             )
 
-            st = get_project_state()
+            st = current_project_state()
             if st:
                 st.tilt_filter_labels = labels
                 st.mark_dirty()

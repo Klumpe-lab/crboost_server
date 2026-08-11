@@ -11,6 +11,12 @@ only 00 blocks anything else.
 | 02 | [tiltseries-single-source](02-tiltseries-single-source.md) | Consolidate on the TiltSeriesRegistry; kill regex re-derivation; typed InstanceId | medium (parity-gated) |
 | 03 | [errors-and-results](03-errors-and-results.md) | One lightweight result/error idiom + lucid logging | low |
 | 04 | [driver-consolidation](04-driver-consolidation.md) | ArrayDriver template, ToolCommand, one status protocol | medium (behavior-preserving by construction, per-driver rollout) |
+| 05 | [per-ts-top-up](05-per-ts-top-up.md) | Re-run one failed/skipped tilt-series without recomputing the job or its downstream chain | medium (capability gap; index-shift hazard gates the cascade stage) |
+
+**05 is not from the audit.** 00–04 derive from `docs/architecture-assessment-2026-08-10.md`; 05 comes
+from a reproduced production failure in `/groups/klumpe/crboost_data/deadcode_test` (2026-08-11) and
+fixes a capability gap rather than a structural one. It shares an enum and a state-machine phase with
+`docs/task-status-state-machine-roadmap.md` — read that one first.
 
 Shared rules for all roadmaps:
 
