@@ -16,6 +16,7 @@ import pandas as pd
 
 from services.array_tasks import read_manifest, resolve_job_dir, scan_statuses
 from services.jobs.spec import JOB_SPEC_BY_TYPE
+from services.tilt_series import get_registry_for
 from services.models_base import InstanceId, JobStatus, JobType, PickListType
 from services.models_base import resolve_species as resolve_species
 from services.models_base import split_species_id as split_species_id
@@ -180,6 +181,182 @@ _PILL_STAGES: list[tuple[str, str, JobType | None]] = [
 # Preprocessing track = the 4 array stages (one shared bar per TS row). The
 # particle stages (pick → subtomo) render as a separate per-species track.
 PREP_STAGES = _PILL_STAGES[:4]
+
+
+# ── Registry-backed per-tilt readers (roadmap 02 stage 3) ─────────────────────
+# The dashboard's per-TS facts come from the TiltSeriesRegistry, not from
+# re-reading emitted STARs/XMLs. Each reader returns None (or {}) when the
+# registry has no data for the job+TS — the caller renders a loud
+# "not in registry" marker, never a silent star fallback (stage-0 decision).
+
+
+def registry_ts_for(project_path: Path, ts_name: str):
+    """TiltSeries entity for a TS name, or None. Never raises — render-path safe."""
+    try:
+        reg = get_registry_for(Path(project_path))
+    except Exception:
+        logger.warning("Could not load tilt-series registry for %s", project_path, exc_info=True)
+        return None
+    return reg.get_tilt_series(ts_name) if reg.has_tilt_series(ts_name) else None
+
+
+def fsm_registry_df(project_path: Path, instance_id: str, ts_name: str) -> pd.DataFrame | None:
+    """Per-tilt DataFrame from FsMotionCtfFrameOutput rows, with the same rln
+    column names the per-tilt star carried (so the plot helpers are unchanged) —
+    plus the REAL per-tilt QC values as `cbCtfResolution`/`cbMeanFrameMovement`
+    (registry ingests them from the Warp XML; the star columns for these are
+    1e-6 placeholders). None when the registry has no output for this job+TS."""
+    ts = registry_ts_for(project_path, ts_name)
+    if ts is None:
+        return None
+    rows = []
+    for f in ts.frames:
+        out = f.outputs.get(instance_id)
+        if out is None:
+            continue
+        rows.append(
+            {
+                "rlnTomoNominalStageTiltAngle": f.nominal_tilt_angle_deg,
+                "rlnMicrographMovieName": f.raw_filename,
+                "rlnDefocusU": out.defocus_u_angstrom,
+                "rlnDefocusV": out.defocus_v_angstrom,
+                "rlnCtfAstigmatism": out.ctf_astigmatism,
+                "cbCtfResolution": out.ctf_resolution,
+                "cbMeanFrameMovement": out.mean_frame_movement,
+            }
+        )
+    return pd.DataFrame(rows) if rows else None
+
+
+def _per_frame_entries_df(ts, instance_id: str, output_type: str, attr_cols: dict[str, str]) -> pd.DataFrame | None:
+    """Shared tsCtf/alignment builder: TS-scoped output's per_frame entries →
+    per-tilt DataFrame in z order. Dropped tilts simply have no entry — the
+    registry never carries the ghost rows the emitted stars do."""
+    out = ts.outputs.get(instance_id)
+    if out is None or getattr(out, "output_type", "") != output_type or not getattr(out, "per_frame", None):
+        return None
+    frames_by_id = {f.id: f for f in ts.frames}
+    rows = []
+    for e in sorted(out.per_frame, key=lambda e: e.z_index):
+        f = frames_by_id.get(e.frame_id)
+        row = {
+            "rlnTomoNominalStageTiltAngle": f.nominal_tilt_angle_deg if f else None,
+            "rlnMicrographMovieName": f.raw_filename if f else e.frame_id,
+        }
+        for col, attr in attr_cols.items():
+            row[col] = getattr(e, attr)
+        rows.append(row)
+    return pd.DataFrame(rows) if rows else None
+
+
+def tsctf_registry_df(project_path: Path, instance_id: str, ts_name: str) -> pd.DataFrame | None:
+    """Per-tilt CTF DataFrame from TsCtfTiltSeriesOutput.per_frame, or None."""
+    ts = registry_ts_for(project_path, ts_name)
+    if ts is None:
+        return None
+    return _per_frame_entries_df(
+        ts,
+        instance_id,
+        "ts_ctf",
+        {
+            "rlnDefocusU": "defocus_u_angstrom",
+            "rlnDefocusV": "defocus_v_angstrom",
+            "rlnCtfAstigmatism": "ctf_astigmatism",
+        },
+    )
+
+
+def alignment_registry_df(project_path: Path, instance_id: str, ts_name: str) -> pd.DataFrame | None:
+    """Per-tilt alignment DataFrame from TsAlignmentTiltSeriesOutput.per_frame, or None."""
+    ts = registry_ts_for(project_path, ts_name)
+    if ts is None:
+        return None
+    return _per_frame_entries_df(
+        ts,
+        instance_id,
+        "ts_alignment",
+        {
+            "rlnTomoXTilt": "tilt_x_deg",
+            "rlnTomoYTilt": "tilt_y_deg",
+            "rlnTomoZRot": "z_rot_deg",
+            "rlnTomoXShiftAngst": "x_shift_angstrom",
+            "rlnTomoYShiftAngst": "y_shift_angstrom",
+        },
+    )
+
+
+def _filter_ran_for_ts(ts) -> bool:
+    """Whether the tilt-filter stamped this TS. A pre-stamping legacy run left
+    no per-frame verdicts, which is indistinguishable from "never ran" — those
+    projects re-earn the section by re-running the filter (stage-0 decision)."""
+    return any(f.is_filtered_out or f.filter_probability is not None for f in ts.frames)
+
+
+def filter_verdicts_from_registry(project_path: Path, ts_name: str) -> dict[str, str]:
+    """{frame_basename: "keep (p=0.92)" | "drop (p=0.12)"} from the registry's
+    per-frame verdicts, for per-tilt plot hovers. Empty when the filter never
+    stamped this TS."""
+    ts = registry_ts_for(project_path, ts_name)
+    if ts is None or not _filter_ran_for_ts(ts):
+        return {}
+    out: dict[str, str] = {}
+    for f in ts.frames:
+        p = f" (p={f.filter_probability:.2f})" if f.filter_probability is not None else ""
+        out[f.raw_filename] = ("drop" if f.is_filtered_out else "keep") + p
+    return out
+
+
+def filter_kept_dropped_from_registry(project_path: Path, ts_name: str) -> dict | None:
+    """Registry version of the old labeled-vs-filtered star diff: kept/dropped
+    counts + the dropped tilts (index, angle, frame). None when the filter
+    never stamped this TS."""
+    ts = registry_ts_for(project_path, ts_name)
+    if ts is None or not _filter_ran_for_ts(ts):
+        return None
+    dropped = [
+        {"index": f.tilt_index, "tilt_angle": f.nominal_tilt_angle_deg, "frame": f.raw_filename}
+        for f in ts.frames
+        if f.is_filtered_out
+    ]
+    return {"n_labeled": ts.frame_count, "n_kept": ts.frame_count - len(dropped), "dropped": dropped}
+
+
+def denoised_mrc_from_registry(project_path: Path, instance_id: str, ts_name: str) -> Path | None:
+    """Denoised-tomogram path from DenoisePredictTomogramOutput, or None. The
+    exists() check keeps stale registry entries (deleted volumes) out of the
+    method selector, matching the old disk-glob behavior."""
+    ts = registry_ts_for(project_path, ts_name)
+    if ts is None or ts.tomogram is None:
+        return None
+    out = ts.tomogram.outputs.get(instance_id)
+    if out is None or getattr(out, "output_type", "") != "denoise_predict":
+        return None
+    p = Path(out.denoised_mrc)
+    return p if p.exists() else None
+
+
+def warp_hand_from_registry(state, project_path: Path) -> int | None:
+    """Warp's APPLIED handedness (its ts_defocus_hand decision, recorded by the
+    tsCtf ingest as are_angles_inverted): -1/+1 when consistent across TS,
+    0 when mixed, None when no tsCtf output is in the registry. This is a
+    different authority than the Import star's declared rlnTomoHand — the chip
+    shows both; divergence is a real finding (the 412 lesson)."""
+    found = find_job_by_type(state, JobType.TS_CTF)
+    if not found:
+        return None
+    iid = found[0]
+    try:
+        reg = get_registry_for(Path(project_path))
+    except Exception:
+        return None
+    hands = set()
+    for ts in reg.all_tilt_series():
+        out = ts.outputs.get(iid)
+        if out is not None and getattr(out, "output_type", "") == "ts_ctf":
+            hands.add(-1 if out.are_angles_inverted else 1)
+    if not hands:
+        return None
+    return hands.pop() if len(hands) == 1 else 0
 
 
 def _ts_names_from_star(p: Path) -> list[str]:
