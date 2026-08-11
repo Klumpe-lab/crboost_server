@@ -12,9 +12,10 @@ XML at ``<fsMotion job>/warp_frameseries/<frame_stem>.xml``:
 
 This module parses just those two attributes, memoized by ``(path, mtime)`` so a
 render path can read them on every tick without re-parsing. The ingest adapter
-(``services/tilt_series/adapters/fs_motion_ctf.py``) already parses the ``<CTF>``
-block of the same XMLs for defocus; this is the read-time complement for the
-quality scalars it doesn't ingest.
+(``services/tilt_series/adapters/fs_motion_ctf.py``) ingests the SAME two values
+into ``FsMotionCtfFrameOutput.ctf_resolution/mean_frame_movement`` (schema 1.2+);
+this XML read path serves runs that predate that, and is slated for retirement
+when the dashboard goes registry-only (roadmap 02 stage 3).
 
 Units note: ``MeanFrameMovement`` carries no unit in the file. Warp convention is
 Ångström (not pixels) — surfaced as unverified where displayed. See

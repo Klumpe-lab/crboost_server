@@ -41,6 +41,79 @@ Build a read-only **parity harness** before changing any consumer:
   the documented fallback story (read-from-stars remains as *explicit* fallback, or a one-shot
   backfill on open; decide here, don't improvise per-panel).
 
+## Stage 0 record (harness built 2026-08-11; runs owed)
+
+`parity_harness.py` at repo root — read-only, run as
+`venv/bin/python parity_harness.py <project> [--verbose]`. It imports the dashboard's OWN readers
+(`ui.tomo_dashboard_dialog` helpers, `services.dashboard_data`, `frameseries_quality`) so parity is
+measured against the real code paths, and diffs them per TS against the loaded
+`TiltSeriesRegistry`. Nine facts: position regex, fsMotion per-tilt defocus (star vs
+`FsMotionCtfFrameOutput`), fsMotion QC (Warp XML ctf-res/motion vs registry fields), tsCtf per-tilt
+defocus, alignment per-frame (XTilt/YTilt/ZRot/shifts), tilt-filter verdicts + DL probability,
+TomoHand (import star vs `are_angles_inverted` — different authorities, divergence is a *finding*),
+denoised MRC path (star+stem-surgery vs registry), reconstructed MRC path. Statuses per row:
+`ok` / `DIFF` / `star-only` (backfill gap) / `reg-only` (registry richer). Also reports: registry
+`sanity_check()` problems, star-only TS (in fsMotion stars but not registry), and the
+NO-REGISTRY case for pre-registry projects. Tolerances: defocus 1 Å, angles/shifts 0.05,
+probability 0.005, QC 0.01. Known limits (fine for stage 0): first-match `find_job_by_type` — one
+instance per job type assumed; frame matching prefers movie-stem == `Frame.id`, falls back to
+positional Z when a star lacks `rlnMicrographMovieName` (matters for post-filter trimmed stars —
+stem matching handles those correctly when the column exists).
+
+### Sandbox runs + triage (2026-08-11, user-executed)
+
+`try2_after_pixShift` (1 TS / 39 frames) and `pos9_10_after_pixShift` (2 TS / 82 frames):
+
+- **Entity layer: FULL PARITY.** position stage/beam 100% ok on both projects; zero sanity
+  problems; no star-only TS. The registry's identity model is trustworthy → stages 1-2 are
+  unblocked with no caveats.
+- **Output layer: EMPTY on both projects — every job fact is star-only** (fsm defocus ×242, fsm
+  XML QC ×241, tsctf, alignment, tomohand, recon paths). Triage: **legacy, not a live bug** — all
+  four array drivers DO wire their ingest adapter and `registry.save()` today
+  (`fs_motion_and_ctf.py:374`, `ts_alignment.py:313`, `ts_ctf.py:306`, `ts_reconstruct.py:185`,
+  each refusing to run on an empty registry), but these sandbox jobs ran before that wiring
+  landed. Fresh-run verification still owed: one new pipeline run should show ok rows.
+- **filter: 79 vacuous ok (keeps) + 3 DIFF `star=dropped, reg=False`** — the three high-tilt
+  (69°/70°) frames the filter trimmed. Root cause found by reading the labeled star: pos9_10's
+  `TiltFilter/tilt_series_labeled/*.star` is the OLD 26-column format with **no
+  `cryoBoostDlLabel`/`cryoBoostDlProbability` columns**, so (a) the prob comparison never emitted,
+  (b) current stamping code (which keys off those columns) can never re-stamp legacy filter runs,
+  (c) legacy filter-verdict backfill must use the labeled-vs-filtered set diff (what the harness
+  computes), not the DL columns. Fresh filter-run stamping check owed.
+- Bonus confirmation: the legacy labeled star visibly carries `rlnCtfMaxResolution=0.000001`
+  placeholders — the Warp placeholder trap the registry's XML-sourced QC fields exist to fix.
+
+### Cluster run: agg_20251113_412 (18 TS / 728 frames, ran WITH live adapter ingest)
+
+This run settles the triage — the registry works everywhere it was wired:
+
+- **Exact parity on live-ingested facts**: fsm_defocus 1456/1456 ok, tsctf_defocus 1364 ok,
+  alignment 3410 ok, tomohand 18/18, recon_path 18/18, position 36/36.
+- **STAR WRONG, REGISTRY RIGHT (46 rows)**: the tsctf/alignment "star-only (no registry
+  per-frame)" rows are exactly the high-tilt frames the tilt-filter dropped (they coincide with
+  the 81 filter DIFFs). The emitted per-tilt stars carry ghost rows for dropped tilts (the known
+  `emit_star` ignores `is_filtered_out` gap from the pipeline-reshape work); the registry's
+  `per_frame` correctly holds only what Warp processed. First hard evidence the registry is MORE
+  correct than the stars — dashboard-on-registry (stage 3) fixes these ghosts for free.
+- **fsm_quality 1434 star-only is legacy too, NOT a live gap**: the adapter ALREADY ingests
+  `ctf_resolution`/`mean_frame_movement` (`adapters/fs_motion_ctf.py:195`, schema 1.2) — this
+  project's fsMotion just ran before that landed. `frameseries_quality.py`'s docstring claiming
+  the adapter "doesn't ingest" them was stale and has been corrected (2026-08-11).
+- **filter 81 DIFF (star=dropped, reg=False)**: runs predate verdict stamping; stamping code
+  exists on both paths today (`drivers/tilt_filter.py:145` DL, `services/jobs/tilt_filter.py:129`
+  manual). Fresh-run stamping verification still owed.
+- **Bottom line: zero live code gaps found.** Every divergence on every project is a
+  pre-adapter/pre-schema/pre-stamping run. A fresh pipeline run today should reach full parity on
+  all nine facts.
+
+**Stage-0 decision (maintainer, 2026-08-11): NO backfill, NO backwards compat.** Quote: "don't
+worry about legacy stuff... blaze ahead with breaking changes and apologize later." The earlier
+one-shot-backfill proposal is DROPPED. Consequences for stage 3: consumers go registry-only;
+projects whose registries lack outputs (anything run pre-adapter) show a loud, honest
+"not in registry — re-run the job" marker in migrated sections (never a silent star fallback,
+per the never-fail-silently rule); the star/XML read helpers are deleted with their consumers.
+Legacy projects re-earn dashboard data by re-running jobs, not by backfill.
+
 ## Stages
 
 1. **`InstanceId` value object** (`services/models_base.py`): frozen dataclass with
