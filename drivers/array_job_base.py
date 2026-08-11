@@ -41,8 +41,10 @@ from services.configs.starfile_service import StarfileService
 # Manifest helpers
 # ----------------------------------------------------------------------
 
-MANIFEST_FILENAME = ".task_manifest.json"
-STATUS_DIR_NAME = ".task_status"
+# services/array_tasks.py owns the on-disk protocol names shared with the
+# UI-side readers. The `as X` re-export is load-bearing: 8 drivers import
+# these FROM this module.
+from services.array_tasks import MANIFEST_FILENAME as MANIFEST_FILENAME, STATUS_DIR_NAME as STATUS_DIR_NAME
 
 
 def write_manifest(
