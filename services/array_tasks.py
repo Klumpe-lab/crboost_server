@@ -11,27 +11,26 @@ import json
 import re
 from pathlib import Path
 
+from services.tilt_series.build import parse_position
+
 MANIFEST_FILENAME = ".task_manifest.json"
 STATUS_DIR_NAME = ".task_status"
-
-_POSITION_RE = re.compile(r"Position_(\d+)(?:_(\d+))?$")
 
 
 def ts_display_name(raw_name: str) -> str:
     """Derive a human-readable display name from a raw tilt-series name.
 
-    Parses the Position_{stage}_{beam} suffix from tomostar-derived names:
+    Keeps the Position_{stage}_{beam} suffix from tomostar-derived names:
       'agg5_20251113_412_Position_11'   -> 'Position_11'
       'agg5_20251113_412_Position_11_2' -> 'Position_11_2'
 
     Falls back to the raw name if the pattern doesn't match.
     """
-    m = _POSITION_RE.search(raw_name)
-    if m:
-        stage = m.group(1)
-        beam = m.group(2)
-        return f"Position_{stage}_{beam}" if beam else f"Position_{stage}"
-    return raw_name
+    parsed = parse_position(raw_name)
+    if parsed is None:
+        return raw_name
+    stage, beam = parsed
+    return f"Position_{stage}_{beam}" if beam else f"Position_{stage}"
 
 
 def shorten_ts_names(items: list[str]) -> dict[str, str]:
@@ -42,11 +41,10 @@ def shorten_ts_names(items: list[str]) -> dict[str, str]:
 def ts_pretty_name(raw_name: str) -> str:
     """Human-friendly tomogram label: 'agg_..._Position_22_2' -> 'Pos 22 · Beam 2'.
     Falls back to the raw name when there's no Position_{stage}[_{beam}] suffix."""
-    m = _POSITION_RE.search(raw_name)
-    if not m:
+    parsed = parse_position(raw_name)
+    if parsed is None:
         return raw_name
-    stage = m.group(1)
-    beam = m.group(2)
+    stage, beam = parsed
     return f"Pos {stage} · Beam {beam}" if beam else f"Pos {stage}"
 
 
@@ -56,12 +54,11 @@ def ts_position_sort_key(raw_name: str):
     Names without a Position_{stage}[_{beam}] suffix sort after parseable ones
     and then alphabetically among themselves so the order is still stable.
     """
-    m = _POSITION_RE.search(raw_name)
-    if not m:
+    parsed = parse_position(raw_name)
+    if parsed is None:
         return (1, float("inf"), 0, raw_name)
-    stage = int(m.group(1))
-    beam = int(m.group(2)) if m.group(2) else 0
-    return (0, stage, beam, raw_name)
+    stage, beam = parsed
+    return (0, stage, beam or 0, raw_name)
 
 
 def sort_ts_by_position(items: list[str]) -> list[str]:

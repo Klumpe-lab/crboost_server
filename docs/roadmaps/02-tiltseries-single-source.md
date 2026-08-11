@@ -130,6 +130,25 @@ the other two copies always did. All ~19 split sites converted, including the en
 (`next_instance_id` builds ids via `str(InstanceId(...))`). `parity_harness.py` left as-is
 (transient stage-0 tool). Edge: empty suffix (`"tm__"`) now decodes as None, not `""`.
 
+## Stage 2 record (done 2026-08-11; py_compile + boot owed)
+
+The audit's "four independent Position regexes" were: `dataset_parsing_service.MDOC_FILENAME_RE`,
+`array_tasks._POSITION_RE` (the task_utils copy, post roadmap-01 3a), `tilt_filter_panel._POS_RE`,
+plus the rsplit-based `_infer_position` in `build.py`. All four now converge on
+`services/tilt_series/build.py`: `parse_position(label) -> (stage, beam|None) | None` is THE
+grammar (end-anchored `Position_(\d+)(?:_(\d+))?$`, beam None = implicit, None = no suffix);
+`infer_position` is its defaults wrapper ((0,1) fallback, made public per plan). Deleted all three
+regex copies; `_parse_mdoc_filename`, `ts_display_name`/`ts_pretty_name`/`ts_position_sort_key`,
+and `_parse_pos_beam` now delegate. Semantic deltas, all deliberate: (a) mdoc filename acceptance
+loosened from `^Position_...` to any name *ending* in `Position_{stage}[_{beam}].mdoc` — prefixed
+mdocs (`W7B4_Position_1.mdoc`) now import instead of "Skipped … unrecognized name"; (b) zero-padded
+stages would display normalized (`Position_011` → `Position_11`) — cosmetic, unseen in real data;
+(c) tilt-filter's unanchored regex is now end-anchored (trailing-junk names no longer half-match).
+The "display of a registry-known TS reads `stage_position`/`beam_position`" clause is deferred to
+stage 3 deliberately: no current display site holds a TiltSeries entity — they hold raw name
+strings from manifests/stars — so the field-read switch lands with each dashboard-on-registry
+section, not as a stage-2 mechanical change.
+
 ## Stages
 
 1. **`InstanceId` value object** (`services/models_base.py`): frozen dataclass with

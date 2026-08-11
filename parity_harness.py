@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from services.dashboard_data import find_job_by_type, job_dir_for, read_tomograms_table
 from services.models_base import JobType
 from services.project_state import get_project_state_for
-from services.tilt_series.build import _infer_position
+from services.tilt_series.build import infer_position
 from services.tilt_series.frameseries_quality import WARP_FRAMESERIES_DIR, read_frame_quality
 from services.tilt_series.registry import TiltSeriesRegistry
 from ui.tomo_dashboard_dialog import (
@@ -90,7 +90,7 @@ def fact_position(reg: TiltSeriesRegistry, rows: list[Row]) -> None:
     """A: Position_* regex (dashboard) vs TiltSeries.stage_position/beam_position."""
     for ts in reg.all_tilt_series():
         try:
-            stage, beam = _infer_position(ts.id)
+            stage, beam = infer_position(ts.id)
         except Exception:
             stage = beam = None
         _row(rows, "position", ts.id, "stage", stage, ts.stage_position, tol=0)

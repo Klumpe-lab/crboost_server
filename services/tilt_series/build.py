@@ -18,6 +18,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -149,7 +150,7 @@ def build_from_mdocs(
 
         ts_label = mdoc_path.stem
         ts_id = f"{project_prefix}{ts_label}" if project_prefix else ts_label
-        stage_position, beam_position = _infer_position(ts_label)
+        stage_position, beam_position = infer_position(ts_label)
 
         # Sort by ZValue to nail down acquisition order.
         sorted_sections = sorted(sections, key=lambda s: int(s.get("ZValue", 0)))
@@ -271,21 +272,29 @@ def _parse_mdoc_datetime(raw) -> datetime | None:
     return None
 
 
-def _infer_position(ts_label: str) -> tuple[int, int]:
-    """Infer stage/beam from a ts_label like 'Position_10' or 'Position_10_2'.
+_POSITION_RE = re.compile(r"Position_(\d+)(?:_(\d+))?$")
 
-    Returns (stage, beam). Beam defaults to 1 when not explicitly present.
-    Returns (0, 1) for labels that don't match the expected pattern — this
-    only affects the cosmetic display fields, not identity.
-    """
-    parts = ts_label.rsplit("_", 2)
-    # Try: "..._Position_10_2" → stage=10, beam=2
-    # Or:  "..._Position_10"    → stage=10, beam=1
-    try:
-        if len(parts) >= 3 and parts[-3].endswith("Position"):
-            return int(parts[-2]), int(parts[-1])
-        if len(parts) >= 2 and parts[-2].endswith("Position"):
-            return int(parts[-1]), 1
-    except ValueError:
-        pass
-    return 0, 1
+
+def parse_position(label: str) -> tuple[int, int | None] | None:
+    """Decode the ``..._Position_{stage}[_{beam}]`` suffix grammar — THE one
+    position parser (roadmap 02 stage 2); nothing else may regex/split for
+    stage/beam. Returns (stage, beam) with beam None when the label carries no
+    explicit beam, or None when the label doesn't end in the suffix at all.
+    Only genuinely-deriving import-time reads and display fallbacks belong
+    here — display of a registry-known TS should read the entity's
+    stage_position/beam_position fields instead."""
+    m = _POSITION_RE.search(label)
+    if not m:
+        return None
+    return int(m.group(1)), (int(m.group(2)) if m.group(2) else None)
+
+
+def infer_position(ts_label: str) -> tuple[int, int]:
+    """`parse_position` with registry-build defaults: implicit beam → 1, and
+    (0, 1) for labels without the suffix — this only affects the cosmetic
+    display fields, not identity."""
+    parsed = parse_position(ts_label)
+    if parsed is None:
+        return 0, 1
+    stage, beam = parsed
+    return stage, beam or 1

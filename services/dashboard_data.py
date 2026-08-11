@@ -19,7 +19,7 @@ from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import InstanceId, JobStatus, JobType, PickListType
 from services.models_base import resolve_species as resolve_species
 from services.models_base import split_species_id as split_species_id
-from services.tilt_series.build import _infer_position
+from services.tilt_series.build import infer_position
 from services.visualization.preview_orchestrator import read_preview_manifest
 
 logger = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ def vis_asset_url(asset_path: str) -> str:
 
 
 def position_label(tomo_name: str) -> tuple[str, tuple[int, int]]:
-    stage, beam = _infer_position(tomo_name)
+    stage, beam = infer_position(tomo_name)
     if stage == 0:
         return tomo_name.rsplit("_", 1)[-1], (stage, beam)
     return f"Pos {stage} · Beam {beam}", (stage, beam)
