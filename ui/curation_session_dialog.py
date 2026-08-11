@@ -185,7 +185,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             ui.separator()
 
             # "Currently loaded" — what the shared live session has open via the REST
-            # swap (backend._curation_loaded). Filled on reconnect + after each Load;
+            # swap (CurationSessionService._curation_loaded). Filled on reconnect + after each Load;
             # hidden until something is loaded. The session is per-user, so this can
             # reflect a tomogram a swap loaded from a different project's dashboard.
             loaded_lbl = ui.label("").classes(
