@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from services.io_slots import JobFileType
-from services.models_base import JobType, ListExtractionState
+from services.models_base import JobType, ListExtractionState, resolve_species
 from services.project_state import MERGED_DIR_NAME
 from services.visualization import picks_filter
 
@@ -58,22 +58,6 @@ class AuthoritativeHandle:
 # ── headless job-dir / species resolution (no UI, no client-context global) ──────────────
 
 
-def _species_id_for_job(state, instance_id: str, job_model) -> str | None:
-    """species_id a per-particle job attaches to — headless re-implementation of
-    ``services.dashboard_data.resolve_species``'s id resolution: ``instance_id`` '__suffix',
-    else ``job_model.species_id``, else the single-species fallback."""
-    suffix = instance_id.split("__", 1)
-    if len(suffix) > 1 and suffix[1]:
-        return suffix[1]
-    sid = getattr(job_model, "species_id", None)
-    if sid:
-        return sid
-    reg = getattr(state, "species_registry", None) or []
-    if len(reg) == 1:
-        return reg[0].id
-    return None
-
-
 def _job_dir(state, instance_id: str, job_model, project_path: Path) -> Path | None:
     """Resolve a job's dir from the EXPLICIT state (``relion_job_name``, then
     ``job_path_mapping``). Local copy of ``services.dashboard_data.job_dir_for`` from when
@@ -97,7 +81,7 @@ def _instance_for_species(state, species_id: str, job_type) -> tuple | None:
     for iid, jm in state.jobs.items():
         if getattr(jm, "job_type", None) != job_type:
             continue
-        if _species_id_for_job(state, iid, jm) == species_id:
+        if resolve_species(state, jm, iid)[1] == species_id:
             return iid, jm
     return None
 

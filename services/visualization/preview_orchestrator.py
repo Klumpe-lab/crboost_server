@@ -96,16 +96,13 @@ def _resolve_and_render_template(
     if project_state is None or (instance_id is None and job_model is None):
         return None
     try:
-        from services.templating.template_metadata import (
-            get_effective_template_path,
-            read_template_header,
-            resolve_species_from_job,
-        )
+        from services.models_base import resolve_species
+        from services.templating.template_metadata import get_effective_template_path, read_template_header
     except Exception as e:
         logger.warning("Template metadata import failed: %s", e)
         return None
     try:
-        species, species_id = resolve_species_from_job(project_state, job_model, instance_id)
+        species, species_id = resolve_species(project_state, job_model, instance_id)
     except Exception as e:
         logger.warning("Species resolution failed: %s", e)
         return None
@@ -232,7 +229,7 @@ def generate_candidate_previews(
     extract job is attached to so we can render a template reference tile in
     the gallery. The species linkage chain (instance_id suffix →
     job_model.species_id → single-species fallback) lives in
-    services.templating.template_metadata.resolve_species_from_job.
+    services.models_base.resolve_species.
     """
     candidates_star = Path(candidates_star)
     tomograms_star = Path(tomograms_star)
