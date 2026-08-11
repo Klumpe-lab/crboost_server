@@ -337,7 +337,7 @@ class PipelineBuilderPanel:
         # consumer's input_optimisation slot to the active merge's synthetic
         # `mergedSources` producer (source_overrides key) so the user doesn't
         # need to manually configure the override.
-        from ui.aggregation_merge_card import apply_aggregation_overrides
+        from services.aggregation_authoritative import apply_aggregation_overrides
 
         apply_aggregation_overrides(state)
 
@@ -596,7 +596,7 @@ def build_pipeline_builder_panel(
     # wire any consumer jobs (Class3D/Refine3D/...) that were added before the
     # merge happened or before the auto-override hook was wired. Cheap to call
     # on every workspace render — only writes when a value would actually change.
-    from ui.aggregation_merge_card import apply_aggregation_overrides
+    from services.aggregation_authoritative import apply_aggregation_overrides
 
     n_wired = apply_aggregation_overrides(current_project_state())
     if n_wired and panel.ui_mgr.is_project_created:

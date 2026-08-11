@@ -1,11 +1,15 @@
 from __future__ import annotations
+import asyncio
+import logging
 from pathlib import Path
 from typing import ClassVar
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams
-from services.models_base import JobType, JobCategory
+from services.models_base import JobStatus, JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
+
+logger = logging.getLogger(__name__)
 
 
 class TiltFilterParams(AbstractJobParams):
@@ -59,3 +63,79 @@ class TiltFilterParams(AbstractJobParams):
     @staticmethod
     def get_input_requirements() -> dict[str, str]:
         return {"ctf": "tsCtf"}
+
+
+# ── commit-time output production (shared by the DL and manual-label paths) ──
+
+
+def _find_tsimport_tomostar_dir(state, project_path: Path) -> Path | None:
+    """Locate the tsImport job's `tomostar/` directory — the source the tilt filter
+    trims (dropping bad-tilt rows) so alignment/CTF/reconstruct inherit the cut."""
+    for _iid, jm in state.jobs.items():
+        if jm.job_type and jm.job_type.value == "tsImport" and jm.execution_status == JobStatus.SUCCEEDED:
+            d = jm.paths.get("tomostar_dir")
+            if d:
+                p = Path(d) if Path(d).is_absolute() else project_path / d
+                if p.is_dir():
+                    return p
+            if jm.relion_job_name:
+                p = project_path / jm.relion_job_name.rstrip("/") / "tomostar"
+                if p.is_dir():
+                    return p
+    return None
+
+
+async def finalize_pipeline_output(state, job_model, ts_data, project_path: Path) -> dict:
+    """Produce the tilt filter's real pipeline output — a trimmed tomostar with the
+    dropped tilts removed — that alignment/CTF/reconstruct consume. Runs at commit for
+    BOTH the DL-assisted and manual-labelling paths (the SLURM driver only runs for the
+    DL pass; manual labelling never dispatches it, so the trim must live here too).
+
+    Sets `job_model.paths['output_tomostar']` so the path resolver wires alignment to
+    it even though this interactive job has no deployed job dir (the resolver falls back
+    to the producer's cached paths for SUCCEEDED interactive jobs). Also stamps the
+    per-tilt verdict into the registry (authoritative record). Returns
+    {"success", "error", "kept", "dropped"}; the UI caller surfaces the outcome."""
+    from services.tilt_series_service import drop_tilts_from_tomostar
+
+    src_tomostar = _find_tsimport_tomostar_dir(state, project_path)
+    if src_tomostar is None:
+        return {
+            "success": False,
+            "error": "Cannot finalize: tsImport tomostar not found (run Import + TS Import first).",
+        }
+
+    df = ts_data.all_tilts_df
+    has_labels = "cryoBoostDlLabel" in df.columns and "cryoBoostKey" in df.columns
+    bad_stems = set(df.loc[df["cryoBoostDlLabel"] != "good", "cryoBoostKey"].tolist()) if has_labels else set()
+
+    out_tomostar = project_path / "TiltFilter" / "tomostar"
+    kept, dropped = await asyncio.to_thread(drop_tilts_from_tomostar, src_tomostar, out_tomostar, bad_stems)
+
+    job_model.paths["output_tomostar"] = str(out_tomostar)
+    # Drop stale slots from the pre-move design so the resolver never wires them.
+    job_model.paths.pop("output_star", None)
+    job_model.paths.pop("output_processing", None)
+
+    # Registry stamp — authoritative record; best-effort, never blocks the commit.
+    try:
+        from services.tilt_series import get_registry_for
+
+        registry = get_registry_for(project_path)
+        if registry.tilt_series_ids() and has_labels:
+            probs = df["cryoBoostDlProbability"] if "cryoBoostDlProbability" in df.columns else [None] * len(df)
+            for stem, is_filt, prob in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), probs, strict=False):
+                try:
+                    registry.set_frame_filtered(
+                        str(stem),
+                        bool(is_filt),
+                        reason="tilt-filter" if is_filt else None,
+                        probability=float(prob) if prob is not None else None,
+                    )
+                except KeyError:
+                    pass
+            await asyncio.to_thread(registry.save)
+    except Exception as e:
+        logger.warning("tilt-filter registry stamp skipped: %s", e)
+
+    return {"success": True, "error": None, "kept": kept, "dropped": dropped}

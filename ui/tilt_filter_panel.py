@@ -21,9 +21,9 @@ from backend import get_backend
 from services.models_base import JobStatus
 from services.project_state import get_state_service
 from ui.current_project import current_project_state
+from services.jobs.tilt_filter import finalize_pipeline_output
 from services.tilt_series_service import (
     apply_labels,
-    drop_tilts_from_tomostar,
     filter_good_tilts,
     generate_tilt_thumbnails,
     get_label_summary,
@@ -163,81 +163,18 @@ def _find_fs_motion_star(project_path):
     return None
 
 
-def _find_tsimport_tomostar_dir(project_path):
-    """Locate the tsImport job's `tomostar/` directory — the source the tilt filter
-    trims (dropping bad-tilt rows) so alignment/CTF/reconstruct inherit the cut."""
-    state = current_project_state()
-    if not state:
-        return None
-    for _iid, jm in state.jobs.items():
-        if jm.job_type and jm.job_type.value == "tsImport" and jm.execution_status == JobStatus.SUCCEEDED:
-            d = jm.paths.get("tomostar_dir")
-            if d:
-                p = Path(d) if Path(d).is_absolute() else project_path / d
-                if p.is_dir():
-                    return p
-            if jm.relion_job_name:
-                p = project_path / jm.relion_job_name.rstrip("/") / "tomostar"
-                if p.is_dir():
-                    return p
-    return None
-
-
-async def _finalize_pipeline_output(job_model, ts_data, project_path) -> bool:
-    """Produce the tilt filter's real pipeline output — a trimmed tomostar with the
-    dropped tilts removed — that alignment/CTF/reconstruct consume. Runs at commit for
-    BOTH the DL-assisted and manual-labelling paths (the SLURM driver only runs for the
-    DL pass; manual labelling never dispatches it, so the trim must live here too).
-
-    Sets `job_model.paths['output_tomostar']` so the path resolver wires alignment to
-    it even though this interactive job has no deployed job dir (the resolver falls back
-    to the producer's cached paths for SUCCEEDED interactive jobs). Also stamps the
-    per-tilt verdict into the registry (authoritative record). The labeled/filtered
-    stars the callers write remain for the dashboard's keep/drop panel."""
-    src_tomostar = _find_tsimport_tomostar_dir(project_path)
-    if src_tomostar is None:
-        ui.notify("Cannot finalize: tsImport tomostar not found (run Import + TS Import first).", type="negative")
-        return False
-
-    df = ts_data.all_tilts_df
-    has_labels = "cryoBoostDlLabel" in df.columns and "cryoBoostKey" in df.columns
-    bad_stems = set(df.loc[df["cryoBoostDlLabel"] != "good", "cryoBoostKey"].tolist()) if has_labels else set()
-
-    out_tomostar = project_path / "TiltFilter" / "tomostar"
-    kept, dropped = await asyncio.to_thread(drop_tilts_from_tomostar, src_tomostar, out_tomostar, bad_stems)
-
-    job_model.paths["output_tomostar"] = str(out_tomostar)
-    # Drop stale slots from the pre-move design so the resolver never wires them.
-    job_model.paths.pop("output_star", None)
-    job_model.paths.pop("output_processing", None)
-
-    # Registry stamp — authoritative record; best-effort, never blocks the commit.
-    try:
-        from services.tilt_series import get_registry_for
-
-        registry = get_registry_for(project_path)
-        if registry.tilt_series_ids() and has_labels:
-            probs = df["cryoBoostDlProbability"] if "cryoBoostDlProbability" in df.columns else [None] * len(df)
-            for stem, is_filt, prob in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), probs, strict=False):
-                try:
-                    registry.set_frame_filtered(
-                        str(stem),
-                        bool(is_filt),
-                        reason="tilt-filter" if is_filt else None,
-                        probability=float(prob) if prob is not None else None,
-                    )
-                except KeyError:
-                    pass
-            await asyncio.to_thread(registry.save)
-    except Exception as e:
-        logger.warning("tilt-filter registry stamp skipped: %s", e)
-
-    ui.notify(
-        f"Filter committed: {kept} tilts kept, {dropped} dropped — alignment will use the trimmed tomostar.",
-        type="positive",
-        timeout=5000,
-    )
-    return True
+def _notify_finalize(res: dict) -> None:
+    """Surface finalize_pipeline_output's outcome — same messages the pre-move
+    inline version emitted."""
+    if res.get("success"):
+        ui.notify(
+            f"Filter committed: {res['kept']} tilts kept, {res['dropped']} dropped — "
+            "alignment will use the trimmed tomostar.",
+            type="positive",
+            timeout=5000,
+        )
+    else:
+        ui.notify(res.get("error") or "Filter commit failed.", type="negative")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -505,7 +442,7 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             await asyncio.to_thread(write_tilt_series, ts_data, labeled_p, "tilt_series_labeled")
 
                             # Produce the real pipeline output (trimmed tomostar) + wire it.
-                            await _finalize_pipeline_output(job_model, ts_data, project_path)
+                            _notify_finalize(await finalize_pipeline_output(state, job_model, ts_data, project_path))
                             job_model.execution_status = JobStatus.SUCCEEDED
                             if state:
                                 state.mark_dirty()
@@ -785,7 +722,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
                 job_model.tilt_labels = dict(labels)
                 # Produce the real pipeline output (trimmed tomostar) + wire it so
                 # alignment consumes the manual cut, not just the display stars.
-                await _finalize_pipeline_output(job_model, ts_data, project_path)
+                _notify_finalize(await finalize_pipeline_output(state, job_model, ts_data, project_path))
                 job_model.execution_status = JobStatus.SUCCEEDED
             if state:
                 state.tilt_filter_labels = labels

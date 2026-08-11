@@ -1,6 +1,9 @@
 """Authoritative-list → optimisation_set resolution + per-species enumeration.
 
-Read-only foundation for seamless cross-tomo/cross-project aggregation
+Read-only foundation (plus ONE mutator, ``apply_aggregation_overrides``, which
+wires consumer jobs' input_optimisation slots at the merged optset — it lives
+here because it is the write-side twin of this module's resolution logic) for
+seamless cross-tomo/cross-project aggregation
 (``docs/LIST_EXTRACTION_AND_AGGREGATION.md`` §8.1–8.2): for each
 ``(species, tomo)`` it resolves the ONE authoritative pick list to a concrete
 ``optimisation_set`` handle plus its DERIVED extraction state, so an aggregator can see —
@@ -20,11 +23,16 @@ This is steps 1–2 of the build order; the gate / auto-extract / roll-up (§8.3
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from services.io_slots import JobFileType
 from services.models_base import JobType, ListExtractionState
+from services.project_state import MERGED_DIR_NAME
 from services.visualization import picks_filter
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -373,6 +381,77 @@ def _main() -> None:
         for h in report.blocked:
             reason = "; ".join(h.notes) or h.extraction_state.value
             print(f"     · BLOCKED  {h.tomo_name} / {h.slug} ({h.kind}: {reason})")
+
+
+# ── consumer wiring — the module's one mutator ───────────────────────────────────────────
+
+
+def apply_aggregation_overrides(state) -> int:
+    """For aggregation projects with a completed merge, point every consumer
+    job's input_optimisation slot at the active merged optimisation_set.star.
+    Idempotent. Returns count of jobs updated.
+
+    Wires via the synthetic merged-sources producer's `source_key` (not a bare
+    `manual:` path) so the IO-config dropdown shows "Merged sources — <name>"
+    selected and the merged optset resolves like any normal producer.
+
+    Writes `source_overrides[slot]` (the resolver key — the single source of
+    truth: the driver's path is re-resolved from it at deploy). Also pre-populates
+    `paths[slot]` for pre-deploy UI display only; that value is discarded and
+    rebuilt by resolve_all_paths at deploy, so it never reaches the driver.
+
+    Also clears stale `is_orphaned` / `missing_inputs` markers since they
+    were written before the override existed.
+
+    Called from three sites:
+      - When a new RP/Class3D/Refine3D is added in an aggregation project.
+      - After a successful merge (retro-wires already-added consumers).
+      - On every workspace render (idempotent self-heal for jobs that pre-date
+        either of the above hooks).
+    """
+    if not getattr(state, "is_aggregation", False):
+        return 0
+    optset = state.active_merged_optset()
+    if optset is None or not optset.exists():
+        logger.debug("apply_aggregation_overrides: no active merged optset")
+        return 0
+
+    optset_str = str(optset)
+    # source_key of the synthetic merged-sources candidate (path_resolution_service.
+    # _add_merged_sources_candidates). instance_path is shared via ProjectState so the
+    # two always agree; the `or` mirrors the candidate's same fallback defensively.
+    instance_path = state.active_merged_optset_instance_path() or MERGED_DIR_NAME
+    override_value = f"{JobType.MERGED_SOURCES.value}:{instance_path}"
+    updated = 0
+    for instance_id, job_model in state.jobs.items():
+        schema = getattr(type(job_model), "INPUT_SCHEMA", None) or []
+        slot_keys = [s.key for s in schema if s.accepts and JobFileType.OPTIMISATION_SET_STAR in s.accepts]
+        if not slot_keys:
+            continue
+        if getattr(job_model, "source_overrides", None) is None:
+            job_model.source_overrides = {}
+        if getattr(job_model, "paths", None) is None:
+            job_model.paths = {}
+        changed = False
+        for k in slot_keys:
+            if job_model.source_overrides.get(k) != override_value:
+                job_model.source_overrides[k] = override_value
+                changed = True
+            # Pre-populate paths so the driver finds the optset even if path
+            # resolution at deploy time somehow loses the override.
+            if job_model.paths.get(k) != optset_str:
+                job_model.paths[k] = optset_str
+                changed = True
+        # Clear stale orphan markers — they were written before the override
+        # existed and would otherwise stick around forever.
+        if changed:
+            if getattr(job_model, "is_orphaned", False):
+                job_model.is_orphaned = False
+            if getattr(job_model, "missing_inputs", None):
+                job_model.missing_inputs = []
+            updated += 1
+            logger.info("apply_aggregation_overrides: wired %s slots %s -> %s", instance_id, slot_keys, optset_str)
+    return updated
 
 
 if __name__ == "__main__":
