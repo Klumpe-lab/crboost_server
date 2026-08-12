@@ -741,10 +741,7 @@ class PipelineRunnerService:
             state = self.backend.state_service.state_for(project_dir)
 
             if state.pipeline_active:
-                return {
-                    "success": False,
-                    "error": "Pipeline is already running. Wait for it to complete or restart the server.",
-                }
+                return err("Pipeline is already running. Wait for it to complete or restart the server.")
 
             pipeline_star = project_dir / "default_pipeline.star"
             if not pipeline_star.exists():
@@ -762,13 +759,13 @@ class PipelineRunnerService:
                     _stdout, stderr = await asyncio.wait_for(init_process.communicate(), timeout=180.0)
                     if init_process.returncode != 0:
                         logger.info("Relion init failed: %s", stderr.decode())
-                        return {"success": False, "error": f"Failed to initialize Relion project: {stderr.decode()}"}
+                        return err(f"Failed to initialize Relion project: {stderr.decode()}")
                     logger.info("Relion project initialized successfully")
                 except TimeoutError:
                     logger.info("Relion init timed out")
                     init_process.kill()
                     await init_process.wait()
-                    return {"success": False, "error": "Relion project initialization timed out"}
+                    return err("Relion project initialization timed out")
 
             scheme_log_dir = project_dir / "Schemes" / scheme_name
             scheme_log_dir.mkdir(parents=True, exist_ok=True)
@@ -827,12 +824,7 @@ class PipelineRunnerService:
                 )
             )
 
-            return {
-                "success": True,
-                "message": f"Pipeline started (PID: {process.pid})",
-                "pid": process.pid,
-                "log_dir": str(scheme_log_dir),
-            }
+            return ok(message=f"Pipeline started (PID: {process.pid})", pid=process.pid, log_dir=str(scheme_log_dir))
 
         except Exception as e:
             import traceback
@@ -844,7 +836,7 @@ class PipelineRunnerService:
                 await self.backend.state_service.save_project(project_path=project_dir, force=True)
             except Exception as save_err:
                 logger.info("Failed to reset pipeline_active after error: %s", save_err)
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     # -------------------------------------------------------------------------
     # Retry path: re-sbatch an existing job dir's supervisor without schemer.
@@ -1174,7 +1166,7 @@ class PipelineRunnerService:
         resolved = project_path.resolve()
         process = self._active_processes.get(resolved)
         if not process:
-            return {"success": False, "error": "No pipeline is running for this project"}
+            return err("No pipeline is running for this project")
 
         pid = process.pid
         logger.info("Stopping schemer PID %s", pid)
@@ -1183,14 +1175,14 @@ class PipelineRunnerService:
             process.terminate()
             try:
                 await asyncio.wait_for(process.wait(), timeout=10.0)
-                return {"success": True, "message": f"Pipeline stopped (PID {pid})"}
+                return ok(message=f"Pipeline stopped (PID {pid})")
             except TimeoutError:
                 logger.info("Schemer didn't respond to SIGTERM, sending SIGKILL")
                 process.kill()
                 await process.wait()
-                return {"success": True, "message": f"Pipeline force-killed (PID {pid})"}
+                return ok(message=f"Pipeline force-killed (PID {pid})")
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     async def stop_and_cleanup(self, project_dir: Path, slurm_job_ids: list[str]) -> dict[str, Any]:
         """
@@ -1225,7 +1217,9 @@ class PipelineRunnerService:
                 jm.execution_status = JobStatus.FAILED
             afterok_state.pipeline_active = False
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
-            return {"success": not errors, "cancelled_slurm_jobs": len(cancelled), "errors": errors}
+            if errors:
+                return err("; ".join(errors), cancelled_slurm_jobs=len(cancelled), errors=errors)
+            return ok(cancelled_slurm_jobs=len(cancelled), errors=[])
 
         resolved = project_dir.resolve()
         process = self._active_processes.get(resolved)
@@ -1322,8 +1316,8 @@ class PipelineRunnerService:
 
         if errors:
             logger.info("Stop completed with non-fatal errors: %s", errors)
-            return {"success": False, "errors": errors}
-        return {"success": True, "cancelled_slurm_jobs": len(normalized_ids)}
+            return err("; ".join(errors), errors=errors)
+        return ok(cancelled_slurm_jobs=len(normalized_ids), errors=[])
 
     async def reset_submission_failure(self, project_dir: Path):
         """
@@ -1362,7 +1356,7 @@ class PipelineRunnerService:
         job_model = state.jobs.get(instance_id)
 
         if not job_model:
-            return {"success": False, "error": f"Job '{instance_id}' not found in state"}
+            return err(f"Job '{instance_id}' not found in state")
 
         # Afterok-orchestrator projects (P1.B): cancel via the persisted supervisor slurm_job_id
         # (authoritative -- works for a still-PENDING dependent with no run.out/manifest), mark the
@@ -1372,7 +1366,7 @@ class PipelineRunnerService:
         # monitor ticking and freeze the rest of the live DAG.
         if getattr(state, "use_afterok_orchestrator", False):
             if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.QUEUED):
-                return {"success": False, "error": f"Job is not live (status: {job_model.execution_status})"}
+                return err(f"Job is not live (status: {job_model.execution_status})")
             cancelled: list = []
             sid = getattr(job_model, "slurm_job_id", None)
             if sid:
@@ -1382,18 +1376,17 @@ class PipelineRunnerService:
                     logger.info("afterok cancel_job scancel warning: %s", res.get("error"))
             job_model.execution_status = JobStatus.FAILED
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
-            return {
-                "success": True,
-                "cancelled_slurm_ids": cancelled,
-                "message": f"Cancelled {instance_id}" + (f" (SLURM {', '.join(cancelled)})" if cancelled else ""),
-            }
+            return ok(
+                cancelled_slurm_ids=cancelled,
+                message=f"Cancelled {instance_id}" + (f" (SLURM {', '.join(cancelled)})" if cancelled else ""),
+            )
 
         if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.SCHEDULED):
-            return {"success": False, "error": f"Job is not running (status: {job_model.execution_status})"}
+            return err(f"Job is not running (status: {job_model.execution_status})")
 
         relion_job_name = job_model.relion_job_name
         if not relion_job_name:
-            return {"success": False, "error": "Job has no relion_job_name -- cannot locate its directory"}
+            return err("Job has no relion_job_name -- cannot locate its directory")
 
         job_dir = project_dir / relion_job_name.rstrip("/")
 
@@ -1467,11 +1460,10 @@ class PipelineRunnerService:
         state.pipeline_active = False
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
-        return {
-            "success": True,
-            "cancelled_slurm_ids": cancelled_ids,
-            "message": (
+        return ok(
+            cancelled_slurm_ids=cancelled_ids,
+            message=(
                 f"Cancelled {relion_job_name}"
                 + (f" (SLURM {', '.join(cancelled_ids)})" if cancelled_ids else " (no active SLURM jobs found)")
             ),
-        }
+        )
