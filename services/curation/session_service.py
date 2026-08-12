@@ -16,6 +16,7 @@ from typing import Any
 
 from services.computing.slurm_service import SlurmService
 from services.configs.config_service import get_config_service
+from services.result import ErrorCode, err, ok
 
 logger = logging.getLogger(__name__)
 
@@ -57,18 +58,15 @@ class CurationSessionService:
         cur = self.config_service.curation
         sif = os.environ.get("CX_SIF") or cur.sif_path
         if not sif or not Path(sif).exists():
-            return {
-                "success": False,
-                "error": (
-                    f"ChimeraX SIF not found (curation.sif_path={cur.sif_path!r}, "
-                    f"CX_SIF={os.environ.get('CX_SIF')!r}). Build it under "
-                    "containers/chimerax_artiax/ and set curation.sif_path in conf.yaml."
-                ),
-            }
+            return err(
+                f"ChimeraX SIF not found (curation.sif_path={cur.sif_path!r}, "
+                f"CX_SIF={os.environ.get('CX_SIF')!r}). Build it under "
+                "containers/chimerax_artiax/ and set curation.sif_path in conf.yaml."
+            )
 
         worker = self.server_dir / "containers" / "chimerax_artiax" / "curation_session.sh"
         if not worker.exists():
-            return {"success": False, "error": f"Worker script missing: {worker}"}
+            return err(f"Worker script missing: {worker}")
 
         # Housekeeping: scancel any zombie curation jobs this project left running
         # (repeated Start clicks / crashed sessions) before launching a fresh one.
@@ -138,11 +136,11 @@ class CurationSessionService:
             )
             stdout, stderr = await proc.communicate()
             if proc.returncode != 0:
-                return {"success": False, "error": f"sbatch failed: {stderr.decode().strip()}"}
+                return err(f"sbatch failed: {stderr.decode().strip()}")
             out = stdout.decode().strip()
             slurm_job_id = out.split()[-1] if out else None
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
         # Persist the SLURM id into the session dir so a fresh UI render (or a
         # different browser tab) can recover + reconnect a session it didn't
@@ -164,12 +162,7 @@ class CurationSessionService:
         )
 
         logger.info("Curation session submitted: SLURM job %s (session %s)", slurm_job_id, session_id)
-        return {
-            "success": True,
-            "slurm_job_id": slurm_job_id,
-            "session_dir": str(session_dir),
-            "session_id": session_id,
-        }
+        return ok(slurm_job_id=slurm_job_id, session_dir=str(session_dir), session_id=session_id)
 
     async def get_curation_session_info(self, session_dir: str, slurm_job_id: str | None = None) -> dict[str, Any]:
         """Poll a launched curation session. Once the job is RUNNING and has
@@ -183,7 +176,7 @@ class CurationSessionService:
                 data.update({"success": True, "status": "ready"})
                 return data
             except Exception as e:
-                return {"success": True, "status": "starting", "detail": f"session.json not readable yet: {e}"}
+                return ok(status="starting", detail=f"session.json not readable yet: {e}")
 
         # No session.json yet — ask SLURM why. query_jobs_by_ids distinguishes the two
         # cases get_user_jobs conflates (get_user_jobs returns [] on squeue failure, which
@@ -200,15 +193,15 @@ class CurationSessionService:
                 state = hit[0] if hit else None
 
         if state in ("PENDING", "CONFIGURING", "SCHEDULED"):
-            return {"success": True, "status": "pending", "slurm_state": state}
+            return ok(status="pending", slurm_state=state)
         if state is not None:
             # RUNNING (or similar) but session.json not visible yet — just started / NFS lag.
-            return {"success": True, "status": "starting", "slurm_state": state}
+            return ok(status="starting", slurm_state=state)
         if not squeue_ok:
             # Couldn't reach the scheduler this tick — keep the spinner up rather than
             # fabricate an "ended" for a job that may well be alive (the transient-squeue
             # false-ended bug). The next 3 s poll re-checks.
-            return {"success": True, "status": "pending", "slurm_state": "scheduler unreachable — retrying"}
+            return ok(status="pending", slurm_state="scheduler unreachable — retrying")
 
         # squeue is healthy and the job is genuinely gone. Only "ended" if the job actually
         # ran (its log exists) — otherwise this is the brief post-sbatch window before it
@@ -218,16 +211,15 @@ class CurationSessionService:
         log_file = sdir / "slurm.log"
         if log_file.exists():
             tail = log_file.read_text()[-1200:].strip()
-            return {
-                "success": True,
-                "status": "ended",
-                "detail": tail
+            return ok(
+                status="ended",
+                detail=tail
                 or (
                     "The session process exited immediately without writing any log — usually a transient "
                     "node-side container/VNC startup failure. Press Try again; it typically lands on a healthy node."
                 ),
-            }
-        return {"success": True, "status": "pending", "slurm_state": "submitting"}
+            )
+        return ok(status="pending", slurm_state="submitting")
 
     async def stop_curation_session(self, slurm_job_id: str | None, project_path: Path | None = None) -> dict[str, Any]:
         """scancel a curation session's SLURM job. With `project_path`, ALSO scancel
@@ -242,7 +234,7 @@ class CurationSessionService:
                 logger.warning("stop_curation_session: project sweep failed: %s", e)
         ids = sorted(set(ids))
         if not ids:
-            return {"success": False, "error": "no SLURM job id"}
+            return err("no SLURM job id")
         return await self.slurm_service.scancel_jobs(ids)
 
     async def _live_project_curation_job_ids(self, project_path: Path) -> list[str]:
@@ -452,7 +444,7 @@ class CurationSessionService:
         node = (session_info or {}).get("node")
         rest_port = (session_info or {}).get("rest_port")
         if not node or not rest_port:
-            return {"success": False, "error": "session has no REST endpoint (no rest_port) — relaunch the session"}
+            return err("session has no REST endpoint (no rest_port) — relaunch the session")
         remote = (
             f"curl -s -G --max-time {int(timeout)} "
             f"--data-urlencode {shlex.quote('command=' + command)} "
@@ -484,7 +476,7 @@ class CurationSessionService:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout + 15)
+            out, err_out = await asyncio.wait_for(proc.communicate(), timeout=timeout + 15)
         except TimeoutError:
             # wait_for cancels the await but not the OS process — reap the orphaned ssh.
             if proc is not None:
@@ -493,17 +485,17 @@ class CurationSessionService:
                     await asyncio.wait_for(proc.wait(), timeout=5)
                 except Exception:
                     pass
-            return {"success": False, "error": f"ChimeraX command timed out after {timeout}s"}
+            return err(f"ChimeraX command timed out after {timeout}s")
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
         if proc.returncode != 0:
-            detail = err.decode(errors="replace").strip() or out.decode(errors="replace").strip()
-            return {"success": False, "error": f"ssh/curl to {node} failed: {detail}"}
+            detail = err_out.decode(errors="replace").strip() or out.decode(errors="replace").strip()
+            return err(f"ssh/curl to {node} failed: {detail}")
         raw = out.decode(errors="replace").strip()
         try:
             data = json.loads(raw)
         except Exception:
-            return {"success": True, "raw": raw}  # non-JSON body (server not in json mode) → treat as ok
+            return ok(raw=raw)  # non-JSON body (server not in json mode) → treat as ok
         cx_err = data.get("error")
         log = data.get("log messages") or {}
         log_err = log.get("error") if isinstance(log, dict) else None
@@ -529,12 +521,12 @@ class CurationSessionService:
                 benign_err = cx_err
             else:
                 real_err = cx_err
-        ok = not real_err
         if real_err:
             logger.info("ChimeraX REST command error: %s — raw: %s", real_err, raw[:1500])
-        elif benign_err or log_err_txt:
+            return err(real_err, log_error=log_err_txt or benign_err, raw=raw, data=data)
+        if benign_err or log_err_txt:
             logger.debug("ChimeraX REST benign diagnostics: %s", raw[:1500])
-        return {"success": ok, "error": real_err, "log_error": log_err_txt or benign_err, "raw": raw, "data": data}
+        return ok(log_error=log_err_txt or benign_err, raw=raw, data=data)
 
     async def save_session_particle_lists(self, session_info: dict[str, Any], dest_dir: Path) -> dict[str, Any]:
         """Best-effort save of every ArtiaX ParticleList currently open in the live
@@ -546,12 +538,12 @@ class CurationSessionService:
 
         info = await self.send_chimerax_command(session_info, "info models")
         if not info.get("success"):
-            return {"success": False, "error": info.get("error") or "could not query session models"}
+            return err(info.get("error") or "could not query session models")
         try:
             jv = (info.get("data") or {}).get("json values") or []
             models = json.loads(jv[0]) if jv and isinstance(jv[0], str) else (jv[0] if jv else [])
         except Exception as e:
-            return {"success": False, "error": f"could not parse model list: {e}"}
+            return err(f"could not parse model list: {e}")
         dest = Path(dest_dir)
         dest.mkdir(parents=True, exist_ok=True)
         model_list = models if isinstance(models, list) else []
@@ -575,7 +567,7 @@ class CurationSessionService:
             res = await self.send_chimerax_command(session_info, f"save {_cxc_quote(out)} partlist {spec}")
             if res.get("success"):
                 saved.append(str(out))
-        return {"success": True, "saved": saved}
+        return ok(saved=saved)
 
     async def save_curation_picks(
         self,
@@ -609,17 +601,18 @@ class CurationSessionService:
                 Path(project_path), tomo_name, species_id=species_id, species_label=species_label
             )
         if dest is None:
-            return {"success": False, "error": "No tomogram is loaded in the session yet — load one first."}
+            return err("No tomogram is loaded in the session yet — load one first.")
         res = await self.save_session_particle_lists(session_info, dest)
         saved = res.get("saved") or []
-        return {
-            "success": res.get("success", False),
-            "error": res.get("error"),
-            "saved": saved,
-            "count": len(saved),
-            "tomo": tomo,
-            "dest": str(dest),
-        }
+        if res.get("success"):
+            return ok(saved=saved, count=len(saved), tomo=tomo, dest=str(dest))
+        return err(
+            res.get("error") or "could not save the session's particle lists",
+            saved=saved,
+            count=len(saved),
+            tomo=tomo,
+            dest=str(dest),
+        )
 
     async def load_into_session(
         self,
@@ -642,7 +635,7 @@ class CurationSessionService:
         from services.visualization import artiax_bridge
 
         if not (session_info or {}).get("rest_port"):
-            return {"success": False, "error": "no live REST session — start a session first"}
+            return err("no live REST session — start a session first")
 
         job_id = str(session_info.get("slurm_job_id") or session_info.get("session_dir") or "")
         # Serialize swaps into the SAME session: two overlapping loads of different
@@ -667,7 +660,7 @@ class CurationSessionService:
                 coords_label=coords_label,
             )
             if not bundle.get("success"):
-                return {"success": False, "error": bundle.get("error") or "could not prepare picks"}
+                return err(bundle.get("error") or "could not prepare picks")
 
             # Point ChimeraX's cwd at this tomo's curation dir so ArtiaX's "Save particle
             # list" dialog defaults there (the worker only sets cwd at launch — it goes
@@ -687,13 +680,13 @@ class CurationSessionService:
                     "tomo_name": tomo_name,
                     "curation_dir": str(out_dir),
                 }
-            return {
-                "success": res.get("success", False),
-                "error": res.get("error"),
-                "loaded": tomo_name,
-                "auto_count": bundle.get("auto_count"),
-                "saved": saved,
-            }
+                return ok(loaded=tomo_name, auto_count=bundle.get("auto_count"), saved=saved)
+            return err(
+                res.get("error") or "ChimeraX load command failed",
+                loaded=tomo_name,
+                auto_count=bundle.get("auto_count"),
+                saved=saved,
+            )
 
     def get_curation_loaded(self, session_info: dict[str, Any]) -> dict[str, Any] | None:
         """What (species, tomo) the live session currently has open via the REST swap,
@@ -746,8 +739,8 @@ class CurationSessionService:
             )
         except Exception as e:
             logger.warning("prepare_curation_bundle failed for %s: %s", tomo_name, e)
-            return {"success": False, "error": str(e)}
-        return {"success": True, **info}
+            return err(str(e))
+        return ok(**info)
 
     def _discover_manual_coords(
         self, project_path: Path, tomo_name: str, *, species_id: str = "", species_label: str = ""
@@ -808,7 +801,7 @@ class CurationSessionService:
         if coords_path is not None:
             chosen = Path(coords_path)
             if not chosen.exists():
-                return {"success": False, "error": f"No such .coords file: {chosen}"}
+                return err(f"No such .coords file: {chosen}")
             discovered: list[str] = [str(chosen)]
         else:
             cands = self._discover_manual_coords(
@@ -816,7 +809,9 @@ class CurationSessionService:
             )
             discovered = [str(c) for c in cands]
             if not cands:
-                return {"success": False, "error": "no_coords_found", "searched": str(cur_dir)}
+                return err(
+                    f"No .coords files found under {cur_dir}", code=ErrorCode.NO_COORDS_FOUND, searched=str(cur_dir)
+                )
             chosen = cands[0]
 
         out_star = cur_dir / "manual.star"
@@ -831,7 +826,7 @@ class CurationSessionService:
             )
         except Exception as e:
             logger.warning("import_curation_picks failed for %s: %s", tomo_name, e)
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
         # Archive the raw .coords for provenance (ArtiaX files carry no author).
         raw_copy = chosen
@@ -845,15 +840,14 @@ class CurationSessionService:
         except Exception as e:
             logger.warning("Could not archive raw import %s: %s", chosen, e)
 
-        return {
-            "success": True,
-            "count": int(count),
-            "out_star": str(out_star),
-            "coords_source": str(chosen),
-            "raw_import": str(raw_copy),
-            "discovered": discovered,
-            "created_by": self.username,
-        }
+        return ok(
+            count=int(count),
+            out_star=str(out_star),
+            coords_source=str(chosen),
+            raw_import=str(raw_copy),
+            discovered=discovered,
+            created_by=self.username,
+        )
 
     async def merge_pick_lists(
         self,
@@ -884,8 +878,8 @@ class CurationSessionService:
             info = await asyncio.to_thread(pick_merge.merge_lists_to_star, srcs, tomo_name, out_star)
         except Exception as e:
             logger.warning("merge_pick_lists failed for %s: %s", tomo_name, e)
-            return {"success": False, "error": str(e)}
-        return {"success": True, **info}
+            return err(str(e))
+        return ok(**info)
 
     async def list_clash_stats(self, star_path: Path, tomo_name: str, radius_ang: float) -> dict[str, Any]:
         """Overlap overview for a list at a chosen radius (Å): how many picks clash
@@ -896,8 +890,8 @@ class CurationSessionService:
             stats = await asyncio.to_thread(pick_merge.clash_stats_star, Path(star_path), tomo_name, float(radius_ang))
         except Exception as e:
             logger.warning("list_clash_stats failed for %s: %s", star_path, e)
-            return {"success": False, "error": str(e)}
-        return {"success": True, **stats}
+            return err(str(e))
+        return ok(**stats)
 
     async def deduplicate_pick_list(self, star_path: Path, tomo_name: str, radius_ang: float) -> dict[str, Any]:
         """Greedy radius-dedup a list's star in place — drop every pick within
@@ -909,5 +903,5 @@ class CurationSessionService:
             info = await asyncio.to_thread(pick_merge.deduplicate_star, Path(star_path), tomo_name, float(radius_ang))
         except Exception as e:
             logger.warning("deduplicate_pick_list failed for %s: %s", star_path, e)
-            return {"success": False, "error": str(e)}
-        return {"success": True, **info}
+            return err(str(e))
+        return ok(**info)

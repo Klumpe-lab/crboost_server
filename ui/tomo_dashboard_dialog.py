@@ -36,6 +36,7 @@ from nicegui import app, context, ui
 from services.configs.user_prefs_service import get_prefs_service
 from services.models_base import InstanceId, JobStatus, JobType, ListExtractionState, PickListType
 from services.project_state import PickList, get_state_service
+from services.result import ErrorCode, err
 from ui.current_project import current_project_state
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import (
@@ -4062,7 +4063,7 @@ def _auto_kick_coords_ingest(
 
         backend = get_backend()
         if backend is None:
-            return {"success": False, "error": "no backend"}
+            return err("no backend")
         progress_cb(0, 0, "ingesting ArtiaX save…")
         result = await backend.import_curation_picks(
             project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id, coords_path=coords
@@ -4103,7 +4104,7 @@ async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -
             project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id
         )
         if not result.get("success"):
-            if result.get("error") == "no_coords_found":
+            if result.get("code") == ErrorCode.NO_COORDS_FOUND:
                 _open_manual_coords_path_dialog(sp, project_path, refresh)
                 return
             ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
