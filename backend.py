@@ -110,6 +110,7 @@ class CryoBoostBackend:
             try:
                 await asyncio.sleep(debounce_s)
             except asyncio.CancelledError:
+                # A newer save superseded this debounce -- dropping the stale one is the point.
                 return
             try:
                 await self.state_service.save_project(project_path=path, force=force)
@@ -498,12 +499,14 @@ class CryoBoostBackend:
                 if (p / "RELION_JOB_EXIT_FAILURE").exists():
                     try:
                         done[od] = ("failed", _json.loads(rj.read_text()) if rj.exists() else {})
-                    except Exception:
+                    except (OSError, ValueError):
+                        # result.json may be mid-write or malformed; the exit marker already decides the status.
                         done[od] = ("failed", {})
                 elif (p / "RELION_JOB_EXIT_SUCCESS").exists() or rj.exists():
                     try:
                         done[od] = ("done", _json.loads(rj.read_text()) if rj.exists() else {})
-                    except Exception:
+                    except (OSError, ValueError):
+                        # result.json may be mid-write or malformed; the exit marker already decides the status.
                         done[od] = ("done", {})
             return done
 
@@ -809,7 +812,8 @@ class CryoBoostBackend:
                             created_at = str(raw_created)[:16]
                             try:
                                 created_ts = datetime.fromisoformat(str(raw_created)).timestamp()
-                            except Exception:
+                            except ValueError:
+                                # Unparsable created_at string -- ctime fallback below kicks in.
                                 created_ts = None
                         creator = data.get("created_by")
                         owner_raw = data.get("owner")
@@ -825,8 +829,8 @@ class CryoBoostBackend:
                             mg = data.get("movies_glob") or ""
                             if mg:
                                 source_directory = str(Path(mg).parent) if "*" in mg else mg
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Unreadable project_params.json for %s -- using fallbacks: %s", item.name, e)
 
                     # Legacy projects (no `mnemonic` persisted) get a
                     # deterministic fallback so the UI always has something
@@ -837,20 +841,23 @@ class CryoBoostBackend:
                             from services.project_nickname import nickname_for
 
                             mnemonic = nickname_for(str(item.resolve()))
-                        except Exception:
+                        except Exception as e:
+                            logger.warning("Nickname fallback failed for %s: %s", item.name, e)
                             mnemonic = ""
 
                     if creator is None:
                         try:
                             creator = pwd.getpwuid(stats.st_uid).pw_name
-                        except Exception:
+                        except KeyError:
+                            # uid absent from the passwd db (LDAP/SSSD miss, foreign uid) -- creator stays unknown.
                             creator = None
 
                     if created_ts is None:
                         # Stable fallback: directory ctime (creation on most filesystems).
                         try:
                             created_ts = item.stat().st_ctime
-                        except Exception:
+                        except OSError:
+                            # Directory vanished/unstat-able mid-scan -- fall back to the scan-time mtime.
                             created_ts = stats.st_mtime
 
                     derived = self._derive_live_status(item, jobs_dict)
@@ -915,7 +922,8 @@ class CryoBoostBackend:
         if pipeline_star.exists():
             try:
                 out["last_activity_ts"] = pipeline_star.stat().st_mtime
-            except Exception:
+            except OSError:
+                # Star deleted between exists() and stat() -- last_activity_ts stays 0.
                 pass
 
         if not isinstance(jobs_dict, dict) or not jobs_dict:
@@ -937,13 +945,15 @@ class CryoBoostBackend:
                     status = "Succeeded"
                     try:
                         out["last_activity_ts"] = max(out["last_activity_ts"], success_marker.stat().st_mtime)
-                    except Exception:
+                    except OSError:
+                        # Marker deleted between exists() and stat() -- keep the current timestamp.
                         pass
                 elif failure_marker.exists():
                     status = "Failed"
                     try:
                         out["last_activity_ts"] = max(out["last_activity_ts"], failure_marker.stat().st_mtime)
-                    except Exception:
+                    except OSError:
+                        # Marker deleted between exists() and stat() -- keep the current timestamp.
                         pass
 
             if status == "Succeeded":
@@ -1120,9 +1130,11 @@ class CryoBoostBackend:
                         parts = line.split(".")[-1].strip().split()
                         if len(parts) >= 3:
                             return int(parts[2])
+            else:
+                logger.warning("header command failed for %s: %s", eer_file_path, result.get("error"))
             return None
         except Exception as e:
-            print(f"Error getting EER frames: {e}")
+            logger.warning("Error getting EER frames for %s: %s", eer_file_path, e)
             return None
 
     async def load_existing_project(self, project_path: str) -> dict[str, Any]:

@@ -3067,7 +3067,7 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
             r = float(radius_in.value or 0)
             stats = await backend.list_clash_stats(star, tomo_name, r)
             if not stats.get("success"):
-                note.set_text("overlap check unavailable")
+                note.set_text(f"overlap check unavailable — {stats.get('error') or 'unknown error'}")
                 return
             nt, nc, nr, na = stats["n_total"], stats["n_clashing"], stats["n_removed"], stats["n_after"]
             if nr <= 0:
