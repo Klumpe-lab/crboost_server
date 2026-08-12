@@ -8,6 +8,7 @@ from pydantic import Field
 from services.jobs._base import AbstractJobParams
 from services.models_base import JobStatus, JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
+from services.result import err, ok
 
 logger = logging.getLogger(__name__)
 
@@ -95,15 +96,12 @@ async def finalize_pipeline_output(state, job_model, ts_data, project_path: Path
     it even though this interactive job has no deployed job dir (the resolver falls back
     to the producer's cached paths for SUCCEEDED interactive jobs). Also stamps the
     per-tilt verdict into the registry (authoritative record). Returns
-    {"success", "error", "kept", "dropped"}; the UI caller surfaces the outcome."""
+    ok(kept=..., dropped=...) or err(...); the UI caller surfaces the outcome."""
     from services.tilt_series_service import drop_tilts_from_tomostar
 
     src_tomostar = _find_tsimport_tomostar_dir(state, project_path)
     if src_tomostar is None:
-        return {
-            "success": False,
-            "error": "Cannot finalize: tsImport tomostar not found (run Import + TS Import first).",
-        }
+        return err("Cannot finalize: tsImport tomostar not found (run Import + TS Import first).")
 
     df = ts_data.all_tilts_df
     has_labels = "cryoBoostDlLabel" in df.columns and "cryoBoostKey" in df.columns
@@ -138,4 +136,4 @@ async def finalize_pipeline_output(state, job_model, ts_data, project_path: Path
     except Exception as e:
         logger.warning("tilt-filter registry stamp skipped: %s", e)
 
-    return {"success": True, "error": None, "kept": kept, "dropped": dropped}
+    return ok(kept=kept, dropped=dropped)

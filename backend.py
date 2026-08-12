@@ -18,6 +18,7 @@ from services.computing.container_service import get_container_service
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
 from services.project_state import get_state_service
+from services.result import err, ok
 from services.computing.slurm_service import SlurmService
 from services.configs.config_service import get_config_service
 from services.curation.session_service import CurationSessionService
@@ -125,7 +126,7 @@ class CryoBoostBackend:
         state = self.state_service.state_for(project_path)
         job_model = state.jobs.get(instance_id)
         if not job_model:
-            return {"success": False, "error": f"Job '{instance_id}' not found"}
+            return err(f"Job '{instance_id}' not found")
 
         # Resolve input paths
         resolver = PathResolutionService(state)
@@ -135,7 +136,7 @@ class CryoBoostBackend:
             )
             job_model.paths.update({k: str(v) for k, v in io_paths.items() if v is not None})
         except Exception as e:
-            return {"success": False, "error": f"Path resolution failed: {e}"}
+            return err(f"Path resolution failed: {e}")
 
         # Create job directory and clean up stale markers from previous runs
         job_dir = project_path / "TiltFilter" / "dl_run"
@@ -202,7 +203,7 @@ class CryoBoostBackend:
                 job_model.execution_status = JobStatus.FAILED
                 state.mark_dirty()
                 await self.state_service.save_project(project_path=project_path, force=True)
-                return {"success": False, "error": f"sbatch failed: {stderr.decode().strip()}"}
+                return err(f"sbatch failed: {stderr.decode().strip()}")
 
             # Parse job ID from "Submitted batch job 12345"
             output = stdout.decode().strip()
@@ -212,13 +213,13 @@ class CryoBoostBackend:
             await self.state_service.save_project(project_path=project_path, force=True)
 
             logger.info("Tilt filter DL submitted: SLURM job %s", slurm_job_id)
-            return {"success": True, "slurm_job_id": slurm_job_id, "job_dir": str(job_dir)}
+            return ok(slurm_job_id=slurm_job_id, job_dir=str(job_dir))
 
         except Exception as e:
             job_model.execution_status = JobStatus.FAILED
             state.mark_dirty()
             await self.state_service.save_project(project_path=project_path, force=True)
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     async def extract_pick_list(
         self,
@@ -315,13 +316,13 @@ class CryoBoostBackend:
             )
             stdout, stderr = await proc.communicate()
             if proc.returncode != 0:
-                return {"success": False, "error": f"sbatch failed: {stderr.decode().strip()}"}
+                return err(f"sbatch failed: {stderr.decode().strip()}")
             output = stdout.decode().strip()
             slurm_job_id = output.split()[-1] if output else None
             logger.info("Per-list extraction submitted: SLURM job %s (%s/%s)", slurm_job_id, species_id, slug)
-            return {"success": True, "slurm_job_id": slurm_job_id, "out_dir": str(out_dir)}
+            return ok(slurm_job_id=slurm_job_id, out_dir=str(out_dir))
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     async def extract_pick_list_and_wait(
         self,
@@ -350,20 +351,19 @@ class CryoBoostBackend:
         results = await self._await_extraction_outdirs([out_dir], timeout_s)
         r = results.get(out_dir)
         if r is None:
-            return {"success": False, "error": "extraction still running — check the SLURM job / tray"}
+            return err("extraction still running — check the SLURM job / tray")
         status, data = r
         if status == "failed":
-            err = data.get("error") or "extraction job failed — see run.err in the list's out dir"
-            return {"success": False, "error": err}
+            return err(data.get("error") or "extraction job failed — see run.err in the list's out dir")
         if not data.get("ok"):
-            return {"success": False, "error": data.get("error") or "extraction produced no usable result"}
+            return err(data.get("error") or "extraction produced no usable result")
         state = self.state_service.state_for(project_path)
         pl = state.get_pick_list(slug, species_id, tomo_name)
         if pl is not None:
             pl.mark_extracted(data["optimisation_set"], int(data.get("count", 0)))
             state.mark_dirty()
             await self.state_service.save_project(project_path=project_path, force=True)
-        return {"success": True, "count": int(data.get("count", 0))}
+        return ok(count=int(data.get("count", 0)))
 
     async def get_authoritative_extraction_status(self, project_path: Path, species_id: str) -> list[dict[str, Any]]:
         """Read-only: per-(species, tomo) authoritative-list extraction status — the
@@ -1025,10 +1025,10 @@ class CryoBoostBackend:
             state.update_modified()
             state.mark_dirty()
             await self.state_service.save_project(project_path=path, force=True)
-            return {"success": True, "owner": state.owner}
+            return ok(owner=state.owner)
         except Exception as e:
             logger.error("Failed to transfer ownership of %s: %s", project_path, e)
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     async def autodetect_parameters(self, mdocs_glob: str) -> dict[str, Any]:
         from services.configs.mdoc_service import get_mdoc_service
@@ -1086,19 +1086,19 @@ class CryoBoostBackend:
 
                 logger.debug("Process completed with return code: %s", process.returncode)
                 if process.returncode == 0:
-                    return {"success": True, "output": stdout.decode(), "error": None}
+                    return ok(output=stdout.decode())
                 else:
-                    return {"success": False, "output": stdout.decode(), "error": stderr.decode()}
+                    return err(stderr.decode(), output=stdout.decode())
 
             except TimeoutError:
                 logger.error("Command timed out after 120 seconds: %s", final_command)
                 process.terminate()
                 await process.wait()
-                return {"success": False, "output": "", "error": "Command execution timed out"}
+                return err("Command execution timed out", output="")
 
         except Exception as e:
             logger.error("Exception in run_shell_command: %s", e)
-            return {"success": False, "output": "", "error": str(e)}
+            return err(str(e), output="")
 
     async def get_pipeline_overview(self, project_path: str):
         """Gets a high-level overview and detailed statuses of all jobs."""
@@ -1133,12 +1133,12 @@ class CryoBoostBackend:
         pipeline_star = Path(project_path) / "default_pipeline.star"
 
         if not pipeline_star.exists():
-            return {"error": "Pipeline file not found"}
+            return err("Pipeline file not found")
 
         try:
             with open(pipeline_star) as f:
                 content = f.read()
 
-            return {"success": True, "content": content, "exists": True}
+            return ok(content=content, exists=True)
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
