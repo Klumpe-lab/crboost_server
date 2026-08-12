@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from services.computing.container_service import get_container_service
+from services.result import err, ok
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ class TemplateService:
         """
         try:
             if not os.path.exists(input_path):
-                return {"success": False, "error": "Input file not found"}
+                return err("Input file not found")
 
             os.makedirs(output_folder, exist_ok=True)
             base = tag if tag else Path(input_path).stem
@@ -136,9 +137,9 @@ class TemplateService:
                 return res_w
 
             if normalize:
-                err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_w, path_b)
-                if err:
-                    return {"success": False, "error": f"Normalization failed: {err}"}
+                norm_err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_w, path_b)
+                if norm_err:
+                    return err(f"Normalization failed: {norm_err}")
             else:
                 cmd_b = f"relion_image_handler --i {path_w} --o {path_b} --multiply_constant -1"
                 res_b = await self.backend.run_shell_command(
@@ -147,10 +148,10 @@ class TemplateService:
                 if not res_b["success"]:
                     return res_b
 
-            return {"success": True, "path_white": path_w, "path_black": path_b}
+            return ok(path_white=path_w, path_black=path_b)
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
 
     async def generate_basic_shape_async(
@@ -203,7 +204,7 @@ class TemplateService:
             return res
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     # =========================================================
     # SPHERICAL MASK
@@ -240,7 +241,7 @@ class TemplateService:
     ) -> dict[str, Any]:
         try:
             if apix_ang <= 0 or box_px <= 0 or diameter_ang <= 0:
-                return {"success": False, "error": "apix, box, and diameter must be positive"}
+                return err("apix, box, and diameter must be positive")
             if soft_edge_pixels < 0:
                 soft_edge_pixels = 0.0
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -276,15 +277,10 @@ class TemplateService:
                 m.set_data(mask)
                 m.voxel_size = apix_ang
 
-            return {
-                "success": True,
-                "path": output_path,
-                "diameter_ang": diameter_ang,
-                "soft_edge_pixels": soft_r_px,
-            }
+            return ok(path=output_path, diameter_ang=diameter_ang, soft_edge_pixels=soft_r_px)
         except Exception as e:
             logger.exception("spherical mask creation failed")
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     # =========================================================
     # RELION MASKING
@@ -308,10 +304,10 @@ class TemplateService:
             )
 
             if res["success"]:
-                return {"success": True, "path": abs_out}
-            return {"success": False, "error": res.get("error", "Unknown error")}
+                return ok(path=abs_out)
+            return err(res.get("error") or "Unknown error")
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     # =========================================================
     # INTERNAL UTILS
@@ -368,25 +364,25 @@ class TemplateService:
             p = Path(file_path)
             if p.exists() and p.is_file():
                 os.remove(p)
-                return {"success": True}
-            return {"success": False, "error": "File not found"}
+                return ok()
+            return err("File not found")
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     def _fetch_pdb_sync(self, pdb_id: str, output_folder: str) -> dict[str, Any]:
         try:
             pdb_id = pdb_id.lower().strip()
             out_path = Path(output_folder) / f"{pdb_id}.cif"
             if out_path.exists():
-                return {"success": True, "path": str(out_path)}
+                return ok(path=str(out_path))
 
             url = f"https://files.rcsb.org/download/{pdb_id}.cif"
             with requests.get(url, stream=True, timeout=30) as r:
                 r.raise_for_status()
                 out_path.write_bytes(r.content)
-            return {"success": True, "path": str(out_path)}
+            return ok(path=str(out_path))
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     def _fetch_emdb_map_sync(self, emdb_id: str, output_folder: str) -> dict[str, Any]:
         try:
@@ -396,7 +392,7 @@ class TemplateService:
             map_path = os.path.join(output_folder, f"emd_{emdb_id}.map")
 
             if os.path.exists(map_path):
-                return {"success": True, "path": map_path}
+                return ok(path=map_path)
 
             with requests.get(url, stream=True, timeout=60) as r:
                 r.raise_for_status()
@@ -409,6 +405,6 @@ class TemplateService:
 
             if os.path.exists(gz_path):
                 os.remove(gz_path)
-            return {"success": True, "path": map_path}
+            return ok(path=map_path)
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
