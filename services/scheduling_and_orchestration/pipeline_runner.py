@@ -1368,17 +1368,21 @@ class PipelineRunnerService:
             if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.QUEUED):
                 return err(f"Job is not live (status: {job_model.execution_status})")
             cancelled: list = []
+            warnings: list[str] = []
             sid = getattr(job_model, "slurm_job_id", None)
             if sid:
                 cancelled = normalize_slurm_ids([str(sid)])
                 res = await self.backend.slurm_service.scancel_jobs(cancelled)
                 if not res.get("success"):
-                    logger.info("afterok cancel_job scancel warning: %s", res.get("error"))
+                    warning = f"scancel failed for {', '.join(cancelled)}: {res.get('error')}"
+                    logger.warning("afterok cancel_job: %s", warning)
+                    warnings.append(warning)
             job_model.execution_status = JobStatus.FAILED
             await self.backend.state_service.save_project(project_path=project_dir, force=True)
             return ok(
                 cancelled_slurm_ids=cancelled,
                 message=f"Cancelled {instance_id}" + (f" (SLURM {', '.join(cancelled)})" if cancelled else ""),
+                warnings=warnings,
             )
 
         if job_model.execution_status not in (JobStatus.RUNNING, JobStatus.SCHEDULED):
@@ -1422,11 +1426,14 @@ class PipelineRunnerService:
         logger.info("IDs to cancel (normalized): %s", ids_to_cancel)
 
         cancelled_ids: list = []
+        warnings: list[str] = []
         if ids_to_cancel:
             result = await self.backend.slurm_service.scancel_jobs(ids_to_cancel)
             cancelled_ids = ids_to_cancel
             if not result["success"]:
-                logger.info("scancel warning: %s", result.get("error"))
+                warning = f"scancel failed for {', '.join(ids_to_cancel)}: {result.get('error')}"
+                logger.warning("cancel_job: %s", warning)
+                warnings.append(warning)
         else:
             logger.info("No SLURM jobs found for %s -- may have already finished", job_dir)
 
@@ -1466,4 +1473,5 @@ class PipelineRunnerService:
                 f"Cancelled {relion_job_name}"
                 + (f" (SLURM {', '.join(cancelled_ids)})" if cancelled_ids else " (no active SLURM jobs found)")
             ),
+            warnings=warnings,
         )

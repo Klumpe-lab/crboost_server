@@ -127,6 +127,7 @@ def derive_keep_state_for_ts(
         try:
             kept_keys.add(_coord_key(row[coord_cols[0]], row[coord_cols[1]], row[coord_cols[2]]))
         except (TypeError, ValueError):
+            # Non-numeric coord in a filtered row — can't key it for matching, skip the row.
             continue
 
     kept_pick_indices: set[int] = set()
@@ -136,6 +137,7 @@ def derive_keep_state_for_ts(
         try:
             key = _coord_key(row[coord_cols[0]], row[coord_cols[1]], row[coord_cols[2]])
         except (TypeError, ValueError):
+            # Non-numeric coord on a candidate row — unmatchable, treat as not kept.
             continue
         if key in kept_keys:
             kept_pick_indices.add(i)
@@ -175,6 +177,7 @@ def save_filtered_picks_for_ts(
         try:
             kept_keys.add(_coord_key(row[coord_cols[0]], row[coord_cols[1]], row[coord_cols[2]]))
         except (TypeError, ValueError):
+            # Non-numeric coord on a candidate row — can't key it, skip (pick just won't match).
             continue
 
     import starfile
@@ -202,6 +205,7 @@ def save_filtered_picks_for_ts(
         try:
             return _coord_key(r[coord_cols[0]], r[coord_cols[1]], r[coord_cols[2]]) in kept_keys
         except (TypeError, ValueError, KeyError):
+            # Missing/non-numeric coord on this row — unmatchable, so not kept.
             return False
 
     df_this_ts_kept = df_this_ts[df_this_ts.apply(_row_in_kept, axis=1)]
@@ -289,7 +293,9 @@ def read_reviewed_counts(subtomo_job_dir: Path) -> dict[str, int]:
         return {}
     try:
         data = json.loads(p.read_text())
-    except (OSError, ValueError):
+    except (OSError, ValueError) as e:
+        # Unreadable/corrupt sidecar — treat as "nothing reviewed", but say so.
+        logger.warning("Could not read review sidecar %s: %s", p, e)
         return {}
     if not isinstance(data, dict):
         return {}
@@ -298,6 +304,7 @@ def read_reviewed_counts(subtomo_job_dir: Path) -> dict[str, int]:
         try:
             out[str(k)] = int(v)
         except (TypeError, ValueError):
+            # Non-int kept-count in sidecar — drop just this TS entry.
             continue
     return out
 
@@ -470,6 +477,7 @@ def derive_keep_state_for_list(source_star: Path, filtered_star: Path | None = N
         try:
             kept_keys.add(_coord_key(r[CENTERED_COLS[0]], r[CENTERED_COLS[1]], r[CENTERED_COLS[2]]))
         except (TypeError, ValueError, KeyError):
+            # Missing/non-numeric coord in filtered row — can't key it, skip the row.
             continue
     kept: set[int] = set()
     for i in range(len(df_src)):
@@ -478,6 +486,7 @@ def derive_keep_state_for_list(source_star: Path, filtered_star: Path | None = N
             if _coord_key(r[CENTERED_COLS[0]], r[CENTERED_COLS[1]], r[CENTERED_COLS[2]]) in kept_keys:
                 kept.add(i)
         except (TypeError, ValueError, KeyError):
+            # Missing/non-numeric coord in source row — unmatchable, treat as not kept.
             continue
     return kept
 
@@ -500,6 +509,7 @@ def sync_filtered_count(pl) -> bool:
     try:
         keep = derive_keep_state_for_list(Path(path))
     except Exception:
+        logger.exception("sync_filtered_count: could not derive keep state for %s", path)
         return False
     new_count = len(keep) if keep is not None else None
     if pl.filtered_count != new_count:

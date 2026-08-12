@@ -556,6 +556,7 @@ class CurationSessionService:
                 "save_session_particle_lists: no models from 'info models' — raw: %s", (info.get("raw") or "")[:1500]
             )
         saved: list[str] = []
+        skipped: list[str] = []
         for m in model_list:
             if not isinstance(m, dict) or m.get("class") != "ParticleList":
                 continue
@@ -567,7 +568,11 @@ class CurationSessionService:
             res = await self.send_chimerax_command(session_info, f"save {_cxc_quote(out)} partlist {spec}")
             if res.get("success"):
                 saved.append(str(out))
-        return ok(saved=saved)
+            else:
+                # Best-effort sweep: one failed list must not abort the rest, but callers see it.
+                logger.warning("save_session_particle_lists: failed to save list %r: %s", name, res.get("error"))
+                skipped.append(name)
+        return ok(saved=saved, skipped=skipped)
 
     async def save_curation_picks(
         self,

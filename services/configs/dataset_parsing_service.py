@@ -169,8 +169,9 @@ class DatasetParsingService:
                         return sub_path.parent
                     # Relative path — assume same dir as mdoc
                     return mdoc_files[0].parent
-            except Exception:
-                pass
+            except Exception as e:
+                # Inference heuristic only — fall back to the mdoc's own directory below.
+                logger.warning("Could not infer frames dir from %s: %s", mdoc_files[0].name, e)
 
             return mdoc_files[0].parent
 
@@ -193,6 +194,8 @@ class DatasetParsingService:
         try:
             z_value = int(z_value_str)
         except (ValueError, TypeError):
+            # Malformed ZValue means the section can't be ordered — drop this tilt.
+            logger.warning("Skipping mdoc section with malformed ZValue %r", z_value_str)
             return None
 
         tilt_angle = 0.0
@@ -200,7 +203,8 @@ class DatasetParsingService:
             try:
                 tilt_angle = float(section["TiltAngle"])
             except (ValueError, TypeError):
-                pass
+                # Malformed TiltAngle — keep the 0.0 placeholder rather than drop the tilt.
+                logger.warning("Malformed TiltAngle %r in mdoc section ZValue=%s", section["TiltAngle"], z_value_str)
 
         sub_frame_path = section.get("SubFramePath", "")
         if not sub_frame_path:
@@ -227,6 +231,7 @@ class DatasetParsingService:
                     mdoc_stats["max_intensity"] = float(parts[1])
                     mdoc_stats["mean_intensity"] = float(parts[2])
                 except (ValueError, TypeError):
+                    # Malformed MinMaxMean — optional per-tilt stats, skip them.
                     pass
         for mdoc_key, stat_key in [
             ("ExposureDose", "exposure_dose"),
@@ -240,6 +245,7 @@ class DatasetParsingService:
                 try:
                     mdoc_stats[stat_key] = float(val)
                 except (ValueError, TypeError):
+                    # Non-numeric mdoc value — optional per-tilt stat, skip it.
                     pass
         ish = section.get("ImageShift", "")
         if ish:
@@ -249,6 +255,7 @@ class DatasetParsingService:
                     mdoc_stats["image_shift_x"] = float(parts[0])
                     mdoc_stats["image_shift_y"] = float(parts[1])
                 except (ValueError, TypeError):
+                    # Malformed ImageShift pair — optional per-tilt stat, skip it.
                     pass
 
         return TiltInfo(
@@ -281,6 +288,7 @@ class DatasetParsingService:
                     result["pixel_size"] = float(src["PixelSpacing"])
                     break
                 except (ValueError, TypeError):
+                    # Non-numeric PixelSpacing — leave unset; acquisition summary shows the gap.
                     pass
 
         # Voltage
@@ -290,6 +298,7 @@ class DatasetParsingService:
                     result["voltage"] = float(src["Voltage"])
                     break
                 except (ValueError, TypeError):
+                    # Non-numeric Voltage — leave unset; acquisition summary shows the gap.
                     pass
 
         # Dose per tilt (from ExposureDose in first section)
@@ -297,6 +306,7 @@ class DatasetParsingService:
             try:
                 result["dose_per_tilt"] = round(float(first["ExposureDose"]), 2)
             except (ValueError, TypeError):
+                # Non-numeric ExposureDose — leave unset; acquisition summary shows the gap.
                 pass
 
         # Tilt axis
@@ -304,11 +314,13 @@ class DatasetParsingService:
             try:
                 result["tilt_axis"] = float(header_kv["Tilt axis angle"])
             except (ValueError, TypeError):
+                # Non-numeric tilt-axis header value — leave unset; summary shows the gap.
                 pass
         elif "RotationAngle" in first:
             try:
                 result["tilt_axis"] = abs(float(first["RotationAngle"]))
             except (ValueError, TypeError):
+                # Non-numeric RotationAngle — leave unset; summary shows the gap.
                 pass
 
         return result

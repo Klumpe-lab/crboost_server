@@ -250,7 +250,7 @@ except Exception as e:
             if sim_box is None:
                 meta = await self.get_structure_metadata(pdb_path)
                 if not meta.get("success"):
-                    return err("Could not determine structure dimensions")
+                    return err(f"Could not determine structure dimensions: {meta.get('error') or 'unknown error'}")
                 max_dim = meta["max_dim"]
                 sim_box = self._calculate_optimal_box(max_dim, sim_apix)
 
