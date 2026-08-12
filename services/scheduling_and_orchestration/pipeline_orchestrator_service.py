@@ -12,6 +12,7 @@ from services.job_models import ImportMoviesParams
 from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS
 from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
 from services.models_base import InstanceId
+from services.result import err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus
 from typing import TYPE_CHECKING
 
@@ -68,7 +69,7 @@ class PipelineOrchestratorService:
 
     async def deploy_and_run_scheme(self, project_dir: Path, selected_instance_ids: list[str]) -> dict[str, Any]:
         if not selected_instance_ids:
-            return {"success": False, "error": "No jobs selected."}
+            return err("No jobs selected.")
 
         state = self.backend.state_service.state_for(project_dir)
 
@@ -77,10 +78,7 @@ class PipelineOrchestratorService:
         # by the time it's reached, relion_job_name and job_path_mapping
         # have already been clobbered, which breaks sync_all_jobs path resolution.
         if state.pipeline_active:
-            return {
-                "success": False,
-                "error": "Pipeline is already running. Wait for it to complete or cancel it first.",
-            }
+            return err("Pipeline is already running. Wait for it to complete or cancel it first.")
 
         # Persist the participating set + order for this run (P1.0 of the orchestrator
         # rework) so a tab-less submitter/reconciler has the pipeline membership
@@ -100,12 +98,7 @@ class PipelineOrchestratorService:
                 instances_to_run.append(instance_id)
 
         if not instances_to_run:
-            return {
-                "success": True,
-                "already_complete": True,
-                "message": "All selected jobs are already finished.",
-                "pid": 0,
-            }
+            return ok(already_complete=True, message="All selected jobs are already finished.", pid=0)
 
         # Orchestrator rework (P1.A): when the project opts into the afterok DAG, submit the WHOLE
         # remaining set (FAILED + fresh) directly via SLURM dependencies. _submit_chain allocates

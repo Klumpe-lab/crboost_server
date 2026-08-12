@@ -83,6 +83,29 @@ again. UI consumption rule: failures render `result["error"]`; branching compare
 - Identify the handful of flows where UI genuinely branches on failure cause (known: no-coords-found,
   no-jobs-selected, curation "nothing open") — those seed `ErrorCode`; everything else is text-only.
 
+## Stage 0 record (gathered 2026-08-12)
+
+Full census in `03-stage0-census.md` (producers per module with line numbers, consumers, mismatch
+table, silent-drop sites). Headlines: 171 producer sites (not ~180); failure keys are `error` ×107,
+`message` ×5 (ALL in `launch_retries` — the live bug), `errors`-list ×2, `detail` ×2 (failure text
+under `success: True`). Exactly ONE cause-branching consumer exists
+(`tomo_dashboard_dialog.py:4106`, `no_coords_found` — the plan's `:4242` reference was stale), so
+`ErrorCode` ships with a single member; "no-jobs-selected" and curation-"nothing open" did NOT earn
+codes (nobody branches / it's `success+count:0`). Two parallel idioms flagged for later folding:
+drivers' `{"ok": ...}` and per-item `{"reason": ...}` records.
+
+## Stage 1 record (done 2026-08-12)
+
+`services/result.py` landed (`ok`/`err` + `ErrorCode(StrEnum)` with `NO_COORDS_FOUND` only).
+Pattern-setter slice converted: `launch_retries` (5 `message` sites → `err()`, kills
+"Failed to start: None" at the producer) + `deploy_and_run_scheme` (3 sites). `backend.start_pipeline`
+is a pass-through; the panel consumer already renders `error` — contract now holds end-to-end.
+
+## Stage 2 record (done 2026-08-12)
+
+`main.py` log format → `%(asctime)s %(levelname).1s %(name)s:%(lineno)d %(message)s`; exception
+policy (three allowed forms, verbatim) + result-idiom rule written into `CLAUDE.md`.
+
 ## Stages
 
 1. **Land `services/result.py`** + convert one vertical slice end-to-end as the pattern-setter:
