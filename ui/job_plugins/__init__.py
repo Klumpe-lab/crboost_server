@@ -104,20 +104,15 @@ def get_extra_tabs(job_type: JobType) -> list[ExtraTab]:
 
 # ---------------------------------------------------------------------------
 # Auto-import plugin modules so their decorators execute at import time.
-# Add new plugin filenames here when you create them.
+# The module list is derived from JobSpec.plugins — when you create a plugin
+# file, list its basename on the job type's row in services/jobs/spec.py.
 # ---------------------------------------------------------------------------
 def _load_plugins():
     import importlib
 
-    _modules = [
-        "ui.job_plugins.fs_motion_and_ctf",
-        "ui.job_plugins.template_match",
-        "ui.job_plugins.subtomo_extraction",
-        "ui.job_plugins.candidate_extract",
-        "ui.job_plugins.tilt_filter",
-        "ui.job_plugins.ts_reconstruct",
-        "ui.job_plugins.array_tasks",
-    ]
+    from services.jobs.spec import JOB_SPECS
+
+    _modules = [f"ui.job_plugins.{name}" for name in dict.fromkeys(m for s in JOB_SPECS for m in s.plugins)]
     for mod in _modules:
         try:
             importlib.import_module(mod)
