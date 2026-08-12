@@ -445,11 +445,17 @@ class PipelineBuilderPanel:
         }
         if labels:
             job_model.tilt_labels = labels
-            job_model.execution_status = JobStatus.SUCCEEDED
-            # Restore output paths if the filtered star already exists on disk
-            filtered_p = state.project_path / "TiltFilter" / "tiltseries_filtered.star"
-            if filtered_p.exists():
-                job_model.paths["output_star"] = str(filtered_p)
+            # Restore the committed pipeline output — the trimmed tomostar dir.
+            # `output_tomostar` is the key the resolver wires into downstream jobs
+            # (finalize_pipeline_output's contract; the legacy `output_star` key is
+            # dead — restoring it leaves the producer resolving to an
+            # External/pending_tiltFilter placeholder that nothing creates).
+            # Only a job whose committed output exists on disk may claim SUCCEEDED;
+            # otherwise the user must re-commit from the panel.
+            out_tomostar = state.project_path / "TiltFilter" / "tomostar"
+            if out_tomostar.is_dir() and any(out_tomostar.iterdir()):
+                job_model.paths["output_tomostar"] = str(out_tomostar)
+                job_model.execution_status = JobStatus.SUCCEEDED
 
     # ── Full rebuild ──────────────────────────────────────────────────────────
 
