@@ -60,7 +60,7 @@ class FsMotionCtfIngestAdapter:
         registry: TiltSeriesRegistry,
         job_dir: Path,
         *,
-        job_instance_id: str = "fsMotionAndCtf",
+        job_instance_id: str,
         warp_folder: str = "warp_frameseries",
         starfile_service: StarfileService | None = None,
     ):

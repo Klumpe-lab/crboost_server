@@ -207,6 +207,20 @@ Kept deliberately: the scalar `import_total_*`/`import_selected_*` counts — th
 holds *imported* TS, so "12 of 14" totals can't be derived from it; the scalars stay the record
 of the import-time selection. `tilt_filter_png_dir` stays (thumbnail cache pointer, not TS data).
 
+## Stage 5 record (code-complete 2026-08-11)
+
+- `job_instance_id` is a REQUIRED keyword on all four ingest adapters. The deleted defaults
+  were dead (every driver passes `instance_id` explicitly) and wrong (`"tsCTF"` isn't even the
+  enum value — it's `"tsCtf"`; a caller relying on the default would have written outputs under
+  a key nothing reads).
+- The `_EER` drift is real (Warp keys strip the full extension chain: movie `<stem>_EER.eer` →
+  key `<stem>`, while `Frame.id` is `<stem>_EER`), so it is BLESSED into the identity contract:
+  rule documented in the `models.py` module docstring, encoded once as `frame_id_to_warp_key()`,
+  resolved via `TiltSeries.frame_by_warp_key()`. The ts_ctf adapter's inline three-branch
+  `_resolve_frame` fallback chain is deleted (its third branch — raw-filename stem — was
+  redundant with `Frame.id` by construction). The other adapters resolve via star movie names
+  (`frame_by_filename`), not Warp keys, and needed no change.
+
 ## Stages
 
 1. **`InstanceId` value object** (`services/models_base.py`): frozen dataclass with

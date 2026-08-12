@@ -58,7 +58,7 @@ class TsAlignmentIngestAdapter:
         registry: TiltSeriesRegistry,
         job_dir: Path,
         *,
-        job_instance_id: str = "tsAlignment",
+        job_instance_id: str,
         warp_folder: str = "warp_tiltseries",
         tomostar_folder: str = "tomostar",
         starfile_service: StarfileService | None = None,
