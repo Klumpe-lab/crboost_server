@@ -96,11 +96,15 @@ def centered_angst_dataframe(coords_angst: np.ndarray) -> pd.DataFrame:
 
 
 @dataclass(frozen=True)
-class TomoFrame:
+class TomogramGeometry:
     """Everything needed to map one tomogram's picks ↔ voxel space.
 
     Build with :meth:`from_tomo_row` from a row of ``tomograms.star``; then
     ``to_voxel`` / ``to_centered_angst`` apply the canonical transform.
+
+    Not to be confused with :class:`services.tilt_series.models.Tomogram` — that is
+    the registry *entity* (stable id, per-job outputs, no geometry); this is the
+    star-derived coordinate frame of one reconstructed volume.
     """
 
     tomo_name: str
@@ -109,7 +113,7 @@ class TomoFrame:
     recon_path: Path | None = None
 
     @classmethod
-    def from_tomo_row(cls, tomo_row: pd.Series, project_root: Path | None = None) -> TomoFrame:
+    def from_tomo_row(cls, tomo_row: pd.Series, project_root: Path | None = None) -> TomogramGeometry:
         recon = tomo_row.get("rlnTomoReconstructedTomogram")
         recon_path = Path(recon) if isinstance(recon, str) and recon else None
         if recon_path is not None and not recon_path.is_absolute() and project_root is not None:

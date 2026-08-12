@@ -22,7 +22,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from services.dataset_models import DatasetOverview, TiltSeriesInfo
+from services.tilt_series.preimport import DatasetOverview, TiltSeriesInfo
 from services.tilt_series.models import Frame, TiltSeries
 
 logger = logging.getLogger(__name__)

@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 from nicegui import ui
 
-from services.dataset_models import DatasetOverview
+from services.tilt_series.preimport import DatasetOverview
 from ui.styles import MONO, SANS as FONT
 
 CLR_HEADING = "#0f172a"

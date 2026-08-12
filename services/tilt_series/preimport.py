@@ -1,12 +1,22 @@
-# services/dataset_models.py
+# services/tilt_series/preimport.py
 """
-Pydantic models for parsed cryo-ET dataset structure.
+Pre-import representation of a cryo-ET dataset: what the mdoc/frame parser sees
+BEFORE a project exists and before registry ingest.
 
-Represents the hierarchical naming convention from the microscope:
+These models represent the hierarchical naming convention from the microscope:
   Position_{stage}_{tilt_idx}_{angle}_{timestamp}_EER.eer       (beam 1, implicit)
   Position_{stage}_{beam}_{tilt_idx}_{angle}_{timestamp}_EER.eer (beam 2+)
   Position_{stage}.mdoc       (beam 1)
   Position_{stage}_{beam}.mdoc (beam 2+)
+
+They are transient parse results (never persisted; the selection cache stores only
+{mdoc_filename: bool}). The registry entities in `services.tilt_series.models`
+(`TiltSeries`/`Frame`) are the post-import single source of truth; the conversion
+from this representation lives in `services.tilt_series.build`
+(`build_from_dataset_overview` / `_build_one_ts`, mapping `ts_label` -> `TiltSeries.id`
+and `TiltInfo` -> `Frame`). This module must stay import-light (pydantic only) —
+`build.py` imports it, and parser services import `build`, so importing either from
+here would create a cycle.
 """
 
 from pathlib import Path
@@ -104,18 +114,18 @@ class AcquisitionSummary(BaseModel):
         w: list[tuple[str, str, str]] = []
         if len(self.pixel_sizes) > 1:
             vals = ", ".join(f"{v:.3f}" for v in self.pixel_sizes)
-            w.append(("pixel_size", "Mixed pixel sizes", f"{vals} \u212b"))
+            w.append(("pixel_size", "Mixed pixel sizes", f"{vals} Å"))
         if len(self.voltages) > 1:
             vals = ", ".join(f"{v:.0f}" for v in self.voltages)
             w.append(("voltage", "Mixed voltages", f"{vals} kV"))
         if len(self.doses) > 1:
             vals = ", ".join(f"{v:.1f}" for v in self.doses)
-            w.append(("dose_per_tilt", "Mixed dose/tilt", f"{vals} e\u207b/\u212b\u00b2"))
+            w.append(("dose_per_tilt", "Mixed dose/tilt", f"{vals} e⁻/Å²"))
         if len(self.tilt_axes) > 1:
             vals = ", ".join(f"{v:.1f}" for v in self.tilt_axes)
-            w.append(("tilt_axis", "Mixed tilt axes", f"{vals}\u00b0"))
+            w.append(("tilt_axis", "Mixed tilt axes", f"{vals}°"))
         if len(self.angle_ranges) > 1:
-            vals = ", ".join(f"[{lo:+.0f}\u00b0..{hi:+.0f}\u00b0]" for lo, hi in self.angle_ranges)
+            vals = ", ".join(f"[{lo:+.0f}°..{hi:+.0f}°]" for lo, hi in self.angle_ranges)
             w.append(("angle_range", "Mixed angle ranges", vals))
         return w
 

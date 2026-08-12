@@ -14,7 +14,13 @@ from pathlib import Path
 from collections.abc import Callable
 
 from services.configs.mdoc_service import get_mdoc_service
-from services.dataset_models import AcquisitionSummary, DatasetOverview, StagePositionInfo, TiltInfo, TiltSeriesInfo
+from services.tilt_series.preimport import (
+    AcquisitionSummary,
+    DatasetOverview,
+    StagePositionInfo,
+    TiltInfo,
+    TiltSeriesInfo,
+)
 from services.tilt_series.build import parse_position
 
 logger = logging.getLogger(__name__)
@@ -27,10 +33,7 @@ class DatasetParsingService:
         self.mdoc_service = get_mdoc_service()
 
     def parse_dataset(
-        self,
-        mdocs_glob: str,
-        frames_dir: str | None = None,
-        progress_cb: Callable[[int, int], None] | None = None,
+        self, mdocs_glob: str, frames_dir: str | None = None, progress_cb: Callable[[int, int], None] | None = None
     ) -> DatasetOverview:
         """
         Parse all mdoc files matching the glob and associate with frame files.
@@ -249,9 +252,12 @@ class DatasetParsingService:
                     pass
 
         return TiltInfo(
-            z_value=z_value, tilt_angle=tilt_angle,
-            frame_filename=frame_filename, frame_path=frame_path,
-            mdoc_stats=mdoc_stats, date_time=section.get("DateTime"),
+            z_value=z_value,
+            tilt_angle=tilt_angle,
+            frame_filename=frame_filename,
+            frame_path=frame_path,
+            mdoc_stats=mdoc_stats,
+            date_time=section.get("DateTime"),
         )
 
     def _extract_acquisition_params(self, mdoc_data: dict) -> dict:

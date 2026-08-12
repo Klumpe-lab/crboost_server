@@ -221,6 +221,25 @@ of the import-time selection. `tilt_filter_png_dir` stays (thumbnail cache point
   redundant with `Frame.id` by construction). The other adapters resolve via star movie names
   (`frame_by_filename`), not Warp keys, and needed no change.
 
+## Stage 6 record (code-complete 2026-08-12; stages 0–5 runtime-confirmed same day)
+
+- Runtime checklist for stages 3–5 confirmed by the maintainer 2026-08-12 (Journey ghost rows gone,
+  registry label round-trip works, roster/sandbox checks pass). Fresh-run parity harness still owed.
+- `services/dataset_models.py` folded verbatim into `services/tilt_series/preimport.py` as the
+  explicit pre-import representation; module docstring documents the conversion
+  (`build.build_from_dataset_overview`/`_build_one_ts`) and the import-light constraint (pydantic
+  only — `build.py` imports it and the parser services import `build`, so importing either from
+  `preimport` would cycle). Four import sites re-pointed; old module deleted, no shim.
+- `TomoFrame` → `TomogramGeometry` (`services/visualization/coords.py` definition;
+  `artiax_bridge.py` call sites; `session_service.py` docstring). Purely internal — nothing on disk
+  embeds the class name. Docstring added distinguishing it from the registry entity
+  `services.tilt_series.models.Tomogram` (stable id, per-job outputs, no geometry).
+- FINDING (deferred, behavior change — quarantined per shared rules):
+  `build_from_dataset_overview` has **zero callers**. Live ingest is `build_from_mdocs` re-parsing
+  mdocs in `project_service.py:313-330`, while the already-parsed `DatasetOverview` from the import
+  panel is thrown away. Wiring the overview path in (and collapsing the two documented divergences,
+  `prior_dose` vs `PriorRecordDose` and MinMaxMean ordering) is a separate, explicit commit.
+
 ## Stages
 
 1. **`InstanceId` value object** (`services/models_base.py`): frozen dataclass with
