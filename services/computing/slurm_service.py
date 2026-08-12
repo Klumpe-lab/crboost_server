@@ -10,6 +10,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 from services.configs.config_service import get_config_service
+from services.result import err, ok
 
 logger = logging.getLogger(__name__)
 
@@ -590,13 +591,13 @@ class SlurmService:
 
     async def scancel_jobs(self, job_ids: list[str]) -> dict[str, Any]:
         if not job_ids:
-            return {"success": True, "cancelled": []}
+            return ok(cancelled=[])
         success, _stdout, stderr = await self._run_command(["scancel", *job_ids])
         if success:
             logger.info("Cancelled jobs: %s", job_ids)
-            return {"success": True, "cancelled": job_ids}
+            return ok(cancelled=job_ids)
         logger.info("scancel returned non-zero (may be already gone): %s", stderr.strip())
-        return {"success": False, "error": stderr.strip(), "cancelled": job_ids}
+        return err(stderr.strip(), cancelled=job_ids)
 
     async def get_cluster_summary(self) -> dict[str, Any]:
         partitions = await self.get_partitions_info()
@@ -619,9 +620,8 @@ class SlurmService:
     async def get_slurm_partitions(self) -> dict[str, Any]:
         try:
             partitions = await self.get_partitions_info()
-            return {
-                "success": True,
-                "partitions": [
+            return ok(
+                partitions=[
                     {
                         "name": p.name,
                         "state": p.state,
@@ -633,17 +633,16 @@ class SlurmService:
                         "memory": p.default_mem_per_cpu,
                     }
                     for p in partitions
-                ],
-            }
+                ]
+            )
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     async def get_slurm_nodes(self, partition: str | None = None) -> dict[str, Any]:
         try:
             nodes = await self.get_nodes_info(partition)
-            return {
-                "success": True,
-                "nodes": [
+            return ok(
+                nodes=[
                     {
                         "name": n.name,
                         "partition": n.partition,
@@ -655,10 +654,10 @@ class SlurmService:
                         "features": n.features or [],
                     }
                     for n in nodes
-                ],
-            }
+                ]
+            )
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     def clear_cache(self):
         self._cache.clear()
@@ -668,9 +667,8 @@ class SlurmService:
         try:
             jobs = await self.get_user_jobs(force_refresh=force_refresh)
             logger.debug("Backend returning %d jobs", len(jobs))
-            return {
-                "success": True,
-                "jobs": [
+            return ok(
+                jobs=[
                     {
                         "job_id": j.job_id,
                         "name": j.name,
@@ -683,18 +681,18 @@ class SlurmService:
                         "stdout_path": j.stdout_path,
                     }
                     for j in jobs
-                ],
-            }
+                ]
+            )
         except Exception as e:
             logger.error("Failed to get user jobs: %s", e)
             import traceback
 
             traceback.print_exc()
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     async def get_slurm_summary(self, force_refresh: bool = False) -> dict[str, Any]:
         try:
             summary = await self.get_cluster_summary()
-            return {"success": True, "summary": summary}
+            return ok(summary=summary)
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))

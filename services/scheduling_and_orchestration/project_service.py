@@ -18,6 +18,7 @@ from services.project_state import (
     # CHANGED: new registry functions
     set_project_state_for,
 )
+from services.result import err, ok
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 
 if TYPE_CHECKING:
@@ -47,7 +48,7 @@ class DataImportService:
 
             if not movies_glob or not mdocs_glob:
                 logger.info("Skipping data import - patterns are empty.")
-                return {"success": True, "message": "Skipped data import (empty patterns)."}
+                return ok(message="Skipped data import (empty patterns).")
 
             source_movie_dir = Path(movies_glob).parent
 
@@ -58,7 +59,7 @@ class DataImportService:
                 mdoc_files = glob.glob(mdocs_glob)
 
             if not mdoc_files:
-                return {"success": False, "error": f"No .mdoc files found with pattern: {mdocs_glob}"}
+                return err(f"No .mdoc files found with pattern: {mdocs_glob}")
 
             for mdoc_path_str in mdoc_files:
                 mdoc_path = Path(mdoc_path_str)
@@ -88,9 +89,9 @@ class DataImportService:
 
                 self.mdoc_service.write_mdoc_file(parsed_mdoc, new_mdoc_path)
 
-            return {"success": True, "message": f"Imported {len(mdoc_files)} tilt-series."}
+            return ok(message=f"Imported {len(mdoc_files)} tilt-series.")
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     async def setup_project_data(
         self,
@@ -145,7 +146,7 @@ class ProjectService:
                     state.jobs.pop(iid, None)
                     state.job_path_mapping.pop(iid, None)
                 await self.backend.state_service.save_project(project_path=project_dir, force=True)
-                return {"success": True, "message": f"Job {job_name} removed from project state."}
+                return ok(message=f"Job {job_name} removed from project state.")
 
             all_orphans = []
             deleted_count = 0
@@ -172,30 +173,26 @@ class ProjectService:
             await self.backend.pipeline_runner.sync_all_jobs(str(project_dir))
 
             if errors:
-                return {
-                    "success": False,
-                    "error": f"Partial failure: {'; '.join(errors)}",
-                    "deleted_count": deleted_count,
-                    "orphaned_jobs": all_orphans,
-                }
+                return err(
+                    f"Partial failure: {'; '.join(errors)}", deleted_count=deleted_count, orphaned_jobs=all_orphans
+                )
 
-            return {
-                "success": True,
-                "message": f"Deleted {deleted_count} job instance(s)."
+            return ok(
+                message=f"Deleted {deleted_count} job instance(s)."
                 + (
                     f" Warning: {len(all_orphans)} downstream job(s) now have broken inputs: {all_orphans}"
                     if all_orphans
                     else ""
                 ),
-                "deleted_count": deleted_count,
-                "orphaned_jobs": all_orphans,
-            }
+                deleted_count=deleted_count,
+                orphaned_jobs=all_orphans,
+            )
 
         except Exception as e:
             import traceback
 
             traceback.print_exc()
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     def set_project_root(self, project_dir: Path):
         """Set the project root for path resolution and update state."""
@@ -279,9 +276,9 @@ class ProjectService:
             if not import_result["success"]:
                 return import_result
 
-            return {"success": True, "message": "Project directory structure created and data imported."}
+            return ok(message="Project directory structure created and data imported.")
         except Exception as e:
-            return {"success": False, "error": f"Failed during directory setup: {e!s}"}
+            return err(f"Failed during directory setup: {e!s}")
 
     async def _setup_qsub_templates(self, project_dir: Path):
         """Copy qsub.sh to project root for relion_schemer to find."""
@@ -369,7 +366,7 @@ class ProjectService:
 
             # 1. Standard Setup (Dirs, Data Import)
             if project_dir.exists():
-                return {"success": False, "error": f"Project directory '{project_dir}' already exists."}
+                return err(f"Project directory '{project_dir}' already exists.")
 
             import getpass
             from services.project_nickname import nickname_for
@@ -492,13 +489,13 @@ class ProjectService:
             )
             await proc.wait()
 
-            return {"success": True, "message": f"Project '{project_name}' created.", "project_path": str(project_dir)}
+            return ok(message=f"Project '{project_name}' created.", project_path=str(project_dir))
 
         except Exception as e:
             import traceback
 
             traceback.print_exc()
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     async def load_project_state(self, project_path: str) -> dict[str, Any]:
         """
@@ -507,11 +504,11 @@ class ProjectService:
         try:
             project_dir = Path(project_path)
             if not project_dir.exists():
-                return {"success": False, "error": f"Project path not found: {project_path}"}
+                return err(f"Project path not found: {project_path}")
 
             params_file = project_dir / "project_params.json"
             if not params_file.exists():
-                return {"success": False, "error": "No project_params.json found"}
+                return err("No project_params.json found")
 
             # Manually read data_sources for compatibility
             movies_glob = ""
@@ -537,7 +534,7 @@ class ProjectService:
             load_success = await self.backend.state_service.load_project(params_file)
 
             if not load_success:
-                return {"success": False, "error": f"StateService failed to load project from {params_file}"}
+                return err(f"StateService failed to load project from {params_file}")
 
             # CHANGED: use explicit path to get the state we just loaded
             state = self.backend.state_service.state_for(project_dir)
@@ -573,15 +570,11 @@ class ProjectService:
             project_name = state.project_name
             selected_jobs = list(state.jobs.keys())
 
-            return {
-                "success": True,
-                "project_name": project_name,
-                "selected_jobs": selected_jobs,
-                "movies_glob": movies_glob,
-                "mdocs_glob": mdocs_glob,
-            }
+            return ok(
+                project_name=project_name, selected_jobs=selected_jobs, movies_glob=movies_glob, mdocs_glob=mdocs_glob
+            )
         except Exception as e:
             import traceback
 
             traceback.print_exc()
-            return {"success": False, "error": str(e)}
+            return err(str(e))
