@@ -106,6 +106,34 @@ is a pass-through; the panel consumer already renders `error` — contract now h
 `main.py` log format → `%(asctime)s %(levelname).1s %(name)s:%(lineno)d %(message)s`; exception
 policy (three allowed forms, verbatim) + result-idiom rule written into `CLAUDE.md`.
 
+## Stage 3 record (done 2026-08-12)
+
+All producer modules converted to `ok()`/`err()` — 163 sites total, four grouped commits (module
+groups rather than strictly one-module-per-commit; each group's consumers checked against the
+census before conversion):
+
+- orchestrator + runner (27): includes `stop_and_cleanup`'s `errors`-list shape gaining a joined
+  `error` message (the `errors` payload key kept for the panel's success-with-warnings reader).
+- backend + project_service + slurm_service + jobs/tilt_filter (52): includes the
+  `debug_pipeline_status` missing-`success` fix and dropping two defensive `error: None` keys
+  (consumers verified failure-branch-only first).
+- templating (41): PyMOL embedded-script `{"success": ...}` strings left untouched (subprocess
+  wire format); None-guards added to upstream-error re-wraps.
+- session_service (38) + the enum switch: `no_coords_found` now travels as
+  `code=ErrorCode.NO_COORDS_FOUND` with real prose in `error`; `tomo_dashboard_dialog` branches on
+  the code (StrEnum value keeps wire compat). Variable-success pass-throughs split into explicit
+  branches with never-None error text.
+- Stragglers converted in the final sweep: `pipeline_deletion_service.preview_deletion` (4),
+  `tomo_dashboard_dialog` "no backend" literal (1).
+
+Recurring hazard worth knowing: locals named `err`/`ok` shadowed the helpers in five functions
+(`_submit_chain`, `process_volume_async`, `_process_simulated_map`, `send_chimerax_command`,
+`extract_pick_list_and_wait`) — all renamed. Sanctioned remaining `"success":` literals:
+`result.py` itself, `session_service.py:176` (`data.update` merge over disk-loaded session.json),
+the two PyMOL script strings, one docstring. Deferred to stage 4+: driver `{"ok": ...}` idiom,
+per-item `{"reason": ...}` records, `DeletionResult` dataclass (dead `error` field), silent-drop
+consumer sites listed in the census.
+
 ## Stages
 
 1. **Land `services/result.py`** + convert one vertical slice end-to-end as the pattern-setter:
