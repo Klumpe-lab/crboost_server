@@ -191,6 +191,12 @@ class PathResolutionService:
                     missing_required.append(f"{slot.key} accepts={[t.value for t in slot.accepts]}")
                 continue
 
+            gap = self._interactive_producer_gap(chosen)
+            if gap:
+                if slot.required:
+                    missing_required.append(f"{slot.key}: {gap}")
+                continue
+
             resolved_inputs.append(
                 ResolvedInput(
                     input_key=slot.key,
@@ -423,6 +429,18 @@ class PathResolutionService:
                     f"No valid source found (accepts: {[t.value for t in slot.accepts]})" if slot.required else None
                 ),
                 is_user_override=is_user_override,
+            )
+
+        gap = self._interactive_producer_gap(chosen)
+        if gap:
+            return InputSlotValidation(
+                slot_key=slot_key,
+                is_valid=not slot.required,
+                source_key=chosen.source_key,
+                resolved_path=chosen.path,
+                file_exists=False,
+                is_user_override=is_user_override,
+                error_message=gap,
             )
 
         is_pending = "pending_" in chosen.path
@@ -694,6 +712,24 @@ class PathResolutionService:
             return str((predicted_dir / slot.path_template).resolve())
 
         return None
+
+    def _interactive_producer_gap(self, candidate: OutputCandidate) -> str | None:
+        """A `pending_<instance>` path is a promise that the dispatcher will create
+        the dir when it deploys the producer — a promise interactive jobs (never
+        dispatched) cannot make. An interactive producer in the candidate pool is
+        SUCCEEDED by construction (see _build_output_index), so a placeholder path
+        means its committed output was never recorded on the job model; wiring it
+        downstream guarantees a runtime crash. Surface the gap at resolve time."""
+        if "pending_" not in candidate.path:
+            return None
+        jm = self.state.jobs.get(candidate.producer_instance_id)
+        if jm is None or not getattr(jm, "IS_INTERACTIVE", False):
+            return None
+        return (
+            f"interactive producer '{candidate.producer_instance_id}' has no committed output on disk "
+            f"(path would be the placeholder {candidate.path}, which nothing creates) — "
+            f"open its panel, commit/save its output, then requeue"
+        )
 
     def invalidate_cache(self):
         """Call when state changes to rebuild the output index."""

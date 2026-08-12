@@ -112,10 +112,7 @@ def get_driver_context(expected_type: type[T] | None = None) -> tuple[ProjectSta
         context_paths = get_context_paths(job_type, job_model, job_dir)
         fresh_paths = {**context_paths, **io_paths}
     except PathResolutionError as e:
-        print(
-            f"FATAL: path resolution failed for instance '{instance_id}' at drive time: {e}",
-            file=sys.stderr,
-        )
+        print(f"FATAL: path resolution failed for instance '{instance_id}' at drive time: {e}", file=sys.stderr)
         sys.exit(1)
 
     local_paths = {k: str(v) for k, v in fresh_paths.items() if v is not None}
@@ -137,14 +134,7 @@ def get_driver_context(expected_type: type[T] | None = None) -> tuple[ProjectSta
         flush=True,
     )
 
-    return (
-        project_state,
-        job_model,
-        context_data,
-        job_dir,
-        project_path,
-        job_type,
-    )
+    return (project_state, job_model, context_data, job_dir, project_path, job_type)
 
 
 # Seconds of complete silence from a tool before run_command treats it as hung.
@@ -320,13 +310,15 @@ def run_command_with_retries(
             if attempt >= attempts:
                 print(
                     f"[retry] {label}: failed after {attempts} attempts (exit {e.returncode}); giving up",
-                    file=sys.stderr, flush=True,
+                    file=sys.stderr,
+                    flush=True,
                 )
                 raise
             print(
                 f"[retry] {label}: attempt {attempt}/{attempts} failed (exit {e.returncode}); "
                 f"retrying in {retry_delay}s",
-                file=sys.stderr, flush=True,
+                file=sys.stderr,
+                flush=True,
             )
             time.sleep(retry_delay)
 
@@ -364,13 +356,22 @@ def diagnose_stale_producer(path: Path) -> str:
         if not found:
             return ""
         listed = "\n        ".join(str(p) for p in found)
-        return (
-            f"\n  ↳ A populated '{name}' exists elsewhere:\n        {listed}"
-            f"\n  ↳ LIKELY CAUSE: stale job-number mapping after an aborted+redeployed scheme run —"
-            f" the predicted External/jobNNN drifted behind RELION's actual assignment, so this job"
-            f" points at an empty stub ({job_dir.name}) instead of the real producer output."
-            f"\n     See docs/ORCHESTRATOR_ROADMAP.md (job-number off-by-one)."
-        )
+        if job_dir.name.startswith("pending_"):
+            producer = job_dir.name.removeprefix("pending_")
+            cause = (
+                f"\n  ↳ LIKELY CAUSE: producer '{producer}' was never deployed — a pending_* placeholder"
+                f" dir is only materialized when the producer is dispatched. For an interactive job"
+                f" (e.g. tilt filter) this means its committed output path was not recorded on the job:"
+                f" open its panel, re-commit, and requeue the downstream jobs."
+            )
+        else:
+            cause = (
+                f"\n  ↳ LIKELY CAUSE: stale job-number mapping after an aborted+redeployed scheme run —"
+                f" the predicted External/jobNNN drifted behind RELION's actual assignment, so this job"
+                f" points at an empty stub ({job_dir.name}) instead of the real producer output."
+                f"\n     See docs/ORCHESTRATOR_ROADMAP.md (job-number off-by-one)."
+            )
+        return f"\n  ↳ A populated '{name}' exists elsewhere:\n        {listed}" + cause
     except Exception:
         return ""
 
