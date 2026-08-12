@@ -821,6 +821,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 )
                 prefs_service.save_to_app_storage(app.storage.user)
 
+                # Load report (roadmap 03 stage 5): anything load() had to drop or
+                # reset is surfaced once here instead of dying in the server log.
+                if state.load_warnings:
+                    n = len(state.load_warnings)
+                    shown = "; ".join(state.load_warnings[:3])
+                    more = f" (+{n - 3} more, see server log)" if n > 3 else ""
+                    ui.notify(f"Project loaded with {n} warning(s): {shown}{more}", type="warning", timeout=10000)
+
                 if state.pipeline_active:
                     ui_mgr.set_pipeline_running(True)
                     ui.notify(

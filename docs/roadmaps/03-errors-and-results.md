@@ -134,6 +134,37 @@ the two PyMOL script strings, one docstring. Deferred to stage 4+: driver `{"ok"
 per-item `{"reason": ...}` records, `DeletionResult` dataclass (dead `error` field), silent-drop
 consumer sites listed in the census.
 
+## Stage 4 record (done 2026-08-12)
+
+Silent-swallow triage in the census-flagged files — ~35 sites converted to the three allowed
+forms, ~12 counted already-compliant:
+
+- `backend.py` (13): `get_projects` scan fallbacks narrowed (`OSError`/`KeyError`/`ValueError` +
+  why-comments), `_derive_live_status` stat-races narrowed, `get_eer_frames_per_tilt` now logs the
+  discarded error text before returning None.
+- `pipeline_runner.cancel_job`: scancel failures upgraded to `logger.warning` AND threaded into
+  the result as `warnings=[...]` on both branches (success semantics unchanged; sole consumer
+  reads via `.get`, inert).
+- `dataset_parsing_service.py` (11): per-tilt/acquisition parse skips narrowed to
+  `(ValueError, TypeError)` with visibility (dropped tilts now logged).
+- `picks_filter.py` (9): per-item skips narrowed + why-comments; `sync_filtered_count`'s banned
+  `except Exception: return False` now `logger.exception` + same return.
+- One-offs: `pdb_service` dimension error carries the underlying cause;
+  `save_session_particle_lists` reports partial failure via `skipped=[...]`; dashboard overlap
+  note shows the reason.
+
+## Stage 5 record (done 2026-08-12) — ROADMAP CODE-COMPLETE
+
+`ProjectState.load()`: the six silent-discard blocks (species registry, imported_tomograms,
+aggregation sources/merges, pick_lists, per-job deserialize) now `logger.exception` + append a
+human-readable message to `ProjectState.load_warnings` (new transient field, `exclude=True` —
+never persisted). `ui/data_import_panel.handle_load_project` toasts the report once after project
+open (first 3 messages + count). Schema drift can no longer silently delete curation state.
+
+Owed: the runtime checklist below (trigger failure paths, read toasts, tail the log for
+`name:lineno`). Deferred beyond this roadmap: drivers' `{"ok": ...}` idiom (roadmap 04 territory),
+per-item `{"reason": ...}` records, `DeletionResult` dead `error` field.
+
 ## Stages
 
 1. **Land `services/result.py`** + convert one vertical slice end-to-end as the pattern-setter:

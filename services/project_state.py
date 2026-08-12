@@ -594,6 +594,12 @@ class ProjectState(BaseModel):
     owner: str | None = None
     job_path_mapping: dict[str, str] = Field(default_factory=dict)
 
+    # Transient load report (roadmap 03 stage 5): human-readable messages for every
+    # block load() had to drop or reset (schema drift, corrupt sub-payloads). Shown
+    # once in the UI after project open so silent data loss becomes visible.
+    # exclude=True — never persisted; it describes THIS load, not the project.
+    load_warnings: list[str] = Field(default_factory=list, exclude=True)
+
     movies_glob: str = ""
     mdocs_glob: str = ""
 
@@ -980,7 +986,8 @@ class ProjectState(BaseModel):
         try:
             project_state.species_registry = [ParticleSpecies(**s) for s in data.get("species_registry", [])]
         except Exception as e:
-            logger.warning("Could not load species registry: %s", e)
+            logger.exception("Could not load species registry")
+            project_state.load_warnings.append(f"Species registry could not be loaded and was reset ({e})")
             project_state.species_registry = []
 
         it = data.get("imported_tomograms")
@@ -988,7 +995,8 @@ class ProjectState(BaseModel):
             try:
                 project_state.imported_tomograms = ImportedTomograms(**it)
             except Exception as e:
-                logger.warning("Could not load imported_tomograms: %s", e)
+                logger.exception("Could not load imported_tomograms")
+                project_state.load_warnings.append(f"Imported-tomograms record could not be loaded ({e})")
 
         # Restore aggregation state (cross-project merge). load() is field-by-field,
         # so these MUST be restored explicitly -- otherwise a reloaded project (a UI
@@ -1006,19 +1014,22 @@ class ProjectState(BaseModel):
                 for s in data.get("aggregation_sources", [])
             ]
         except Exception as e:
-            logger.warning("Could not load aggregation_sources: %s", e)
+            logger.exception("Could not load aggregation_sources")
+            project_state.load_warnings.append(f"Aggregation sources could not be loaded and were reset ({e})")
             project_state.aggregation_sources = []
         try:
             project_state.aggregation_merges = [AggregationMerge(**m) for m in data.get("aggregation_merges", [])]
         except Exception as e:
-            logger.warning("Could not load aggregation_merges: %s", e)
+            logger.exception("Could not load aggregation_merges")
+            project_state.load_warnings.append(f"Aggregation merges could not be loaded and were reset ({e})")
             project_state.aggregation_merges = []
 
         # Restore curation workbench pick lists (same field-by-field drop bug).
         try:
             project_state.pick_lists = [PickList(**p) for p in data.get("pick_lists", [])]
         except Exception as e:
-            logger.warning("Could not load pick_lists: %s", e)
+            logger.exception("Could not load pick_lists")
+            project_state.load_warnings.append(f"Curation pick lists could not be loaded and were reset ({e})")
             project_state.pick_lists = []
         project_state.authoritative_pick_lists = data.get("authoritative_pick_lists", {})
 
@@ -1050,8 +1061,12 @@ class ProjectState(BaseModel):
                     logger.warning(
                         "No param class for job type '%s' (instance '%s'), skipping", job_type_value, instance_id
                     )
+                    project_state.load_warnings.append(
+                        f"Job '{instance_id}' skipped — unknown job type '{job_type_value}'"
+                    )
             except Exception as e:
-                logger.warning("Skipping job instance '%s' - failed to deserialize: %s", instance_id, e)
+                logger.exception("Skipping job instance '%s' - failed to deserialize", instance_id)
+                project_state.load_warnings.append(f"Job '{instance_id}' could not be loaded and was skipped ({e})")
 
         # pipeline_order (P1.0): use the persisted value; for legacy projects that
         # predate the field, backfill from the loaded job set in file order -- every
