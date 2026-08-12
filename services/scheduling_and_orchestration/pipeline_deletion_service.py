@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 from services.configs.starfile_service import StarfileService
 from services.project_state import JobType
+from services.result import err, ok
 
 logger = logging.getLogger(__name__)
 
@@ -344,15 +345,15 @@ class PipelineDeletionService:
         
         graph = self.load_pipeline_graph(project_dir)
         if graph is None:
-            return {"success": False, "error": "Could not load pipeline"}
-        
+            return err("Could not load pipeline")
+
         # Check job exists
         if graph.processes.empty:
-            return {"success": False, "error": "Pipeline has no jobs"}
-        
+            return err("Pipeline has no jobs")
+
         job_mask = graph.processes["rlnPipeLineProcessName"] == job_name
         if not job_mask.any():
-            return {"success": False, "error": f"Job '{job_name}' not found"}
+            return err(f"Job '{job_name}' not found")
         
         # Get job status
         job_status = graph.get_job_status(job_name)
@@ -372,14 +373,13 @@ class PipelineDeletionService:
                 detail["type"] = job_type_str
             downstream_details.append(detail)
         
-        return {
-            "success": True,
-            "job_path": job_name,
-            "job_status": job_status,
-            "downstream_count": len(downstream_jobs),
-            "downstream_jobs": downstream_details,
-            "warning": f"{len(downstream_jobs)} job(s) will become orphaned" if downstream_jobs else None,
-        }
+        return ok(
+            job_path=job_name,
+            job_status=job_status,
+            downstream_count=len(downstream_jobs),
+            downstream_jobs=downstream_details,
+            warning=f"{len(downstream_jobs)} job(s) will become orphaned" if downstream_jobs else None,
+        )
 
 # Singleton instance
 _deletion_service: PipelineDeletionService | None = None
