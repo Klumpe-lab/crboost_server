@@ -6,6 +6,7 @@ from pathlib import Path
 import textwrap
 from typing import Any
 from services.computing.container_service import get_container_service
+from services.result import err, ok
 from services.templating.template_service import normalize_white_and_negate_to_black
 
 logger = logging.getLogger(__name__)
@@ -132,14 +133,14 @@ except Exception as e:
         result = await self._run_pymol_script(script, output_dir, [str(output_dir)])
 
         if not result.get("success"):
-            return {"success": False, "error": result.get("error", "Unknown error")}
+            return err(result.get("error") or "Unknown error")
 
         stdout = result.get("output", "")
         for line in stdout.split("\n"):
             if line.startswith("PYMOL_RESULT:"):
                 return json.loads(line.replace("PYMOL_RESULT:", ""))
 
-        return {"success": False, "error": "No result found in PyMOL output"}
+        return err("No result found in PyMOL output")
 
     # =========================================================================
     # ALIGNMENT
@@ -196,19 +197,19 @@ except Exception as e:
         result = await self._run_pymol_script(script, output_dir, [str(input_dir), str(output_dir)])
 
         if not result.get("success"):
-            return {"success": False, "error": result.get("error", "Unknown error")}
+            return err(result.get("error") or "Unknown error")
 
         # CRITICAL: Re-parse CIF on host
         if output_path.endswith(".cif") and Path(output_path).exists():
             if not self._reparse_cif(Path(output_path)):
-                return {"success": False, "error": "CIF post-processing failed"}
+                return err("CIF post-processing failed")
 
         stdout = result.get("output", "")
         for line in stdout.split("\n"):
             if line.startswith("PYMOL_RESULT:"):
                 return json.loads(line.replace("PYMOL_RESULT:", ""))
 
-        return {"success": True, "path": output_path}
+        return ok(path=output_path)
 
     # =========================================================================
     # CISTEM SIMULATION - Fixed to match original exactly
@@ -234,7 +235,7 @@ except Exception as e:
             # CHECK: Ensure cistem is configured (binary or container)
             cistem_config = self.container_service.config.get_tool_config("cistem")
             if not cistem_config:
-                return {"success": False, "error": "Tool 'cistem' not configured in conf.yaml"}
+                return err("Tool 'cistem' not configured in conf.yaml")
 
             pdb_path = str(Path(pdb_path).resolve())
             output_folder = str(Path(output_folder).resolve())
@@ -249,7 +250,7 @@ except Exception as e:
             if sim_box is None:
                 meta = await self.get_structure_metadata(pdb_path)
                 if not meta.get("success"):
-                    return {"success": False, "error": "Could not determine structure dimensions"}
+                    return err("Could not determine structure dimensions")
                 max_dim = meta["max_dim"]
                 sim_box = self._calculate_optimal_box(max_dim, sim_apix)
 
@@ -307,7 +308,7 @@ except Exception as e:
 
             error_detail = f"Simulation error: {e!s}\n{traceback.format_exc()}"
             logger.error("✗ %s", error_detail)
-            return {"success": False, "error": error_detail}
+            return err(error_detail)
 
     async def _run_cistem_with_pymol(
         self,
@@ -396,16 +397,16 @@ except Exception as e:
         pymol_result = await self._run_pymol_script(pymol_script, output_folder, binds_needed)
 
         if not pymol_result.get("success"):
-            return {"success": False, "error": f"PyMOL failed: {pymol_result.get('error')}"}
+            return err(f"PyMOL failed: {pymol_result.get('error') or 'unknown error'}")
 
         # CRITICAL: Verify file exists on HOST
         if not struct_file.exists():
-            return {"success": False, "error": f"PyMOL did not create {struct_file.name}"}
+            return err(f"PyMOL did not create {struct_file.name}")
 
         # CRITICAL: Re-parse CIF using BioPython (matches original libpdb.py lines 69-74)
         logger.info("Re-parsing CIF with BioPython...")
         if not self._reparse_cif(struct_file):
-            return {"success": False, "error": "CIF post-processing failed"}
+            return err("CIF post-processing failed")
 
         logger.info("✓ Structure prepared: %s (%s bytes)", struct_file.name, f"{struct_file.stat().st_size:,}")
 
@@ -479,7 +480,7 @@ except Exception as e:
             except TimeoutError:
                 process.kill()
                 await process.wait()
-                return {"success": False, "error": "cisTEM timeout (>600s)"}
+                return err("cisTEM timeout (>600s)")
 
             stdout = (stdout_b or b"").decode("utf-8", errors="replace")
             stderr = (stderr_b or b"").decode("utf-8", errors="replace")
@@ -506,14 +507,14 @@ except Exception as e:
                 error = f"cisTEM failed with exit code {process.returncode}"
                 if stderr:
                     error += f"\nStderr: {stderr[:500]}"
-                return {"success": False, "error": error}
+                return err(error)
 
             # Verify output exists
             if not sim_output_path.exists():
                 error = f"cisTEM did not create output file: {sim_output_path}\nDirectory contents:\n"
                 for f in output_folder.iterdir():
                     error += f"  {f.name}\n"
-                return {"success": False, "error": error}
+                return err(error)
 
             # Verify MRC is valid
             try:
@@ -527,7 +528,7 @@ except Exception as e:
                         sim_output_path.name, shape, voxel_size,
                     )
             except Exception as e:
-                return {"success": False, "error": f"Invalid MRC file created: {e}"}
+                return err(f"Invalid MRC file created: {e}")
 
             # Cleanup structure file (optional - keep for debugging if needed)
             try:
@@ -536,13 +537,13 @@ except Exception as e:
             except Exception as e:
                 logger.warning("⚠ Could not delete %s: %s", struct_file.name, e)
 
-            return {"success": True, "sim_path": str(sim_output_path)}
+            return ok(sim_path=str(sim_output_path))
 
         except Exception as e:
             import traceback
 
             error = f"cisTEM execution error: {e!s}\n{traceback.format_exc()}"
-            return {"success": False, "error": error}
+            return err(error)
 
 
     async def _process_simulated_map(
@@ -585,19 +586,19 @@ except Exception as e:
             )
 
             if not result_white.get("success"):
-                return {"success": False, "error": f"Relion (white) failed: {result_white.get('error')}"}
+                return err(f"Relion (white) failed: {result_white.get('error') or 'unknown error'}")
 
             # σ-normalize the resampled+lowpassed white volume and emit
             # black as its negation. Shared with process_volume_async to
             # keep all template outputs at mean=0, std=1 regardless of
             # source (RELION class / EMDB / PDB simulate / ellipsoid).
-            err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_white, path_black)
-            if err:
-                return {"success": False, "error": f"Normalization failed: {err}"}
+            norm_err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_white, path_black)
+            if norm_err:
+                return err(f"Normalization failed: {norm_err}")
 
-            return {"success": True, "path": path_black, "path_white": path_white, "path_black": path_black}
+            return ok(path=path_black, path_white=path_white, path_black=path_black)
 
         except Exception as e:
             import traceback
 
-            return {"success": False, "error": f"Processing error: {e!s}\n{traceback.format_exc()}"}
+            return err(f"Processing error: {e!s}\n{traceback.format_exc()}")
