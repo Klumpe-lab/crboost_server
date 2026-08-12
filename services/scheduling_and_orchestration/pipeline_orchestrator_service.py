@@ -280,7 +280,7 @@ class PipelineOrchestratorService:
                 try:
                     job_type = InstanceId.parse(instance_id).job_type
                 except ValueError:
-                    return {"success": False, "error": f"Unknown job type for instance '{instance_id}'"}
+                    return err(f"Unknown job type for instance '{instance_id}'")
                 template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
                 state.ensure_job_initialized(job_type, instance_id=instance_id, template_path=template_base)
                 job_model = state.jobs.get(instance_id)
@@ -329,7 +329,7 @@ class PipelineOrchestratorService:
             except PathResolutionError as e:
                 job_model.is_orphaned = True
                 job_model.missing_inputs = [str(e)]
-                return {"success": False, "error": f"Path resolution failed for {instance_id}: {e}"}
+                return err(f"Path resolution failed for {instance_id}: {e}")
 
             job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v is not None}
             job_model.is_orphaned = False
@@ -363,7 +363,7 @@ class PipelineOrchestratorService:
                         raise ValueError(f"RUNS_INLINE set but no inline writer for {job_type}")
                 except Exception as e:
                     logger.exception("inline writer failed for %s", instance_id)
-                    return {"success": False, "error": f"Inline writer failed for {instance_id}: {e}"}
+                    return err(f"Inline writer failed for {instance_id}: {e}")
                 (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
                 job_model.execution_status = JobStatus.SUCCEEDED
                 job_model.slurm_job_id = None
@@ -384,7 +384,7 @@ class PipelineOrchestratorService:
         try:
             order, preds = _toposort_submit_order(submit_ids, edges)
         except ValueError as e:
-            return {"success": False, "error": f"Pipeline DAG is not acyclic ({e}); cannot submit afterok chain."}
+            return err(f"Pipeline DAG is not acyclic ({e}); cannot submit afterok chain.")
 
         # Prepare + toposort succeeded -> commit the allocator (these job dirs are now owned).
         state.job_dir_counter = next_job_num
@@ -425,24 +425,20 @@ class PipelineOrchestratorService:
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
         if submit_error is not None:
-            failed_iid, err = submit_error
-            return {
-                "success": False,
-                "error": (
-                    f"sbatch failed for {failed_iid}: {err}. {len(submitted)} earlier job(s) are queued "
-                    f"in SLURM and recorded; cancel them manually until the P1.B reconciler lands."
-                ),
-                "afterok": True,
-                "submitted": submitted,
-            }
+            failed_iid, exc = submit_error
+            return err(
+                f"sbatch failed for {failed_iid}: {exc}. {len(submitted)} earlier job(s) are queued "
+                f"in SLURM and recorded; cancel them manually until the P1.B reconciler lands.",
+                afterok=True,
+                submitted=submitted,
+            )
 
-        return {
-            "success": True,
-            "message": f"Submitted {len(submitted)} job(s) as a SLURM afterok DAG (schemer-free).",
-            "pid": 0,
-            "afterok": True,
-            "submitted": submitted,
-        }
+        return ok(
+            message=f"Submitted {len(submitted)} job(s) as a SLURM afterok DAG (schemer-free).",
+            pid=0,
+            afterok=True,
+            submitted=submitted,
+        )
 
     def _render_supervisor_script(
         self, job_dir: Path, job_model: AbstractJobParams, fn_exe: str, server_dir: Path
@@ -696,7 +692,7 @@ class PipelineOrchestratorService:
         job_numbers = self._get_all_job_numbers_for_type(project_dir, job_type)
 
         if not job_numbers:
-            return {"success": False, "error": f"No instances of {job_type.value} found to delete."}
+            return err(f"No instances of {job_type.value} found to delete.")
 
         logger.info("Found %d instances of %s to delete: %s", len(job_numbers), job_type.value, job_numbers)
 
@@ -716,9 +712,9 @@ class PipelineOrchestratorService:
                 errors.append(f"Job {job_num_str}: {result.get('error')}")
 
         if success_count == 0 and errors:
-            return {"success": False, "error": f"Failed to delete jobs: {'; '.join(errors)}"}
+            return err(f"Failed to delete jobs: {'; '.join(errors)}")
 
-        return {"success": True, "message": f"Deleted {success_count} job instances.", "deleted_aliases": job_numbers}
+        return ok(message=f"Deleted {success_count} job instances.", deleted_aliases=job_numbers)
 
     def _get_all_job_numbers_for_type(self, project_dir: Path, target_job_type: JobType) -> list[str]:
         """
