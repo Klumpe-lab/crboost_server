@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from services.models_base import InstanceId, JobType
 from services.project_state import JobStatus
+from services.result import err, ok
 from services.scheduling_and_orchestration.pipeline_orchestrator_service import JobTypeResolver
 
 if TYPE_CHECKING:
@@ -869,23 +870,20 @@ class PipelineRunnerService:
         state = self.backend.state_service.state_for(project_dir)
 
         if state.pipeline_active or self.is_active(project_dir):
-            return {
-                "success": False,
-                "message": "Pipeline is already running. Wait for it to complete or cancel it first.",
-            }
+            return err("Pipeline is already running. Wait for it to complete or cancel it first.")
 
         prepared: list[tuple] = []  # (instance_id, job_dir, script_path)
         for iid in retry_instance_ids:
             job_model = state.jobs.get(iid)
             if not job_model:
-                return {"success": False, "message": f"Retry target {iid} not in state"}
+                return err(f"Retry target {iid} not in state")
             rjn = getattr(job_model, "relion_job_name", None)
             if not rjn:
-                return {"success": False, "message": f"Retry target {iid} has no relion_job_name"}
+                return err(f"Retry target {iid} has no relion_job_name")
             job_dir = project_dir / rjn.rstrip("/")
             script = job_dir / "run_submit.script"
             if not script.exists():
-                return {"success": False, "message": f"Cannot retry {iid}: {script} missing"}
+                return err(f"Cannot retry {iid}: {script} missing")
             prepared.append((iid, job_dir, script))
 
         # Clean stale markers, flip pipeline.star to Running, sbatch each supervisor.
@@ -901,7 +899,7 @@ class PipelineRunnerService:
             except Exception as e:
                 logger.exception("sbatch failed for retry of %s", iid)
                 self._patch_pipeline_process_status(project_dir, rjn, "Failed")
-                return {"success": False, "message": f"sbatch failed for {iid}: {e}"}
+                return err(f"sbatch failed for {iid}: {e}")
 
             job_model = state.jobs[iid]
             job_model.slurm_job_id = slurm_id
@@ -929,7 +927,7 @@ class PipelineRunnerService:
             f"Retrying {len(prepared)} job(s) in place; "
             f"will continue with {len(on_success_fresh_ids)} fresh job(s) on success"
         )
-        return {"success": True, "message": message, "pid": 0}
+        return ok(message=message, pid=0)
 
     async def _monitor_retries_and_handoff(
         self,
