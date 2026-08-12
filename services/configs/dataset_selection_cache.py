@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from services.dataset_models import DatasetOverview
+from services.tilt_series.preimport import DatasetOverview
 
 logger = logging.getLogger(__name__)
 

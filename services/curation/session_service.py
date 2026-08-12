@@ -791,7 +791,7 @@ class CurationSessionService:
 
         Converts the `.coords` (physical Å from the volume corner) → a RELION-5
         centered-Å particles star at `Curation/<species>/<tomo>/manual.star` (the
-        same `TomoFrame` as export, so the round trip is parity-exact), and archives
+        same `TomogramGeometry` as export, so the round trip is parity-exact), and archives
         the raw `.coords` under that tomogram's `imports/<stamp>.coords` for
         provenance. Returns the count + resolved paths; the caller registers a
         `manual` PickList on ProjectState (this method owns only file I/O, off the

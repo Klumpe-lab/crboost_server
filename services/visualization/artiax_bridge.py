@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 import starfile
 
-from services.visualization.coords import TomoFrame, centered_angst_dataframe, picks_centered_angst
+from services.visualization.coords import TomogramGeometry, centered_angst_dataframe, picks_centered_angst
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +59,13 @@ def write_coords_file(coords_corner_angst: np.ndarray, path: Path) -> None:
     np.savetxt(str(path), arr, fmt="%.4f", delimiter=" ")
 
 
-def artiax_to_centered_angst(coords_corner_angst: np.ndarray, frame: TomoFrame) -> np.ndarray:
+def artiax_to_centered_angst(coords_corner_angst: np.ndarray, frame: TomogramGeometry) -> np.ndarray:
     """ArtiaX corner-Å → RELION-5 centered-Å for one tomogram."""
     voxel = np.asarray(coords_corner_angst, dtype=float).reshape(-1, 3) / frame.pixel_size
     return frame.to_centered_angst(voxel)
 
 
-def centered_angst_to_artiax(centered_angst: np.ndarray, frame: TomoFrame) -> np.ndarray:
+def centered_angst_to_artiax(centered_angst: np.ndarray, frame: TomogramGeometry) -> np.ndarray:
     """RELION-5 centered-Å → ArtiaX corner-Å for one tomogram."""
     voxel = frame.to_voxel(np.asarray(centered_angst, dtype=float).reshape(-1, 3))
     return voxel * frame.pixel_size
@@ -79,12 +79,12 @@ def _find_table(star_path: Path, required_col: str) -> pd.DataFrame:
     raise ValueError(f"No table with column {required_col!r} in {star_path}")
 
 
-def frame_for_tomo(tomograms_star: Path, tomo_name: str, project_root: Path | None = None) -> TomoFrame:
+def frame_for_tomo(tomograms_star: Path, tomo_name: str, project_root: Path | None = None) -> TomogramGeometry:
     tomo_df = _find_table(Path(tomograms_star), "rlnTomoName")
     rows = tomo_df[tomo_df["rlnTomoName"] == tomo_name]
     if rows.empty:
         raise ValueError(f"Tomogram {tomo_name!r} not found in {tomograms_star}")
-    return TomoFrame.from_tomo_row(rows.iloc[0], project_root=project_root)
+    return TomogramGeometry.from_tomo_row(rows.iloc[0], project_root=project_root)
 
 
 def export_tomo_picks_to_coords(
@@ -105,7 +105,7 @@ def import_coords_to_centered_star(
 ) -> int:
     """Ingest an ArtiaX ``.coords`` (manual picks) → a RELION-5 centered-Å particles
     star for one tomogram. The inverse of :func:`export_tomo_picks_to_coords`, using
-    the SAME :class:`TomoFrame`, so the ``N/2`` centering cancels and an
+    the SAME :class:`TomogramGeometry`, so the ``N/2`` centering cancels and an
     export→ArtiaX→import round trip is parity-exact. Returns the pick count.
 
     Minimal schema: ``rlnTomoName`` + the three ``rlnCenteredCoordinate*Angst`` columns
