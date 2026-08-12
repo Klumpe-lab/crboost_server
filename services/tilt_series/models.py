@@ -17,6 +17,12 @@ Identity rules (enforced by callers, documented here):
 - `Frame.tilt_index` is the 0-based index into the TS's acquisition order (Z).
   It matches `<Node Z=...>` in WarpTools XMLs.
 
+- WarpTools keys its per-movie artifacts (XML basenames, `cryoBoostKey`) by the
+  movie filename with the FULL extension chain stripped: for EER movies named
+  `<stem>_EER.eer` Warp's key is `<stem>`, while `Frame.id` (single-suffix
+  stem) is `<stem>_EER`. `frame_id_to_warp_key()` below is the ONE place this
+  drift rule is encoded; `TiltSeries.frame_by_warp_key()` resolves through it.
+
 Outputs are per-job-type discriminated unions, keyed in each entity's
 `outputs` dict by the job instance_id (not JobType) so species-scoped or
 multiple-pass job runs can coexist.
@@ -29,6 +35,13 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+def frame_id_to_warp_key(frame_id: str) -> str:
+    """The cryoBoostKey WarpTools uses for a frame (see the identity rules in
+    the module docstring): `Frame.id` with a trailing `_EER` stripped. Identity
+    for non-EER movies."""
+    return frame_id[: -len("_EER")] if frame_id.endswith("_EER") else frame_id
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -299,3 +312,11 @@ class TiltSeries(BaseModel):
             if f.raw_filename == target or f.id == target_stem:
                 return f
         raise KeyError(f"Frame {name!r} not found in TS {self.id}")
+
+    def frame_by_warp_key(self, warp_key: str) -> Frame | None:
+        """Look up by WarpTools' per-movie key (cryoBoostKey) — `Frame.id`
+        modulo the `_EER` drift rule (`frame_id_to_warp_key`)."""
+        for f in self.frames:
+            if frame_id_to_warp_key(f.id) == warp_key:
+                return f
+        return None

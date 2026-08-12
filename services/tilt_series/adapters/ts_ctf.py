@@ -28,7 +28,6 @@ import pandas as pd
 from services.configs.metadata_service import WarpXmlParser
 from services.configs.starfile_service import StarfileService
 from services.tilt_series.models import (
-    Frame,
     TiltSeries,
     TsCtfPerFrameCtf,
     TsCtfTiltSeriesOutput,
@@ -55,7 +54,7 @@ class TsCtfIngestAdapter:
         registry: TiltSeriesRegistry,
         job_dir: Path,
         *,
-        job_instance_id: str = "tsCTF",
+        job_instance_id: str,
         warp_folder: str = "warp_tiltseries",
         starfile_service: StarfileService | None = None,
     ):
@@ -199,8 +198,8 @@ class TsCtfIngestAdapter:
             raise RuntimeError(f"No CTF rows parsed from {xml_path}")
 
         # cryoBoostKey in parser output == movie filename with _EER.eer/.tif/.eer
-        # stripped (see WarpXmlParser._parse_tilt_series_xml). We resolve via
-        # the TS's `frame_by_filename`, which tolerates stem vs full filename.
+        # stripped (see WarpXmlParser._parse_tilt_series_xml). Resolved via the
+        # identity contract's blessed drift rule: TiltSeries.frame_by_warp_key.
         per_frame: list[TsCtfPerFrameCtf] = []
         missing: list[str] = []
         ambiguous: list[str] = []
@@ -208,7 +207,7 @@ class TsCtfIngestAdapter:
 
         for _, row in warp_df.iterrows():
             key = str(row["cryoBoostKey"])
-            frame = self._resolve_frame(ts, key)
+            frame = ts.frame_by_warp_key(key)
             if frame is None:
                 missing.append(key)
                 continue
@@ -255,23 +254,6 @@ class TsCtfIngestAdapter:
             are_angles_inverted=are_inverted,
             per_frame=per_frame,
         )
-
-    def _resolve_frame(self, ts: TiltSeries, warp_key: str) -> Frame | None:
-        """Map a WarpXmlParser cryoBoostKey to a Frame in `ts`. The key has
-        already had `_EER.eer`/`.eer`/`.tif` stripped; frames in the registry
-        are keyed by stem and filename. Try stem match first (the common
-        case), then full-filename fallback."""
-        for f in ts.frames:
-            # registry's id == Path(raw_filename).stem (strips only last ext),
-            # so for "foo_EER.eer" the id is "foo_EER" while warp_key is "foo".
-            # Try both exact-equal and (stem-stripped-of-"_EER") forms.
-            if f.id == warp_key:
-                return f
-            if f.id.endswith("_EER") and f.id[: -len("_EER")] == warp_key:
-                return f
-            if Path(f.raw_filename).stem == warp_key:
-                return f
-        return None
 
     def _read_only_block(self, path: Path) -> pd.DataFrame:
         data = self.starfile_service.read(path)

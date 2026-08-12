@@ -36,7 +36,7 @@ class TsReconstructIngestAdapter:
         registry: TiltSeriesRegistry,
         job_dir: Path,
         *,
-        job_instance_id: str = "tsReconstruct",
+        job_instance_id: str,
         warp_folder: str = "warp_tiltseries",
         starfile_service: StarfileService | None = None,
     ):
