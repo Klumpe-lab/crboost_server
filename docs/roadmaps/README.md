@@ -12,6 +12,7 @@ only 00 blocks anything else.
 | 03 | [errors-and-results](03-errors-and-results.md) | One lightweight result/error idiom + lucid logging | low | not started |
 | 04 | [driver-consolidation](04-driver-consolidation.md) | ArrayDriver template, ToolCommand, one status protocol | medium (behavior-preserving by construction, per-driver rollout) | not started |
 | 05 | [per-ts-top-up](05-per-ts-top-up.md) | Re-run one failed/skipped tilt-series without recomputing the job or its downstream chain | medium (capability gap; index-shift hazard gates the cascade stage) | not started |
+| — | [denovo_picking/](denovo_picking/00-overview.md) | De-novo species + manual picking; tomo-import hardening; project-type dissolution; aggregation factor-out | medium (dashboard inversion, parity-gated) | scoped 2026-08-11 — decisions D-1/D-7/D-10 locked; supersedes `notes/PARTICLE_PROJECT_ROADMAP.md` |
 
 **05 is not from the audit.** 00–04 derive from `docs/architecture-assessment-2026-08-10.md`; 05 comes
 from a reproduced production failure in `/groups/klumpe/crboost_data/deadcode_test` (2026-08-11) and

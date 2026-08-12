@@ -15,6 +15,17 @@ behavior-verified PENDING RUNTIME. Next: Phase 2+3 (freshness → dashboard-on-r
 > **denoise**, which is tomogram-scoped, is in scope); **template-matching onward is out of scope here**
 > and belongs to the future particle registry. See §3 Tier C.
 
+> **Interop note (2026-08-11, from `docs/roadmaps/denovo_picking/00-overview.md`).** Imported
+> (user-supplied) tomograms currently live star-only (`Tomograms/tomograms.star` +
+> `ProjectState.ImportedTomograms`) — they have no representable home here because `Tomogram`
+> requires a parent `TiltSeries` with an mdoc. The de-novo-picking roadmap deliberately does NOT
+> change that. When this consolidation makes the registry THE store, imported tomograms should
+> enter as **standalone `Tomogram` entities** (`tilt_series_id` made optional, standalone
+> persistence root, one ingest path from an import batch) — possibly under a rename to something
+> like "DataRegistry" that reflects entry-at-any-stage of the frames→tomogram lineage. Keep it a
+> closed typed model (no generic lineage-graph), and keep particles out of it per the scope steer
+> above. Full assessment in the denovo_picking overview §Registry interop.
+
 ---
 
 ## 1. The thesis
