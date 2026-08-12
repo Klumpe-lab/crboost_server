@@ -337,6 +337,36 @@ match) + Tasks tabs (array types); Journey per-TS pills on a legacy no-manifest 
 fallback); deploy a scheme (driver command build); reconciliation of an existing project WITH a
 tiltFilter job (6c behavior change: its dir now resolves to a job type instead of None).
 
+## Stage 7 record (executed 2026-08-11) — ROADMAP COMPLETE
+
+`check_boundaries.py` at repo root (~160 lines, stdlib-only AST walk), run as
+`python check_boundaries.py`, exit 1 on violation; added to CLAUDE.md's lint commands. **Deviation
+from the sketch:** standalone script, NOT inside `preflight.py` — preflight is an interactive setup
+wizard, and the boundary check belongs in the fast non-interactive lint loop next to `ruff check .`.
+Ruff's flake8-tidy-imports banned-api was rejected because it can't express per-directory rules.
+Four declarative rules (lists at the top of the file, grow them as boundaries land):
+
+- **R1** `services/`, `drivers/`, `backend.py` may not import `ui.*` — `ast.walk` over every
+  Import/ImportFrom, so function-local imports (the audit's 51 dodgers) can't hide. `main.py`
+  excluded (entry point, legitimately imports ui).
+- **R2** `ui/` may not call `*.save_project()` on a receiver mentioning `state_service` (the stage-4
+  enforcement target: it's a *call* pattern, not an import). Verified all 21 current ui/ save calls
+  go through backend receivers (`backend`, `self.backend`, `panel.backend`, `bk`, `get_backend()`).
+  Known gap, accepted: an aliased `svc = get_state_service()` then `svc.save_project()` with a
+  non-obvious name escapes — full dataflow isn't worth it.
+- **R3** stage-3 shims frozen: `ui.components.task_utils` / `ui.dashboard.data` banned as whole
+  modules (verified zero importers today); `ui.dashboard.pixel_sanity`'s three shimmed old names
+  banned as (module, name) pairs (that module also holds live renderers, so no whole-module ban).
+- **R4** no new module-level dict literal keyed by ≥3 `JobType.` members outside
+  `services/jobs/spec.py` (the stage-6 target). Threshold 3 keeps small legitimate mappings legal;
+  verified zero JobType-keyed dict entries exist outside spec.py today, so current tree is clean.
+
+The stage-1 `as X`/`__all__` re-export convention is NOT machine-enforced (would need import-graph
+resolution against ruff's F401 autofix timing); it stays a review rule recorded in the stage-1 record.
+Verification ceiling: ruff + grep (no interpreter this session) — **the checker itself has never
+executed**; first `python check_boundaries.py` run is owed and should print "Boundaries clean (...)"
+with exit 0.
+
 ## Stages (each committable)
 
 1. **Undo the inversion.** *(DONE 2026-08-11 — record above.)* Add `ui/current_project.py` with `current_project_state()` (tab-context
@@ -371,7 +401,7 @@ tiltFilter job (6c behavior change: its dir now resolves to a job type instead o
    `JOB_DEPENDENCIES` + `_PREREQUISITES` + `_ARRAY_STAGE_OUTPUT_STAR` + plugin `_REGISTRY`).
    Build it additively: new table first, then convert readers one commit at a time, delete old tables
    last. Also stop rebuilding the mapping per call (`services/jobs/__init__.py:30`).
-7. **Enforcement.** Add a tiny import-linter (a ~30-line AST check in `preflight.py` or a ruff
+7. **Enforcement.** *(DONE 2026-08-11 — record above.)* Add a tiny import-linter (a ~30-line AST check in `preflight.py` or a ruff
    `flake8-tidy-imports` banned-api config): `services/` may not import `ui.*`; `ui/` may not import
    `services.project_state.save_project` (list grows as stages land). Without this, the boundary
    erodes again — 51 of today's violations are function-local imports that dodged review.
