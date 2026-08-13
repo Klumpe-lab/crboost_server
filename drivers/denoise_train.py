@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import traceback
 import json
-from services.computing.container_service import get_container_service
 import starfile
 
 # Direct imports for validation since we are inside the container
@@ -22,7 +21,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 try:
-    from drivers.driver_base import get_driver_context, run_command
+    from drivers.driver_base import ToolCommand, get_driver_context, run_command, run_tool
     from services.job_models import DenoiseTrainParams
     from services.models_base import DenoiseMethod, IsoNetRefineMethod
 except ImportError:
@@ -41,16 +40,13 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     installed sif. ISONET-ASSUMPTION markers flag conventions to confirm with a smoke run
     (isonet.py <cmd> --help; a 1-2 TS prepare_star+refine). See ISONET_INTEGRATION_PLAN.md.
     """
-    import shlex
-
-    container = get_container_service()
     input_star = paths["input_star"]
 
-    def isonet(cmd: str):
-        wrapped = container.wrap_command_for_tool(
-            command=cmd, cwd=job_dir, tool_name="isonet", additional_binds=additional_binds
-        )
-        run_command(wrapped, cwd=job_dir)
+    # tool_name stays the "isonet" literal in this IsoNet-only helper: the branch, not
+    # params, is what makes it IsoNet here, and params.get_tool_name() would answer
+    # "cryocare" if this were ever called off the ISONET branch.
+    def isonet(cmd: ToolCommand):
+        run_tool(cmd, tool_name="isonet", cwd=job_dir, binds=additional_binds)
 
     tomo_df = starfile.read(input_star)
     if isinstance(tomo_df, dict):
@@ -98,20 +94,31 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     prep = "isonet_prep.star"
     # 2. prepare_star — build the IsoNet registry from the staged full + even/odd dirs.
     isonet(
-        f"isonet.py prepare_star --full {shlex.quote(str(full_dir))} "
-        f"--even {shlex.quote(str(even_dir))} --odd {shlex.quote(str(odd_dir))} "
-        f"--star_name {prep} --pixel_size auto --cs {cs} --voltage {voltage} --ac {ac}"
+        ToolCommand("isonet.py prepare_star")
+        .opt_path("--full", full_dir, quote=True)
+        .opt_path("--even", even_dir, quote=True)
+        .opt_path("--odd", odd_dir, quote=True)
+        .opt("--star_name", prep)
+        .opt("--pixel_size", "auto")
+        .opt("--cs", cs)
+        .opt("--voltage", voltage)
+        .opt("--ac", ac)
     )
 
     # input_column threads through: rlnDeconvTomoName if we deconv, else rlnTomoName (Warp already
     # deconvolved -- deconv OFF by default, params.isonet_deconv).
     input_col = "rlnTomoName"
     if params.isonet_deconv:
-        isonet(f"isonet.py deconv --star_file {prep} --output_dir deconv")
+        isonet(ToolCommand("isonet.py deconv").opt("--star_file", prep).opt("--output_dir", "deconv"))
         input_col = "rlnDeconvTomoName"
 
     # 3. make_mask — focus training on specimen regions.
-    isonet(f"isonet.py make_mask --star_file {prep} --input_column {input_col} --output_dir mask")
+    isonet(
+        ToolCommand("isonet.py make_mask")
+        .opt("--star_file", prep)
+        .opt("--input_column", input_col)
+        .opt("--output_dir", "mask")
+    )
 
     # 4. refine — the training. Writes .pt checkpoint(s) into isonet_maps/.
     # IsoNet `refine` rejects --method auto when the prep star carries BOTH the full volume and
@@ -122,8 +129,11 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     if params.isonet_method == IsoNetRefineMethod.AUTO:
         refine_method = IsoNetRefineMethod.ISONET2_N2N.value
     isonet(
-        f"isonet.py refine --star_file {prep} --output_dir isonet_maps "
-        f"--method {refine_method} --input_column {input_col}"
+        ToolCommand("isonet.py refine")
+        .opt("--star_file", prep)
+        .opt("--output_dir", "isonet_maps")
+        .opt("--method", refine_method)
+        .opt("--input_column", input_col)
     )
 
     model_dir = job_dir / "isonet_maps"
@@ -312,7 +322,6 @@ def main():
         if found_count == 0:
             raise ValueError(f"No valid tomograms found for filter '{filter_str}'")
 
-        container_service = get_container_service()
 
         # ==========================================
         # CONFIGURATION & EXTRACTION
@@ -364,12 +373,9 @@ def main():
             json.dump(train_config, f, indent=4)
 
         print("[DRIVER] Extracting training data...", flush=True)
-        extract_cmd = f"cryoCARE_extract_train_data.py --conf {config_json_path.name}"
+        extract_cmd = ToolCommand("cryoCARE_extract_train_data.py").opt("--conf", config_json_path.name)
 
-        wrapped_extract = container_service.wrap_command_for_tool(
-            command=extract_cmd, cwd=job_dir, tool_name="cryocare", additional_binds=additional_binds
-        )
-        run_command(wrapped_extract, cwd=job_dir)
+        run_tool(extract_cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         # ==========================================
         # VALIDATION PHASE 2: EXTRACTED PATCHES
@@ -380,12 +386,9 @@ def main():
         # TRAINING
         # ==========================================
         print("[DRIVER] Training model...", flush=True)
-        train_cmd = f"cryoCARE_train.py --conf {config_json_path.name}"
+        train_cmd = ToolCommand("cryoCARE_train.py").opt("--conf", config_json_path.name)
 
-        wrapped_train = container_service.wrap_command_for_tool(
-            command=train_cmd, cwd=job_dir, tool_name="cryocare", additional_binds=additional_binds
-        )
-        run_command(wrapped_train, cwd=job_dir)
+        run_tool(train_cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         # ==========================================
         # ARCHIVING
