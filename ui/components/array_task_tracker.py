@@ -25,6 +25,7 @@ from pathlib import Path
 from nicegui import ui
 
 from services.array_tasks import (
+    TaskProgress,
     shorten_ts_names,
     sort_ts_by_position,
     ts_anchor_id,
@@ -143,41 +144,35 @@ def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
 
 
 def _update_summary(container: ui.row, statuses: dict[str, str], item_label: str) -> None:
-    n_ok = sum(1 for s in statuses.values() if s == _OK)
-    n_fail = sum(1 for s in statuses.values() if s == _FAIL)
-    n_running = sum(1 for s in statuses.values() if s == _RUNNING)
-    n_pending = sum(1 for s in statuses.values() if s == _PENDING)
-    n_skip = sum(1 for s in statuses.values() if s == _SKIP)
-    total = len(statuses)
+    p = TaskProgress.from_statuses(statuses)
 
     parts = []
-    if n_ok:
-        parts.append(f'<span style="color: #16a34a; font-weight: 600;">{n_ok} done</span>')
-    if n_running:
-        parts.append(f'<span style="color: #2563eb; font-weight: 600;">{n_running} running</span>')
-    if n_fail:
-        parts.append(f'<span style="color: #dc2626; font-weight: 600;">{n_fail} failed</span>')
-    if n_skip:
-        parts.append(f'<span style="color: #94a3b8;">{n_skip} skipped</span>')
-    if n_pending:
-        parts.append(f'<span style="color: #9ca3af;">{n_pending} pending</span>')
+    if p.n_ok:
+        parts.append(f'<span style="color: #16a34a; font-weight: 600;">{p.n_ok} done</span>')
+    if p.n_running:
+        parts.append(f'<span style="color: #2563eb; font-weight: 600;">{p.n_running} running</span>')
+    if p.n_fail:
+        parts.append(f'<span style="color: #dc2626; font-weight: 600;">{p.n_fail} failed</span>')
+    if p.n_skip:
+        parts.append(f'<span style="color: #94a3b8;">{p.n_skip} skipped</span>')
+    if p.n_pending:
+        parts.append(f'<span style="color: #9ca3af;">{p.n_pending} pending</span>')
 
-    html = f'<span style="{MONO} font-size: 11px;">{" · ".join(parts)} / {total} {item_label.lower()}</span>'
+    html = f'<span style="{MONO} font-size: 11px;">{" · ".join(parts)} / {p.total} {item_label.lower()}</span>'
     container.clear()
     with container:
         ui.html(html, sanitize=False)
 
 
 def _update_progress(bar: ui.linear_progress, statuses: dict[str, str]) -> None:
-    total = len(statuses)
-    if total == 0:
+    p = TaskProgress.from_statuses(statuses)
+    if p.total == 0:
         bar.set_value(0)
         return
-    # Skipped items are settled (won't ever run) — count them as "done" so
-    # the bar reaches 100% when only skips + oks remain.
-    n_done = sum(1 for s in statuses.values() if s in (_OK, _FAIL, _SKIP))
-    bar.set_value(n_done / total)
-    bar.props(f"color={'negative' if any(s == _FAIL for s in statuses.values()) else 'positive'}")
+    # Settled = ok + fail + skip: skipped items won't ever run, so the bar
+    # reaches 100% when only skips + oks remain.
+    bar.set_value(p.n_settled / p.total)
+    bar.props(f"color={'negative' if p.n_fail else 'positive'}")
 
 
 # ── Row building (once) and updating (on poll) ──
