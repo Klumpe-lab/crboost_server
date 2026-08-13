@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from typing import TYPE_CHECKING
 
+from services.array_tasks import any_task_started, manifest_array_job_id, mark_stopped_tasks_failed
 from services.models_base import InstanceId, JobType
 from services.project_state import JobStatus
 from services.result import err, ok
@@ -169,7 +170,10 @@ class PipelineRunnerService:
             active = self.is_active(Path(project_path))
             logger.info(
                 "STOP-ON-FAIL: failure in %s — markers=%s already_in_star=%s; is_active=%s",
-                project_path, failed_job_paths, already_failed_in_star, active,
+                project_path,
+                failed_job_paths,
+                already_failed_in_star,
+                active,
             )
             try:
                 result = await self.stop_and_cleanup(Path(project_path), slurm_job_ids=[])
@@ -278,21 +282,14 @@ class PipelineRunnerService:
                     job_model.slurm_job_id = sj.job_id
                     supervisor_pending = sj.state == "PENDING"
 
-                # Honest RUNNING for array-dispatching jobs. The supervisor writes
-                # .task_manifest.json BEFORE it sbatches the child array, and its
-                # own SLURM state can read RUNNING while every child task is still
-                # PENDING in the queue. So neither manifest-existence nor the
-                # supervisor's state is a truthful "work in flight" signal — both
-                # produce a spinning spinner over a job that is doing nothing yet.
-                # SLURM creates task_<idx>.out the moment a child STARTS, so that
-                # is the real signal: the job stays QUEUED while its tasks wait for
-                # cluster nodes, and only flips to RUNNING (spinner) once a task
-                # actually runs. Non-array jobs fall back to the supervisor state.
-                if (job_dir_clean / ".task_manifest.json").exists():
-                    if any(job_dir_clean.glob("task_*.out")):
-                        new_status = JobStatus.RUNNING
-                    else:
-                        new_status = JobStatus.QUEUED
+                # Honest RUNNING for array-dispatching jobs: the job stays QUEUED
+                # while its child tasks wait for cluster nodes and only flips to
+                # RUNNING (spinner) once a task actually starts (see
+                # any_task_started for why supervisor state alone lies here).
+                # Non-array jobs (None) fall back to the supervisor state.
+                started = any_task_started(job_dir_clean)
+                if started is not None:
+                    new_status = JobStatus.RUNNING if started else JobStatus.QUEUED
                 else:
                     new_status = JobStatus.QUEUED if supervisor_pending else JobStatus.RUNNING
             else:
@@ -369,12 +366,12 @@ class PipelineRunnerService:
         return None
 
     def _afterok_refine_running(self, job_dir: Path | None) -> JobStatus:
-        """B1 refinement for a supervisor squeue reports as RUNNING: it writes .task_manifest.json
-        BEFORE sbatching its child array, so 'supervisor RUNNING' with no started child is still
-        queued work; a child task_*.out is the real RUNNING signal. A single-shot (no-manifest)
-        job is genuinely RUNNING."""
-        if job_dir is not None and (job_dir / ".task_manifest.json").exists():
-            return JobStatus.RUNNING if any(job_dir.glob("task_*.out")) else JobStatus.QUEUED
+        """B1 refinement for a supervisor squeue reports as RUNNING: 'supervisor
+        RUNNING' with no started child is still queued work (see any_task_started).
+        A single-shot (no-manifest) job is genuinely RUNNING."""
+        started = any_task_started(job_dir) if job_dir is not None else None
+        if started is not None:
+            return JobStatus.RUNNING if started else JobStatus.QUEUED
         return JobStatus.RUNNING
 
     async def reconcile_afterok(self, project_path: str) -> dict[str, bool]:
@@ -543,9 +540,7 @@ class PipelineRunnerService:
             backend = self.backend
 
             async def _run(progress_cb):
-                n = await asyncio.to_thread(
-                    generate_tilt_thumbnails, ts_ctf_star, proj_path, png_dir, progress_cb
-                )
+                n = await asyncio.to_thread(generate_tilt_thumbnails, ts_ctf_star, proj_path, png_dir, progress_cb)
                 st = backend.state_service.state_for(proj_path)
                 if st is not None:
                     st.tilt_filter_png_dir = str(png_dir)
@@ -981,48 +976,6 @@ class PipelineRunnerService:
         finally:
             self._retry_monitors.pop(resolved, None)
 
-    def _finalize_stopped_task_statuses(self, job_dir: Path) -> int:
-        """For each manifest item without .ok/.fail but with task_{idx}.out on
-        disk (i.e. it was actively running when the pipeline got stopped), write
-        a .fail marker atomically. Returns the count of markers written."""
-        import json
-
-        manifest_path = job_dir / ".task_manifest.json"
-        if not manifest_path.exists():
-            return 0
-        try:
-            manifest = json.loads(manifest_path.read_text())
-        except Exception:
-            return 0
-        items = manifest.get("items") or []
-        if not items:
-            return 0
-
-        status_dir = job_dir / ".task_status"
-        status_dir.mkdir(parents=True, exist_ok=True)
-        existing = (
-            {p.stem for p in status_dir.glob("*.ok")}
-            | {p.stem for p in status_dir.glob("*.fail")}
-            | {p.stem for p in status_dir.glob("*.skip")}
-        )
-
-        marked = 0
-        for idx, name in enumerate(items):
-            if name in existing:
-                continue
-            if not (job_dir / f"task_{idx}.out").exists():
-                continue
-            # Atomic write: temp then rename.
-            tmp = status_dir / f".{name}.fail.tmp"
-            target = status_dir / f"{name}.fail"
-            try:
-                tmp.write_text("")
-                os.replace(tmp, target)
-                marked += 1
-            except Exception:
-                tmp.unlink(missing_ok=True)
-        return marked
-
     def _patch_pipeline_process_status(self, project_dir: Path, job_path: str, new_status: str) -> None:
         pipeline_star = project_dir / "default_pipeline.star"
         if not pipeline_star.exists():
@@ -1042,9 +995,7 @@ class PipelineRunnerService:
         except Exception as e:
             logger.warning("Could not patch %s status to %s: %s", job_path, new_status, e)
 
-    async def _sbatch_script(
-        self, script_path: Path, cwd: Path, dependency_after_ids: list[str] | None = None
-    ) -> str:
+    async def _sbatch_script(self, script_path: Path, cwd: Path, dependency_after_ids: list[str] | None = None) -> str:
         """sbatch in an env stripped of SLURM_*/SBATCH_* so the submission
         doesn't inherit any parent job context. Returns the SLURM job ID.
 
@@ -1251,17 +1202,9 @@ class PipelineRunnerService:
             job_dir_str = (job_model.paths or {}).get("job_dir")
             if not job_dir_str:
                 continue
-            manifest_path = Path(job_dir_str) / ".task_manifest.json"
-            if manifest_path.exists():
-                try:
-                    import json
-
-                    manifest = json.loads(manifest_path.read_text())
-                    array_jid = manifest.get("array_job_id")
-                    if array_jid:
-                        slurm_job_ids.append(str(array_jid))
-                except Exception:
-                    pass
+            array_jid = manifest_array_job_id(Path(job_dir_str))
+            if array_jid:
+                slurm_job_ids.append(array_jid)
 
         # Normalize array child IDs (28666490_1) → parent IDs (28666490) so a
         # single scancel kills entire arrays instead of individual tasks.
@@ -1285,7 +1228,7 @@ class PipelineRunnerService:
             if not job_dir_str:
                 continue
             try:
-                n = self._finalize_stopped_task_statuses(Path(job_dir_str))
+                n = mark_stopped_tasks_failed(Path(job_dir_str))
                 if n:
                     logger.info("Marked %d stopped task(s) as .fail in %s", n, job_dir_str)
             except Exception as e:
@@ -1409,18 +1352,10 @@ class PipelineRunnerService:
         # Also check the task manifest for an explicit array_job_id written by the
         # supervisor. This is the most reliable source because the supervisor records
         # the parent ID at sbatch time.
-        manifest_path = job_dir / ".task_manifest.json"
-        if manifest_path.exists():
-            try:
-                import json
-
-                manifest = json.loads(manifest_path.read_text())
-                array_jid = manifest.get("array_job_id")
-                if array_jid:
-                    raw_ids.append(str(array_jid))
-                    logger.info("Found array_job_id %s in task manifest", array_jid)
-            except Exception as e:
-                logger.info("Could not read task manifest: %s", e)
+        array_jid = manifest_array_job_id(job_dir)
+        if array_jid:
+            raw_ids.append(array_jid)
+            logger.info("Found array_job_id %s in task manifest", array_jid)
 
         ids_to_cancel = normalize_slurm_ids(raw_ids) if raw_ids else []
         logger.info("IDs to cancel (normalized): %s", ids_to_cancel)
