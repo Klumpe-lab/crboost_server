@@ -658,7 +658,7 @@ class CryoBoostBackend:
         self,
         session_info: dict[str, Any],
         project_path: Path,
-        candidates_star: Path,
+        candidates_star: Path | None,
         tomograms_star: Path,
         tomo_name: str,
         species_label: str = "",
@@ -687,7 +687,7 @@ class CryoBoostBackend:
     async def prepare_curation_bundle(
         self,
         project_path: Path,
-        candidates_star: Path,
+        candidates_star: Path | None,
         tomograms_star: Path,
         tomo_name: str,
         species_label: str = "",
