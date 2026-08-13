@@ -12,8 +12,9 @@ import shlex
 import time
 import argparse
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
+from typing import Generic, TypeVar
 
 # Add server root to path to import services
 server_dir = Path(__file__).parent.parent
@@ -138,6 +139,43 @@ def get_driver_context(expected_type: type[T] | None = None) -> tuple[ProjectSta
     )
 
     return (project_state, job_model, context_data, job_dir, project_path, job_type)
+
+
+@dataclass(frozen=True)
+class DriverContext(Generic[T]):
+    """One driver's bootstrap result, as a single frozen object.
+
+    Replaces `get_driver_context()`'s 6-positional tuple plus bare `context_data`
+    dict — an unpack that appeared under three different local names across 17
+    sites, each re-doing the same two conversions (`paths` to `Path`, binds to a
+    mutable list). Those conversions happen once, here.
+
+    `params` keeps its concrete type: `DriverContext.load(TsReconstructParams)`
+    returns a `DriverContext[TsReconstructParams]`.
+    """
+
+    state: ProjectState
+    params: T
+    job_dir: Path
+    project_path: Path
+    job_type: JobType
+    instance_id: str
+    paths: dict[str, Path]
+    additional_binds: list[str]
+
+    @classmethod
+    def load(cls, expected_type: type[T]) -> "DriverContext[T]":
+        state, params, data, job_dir, project_path, job_type = get_driver_context(expected_type)
+        return cls(
+            state=state,
+            params=params,
+            job_dir=job_dir,
+            project_path=project_path,
+            job_type=job_type,
+            instance_id=data["instance_id"],
+            paths={k: Path(v) for k, v in data["paths"].items()},
+            additional_binds=list(data["additional_binds"]),
+        )
 
 
 # Seconds of complete silence from a tool before run_command treats it as hung.
