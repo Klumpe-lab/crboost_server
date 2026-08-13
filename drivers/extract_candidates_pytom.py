@@ -42,9 +42,8 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool
 from drivers.subtomo_merge import write_optimisation_set
-from services.computing.container_service import get_container_service
 from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
 
 
@@ -101,24 +100,24 @@ def cleanup_tomo_names(candidates_star: Path, apix_fallback: float) -> int:
         return 0
 
 
-def build_extract_base_cmd(params: CandidateExtractPytomParams, apix: float) -> list[str]:
-    base_cmd = [
-        "pytom_extract_candidates.py",
-        "-n", str(params.max_num_particles),
-        "--particle-diameter", str(int(params.particle_diameter_ang / 2.0 / apix) * apix),
-        "--relion5-compat",
-        "--log", "debug",
-    ]
+def build_extract_base_cmd(params: CandidateExtractPytomParams, apix: float) -> ToolCommand:
+    base_cmd = (
+        ToolCommand("pytom_extract_candidates.py")
+        .opt("-n", params.max_num_particles)
+        .opt("--particle-diameter", int(params.particle_diameter_ang / 2.0 / apix) * apix)
+        .flag("--relion5-compat")
+        .opt("--log", "debug")
+    )
     if params.cutoff_method == ExtractionCutoffMethod.FALSE_POSITIVES:
-        base_cmd.extend(["--number-of-false-positives", str(params.expected_false_positives)])
+        base_cmd.opt("--number-of-false-positives", params.expected_false_positives)
     elif params.cutoff_method == ExtractionCutoffMethod.MANUAL:
-        base_cmd.extend(["-c", str(params.cc_threshold)])
+        base_cmd.opt("-c", params.cc_threshold)
 
     if params.score_filter_method == "tophat":
-        base_cmd.append("--tophat-filter")
+        base_cmd.flag("--tophat-filter")
         if params.score_filter_value != "None" and ":" in params.score_filter_value:
             conn, bins = params.score_filter_value.split(":")
-            base_cmd.extend(["--tophat-connectivity", conn, "--tophat-bins", bins])
+            base_cmd.opt("--tophat-connectivity", conn).opt("--tophat-bins", bins)
     return base_cmd
 
 
@@ -421,15 +420,10 @@ def run_task_mode(array_idx: int):
             write_status_atomic(status_dir, tomo_name, ok=True)
             sys.exit(0)
 
-        base_cmd = build_extract_base_cmd(params, apix)
-        cmd = [*base_cmd, "-j", str(job_json)]
-        cmd_str = " ".join(cmd)
-        print(f"[TASK {array_idx}] Command: {cmd_str}", flush=True)
+        cmd = build_extract_base_cmd(params, apix).opt_path("-j", job_json, quote=False)
+        print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
 
-        wrapped = get_container_service().wrap_command_for_tool(
-            command=cmd_str, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
-        )
-        run_command(wrapped, cwd=job_dir)
+        run_tool(cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         if not out_star.exists():
             raise FileNotFoundError(
