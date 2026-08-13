@@ -54,3 +54,58 @@ Sandbox: `py_compile` + `ruff` + `python check_boundaries.py`. User runtime:
    `project_params.json` with a non-default color and `origin="manual"`.
 3. Delete a species that has pick lists → confirm dialog enumerates them; registry JSON shows the
    purge.
+
+---
+
+## S1 CODE-COMPLETE 2026-08-13 — pending runtime
+
+**Model** (`services/models_base.py`, `services/project_state.py`)
+
+- `SPECIES_OVERLAY_COLORS` moved from `services/dashboard_data.py` to `models_base` — a species'
+  color is now persisted model data assigned at creation, so the palette has to be visible to the
+  model layer. `dashboard_data` re-exports the name, so the four UI import sites are untouched.
+- `species_palette_color(species_id)` alongside it. Deliberately NOT `hash()`: `PYTHONHASHSEED`
+  randomizes str hashing per process, so a species would change color on every server restart.
+  Sums code points instead — stable across runs, and matches what the dashboard already did.
+- `ExtractionParams` (box_size, binning, crop_size), **no defaults**, and
+  `ParticleSpecies.extraction_params: ExtractionParams | None`. `None` means undecided; S3's dialog
+  must ask rather than invent geometry a de-novo species has no TM job to inherit.
+- `ParticleSpecies.origin: str = ""` — `"workbench" | "manual" | "imported"`; empty on pre-existing
+  species, read as workbench.
+- `add_species(name, *, origin="workbench", color="")` — color defaults to the palette slot for the
+  generated id, so species stop all sharing one blue.
+- `species_references(species_id)` is new and feeds BOTH the confirm dialog and `remove_species`, so
+  the two can't disagree about what a species owns. `remove_species` now purges pick lists,
+  authoritative-list choices and matching `source_overrides` instead of leaving dangling refs that
+  only surfaced as resolution failures at deploy time.
+
+**DEVIATION from the plan:** jobs carrying `species_id` are surfaced in the confirm dialog but NOT
+auto-deleted. A job owns a job dir and a `default_pipeline.star` row — removing one is a pipeline
+operation, not a registry edit, and silently deleting pipeline jobs from a species delete is a much
+bigger hammer than the rest of the purge. The dialog names them so the user can delete them
+deliberately. Flip this if the maintainer wants the full cascade.
+
+**UI**
+
+- "New species" button on the PARTICLES phase header (`pipeline_roster._build_new_species_btn`),
+  next to import-tomograms. `SingleFlight`-guarded — the roster is poll-refreshed, so the button can
+  be destroyed mid-click. Creates with `origin="manual"` and, unlike the workbench "+", does NOT
+  create a `templates/<sid>/` dir: a de-novo species may never have a template.
+- Color swatch editor on the workbench species header — the color dot is now a menu of the 8 palette
+  colors. Repaints just the dot on pick (one attribute → one visual property; a rebuild would
+  destroy the menu mid-click).
+- Species gate message points at the new button instead of "go to the Template Workbench".
+
+**Data-less projects — `is_particle_only` deleted**
+
+It was a transient UI field that duplicated what the globs already said (creation mechanics were
+glob-gated, never flag-gated). Replaced by `is_dataless()` = both globs empty. The particle-only
+toggle, its hint and the mutual-exclusion sync with the aggregation toggle are gone; the aggregation
+toggle survives until S6 but no longer has an exclusion partner. A half-filled form still demands the
+missing half — that's a mistake, not a data-less project. The create button reads "Ready to create —
+without raw data" so it can't happen by accident.
+
+Also dropped the branch that mirrored an aggregation project's pre-initialized SubtomoExtraction into
+`selected_jobs`: verified against `project_service.create_project` ("Aggregation projects have no
+pipeline jobs at creation time" since the merge moved to a standalone workspace card), so it was
+reloading an EMPTY job list over the user's selections.
