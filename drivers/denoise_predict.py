@@ -23,7 +23,6 @@ affects the per-task command built in TASK mode.
 
 import json
 import os
-import shlex
 import shutil
 import sys
 import tarfile
@@ -46,8 +45,7 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command, require_producer_input
-from services.computing.container_service import get_container_service
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool, require_producer_input
 from services.job_models import DenoisePredictParams
 from services.models_base import DenoiseMethod
 
@@ -122,7 +120,7 @@ def build_cryocare_predict_command(
     odd_path: Path,
     output_dir: Path,
     idx: int,
-) -> str:
+) -> ToolCommand:
     """cryoCARE_predict.py treats `output` as a directory and writes output_dir/basename(even)
     inside it -- which equals output_dir/<tomo_basename>."""
     base_tiles = (params.ntiles_z, params.ntiles_y, params.ntiles_x)
@@ -142,7 +140,10 @@ def build_cryocare_predict_command(
     cfg_name = f"predict_{idx}.json"
     with open(job_dir / cfg_name, "w") as f:
         json.dump(cfg, f, indent=4)
-    return f"TF_FORCE_GPU_ALLOW_GROWTH=true TF_GPU_ALLOCATOR=cuda_malloc_async cryoCARE_predict.py --conf {cfg_name}"
+    # Env prefix rides in front of the executable — in-band, as the shell needs it.
+    return ToolCommand(
+        "TF_FORCE_GPU_ALLOW_GROWTH=true TF_GPU_ALLOCATOR=cuda_malloc_async cryoCARE_predict.py"
+    ).opt("--conf", cfg_name)
 
 
 def prepare_isonet_model(job_dir: Path, model_tar: Path) -> Path:
@@ -189,7 +190,6 @@ def run_isonet_predict_task(
     per-task dir and move the single corrected MRC to the canonical denoised path (out_mrc).
     Predicting into an isolated per-task dir sidesteps IsoNet's output-filename convention --
     ISONET-ASSUMPTION: predict writes exactly one full-size .mrc. See ISONET_INTEGRATION_PLAN.md."""
-    container = get_container_service()
     stage = job_dir / ".staging" / f"task_{ts_name}"
     full_dir, even_dir, odd_dir, corrected = stage / "full", stage / "even", stage / "odd", stage / "corrected"
     for d in (full_dir, even_dir, odd_dir, corrected):
@@ -203,26 +203,34 @@ def run_isonet_predict_task(
 
     prep = stage / "isonet_prep.star"
 
-    def isonet(cmd: str):
-        wrapped = container.wrap_command_for_tool(
-            command=cmd, cwd=job_dir, tool_name="isonet", additional_binds=additional_binds
-        )
-        run_command(wrapped, cwd=job_dir)
+    # tool_name stays the "isonet" literal in this IsoNet-only helper: the branch, not
+    # params, is what makes it IsoNet here, and params.get_tool_name() would answer
+    # "cryocare" if this were ever called off the ISONET branch.
+    def isonet(cmd: ToolCommand):
+        run_tool(cmd, tool_name="isonet", cwd=job_dir, binds=additional_binds)
 
     isonet(
-        f"isonet.py prepare_star --full {shlex.quote(str(full_dir))} "
-        f"--even {shlex.quote(str(even_dir))} --odd {shlex.quote(str(odd_dir))} "
-        f"--star_name {shlex.quote(str(prep))} --pixel_size auto"
+        ToolCommand("isonet.py prepare_star")
+        .opt_path("--full", full_dir, quote=True)
+        .opt_path("--even", even_dir, quote=True)
+        .opt_path("--odd", odd_dir, quote=True)
+        .opt_path("--star_name", prep, quote=True)
+        .opt("--pixel_size", "auto")
     )
     input_col = "rlnTomoName"
     if params.isonet_deconv:
         isonet(
-            f"isonet.py deconv --star_file {shlex.quote(str(prep))} --output_dir {shlex.quote(str(stage / 'deconv'))}"
+            ToolCommand("isonet.py deconv")
+            .opt_path("--star_file", prep, quote=True)
+            .opt_path("--output_dir", stage / "deconv", quote=True)
         )
         input_col = "rlnDeconvTomoName"
     isonet(
-        f"isonet.py predict --star_file {shlex.quote(str(prep))} --model {shlex.quote(str(model_pt))} "
-        f"--input_column {input_col} --output_dir {shlex.quote(str(corrected))}"
+        ToolCommand("isonet.py predict")
+        .opt_path("--star_file", prep, quote=True)
+        .opt_path("--model", model_pt, quote=True)
+        .opt("--input_column", input_col)
+        .opt_path("--output_dir", corrected, quote=True)
     )
 
     mrcs = list(corrected.glob("*.mrc"))
@@ -527,10 +535,7 @@ def run_task_mode(array_idx: int):
                 raise FileNotFoundError(f"Missing even/odd halves for {tomo_basename}: {even_path} / {odd_path}")
             cmd = build_cryocare_predict_command(params, job_dir, model_tar, even_path, odd_path, output_dir, array_idx)
             print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
-            wrapped = get_container_service().wrap_command_for_tool(
-                command=cmd, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
-            )
-            run_command(wrapped, cwd=job_dir)
+            run_tool(cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         if not out_mrc.exists():
             raise FileNotFoundError(f"Prediction reported success but output missing: {out_mrc}")
