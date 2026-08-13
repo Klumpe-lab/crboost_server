@@ -24,6 +24,7 @@ from services.models_base import (
     ListExtractionState,
     MicroscopeParams,
     AcquisitionParams,
+    species_palette_color,
 )
 from services.computing.slurm_service import SlurmConfig
 from services.job_models import (
@@ -184,10 +185,33 @@ class TemplateWorkbenchUIState(BaseModel):
     basic_shape_def: str = "550:550:550"
 
 
+class ExtractionParams(BaseModel):
+    """Per-species subtomogram extraction geometry.
+
+    NO defaults on purpose. A species picked de novo has no template-matching job
+    to inherit box/bin/crop from, and guessing them silently produces
+    wrong-but-plausible extractions that are painful to trace back. Absent means
+    "the user has not decided yet" — the extract dialog must ask.
+    """
+
+    box_size: int
+    binning: float
+    crop_size: int
+
+
 class ParticleSpecies(BaseModel):
     id: str  # slug, used as folder name and instance suffix
     name: str  # display label
     color: str = "#3b82f6"
+
+    # How this species came to exist: "workbench" (template-driven), "manual"
+    # (created de novo for hand picking), "imported". Empty on species that
+    # pre-date the field — treat as "workbench".
+    origin: str = ""
+
+    # Set once the user commits extraction geometry for a de-novo species.
+    # None means undecided, never "use some default" — see ExtractionParams.
+    extraction_params: ExtractionParams | None = None
 
     # Particle-intrinsic properties; species-level (not per-job).
     diameter_ang: float | None = None
@@ -749,9 +773,14 @@ class ProjectState(BaseModel):
     def get_species(self, species_id: str) -> ParticleSpecies | None:
         return next((s for s in self.species_registry if s.id == species_id), None)
 
-    def add_species(self, name: str, color: str = "#3b82f6") -> ParticleSpecies:
+    def add_species(self, name: str, *, origin: str = "workbench", color: str = "") -> ParticleSpecies:
         """Create a new species entry from a display name. Caller is responsible
-        for ensuring the name is not blank before calling."""
+        for ensuring the name is not blank before calling.
+
+        `color` defaults to a deterministic palette slot for the generated id, so
+        every species is visually distinct on the shared tomogram canvas instead of
+        all sharing one blue. Pass an explicit color to override.
+        """
         sid = slugify(name)
         # Avoid id collisions by appending a counter if needed
         existing_ids = {s.id for s in self.species_registry}
@@ -760,20 +789,66 @@ class ProjectState(BaseModel):
         while sid in existing_ids:
             sid = f"{base}_{n}"
             n += 1
-        species = ParticleSpecies(id=sid, name=name, color=color)
+        species = ParticleSpecies(id=sid, name=name, color=color or species_palette_color(sid), origin=origin)
         self.species_registry.append(species)
         self.update_modified()
         return species
 
+    def species_references(self, species_id: str) -> dict[str, list[str]]:
+        """Everything in this project that points at `species_id`.
+
+        Feeds both the delete-confirmation dialog (so the user sees what a delete
+        takes with it) and `remove_species` itself, so the two can never disagree
+        about what a species owns.
+        """
+        pick_lists = [f"{pl.tomo_name}/{pl.slug}" for pl in self.pick_lists if pl.species_id == species_id]
+        authoritative = [k for k in self.authoritative_pick_lists if k.split("\x1f", 1)[0] == species_id]
+        jobs = [iid for iid, jm in (self.jobs or {}).items() if getattr(jm, "species_id", None) == species_id]
+        # Overrides pointing at one of this species' pick-list producers. The
+        # resolver key is "<jobtype>:<instance_path>" and per-list producers carry
+        # a `pick_list__<slug>` instance path (see the resolver's merged/pick-list
+        # candidates), so a species' lists are identifiable by slug.
+        slugs = {pl.slug for pl in self.pick_lists if pl.species_id == species_id}
+        overrides: list[str] = []
+        for iid, jm in (self.jobs or {}).items():
+            for slot, value in (getattr(jm, "source_overrides", None) or {}).items():
+                if any(f"pick_list__{slug}" in str(value) for slug in slugs):
+                    overrides.append(f"{iid}:{slot}")
+        return {
+            "pick_lists": pick_lists,
+            "authoritative_pick_lists": authoritative,
+            "jobs": jobs,
+            "source_overrides": overrides,
+        }
+
     def remove_species(self, species_id: str) -> bool:
-        """Drop a species from the registry. Returns True if removed.
-        File cleanup (templates/<sid>/) is the caller's responsibility —
-        this method only mutates the in-memory registry."""
+        """Drop a species from the registry AND purge everything referencing it.
+
+        Returns True if removed. File cleanup (templates/<sid>/, Curation/<sid>/)
+        is the caller's responsibility — this method only mutates in-memory state.
+
+        Previously this dropped only the registry entry, leaving pick lists,
+        authoritative-list choices and resolver overrides pointing at a species
+        that no longer exists; those dangling refs then resolved to nothing at
+        deploy time, far from the delete that caused them.
+        """
         before = len(self.species_registry)
         self.species_registry = [s for s in self.species_registry if s.id != species_id]
         removed = len(self.species_registry) < before
-        if removed:
-            self.update_modified()
+        if not removed:
+            return False
+
+        refs = self.species_references(species_id)
+        self.pick_lists = [pl for pl in self.pick_lists if pl.species_id != species_id]
+        for key in refs["authoritative_pick_lists"]:
+            self.authoritative_pick_lists.pop(key, None)
+        for ref in refs["source_overrides"]:
+            iid, _, slot = ref.rpartition(":")
+            overrides = getattr(self.jobs.get(iid), "source_overrides", None)
+            if overrides:
+                overrides.pop(slot, None)
+
+        self.update_modified()
         return removed
 
     # ── Curation workbench: per-(species, tomo) pick-list registry ───────────
