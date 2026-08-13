@@ -29,7 +29,8 @@ def setup_logging(debug: bool = False):
     level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(
         level=level,
-        format="%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
+        # name:lineno makes every record trackable to its file (roadmap 03 stage 2)
+        format="%(asctime)s %(levelname).1s %(name)s:%(lineno)d %(message)s",
         datefmt="%H:%M:%S",
     )
     # Quiet down noisy third-party loggers
