@@ -443,10 +443,16 @@ class TsAlignmentIngestAdapter:
 
     def _assert_ts_identity_consistency(self, expected_ts_ids: set) -> None:
         """The three independent sources of per-TS identity — tomostar files,
-        per-TS XMLs, and tiltstack dirs — MUST agree. Any drift means the
-        upstream array-job staging corrupted something, and silently picking
-        one source's value for another TS is exactly the failure mode this
-        refactor exists to prevent."""
+        per-TS XMLs, and tiltstack dirs — MUST agree for every TS being
+        ingested. Drift there means the upstream array-job staging corrupted
+        something, and silently picking one source's value for another TS is
+        exactly the failure mode this refactor exists to prevent.
+
+        Only the ingested (expected) TS must be present in all three sources:
+        a muted TS, or one whose task failed, never ran — it legitimately has
+        a tomostar but no XML/tiltstack output, and must not fail the job.
+        Non-expected extras are surfaced as a warning; full-set drift policing
+        is a dispatch-time concern (census #38/#39), not an ingest one."""
         tomostar_stems = (
             {p.stem for p in self.tomostar_dir.glob("*.tomostar")}
             if self.tomostar_dir.is_dir() else set()
@@ -461,24 +467,23 @@ class TsAlignmentIngestAdapter:
         )
 
         mismatches: list[str] = []
-        if tomostar_stems != tiltstack_stems:
-            mismatches.append(
-                f"tomostar vs tiltstack: only-tomostar={sorted(tomostar_stems - tiltstack_stems)}, "
-                f"only-tiltstack={sorted(tiltstack_stems - tomostar_stems)}"
-            )
-        if tomostar_stems != xml_stems:
-            mismatches.append(
-                f"tomostar vs xml: only-tomostar={sorted(tomostar_stems - xml_stems)}, "
-                f"only-xml={sorted(xml_stems - tomostar_stems)}"
-            )
-        input_missing = expected_ts_ids - tomostar_stems
-        if input_missing:
-            mismatches.append(f"expected TS with no tomostar: {sorted(input_missing)}")
+        for label, stems in (("tomostar", tomostar_stems), ("xml", xml_stems), ("tiltstack", tiltstack_stems)):
+            missing = expected_ts_ids - stems
+            if missing:
+                mismatches.append(f"expected TS with no {label}: {sorted(missing)}")
 
         if mismatches:
             raise RuntimeError(
                 f"TS identity consistency violated in {self.job_dir}; refusing to ingest "
                 f"to avoid silent cross-TS contamination.\n  - " + "\n  - ".join(mismatches)
+            )
+
+        extras = (tomostar_stems | xml_stems | tiltstack_stems) - expected_ts_ids
+        if extras:
+            logger.warning(
+                "tsAlignment ingest: %d TS present in job dir but not ingested "
+                "(muted/failed this run, or stale from a previous one): %s",
+                len(extras), sorted(extras),
             )
 
     def _resolve_per_ts_path(
