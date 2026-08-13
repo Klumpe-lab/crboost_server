@@ -45,6 +45,7 @@ from services.visualization.preview_orchestrator import (
     read_preview_manifest,
 )
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview, render_xz_slab_preview
+from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
 from ui.components.reactive import SingleFlight
 from ui.dashboard.css import ensure_assets_loaded
 from ui.dashboard.figures import (
@@ -59,7 +60,6 @@ from ui.dashboard.figures import (
 from services.dashboard_data import (
     SPECIES_OVERLAY_COLORS,
     alignment_registry_df,
-    candidate_extract_instances,
     collect_dashboard_journey,
     collect_species_journey,
     denoised_mrc_from_registry,
@@ -76,6 +76,7 @@ from services.dashboard_data import (
     recon_mrc_map,
     resolve_species,
     resolve_volume_for_3dmod,
+    species_render_plan,
     split_species_id,
     template_match_instances,
     tsctf_registry_df,
@@ -2331,8 +2332,12 @@ def _list_cutout_paths(project_path: Path, species_id: str, tomo_name: str, slug
 
 def _list_cutout_box_px(sp: dict) -> int:
     """Cutout box edge in binned-recon px ≈ 2× particle diameter (context around
-    the pick), clamped. Falls back to 48 when diameter/pixel size is unknown."""
-    diameter = float(getattr(sp.get("jm"), "particle_diameter_ang", 0.0) or 0.0)
+    the pick), clamped. Falls back to 48 when diameter/pixel size is unknown — this
+    is a display window, not extraction geometry, so a generic one is honest."""
+    species = current_project_state().get_species(sp.get("species_id") or "")
+    diameter = float(getattr(sp.get("jm"), "particle_diameter_ang", 0.0) or 0.0) or float(
+        getattr(species, "diameter_ang", 0.0) or 0.0
+    )
     px = (sp.get("entry") or {}).get("pixel_size_ang")
     if diameter and px and px > 0:
         half = max(16, min(96, round(diameter / px)))
@@ -2867,7 +2872,18 @@ async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh)
         # Prefer the curated subset so extraction consumes the KEPT picks, not all of them.
         filtered = picks_filter.filtered_list_path(Path(star))
         list_star = str(filtered) if filtered.exists() else str(star)
-        candidate_optset = Path(sp["job_dir"]) / "optimisation_set.star"
+        job_dir = sp.get("job_dir")
+        if job_dir is None:
+            # S3 gives the candidate-free extraction path (build the optset from the
+            # tomograms.star). Until then, say so rather than failing obscurely.
+            ui.notify(
+                "This species has no candidate-extract job, so there is no optimisation set to extract "
+                "against yet — candidate-free extraction is not wired up.",
+                type="warning",
+                timeout=6000,
+            )
+            return
+        candidate_optset = Path(job_dir) / "optimisation_set.star"
         if not candidate_optset.exists():
             ui.notify(
                 "Species candidate optimisation_set.star not found — cannot extract.", type="negative", timeout=5000
@@ -3113,7 +3129,7 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
 # See W3 in docs/ARTIAX_BRIDGE_PLAN.md.
 
 
-def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id: str, shape: str = "circle"):
+def _render_pick_layer(picks: list, color: str, dims: list | None, axis: str, layer_id: str, shape: str = "circle"):
     """Render one pick list's ghost-dot layer over a shared slab canvas.
 
     Carries a stable DOM `layer_id` and per-dot `data-pick-idx` plus a
@@ -3122,10 +3138,14 @@ def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id:
     does `getElementById(layer_id)` then scopes its querySelector to it).
     `shape` (circle/diamond/square/triangle) is the per-list glyph, applied on
     the layer so it cascades to every child dot. Returns the layer element so a
-    checkbox can toggle its visibility."""
-    x_dim = max(int(dims[0]), 1)
-    y_dim = max(int(dims[1]), 1)
-    z_dim = max(int(dims[2]), 1)
+    checkbox can toggle its visibility. With unknown ``dims`` the layer renders
+    empty — a dot needs the binned extent to be placed, and placing it against a
+    stand-in extent is how picks end up quietly in the wrong corner."""
+    x_dim = max(int(dims[0]), 1) if dims else 0
+    y_dim = max(int(dims[1]), 1) if dims else 0
+    z_dim = max(int(dims[2]), 1) if dims else 0
+    if not (x_dim and y_dim and z_dim):
+        picks = []
     # `--sp-color` cascades to every child .cb-pick-ghost (the restyle rule
     # reads it via var()), so the species color survives the !important dot
     # styling without per-dot inline overrides.
@@ -3155,40 +3175,15 @@ def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -> tuple[Path | None, Path | None]:
-    """(recon_job_dir, reconstructed-tomogram MRC) for this TS, or Nones.
-
-    Falls back to the project-level imported tomograms.star (PARTICLES-header import
-    utility) for data-less / particle-only projects, which have no TS_RECONSTRUCT job."""
-    rec = find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
-    if rec:
-        recon_job_dir = job_dir_for(project_state, rec[0], rec[1], project_path)
-        if not recon_job_dir:
-            return None, None
-        star_path = recon_job_dir / "tomograms.star"
-    else:
-        imported = project_state.imported_tomograms_star_path()
-        if not imported:
-            return None, None
-        star_path = Path(imported)
-        recon_job_dir = star_path.parent
-    tomo_df = read_tomograms_table(star_path)
-    if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
-        return recon_job_dir, None
-    match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
-    if match.empty:
-        return recon_job_dir, None
-    mrc = resolve_volume_for_3dmod(match.iloc[0], project_path)
-    return recon_job_dir, (Path(mrc) if mrc else None)
-
-
-def _read_pick_list_voxels(star_path: Path, dims: list, pixel_size: float | None) -> list[dict]:
+def _read_pick_list_voxels(star_path: Path, dims: list | None, pixel_size: float | None) -> list[dict]:
     """Read a centered-Å pick star → voxel-space picks ``[{i, x, y, z}]`` for the
     canvas overlay, using the binned ``dims`` + ``pixel_size`` already resolved in
     the render context (no MRC re-read per render). Returns ``[]`` if the file,
     its deps, or the centered-coord columns are unavailable — so a missing/changed
-    list degrades to 'nothing drawn' rather than breaking the dashboard render."""
-    if not star_path or not Path(star_path).exists() or not pixel_size or pixel_size <= 0:
+    list degrades to 'nothing drawn' rather than breaking the dashboard render.
+    Unknown dims/pixel size land here too: no overlay beats an overlay drawn at a
+    guessed scale (the geometry chip in the section header says why)."""
+    if not star_path or not Path(star_path).exists() or not pixel_size or pixel_size <= 0 or not dims:
         return []
     try:
         import starfile
@@ -3239,8 +3234,11 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
         )
     species_id = sp.get("species_id") or ""
     if species_id:
-        dims = sp.get("dims") or [1, 1, 1]
+        # dims / pixel_size may be None (geometry unresolved) — `_read_pick_list_voxels`
+        # then draws nothing rather than mapping picks through an invented scale.
+        dims = sp.get("dims")
         pixel_size = (sp.get("entry") or {}).get("pixel_size_ang")
+        geometry_ok = bool(dims) and bool(pixel_size and pixel_size > 0)
         for pl in project_state.get_pick_lists(species_id, ts_name):
             picks = _read_pick_list_voxels(Path(pl.path), dims, pixel_size)
             if not picks:
@@ -3274,7 +3272,10 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
             # prior session (filtered_count=None on disk) reads falsely STALE right after a
             # correct extraction of its kept subset. mark_dirty so the corrected count
             # persists for cross-session / aggregation reads that never re-render this panel.
-            if pl.filtered_count != filtered_count:
+            # Only when the geometry actually resolved: with unknown dims/apix EVERY list
+            # reads back empty, and writing that through would wipe a real cached count on
+            # a render that never looked at the picks.
+            if geometry_ok and pl.filtered_count != filtered_count:
                 pl.filtered_count = filtered_count
                 project_state.mark_dirty()
             lists.append(
@@ -3295,63 +3296,149 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
     return lists
 
 
-def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str, refresh) -> list[dict]:
-    """One entry per candidate-extract instance that has a row for this TS,
-    with everything the Particles section needs (row, manifest, entry, picks,
-    color, lists). Drives both the shared canvas overlay and the per-species tabs."""
-    out: list[dict] = []
-    for idx, (iid, jm) in enumerate(candidate_extract_instances(project_state)):
-        job_dir = job_dir_for(project_state, iid, jm, project_path)
-        if not job_dir:
-            continue
-        ce_rows = _collect_tomo_rows_for_instance(job_dir, project_path)
-        row = next((r for r in ce_rows if r["tomo_name"] == ts_name), None)
-        if row is None:
-            continue
-        # Lazy-generate previews + IMOD overlays for this species (idempotent;
-        # refresh re-renders the dashboard when the background job lands).
-        _auto_kick_preview_generation(iid, jm, job_dir, project_path, refresh)
-        _auto_kick_imod_generation(iid, jm, job_dir, project_path, refresh)
-        manifest = read_preview_manifest(job_dir) or {}
-        entry = (manifest.get("tomograms") or {}).get(ts_name) or {}
-        picks_data = _read_picks_json(Path(entry["picks_json"])) if entry.get("picks_json") else {}
-        label = (manifest.get("template") or {}).get("species_name") or split_species_id(iid) or iid
-        # Resolve the subtomo job for THIS species (by species_id) so the
-        # gallery's save-filter writes into the right job — the old lex-greatest
-        # heuristic mis-targeted every species at one subtomo job.
-        _, species_id = resolve_species(project_state, jm, iid)
-        sub_match = matching_subtomo_instance(project_state, species_id)
-        subtomo_job_dir = job_dir_for(project_state, sub_match[0], sub_match[1], project_path) if sub_match else None
-        # Auto list's curated kept count (the subtomo-gallery keep/drop), read off the
-        # cheap reviewed sidecar so the table shows kept/total for auto like the rest.
-        auto_kept_count = None
-        if subtomo_job_dir:
-            try:
-                from services.visualization import picks_filter
+def _denovo_species_entry(species, species_id: str, idx: int, color: str, geom: TomoGeometry, ts_name: str) -> dict:
+    """Species-section entry for a species with NO candidate-extract job — picked de
+    novo, so everything comes from the tomogram's geometry plus the user's own pick
+    lists. `row` mirrors the shape `_collect_tomo_rows_for_instance` produces and
+    `entry` carries the geometry under the keys the preview manifest would have used,
+    so the whole render path below runs unchanged. No manifest, no auto picks, no job
+    dir: `jm`/`job_dir` are None and the CE-only branches skip themselves."""
+    label, (stage, beam) = position_label(ts_name)
+    row = {
+        "tomo_name": ts_name,
+        "position_label": label,
+        "stage": stage,
+        "beam": beam,
+        "vol_path": str(geom.recon_mrc) if geom.recon_mrc else None,
+        "mod_path": None,  # IMOD overlays are a candidate-extract artifact
+        "mod_exists": False,
+        "n_picks": None,
+        "score_range": None,
+        "status": "ok" if geom.recon_mrc else "missing-volume",
+        "error": None,
+    }
+    return {
+        "idx": idx,
+        # D-1: an internal key for tabs / canvas layers, never a roster job.
+        "iid": f"pick__{species_id}",
+        "jm": None,
+        "job_dir": None,
+        "species_id": species_id,
+        "subtomo_job_dir": None,
+        "subtomo_jm": None,
+        "auto_kept_count": None,
+        "row": row,
+        "manifest": {},
+        "entry": {
+            "pixel_size_ang": geom.binned_apix,
+            "tomo_dims_xyz_px": list(geom.dims_xyz_px) if geom.dims_xyz_px else None,
+        },
+        "label": str(getattr(species, "name", "") or species_id or "species"),
+        "color": color,
+        "picks": [],
+        "dims": list(geom.dims_xyz_px) if geom.dims_xyz_px else None,
+        "tomograms_star": geom.tomograms_star,
+    }
 
-                auto_kept_count = picks_filter.read_reviewed_counts(subtomo_job_dir).get(ts_name)
-            except Exception:
-                auto_kept_count = None
-        # Prescan: auto-ingest a fresh ArtiaX save at the bundle's tomo-named path
-        # so a curated list surfaces without an explicit Import click.
-        _auto_kick_coords_ingest(job_dir, project_path, species_id, str(label), ts_name, refresh)
-        sp_entry = {
-            "idx": idx,
-            "iid": iid,
-            "jm": jm,
-            "job_dir": job_dir,
-            "species_id": species_id,
-            "subtomo_job_dir": subtomo_job_dir,
-            "subtomo_jm": sub_match[1] if sub_match else None,
-            "auto_kept_count": auto_kept_count,
-            "row": row,
-            "manifest": manifest,
-            "entry": entry,
-            "label": str(label),
-            "color": SPECIES_OVERLAY_COLORS[idx % len(SPECIES_OVERLAY_COLORS)],
-            "picks": picks_data.get("picks") or [],
-            "dims": picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1],
-        }
+
+def _ce_species_entry(
+    ce, species_id, idx: int, color: str, geom, project_state, project_path: Path, ts_name: str, refresh
+) -> dict | None:
+    """Species-section entry backed by a candidate-extract instance — the pre-inversion
+    path, unchanged except for the color source and the dims fallback."""
+    iid, jm = ce
+    job_dir = job_dir_for(project_state, iid, jm, project_path)
+    if not job_dir:
+        return None
+    ce_rows = _collect_tomo_rows_for_instance(job_dir, project_path)
+    row = next((r for r in ce_rows if r["tomo_name"] == ts_name), None)
+    if row is None:
+        return None
+    # Lazy-generate previews + IMOD overlays for this species (idempotent;
+    # refresh re-renders the dashboard when the background job lands).
+    _auto_kick_preview_generation(iid, jm, job_dir, project_path, refresh)
+    _auto_kick_imod_generation(iid, jm, job_dir, project_path, refresh)
+    manifest = read_preview_manifest(job_dir) or {}
+    entry = (manifest.get("tomograms") or {}).get(ts_name) or {}
+    picks_data = _read_picks_json(Path(entry["picks_json"])) if entry.get("picks_json") else {}
+    label = (manifest.get("template") or {}).get("species_name") or split_species_id(iid) or iid
+    # Resolve the subtomo job for THIS species (by species_id) so the
+    # gallery's save-filter writes into the right job — the old lex-greatest
+    # heuristic mis-targeted every species at one subtomo job.
+    sub_match = matching_subtomo_instance(project_state, species_id)
+    subtomo_job_dir = job_dir_for(project_state, sub_match[0], sub_match[1], project_path) if sub_match else None
+    # Auto list's curated kept count (the subtomo-gallery keep/drop), read off the
+    # cheap reviewed sidecar so the table shows kept/total for auto like the rest.
+    auto_kept_count = None
+    if subtomo_job_dir:
+        try:
+            from services.visualization import picks_filter
+
+            auto_kept_count = picks_filter.read_reviewed_counts(subtomo_job_dir).get(ts_name)
+        except Exception:
+            auto_kept_count = None
+    # The candidate-extract job's own tomograms.star stays authoritative for this
+    # species: on a denoised chain it repoints rlnTomoReconstructedTomogram at the
+    # denoised volume, so sourcing the recon job's star instead would silently swap
+    # which volume ArtiaX opens. The geometry star is the fallback when the job copy
+    # is absent (and the only source on the de-novo path, which has no job dir).
+    ce_star = job_dir / "tomograms.star"
+    tomograms_star = ce_star if ce_star.exists() else (geom.tomograms_star if geom else ce_star)
+    return {
+        "idx": idx,
+        "iid": iid,
+        "jm": jm,
+        "job_dir": job_dir,
+        "species_id": species_id,
+        "subtomo_job_dir": subtomo_job_dir,
+        "subtomo_jm": sub_match[1] if sub_match else None,
+        "auto_kept_count": auto_kept_count,
+        "row": row,
+        "manifest": manifest,
+        "entry": entry,
+        "label": str(label),
+        "color": color,
+        "picks": picks_data.get("picks") or [],
+        # picks.json / manifest first (parity), then the geometry provider. The old
+        # `[1, 1, 1]` tail is gone: dims we don't know disable the overlay instead of
+        # collapsing every dot into the corner.
+        "dims": picks_data.get("tomo_dims_xyz_px")
+        or entry.get("tomo_dims_xyz_px")
+        or (list(geom.dims_xyz_px) if geom and geom.dims_xyz_px else None),
+        "tomograms_star": tomograms_star,
+    }
+
+
+def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str, refresh) -> list[dict]:
+    """One entry per species the Particles section renders for this TS, with
+    everything it needs (row, manifest, entry, picks, color, lists).
+    Drives both the shared canvas overlay and the per-species tabs.
+
+    Enumerates `species_render_plan` (the registry, not the candidate-extract jobs):
+    a species with a CE instance keeps the pre-inversion entry exactly; a species
+    without one gets a geometry-backed entry so it can be picked into de novo."""
+    geom = geometry_for_ts(project_state, project_path, ts_name)
+    out: list[dict] = []
+    for idx, (species, species_id, ce) in enumerate(species_render_plan(project_state)):
+        color = getattr(species, "color", "") or SPECIES_OVERLAY_COLORS[idx % len(SPECIES_OVERLAY_COLORS)]
+        if ce is None:
+            # Nothing has reconstructed or imported this tomogram, so there is no
+            # frame to pick in — the species simply doesn't appear on this TS.
+            if geom is None:
+                continue
+            sp_entry = _denovo_species_entry(species, species_id or "", idx, color, geom, ts_name)
+        else:
+            sp_entry = _ce_species_entry(
+                ce, species_id, idx, color, geom, project_state, project_path, ts_name, refresh
+            )
+            if sp_entry is None:
+                continue
+        # Prescan: auto-ingest a fresh ArtiaX save at the bundle's tomo-named path so
+        # a curated list surfaces without an explicit Import click. Both paths need
+        # it — for a de-novo species this IS how picks enter the project.
+        _auto_kick_coords_ingest(
+            sp_entry["tomograms_star"], project_path, sp_entry["species_id"], sp_entry["label"], ts_name, refresh
+        )
         sp_entry["lists"] = _collect_pick_lists_for_species(sp_entry, project_state, ts_name)
         out.append(sp_entry)
     return out
@@ -3561,15 +3648,97 @@ def _render_imported_particles_section(
     return True
 
 
+def _render_geometry_chip(geom: TomoGeometry | None) -> None:
+    """The tomogram's binned pixel size + dims in the Particles header, WITH the
+    provenance of the pixel size. A missing apix (or missing dims) is shown red and
+    disables every overlay downstream — the one thing we must never do is present a
+    stand-in scale as if it were measured (CLAUDE.md, 'Surfacing uncertainty')."""
+    if geom is None:
+        return
+    if geom.dims_xyz_px:
+        ui.label("×".join(str(int(v)) for v in geom.dims_xyz_px)).classes("text-[10px] font-mono text-gray-500")
+    else:
+        _imported_wip_marker(
+            "dimensions unknown",
+            "Neither the reconstruction MRC header nor tomograms.star gives this tomogram's size, "
+            "so picks cannot be placed on the canvas.",
+        )
+    if geom.binned_apix is None:
+        _imported_wip_marker(
+            "pixel size unset",
+            "tomograms.star has no usable rlnTomoTiltSeriesPixelSize and the reconstruction MRC header "
+            "carries no voxel size. Pick overlays are disabled rather than drawn at a guessed scale — "
+            "set 'Pixel size' on the Import Tomograms job.",
+        )
+    elif geom.apix_provenance == APIX_MRC_HEADER:
+        ui.label(f"{geom.binned_apix:g} Å/px").classes("text-[10px] font-mono text-amber-600").tooltip(
+            "Pixel size read from the reconstruction MRC header — tomograms.star does not carry one."
+        )
+    else:
+        ui.label(f"{geom.binned_apix:g} Å/px").classes("text-[10px] font-mono text-gray-500").tooltip(
+            "Binned pixel size from tomograms.star (rlnTomoTiltSeriesPixelSize × rlnTomoTomogramBinning)."
+        )
+
+
+async def _prompt_new_species(project_path: Path, refresh) -> None:
+    """Create a label-only species from the Particles empty state (D-5's second
+    entry point; the roster's PARTICLES header carries the first). ``origin="manual"``
+    — no template directory, because a de-novo species may never have a template.
+    SingleFlight-guarded: this button sits in a poll-refreshed container and can be
+    rebuilt mid-click."""
+    from backend import get_backend
+    from services.project_state import get_project_state_for
+    from ui.species_workbench_panel import _prompt_species_name
+
+    async with _curation_flight(f"new_species:{project_path}") as acquired:
+        if not acquired:
+            return
+        name = await _prompt_species_name()
+        if not name:
+            return
+        species = get_project_state_for(project_path).add_species(name, origin="manual")
+        await get_backend().save_project(project_path, force=True)
+        ui.notify(f"Created species '{species.name}' — pick into it with 'Curate in ArtiaX'", type="positive")
+        refresh()
+
+
+def _render_no_species_empty_state(project_path: Path, refresh) -> None:
+    """Particles section for a tomogram nobody has declared a species for yet. The
+    de-novo entry point (D-5): picking needs a species, and this is where the user
+    is standing when they realize that."""
+    with ui.element("div").classes("cb-empty"):
+        ui.icon("scatter_plot", size="28px").classes("text-gray-400")
+        ui.label("No particle species yet.").classes("text-xs")
+        ui.label(
+            "A species is the label picks hang off. Create one to pick particles by hand in ArtiaX — "
+            "no template or template-matching job needed."
+        ).classes("text-[11px] italic text-center text-gray-500").style("max-width: 460px;")
+        ui.button("New species", icon="add", on_click=lambda: _prompt_new_species(project_path, refresh)).props(
+            "dense no-caps unelevated color=indigo size=sm"
+        )
+
+
 def _render_particles_section(ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None) -> bool:
     """Unified Particles section: a shared tomogram canvas with every species'
     picks overlaid (toggleable), plus a per-species tab carrying that species'
     gallery / scatter. Replaces the old per-species candidate-extract cards."""
+    geom = geometry_for_ts(project_state, project_path, ts_name)
     species_data = _collect_species_data_for_ts(project_state, project_path, ts_name, refresh)
     if not species_data:
-        return False
+        # A tomogram exists here but no species does — offer to create one rather
+        # than leaving the section (and the whole picking path) undiscoverable.
+        if geom is None:
+            return False
+        with ui.element("div").classes("cb-section-card w-full") as empty_card:
+            empty_card._props["data-section"] = "particles"
+            with ui.element("div").classes("cb-section-card-header"):
+                ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
+                ui.label("Particles").classes("cb-section-title")
+                _render_geometry_chip(geom)
+            _render_no_species_empty_state(project_path, refresh)
+        return True
 
-    recon_job_dir, mrc_path = _resolve_recon_mrc_for_ts(project_state, project_path, ts_name)
+    mrc_path = geom.recon_mrc if geom else None
 
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "particles"
@@ -3577,6 +3746,7 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
             ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
             ui.label("Particles").classes("cb-section-title")
             ui.label(f"{len(species_data)} species").classes("text-[10px] font-mono text-gray-500")
+            _render_geometry_chip(geom)
             ui.space()
             # Per-species generate controls (Render previews · Re-render · IMOD)
             # live in the panel toolbar, following the active tab; the canvas-wide
@@ -3602,16 +3772,14 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
             # gallery/rail column beside it always gets the majority instead of the
             # slab eating ~half the row by its vh·aspect width. All species share the
             # TS's reconstructed tomogram → take the first real dims for the aspect.
-            cdims = next((sp["dims"] for sp in species_data if sp.get("dims") and tuple(sp["dims"]) != (1, 1, 1)), None)
+            cdims = next((sp["dims"] for sp in species_data if sp.get("dims")), None)
             cx, cy = (max(int(cdims[0]), 1), max(int(cdims[1]), 1)) if cdims else (1, 1)
             canvas_col.style(f"width: min(1080px, calc({_SLAB_MAX_VH}vh * {cx} / {cy})); max-width: {_SLAB_MAX_PCT}%")
             with canvas_col:
                 # Shared canvas: lazily renders the recon slab and overlays each
                 # species' picks. Returns {iid: {"xy": layer_id, "xz": layer_id}}
                 # so each tab's gallery cross-links to its own dots.
-                canvas_layers = _render_particles_canvas(
-                    species_data, recon_job_dir, mrc_path, ts_name, project_path, refresh
-                )
+                canvas_layers = _render_particles_canvas(species_data, geom, ts_name, project_path, refresh)
 
             with ui.element("div").classes("cb-particles-tabs-col"):
                 tab_objs: list[tuple[dict, object]] = []
@@ -3649,26 +3817,24 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
 
 
 def _render_particles_canvas(
-    species_data: list[dict],
-    recon_job_dir: Path | None,
-    mrc_path: Path | None,
-    ts_name: str,
-    project_path: Path,
-    refresh,
+    species_data: list[dict], geom: TomoGeometry | None, ts_name: str, project_path: Path, refresh
 ) -> dict:
     """Maximized shared slab canvas with each species' picks overlaid as a
     color-coded, toggleable layer. Returns {iid: {"xy": layer_id, "xz":
     layer_id|None}} so each tab's gallery can cross-link to its dots."""
     layer_ids: dict[str, dict] = {}
 
-    if recon_job_dir is None or mrc_path is None:
+    if geom is None or geom.recon_mrc is None:
         ui.label("No reconstructed tomogram on disk — canvas unavailable; per-species galleries below.").classes(
             "cb-section-placeholder"
         )
         return layer_ids
 
-    _auto_kick_recon_slabs(recon_job_dir, ts_name, mrc_path, project_path, refresh)
-    xy_png, xz_png = _recon_slab_paths(recon_job_dir, ts_name)
+    # The slabs cache next to the star that declared the volume — the recon job dir
+    # for a pipeline tomogram, the Tomograms dir for an imported one.
+    slab_dir, mrc_path = geom.tomograms_star.parent, geom.recon_mrc
+    _auto_kick_recon_slabs(slab_dir, ts_name, mrc_path, project_path, refresh)
+    xy_png, xz_png = _recon_slab_paths(slab_dir, ts_name)
     if not xy_png.exists():
         with ui.element("div").classes("cb-empty"):
             ui.spinner(size="26px", color="indigo-500")
@@ -3685,7 +3851,16 @@ def _render_particles_canvas(
             ui.image(vis_asset_url(str(xy_png)))
         return layer_ids
 
-    dims = with_picks[0]["dims"]
+    # All species on this TS share the one volume, so any species that resolved dims
+    # gives the canvas its aspect; the geometry provider is the backstop. Unknown
+    # extent ⇒ bare slab, no overlay (never dots placed against a stand-in size).
+    dims = next((sp["dims"] for sp in with_picks if sp.get("dims")), None) or (
+        list(geom.dims_xyz_px) if geom.dims_xyz_px else None
+    )
+    if dims is None:
+        with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style(f"max-height: {_SLAB_MAX_VH}vh;"):
+            ui.image(vis_asset_url(str(xy_png)))
+        return layer_ids
     x_dim = max(int(dims[0]), 1)
     y_dim = max(int(dims[1]), 1)
     z_dim = max(int(dims[2]), 1)
@@ -3743,7 +3918,10 @@ def _tm_essentials_for_species(sp: dict) -> dict:
     species (by species_id) and pull the interpretive essentials shown in the
     tab header: matched TM instance id, angular search θ, and symmetry."""
     state = current_project_state()
-    species, species_id = resolve_species(state, sp["jm"], sp["iid"])
+    # The collector already ran the resolve chain; re-running it here would have to
+    # cope with a de-novo species' synthetic instance id and its `jm=None`.
+    species_id = sp.get("species_id")
+    species = state.get_species(species_id) if species_id else None
     info: dict = {
         "species": species,
         "species_id": species_id,
@@ -3760,6 +3938,16 @@ def _tm_essentials_for_species(sp: dict) -> dict:
             info["sym"] = (getattr(species, "symmetry", None) if species else None) or getattr(tm_jm, "symmetry", None)
             break
     return info
+
+
+def _artiax_inputs(sp: dict) -> tuple[Path | None, Path]:
+    """``(candidates_star, tomograms_star)`` for one species' ArtiaX round trip.
+
+    ``candidates_star`` is None for a species with no candidate-extract job — there
+    is no reference pick list to preload, and the bundle opens the tomogram with an
+    empty ArtiaX session, which is exactly the de-novo picking start."""
+    job_dir = sp.get("job_dir")
+    return (Path(job_dir) / "candidates.star" if job_dir else None), Path(sp["tomograms_star"])
 
 
 async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
@@ -3779,12 +3967,12 @@ async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
         if backend is None:
             ui.notify("Backend unavailable.", type="negative")
             return
-        job_dir = Path(sp["job_dir"])
+        candidates_star, tomograms_star = _artiax_inputs(sp)
         ui.notify(f"Preparing ArtiaX bundle for {tomo_name}…", type="info")
         bundle = await backend.prepare_curation_bundle(
             project_path,
-            job_dir / "candidates.star",
-            job_dir / "tomograms.star",
+            candidates_star,
+            tomograms_star,
             tomo_name,
             sp.get("label") or sp.get("species_id") or "",
             species_id=sp.get("species_id") or "",
@@ -3793,8 +3981,8 @@ async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
             ui.notify(f"Could not prepare picks for {tomo_name}: {bundle.get('error')}", type="negative")
             return
         bundle["tomo_name"] = tomo_name
-        bundle["candidates_star"] = str(job_dir / "candidates.star")
-        bundle["tomograms_star"] = str(job_dir / "tomograms.star")
+        bundle["candidates_star"] = str(candidates_star) if candidates_star else ""
+        bundle["tomograms_star"] = str(tomograms_star)
         bundle["species_id"] = sp.get("species_id") or ""
         bundle["species_label"] = sp.get("label") or sp.get("species_id") or ""
         await open_curation_control_center(backend, project_path, bundle=bundle)
@@ -3869,13 +4057,13 @@ async def _handle_load_into_session(sp: dict, project_path: Path) -> None:
         if not go:
             return
 
-        job_dir = Path(sp["job_dir"])
+        candidates_star, tomograms_star = _artiax_inputs(sp)
         _notify(f"Loading {tomo_name} into the running session…", type="info")
         res = await backend.load_into_session(
             active,
             project_path,
-            job_dir / "candidates.star",
-            job_dir / "tomograms.star",
+            candidates_star,
+            tomograms_star,
             tomo_name,
             sp.get("label") or species_id or "",
             species_id=species_id,
@@ -3913,12 +4101,12 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
         if not star:
             ui.notify(f"'{lst.get('label')}' has no backing file to open.", type="warning")
             return
-        job_dir = Path(sp["job_dir"])
+        candidates_star, tomograms_star = _artiax_inputs(sp)
         ui.notify(f"Preparing {lst.get('label')} for ArtiaX…", type="info")
         bundle = await backend.prepare_curation_bundle(
             project_path,
-            job_dir / "candidates.star",
-            job_dir / "tomograms.star",
+            candidates_star,
+            tomograms_star,
             tomo_name,
             sp.get("label") or species_id or "",
             species_id=species_id,
@@ -3929,8 +4117,8 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
             ui.notify(f"Could not prepare {lst.get('label')}: {bundle.get('error')}", type="negative")
             return
         bundle["tomo_name"] = tomo_name
-        bundle["candidates_star"] = str(job_dir / "candidates.star")
-        bundle["tomograms_star"] = str(job_dir / "tomograms.star")
+        bundle["candidates_star"] = str(candidates_star) if candidates_star else ""
+        bundle["tomograms_star"] = str(tomograms_star)
         bundle["species_id"] = species_id
         bundle["species_label"] = sp.get("label") or species_id or ""
         bundle["source_star"] = str(star)
@@ -4027,14 +4215,17 @@ def _pending_save_for_tomo(
 
 
 def _auto_kick_coords_ingest(
-    job_dir: Path, project_path: Path, species_id: str, species_label: str, tomo_name: str, refresh
+    tomograms_star: Path, project_path: Path, species_id: str, species_label: str, tomo_name: str, refresh
 ) -> None:
     """Prescan: if the user saved an ArtiaX `.coords` for this (species, tomo) — see
     `_pending_save_for_tomo` for how an arbitrarily-named save is safely attributed —
     and it's newer than the registered `manual` list (or there's none yet), ingest it
     in the background so the list appears without a click. An mtime-keyed dedup set +
     a created_at guard make it idempotent; the Import button stays for out-of-tree /
-    unattributable saves. Safe to call every render."""
+    unattributable saves. Safe to call every render.
+
+    Keyed on `curation_dir(...)` + the tomogram's star, never a job dir — the save
+    belongs to a (species, tomo), and a de-novo species has no job to hang it off."""
     if not species_id:
         return
     pending = _pending_save_for_tomo(project_path, species_label, species_id, tomo_name)
@@ -4066,7 +4257,7 @@ def _auto_kick_coords_ingest(
             return err("no backend")
         progress_cb(0, 0, "ingesting ArtiaX save…")
         result = await backend.import_curation_picks(
-            project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id, coords_path=coords
+            project_path, Path(tomograms_star), tomo_name, species_label, species_id, coords_path=coords
         )
         if result.get("success"):
             await _persist_manual_pick_list(result, species_id, tomo_name, project_path)
@@ -4099,9 +4290,8 @@ async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -
         if backend is None:
             ui.notify("Backend unavailable.", type="negative")
             return
-        job_dir = Path(sp["job_dir"])
         result = await backend.import_curation_picks(
-            project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id
+            project_path, Path(sp["tomograms_star"]), tomo_name, species_label, species_id
         )
         if not result.get("success"):
             if result.get("code") == ErrorCode.NO_COORDS_FOUND:
@@ -4121,7 +4311,7 @@ def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> No
     tomo_name = sp["row"]["tomo_name"]
     species_id = sp.get("species_id") or ""
     species_label = sp.get("label") or species_id or ""
-    job_dir = Path(sp["job_dir"])
+    tomograms_star = Path(sp["tomograms_star"])
     with ui.dialog() as dialog, ui.card().classes("w-[34rem] max-w-full gap-2"):
         ui.label(f"Import ArtiaX picks — {tomo_name}").classes("text-base font-bold")
         ui.label(
@@ -4140,7 +4330,7 @@ def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> No
                 ui.notify("Backend unavailable.", type="negative")
                 return
             result = await backend.import_curation_picks(
-                project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id, coords_path=Path(p)
+                project_path, tomograms_star, tomo_name, species_label, species_id, coords_path=Path(p)
             )
             if not result.get("success"):
                 ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
@@ -4159,8 +4349,13 @@ def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None
     Render previews (gen-missing) · Re-render all (cache-bypass) · (Re)generate
     IMOD overlays. Rendered into the Particles section title bar (next to the
     canvas-wide Invert switch), following the active species tab — so they sit in
-    the panel toolbar, not crammed into the tab body."""
-    iid, jm, job_dir = sp["iid"], sp["jm"], sp["job_dir"]
+    the panel toolbar, not crammed into the tab body.
+
+    All three act on a candidate-extract job; a species picked de novo has none, so
+    the toolbar is simply empty for it."""
+    iid, jm, job_dir = sp["iid"], sp["jm"], sp.get("job_dir")
+    if job_dir is None:
+        return
     imod_dir = job_dir / "vis" / "imodPartRad"
     has_imod_models = imod_dir.exists() and any(imod_dir.glob("*.mod"))
     gen_missing_btn = (
@@ -4213,8 +4408,10 @@ def _render_species_tab_body(
     # Always present an `auto` entry so the PyTOM section (incl. its zero-picks /
     # errored / generating states) stays reachable even when there are no auto
     # picks (the collector omits a 0-pick auto list to keep the canvas overlay clean).
+    # Only for a species that HAS a candidate-extract job — a de-novo species has no
+    # PyTOM section behind the chip, and an empty one would read as a failed run.
     lists = list(sp.get("lists") or [])
-    if not any(lst["slug"] == "auto" for lst in lists):
+    if sp.get("job_dir") is not None and not any(lst["slug"] == "auto" for lst in lists):
         lists.insert(
             0,
             {
@@ -4224,7 +4421,7 @@ def _render_species_tab_body(
                 "color": sp.get("color") or "#6366f1",
                 "shape": glyph_for(PickListType.AUTO),
                 "picks": sp.get("picks") or [],
-                "dims": sp.get("dims") or [1, 1, 1],
+                "dims": sp.get("dims"),
                 "visible": True,
                 "filtered_count": sp.get("auto_kept_count"),
             },
