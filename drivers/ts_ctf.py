@@ -14,7 +14,6 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 """
 
 import os
-import shlex
 import shutil
 import sys
 import traceback
@@ -37,8 +36,7 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command, run_command_with_retries, require_producer_input
-from services.computing.container_service import get_container_service
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool, require_producer_input
 from services.job_models import TsCtfParams
 from services.tilt_series import get_registry_for
 from services.tilt_series.adapters import TsCtfIngestAdapter
@@ -59,15 +57,19 @@ def run_defocus_hand_globally(
     Run ts_defocus_hand on ALL tilt-series at once. This is a global step because
     the handedness decision needs statistics across multiple TS.
     """
-    settings_str = shlex.quote(str(settings_file))
-    output_str = shlex.quote(str(output_processing))
 
-    check_cmd = f"WarpTools ts_defocus_hand --settings {settings_str} --output_processing {output_str} --check"
+    def defocus_hand(mode_flag: str) -> str:
+        return (
+            ToolCommand("WarpTools ts_defocus_hand")
+            .opt_path("--settings", settings_file, quote=True)
+            .opt_path("--output_processing", output_processing, quote=True)
+            .flag(mode_flag)
+            .render()
+        )
 
-    set_flip_cmd = f"WarpTools ts_defocus_hand --settings {settings_str} --output_processing {output_str} --set_flip"
-    set_noflip_cmd = (
-        f"WarpTools ts_defocus_hand --settings {settings_str} --output_processing {output_str} --set_noflip"
-    )
+    check_cmd = defocus_hand("--check")
+    set_flip_cmd = defocus_hand("--set_flip")
+    set_noflip_cmd = defocus_hand("--set_noflip")
 
     if params.defocus_hand == "auto":
         hand_cmd = (
@@ -84,11 +86,7 @@ def run_defocus_hand_globally(
     else:
         hand_cmd = " && ".join([check_cmd, set_noflip_cmd])
 
-    container_svc = get_container_service()
-    wrapped = container_svc.wrap_command_for_tool(
-        command=hand_cmd, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
-    )
-    run_command(wrapped, cwd=job_dir)
+    run_tool(hand_cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
 
 def stage_ctf_environment(
@@ -135,25 +133,25 @@ def stage_ctf_environment(
     return stage_root
 
 
-def build_ctf_command(params: TsCtfParams) -> str:
+def build_ctf_command(params: TsCtfParams) -> ToolCommand:
     """Build the ts_ctf command to run inside a staged environment."""
     cmd = (
-        f"WarpTools ts_ctf "
-        f"--settings warp_tiltseries.settings "
-        f"--input_processing warp_tiltseries "
-        f"--output_processing warp_tiltseries "
-        f"--window {params.window} "
-        f"--range_low {params.range_min} "
-        f"--range_high {params.range_max} "
-        f"--defocus_min {params.defocus_min} "
-        f"--defocus_max {params.defocus_max} "
-        f"--voltage {round(params.voltage)} "
-        f"--cs {params.spherical_aberration} "
-        f"--amplitude {params.amplitude_contrast} "
-        f"--perdevice {params.perdevice}"
+        ToolCommand("WarpTools ts_ctf")
+        .opt("--settings", "warp_tiltseries.settings")
+        .opt("--input_processing", "warp_tiltseries")
+        .opt("--output_processing", "warp_tiltseries")
+        .opt("--window", params.window)
+        .opt("--range_low", params.range_min)
+        .opt("--range_high", params.range_max)
+        .opt("--defocus_min", params.defocus_min)
+        .opt("--defocus_max", params.defocus_max)
+        .opt("--voltage", round(params.voltage))
+        .opt("--cs", params.spherical_aberration)
+        .opt("--amplitude", params.amplitude_contrast)
+        .opt("--perdevice", params.perdevice)
     )
     if params.do_phase:
-        cmd += " --fit_phase"
+        cmd.flag("--fit_phase")
     return cmd
 
 
@@ -364,10 +362,14 @@ def run_task_mode(array_idx: int):
         cmd = build_ctf_command(params)
         print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
 
-        wrapped = get_container_service().wrap_command_for_tool(
-            command=cmd, cwd=stage_root, tool_name=params.get_tool_name(), additional_binds=additional_binds
+        run_tool(
+            cmd,
+            tool_name=params.get_tool_name(),
+            cwd=stage_root,
+            binds=additional_binds,
+            attempts=3,
+            label=f"ts_ctf {ts_name}",
         )
-        run_command_with_retries(wrapped, cwd=stage_root, label=f"ts_ctf {ts_name}")
 
         # Copy the updated XML back to the shared output dir
         staged_xml = stage_root / "warp_tiltseries" / f"{ts_name}.xml"
