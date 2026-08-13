@@ -30,6 +30,52 @@ Totals: 75 divergence entries — 32 KEEP, 30 ALIGN, 13 ASK.
 - **[#56] miss_align** — 5 item/TS enumeration source (`drivers/miss_align.py:217-241, 46-63`)
 - **[#68] extract_pick_list** — 1+2 bootstrap bypass / argparse dispatch (`drivers/extract_pick_list.py:10-11, 31, 108-122`)
 
+### ASK decisions (maintainer, 2026-08-13)
+
+Blanket policy for the silent-tolerance group: **never guess, no silent green ticks — hard fail with a
+distinguishable per-TS reason.** Approved surfacing: a per-TS "missing inputs / underspecified
+metadata" badge (reason-bearing status records per docs/task-status-state-machine-roadmap.md's JSON
+migration; until then, a distinct fail message in the task log). Containment rule: a missing/broken
+per-TS input fails THAT TS visibly (pre-marked `.fail` + reason, others proceed, job ends FAILED);
+only globally broken inputs (unreadable input star) fail the supervisor outright.
+
+- **#7 ts_ctf** — ALIGN: raise on missing tomostar (base behavior). No known legitimate
+  missing-tomostar case; if one ever exists it must arrive as an explicit `.skip`, never a no-op `.ok`.
+- **#10 ts_ctf** — FIX: supervisor copies alignment XMLs **only for TS about to be dispatched**
+  (no `.ok` marker). Preserves sparse re-dispatch; settled TS keep their CTF-updated XMLs.
+  (Maintainer's first instinct was recompute-all/clear-`.ok`; the filter was chosen because blanket
+  recompute defeats sparse re-runs on large datasets — flip to recompute if the filter proves leaky.)
+- **#12 fs_motion** — ALIGN: unresolvable per-TS star = that TS enters the manifest pre-marked
+  `.fail` with reason (visible in tracker), not a silent drop from `ts_names`.
+- **#13 fs_motion** — ALIGN: missing frame file = that TS task fails with reason; no partial-frame-set
+  green ticks.
+- **#53 denoise_train** — ALIGN: no column guessing; require the exact expected block/column, hard
+  error otherwise.
+- **#28 extract_candidates** — ALIGN: tomo-name cleanup failure = job failure, not `[WARN]`.
+- **#38/#39 ts_alignment** — DESIGN: TiltSeriesRegistry becomes the enumeration authority; drop
+  glob-enumeration AND the once-only whole-dir snapshot (stage fresh from producer every supervisor
+  run). Registry is weaponized as the drift detector: a dispatch-time set-consistency check
+  (registry vs tomostar dir vs input star) that fails loud on divergence — extends the adapter-side
+  `_assert_ts_identity_consistency` from ingest time to dispatch time. Coordinate with
+  docs/registry-consolidation-roadmap.md; ts_alignment's migration commit is the pilot.
+- **#25 extract_candidates** — DIRECTION: the **coordinate list** is the fundamental object.
+  Extraction enumerates the tomograms referenced by the coordinate list being extracted (TM-produced
+  or manual pick_list optset), threaded through the species registry (multiple lists per species,
+  multiple species per tomogram) per docs/roadmaps/denovo_picking/. Interim, before that lands: keep
+  TM-output enumeration but LOUDLY report the input-star-minus-TM-output difference instead of silence.
+- **#56 miss_align** — DEFERRED (maintainer binned it): keep whole-dir consumption; revisit the
+  training-set-membership question at miss_align's migration.
+- **#19 template_match (+ extract_candidates twin)** — KEEP: never edit primary files — excluded
+  tomograms stay as rows in tomograms.star. Mutedness (and coordinate exclusion) is project-state /
+  registry data; downstream consults it there, not row absence.
+- **#30 denoise_predict** — KEEP: preflight omission accidental but harmless; standalone
+  "just denoise a tomogram" is not a supported use case of this software.
+- **#68 extract_pick_list** — DESIGN (blocks stage 5 only): make it a bona fide job with a REAL,
+  UI-visible identity — proper JobType + param class + per-list instance id
+  (e.g. `extractPickList__<list-slug>`) in project_params.json, bootstrapped via
+  `get_driver_context`, status surfaced in the per-list extraction UI. Explicitly NO hidden/synthetic
+  instances invisible to the UI.
+
 ## Divergence ledger (by driver, in stage-3 migration risk order)
 
 ### ts_reconstruct (4)
