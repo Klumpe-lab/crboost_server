@@ -33,6 +33,9 @@ inconsistencies (live injection-hazard class) disappear.
 > transcript harvest. **Transcript caveat:** all harvested logs predate the Aug-11/12 driver code
 > AND the per-TS array refactor (array-mode exemplars exist only in `demo` for fsMotion/tsAlign/
 > tsCtf) — fresh transcripts are required before stage 2 migrates each builder.
+> **Resolved 2026-08-13:** post-echo transcripts harvested byte-exact into
+> `04-stage2-transcripts.md` (fsMotionAndCtf, tsImport, tsAlignment, tsCtf, tsReconstruct from
+> `stage4refactor_demo`); remaining job types still need runs.
 
 1. **Divergence ledger.** Table of every known behavioral difference, each with a decision
    (KEEP as intentional / ALIGN in an isolated flagged commit):
@@ -65,6 +68,28 @@ inconsistencies (live injection-hazard class) disappear.
    `task_*.out`. Convert the three implementations (`array_job_base`, `pipeline_runner.py:1013-1034`,
    `ui/components/task_utils.py:104-126`) to it. Pure consolidation; the on-disk format is frozen —
    any format change would orphan running jobs mid-flight.
+
+   > **DONE 2026-08-13** (code + first runtime session). Commits: `69b9843` (`services/array_tasks.py`
+   > grows `TaskProgress` — single settledness arithmetic, skip=settled — plus `manifest_items` /
+   > `manifest_array_job_id` / `any_task_started` / `mark_stopped_tasks_failed`), `db6813a`
+   > (`pipeline_runner` converted; commit message carries a stale roadmap-03 label — content is this
+   > conversion), `c030c29` (roster tallies via `TaskProgress`, skip-counts-as-settled fix, gray ⊘n
+   > chip), `7593368` (task tracker via `TaskProgress.from_statuses`). Related landed in the same
+   > session: `670a835` (all 13 census ASK decisions recorded), `bb8cafe` (ts_ctf supervisor copies
+   > alignment XMLs only for non-`.ok` TS — ledger #10), `71a66ff` (`run_command` echoes
+   > `[run_command] $ <cmd>` into every job log — feeds stage 2 transcripts), `3056ba3`
+   > (ts_alignment adapter identity check requires ingested TS present in all sources; extras
+   > downgrade to warnings — found at runtime, see below).
+   >
+   > **Runtime verification** on `/groups/klumpe/crboost_data/stage4refactor_demo/` (5 TS,
+   > `Position_1` muted in Journey): mute worked end-to-end — alignment array pre-marked the muted TS
+   > `.skip`, ran 4 tasks. First run went RED because the adapter's identity check demanded full
+   > set-equality across tomostar/XML/tiltstack and the muted TS legitimately has only a tomostar →
+   > fixed in `3056ba3`. Redeployed chain all green: job006 tsAlignment (manifest enumerates all 5,
+   > status 4×`.ok`+1×`.skip`), job007 tsCtf (manifest enumerates the 4 live TS, 4×`.ok`, supervisor
+   > `ts_defocus_hand --check`/`--set_flip` ran once), job008 tsReconstruct dispatched 4 tasks.
+   > Note the enumeration asymmetry (muted TS in-manifest-but-skipped at alignment vs
+   > dropped-from-manifest downstream) — feeds ledger #38/#39 (registry as enumeration authority).
 2. **`ToolCommand` + `run_tool()`** in `driver_base.py`: builder (`.arg()/.flag()/.paths()`) +
    one runner folding tool-name resolution (`params.get_tool_name()`), bind dedup, consistent
    quoting, the `[TASK n] Command:` log line, container wrapping, retries. Migrate one driver per
