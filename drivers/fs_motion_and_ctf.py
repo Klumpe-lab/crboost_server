@@ -17,7 +17,6 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 """
 
 import os
-import shlex
 import shutil
 import sys
 import traceback
@@ -37,8 +36,7 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command
-from services.computing.container_service import get_container_service
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool
 from services.configs.starfile_service import StarfileService
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.tilt_series import get_registry_for
@@ -101,11 +99,13 @@ def read_ts_frame_mapping(input_star: Path, project_root: Path) -> dict[str, lis
     return mapping
 
 
-def build_warp_commands(params: FsMotionCtfParams, frames_rel: str) -> str:
-    """Build WarpTools create_settings + fs_motion_and_ctf command for a staged frame dir."""
-    gain_path_str = ""
-    if params.gain_path and params.gain_path != "None":
-        gain_path_str = shlex.quote(params.gain_path)
+def build_warp_commands(params: FsMotionCtfParams, frames_rel: str, extension: str) -> str:
+    """Build WarpTools create_settings + fs_motion_and_ctf command for a staged frame dir.
+
+    `extension` is the frame glob (e.g. "*.eer"), embedded single-quoted so the shell
+    hands it to WarpTools rather than expanding it.
+    """
+    gain_path = params.gain_path if params.gain_path and params.gain_path != "None" else ""
     gain_ops_str = params.gain_operations if params.gain_operations else ""
 
     # Negative sign on --eer_ngroups reinterprets the value as "EER fractions" (RELION
@@ -114,74 +114,49 @@ def build_warp_commands(params: FsMotionCtfParams, frames_rel: str) -> str:
     # to produce a sharp average; dropping the sign collapses CTF fits into the floor
     # of the defocus search range on low-SNR (high-tilt) images. The old CryoBoost and
     # the pre-refactor driver both applied this sign for EER inputs.
-    create_settings_parts = [
-        "WarpTools create_settings",
-        "--folder_data",
-        frames_rel,
-        "--extension",
-        "'*.eer'",
-        "--folder_processing",
-        "warp_frameseries",
-        "--output",
-        "warp_frameseries.settings",
-        "--angpix",
-        str(params.pixel_size),
-        "--eer_ngroups",
-        f"-{params.eer_ngroups}",
-    ]
-    if gain_path_str:
-        create_settings_parts.extend(["--gain_reference", gain_path_str])
+    create_settings = (
+        ToolCommand("WarpTools create_settings")
+        .opt("--folder_data", frames_rel)
+        .raw(f"--extension '{extension}'")
+        .opt("--folder_processing", "warp_frameseries")
+        .opt("--output", "warp_frameseries.settings")
+        .opt("--angpix", params.pixel_size)
+        .opt("--eer_ngroups", f"-{params.eer_ngroups}")
+    )
+    if gain_path:
+        create_settings.opt_path("--gain_reference", gain_path, quote=True)
         if gain_ops_str:
-            create_settings_parts.extend(["--gain_operations", gain_ops_str])
+            create_settings.opt("--gain_operations", gain_ops_str)
 
-    run_main_parts = [
-        "WarpTools fs_motion_and_ctf",
-        "--settings",
-        "warp_frameseries.settings",
-        "--m_grid",
-        params.m_grid,
-        "--m_range_min",
-        str(params.m_range_min),
-        "--m_range_max",
-        str(params.m_range_max),
-        "--m_bfac",
-        str(params.m_bfac),
-        "--c_grid",
-        params.c_grid,
-        "--c_window",
-        str(params.c_window),
-        "--c_range_min",
-        str(params.c_range_min),
-        "--c_range_max",
-        str(params.c_range_max),
-        "--c_defocus_min",
-        str(params.defocus_min_microns),
-        "--c_defocus_max",
-        str(params.defocus_max_microns),
-        "--c_voltage",
-        str(round(float(params.voltage))),
-        "--c_cs",
-        str(params.spherical_aberration),
-        "--c_amplitude",
-        str(params.amplitude_contrast),
-        "--perdevice",
-        str(params.perdevice),
-        "--out_averages",
-        "--out_skip_first",
-        str(params.out_skip_first),
-        "--out_skip_last",
-        str(params.out_skip_last),
-    ]
+    run_main = (
+        ToolCommand("WarpTools fs_motion_and_ctf")
+        .opt("--settings", "warp_frameseries.settings")
+        .opt("--m_grid", params.m_grid)
+        .opt("--m_range_min", params.m_range_min)
+        .opt("--m_range_max", params.m_range_max)
+        .opt("--m_bfac", params.m_bfac)
+        .opt("--c_grid", params.c_grid)
+        .opt("--c_window", params.c_window)
+        .opt("--c_range_min", params.c_range_min)
+        .opt("--c_range_max", params.c_range_max)
+        .opt("--c_defocus_min", params.defocus_min_microns)
+        .opt("--c_defocus_max", params.defocus_max_microns)
+        .opt("--c_voltage", round(float(params.voltage)))
+        .opt("--c_cs", params.spherical_aberration)
+        .opt("--c_amplitude", params.amplitude_contrast)
+        .opt("--perdevice", params.perdevice)
+        .flag("--out_averages")
+        .opt("--out_skip_first", params.out_skip_first)
+        .opt("--out_skip_last", params.out_skip_last)
+    )
     if params.out_average_halves:
-        run_main_parts.append("--out_average_halves")
+        run_main.flag("--out_average_halves")
     if params.c_use_sum:
-        run_main_parts.append("--c_use_sum")
+        run_main.flag("--c_use_sum")
     if params.do_phase:
-        run_main_parts.append("--c_fit_phase")
+        run_main.flag("--c_fit_phase")
 
-    create_cmd = " ".join(create_settings_parts)
-    run_cmd = " ".join(run_main_parts)
-    return f"test -f warp_frameseries.settings || ({create_cmd}) && {run_cmd}"
+    return f"test -f warp_frameseries.settings || ({create_settings.render()}) && {run_main.render()}"
 
 
 def detect_frame_extension(frames_dir: Path) -> str:
@@ -431,20 +406,11 @@ def run_task_mode(array_idx: int):
         ext = detect_frame_extension(staged_frames_dir)
 
         # Build the WarpTools command — runs inside stage_root with frames in ./frames/
-        warp_command = build_warp_commands(params, "frames")
-
-        # Patch the extension in the create_settings command if not .eer
-        if ext != "*.eer":
-            warp_command = warp_command.replace("'*.eer'", f"'{ext}'")
+        warp_command = build_warp_commands(params, "frames", ext)
 
         print(f"[TASK {array_idx}] Command: {warp_command[:300]}...", flush=True)
 
-        container_svc = get_container_service()
-        apptainer_command = container_svc.wrap_command_for_tool(
-            command=warp_command, cwd=stage_root, tool_name="warptools", additional_binds=additional_binds
-        )
-
-        run_command(apptainer_command, cwd=stage_root)
+        run_tool(warp_command, tool_name=params.get_tool_name(), cwd=stage_root, binds=additional_binds)
 
         # Collect outputs into shared warp_frameseries/ dir
         print(f"[TASK {array_idx}] Collecting outputs...", flush=True)
