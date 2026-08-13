@@ -623,7 +623,7 @@ class CurationSessionService:
         self,
         session_info: dict[str, Any],
         project_path: Path,
-        candidates_star: Path,
+        candidates_star: Path | None,
         tomograms_star: Path,
         tomo_name: str,
         species_label: str = "",
@@ -706,7 +706,7 @@ class CurationSessionService:
     async def prepare_curation_bundle(
         self,
         project_path: Path,
-        candidates_star: Path,
+        candidates_star: Path | None,
         tomograms_star: Path,
         tomo_name: str,
         species_label: str = "",
@@ -725,16 +725,19 @@ class CurationSessionService:
         `coords_label` to open a SPECIFIC workbench list instead (its centered-Å
         star as the export source, labelled so its reference `.coords` is named
         apart from the user's own save) — the per-list "Open in ArtiaX" path.
+        With neither (a species picked de novo), the session opens the bare
+        tomogram and the user picks into an empty ArtiaX list.
         """
         from services.visualization import artiax_bridge
 
         out_dir = artiax_bridge.curation_dir(
             Path(project_path), tomo_name, species_id=species_id, species_label=species_label
         )
+        export_source = source_star or candidates_star
         try:
             info = await asyncio.to_thread(
                 artiax_bridge.prepare_curation_bundle,
-                Path(source_star or candidates_star),
+                Path(export_source) if export_source is not None else None,
                 Path(tomograms_star),
                 tomo_name,
                 out_dir,

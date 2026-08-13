@@ -256,7 +256,7 @@ def build_session_cxc(
 
 
 def prepare_curation_bundle(
-    candidates_star: Path,
+    candidates_star: Path | None,
     tomograms_star: Path,
     tomo_name: str,
     out_dir: Path,
@@ -278,6 +278,10 @@ def prepare_curation_bundle(
     ``<label>_ref.coords`` / ``open__<label>.cxc`` so the import scan can tell
     crboost's reference export from the user's own save. Launch with ``CB_CXC``
     pointing at ``cxc_path``.
+
+    ``candidates_star=None`` is the de-novo case: there are no reference picks to
+    preload, so no ``.coords`` is written and the ``.cxc`` opens the bare tomogram.
+    The user creates a particle list in ArtiaX and saves it; ingest is unchanged.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -289,8 +293,13 @@ def prepare_curation_bundle(
             "(rlnTomoReconstructedTomogram) — curation needs the binned recon to open in ArtiaX."
         )
     is_auto = coords_label == "auto"
-    ref_coords = out_dir / ("auto.coords" if is_auto else f"{_safe_slug(coords_label)}_ref.coords")
-    n = export_tomo_picks_to_coords(Path(candidates_star), Path(tomograms_star), tomo_name, ref_coords, project_root)
+    ref_coords: Path | None = None
+    n = 0
+    if candidates_star is not None:
+        ref_coords = out_dir / ("auto.coords" if is_auto else f"{_safe_slug(coords_label)}_ref.coords")
+        n = export_tomo_picks_to_coords(
+            Path(candidates_star), Path(tomograms_star), tomo_name, ref_coords, project_root
+        )
     manual_coords = out_dir / "manual.coords"
     cxc_path = out_dir / ("open.cxc" if is_auto else f"open__{_safe_slug(coords_label)}.cxc")
     cxc_path.write_text(
@@ -308,7 +317,7 @@ def prepare_curation_bundle(
     logger.info("Curation bundle for %s [%s] -> %s (%d picks)", tomo_name, coords_label, cxc_path, n)
     return {
         "cxc_path": str(cxc_path),
-        "auto_coords": str(ref_coords),
+        "auto_coords": str(ref_coords) if ref_coords is not None else None,
         "manual_coords": str(manual_coords),
         "recon": str(recon),
         "pixel_size": float(frame.pixel_size),
