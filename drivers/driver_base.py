@@ -8,8 +8,10 @@ Refactored for Single Source of Truth architecture.
 import subprocess
 import sys
 import os
+import shlex
 import time
 import argparse
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TypeVar
 
@@ -19,6 +21,7 @@ sys.path.append(str(server_dir))
 
 try:
     from services.project_state import ProjectState, AbstractJobParams, JobType
+    from services.computing.container_service import get_container_service
 except ImportError as e:
     print("FATAL: driver_base could not import services. Check PYTHONPATH.", file=sys.stderr)
     print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}", file=sys.stderr)
@@ -200,6 +203,30 @@ def _derive_watchdog_timeout() -> int:
     return 8 * 60 * 60  # 8h fallback
 
 
+PRINT_CMD_ENV = "CRBOOST_PRINT_CMD"
+
+
+def print_cmd_only() -> bool:
+    """True when the driver should print every tool command instead of running it.
+
+    Snapshot mode for command-parity work: set ``CRBOOST_PRINT_CMD=1`` and a driver
+    emits its usual ``[run_command] $ ...`` lines — fully container-wrapped, byte-for
+    -byte what would have executed — without launching anything. The gate lives in
+    ``run_command`` rather than ``run_tool`` on purpose: every driver funnels through
+    it, migrated or not, so a snapshot taken before a command-builder refactor is
+    directly diffable against one taken after.
+
+    Read at call time, not import time, so a caller can flip it per command.
+
+    Two caveats when snapshotting: the driver's Python-side work (staging dirs,
+    manifest/star writes) still happens, so run it against a scratch copy of a
+    project; and a driver that validates a tool's output right after the call will
+    abort there, giving a partial — but deterministic, hence still diffable —
+    transcript.
+    """
+    return os.environ.get(PRINT_CMD_ENV, "").strip() not in ("", "0")
+
+
 def run_command(command: str, cwd: Path, timeout: int | None = None, idle_timeout: int = IDLE_TIMEOUT_DEFAULT):
     """
     Run a shell command, stream output, and check for errors.
@@ -235,6 +262,10 @@ def run_command(command: str, cwd: Path, timeout: int | None = None, idle_timeou
     # was actually executed (container wrap included) — reproducibility + the
     # ground truth for command-builder refactors.
     print(f"[run_command] $ {command}", flush=True)
+
+    if print_cmd_only():
+        print(f"[run_command] {PRINT_CMD_ENV} set — printed only, not executed", flush=True)
+        return
 
     process = subprocess.Popen(
         command,
@@ -326,6 +357,91 @@ def run_command_with_retries(
                 flush=True,
             )
             time.sleep(retry_delay)
+
+
+class ToolCommand:
+    """Ordered accumulator for one tool invocation, rendered as a flat string.
+
+    Deliberately NOT a quoting engine. Every tool execution ends up as a single
+    ``bash -c '<string>'`` argument (the container wrapper quotes the whole command),
+    so compound shell survives — and the per-site quoting policy differs across
+    drivers and is part of the bytes we must preserve. Hence ``opt_path`` takes a
+    mandatory ``quote=`` that transcribes the call site's existing policy; the
+    ``quote=False`` sites double as the greppable inventory of unquoted-path
+    injection hazards.
+
+    Rendering is ``" ".join(parts)`` in insertion order: no reordering, no dedup, no
+    validation, no implicit quoting. Value formatting quirks (``round(...)``,
+    ``f"{x}x{y}"``, sign prefixes) stay at the call site — the builder never
+    re-formats what it is handed.
+    """
+
+    def __init__(self, exe: str):
+        # exe may fuse a subcommand: "WarpTools ts_reconstruct".
+        self.parts: list[str] = [exe]
+
+    def flag(self, flag: str) -> "ToolCommand":
+        """A valueless switch: ``--dont_invert``."""
+        self.parts.append(flag)
+        return self
+
+    def opt(self, flag: str, value) -> "ToolCommand":
+        """A flag with an unquoted scalar value — ``str(value)``, as an f-string would."""
+        self.parts.extend([flag, str(value)])
+        return self
+
+    def opt_path(self, flag: str, path, *, quote: bool) -> "ToolCommand":
+        """A flag with a path value. ``quote=True`` → ``shlex.quote``; ``False`` → verbatim."""
+        rendered = str(path)
+        self.parts.extend([flag, shlex.quote(rendered) if quote else rendered])
+        return self
+
+    def raw(self, fragment: str) -> "ToolCommand":
+        """Append a pre-rendered fragment verbatim.
+
+        The escape hatch for shapes that are not flag/value pairs: env prefixes,
+        fused glob tokens (``--extension '*.eer'``), multi-value splats (``-g 0 1 2``),
+        and user passthrough args.
+        """
+        self.parts.append(fragment)
+        return self
+
+    def render(self) -> str:
+        return " ".join(self.parts)
+
+    def __str__(self) -> str:
+        return self.render()
+
+
+def run_tool(
+    command: str | ToolCommand,
+    *,
+    tool_name: str,
+    cwd: Path,
+    binds: Iterable[str | Path] = (),
+    attempts: int = 1,
+    label: str = "",
+    timeout: int | None = None,
+) -> None:
+    """Wrap a tool command for its execution mode and run it.
+
+    Consolidates the wrap-and-run tail every driver repeats. ``binds`` are extra
+    paths to bind into the container: the wrapper resolves, dedups and sorts them
+    itself, so caller-side ordering and dedup idiom cannot affect the emitted bytes.
+    ``attempts > 1`` routes through ``run_command_with_retries``.
+
+    Accepts a plain ``str`` as well as a ``ToolCommand`` — compound shell (guard
+    chains, ``$()`` capture) is composed by the driver into a string and passed
+    through whole.
+    """
+    rendered = command.render() if isinstance(command, ToolCommand) else command
+    wrapped = get_container_service().wrap_command_for_tool(
+        command=rendered, cwd=cwd, tool_name=tool_name, additional_binds=[str(b) for b in binds]
+    )
+    if attempts > 1:
+        run_command_with_retries(wrapped, cwd=cwd, attempts=attempts, label=label or tool_name, timeout=timeout)
+    else:
+        run_command(wrapped, cwd=cwd, timeout=timeout)
 
 
 def diagnose_stale_producer(path: Path) -> str:
