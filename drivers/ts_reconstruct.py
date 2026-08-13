@@ -19,7 +19,6 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 """
 
 import os
-import shlex
 import sys
 import traceback
 from pathlib import Path
@@ -39,8 +38,7 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command_with_retries, require_producer_input
-from services.computing.container_service import get_container_service
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool, require_producer_input
 from services.configs.starfile_service import StarfileService
 from services.job_models import TsReconstructParams
 from services.tilt_series import get_registry_for
@@ -71,17 +69,17 @@ def reconstruction_mrc_path(job_dir: Path, ts_name: str, rescale_angpixs: float)
 
 def build_reconstruct_command(
     params: TsReconstructParams, settings_file: Path, input_processing: Path, output_processing: Path
-) -> str:
+) -> ToolCommand:
     return (
-        f"WarpTools ts_reconstruct "
-        f"--settings {shlex.quote(str(settings_file))} "
-        f"--input_processing {shlex.quote(str(input_processing))} "
-        f"--output_processing {shlex.quote(str(output_processing))} "
-        f"--angpix {params.rescale_angpixs} "
-        f"--halfmap_frames {params.halfmap_frames} "
-        f"--deconv {params.deconv} "
-        f"--perdevice {params.perdevice} "
-        f"--dont_invert"
+        ToolCommand("WarpTools ts_reconstruct")
+        .opt_path("--settings", settings_file, quote=True)
+        .opt_path("--input_processing", input_processing, quote=True)
+        .opt_path("--output_processing", output_processing, quote=True)
+        .opt("--angpix", params.rescale_angpixs)
+        .opt("--halfmap_frames", params.halfmap_frames)
+        .opt("--deconv", params.deconv)
+        .opt("--perdevice", params.perdevice)
+        .flag("--dont_invert")
     )
 
 
@@ -250,11 +248,14 @@ def run_task_mode(array_idx: int):
         )
         print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
 
-        wrapped = get_container_service().wrap_command_for_tool(
-            command=cmd, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
+        run_tool(
+            cmd,
+            tool_name=params.get_tool_name(),
+            cwd=job_dir,
+            binds=additional_binds,
+            attempts=3,
+            label=f"ts_reconstruct {ts_name}",
         )
-
-        run_command_with_retries(wrapped, cwd=job_dir, label=f"ts_reconstruct {ts_name}")
 
         if not out_mrc.exists():
             raise FileNotFoundError(f"WarpTools reported success but expected output MRC missing: {out_mrc}")
