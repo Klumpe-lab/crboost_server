@@ -1,8 +1,8 @@
-import json
 import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 from nicegui import ui
+from services.array_tasks import TaskProgress
 from services.models_base import JobStatus
 from services.project_state import JobType
 from ui.current_project import current_project_state
@@ -83,68 +83,39 @@ def _resolve_array_job_dir(job_model, project_path: Path | None = None) -> Path 
     return None
 
 
-def _get_array_progress(job_model, project_path: Path | None = None) -> tuple[int, int, int, int] | None:
-    """Return (n_done, n_failed, n_total, n_running) for array jobs, or None.
+def _get_array_progress(job_model, project_path: Path | None = None) -> TaskProgress | None:
+    """Return a TaskProgress for array jobs, or None (no job dir / no manifest).
 
-    n_done    = settled tasks (.ok + .fail)
-    n_failed  = .fail markers
-    n_total   = manifest item count
-    n_running = tasks SLURM has STARTED (task_<idx>.out exists) but not yet
-                settled. Surfacing this is what lets a fully-parallel array show
-                live work in flight instead of sitting at 0/N until a whole
-                throttle-wave of .ok markers lands at once.
+    Statuses are resolved PER MANIFEST ITEM via scan_statuses (an item can carry
+    both `.ok` and `.fail` from a superseded submission; `.ok` wins, matching
+    the per-TS sub-rows), and the tally is TaskProgress — the same settledness
+    arithmetic the task tracker uses. Skipped (muted) items count as settled, so
+    a job whose remaining items are all ok/skip reads as complete instead of
+    sitting at 5/6 forever.
     """
+    from services.array_tasks import manifest_items, progress
+
     job_dir = _resolve_array_job_dir(job_model, project_path)
     if job_dir is None:
         return None
 
-    manifest_path = job_dir / ".task_manifest.json"
-    if not manifest_path.exists():
-        return None
-    try:
-        manifest = json.loads(manifest_path.read_text())
-    except Exception:
-        return None
-    items = manifest.get("items", [])
+    items = manifest_items(job_dir)
     if not items:
         return None
-
-    # Resolve one status PER MANIFEST ITEM rather than counting marker files: an
-    # item can carry both `.ok` and `.fail` (an orphan task from a superseded
-    # submission writing over a settled item), and counting files then reports a
-    # failure on a job that succeeded — the red badge stays lit after a good
-    # rerun. `.ok` wins, matching scan_statuses() used by the per-TS sub-rows.
-    from services.array_tasks import scan_statuses
-
-    statuses = scan_statuses(job_dir, items)
-    n_ok = sum(1 for s in statuses.values() if s == "ok")
-    n_fail = sum(1 for s in statuses.values() if s == "fail")
-    # SLURM creates task_<idx>.out the moment a child task starts running, so the
-    # count of started-but-unsettled tasks is the honest "running now" signal.
-    n_started = sum(1 for _ in job_dir.glob("task_*.out"))
-    n_settled = n_ok + n_fail
-    n_running = max(0, n_started - n_settled)
-    return (n_settled, n_fail, len(items), n_running)
+    return progress(job_dir, items)
 
 
 def _get_array_ts_statuses(
     job_model, project_path: Path | None = None
 ) -> tuple[list[str], dict[str, str], dict[str, str]] | None:
     """Return (items, statuses, display_names) for per-TS sub-rows, or None."""
-    from services.array_tasks import shorten_ts_names, scan_statuses
+    from services.array_tasks import manifest_items, shorten_ts_names, scan_statuses
 
     job_dir = _resolve_array_job_dir(job_model, project_path)
     if job_dir is None:
         return None
 
-    manifest_path = job_dir / ".task_manifest.json"
-    if not manifest_path.exists():
-        return None
-    try:
-        manifest = json.loads(manifest_path.read_text())
-    except Exception:
-        return None
-    items = manifest.get("items", [])
+    items = manifest_items(job_dir)
     if not items:
         return None
 
@@ -184,7 +155,7 @@ class RosterWidget(FingerprintedView):
         self._expanded_instances: dict[str, bool] = {}
         # Per-tick cache of array job state. Populated by signature(), read by
         # render(). Keyed by instance_id. Avoids redundant disk reads per tick.
-        self._array_progress_cache: dict[str, tuple[int, int, int] | None] = {}
+        self._array_progress_cache: dict[str, TaskProgress | None] = {}
         self._array_ts_cache: dict[str, tuple[list[str], dict[str, str], dict[str, str]] | None] = {}
 
     def _get_container(self) -> Any:
@@ -439,15 +410,20 @@ class RosterWidget(FingerprintedView):
             # signature can't disagree on what's being painted.
             progress = self._array_progress_cache.get(instance_id)
             if progress is not None:
-                n_done, n_fail, n_total, n_running = progress
-                n_ok = n_done - n_fail
+                n_ok, n_fail, n_skip, n_total = progress.n_ok, progress.n_fail, progress.n_skip, progress.total
                 # Live "running now" chip — shows that a parallel array is actively
                 # working even while the settled count (below) sits low between
                 # throttle-waves, so the row no longer looks frozen at 0/N.
-                if n_running > 0:
-                    ui.label(f"▸{n_running}").style(
+                if progress.n_running > 0:
+                    ui.label(f"▸{progress.n_running}").style(
                         f"{MONO} font-size: 9px; font-weight: 700; color: #2563eb; flex-shrink: 0;"
-                    ).tooltip(f"{n_running} tilt-series running now")
+                    ).tooltip(f"{progress.n_running} tilt-series running now")
+                # Skipped (muted) chip — settled by design, shown apart from the
+                # ok count so "5/6 ⊘1" isn't mistaken for an incomplete run.
+                if n_skip > 0:
+                    ui.label(f"⊘{n_skip}").style(
+                        f"{MONO} font-size: 9px; font-weight: 600; color: #94a3b8; flex-shrink: 0;"
+                    ).tooltip(f"{n_skip} tilt-series skipped (muted / nothing to do)")
                 if n_fail > 0:
                     # Show "ok/total fail!" — e.g. "17/18 1!"
                     ui.label(f"{n_ok}/{n_total}").style(
@@ -456,11 +432,11 @@ class RosterWidget(FingerprintedView):
                     ui.label(f"{n_fail}!").style(
                         f"{MONO} font-size: 9px; font-weight: 700; color: #dc2626; flex-shrink: 0;"
                     )
-                elif n_done == n_total:
+                elif progress.n_settled == n_total:
                     ui.label(f"{n_ok}/{n_total}").style(
                         f"{MONO} font-size: 9px; font-weight: 600; color: #16a34a; flex-shrink: 0;"
                     )
-                elif n_done > 0:
+                elif progress.n_settled > 0:
                     ui.label(f"{n_ok}/{n_total}").style(
                         f"{MONO} font-size: 9px; font-weight: 600; color: #2563eb; flex-shrink: 0;"
                     )
@@ -1219,6 +1195,7 @@ class RosterWidget(FingerprintedView):
                     prefs_service.prefs.add_recent_root(new_base)
                     prefs_service.save_to_app_storage(ng_app.storage.user)
                     _render_history()
+
         # ── selected-project preview (left pane) ─────────────────────────────
         selected_ref = {"path": current_path_str}
         left_refs: dict = {"container": None}
@@ -1298,8 +1275,7 @@ class RosterWidget(FingerprintedView):
             # Two-column body: left = selected project's params, right = the
             # all-projects roster (single-click previews here; arrow opens).
             with ui.element("div").style(
-                "display: flex; flex-direction: row; align-items: stretch; width: 100%; "
-                "flex: 1 1 auto; min-height: 0;"
+                "display: flex; flex-direction: row; align-items: stretch; width: 100%; flex: 1 1 auto; min-height: 0;"
             ):
                 # LEFT — parameter panel for the previewed project.
                 with ui.element("div").style(
