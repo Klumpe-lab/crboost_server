@@ -96,6 +96,33 @@ inconsistencies (live injection-hazard class) disappear.
    commit against the Stage-0 transcripts. The 11 hardcoded tool-name strings become
    `get_tool_name()` calls in the same commits (transcript-visible, safe). Quoting *changes* (the
    12 builders disagree) are collected into one final flagged commit, not sprinkled.
+
+   > Design approved 2026-08-13 — `04-stage2-toolcommand-design.md`, all five §7 decisions resolved
+   > as recommended (D1 tagged-verb builder with mandatory `quote=`; D2 compound shell stays literal
+   > f-strings; D3 `crboost` deferred to the flagged StrEnum commit; D4 `--print-cmd` snapshots gate
+   > the 9 uncovered types; D5 `run_tool` takes `str | ToolCommand`). The sketch's `.arg()/.paths()`
+   > verbs were dropped: the census showed per-site quoting policy differs and is part of the bytes,
+   > so `opt_path(..., quote=)` transcribes each site's existing policy instead of unifying it.
+   >
+   > **CODE-COMPLETE 2026-08-13** for the 5 transcript-covered drivers, byte-parity pending runtime.
+   > `driver_base` grew `ToolCommand` (insertion-order `" ".join`; `flag/opt/opt_path/raw`; no
+   > reordering, dedup, validation, or implicit quoting) and `run_tool()` (renders, wraps via
+   > `wrap_command_for_tool`, dispatches to `run_command` or `run_command_with_retries`). Migrated in
+   > transcript order: `ts_reconstruct`, `ts_ctf` (incl. the `ts_defocus_hand` mini-script — three
+   > near-identical commands via a local helper, compound `$()`/`if` shell left literal),
+   > `ts_alignment` (method dispatch returns `ToolCommand`; the unimplemented-method error shim stays
+   > a `str`), `fs_motion_and_ctf`, `ts_import`. Tool-name literals converted: `"warptools"` × 2
+   > (fs_motion, ts_import) → `params.get_tool_name()`, verified to return the same string;
+   > `extract_pick_list` untouched per census #73. fs_motion's build-then-`.replace("'*.eer'", ...)`
+   > patch died — the extension is now a builder argument.
+   >
+   > **`--print-cmd` snapshot mode** (D4) landed with it, as `CRBOOST_PRINT_CMD=1`. The gate lives in
+   > `run_command`, NOT in `run_tool`, on purpose: every driver funnels through `run_command` whether
+   > migrated or not, so a snapshot taken on pre-migration code is directly diffable against one
+   > taken after. Prints the usual `[run_command] $ ...` line, fully container-wrapped, and returns
+   > without executing. Caveats: the driver's Python-side work (staging, manifest/star writes) still
+   > runs, so snapshot against a scratch copy; and a driver that validates tool output right after
+   > the call aborts there, giving a partial-but-deterministic (hence still diffable) transcript.
 3. **`ArrayDriver` template class** in `array_job_base.py`: hooks
    `enumerate_items() / stage(item) / build_command(item) / collect(item) / aggregate()`; the base
    owns mode dispatch, both bootstrap try/excepts, manifest index lookup, exclusion application,
