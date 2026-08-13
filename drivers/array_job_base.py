@@ -27,12 +27,15 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
+from drivers.driver_base import DriverContext, run_tool
 from services.computing.slurm_service import SlurmConfig
 from services.configs.starfile_service import StarfileService
 
@@ -716,3 +719,227 @@ def install_cancel_handler(array_job_id: str, job_dir: Path) -> None:
 
     signal.signal(signal.SIGTERM, _cancel)
     signal.signal(signal.SIGINT, _cancel)
+
+
+# ----------------------------------------------------------------------
+# ArrayDriver template
+# ----------------------------------------------------------------------
+
+
+class ArrayDriver(ABC):
+    """Template for the supervisor + per-item SLURM-array drivers.
+
+    The eight per-TS drivers each re-implemented the same skeleton: dispatch on
+    SLURM_ARRAY_TASK_ID, two near-identical bootstrap try/excepts, the manifest
+    index lookup, exclusion pre-marking, the results tally, the RELION_JOB_EXIT_*
+    markers, and the fail-status handler. All of that lives here now; a subclass
+    supplies only what is genuinely per-job.
+
+    Required hooks: `enumerate_items`, `build_command`, `aggregate`.
+    Optional hooks exist for the divergences the stage-0 census recorded as
+    deliberate — a supervisor-side compute step before dispatch (ts_ctf's global
+    ts_defocus_hand), in-task idempotency, per-TS staging, output verification,
+    and copy-back. Each defaults to a no-op, so a driver that does not need one
+    does not mention it.
+
+    Class attributes a subclass must set: `params_class`, `job_name`,
+    `driver_script`. `retry_attempts` > 1 routes the tool through
+    run_command_with_retries.
+    """
+
+    params_class: type
+    job_name: str
+    driver_script: Path
+    retry_attempts: int = 1
+
+    # Log prefix for the mode currently running; hooks print through self.log()
+    # so a line reads the same whichever mode emitted it.
+    _prefix: str = "[DRIVER]"
+
+    def log(self, message: str) -> None:
+        print(f"{self._prefix} {message}", flush=True)
+
+    # ---------------- supervisor hooks ----------------
+
+    @abstractmethod
+    def enumerate_items(self, ctx: DriverContext) -> list[str]:
+        """The authoritative item list for this run (validate inputs here too)."""
+
+    def item_metadata(self, ctx: DriverContext, items: list[str]) -> dict[str, dict] | None:
+        """Per-item metadata to persist in the manifest (`ts_metadata`)."""
+        return None
+
+    def manifest_extras(self, ctx: DriverContext, items: list[str]) -> dict | None:
+        """Job-wide extra keys to persist in the manifest (`manifest_extra`)."""
+        return None
+
+    def pre_dispatch(self, ctx: DriverContext, items: list[str]) -> None:
+        """Supervisor-side work between preflight and array submission."""
+        return None
+
+    @abstractmethod
+    def aggregate(self, ctx: DriverContext, results: ArrayResults) -> None:
+        """Post-array metadata aggregation. Runs only when every item settled."""
+
+    # ---------------- task hooks ----------------
+
+    def task_already_done(self, ctx: DriverContext, item: str) -> bool:
+        """True to record `.ok` and exit without running the tool (in-task idempotency)."""
+        return False
+
+    def stage(self, ctx: DriverContext, item: str):
+        """Build this item's isolated environment. Return value is passed to the later hooks."""
+        return None
+
+    @abstractmethod
+    def build_command(self, ctx: DriverContext, item: str, staged):
+        """The ToolCommand (or composed shell string) to run for this item."""
+
+    def task_cwd(self, ctx: DriverContext, item: str, staged) -> Path:
+        """Working directory for the tool. Defaults to the job dir."""
+        return ctx.job_dir
+
+    def verify_outputs(self, ctx: DriverContext, item: str, staged) -> None:
+        """Raise if the tool exited 0 without producing what it promised."""
+        return None
+
+    def collect(self, ctx: DriverContext, item: str, staged) -> None:
+        """Move this item's outputs from its staging dir into the shared job dir."""
+        return None
+
+    # ---------------- driver skeleton ----------------
+
+    def main(self) -> None:
+        print("Python", sys.version, flush=True)
+        array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
+        if array_idx_env is None:
+            self._prefix = "[SUPERVISOR]"
+            print(f"--- {self.job_name}: SUPERVISOR mode ---", flush=True)
+            self.run_supervisor()
+        else:
+            self._prefix = f"[TASK {array_idx_env}]"
+            print(f"--- {self.job_name}: TASK mode (array idx {array_idx_env}) ---", flush=True)
+            self.run_task(int(array_idx_env))
+
+    def run_supervisor(self) -> None:
+        try:
+            ctx = DriverContext.load(self.params_class)
+        except Exception as e:
+            # No context yet, so the failure marker goes to the cwd qsub.sh cd'd into.
+            (Path.cwd() / "RELION_JOB_EXIT_FAILURE").touch()
+            print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            sys.exit(1)
+
+        print(f"[SUPERVISOR] CWD (job dir): {ctx.job_dir}", flush=True)
+
+        try:
+            items = self.enumerate_items(ctx)
+            if not items:
+                raise ValueError(f"{self.job_name}: no tilt-series to process")
+            print(f"[SUPERVISOR] Found {len(items)} tilt-series", flush=True)
+
+            preflight_registry(ctx.project_path, items, job_name=self.job_name)
+            self.pre_dispatch(ctx, items)
+
+            # Honor user "exclude from processing": pre-skip excluded items so they are
+            # never dispatched and count as settled (not failures) in aggregation.
+            apply_exclusions(ctx.job_dir, ctx.project_path, items)
+
+            array_job_id = submit_array_job(
+                job_dir=ctx.job_dir,
+                project_path=ctx.project_path,
+                instance_id=ctx.instance_id,
+                ts_names=items,
+                per_task_cfg=ctx.params.get_effective_slurm_config(),
+                array_throttle=ctx.params.array_throttle,
+                driver_script=self.driver_script,
+                ts_metadata=self.item_metadata(ctx, items),
+                manifest_extra=self.manifest_extras(ctx, items),
+            )
+
+            if array_job_id is not None:
+                install_cancel_handler(array_job_id, ctx.job_dir)
+                wait_for_array_completion(array_job_id, poll_secs=30)
+            else:
+                print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
+
+            results = collect_task_results(ctx.job_dir, items)
+            print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
+            if results.failed:
+                print(f"[SUPERVISOR] FAILED tilt-series: {results.failed}", flush=True)
+            if results.missing:
+                print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
+
+            if not results.all_succeeded:
+                (ctx.job_dir / "RELION_JOB_EXIT_FAILURE").touch()
+                print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
+                sys.exit(1)
+
+            print("[SUPERVISOR] All tasks succeeded; aggregating metadata...", flush=True)
+            self.aggregate(ctx, results)
+
+            (ctx.job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
+            print("[SUPERVISOR] Job finished successfully.", flush=True)
+            sys.exit(0)
+
+        # sys.exit above raises SystemExit (a BaseException), so it passes through here.
+        except Exception as e:
+            print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            (ctx.job_dir / "RELION_JOB_EXIT_FAILURE").touch()
+            sys.exit(1)
+
+    def run_task(self, array_idx: int) -> None:
+        try:
+            ctx = DriverContext.load(self.params_class)
+        except Exception as e:
+            print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            sys.exit(1)
+
+        status_dir = ctx.job_dir / STATUS_DIR_NAME
+        item = None
+        try:
+            manifest = read_manifest(ctx.job_dir)
+            items = manifest["ts_names"]
+            if array_idx >= len(items):
+                raise IndexError(f"SLURM_ARRAY_TASK_ID {array_idx} out of range (manifest has {len(items)})")
+            item = items[array_idx]
+            print(f"[TASK {array_idx}] ts_name={item}", flush=True)
+
+            if self.task_already_done(ctx, item):
+                write_status_atomic(status_dir, item, ok=True)
+                sys.exit(0)
+
+            staged = self.stage(ctx, item)
+            cmd = self.build_command(ctx, item, staged)
+            print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
+
+            run_tool(
+                cmd,
+                tool_name=ctx.params.get_tool_name(),
+                cwd=self.task_cwd(ctx, item, staged),
+                binds=ctx.additional_binds,
+                attempts=self.retry_attempts,
+                label=f"{self.job_name} {item}",
+            )
+
+            self.verify_outputs(ctx, item, staged)
+            self.collect(ctx, item, staged)
+
+            write_status_atomic(status_dir, item, ok=True)
+            print(f"[TASK {array_idx}] {item} done", flush=True)
+            sys.exit(0)
+
+        except Exception as e:
+            label = item or f"_unknown_idx{array_idx}"
+            print(f"[TASK {array_idx}] FATAL ERROR for ts={label}: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            try:
+                write_status_atomic(status_dir, label, ok=False)
+            except Exception as inner:
+                # Deliberately broad and last-ditch: we are already on the failure path,
+                # and masking the real error with a status-write error helps nobody.
+                print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
+            sys.exit(1)
