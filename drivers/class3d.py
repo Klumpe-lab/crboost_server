@@ -11,8 +11,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from drivers.driver_base import get_driver_context, run_command
-from services.computing.container_service import get_container_service
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool
 from services.job_models import Class3DParams
 
 
@@ -46,86 +45,67 @@ def main():
 
         output_root = str(job_dir / "run")
 
-        cmd_parts = [
-            "relion_refine",
-            "--ios",
-            str(input_optimisation),
-            "--ref",
-            str(input_reference),
-            "--o",
-            output_root,
-            "--K",
-            str(params.n_classes),
-            "--iter",
-            str(params.n_iterations),
-            "--healpix_order",
-            str(params.healpix_order),
-            "--offset_range",
-            str(params.offset_range),
-            "--offset_step",
-            str(params.offset_step),
-            "--oversampling",
-            str(params.oversampling),
-            "--sym",
-            params.symmetry.value if hasattr(params.symmetry, "value") else str(params.symmetry),
-            "--j",
-            str(params.threads),
-            "--pool",
-            str(params.pool),
-            "--pad",
-            str(params.pad),
-            "--trust_ref_size",
-        ]
+        cmd = (
+            ToolCommand("relion_refine")
+            .opt_path("--ios", input_optimisation, quote=False)
+            .opt_path("--ref", input_reference, quote=False)
+            .opt_path("--o", output_root, quote=False)
+            .opt("--K", params.n_classes)
+            .opt("--iter", params.n_iterations)
+            .opt("--healpix_order", params.healpix_order)
+            .opt("--offset_range", params.offset_range)
+            .opt("--offset_step", params.offset_step)
+            .opt("--oversampling", params.oversampling)
+            .opt("--sym", params.symmetry.value if hasattr(params.symmetry, "value") else params.symmetry)
+            .opt("--j", params.threads)
+            .opt("--pool", params.pool)
+            .opt("--pad", params.pad)
+            .flag("--trust_ref_size")
+        )
 
         if params.ini_high > 0:
-            cmd_parts += ["--ini_high", str(params.ini_high)]
+            cmd.opt("--ini_high", params.ini_high)
         if params.particle_diameter > 0:
-            cmd_parts += ["--particle_diameter", str(params.particle_diameter)]
+            cmd.opt("--particle_diameter", params.particle_diameter)
         if params.tau_fudge > 0:
-            cmd_parts += ["--tau2_fudge", str(params.tau_fudge)]
+            cmd.opt("--tau2_fudge", params.tau_fudge)
         if params.sigma_ang > 0:
-            cmd_parts += ["--sigma_ang", str(params.sigma_ang)]
+            cmd.opt("--sigma_ang", params.sigma_ang)
 
         if params.do_ctf:
-            cmd_parts.append("--ctf")
+            cmd.flag("--ctf")
         if params.do_norm:
-            cmd_parts.append("--norm")
+            cmd.flag("--norm")
         if params.do_scale:
-            cmd_parts.append("--scale")
+            cmd.flag("--scale")
         if params.zero_mask:
-            cmd_parts.append("--zero_mask")
+            cmd.flag("--zero_mask")
         if params.dont_combine_weights_via_disc:
-            cmd_parts.append("--dont_combine_weights_via_disc")
+            cmd.flag("--dont_combine_weights_via_disc")
         if params.flatten_solvent:
-            cmd_parts.append("--flatten_solvent")
+            cmd.flag("--flatten_solvent")
         if params.firstiter_cc:
-            cmd_parts.append("--firstiter_cc")
+            cmd.flag("--firstiter_cc")
         if params.preread_images:
-            cmd_parts.append("--preread_images")
+            cmd.flag("--preread_images")
 
         solvent_mask = getattr(params, "solvent_mask_path", "")
         if solvent_mask and solvent_mask.strip():
             mask_path = Path(solvent_mask)
             if not mask_path.exists():
                 raise FileNotFoundError(f"Solvent mask not found: {mask_path}")
-            cmd_parts += ["--solvent_mask", str(mask_path)]
+            cmd.opt_path("--solvent_mask", mask_path, quote=False)
             additional_binds.append(str(mask_path.parent.resolve()))
 
         if params.use_gpu:
-            cmd_parts.append("--gpu")
+            cmd.flag("--gpu")
 
-        cmd_str = " ".join(cmd_parts)
-        print(f"[DRIVER] Command: {cmd_str}", flush=True)
+        print(f"[DRIVER] Command: {cmd}", flush=True)
 
-        container_service = get_container_service()
         additional_binds.append(str(input_optimisation.parent.resolve()))
         additional_binds.append(str(input_reference.parent.resolve()))
-        additional_binds = list(set(additional_binds))
 
-        wrapped_cmd = container_service.wrap_command_for_tool(
-            cmd_str, cwd=job_dir, tool_name="relion", additional_binds=additional_binds
-        )
-        run_command(wrapped_cmd, cwd=job_dir)
+        run_tool(cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         # relion_refine for Class3D (fixed --iter N, no --auto_refine) writes its
         # outputs with the iteration number: run_it{N}_optimisation_set.star -- there
