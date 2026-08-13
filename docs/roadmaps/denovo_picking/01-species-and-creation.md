@@ -54,6 +54,9 @@ Sandbox: `py_compile` + `ruff` + `python check_boundaries.py`. User runtime:
    `project_params.json` with a non-default color and `origin="manual"`.
 3. Delete a species that has pick lists → confirm dialog enumerates them; registry JSON shows the
    purge.
+4. Delete a species that has pipeline jobs → the dialog names the instance ids; after confirming,
+   their job folders are gone, the roster rows are gone, and `default_pipeline.star` no longer lists
+   them.
 
 ---
 
@@ -79,11 +82,24 @@ Sandbox: `py_compile` + `ruff` + `python check_boundaries.py`. User runtime:
   authoritative-list choices and matching `source_overrides` instead of leaving dangling refs that
   only surfaced as resolution failures at deploy time.
 
-**DEVIATION from the plan:** jobs carrying `species_id` are surfaced in the confirm dialog but NOT
-auto-deleted. A job owns a job dir and a `default_pipeline.star` row — removing one is a pipeline
-operation, not a registry edit, and silently deleting pipeline jobs from a species delete is a much
-bigger hammer than the rest of the purge. The dialog names them so the user can delete them
-deliberately. Flip this if the maintainer wants the full cascade.
+**Job cascade — maintainer's call, 2026-08-13: cascade.** The first pass surfaced jobs carrying
+`species_id` in the confirm dialog but left them in place (a job owns a job dir and a
+`default_pipeline.star` row, so removing one is a pipeline operation rather than a registry edit).
+The maintainer chose the full cascade instead, so `_do_delete_species` now awaits
+`backend.delete_job(job_type, project_path, instance_id=iid)` for each of them BEFORE the registry
+purge (delete_job reads the job model to find its dir). Per-job failures are toasted and logged and
+the rest continue. Two knock-on changes:
+
+- `species_references(...)["jobs"]` now also matches the **instance-id suffix**
+  (`templatematching__ribosome`), not just `job_model.species_id` — otherwise the cascade would miss
+  jobs that name their species only in the iid and leave exactly the orphans it exists to prevent.
+  Deliberately NOT `resolve_species`: its single-species fallback attributes every per-particle job
+  to the last remaining species, so deleting that species would take the whole particle chain.
+- `_do_delete_species` is `async` and now **awaits** `_save_state()`; the old
+  `asyncio.create_task(...)` could be GC'd before running (the W2 lesson).
+
+The delete is irreversible and now removes job folders — the dialog lists the exact instance ids in
+red above the "cannot be undone" line.
 
 **UI**
 

@@ -90,3 +90,84 @@ Spec in `00-overview.md` §Seam specs. Rules:
 1. New manual list moves the journey strip without leaving/re-entering the panel.
 2. Kill a slab render mid-flight (or point at an unreadable MRC) → error chip, not spinner.
 3. Imported-only project: no fallback section anywhere; unified panel handles everything.
+
+---
+
+## S2 CODE-COMPLETE 2026-08-13 — pending runtime
+
+Verified to the sandbox ceiling only: `ruff check .` clean, `ruff format --check` clean on every
+touched file. `python -m py_compile` and `check_boundaries.py` are owed (the venv's python symlink is
+dead while `/software` is unmounted).
+
+### Landed
+
+**`services/visualization/tomo_geometry.py`** (new, ~215 lines). `TomoGeometry` +
+`geometry_for_ts` + `tomogram_star_sources` + `read_tomo_table`, exactly the spec'd shape.
+`is_usable` is the render gate. Star table and MRC header are memoized per path by mtime (one entry
+each, self-invalidating) — this runs for every selected TS on every dashboard refresh, and the parse
+is what costs; recon-MRC *existence* is deliberately re-checked every call so a volume that lands
+mid-session appears without a restart.
+
+**The inversion.** `services/dashboard_data.py` gains `ce_instances_by_species` /
+`ce_instance_for_species` / `species_render_plan` / `pick_list_counts_for_species`;
+`collect_species_journey` and `_collect_species_data_for_ts` both enumerate `species_render_plan`.
+`_collect_species_data_for_ts` split into `_ce_species_entry` (the pre-inversion body, unchanged
+except color + the dims tail) and `_denovo_species_entry`.
+
+**ArtiaX decoupling.** `candidates_star: Path | None` through
+`artiax_bridge.prepare_curation_bundle` → `session_service.prepare_curation_bundle` /
+`load_into_session` → `backend`; `auto_coords` is None and `auto_count` 0 when there are no
+reference picks, and the `.cxc` simply omits the `open <f>.coords` line (`session_chimerax_commands`
+already took `Path | None`). `curation_session_dialog.can_load` now requires only `tomograms_star`.
+
+**`.coords` auto-ingest** takes a `tomograms_star` instead of a CE `job_dir`, and is called once in
+the collector loop for BOTH paths — for a de-novo species it is the only way picks enter the project.
+
+**`services/pixel_chain.py`** emits a `Pick` row for every registry species with no CE instance.
+
+### Deviations from the plan, with reasons
+
+1. **Dims come from the recon MRC header first, not from the star.** The plan ordered
+   `rlnTomoSize{X,Y,Z} / binning` ahead of the header. For a real reconstruction those columns hold
+   the UNBINNED tilt-image size, whose Z is the tilt-image height rather than the tomogram
+   thickness — the division is simply wrong there. More decisively, `coords.binned_tomo_size_from_
+   tomo_row` (which backs the ArtiaX transform *and* what the preview manifest recorded) reads the
+   header, so a star-first provider would make overlays disagree with the picks they round-trip.
+   Star dims are kept as the fallback when the volume is absent.
+2. **CE species keep sourcing `tomograms_star` from their own job dir.** The plan said all dashboard
+   call sites should read `TomoGeometry.tomograms_star`. On a denoised chain the candidate-extract
+   job's `tomograms.star` repoints `rlnTomoReconstructedTomogram` at the *denoised* volume, so
+   switching to the recon job's star would silently change which volume ArtiaX opens. The geometry
+   star is the fallback when the job copy is absent, and the only source on the de-novo path.
+3. **`[1, 1, 1]` dims are gone from the CE path too**, not just the no-CE path — it is the same
+   invented default the roadmap condemns, and it renders every dot in the corner. Unknown dims now
+   disable the overlay (`_render_pick_layer` draws nothing, `_read_pick_list_voxels` returns `[]`)
+   and the header chip says why. Only fires where today's render was already wrong.
+4. **Pixel-sanity de-novo row uses the recon *job's* geometry, not the provider.**
+   `compute_pixel_chain` is a pure state reader with no `project_path` and no TS — pulling per-tomogram
+   disk reads into it for one row is out of proportion. On an imported-only project that row reads
+   blank; the real per-tomogram geometry (with provenance) is in the Particles header chip.
+5. **Parity is enforced by an explicit unclaimed-CE bucket.** A CE instance `resolve_species` cannot
+   attribute to a *registered* species (bare iid, no `species_id`, ≥2 species) would have vanished
+   under a naive registry-only loop. `ce_instances_by_species` returns it in `unclaimed` and
+   `species_render_plan` appends it, so the entry count per CE instance is unchanged. Two CE
+   instances resolving to one species also still emit two entries.
+
+### Known visible diffs on a CE-rich project
+
+- Species **order** follows the registry rather than sorted instance id (they usually coincide).
+- Species **color** comes from `species.color` (S1) instead of the positional palette index.
+- The Particles header carries a new geometry chip (dims · Å/px, red when unset).
+- A project with tomograms but no species now renders a Particles card with a "New species" empty
+  state instead of no card at all (D-5's second creation entry point).
+- `_render_imported_particles_section` is now unreachable: any TS with an imported-star row resolves
+  geometry, so `_render_particles_section` handles it. Left in place per the plan; deleted in S4.
+
+### Owed
+
+- The runtime checklist above (regression on a real TM project FIRST).
+- `venv/bin/python -m py_compile` + `check_boundaries.py`.
+- `_handle_extract_list` on a de-novo species notifies "no optimisation set to extract against yet"
+  — S3 replaces that with `build_list_optset_from_tomograms`.
+- No radio is pre-checked in the rail's `auth` column for a de-novo species (the default slug is
+  `"auto"`, which has no row). Cosmetic; revisit with S3's authoritative-slug work.
