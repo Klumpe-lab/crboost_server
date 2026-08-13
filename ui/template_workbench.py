@@ -42,7 +42,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from nicegui import app, context, ui
 
 from services.jobs._base import SymmetryGroup
-from services.models_base import SPECIES_OVERLAY_COLORS
+from services.models_base import SPECIES_OVERLAY_COLORS, InstanceId
 from services.project_state import (
     ParticleSpecies,
     ParticleTemplate,
@@ -529,13 +529,12 @@ class TemplateWorkbench:
                 if n_ovr:
                     ui.label(f"• {n_ovr} downstream input override{'s' if n_ovr != 1 else ''}").classes(_BODY_CLS)
                 ui.label(f"• Folder: {self.output_folder}").classes(_MONO_CLS)
-            # Jobs are NOT auto-deleted: they own job dirs and default_pipeline.star
-            # rows, so removing them is a pipeline operation, not a registry edit.
+            # Jobs cascade: their job dirs and default_pipeline.star rows go with
+            # the species, so the roster is left clean rather than holding rows
+            # that point at a species which no longer exists.
             if refs["jobs"]:
-                ui.label(
-                    f"Kept (delete from the pipeline yourself if you want them gone): "
-                    f"{', '.join(refs['jobs'])}"
-                ).classes(_HINT_CLS + " mt-1")
+                ui.label(f"• {len(refs['jobs'])} pipeline job(s), with their job folders: ").classes(_BODY_CLS)
+                ui.label(", ".join(refs["jobs"])).classes(_MONO_CLS + " text-red-600")
             ui.label(
                 "All registered files (+ sidecars) get removed. The folder is "
                 "removed only if empty afterwards (manual drops are preserved)."
@@ -544,20 +543,33 @@ class TemplateWorkbench:
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
                 ui.button("Cancel", on_click=dialog.close).props("flat dense no-caps")
 
-                def _confirm():
+                async def _confirm():
                     dialog.close()
-                    self._do_delete_species()
+                    await self._do_delete_species()
 
                 ui.button("Delete species", on_click=_confirm).props(
                     "unelevated dense color=negative no-caps"
                 )
         dialog.open()
 
-    def _do_delete_species(self) -> None:
+    async def _do_delete_species(self) -> None:
         sp = self._get_species()
         if sp is None:
             return
         sid = sp.id
+        state = get_project_state_for(Path(self.project_path))
+        # Pipeline jobs attached to this species go first: `delete_job` reads the
+        # job model to find its job dir, so it has to run while the state still
+        # describes them. Each failure is reported and the rest continue — a
+        # half-deleted species is still better than one whose registry entry
+        # survives while its jobs are gone.
+        job_iids = state.species_references(sid)["jobs"]
+        for iid in job_iids:
+            job_name = InstanceId.split(iid)[0]
+            result = await self.backend.delete_job(job_name, Path(self.project_path), instance_id=iid)
+            if not result.get("success"):
+                logger.warning("Deleting job %s with species %s failed: %s", iid, sid, result.get("error"))
+                ui.notify(f"Could not delete job {iid}: {result.get('error')}", type="warning", timeout=5000)
         # Cascade: delete each template's + mask's file + sidecar.
         for tpl in list(sp.templates):
             self._delete_file_with_sidecar(tpl.template_path)
@@ -571,9 +583,10 @@ class TemplateWorkbench:
         except OSError:
             logger.info("Species folder %s not empty after cascade; left in place", self.output_folder)
 
-        state = get_project_state_for(Path(self.project_path))
         state.remove_species(sid)
-        asyncio.create_task(self._save_state())
+        # Awaited, not fire-and-forget: a create_task here can be GC'd before it
+        # runs, which would leave the deleted species back on disk after a reload.
+        await self._save_state()
         self._log(f"Deleted species: {sid}")
 
         if callable(self.on_species_deleted):
