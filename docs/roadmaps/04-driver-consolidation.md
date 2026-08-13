@@ -27,6 +27,13 @@ inconsistencies (live injection-hazard class) disappear.
 
 ## Stage 0 — gather first
 
+> **DONE 2026-08-13** → `04-stage0-census.md`: 75-entry divergence ledger (32 KEEP / 30 ALIGN /
+> 13 ASK), corrected builder counts (18 tool-command builders, 6/18 shlex, 12 hardcoded tool_name=
+> sites + 13 hardcoded binary names), 10-item status-protocol drift list, adapter duplication map,
+> transcript harvest. **Transcript caveat:** all harvested logs predate the Aug-11/12 driver code
+> AND the per-TS array refactor (array-mode exemplars exist only in `demo` for fsMotion/tsAlign/
+> tsCtf) — fresh transcripts are required before stage 2 migrates each builder.
+
 1. **Divergence ledger.** Table of every known behavioral difference, each with a decision
    (KEEP as intentional / ALIGN in an isolated flagged commit):
    - `subtomo_extraction` reads `manifest["items"]` vs everyone's `manifest["ts_names"]`, and
@@ -48,7 +55,8 @@ inconsistencies (live injection-hazard class) disappear.
    **byte-identical commands** (modulo agreed quoting fixes, which go in their own commit).
 3. **Confirm the memory correction:** `denoise_predict` *is* array-migrated; `denoise_train` is
    legitimately a global reduction (no array). No migration work needed there beyond adapter/status
-   adoption; update `DENOISE_PER_TS_SPLIT_PLAN.md` if it still says otherwise.
+   adoption. (Confirmed against code 2026-08-13, see `04-stage0-census.md`;
+   `DENOISE_PER_TS_SPLIT_PLAN.md` no longer exists in the repo — nothing to update there.)
 
 ## Stages
 
