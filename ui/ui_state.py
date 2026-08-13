@@ -42,13 +42,9 @@ class DataImportFormState(BaseModel):
     mdocs_valid: bool = False
 
     # Aggregation mode: skip raw frames/mdocs, start at SubtomoExtraction.
-    # LEGACY — being replaced by particle-only + provider jobs (PARTICLE_PROJECT_ROADMAP.md P5).
+    # LEGACY — being replaced by data-less projects (empty globs) + provider jobs;
+    # retired in de-novo picking S6 (docs/roadmaps/denovo_picking/).
     is_aggregation: bool = False
-
-    # Particle-only mode: create a data-less project (no raw frames/mdocs, no
-    # ImportMovies). Tomograms / picks / particles are supplied later via provider
-    # jobs. Unlike is_aggregation this yields a *plain* project (no orphaning band-aids).
-    is_particle_only: bool = False
 
     # Create the project as shared/lab-owned (owner = SHARED_OWNER) rather than
     # belonging to the creating user.
@@ -471,7 +467,6 @@ class UIStateManager:
         movies_valid: bool | None = None,
         mdocs_valid: bool | None = None,
         is_aggregation: bool | None = None,
-        is_particle_only: bool | None = None,
         is_shared: bool | None = None,
     ):
         di = self._state.data_import
@@ -493,8 +488,6 @@ class UIStateManager:
             di.mdocs_valid = mdocs_valid
         if is_aggregation is not None:
             di.is_aggregation = is_aggregation
-        if is_particle_only is not None:
-            di.is_particle_only = is_particle_only
         if is_shared is not None:
             di.is_shared = is_shared
 
