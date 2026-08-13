@@ -15,6 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny, field_validator
 
 from services.models_base import (
+    InstanceId,
     JobType,
     # Re-exports: many modules import these via services.project_state.
     # The `as X` alias marks them as intentional so autofixes don't strip them.
@@ -803,7 +804,17 @@ class ProjectState(BaseModel):
         """
         pick_lists = [f"{pl.tomo_name}/{pl.slug}" for pl in self.pick_lists if pl.species_id == species_id]
         authoritative = [k for k in self.authoritative_pick_lists if k.split("\x1f", 1)[0] == species_id]
-        jobs = [iid for iid, jm in (self.jobs or {}).items() if getattr(jm, "species_id", None) == species_id]
+        # A per-particle job names its species EITHER on the model (`species_id`) or in
+        # its instance-id suffix (`templatematching__ribosome`) — both are explicit, and
+        # a delete that misses one leaves an orphan job in the roster. Deliberately NOT
+        # `resolve_species`: its single-species fallback would attribute every per-particle
+        # job to the last remaining species, so deleting that species would take the whole
+        # particle chain with it.
+        jobs = [
+            iid
+            for iid, jm in (self.jobs or {}).items()
+            if getattr(jm, "species_id", None) == species_id or InstanceId.split(iid)[1] == species_id
+        ]
         # Overrides pointing at one of this species' pick-list producers. The
         # resolver key is "<jobtype>:<instance_path>" and per-list producers carry
         # a `pick_list__<slug>` instance path (see the resolver's merged/pick-list
