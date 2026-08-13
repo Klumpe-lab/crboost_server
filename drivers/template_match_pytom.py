@@ -46,8 +46,7 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command
-from services.computing.container_service import get_container_service
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool
 from services.job_models import TemplateMatchPytomParams
 
 
@@ -193,7 +192,7 @@ def build_pytom_base_cmd(
     tm_results_dir: Path,
     gpu_ids: list[str],
     angle_list_file: Path | None = None,
-) -> list[str]:
+) -> ToolCommand:
     """The per-task base command before per-tomogram args are appended.
 
     Symmetry routing:
@@ -205,38 +204,38 @@ def build_pytom_base_cmd(
         (PyTOM's dedicated flag, simpler than rolling our own angle list).
       - C1 → `--angular-search <float>` only.
     """
-    base_cmd = [
-        "pytom_match_template.py",
-        "-t", str(template_file),
-        "-d", str(tm_results_dir),
-        "-m", str(mask_file),
-        "--voltage", str(state.microscope.acceleration_voltage_kv),
-        "--spherical-aberration", str(state.microscope.spherical_aberration_mm),
-        "--amplitude-contrast", str(state.microscope.amplitude_contrast),
-        "--per-tilt-weighting",
-        "--log", "debug",
-        "-g", *gpu_ids,
-    ]
+    base_cmd = (
+        ToolCommand("pytom_match_template.py")
+        .opt_path("-t", template_file, quote=False)
+        .opt_path("-d", tm_results_dir, quote=False)
+        .opt_path("-m", mask_file, quote=False)
+        .opt("--voltage", state.microscope.acceleration_voltage_kv)
+        .opt("--spherical-aberration", state.microscope.spherical_aberration_mm)
+        .opt("--amplitude-contrast", state.microscope.amplitude_contrast)
+        .flag("--per-tilt-weighting")
+        .opt("--log", "debug")
+        .raw(" ".join(["-g", *gpu_ids]))
+    )
 
     sym = str(params.symmetry) if params.symmetry else "C1"
     if angle_list_file is not None:
-        base_cmd.extend(["--angular-search", str(angle_list_file)])
+        base_cmd.opt_path("--angular-search", angle_list_file, quote=False)
     else:
-        base_cmd.extend(["--angular-search", str(params.angular_search)])
+        base_cmd.opt("--angular-search", params.angular_search)
         if sym != "C1" and sym.startswith("C"):
-            base_cmd.extend(["--z-axis-rotational-symmetry", sym[1:]])
+            base_cmd.opt("--z-axis-rotational-symmetry", sym[1:])
 
     if params.gpu_split != "None":
-        base_cmd.extend(["-s", *get_gpu_split(params.gpu_split)])
+        base_cmd.raw(" ".join(["-s", *get_gpu_split(params.gpu_split)]))
     if params.spectral_whitening:
-        base_cmd.append("--spectral-whitening")
+        base_cmd.flag("--spectral-whitening")
     if getattr(params, "random_phase_correction", False):
-        base_cmd.append("--random-phase-correction")
+        base_cmd.flag("--random-phase-correction")
     if params.non_spherical_mask:
-        base_cmd.append("--non-spherical-mask")
+        base_cmd.flag("--non-spherical-mask")
     if params.bandpass_filter != "None" and ":" in params.bandpass_filter:
         low, high = params.bandpass_filter.split(":")
-        base_cmd.extend(["--low-pass", low, "--high-pass", high])
+        base_cmd.opt("--low-pass", low).opt("--high-pass", high)
 
     return base_cmd
 
@@ -502,30 +501,25 @@ def run_task_mode(array_idx: int):
         gpu_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")
         angle_list_str = manifest.get("angle_list_path")
         angle_list_file = Path(angle_list_str) if angle_list_str else None
-        base_cmd = build_pytom_base_cmd(
+        cmd = build_pytom_base_cmd(
             params=params, state=state, template_file=template_file,
             mask_file=mask_file, tm_results_dir=tm_results_dir, gpu_ids=gpu_ids,
             angle_list_file=angle_list_file,
         )
 
-        cmd = base_cmd.copy()
-        cmd.extend(["-v", str(local_tomo)])
+        cmd.opt_path("-v", local_tomo, quote=False)
         if use_legacy:
-            cmd.extend(["--tilt-angles", str(job_dir / "tiltAngleFiles" / f"{tomo_name}.tlt")])
-            cmd.extend(["--defocus", str(job_dir / "defocusFiles" / f"{tomo_name}.txt")])
-            cmd.extend(["--dose-accumulation", str(job_dir / "doseFiles" / f"{tomo_name}.txt")])
+            cmd.opt_path("--tilt-angles", job_dir / "tiltAngleFiles" / f"{tomo_name}.tlt", quote=False)
+            cmd.opt_path("--defocus", job_dir / "defocusFiles" / f"{tomo_name}.txt", quote=False)
+            cmd.opt_path("--dose-accumulation", job_dir / "doseFiles" / f"{tomo_name}.txt", quote=False)
         else:
             if not patched_tomograms_star:
                 raise RuntimeError("Non-legacy mode requires patched_tomograms_star in manifest")
-            cmd.extend(["--relion5-tomograms-star", patched_tomograms_star])
+            cmd.opt_path("--relion5-tomograms-star", patched_tomograms_star, quote=False)
 
-        cmd_str = " ".join(cmd)
-        print(f"[TASK {array_idx}] Command: {cmd_str}", flush=True)
+        print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
 
-        wrapped = get_container_service().wrap_command_for_tool(
-            command=cmd_str, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
-        )
-        run_command(wrapped, cwd=job_dir)
+        run_tool(cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         if not out_scores.exists():
             raise FileNotFoundError(
