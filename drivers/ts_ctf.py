@@ -27,6 +27,7 @@ from drivers.array_job_base import (
     apply_exclusions,
     collect_task_results,
     copy_tomostar_with_absolute_paths,
+    get_previously_succeeded,
     install_cancel_handler,
     preflight_registry,
     read_manifest,
@@ -216,17 +217,26 @@ def run_supervisor_mode():
 
         # Step 1: Copy alignment XMLs into our output dir — but only for the
         # in-scope TS. Excluded XMLs would also poison run_defocus_hand_globally
-        # (it operates on every XML in output_processing).
+        # (it operates on every XML in output_processing). TS already holding
+        # `.ok` are also excluded from the copy: they are never re-dispatched
+        # (submit_array_job skips them), so their XMLs in output_processing
+        # carry task-written CTF results that a re-copy would silently clobber.
         output_processing.mkdir(parents=True, exist_ok=True)
+        already_ok = get_previously_succeeded(job_dir)
         copied = 0
         skipped = 0
+        preserved = 0
         for xml_file in input_processing.glob("*.xml"):
-            if xml_file.stem in in_scope:
+            if xml_file.stem not in in_scope:
+                skipped += 1
+            elif xml_file.stem in already_ok:
+                preserved += 1
+            else:
                 shutil.copy2(str(xml_file), str(output_processing / xml_file.name))
                 copied += 1
-            else:
-                skipped += 1
         msg = f"[SUPERVISOR] Copied {copied} alignment XMLs to {output_processing}"
+        if preserved:
+            msg += f" (preserved {preserved} CTF-updated XMLs of already-succeeded TS)"
         if skipped:
             msg += f" (skipped {skipped} excluded by alignment output STAR)"
         print(msg, flush=True)
