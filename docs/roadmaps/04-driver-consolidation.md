@@ -160,6 +160,46 @@ inconsistencies (live injection-hazard class) disappear.
    `subtomo_extraction` (most divergences). One driver per commit; each divergence resolves per the
    Stage-0 ledger — ALIGN items land as separate flagged commits *after* the pure migration of that
    driver.
+
+   > **BASE + 2 DRIVERS 2026-08-13, PENDING RUNTIME.** `ArrayDriver(ABC)` in `array_job_base.py`
+   > owns mode dispatch, both bootstrap try/excepts, manifest index lookup, exclusion pre-marking,
+   > the results tally, `RELION_JOB_EXIT_*`, the fail-status handler, and a `self.log()` that
+   > stamps `[SUPERVISOR]` / `[TASK n]` so a hook's line reads the same whichever mode emitted it
+   > (absorbs the dim-12 log-format ALIGNs). Abstract: `enumerate_items`, `build_command`,
+   > `aggregate`. Optional, each defaulting to a no-op so a driver that doesn't need one doesn't
+   > mention it: `item_metadata`, `manifest_extras`, `pre_dispatch`, `task_already_done`, `stage`,
+   > `task_cwd`, `verify_outputs`, `collect`. `retry_attempts` class attr replaces the
+   > run_command/run_command_with_retries choice.
+   >
+   > `DriverContext` (frozen, generic over the param class) landed in `driver_base.py` with it:
+   > `DriverContext.load(TsReconstructParams)` returns a `DriverContext[TsReconstructParams]` and
+   > does the two conversions every call site was re-doing by hand (`paths` → `Path`, binds → list).
+   > Since ArrayDriver owns the bootstrap, subclasses never call `get_driver_context` at all.
+   >
+   > **ts_reconstruct** (pilot) 279 → 131 lines. Ledger #0 applied (dropped the duplicated local
+   > `read_tilt_series_names_from_input_star` + its lone-purpose `StarfileService` import for the
+   > base one). #1 (in-task idempotency) → `task_already_done`; #2 (fail-loud MRC check) →
+   > `verify_outputs` — both promoted from "documented deviation" to named base hooks.
+   >
+   > **ts_ctf** 396 → 275 lines, and the reason it was migrated second: it stresses the hook design
+   > hardest. #4 (supervisor runs real compute before dispatch — the global `ts_defocus_hand`) is
+   > exactly `pre_dispatch`; the task runs with cwd = its staging dir, which is `task_cwd`; the
+   > XML copy-back is `collect`. Nothing about ts_ctf needed a new hook, which is the evidence the
+   > hook set is right.
+   >
+   > ONE deliberate behavioral delta in the ts_ctf move: `preflight_registry` now runs BEFORE
+   > `pre_dispatch` instead of after the copy+defocus_hand compute. It is read-only (validates,
+   > prints, raises) and its own docstring asks to run early, so this is the fail-fast direction —
+   > but it is a change, not a pure move, hence flagged here.
+   >
+   > ts_ctf ALIGNs landed as a separate follow-up commit per the prime directive: #5 (defocus_hand
+   > gets `attempts=3` + the `[run_command]` echo it now inherits from `run_tool`), #7 (missing
+   > tomostar raises instead of staging a no-op that green-ticks — the maintainer's ASK decision),
+   > #9 (a vanished staged XML raises instead of silently skipping copy-back and writing `.ok`).
+   > **#8 still open**: task mode hardcodes `job_dir/warp_tiltseries{,.settings}` and `job_dir/tomostar`
+   > rather than reading the resolver, and the supervisor has a silent `paths.get("output_processing",
+   > ...)` default. Aligning needs the resolver's actual tsCtf output verified first — do that
+   > before touching it, since supervisor/task disagreement here fails staging outright.
 4. **`BaseIngestAdapter`** in `services/tilt_series/adapters/_base.py`: shared `__init__`,
    `_read_only_block`, `_resolve_per_ts_path`, excluded-ids filtering; the four adapters shrink to
    their parsing cores; `denoise_predict` and `tilt_filter` get real adapters replacing hand-rolled
