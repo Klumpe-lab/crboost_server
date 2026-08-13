@@ -42,6 +42,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from nicegui import app, context, ui
 
 from services.jobs._base import SymmetryGroup
+from services.models_base import SPECIES_OVERLAY_COLORS
 from services.project_state import (
     ParticleSpecies,
     ParticleTemplate,
@@ -511,12 +512,30 @@ class TemplateWorkbench:
             return
         n_tpl = len(sp.templates)
         n_mask = len(sp.masks)
+        state = get_project_state_for(Path(self.project_path))
+        refs = state.species_references(sp.id)
         with ui.dialog() as dialog, ui.card().classes("p-4 gap-2"):
             ui.label(f"Delete species '{sp.name}'?").classes(_TITLE_CLS)
             with ui.column().classes("gap-0 mt-1"):
                 ui.label(f"• {n_tpl} template{'s' if n_tpl != 1 else ''} on disk").classes(_BODY_CLS)
                 ui.label(f"• {n_mask} mask{'es' if n_mask != 1 else ''} on disk").classes(_BODY_CLS)
+                n_lists = len(refs["pick_lists"])
+                if n_lists:
+                    ui.label(f"• {n_lists} pick list{'s' if n_lists != 1 else ''} (curation)").classes(_BODY_CLS)
+                n_auth = len(refs["authoritative_pick_lists"])
+                if n_auth:
+                    ui.label(f"• {n_auth} authoritative-list choice{'s' if n_auth != 1 else ''}").classes(_BODY_CLS)
+                n_ovr = len(refs["source_overrides"])
+                if n_ovr:
+                    ui.label(f"• {n_ovr} downstream input override{'s' if n_ovr != 1 else ''}").classes(_BODY_CLS)
                 ui.label(f"• Folder: {self.output_folder}").classes(_MONO_CLS)
+            # Jobs are NOT auto-deleted: they own job dirs and default_pipeline.star
+            # rows, so removing them is a pipeline operation, not a registry edit.
+            if refs["jobs"]:
+                ui.label(
+                    f"Kept (delete from the pipeline yourself if you want them gone): "
+                    f"{', '.join(refs['jobs'])}"
+                ).classes(_HINT_CLS + " mt-1")
             ui.label(
                 "All registered files (+ sidecars) get removed. The folder is "
                 "removed only if empty afterwards (manual drops are preserved)."
@@ -1002,6 +1021,46 @@ class TemplateWorkbench:
     # 1. SPECIES HEADER
     # ------------------------------------------------------------------
 
+    def _render_color_swatch(self, current: str) -> None:
+        """The species' overlay color, click to change.
+
+        Species share one tomogram canvas, so color is how a user tells two
+        picks apart — it needs to be editable, and constrained to the palette
+        that stays legible over greyscale (see SPECIES_OVERLAY_COLORS).
+        """
+        def _dot_style(color: str) -> str:
+            return (
+                f"width: 10px; height: 10px; border-radius: 50%; background: {color}; "
+                f"flex-shrink: 0; cursor: pointer; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #e5e7eb;"
+            )
+
+        dot = ui.element("div").style(_dot_style(current)).tooltip("Overlay color")
+        with dot, ui.menu().props("auto-close"):
+            with ui.row().classes("p-2 gap-1 flex-wrap").style("max-width: 128px;"):
+                for color in SPECIES_OVERLAY_COLORS:
+                    selected = color.lower() == (current or "").lower()
+
+                    def _pick(c=color):
+                        def _apply(s: ParticleSpecies) -> None:
+                            s.color = c
+
+                        self._mutate_species(_apply)
+                        asyncio.create_task(self._save_state())
+                        # Repaint just the swatch — one attribute driving one visual
+                        # property needs no rebuild, and rebuilding here would destroy
+                        # the menu mid-click.
+                        dot.style(_dot_style(c))
+
+                    (
+                        ui.element("div")
+                        .style(
+                            f"width: 16px; height: 16px; border-radius: 50%; background: {color}; "
+                            f"cursor: pointer; "
+                            f"box-shadow: 0 0 0 2px #fff, 0 0 0 {'3px #111827' if selected else '3px #e5e7eb'};"
+                        )
+                        .on("click", _pick)
+                    )
+
     def _render_species_header(self) -> None:
         sp = self._get_species()
         if sp is None:
@@ -1016,10 +1075,7 @@ class TemplateWorkbench:
             f"border: 1px solid #e5e7eb; border-left: 4px solid {_INDIGO}; box-shadow: none;"
         ):
             with ui.row().classes("w-full items-center px-3 py-1 gap-3"):
-                ui.element("div").style(
-                    f"width: 10px; height: 10px; border-radius: 50%; "
-                    f"background: {species_color}; flex-shrink: 0;"
-                )
+                self._render_color_swatch(species_color)
                 ui.label(species_name).classes(_TITLE_CLS)
                 ui.label("species particle metadata").classes(_HINT_CLS)
 
