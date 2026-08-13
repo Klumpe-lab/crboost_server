@@ -717,6 +717,76 @@ def matching_subtomo_instance(state, species_id):
     return None
 
 
+def ce_instances_by_species(state) -> tuple[dict[str, list[tuple[str, object]]], list[tuple[str, object]]]:
+    """Invert `resolve_species` over the candidate-extract instances:
+    ``({species_id: [(iid, jm), ...]}, unclaimed)``.
+
+    `unclaimed` holds instances `resolve_species` cannot attribute to a REGISTERED
+    species — a bare instance id with no `species_id` field and 2+ species in the
+    project, or a `species_id` naming a species that no longer exists. Those still
+    render a species entry of their own today, so the inversion has to keep emitting
+    them (see `species_render_plan`)."""
+    by_species: dict[str, list[tuple[str, object]]] = {}
+    unclaimed: list[tuple[str, object]] = []
+    known = {sp.id for sp in (getattr(state, "species_registry", None) or [])}
+    for iid, jm in candidate_extract_instances(state):
+        _, sid = resolve_species(state, jm, iid)
+        if sid in known:
+            by_species.setdefault(sid, []).append((iid, jm))
+        else:
+            unclaimed.append((iid, jm))
+    return by_species, unclaimed
+
+
+def ce_instance_for_species(state, species_id: str) -> tuple[str, object] | None:
+    """The candidate-extract instance attached to this species, or None."""
+    instances = ce_instances_by_species(state)[0].get(species_id) or []
+    return instances[0] if instances else None
+
+
+def species_render_plan(state) -> list[tuple[object | None, str | None, tuple[str, object] | None]]:
+    """The dashboard's species enumeration: ``[(species, species_id, ce_instance), ...]``.
+
+    THE INVERSION (de-novo picking, S2): the Particles panel and the roster particle
+    track enumerate the species REGISTRY, not candidate-extract jobs — so a species
+    created de novo, with no template and no template-matching chain, still gets a
+    row to pick into.
+
+    Parity contract with the pre-inversion enumeration: **one entry per
+    candidate-extract instance exactly as before** (species-claimed instances under
+    their species, unattributable ones appended), plus **one extra entry per
+    registered species that no candidate-extract instance claims**. A CE-rich project
+    therefore drives the identical render path with identical inputs; the only
+    intended visible differences are species order (registry order rather than
+    instance-id order) and color (persisted `species.color` rather than the
+    positional palette index)."""
+    by_species, unclaimed = ce_instances_by_species(state)
+    plan: list[tuple[object | None, str | None, tuple[str, object] | None]] = []
+    for sp in getattr(state, "species_registry", None) or []:
+        instances = by_species.get(sp.id) or []
+        if instances:
+            plan.extend((sp, sp.id, ce) for ce in instances)
+        else:
+            plan.append((sp, sp.id, None))
+    for iid, jm in unclaimed:
+        _, sid = resolve_species(state, jm, iid)
+        plan.append((None, sid, (iid, jm)))
+    return plan
+
+
+def pick_list_counts_for_species(state, species_id: str | None) -> dict[str, int]:
+    """``{tomo_name: sum of picks across that tomogram's registered lists}`` for one
+    species. The only per-TS fact a de-novo species has before anything is extracted."""
+    out: dict[str, int] = {}
+    if not species_id:
+        return out
+    for pl in getattr(state, "pick_lists", None) or []:
+        if pl.species_id != species_id:
+            continue
+        out[pl.tomo_name] = out.get(pl.tomo_name, 0) + int(pl.count or 0)
+    return out
+
+
 def recon_mrc_map(state, project_path: Path) -> dict[str, str]:
     """{ts_name: reconstructed-tomogram path} read once from the recon job's
     tomograms.star, so the roster info popover can list the volume without a
@@ -743,15 +813,36 @@ def collect_species_journey(project_state, project_path: Path) -> dict[str, list
 
     {ts: [{idx, label, color, species_id, pick_status, subtomo_status, n_picks,
     ce_star, subtomo_star, pixel_size_ang, tomo_dims}]}. Species order + color
-    follow `candidate_extract_instances` enumeration, so the roster dot matches
-    the canvas overlay and the species tabs everywhere."""
+    follow `species_render_plan`, so the roster dot matches the canvas overlay and
+    the species tabs everywhere. A species with no candidate-extract job (picked de
+    novo) contributes a row for each tomogram it has pick lists on — its only per-TS
+    fact until those lists are extracted."""
     out: dict[str, list[dict]] = {}
-    for idx, (iid, jm) in enumerate(candidate_extract_instances(project_state)):
+    for idx, (species, species_id, ce) in enumerate(species_render_plan(project_state)):
+        color = getattr(species, "color", "") or SPECIES_OVERLAY_COLORS[idx % len(SPECIES_OVERLAY_COLORS)]
+        if ce is None:
+            for ts, n_picks in pick_list_counts_for_species(project_state, species_id).items():
+                out.setdefault(ts, []).append(
+                    {
+                        "idx": idx,
+                        "label": str(getattr(species, "name", "") or species_id or ""),
+                        "color": color,
+                        "species_id": species_id,
+                        "pick_status": "ok" if n_picks else "pending",
+                        "subtomo_status": "pending",
+                        "n_picks": n_picks,
+                        "filtered_count": None,
+                        "ce_star": None,
+                        "subtomo_star": None,
+                        "pixel_size_ang": None,
+                        "tomo_dims": None,
+                    }
+                )
+            continue
+        iid, jm = ce
         jd = job_dir_for(project_state, iid, jm, project_path)
         if jd is None:
             continue
-        color = SPECIES_OVERLAY_COLORS[idx % len(SPECIES_OVERLAY_COLORS)]
-        _, species_id = resolve_species(project_state, jm, iid)
         manifest = read_preview_manifest(jd) or {}
         entries = manifest.get("tomograms") or {}
         label = _species_label_for(jm, iid, manifest)
