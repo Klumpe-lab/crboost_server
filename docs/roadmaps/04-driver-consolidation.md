@@ -123,6 +123,34 @@ inconsistencies (live injection-hazard class) disappear.
    > without executing. Caveats: the driver's Python-side work (staging, manifest/star writes) still
    > runs, so snapshot against a scratch copy; and a driver that validates tool output right after
    > the call aborts there, giving a partial-but-deterministic (hence still diffable) transcript.
+   >
+   > **BYTE-PARITY VERIFIED 2026-08-13** — all 5 transcript-covered types, live post-migration run
+   > on `/groups/klumpe/crboost_data/deadcode_stage5_pre/` (5 TS, none muted, drivers edited 16:02
+   > vs jobs run 16:15+). Every `[run_command]` line diffs clean against `04-stage2-transcripts.md`
+   > after normalizing only project name, job number (this project has no TiltFilter, so alignment
+   > is job004 not job006) and TS name: fs_motion (job002), ts_import (job003), ts_alignment
+   > (job004), ts_ctf task + the `ts_defocus_hand --check && --set_flip` supervisor mini-script
+   > (job005), ts_reconstruct (job006). Full chain green, 5×`.ok` per array job,
+   > `RELION_JOB_EXIT_SUCCESS` on all five.
+   >
+   > **Remaining 9 builders migrated the same day** (no transcripts; parity by transcription
+   > discipline + `--print-cmd` available as the gate): reconstruct_particle, class3d,
+   > subtomo_extraction, extract_pick_list (RELION group); template_match, extract_candidates
+   > (PyTOM group, incl. the `-g 0 1 2` / `-s` splats as `.raw()`); denoise_predict, denoise_train,
+   > miss_align (env-prefix group — `TF_FORCE_GPU_ALLOW_GROWTH=... cryoCARE_predict.py` and
+   > `env HOME=... miss-alignment train` become the ToolCommand exe, which is where the shell needs
+   > them). `subtomo_merge` has no tool execution — nothing to migrate. After this pass
+   > `wrap_command_for_tool` appears in `drivers/` ONLY inside `run_tool`.
+   >
+   > Tool-name literals: 12 of 17 converted. Five deliberately kept, each with an in-code reason —
+   > `extract_pick_list` (census #73, no param class until #68) and the four calls inside the
+   > IsoNet-only helpers `run_isonet_predict_task` / `run_isonet_train`. In those helpers the
+   > *branch*, not `params`, is what makes the tool IsoNet; `params.get_tool_name()` is
+   > method-conditional and would answer `"cryocare"` if the helper were ever called off the ISONET
+   > branch, so the literal is strictly safer than the indirection. The two cryoCARE-branch calls in
+   > `denoise_train.main()` WERE converted — the IsoNet branch `sys.exit(0)`s before them, so
+   > `get_tool_name()` is unambiguous there. The two native `tar` calls stay on bare `run_command`
+   > (design non-goal — they are not container-wrapped).
 3. **`ArrayDriver` template class** in `array_job_base.py`: hooks
    `enumerate_items() / stage(item) / build_command(item) / collect(item) / aggregate()`; the base
    owns mode dispatch, both bootstrap try/excepts, manifest index lookup, exclusion application,
