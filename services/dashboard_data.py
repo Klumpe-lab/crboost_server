@@ -17,7 +17,16 @@ import pandas as pd
 from services.array_tasks import read_manifest, resolve_job_dir, scan_statuses
 from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.tilt_series import get_registry_for
-from services.models_base import InstanceId, JobStatus, JobType, PickListType
+from services.models_base import (
+    InstanceId,
+    JobStatus,
+    JobType,
+    PickListType,
+    # Re-export: the renderers read this as a dashboard overlay constant, but a
+    # species' color is persisted model data (assigned by ProjectState.add_species),
+    # so the palette itself has to be visible to the model layer.
+    SPECIES_OVERLAY_COLORS as SPECIES_OVERLAY_COLORS,
+)
 from services.models_base import resolve_species as resolve_species
 from services.models_base import split_species_id as split_species_id
 from services.tilt_series.build import infer_position
@@ -26,22 +35,11 @@ from services.visualization.preview_orchestrator import read_preview_manifest
 logger = logging.getLogger(__name__)
 
 
-# Per-species overlay colors for the shared tomogram canvas. Indexed by the
-# candidate-extract instance's sorted position so a species keeps its color
-# across re-renders (and matches its checkbox). Maximally-saturated hues that
-# are absent from a greyscale tomogram (no mid-grays) so the dots pop; the
-# .cb-pick-ghost dual halo (dark + light ring) keeps them legible on both the
-# bright and dark ends of the backdrop.
-SPECIES_OVERLAY_COLORS = [
-    "#ff1744",  # vivid red
-    "#00e5ff",  # vivid cyan
-    "#ffea00",  # vivid yellow
-    "#d500f9",  # vivid magenta-purple
-    "#76ff03",  # neon green
-    "#2979ff",  # vivid blue
-    "#ff9100",  # vivid orange
-    "#f50057",  # vivid pink
-]
+# SPECIES_OVERLAY_COLORS (imported above) indexes per-species overlay colors for
+# the shared tomogram canvas, so a species keeps its color across re-renders and
+# matches its checkbox. Maximally-saturated hues that are absent from a greyscale
+# tomogram (no mid-grays) so the dots pop; the .cb-pick-ghost dual halo (dark +
+# light ring) keeps them legible on both the bright and dark ends of the backdrop.
 
 # Overlay glyph per pick-list type. Color (per list) is the primary
 # distinguisher; the glyph is secondary reinforcement so several lists over one

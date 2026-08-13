@@ -233,3 +233,33 @@ class AcquisitionParams(BaseModel):
     camera_name: str | None = None
     binning: int | None = Field(default=1, ge=1)
     frame_dose: float | None = None
+
+
+# Per-species overlay palette. Lives here rather than in the dashboard because a
+# species' color is persisted model data (assigned at creation by
+# ProjectState.add_species), not a render-time choice; services.dashboard_data
+# re-exports it for the renderers that read it as an overlay constant.
+#
+# Saturated primaries on purpose: these sit over a greyscale tomogram (no
+# mid-grays) so the dots pop at either end of the backdrop.
+SPECIES_OVERLAY_COLORS = [
+    "#ff1744",  # vivid red
+    "#00e5ff",  # vivid cyan
+    "#ffea00",  # vivid yellow
+    "#d500f9",  # vivid magenta-purple
+    "#76ff03",  # neon green
+    "#2979ff",  # vivid blue
+    "#ff9100",  # vivid orange
+    "#f50057",  # vivid pink
+]
+
+
+def species_palette_color(species_id: str) -> str:
+    """Deterministic palette color for a species id.
+
+    Deliberately NOT `hash()`: PYTHONHASHSEED randomizes str hashing per process,
+    so the same species would change color between server restarts. Summing the
+    code points is stable across runs and matches what the dashboard already does
+    for workbench-authored species.
+    """
+    return SPECIES_OVERLAY_COLORS[sum(map(ord, str(species_id))) % len(SPECIES_OVERLAY_COLORS)]
