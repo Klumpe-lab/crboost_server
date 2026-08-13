@@ -28,37 +28,32 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from drivers.driver_base import run_command
-from services.computing.container_service import get_container_service
+from drivers.driver_base import ToolCommand, run_tool
 from services.visualization.list_extraction import build_list_optset, write_extracted_optset
 
 
-def _build_subtomo_cmd(optset: Path, out_run: Path, args) -> str:
+def _build_subtomo_cmd(optset: Path, out_run: Path, args) -> ToolCommand:
     """relion_tomo_subtomo command for ONE list's optset — mirrors the per-TS command
     in drivers/subtomo_extraction.py so a list extracts with the SAME box/bin/crop as
     the species' auto extraction (downstream refinement can mix the two)."""
-    cmd = [
-        "relion_tomo_subtomo",
-        "--o",
-        str(out_run) + "/",
-        "--i",
-        str(optset),
-        "--b",
-        str(args.box),
-        "--bin",
-        str(int(args.binning)),
-    ]
+    cmd = (
+        ToolCommand("relion_tomo_subtomo")
+        .opt_path("--o", f"{out_run}/", quote=False)
+        .opt_path("--i", optset, quote=False)
+        .opt("--b", args.box)
+        .opt("--bin", int(args.binning))
+    )
     if args.crop and args.crop > 0:
-        cmd += ["--crop", str(args.crop)]
+        cmd.opt("--crop", args.crop)
     if args.max_dose and args.max_dose > 0:
-        cmd += ["--max_dose", str(args.max_dose)]
+        cmd.opt("--max_dose", args.max_dose)
     if args.min_frames and args.min_frames > 1:
-        cmd += ["--min_frames", str(args.min_frames)]
+        cmd.opt("--min_frames", args.min_frames)
     if args.stack2d:
-        cmd.append("--stack2d")
+        cmd.flag("--stack2d")
     if args.float16:
-        cmd.append("--float16")
-    return " ".join(cmd)
+        cmd.flag("--float16")
+    return cmd
 
 
 def _run(args) -> dict:
@@ -78,8 +73,8 @@ def _run(args) -> dict:
     if (out_run / "particles.star").exists() and (out_run / "Subtomograms").exists():
         print("[extract-list] outputs already present — skipping relion_tomo_subtomo", flush=True)
     else:
-        cmd_str = _build_subtomo_cmd(input_optset, out_run, args)
-        print(f"[extract-list] command: {cmd_str}", flush=True)
+        cmd = _build_subtomo_cmd(input_optset, out_run, args)
+        print(f"[extract-list] command: {cmd}", flush=True)
         # Bind the project tree (tilt series / tomograms the optset points at), the
         # out dir, and the tomograms.star + candidate-optset dirs (may sit outside it).
         binds = sorted(
@@ -90,10 +85,9 @@ def _run(args) -> dict:
                 str(Path(args.candidate_optset).resolve().parent),
             }
         )
-        wrapped = get_container_service().wrap_command_for_tool(
-            cmd_str, cwd=out_run, tool_name="relion", additional_binds=binds
-        )
-        run_command(wrapped, cwd=out_run)
+        # tool_name stays a literal here: this driver has no param class to ask
+        # (census #73) — it gets one with the #68 job-identity work.
+        run_tool(cmd, tool_name="relion", cwd=out_run, binds=binds)
         if not (out_run / "particles.star").exists():
             raise RuntimeError(f"relion_tomo_subtomo produced no particles.star in {out_run}")
         if not (out_run / "Subtomograms").exists():

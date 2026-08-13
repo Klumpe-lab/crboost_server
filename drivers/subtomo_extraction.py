@@ -59,7 +59,7 @@ from drivers.array_job_base import (
     write_skip_status,
     write_status_atomic,
 )
-from drivers.driver_base import get_driver_context, run_command
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool
 from drivers.subtomo_merge import (
     _parse_optimisation_set,
     _read_input_particles_lenient,
@@ -70,7 +70,6 @@ from drivers.subtomo_merge import (
     merge_optimisation_sets_into_jobdir,
     write_optimisation_set,
 )
-from services.computing.container_service import get_container_service
 from services.job_models import SubtomoExtractionParams
 
 DRIVER_SCRIPT = Path(__file__).resolve()
@@ -409,44 +408,34 @@ def run_task_mode(array_idx: int):
             write_status_atomic(status_dir, ts_name, ok=True)
             return
 
-        cmd_parts = [
-            "relion_tomo_subtomo",
-            "--o",
-            str(out_dir) + "/",
-            "--i",
-            str(per_ts_optset),
-            "--b",
-            str(params.box_size),
-            "--bin",
-            str(int(params.binning)),
-        ]
+        cmd = (
+            ToolCommand("relion_tomo_subtomo")
+            .opt_path("--o", f"{out_dir}/", quote=False)
+            .opt_path("--i", per_ts_optset, quote=False)
+            .opt("--b", params.box_size)
+            .opt("--bin", int(params.binning))
+        )
         if params.crop_size > 0:
-            cmd_parts.extend(["--crop", str(params.crop_size)])
+            cmd.opt("--crop", params.crop_size)
         if params.max_dose > 0:
-            cmd_parts.extend(["--max_dose", str(params.max_dose)])
+            cmd.opt("--max_dose", params.max_dose)
         if params.min_frames > 1:
-            cmd_parts.extend(["--min_frames", str(params.min_frames)])
+            cmd.opt("--min_frames", params.min_frames)
         if params.do_stack2d:
-            cmd_parts.append("--stack2d")
+            cmd.flag("--stack2d")
         if params.do_float16:
-            cmd_parts.append("--float16")
+            cmd.flag("--float16")
 
-        cmd_str = " ".join(cmd_parts)
-        print(f"[TASK {array_idx}] Command: {cmd_str}", flush=True)
+        print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
 
         # Bind both the staging dir (read input optimisation set) and the
         # upstream optimisation set's directory (relion follows the
-        # absolute paths inside it). Dedup to avoid noisy mounts.
+        # absolute paths inside it).
         additional_binds = list(context["additional_binds"])
         additional_binds.append(str(staging_dir.resolve()))
         additional_binds.append(str(per_ts_optset.parent.resolve()))
-        additional_binds = sorted(set(additional_binds))
 
-        container_service = get_container_service()
-        wrapped_cmd = container_service.wrap_command_for_tool(
-            cmd_str, cwd=out_dir, tool_name="relion", additional_binds=additional_binds
-        )
-        run_command(wrapped_cmd, cwd=out_dir)
+        run_tool(cmd, tool_name=params.get_tool_name(), cwd=out_dir, binds=additional_binds)
 
         if not (out_dir / "particles.star").exists():
             raise RuntimeError(f"relion_tomo_subtomo did not produce particles.star in {out_dir}")
