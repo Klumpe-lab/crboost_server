@@ -232,8 +232,10 @@ def compute_pixel_chain(project_state) -> list[dict]:
 
     # ---- Candidate Extract (one row per species) ----
     candidate_diameter_by_species: dict[str | None, list[tuple[str, float]]] = {}
+    ce_species_ids: set[str | None] = set()
     for ce_iid, ce_jm in candidate_extract_instances(project_state):
         species, species_id = resolve_species(project_state, ce_jm, ce_iid)
+        ce_species_ids.add(species_id)
         # Particle diameter: prefer species.diameter_ang (v2 source of truth);
         # fall back to the per-Pick-job value (v1) so projects pre-migration
         # still surface a number.
@@ -268,6 +270,29 @@ def compute_pixel_chain(project_state) -> list[dict]:
                 species_id=species_id,
                 species_name=getattr(species, "name", None) or species_id,
                 notes=notes,
+            )
+        )
+
+    # ---- Manual-pick species (registry species with no candidate-extract job) ----
+    # A species picked de novo never gets a Pick row from the loop above, so it would
+    # be absent from the sanity table entirely. Its picks live in the reconstruction's
+    # frame, so that is the geometry to show. On an imported-only project there is no
+    # recon job and these read blank — honest: the per-tomogram geometry (with its
+    # provenance) is surfaced in the Particles section, which knows the tilt series.
+    for sp in getattr(project_state, "species_registry", None) or []:
+        if sp.id in ce_species_ids:
+            continue
+        rows.append(
+            make_row(
+                "pick",
+                "Pick",
+                px_size_ang=recon_px,
+                tomo_px=recon_dims,
+                particle_diameter_ang=float(getattr(sp, "diameter_ang", 0.0) or 0.0) or None,
+                species_color=getattr(sp, "color", None),
+                species_id=sp.id,
+                species_name=sp.name or sp.id,
+                notes=["manual picks · no candidate-extract job"],
             )
         )
 
