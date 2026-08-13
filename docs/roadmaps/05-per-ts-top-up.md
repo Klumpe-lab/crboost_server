@@ -96,6 +96,28 @@ anyway; fixing §2 without fixing this would *expose* it.
 
 ## 4. Stage 0 — gather first
 
+> **PARTIAL RECORD 2026-08-13** (items 2 + 4 verified by code reading; 1 + 3 remain).
+> **Item 2 — aggregation contract: rebuild-from-all-settled, confirmed for all four core drivers.**
+> Every supervisor calls `adapter.ingest(results.ok)` where `results.ok` = ALL `.ok` stems in the
+> status dir (prior submissions included), and every adapter's `emit_star` re-reads the full input
+> STAR and rewrites the complete output STAR — nothing appends. Precondition it relies on: the
+> shared output dir retains prior-run per-TS artifacts (XMLs / MRCs), which the ts_ctf #10
+> copy-filter fix (`bb8cafe`) protects. Failure posture differs by driver and matches their
+> supervisor policy: `fs_motion_ctf.py:161`, `ts_ctf.py:168`, `ts_reconstruct.py:117` RAISE on any
+> non-excluded TS lacking an ingested output (all-or-nothing supervisors — emit only runs after
+> `all_succeeded`); `ts_alignment.py:225-233` warns-and-drops per TS, fatal only on total wipeout
+> (the tolerant tally — this is where the §2 drop policy lives). Consequence for stage 4: a top-up
+> re-run at any stage emits a complete STAR covering old + new TS; the cascade only needs to
+> re-trigger downstream, not to merge stars.
+> **Item 4 — `is_excluded` round-trip exists.** `registry.set_excluded()`
+> (`services/tilt_series/registry.py:184`) sets both ways and the dashboard toggles it
+> (`ui/tomo_dashboard_dialog.py:468-470`); the one-way door is purely the on-disk `.skip` marker
+> (`clean_status_dir` never removes `.skip`) → §3's `retry_items=` fix is sufficient, no UI work
+> needed for un-muting itself.
+> Also noted in passing: `ts_alignment.py` adapter `emit_star` falls back to `frame_angpix = 1.35`
+> when no pixel-size column exists (`adapters/ts_alignment.py:177`) — another instance of the
+> known 1.35-default trap, flagged for the never-silent-defaults policy, out of 05 scope.
+
 1. **Confirm the downstream propagation shape.** For `deadcode_test`, enumerate which jobs after
    `job004` have manifests missing `Position_1_3` and which emit STARs that would need regenerating.
    Establishes how far a top-up must cascade.
