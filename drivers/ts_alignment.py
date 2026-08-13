@@ -34,8 +34,7 @@ from drivers.array_job_base import (
     write_status_atomic,
     STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command, require_producer_input
-from services.computing.container_service import get_container_service
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool, require_producer_input
 from services.jobs.ts_alignment import TsAlignmentParams
 from services.models_base import AlignmentMethod
 from services.tilt_series import get_registry_for
@@ -92,44 +91,38 @@ def stage_alignment_environment(job_dir: Path, ts_name: str, source_tomostar_dir
     return stage_root
 
 
-def build_alignment_command(params: TsAlignmentParams, stage_root: Path) -> str:
-    """Build the alignment command to run inside the staged environment."""
+def build_alignment_command(params: TsAlignmentParams, stage_root: Path) -> ToolCommand | str:
+    """Build the alignment command to run inside the staged environment.
+
+    Returns a shell fragment (not a ToolCommand) for an unimplemented method: the
+    error shim is compound shell, not a tool invocation.
+    """
     if params.alignment_method == AlignmentMethod.ARETOMO:
-        cmd_parts = [
-            "WarpTools ts_aretomo",
-            "--settings",
-            "warp_tiltseries.settings",
-            "--output_processing",
-            "warp_tiltseries",
-            "--angpix",
-            str(params.rescale_angpixs),
-            "--alignz",
-            str(int(params.sample_thickness_nm * 10)),
-            "--perdevice",
-            str(params.perdevice),
-        ]
+        cmd = (
+            ToolCommand("WarpTools ts_aretomo")
+            .opt("--settings", "warp_tiltseries.settings")
+            .opt("--output_processing", "warp_tiltseries")
+            .opt("--angpix", params.rescale_angpixs)
+            .opt("--alignz", int(params.sample_thickness_nm * 10))
+            .opt("--perdevice", params.perdevice)
+        )
         if params.patch_x > 0 and params.patch_y > 0:
-            cmd_parts.extend(["--patches", f"{params.patch_x}x{params.patch_y}"])
+            cmd.opt("--patches", f"{params.patch_x}x{params.patch_y}")
         if params.axis_iter > 0:
-            cmd_parts.extend(["--axis_iter", str(params.axis_iter)])
-            cmd_parts.extend(["--axis_batch", str(min(params.axis_batch, 1))])
+            cmd.opt("--axis_iter", params.axis_iter)
+            cmd.opt("--axis_batch", min(params.axis_batch, 1))
+        return cmd
 
-    elif params.alignment_method == AlignmentMethod.IMOD:
-        cmd_parts = [
-            "WarpTools ts_etomo_patches",
-            "--settings",
-            "warp_tiltseries.settings",
-            "--output_processing",
-            "warp_tiltseries",
-            "--angpix",
-            str(params.rescale_angpixs),
-            "--patch_size",
-            str(int(params.imod_patch_size * 10)),
-        ]
-    else:
-        return f"echo 'ERROR: Alignment method {params.alignment_method} not implemented'; exit 1;"
+    if params.alignment_method == AlignmentMethod.IMOD:
+        return (
+            ToolCommand("WarpTools ts_etomo_patches")
+            .opt("--settings", "warp_tiltseries.settings")
+            .opt("--output_processing", "warp_tiltseries")
+            .opt("--angpix", params.rescale_angpixs)
+            .opt("--patch_size", int(params.imod_patch_size * 10))
+        )
 
-    return " ".join(cmd_parts)
+    return f"echo 'ERROR: Alignment method {params.alignment_method} not implemented'; exit 1;"
 
 
 def collect_per_ts_outputs(job_dir: Path, ts_name: str) -> None:
@@ -383,11 +376,7 @@ def run_task_mode(array_idx: int):
         cmd = build_alignment_command(params, stage_root)
         print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
 
-        wrapped = get_container_service().wrap_command_for_tool(
-            command=cmd, cwd=stage_root, tool_name=params.get_tool_name(), additional_binds=additional_binds
-        )
-
-        run_command(wrapped, cwd=stage_root)
+        run_tool(cmd, tool_name=params.get_tool_name(), cwd=stage_root, binds=additional_binds)
 
         # Collect outputs into shared job dir
         collect_per_ts_outputs(job_dir, ts_name)
