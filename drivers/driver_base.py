@@ -231,6 +231,11 @@ def run_command(command: str, cwd: Path, timeout: int | None = None, idle_timeou
         timeout = _derive_watchdog_timeout()
     idle_timeout = min(idle_timeout, timeout) if idle_timeout else 0
 
+    # Echo the exact command into the job log: the one reliable record of what
+    # was actually executed (container wrap included) — reproducibility + the
+    # ground truth for command-builder refactors.
+    print(f"[run_command] $ {command}", flush=True)
+
     process = subprocess.Popen(
         command,
         shell=True,
