@@ -31,9 +31,8 @@ from collections.abc import Iterable
 
 import pandas as pd
 
-from services.configs.starfile_service import StarfileService
+from services.tilt_series.adapters._base import BaseIngestAdapter
 from services.tilt_series.models import FsMotionCtfFrameOutput, TiltSeries
-from services.tilt_series.registry import TiltSeriesRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -54,22 +53,8 @@ def _pos_float(v: str | None) -> float | None:
     return f if f > 0 else None
 
 
-class FsMotionCtfIngestAdapter:
-    def __init__(
-        self,
-        registry: TiltSeriesRegistry,
-        job_dir: Path,
-        *,
-        job_instance_id: str,
-        warp_folder: str = "warp_frameseries",
-        starfile_service: StarfileService | None = None,
-    ):
-        self.registry = registry
-        self.job_dir = Path(job_dir)
-        self.job_instance_id = job_instance_id
-        self.warp_folder = warp_folder
-        self.warp_dir = self.job_dir / warp_folder
-        self.starfile_service = starfile_service or StarfileService()
+class FsMotionCtfIngestAdapter(BaseIngestAdapter):
+    DEFAULT_WARP_FOLDER = "warp_frameseries"
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -130,7 +115,7 @@ class FsMotionCtfIngestAdapter:
         in_star_dir = input_star_path.parent
         out_ts_df = in_ts_df.copy()
 
-        excluded = {str(t) for t in (excluded_ids or ())}
+        excluded = self._excluded_set(excluded_ids)
         unresolved: list[str] = []
         for _, ts_row in in_ts_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
@@ -164,8 +149,7 @@ class FsMotionCtfIngestAdapter:
                 + "\n  - ".join(unresolved)
             )
 
-        if excluded:
-            out_ts_df = out_ts_df[~out_ts_df["rlnTomoName"].astype(str).isin(excluded)].reset_index(drop=True)
+        out_ts_df = self._drop_excluded(out_ts_df, excluded)
 
         # Rewrite per-TS paths in the global block to point to the new tilt_dir.
         out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(
@@ -218,22 +202,6 @@ class FsMotionCtfIngestAdapter:
             mean_frame_movement=mean_frame_movement,
             warp_xml_path=xml_path,
         )
-
-    def _resolve_per_ts_path(
-        self, per_ts_rel: str, in_star_dir: Path, project_root: Path
-    ) -> Path | None:
-        """Try (in_star_dir / rel) then (project_root / rel). The ts_import STAR
-        uses project-root-relative paths (RELION convention); later-job STARs
-        use paths relative to the STAR itself."""
-        for base in (in_star_dir, project_root):
-            cand = (base / per_ts_rel).resolve()
-            if cand.exists():
-                return cand
-        return None
-
-    def _read_only_block(self, path: Path) -> pd.DataFrame:
-        data = self.starfile_service.read(path)
-        return next(iter(data.values())).copy()
 
     def _apply_motion_ctf_to_tilt_df(
         self, ts: TiltSeries, tilt_df: pd.DataFrame

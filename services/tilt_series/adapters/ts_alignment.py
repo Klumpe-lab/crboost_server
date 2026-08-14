@@ -32,6 +32,7 @@ import pandas as pd
 
 from services.configs.starfile_service import StarfileService
 from services.models_base import AlignmentMethod
+from services.tilt_series.adapters._base import BaseIngestAdapter
 from services.tilt_series.models import (
     TiltSeries,
     TsAlignmentPerFrame,
@@ -52,24 +53,26 @@ _ALN_COL_YSHIFT = 4
 _ALN_COL_TILT = 9
 
 
-class TsAlignmentIngestAdapter:
+class TsAlignmentIngestAdapter(BaseIngestAdapter):
     def __init__(
         self,
         registry: TiltSeriesRegistry,
         job_dir: Path,
         *,
         job_instance_id: str,
-        warp_folder: str = "warp_tiltseries",
+        warp_folder: str | None = None,
         tomostar_folder: str = "tomostar",
         starfile_service: StarfileService | None = None,
     ):
-        self.registry = registry
-        self.job_dir = Path(job_dir)
-        self.job_instance_id = job_instance_id
-        self.warp_dir = self.job_dir / warp_folder
+        super().__init__(
+            registry,
+            job_dir,
+            job_instance_id=job_instance_id,
+            warp_folder=warp_folder,
+            starfile_service=starfile_service,
+        )
         self.tiltstack_dir = self.warp_dir / "tiltstack"
         self.tomostar_dir = self.job_dir / tomostar_folder
-        self.starfile_service = starfile_service or StarfileService()
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -485,19 +488,6 @@ class TsAlignmentIngestAdapter:
                 "(muted/failed this run, or stale from a previous one): %s",
                 len(extras), sorted(extras),
             )
-
-    def _resolve_per_ts_path(
-        self, per_ts_rel: str, in_star_dir: Path, project_root: Path
-    ) -> Path | None:
-        for base in (in_star_dir, project_root):
-            cand = (base / per_ts_rel).resolve()
-            if cand.exists():
-                return cand
-        return None
-
-    def _read_only_block(self, path: Path) -> pd.DataFrame:
-        data = self.starfile_service.read(path)
-        return next(iter(data.values())).copy()
 
     def _apply_alignment_to_tilt_df(
         self,

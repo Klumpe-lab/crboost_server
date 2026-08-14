@@ -196,20 +196,85 @@ inconsistencies (live injection-hazard class) disappear.
    > gets `attempts=3` + the `[run_command]` echo it now inherits from `run_tool`), #7 (missing
    > tomostar raises instead of staging a no-op that green-ticks — the maintainer's ASK decision),
    > #9 (a vanished staged XML raises instead of silently skipping copy-back and writing `.ok`).
-   > **#8 still open**: task mode hardcodes `job_dir/warp_tiltseries{,.settings}` and `job_dir/tomostar`
-   > rather than reading the resolver, and the supervisor has a silent `paths.get("output_processing",
-   > ...)` default. Aligning needs the resolver's actual tsCtf output verified first — do that
-   > before touching it, since supervisor/task disagreement here fails staging outright.
+   > **#8 CLOSED 2026-08-13, PENDING RUNTIME.** The precondition first: `TsCtfParams.OUTPUT_SCHEMA`
+   > declares `output_processing` with `path_template="warp_tiltseries/"`, and `resolve_outputs`
+   > renders it as `(job_dir / "warp_tiltseries/").resolve()` — byte-identical to the hardcoded
+   > default, and `as_paths_dict` has no key collision for tsCtf, so the key is always present when
+   > the bootstrap succeeded. The `paths.get(..., default)` was therefore dead and is now
+   > `ctx.paths["output_processing"]`, in the supervisor AND in `stage`/`collect`.
+   >
+   > The other two literals are NOT resolver paths and the ledger entry mis-stated them: the task
+   > reads `job_dir/warp_tiltseries.settings` and `job_dir/tomostar`, which are **job-local copies
+   > the supervisor's `pre_dispatch` makes** — nothing declares them as OutputSlots, and the
+   > resolver's `warp_tiltseries_settings` INPUT points at the upstream alignment file, not at our
+   > copy. So they are a supervisor↔task contract, now named once as `LOCAL_SETTINGS_NAME` /
+   > `LOCAL_TOMOSTAR_NAME` with the reason in-code. This closes the exact drift the ledger warned
+   > about: the supervisor used to name its copy after the *upstream* file (`settings_file.name`)
+   > while the task looked for the literal `"warp_tiltseries.settings"` — identical today, since all
+   > four `WARP_TILTSERIES_SETTINGS` producers use that `path_template`, but a fail-hard mismatch the
+   > moment one didn't. The staged-dir literals inside `.staging/task_*/` are left alone on purpose:
+   > those are dictated by the settings file's own relative `DataFolder`/`ProcessingFolder` keys.
 4. **`BaseIngestAdapter`** in `services/tilt_series/adapters/_base.py`: shared `__init__`,
    `_read_only_block`, `_resolve_per_ts_path`, excluded-ids filtering; the four adapters shrink to
    their parsing cores; `denoise_predict` and `tilt_filter` get real adapters replacing hand-rolled
    registry stamps. Coordinates with Roadmap 02 stage 5 (required `job_instance_id`).
+
+   > **BASE CLASS DONE 2026-08-13, PENDING RUNTIME.** `BaseIngestAdapter` owns the constructor head
+   > (`registry` / `job_dir` / `job_instance_id` / `warp_folder` / `warp_dir` / `starfile_service`),
+   > `_read_only_block` (was copied 3×), `_resolve_per_ts_path` (2×), and the exclusion pair
+   > `_excluded_set` / `_drop_excluded` (3×). Subclasses declare `DEFAULT_WARP_FOLDER` instead of a
+   > per-`__init__` default; `fs_motion_ctf` and `ts_ctf` now have NO `__init__` at all,
+   > `ts_reconstruct` keeps one for `rec_dir` and `ts_alignment` for `tiltstack_dir`/`tomostar_dir`.
+   > Deliberately not an ABC: `ingest`/`emit_star` have genuinely different signatures per job type
+   > (pixel sizes, alignment method, project root), and unifying them would mean `**kwargs` soup.
+   > Two incidental attribute additions, both write-only and unread: `ts_ctf` now also sets
+   > `warp_folder`, `ts_reconstruct` also sets `warp_dir` (`rec_dir` derives from it identically).
+   >
+   > **NOT DONE — needs a maintainer decision, not code motion.** The `denoise_predict` /
+   > `tilt_filter` adapters do not fit this base, and forcing them would change failure semantics:
+   > both stamps are **best-effort by explicit design** (`stamp_denoise_registry`,
+   > `drivers/denoise_predict.py`; the frame-verdict stamp, `drivers/tilt_filter.py:134-157`) —
+   > wrapped in a broad catch that only warns, on the stated grounds that a registry failure must
+   > never fail a job whose real outputs already exist. Every adapter in this family is fail-loud.
+   > `tilt_filter` also has no adapter *shape*: it calls `set_frame_filtered` per frame stem, with no
+   > typed output attachment and no `emit_star`. **ASK:** should a registry-stamp failure fail those
+   > two jobs (adopt the family's fail-loud contract) or keep warning (and stay outside the family)?
 5. **Library relocations:** `drivers/subtomo_merge.py` → `services/` (then
    `services/visualization/list_extraction.py:38-90` imports it instead of mirroring — its docstrings
    already apologize for the copy); single-source the driver-invocation command string
    (`pipeline_orchestrator_service.py:529-541` ≡ `array_job_base.py:445-454`); port
    `extract_pick_list.py` onto `get_driver_context` (today it hand-rolls argparse and bypasses the
    bootstrap entirely).
+
+   > **DONE 2026-08-13 (2 of 3), PENDING RUNTIME.**
+   >
+   > **subtomo_merge → `services/subtomo_merge.py`.** Pure move (shebang dropped — it has no
+   > `__main__`). Repointed: `drivers/subtomo_extraction.py` (6 private names),
+   > `drivers/extract_candidates_pytom.py`, and `ui/aggregation_merge_card.py` — which was a
+   > **`ui/` → `drivers/` import**, a real boundary violation `check_boundaries.py` does not yet
+   > catch (R1 only bans the reverse direction). `list_extraction.py`'s two hand-mirrored copies
+   > (`_parse_optimisation_set`, `_write_optimisation_set`) are deleted in favour of the originals;
+   > the only behavioural delta is that relative paths in a parsed optset now come back `.resolve()`d,
+   > which changes no file we write (both writers `.resolve()` at write time). Names left private
+   > (`_parse_optimisation_set` and friends) on purpose: 7 cross-module call sites already import them
+   > that way, and renaming would churn a driver this stage is not otherwise touching.
+   >
+   > **Driver-invocation string → `services/jobs/spec.py`.** `driver_launch_prefix()` (the
+   > `export PYTHONPATH=…; <python> <script>` head) + `driver_invocation()` (that plus
+   > `--instance_id/--project_path`). Byte-identical at every site: the orchestrator's
+   > `python_exe = "python3"` fallback was a `str` and array_job_base's a `Path`, which render the
+   > same. The census named two call sites; there was a **third** — `backend.extract_pick_list`
+   > (`backend.py:263-283`) carries the same prefix with a different argument set, which is why the
+   > prefix is split out rather than folded into one function.
+   >
+   > **`extract_pick_list` → `get_driver_context`: NOT APPLICABLE, and the roadmap item is wrong.**
+   > This driver is not a pipeline job: `backend.extract_pick_list` submits it as a one-off sbatch
+   > with `--candidate-optset/--list-star/--tomo/--out-dir/--project-root`, it has no `--instance_id`,
+   > no entry in `project_state.jobs`, and no param class (census #73). `get_driver_context` requires
+   > all three — it looks the instance up in `project_state.jobs` and `sys.exit(1)`s on a miss, then
+   > runs full IO-slot path resolution. Everything this driver *can* share it already does
+   > (`ToolCommand`, `run_tool`, and now the launch prefix). Genuinely blocked on census #68 giving it
+   > a job identity; re-open this item there.
 
 ## Modern-Python weave-in
 
