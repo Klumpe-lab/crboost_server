@@ -33,6 +33,18 @@ from services.tilt_series import get_registry_for
 from services.tilt_series.adapters import TsCtfIngestAdapter
 
 
+# The supervisor copies the upstream settings file and tomostar dir into the job dir
+# once; every array task then stages from those copies. They are a supervisor↔task
+# contract, NOT resolver outputs — nothing declares them as OutputSlots, and the
+# resolver's `warp_tiltseries_settings` input points at the UPSTREAM (alignment) file,
+# not at our copy of it. Both ends name them here because a task looking for a name the
+# supervisor never wrote fails staging outright (ledger #8). The literals are dictated
+# by the settings file's own relative DataFolder="tomostar" /
+# ProcessingFolder="warp_tiltseries" keys, so they are not free choices.
+LOCAL_SETTINGS_NAME = "warp_tiltseries.settings"
+LOCAL_TOMOSTAR_NAME = "tomostar"
+
+
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
@@ -190,7 +202,10 @@ class TsCtfDriver(ArrayDriver):
         """
         input_processing = ctx.paths["input_processing"]
         settings_file = ctx.paths["warp_tiltseries_settings"]
-        output_processing = ctx.paths.get("output_processing", ctx.job_dir / "warp_tiltseries")
+        # OUTPUT_SCHEMA declares output_processing (path_template "warp_tiltseries/"),
+        # so resolution either produced this key or already aborted the bootstrap —
+        # a local default here could only ever mask a resolver change.
+        output_processing = ctx.paths["output_processing"]
         in_scope = set(items)
 
         # Copy alignment XMLs into our output dir — but only for the in-scope TS.
@@ -220,13 +235,13 @@ class TsCtfDriver(ArrayDriver):
         self.log(msg)
 
         # Copy settings into job dir for staging
-        local_settings = ctx.job_dir / settings_file.name
+        local_settings = ctx.job_dir / LOCAL_SETTINGS_NAME
         if not local_settings.exists():
             shutil.copy2(str(settings_file), str(local_settings))
 
         # Find tomostar dir (from the alignment job or tsImport)
-        tomostar_dir = settings_file.parent / "tomostar"
-        local_tomostar = ctx.job_dir / "tomostar"
+        tomostar_dir = settings_file.parent / LOCAL_TOMOSTAR_NAME
+        local_tomostar = ctx.job_dir / LOCAL_TOMOSTAR_NAME
         if not local_tomostar.exists() and tomostar_dir.exists():
             shutil.copytree(str(tomostar_dir), str(local_tomostar))
 
@@ -259,9 +274,9 @@ class TsCtfDriver(ArrayDriver):
         stage_root = stage_ctf_environment(
             ctx.job_dir,
             item,
-            ctx.job_dir / "warp_tiltseries",
-            ctx.job_dir / "warp_tiltseries.settings",
-            ctx.job_dir / "tomostar",
+            ctx.paths["output_processing"],
+            ctx.job_dir / LOCAL_SETTINGS_NAME,
+            ctx.job_dir / LOCAL_TOMOSTAR_NAME,
         )
         self.log(f"Staged at: {stage_root}")
         return stage_root
@@ -281,7 +296,7 @@ class TsCtfDriver(ArrayDriver):
         staged_xml = staged / "warp_tiltseries" / f"{item}.xml"
         if not staged_xml.exists():
             raise FileNotFoundError(f"ts_ctf reported success but the staged XML is gone: {staged_xml}")
-        shutil.copy2(str(staged_xml), str(ctx.job_dir / "warp_tiltseries" / f"{item}.xml"))
+        shutil.copy2(str(staged_xml), str(ctx.paths["output_processing"] / f"{item}.xml"))
 
 
 if __name__ == "__main__":
