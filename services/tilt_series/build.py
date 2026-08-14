@@ -18,11 +18,11 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
 
-from services.dataset_models import DatasetOverview, TiltSeriesInfo
+from services.tilt_series.preimport import DatasetOverview, TiltSeriesInfo
 from services.tilt_series.models import Frame, TiltSeries
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 def build_from_dataset_overview(
     overview: DatasetOverview, *, project_prefix: str = ""
-) -> List[TiltSeries]:
+) -> list[TiltSeries]:
     """Construct TS entities from an already-parsed DatasetOverview.
 
     `project_prefix` is prepended to TS labels to match how WarpTools names the
@@ -43,7 +43,7 @@ def build_from_dataset_overview(
     `{project_name}_{ts_label}` after `ts_import`). Pass `""` to use the bare
     labels.
     """
-    out: List[TiltSeries] = []
+    out: list[TiltSeries] = []
     for pos in overview.positions:
         for ts_info in pos.tilt_series:
             if not ts_info.selected:
@@ -66,7 +66,7 @@ def _build_one_ts(ts_info: TiltSeriesInfo, *, project_prefix: str) -> TiltSeries
     cumulative = 0.0
     dose_per_tilt = ts_info.dose_per_tilt or 0.0
 
-    frames: List[Frame] = []
+    frames: list[Frame] = []
     for i, tilt in enumerate(sorted_tilts):
         frame_path = tilt.frame_path or Path(tilt.frame_filename)
         frame_id = Path(tilt.frame_filename).stem
@@ -118,9 +118,9 @@ def _build_one_ts(ts_info: TiltSeriesInfo, *, project_prefix: str) -> TiltSeries
 def build_from_mdocs(
     mdocs_glob: str,
     *,
-    frames_dir: Optional[Path] = None,
+    frames_dir: Path | None = None,
     project_prefix: str = "",
-) -> List[TiltSeries]:
+) -> list[TiltSeries]:
     """Parse mdocs directly when no DatasetOverview is available.
 
     `frames_dir` is optional; if provided, each frame's `raw_path` is resolved
@@ -135,7 +135,7 @@ def build_from_mdocs(
         logger.warning("build_from_mdocs: no mdocs matched %s", mdocs_glob)
         return []
 
-    out: List[TiltSeries] = []
+    out: list[TiltSeries] = []
     for mdoc_path in mdoc_paths:
         try:
             parsed = svc.parse_mdoc_file(mdoc_path)
@@ -150,13 +150,13 @@ def build_from_mdocs(
 
         ts_label = mdoc_path.stem
         ts_id = f"{project_prefix}{ts_label}" if project_prefix else ts_label
-        stage_position, beam_position = _infer_position(ts_label)
+        stage_position, beam_position = infer_position(ts_label)
 
         # Sort by ZValue to nail down acquisition order.
         sorted_sections = sorted(sections, key=lambda s: int(s.get("ZValue", 0)))
 
         cumulative = 0.0
-        frames: List[Frame] = []
+        frames: list[Frame] = []
         dose_per_tilt = _coerce_float(sorted_sections[0].get("ExposureDose")) or 0.0
 
         for i, sec in enumerate(sorted_sections):
@@ -207,7 +207,7 @@ def build_from_mdocs(
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _coerce_float(v) -> Optional[float]:
+def _coerce_float(v) -> float | None:
     if v is None:
         return None
     try:
@@ -260,7 +260,7 @@ def _acq_kwargs_from_raw_section(sec: dict) -> dict:
     return kw
 
 
-def _parse_mdoc_datetime(raw) -> Optional[datetime]:
+def _parse_mdoc_datetime(raw) -> datetime | None:
     if not raw:
         return None
     # mdoc DateTime format is typically like "05-Feb-2026  17:15:24"
@@ -272,21 +272,29 @@ def _parse_mdoc_datetime(raw) -> Optional[datetime]:
     return None
 
 
-def _infer_position(ts_label: str) -> tuple[int, int]:
-    """Infer stage/beam from a ts_label like 'Position_10' or 'Position_10_2'.
+_POSITION_RE = re.compile(r"Position_(\d+)(?:_(\d+))?$")
 
-    Returns (stage, beam). Beam defaults to 1 when not explicitly present.
-    Returns (0, 1) for labels that don't match the expected pattern — this
-    only affects the cosmetic display fields, not identity.
-    """
-    parts = ts_label.rsplit("_", 2)
-    # Try: "..._Position_10_2" → stage=10, beam=2
-    # Or:  "..._Position_10"    → stage=10, beam=1
-    try:
-        if len(parts) >= 3 and parts[-3].endswith("Position"):
-            return int(parts[-2]), int(parts[-1])
-        if len(parts) >= 2 and parts[-2].endswith("Position"):
-            return int(parts[-1]), 1
-    except ValueError:
-        pass
-    return 0, 1
+
+def parse_position(label: str) -> tuple[int, int | None] | None:
+    """Decode the ``..._Position_{stage}[_{beam}]`` suffix grammar — THE one
+    position parser (roadmap 02 stage 2); nothing else may regex/split for
+    stage/beam. Returns (stage, beam) with beam None when the label carries no
+    explicit beam, or None when the label doesn't end in the suffix at all.
+    Only genuinely-deriving import-time reads and display fallbacks belong
+    here — display of a registry-known TS should read the entity's
+    stage_position/beam_position fields instead."""
+    m = _POSITION_RE.search(label)
+    if not m:
+        return None
+    return int(m.group(1)), (int(m.group(2)) if m.group(2) else None)
+
+
+def infer_position(ts_label: str) -> tuple[int, int]:
+    """`parse_position` with registry-build defaults: implicit beam → 1, and
+    (0, 1) for labels without the suffix — this only affects the cosmetic
+    display fields, not identity."""
+    parsed = parse_position(ts_label)
+    if parsed is None:
+        return 0, 1
+    stage, beam = parsed
+    return stage, beam or 1

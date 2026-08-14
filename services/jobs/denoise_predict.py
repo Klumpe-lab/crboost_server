@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Optional, Set, Tuple
+from typing import ClassVar
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams
@@ -19,7 +19,7 @@ class DenoisePredictParams(AbstractJobParams):
     # inherited from the denoisetrain job that produced this job's model (see
     # inherited_from_train). Predict must run whatever the model was trained as, so exposing
     # an independent setting only invites a train/predict mismatch that fails deep in the run.
-    USER_PARAMS: ClassVar[Set[str]] = {
+    USER_PARAMS: ClassVar[set[str]] = {
         "ntiles_x",
         "ntiles_y",
         "ntiles_z",
@@ -28,13 +28,13 @@ class DenoisePredictParams(AbstractJobParams):
         "array_throttle",
     }
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="model_path", accepts=[JobFileType.DENOISE_MODEL_TAR], preferred_source="denoisetrain"),
         InputSlot(key="input_star", accepts=[JobFileType.TOMOGRAMS_STAR], preferred_source="tsReconstruct"),
         InputSlot(key="reconstruct_base", accepts=[JobFileType.WARP_TILTSERIES_DIR], preferred_source="tsReconstruct"),
     ]
 
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_star", produces=JobFileType.DENOISED_TOMOGRAMS_STAR, path_template="tomograms.star")
     ]
 
@@ -73,7 +73,7 @@ class DenoisePredictParams(AbstractJobParams):
     def get_tool_name(self) -> str:
         return "isonet" if self.denoise_method == DenoiseMethod.ISONET else "cryocare"
 
-    def _get_queue_options(self) -> List[Tuple[str, str]]:
+    def _get_queue_options(self) -> list[tuple[str, str]]:
         """Per-tomogram prediction is parallelized over a SLURM array, so the parent sbatch
         is a lightweight CPU-only supervisor (enumerate tomograms, submit the child array,
         poll, aggregate the denoised tomograms.star). User-facing slurm config (project
@@ -92,16 +92,16 @@ class DenoisePredictParams(AbstractJobParams):
             options.append((var_name, str(getattr(sup, field_name))))
         return options
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
         model_path = self.paths.get("model_path", "")
         return [("in_tomoset", str(input_star)), ("in_model", str(model_path))]
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"train": "denoisetrain"}
 
-    def inherited_from_train(self, project_state) -> Tuple[Optional[DenoiseMethod], Optional[bool]]:
+    def inherited_from_train(self, project_state) -> tuple[DenoiseMethod | None, bool | None]:
         """(denoise_method, isonet_deconv) inherited from the denoisetrain job that produced
         this job's model, or (None, None) if it can't be resolved.
 

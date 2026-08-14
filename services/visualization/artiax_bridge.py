@@ -15,7 +15,7 @@ Mapping to our RELION-5 centered-Å convention (see :mod:`services.visualization
 
 Because we own both directions and exchange in ArtiaX's corner-Å (= voxel*px) space, the ``N/2``
 centering term cancels in any our→ArtiaX→our round trip regardless of the half-voxel parity
-ambiguity. See ``services/visualization/ARTIAX_BRIDGE_PLAN.md``.
+ambiguity. See ``docs/ARTIAX_BRIDGE_PLAN.md``.
 """
 
 from __future__ import annotations
@@ -24,13 +24,13 @@ import argparse
 import logging
 import re
 from pathlib import Path
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
 import starfile
 
-from services.visualization.coords import TomoFrame, centered_angst_dataframe, picks_centered_angst
+from services.visualization.coords import TomogramGeometry, centered_angst_dataframe, picks_centered_angst
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +59,13 @@ def write_coords_file(coords_corner_angst: np.ndarray, path: Path) -> None:
     np.savetxt(str(path), arr, fmt="%.4f", delimiter=" ")
 
 
-def artiax_to_centered_angst(coords_corner_angst: np.ndarray, frame: TomoFrame) -> np.ndarray:
+def artiax_to_centered_angst(coords_corner_angst: np.ndarray, frame: TomogramGeometry) -> np.ndarray:
     """ArtiaX corner-Å → RELION-5 centered-Å for one tomogram."""
     voxel = np.asarray(coords_corner_angst, dtype=float).reshape(-1, 3) / frame.pixel_size
     return frame.to_centered_angst(voxel)
 
 
-def centered_angst_to_artiax(centered_angst: np.ndarray, frame: TomoFrame) -> np.ndarray:
+def centered_angst_to_artiax(centered_angst: np.ndarray, frame: TomogramGeometry) -> np.ndarray:
     """RELION-5 centered-Å → ArtiaX corner-Å for one tomogram."""
     voxel = frame.to_voxel(np.asarray(centered_angst, dtype=float).reshape(-1, 3))
     return voxel * frame.pixel_size
@@ -79,16 +79,16 @@ def _find_table(star_path: Path, required_col: str) -> pd.DataFrame:
     raise ValueError(f"No table with column {required_col!r} in {star_path}")
 
 
-def frame_for_tomo(tomograms_star: Path, tomo_name: str, project_root: Optional[Path] = None) -> TomoFrame:
+def frame_for_tomo(tomograms_star: Path, tomo_name: str, project_root: Path | None = None) -> TomogramGeometry:
     tomo_df = _find_table(Path(tomograms_star), "rlnTomoName")
     rows = tomo_df[tomo_df["rlnTomoName"] == tomo_name]
     if rows.empty:
         raise ValueError(f"Tomogram {tomo_name!r} not found in {tomograms_star}")
-    return TomoFrame.from_tomo_row(rows.iloc[0], project_root=project_root)
+    return TomogramGeometry.from_tomo_row(rows.iloc[0], project_root=project_root)
 
 
 def export_tomo_picks_to_coords(
-    candidates_star: Path, tomograms_star: Path, tomo_name: str, out_path: Path, project_root: Optional[Path] = None
+    candidates_star: Path, tomograms_star: Path, tomo_name: str, out_path: Path, project_root: Path | None = None
 ) -> int:
     """Write our picks for one tomogram to an ArtiaX ``.coords`` file. Returns the pick count."""
     parts = _find_table(Path(candidates_star), "rlnTomoName")
@@ -101,11 +101,11 @@ def export_tomo_picks_to_coords(
 
 
 def import_coords_to_centered_star(
-    coords_path: Path, tomograms_star: Path, tomo_name: str, out_star: Path, project_root: Optional[Path] = None
+    coords_path: Path, tomograms_star: Path, tomo_name: str, out_star: Path, project_root: Path | None = None
 ) -> int:
     """Ingest an ArtiaX ``.coords`` (manual picks) → a RELION-5 centered-Å particles
     star for one tomogram. The inverse of :func:`export_tomo_picks_to_coords`, using
-    the SAME :class:`TomoFrame`, so the ``N/2`` centering cancels and an
+    the SAME :class:`TomogramGeometry`, so the ``N/2`` centering cancels and an
     export→ArtiaX→import round trip is parity-exact. Returns the pick count.
 
     Minimal schema: ``rlnTomoName`` + the three ``rlnCenteredCoordinate*Angst`` columns
@@ -171,7 +171,7 @@ def curation_dir(project_root, tomo_name: str, *, species_id: str = "", species_
     return Path(project_root) / "Curation" / sp_slug / _safe_slug(tomo_name)
 
 
-def session_chimerax_commands(recon_mrc, auto_coords: Optional[Path] = None) -> list[str]:
+def session_chimerax_commands(recon_mrc, auto_coords: Path | None = None) -> list[str]:
     """The ChimeraX command lines that load a tomogram + our picks into ArtiaX.
 
     This is the single source of the load backbone: the ``.cxc`` bakes these in for
@@ -187,7 +187,7 @@ def session_chimerax_commands(recon_mrc, auto_coords: Optional[Path] = None) -> 
 
 
 def swap_chimerax_commands(
-    recon_mrc, pick_file=None, *, clear: bool = True, force_apix: Optional[float] = None, cwd=None
+    recon_mrc, pick_file=None, *, clear: bool = True, force_apix: float | None = None, cwd=None
 ) -> list[str]:
     """The in-session "swap to this tomogram" command sequence — what crboost POSTs
     over the REST channel (see ``backend.send_chimerax_command``) to load a new
@@ -218,14 +218,14 @@ def swap_chimerax_commands(
 
 def build_session_cxc(
     recon_mrc,
-    auto_coords: Optional[Path] = None,
+    auto_coords: Path | None = None,
     *,
     tomo_name: str = "",
     species: str = "",
-    pixel_size: Optional[float] = None,
-    tomo_size: Optional[Sequence[int]] = None,
-    manual_coords: Optional[Path] = None,
-    window_size: Optional[Sequence[int]] = None,
+    pixel_size: float | None = None,
+    tomo_size: Sequence[int] | None = None,
+    manual_coords: Path | None = None,
+    window_size: Sequence[int] | None = None,
 ) -> str:
     """Build a ChimeraX startup ``.cxc`` that preloads one tomogram + our picks in ArtiaX.
 
@@ -256,15 +256,15 @@ def build_session_cxc(
 
 
 def prepare_curation_bundle(
-    candidates_star: Path,
+    candidates_star: Path | None,
     tomograms_star: Path,
     tomo_name: str,
     out_dir: Path,
     *,
     species: str = "",
     coords_label: str = "auto",
-    project_root: Optional[Path] = None,
-    window_size: Optional[Sequence[int]] = None,
+    project_root: Path | None = None,
+    window_size: Sequence[int] | None = None,
 ) -> dict:
     """Materialize everything a ChimeraX/ArtiaX session needs to open one
     tomogram preloaded with a reference pick list.
@@ -278,6 +278,10 @@ def prepare_curation_bundle(
     ``<label>_ref.coords`` / ``open__<label>.cxc`` so the import scan can tell
     crboost's reference export from the user's own save. Launch with ``CB_CXC``
     pointing at ``cxc_path``.
+
+    ``candidates_star=None`` is the de-novo case: there are no reference picks to
+    preload, so no ``.coords`` is written and the ``.cxc`` opens the bare tomogram.
+    The user creates a particle list in ArtiaX and saves it; ingest is unchanged.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -289,8 +293,13 @@ def prepare_curation_bundle(
             "(rlnTomoReconstructedTomogram) — curation needs the binned recon to open in ArtiaX."
         )
     is_auto = coords_label == "auto"
-    ref_coords = out_dir / ("auto.coords" if is_auto else f"{_safe_slug(coords_label)}_ref.coords")
-    n = export_tomo_picks_to_coords(Path(candidates_star), Path(tomograms_star), tomo_name, ref_coords, project_root)
+    ref_coords: Path | None = None
+    n = 0
+    if candidates_star is not None:
+        ref_coords = out_dir / ("auto.coords" if is_auto else f"{_safe_slug(coords_label)}_ref.coords")
+        n = export_tomo_picks_to_coords(
+            Path(candidates_star), Path(tomograms_star), tomo_name, ref_coords, project_root
+        )
     manual_coords = out_dir / "manual.coords"
     cxc_path = out_dir / ("open.cxc" if is_auto else f"open__{_safe_slug(coords_label)}.cxc")
     cxc_path.write_text(
@@ -308,7 +317,7 @@ def prepare_curation_bundle(
     logger.info("Curation bundle for %s [%s] -> %s (%d picks)", tomo_name, coords_label, cxc_path, n)
     return {
         "cxc_path": str(cxc_path),
-        "auto_coords": str(ref_coords),
+        "auto_coords": str(ref_coords) if ref_coords is not None else None,
         "manual_coords": str(manual_coords),
         "recon": str(recon),
         "pixel_size": float(frame.pixel_size),

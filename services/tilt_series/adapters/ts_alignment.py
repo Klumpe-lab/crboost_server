@@ -25,13 +25,14 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from collections.abc import Iterable
 
 import numpy as np
 import pandas as pd
 
 from services.configs.starfile_service import StarfileService
 from services.models_base import AlignmentMethod
+from services.tilt_series.adapters._base import BaseIngestAdapter
 from services.tilt_series.models import (
     TiltSeries,
     TsAlignmentPerFrame,
@@ -52,24 +53,26 @@ _ALN_COL_YSHIFT = 4
 _ALN_COL_TILT = 9
 
 
-class TsAlignmentIngestAdapter:
+class TsAlignmentIngestAdapter(BaseIngestAdapter):
     def __init__(
         self,
         registry: TiltSeriesRegistry,
         job_dir: Path,
         *,
-        job_instance_id: str = "tsAlignment",
-        warp_folder: str = "warp_tiltseries",
+        job_instance_id: str,
+        warp_folder: str | None = None,
         tomostar_folder: str = "tomostar",
-        starfile_service: Optional[StarfileService] = None,
+        starfile_service: StarfileService | None = None,
     ):
-        self.registry = registry
-        self.job_dir = Path(job_dir)
-        self.job_instance_id = job_instance_id
-        self.warp_dir = self.job_dir / warp_folder
+        super().__init__(
+            registry,
+            job_dir,
+            job_instance_id=job_instance_id,
+            warp_folder=warp_folder,
+            starfile_service=starfile_service,
+        )
         self.tiltstack_dir = self.warp_dir / "tiltstack"
         self.tomostar_dir = self.job_dir / tomostar_folder
-        self.starfile_service = starfile_service or StarfileService()
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -79,7 +82,7 @@ class TsAlignmentIngestAdapter:
         alignment_method: AlignmentMethod,
         *,
         alignment_angpix: float = 0.0,
-    ) -> List[str]:
+    ) -> list[str]:
         """Populate the registry with per-TS alignment outputs.
 
         `alignment_angpix` is the binned-stack pixel size used for shift
@@ -111,8 +114,8 @@ class TsAlignmentIngestAdapter:
                 f"Reload the project to backfill the registry from mdocs."
             )
 
-        problems: Dict[str, str] = {}
-        ingested: List[str] = []
+        problems: dict[str, str] = {}
+        ingested: list[str] = []
         for ts_id in expected:
             ts = self.registry.get_tilt_series(ts_id)
             try:
@@ -176,9 +179,9 @@ class TsAlignmentIngestAdapter:
         )
         frame_angpix = float(in_ts_df[pixel_size_col].iloc[0]) if pixel_size_col else 1.35
 
-        all_tilts_list: List[pd.DataFrame] = []
-        problems: Dict[str, str] = {}
-        emitted: List[str] = []
+        all_tilts_list: list[pd.DataFrame] = []
+        problems: dict[str, str] = {}
+        emitted: list[str] = []
         for _, ts_row in in_ts_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
             # Strict identity: rlnTomoName MUST equal the tilt_series STAR stem
@@ -298,8 +301,8 @@ class TsAlignmentIngestAdapter:
                 f"({len(aln_data)}) for TS {ts.id}"
             )
 
-        per_frame: List[TsAlignmentPerFrame] = []
-        unresolved: List[str] = []
+        per_frame: list[TsAlignmentPerFrame] = []
+        unresolved: list[str] = []
         for i, tomo_row in tomostar_df.iterrows():
             movie_name = str(tomo_row["wrpMovieName"])
             try:
@@ -346,7 +349,7 @@ class TsAlignmentIngestAdapter:
 
     def _parse_alignment_files(
         self, ts_tiltstack: Path, alignment_method: AlignmentMethod
-    ) -> Tuple[Optional[np.ndarray], Optional[Path], Optional[Path], Optional[Path]]:
+    ) -> tuple[np.ndarray | None, Path | None, Path | None, Path | None]:
         """Locate + parse the alignment output for one TS. Returns
         (aln_data, aln_file_path, xf_file_path, tlt_file_path)."""
         if alignment_method == AlignmentMethod.ARETOMO:
@@ -374,7 +377,7 @@ class TsAlignmentIngestAdapter:
         raise RuntimeError(f"alignment method {alignment_method} not implemented")
 
     @staticmethod
-    def _read_aretomo_aln(aln_file: Path) -> Optional[np.ndarray]:
+    def _read_aretomo_aln(aln_file: Path) -> np.ndarray | None:
         data = []
         with open(aln_file) as f:
             for line in f:
@@ -392,7 +395,7 @@ class TsAlignmentIngestAdapter:
         return np.array(data)
 
     @staticmethod
-    def _read_imod_xf_tlt(xf_file: Path, tlt_file: Path) -> Optional[np.ndarray]:
+    def _read_imod_xf_tlt(xf_file: Path, tlt_file: Path) -> np.ndarray | None:
         df1 = pd.read_csv(xf_file, delim_whitespace=True, header=None, names=["m1", "m2", "m3", "m4", "tx", "ty"])
         df2 = pd.read_csv(tlt_file, delim_whitespace=True, header=None, names=["tilt_angle"])
         combined = pd.concat([df1, df2], axis=1)
@@ -443,10 +446,16 @@ class TsAlignmentIngestAdapter:
 
     def _assert_ts_identity_consistency(self, expected_ts_ids: set) -> None:
         """The three independent sources of per-TS identity — tomostar files,
-        per-TS XMLs, and tiltstack dirs — MUST agree. Any drift means the
-        upstream array-job staging corrupted something, and silently picking
-        one source's value for another TS is exactly the failure mode this
-        refactor exists to prevent."""
+        per-TS XMLs, and tiltstack dirs — MUST agree for every TS being
+        ingested. Drift there means the upstream array-job staging corrupted
+        something, and silently picking one source's value for another TS is
+        exactly the failure mode this refactor exists to prevent.
+
+        Only the ingested (expected) TS must be present in all three sources:
+        a muted TS, or one whose task failed, never ran — it legitimately has
+        a tomostar but no XML/tiltstack output, and must not fail the job.
+        Non-expected extras are surfaced as a warning; full-set drift policing
+        is a dispatch-time concern (census #38/#39), not an ingest one."""
         tomostar_stems = (
             {p.stem for p in self.tomostar_dir.glob("*.tomostar")}
             if self.tomostar_dir.is_dir() else set()
@@ -460,20 +469,11 @@ class TsAlignmentIngestAdapter:
             if self.tiltstack_dir.is_dir() else set()
         )
 
-        mismatches: List[str] = []
-        if tomostar_stems != tiltstack_stems:
-            mismatches.append(
-                f"tomostar vs tiltstack: only-tomostar={sorted(tomostar_stems - tiltstack_stems)}, "
-                f"only-tiltstack={sorted(tiltstack_stems - tomostar_stems)}"
-            )
-        if tomostar_stems != xml_stems:
-            mismatches.append(
-                f"tomostar vs xml: only-tomostar={sorted(tomostar_stems - xml_stems)}, "
-                f"only-xml={sorted(xml_stems - tomostar_stems)}"
-            )
-        input_missing = expected_ts_ids - tomostar_stems
-        if input_missing:
-            mismatches.append(f"expected TS with no tomostar: {sorted(input_missing)}")
+        mismatches: list[str] = []
+        for label, stems in (("tomostar", tomostar_stems), ("xml", xml_stems), ("tiltstack", tiltstack_stems)):
+            missing = expected_ts_ids - stems
+            if missing:
+                mismatches.append(f"expected TS with no {label}: {sorted(missing)}")
 
         if mismatches:
             raise RuntimeError(
@@ -481,25 +481,20 @@ class TsAlignmentIngestAdapter:
                 f"to avoid silent cross-TS contamination.\n  - " + "\n  - ".join(mismatches)
             )
 
-    def _resolve_per_ts_path(
-        self, per_ts_rel: str, in_star_dir: Path, project_root: Path
-    ) -> Optional[Path]:
-        for base in (in_star_dir, project_root):
-            cand = (base / per_ts_rel).resolve()
-            if cand.exists():
-                return cand
-        return None
-
-    def _read_only_block(self, path: Path) -> pd.DataFrame:
-        data = self.starfile_service.read(path)
-        return next(iter(data.values())).copy()
+        extras = (tomostar_stems | xml_stems | tiltstack_stems) - expected_ts_ids
+        if extras:
+            logger.warning(
+                "tsAlignment ingest: %d TS present in job dir but not ingested "
+                "(muted/failed this run, or stale from a previous one): %s",
+                len(extras), sorted(extras),
+            )
 
     def _apply_alignment_to_tilt_df(
         self,
         ts: TiltSeries,
         aln_output: TsAlignmentTiltSeriesOutput,
         tilt_df: pd.DataFrame,
-    ) -> Tuple[pd.DataFrame, List[str]]:
+    ) -> tuple[pd.DataFrame, list[str]]:
         """Overlay the five alignment columns onto the per-TS tilt DataFrame.
 
         Resolution: tilt_row['rlnMicrographMovieName'] → Frame via
@@ -513,7 +508,7 @@ class TsAlignmentIngestAdapter:
         over the tomostar and left unmatched STAR rows un-overlaid. Downstream
         WarpTools treats the tomostar as the authoritative frame set, so those
         NaN rows are cosmetic and never processed by ts_ctf/ts_reconstruct."""
-        errors: List[str] = []
+        errors: list[str] = []
         by_frame_id = {p.frame_id: p for p in aln_output.per_frame}
 
         if "rlnMicrographMovieName" not in tilt_df.columns:
@@ -525,7 +520,7 @@ class TsAlignmentIngestAdapter:
                 tilt_df[col] = float("nan")
 
         skipped = 0
-        filtered_idx: List[int] = []
+        filtered_idx: list[int] = []
         for idx, row in tilt_df.iterrows():
             movie_name = row["rlnMicrographMovieName"]
             try:

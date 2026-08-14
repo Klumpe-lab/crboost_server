@@ -8,7 +8,7 @@ class SmallSimpleCNN(nn.Module):
     """CNN architecture for binary classification (good/bad tilts)."""
     
     def __init__(self):
-        super(SmallSimpleCNN, self).__init__()
+        super().__init__()
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
         self.bn1 = nn.BatchNorm2d(32)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)

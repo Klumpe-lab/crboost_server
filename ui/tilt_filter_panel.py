@@ -11,18 +11,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import re
 import urllib.parse
 from pathlib import Path
-from typing import Dict
 
 from nicegui import ui
 
+from backend import get_backend
 from services.models_base import JobStatus
-from services.project_state import get_project_state, get_state_service
+from services.tilt_series.build import parse_position
+from services.project_state import get_state_service
+from ui.current_project import current_project_state
+from services.jobs.tilt_filter import finalize_pipeline_output
 from services.tilt_series_service import (
     apply_labels,
-    drop_tilts_from_tomostar,
     filter_good_tilts,
     generate_tilt_thumbnails,
     get_label_summary,
@@ -49,8 +50,6 @@ CARD = (
     f"background: white; border-radius: 6px; border: 1px solid {CLR_BORDER}; box-shadow: 0 1px 2px rgba(15,23,42,0.04);"
 )
 SEC = f"border: 1px solid {CLR_BORDER}; border-radius: 5px; padding: 6px 8px; background: #f8fafc;"
-
-_POS_RE = re.compile(r"Position_(\d+)(?:_(\d+))?")
 
 
 # ── Tiny helpers ─────────────────────────────────────────────────────────────
@@ -100,14 +99,15 @@ def _meta_row(label, value):
 
 def _parse_pos_beam(ts_name: str):
     """Extract (position, beam) from a tilt-series name like Position_9 or Position_9_2."""
-    m = _POS_RE.search(ts_name)
-    if m:
-        return int(m.group(1)), int(m.group(2)) if m.group(2) else 1
-    return None, None
+    parsed = parse_position(ts_name)
+    if parsed is None:
+        return None, None
+    stage, beam = parsed
+    return stage, beam or 1
 
 
 def _find_ts_ctf_star(project_path):
-    state = get_project_state()
+    state = current_project_state()
     if not state:
         return None
     for _iid, jm in state.jobs.items():
@@ -129,7 +129,7 @@ def _find_fs_motion_warp_dir(project_path):
     per-tilt WarpTools XMLs with the REAL CTF-fit resolution + motion that the
     star hides behind 1e-6 placeholders. Returns None if not found / not run.
     See docs/preprocessing-metrics-inventory.md §4."""
-    state = get_project_state()
+    state = current_project_state()
     if not state:
         return None
     for _iid, jm in state.jobs.items():
@@ -145,7 +145,7 @@ def _find_fs_motion_star(project_path):
     tilt filter moved upstream (before alignment), this is the per-tilt star the DL
     classifies — it lists the same motion-corrected averages (rlnMicrographName) the
     old ts_ctf star did, so the classifier sees identical images."""
-    state = get_project_state()
+    state = current_project_state()
     if not state:
         return None
     for _iid, jm in state.jobs.items():
@@ -162,81 +162,18 @@ def _find_fs_motion_star(project_path):
     return None
 
 
-def _find_tsimport_tomostar_dir(project_path):
-    """Locate the tsImport job's `tomostar/` directory — the source the tilt filter
-    trims (dropping bad-tilt rows) so alignment/CTF/reconstruct inherit the cut."""
-    state = get_project_state()
-    if not state:
-        return None
-    for _iid, jm in state.jobs.items():
-        if jm.job_type and jm.job_type.value == "tsImport" and jm.execution_status == JobStatus.SUCCEEDED:
-            d = jm.paths.get("tomostar_dir")
-            if d:
-                p = Path(d) if Path(d).is_absolute() else project_path / d
-                if p.is_dir():
-                    return p
-            if jm.relion_job_name:
-                p = project_path / jm.relion_job_name.rstrip("/") / "tomostar"
-                if p.is_dir():
-                    return p
-    return None
-
-
-async def _finalize_pipeline_output(job_model, ts_data, project_path) -> bool:
-    """Produce the tilt filter's real pipeline output — a trimmed tomostar with the
-    dropped tilts removed — that alignment/CTF/reconstruct consume. Runs at commit for
-    BOTH the DL-assisted and manual-labelling paths (the SLURM driver only runs for the
-    DL pass; manual labelling never dispatches it, so the trim must live here too).
-
-    Sets `job_model.paths['output_tomostar']` so the path resolver wires alignment to
-    it even though this interactive job has no deployed job dir (the resolver falls back
-    to the producer's cached paths for SUCCEEDED interactive jobs). Also stamps the
-    per-tilt verdict into the registry (authoritative record). The labeled/filtered
-    stars the callers write remain for the dashboard's keep/drop panel."""
-    src_tomostar = _find_tsimport_tomostar_dir(project_path)
-    if src_tomostar is None:
-        ui.notify("Cannot finalize: tsImport tomostar not found (run Import + TS Import first).", type="negative")
-        return False
-
-    df = ts_data.all_tilts_df
-    has_labels = "cryoBoostDlLabel" in df.columns and "cryoBoostKey" in df.columns
-    bad_stems = set(df.loc[df["cryoBoostDlLabel"] != "good", "cryoBoostKey"].tolist()) if has_labels else set()
-
-    out_tomostar = project_path / "TiltFilter" / "tomostar"
-    kept, dropped = await asyncio.to_thread(drop_tilts_from_tomostar, src_tomostar, out_tomostar, bad_stems)
-
-    job_model.paths["output_tomostar"] = str(out_tomostar)
-    # Drop stale slots from the pre-move design so the resolver never wires them.
-    job_model.paths.pop("output_star", None)
-    job_model.paths.pop("output_processing", None)
-
-    # Registry stamp — authoritative record; best-effort, never blocks the commit.
-    try:
-        from services.tilt_series import get_registry_for
-
-        registry = get_registry_for(project_path)
-        if registry.tilt_series_ids() and has_labels:
-            probs = df["cryoBoostDlProbability"] if "cryoBoostDlProbability" in df.columns else [None] * len(df)
-            for stem, is_filt, prob in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), probs):
-                try:
-                    registry.set_frame_filtered(
-                        str(stem),
-                        bool(is_filt),
-                        reason="tilt-filter" if is_filt else None,
-                        probability=float(prob) if prob is not None else None,
-                    )
-                except KeyError:
-                    pass
-            await asyncio.to_thread(registry.save)
-    except Exception as e:
-        logger.warning("tilt-filter registry stamp skipped: %s", e)
-
-    ui.notify(
-        f"Filter committed: {kept} tilts kept, {dropped} dropped — alignment will use the trimmed tomostar.",
-        type="positive",
-        timeout=5000,
-    )
-    return True
+def _notify_finalize(res: dict) -> None:
+    """Surface finalize_pipeline_output's outcome — same messages the pre-move
+    inline version emitted."""
+    if res.get("success"):
+        ui.notify(
+            f"Filter committed: {res['kept']} tilts kept, {res['dropped']} dropped — "
+            "alignment will use the trimmed tomostar.",
+            type="positive",
+            timeout=5000,
+        )
+    else:
+        ui.notify(res.get("error") or "Filter commit failed.", type="negative")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -284,7 +221,7 @@ def build_tilt_filter_panel(backend) -> None:
             with mc:
                 if source_star:
                     _meta_row("Source star", str(source_star))
-                state = get_project_state()
+                state = current_project_state()
                 pd_str = state.tilt_filter_png_dir if state else None
                 if pd_str:
                     _meta_row("Thumbnails", pd_str)
@@ -329,7 +266,7 @@ def render_tilt_filter_job_panel(job_type, instance_id, job_model, backend, ui_m
 
             # ── Stats + Gallery containers (created before DL config so it can reference them) ──
             stats_c = ui.element("div").classes("w-full")
-            state = get_project_state()
+            state = current_project_state()
             pd_str = state.tilt_filter_png_dir if state else None
             png_dir = Path(pd_str) if pd_str else project_path / "TiltFilter" / "png"
             gallery_c = ui.column().classes("w-full gap-0")
@@ -413,10 +350,10 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                     job_model.prob_threshold = thresh_inp.value
                     job_model.prob_action = action_sel.value
 
-                    state = get_project_state()
+                    state = current_project_state()
                     if state:
                         state.mark_dirty()
-                        await get_state_service().save_project()
+                        await backend.save_project(project_path)
 
                     status_row.clear()
                     with status_row:
@@ -467,7 +404,7 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             job_model.execution_status = JobStatus.FAILED
                             if state:
                                 state.mark_dirty()
-                                await get_state_service().save_project()
+                                await backend.save_project(project_path)
                             return
 
                     # Success — reload labels into gallery
@@ -491,8 +428,6 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                                     if key:
                                         new_labels[key] = label
                                 job_model.tilt_labels = new_labels
-                                if state:
-                                    state.tilt_filter_labels = new_labels
 
                             # Write filtered output for downstream
                             good_data = filter_good_tilts(ts_data)
@@ -504,11 +439,11 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             await asyncio.to_thread(write_tilt_series, ts_data, labeled_p, "tilt_series_labeled")
 
                             # Produce the real pipeline output (trimmed tomostar) + wire it.
-                            await _finalize_pipeline_output(job_model, ts_data, project_path)
+                            _notify_finalize(await finalize_pipeline_output(state, job_model, ts_data, project_path))
                             job_model.execution_status = JobStatus.SUCCEEDED
                             if state:
                                 state.mark_dirty()
-                                await get_state_service().save_project()
+                                await backend.save_project(project_path)
 
                             ui.notify(
                                 f"DL filter applied: {good_data.num_tilts} good tilts", type="positive", timeout=5000
@@ -574,14 +509,14 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job
             async def _run(progress_cb):
                 n = await asyncio.to_thread(generate_tilt_thumbnails, ts_ctf_star, project_path, png_dir, progress_cb)
                 # Resolve by explicit path: this runs in a BackgroundTask with no
-                # client/tab context, where bare get_project_state() returns a blank
+                # client/tab context, where bare current_project_state() returns a blank
                 # throwaway — so the assignment + path-less save silently no-opped and
                 # tilt_filter_png_dir never persisted (same class as the curation W2 bug).
                 if project_path:
                     st = get_state_service().state_for(project_path)
                     st.tilt_filter_png_dir = str(png_dir)
                     st.mark_dirty()
-                    await get_state_service().save_project(project_path=project_path, force=True)
+                    await get_backend().save_project(project_path, force=True)
                 return f"{n} thumbnails generated"
 
             status_lbl.text = "Running — gallery will appear here when complete."
@@ -616,11 +551,10 @@ def _build_gallery(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job_m
 
 
 def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, job_model=None):
-    state = get_project_state()
-    if job_model is not None:
-        labels = dict(job_model.tilt_labels) if job_model.tilt_labels else {}
-    else:
-        labels = dict(state.tilt_filter_labels) if state else {}
+    state = current_project_state()
+    # job_model.tilt_labels is the durable label store (the ProjectState
+    # tilt_filter_labels mirror is gone — roadmap 02 stage 4).
+    labels = dict(job_model.tilt_labels) if job_model is not None and job_model.tilt_labels else {}
 
     if labels:
         apply_labels(ts_data, labels)
@@ -629,7 +563,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
         ts_data.all_tilts_df["cryoBoostDlProbability"] = 1.0
 
     df = ts_data.all_tilts_df
-    png_map: Dict[str, Path] = {f.stem: f for f in sorted(png_dir.glob("*.png"))}
+    png_map: dict[str, Path] = {f.stem: f for f in sorted(png_dir.glob("*.png"))}
     df["_png"] = df["cryoBoostKey"].map(lambda k: str(png_map.get(k, "")))
     # Unique row ID for DOM identification (cryoBoostKey can have duplicates)
     df["_row_id"] = [f"r{i}" for i in range(len(df))]
@@ -665,7 +599,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
 
     # ── Build position → tilt-series hierarchy ──
     ts_names = sorted(df["rlnTomoName"].unique().tolist())
-    hierarchy: Dict[int, list] = {}
+    hierarchy: dict[int, list] = {}
     for tn in ts_names:
         pos, beam = _parse_pos_beam(tn)
         pos_key = pos if pos is not None else 0
@@ -706,7 +640,7 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
     # ── Groups ──
     group_c = ui.column().classes("w-full gap-1")
     # Track which groups are expanded by ts_name so we can preserve across re-renders
-    expand_state: Dict[str, bool] = {}
+    expand_state: dict[str, bool] = {}
 
     def _sort_ts_df(ts_df):
         s = view_opts["sort"]
@@ -784,12 +718,11 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
                 job_model.tilt_labels = dict(labels)
                 # Produce the real pipeline output (trimmed tomostar) + wire it so
                 # alignment consumes the manual cut, not just the display stars.
-                await _finalize_pipeline_output(job_model, ts_data, project_path)
+                _notify_finalize(await finalize_pipeline_output(state, job_model, ts_data, project_path))
                 job_model.execution_status = JobStatus.SUCCEEDED
             if state:
-                state.tilt_filter_labels = labels
                 state.mark_dirty()
-                await get_state_service().save_project()
+                await get_backend().save_project(project_path)
 
             sm = get_label_summary(ts_data)
             ui.notify(f"Saved: {sm['good']} good, {sm['bad']} bad", type="positive", timeout=4000)
@@ -818,7 +751,6 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
         if job_model is not None:
             job_model.tilt_labels = dict(labels)
         if state:
-            state.tilt_filter_labels = labels
             state.mark_dirty()
         _refresh_stats()
         # Bulk-update all visible cards via JS — no full re-render needed
@@ -964,10 +896,9 @@ def _attach_grid_click_handler(html_el, labels, full_df, ts_data, refresh_stats,
                 f"{'display: none' if n_bad_now == 0 else ''};"
             )
 
-            st = get_project_state()
-            if st:
-                st.tilt_filter_labels = labels
-                st.mark_dirty()
+            # Clicks mutate the shared in-memory `labels` dict; Save persists it
+            # to job_model.tilt_labels (the per-click ProjectState mirror write
+            # went away with roadmap 02 stage 4).
             refresh_stats()
 
     html_el.on(

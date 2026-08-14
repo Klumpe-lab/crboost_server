@@ -22,7 +22,7 @@ import numpy as np
 import starfile
 import pandas as pd
 from pathlib import Path
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 from services.visualization.coords import (
     binned_tomo_size_from_tomo_row,
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 def _read_tomogram_info(tomograms_star: Path) -> pd.DataFrame:
     data = starfile.read(tomograms_star, always_dict=True)
-    for key, val in data.items():
+    for _key, val in data.items():
         if isinstance(val, pd.DataFrame) and "rlnTomoName" in val.columns:
             return val
     raise ValueError(f"No tomogram table with rlnTomoName found in {tomograms_star}")
@@ -43,7 +43,7 @@ def _read_tomogram_info(tomograms_star: Path) -> pd.DataFrame:
 
 def _read_particles(candidates_star: Path) -> pd.DataFrame:
     data = starfile.read(candidates_star, always_dict=True)
-    for key, val in data.items():
+    for _key, val in data.items():
         if isinstance(val, pd.DataFrame) and "rlnTomoName" in val.columns:
             return val
     raise ValueError(f"No particle table found in {candidates_star}")
@@ -58,7 +58,7 @@ def _get_unbinned_tomo_size(tomo_row: pd.Series) -> np.ndarray:
     return np.array([float(tomo_row["rlnTomoSizeX"]), float(tomo_row["rlnTomoSizeY"]), float(tomo_row["rlnTomoSizeZ"])])
 
 
-def _get_binned_tomo_size(tomo_row: pd.Series, project_root: Optional[Path] = None) -> np.ndarray:
+def _get_binned_tomo_size(tomo_row: pd.Series, project_root: Path | None = None) -> np.ndarray:
     return binned_tomo_size_from_tomo_row(tomo_row, project_root=project_root)
 
 
@@ -95,7 +95,7 @@ def _write_imod_model(
     output_mod: Path,
     radius_px: int,
     command_runner: Callable[[str, Path], None],
-    color: Tuple[int, int, int] = (0, 255, 0),
+    color: tuple[int, int, int] = (0, 255, 0),
     thickness: int = 2,
 ) -> None:
     output_txt.parent.mkdir(parents=True, exist_ok=True)
@@ -145,8 +145,8 @@ def generate_candidate_vis(
     tomograms_star: Path,
     particle_diameter_ang: float,
     output_dir: Path,
-    command_runner: Optional[Callable[[str, Path], None]] = None,
-    project_root: Optional[Path] = None,  # <-- add
+    command_runner: Callable[[str, Path], None] | None = None,
+    project_root: Path | None = None,  # <-- add
 ) -> None:
     """
     Generate IMOD visualization models and Warp-compatible coordinates.
@@ -223,7 +223,7 @@ def generate_candidate_vis(
     logger.info("Candidate visualization complete for %d tomogram(s)", len(tomo_names))
 
 
-def view_volume(mrc_path: str, command_runner: Optional[Callable[[str, Path], None]] = None) -> None:
+def view_volume(mrc_path: str, command_runner: Callable[[str, Path], None] | None = None) -> None:
     """
     Launch 3dmod to view a volume.
 

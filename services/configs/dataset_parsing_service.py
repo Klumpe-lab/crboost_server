@@ -9,17 +9,21 @@ Each mdoc's ZValue sections provide the definitive frame-to-tilt-series associat
 import glob
 import logging
 import os
-import re
 from collections import defaultdict
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
 
 from services.configs.mdoc_service import get_mdoc_service
-from services.dataset_models import AcquisitionSummary, DatasetOverview, StagePositionInfo, TiltInfo, TiltSeriesInfo
+from services.tilt_series.preimport import (
+    AcquisitionSummary,
+    DatasetOverview,
+    StagePositionInfo,
+    TiltInfo,
+    TiltSeriesInfo,
+)
+from services.tilt_series.build import parse_position
 
 logger = logging.getLogger(__name__)
-
-MDOC_FILENAME_RE = re.compile(r"^Position_(\d+)(?:_(\d+))?\.mdoc$")
 
 
 class DatasetParsingService:
@@ -29,10 +33,7 @@ class DatasetParsingService:
         self.mdoc_service = get_mdoc_service()
 
     def parse_dataset(
-        self,
-        mdocs_glob: str,
-        frames_dir: Optional[str] = None,
-        progress_cb: Optional[Callable[[int, int], None]] = None,
+        self, mdocs_glob: str, frames_dir: str | None = None, progress_cb: Callable[[int, int], None] | None = None
     ) -> DatasetOverview:
         """
         Parse all mdoc files matching the glob and associate with frame files.
@@ -55,8 +56,8 @@ class DatasetParsingService:
         resolved_frames_dir = self._resolve_frames_directory(mdoc_paths, frames_dir)
         frame_ext = self._detect_frame_extension(resolved_frames_dir)
 
-        warnings: List[str] = []
-        tilt_series_list: List[TiltSeriesInfo] = []
+        warnings: list[str] = []
+        tilt_series_list: list[TiltSeriesInfo] = []
 
         total_mdocs = len(mdoc_paths)
         if progress_cb:
@@ -76,7 +77,7 @@ class DatasetParsingService:
                 warnings.append(f"Failed to parse {mdoc_path.name}: {e}")
                 continue
 
-            tilts: List[TiltInfo] = []
+            tilts: list[TiltInfo] = []
             for section in mdoc_data["data"]:
                 tilt = self._build_tilt_info(section, resolved_frames_dir)
                 if tilt is not None:
@@ -115,24 +116,26 @@ class DatasetParsingService:
             acquisition_summary=acq_summary,
         )
 
-    def _parse_mdoc_filename(self, mdoc_name: str) -> Optional[Tuple[int, int]]:
+    def _parse_mdoc_filename(self, mdoc_name: str) -> tuple[int, int] | None:
         """
-        Extract (stage_position, beam_position) from mdoc filename.
+        Extract (stage_position, beam_position) from mdoc filename via the
+        canonical Position parser.
 
         'Position_10.mdoc'   -> (10, 1)
         'Position_10_2.mdoc' -> (10, 2)
-        'Position_10_3.mdoc' -> (10, 3)
+        'prefix_Position_10.mdoc' -> (10, 1)  (prefixed names accepted)
 
-        Returns None if the filename doesn't match the expected pattern.
+        Returns None if the filename doesn't end in Position_{stage}[_{beam}].mdoc.
         """
-        m = MDOC_FILENAME_RE.match(mdoc_name)
-        if not m:
+        if not mdoc_name.endswith(".mdoc"):
             return None
-        stage = int(m.group(1))
-        beam = int(m.group(2)) if m.group(2) else 1
-        return (stage, beam)
+        parsed = parse_position(mdoc_name[: -len(".mdoc")])
+        if parsed is None:
+            return None
+        stage, beam = parsed
+        return (stage, beam or 1)
 
-    def _resolve_frames_directory(self, mdoc_files: List[Path], frames_dir: Optional[str]) -> Optional[Path]:
+    def _resolve_frames_directory(self, mdoc_files: list[Path], frames_dir: str | None) -> Path | None:
         """
         Determine where frame files are located.
 
@@ -166,14 +169,15 @@ class DatasetParsingService:
                         return sub_path.parent
                     # Relative path — assume same dir as mdoc
                     return mdoc_files[0].parent
-            except Exception:
-                pass
+            except Exception as e:
+                # Inference heuristic only — fall back to the mdoc's own directory below.
+                logger.warning("Could not infer frames dir from %s: %s", mdoc_files[0].name, e)
 
             return mdoc_files[0].parent
 
         return None
 
-    def _detect_frame_extension(self, frames_dir: Optional[Path]) -> str:
+    def _detect_frame_extension(self, frames_dir: Path | None) -> str:
         if not frames_dir or not frames_dir.exists():
             return ""
         for ext in [".eer", ".tiff", ".tif", ".mrc"]:
@@ -181,7 +185,7 @@ class DatasetParsingService:
                 return ext
         return ""
 
-    def _build_tilt_info(self, section: Dict, frames_dir: Optional[Path]) -> Optional[TiltInfo]:
+    def _build_tilt_info(self, section: dict, frames_dir: Path | None) -> TiltInfo | None:
         """Build a TiltInfo from a parsed mdoc ZValue section."""
         z_value_str = section.get("ZValue")
         if z_value_str is None:
@@ -190,6 +194,8 @@ class DatasetParsingService:
         try:
             z_value = int(z_value_str)
         except (ValueError, TypeError):
+            # Malformed ZValue means the section can't be ordered — drop this tilt.
+            logger.warning("Skipping mdoc section with malformed ZValue %r", z_value_str)
             return None
 
         tilt_angle = 0.0
@@ -197,7 +203,8 @@ class DatasetParsingService:
             try:
                 tilt_angle = float(section["TiltAngle"])
             except (ValueError, TypeError):
-                pass
+                # Malformed TiltAngle — keep the 0.0 placeholder rather than drop the tilt.
+                logger.warning("Malformed TiltAngle %r in mdoc section ZValue=%s", section["TiltAngle"], z_value_str)
 
         sub_frame_path = section.get("SubFramePath", "")
         if not sub_frame_path:
@@ -214,7 +221,7 @@ class DatasetParsingService:
                 frame_path = candidate.resolve()
 
         # Extract numeric MDOC stats for per-tilt metadata registry
-        mdoc_stats: Dict[str, float] = {}
+        mdoc_stats: dict[str, float] = {}
         mmm = section.get("MinMaxMean", "")
         if mmm:
             parts = mmm.split()
@@ -224,6 +231,7 @@ class DatasetParsingService:
                     mdoc_stats["max_intensity"] = float(parts[1])
                     mdoc_stats["mean_intensity"] = float(parts[2])
                 except (ValueError, TypeError):
+                    # Malformed MinMaxMean — optional per-tilt stats, skip them.
                     pass
         for mdoc_key, stat_key in [
             ("ExposureDose", "exposure_dose"),
@@ -237,6 +245,7 @@ class DatasetParsingService:
                 try:
                     mdoc_stats[stat_key] = float(val)
                 except (ValueError, TypeError):
+                    # Non-numeric mdoc value — optional per-tilt stat, skip it.
                     pass
         ish = section.get("ImageShift", "")
         if ish:
@@ -246,23 +255,27 @@ class DatasetParsingService:
                     mdoc_stats["image_shift_x"] = float(parts[0])
                     mdoc_stats["image_shift_y"] = float(parts[1])
                 except (ValueError, TypeError):
+                    # Malformed ImageShift pair — optional per-tilt stat, skip it.
                     pass
 
         return TiltInfo(
-            z_value=z_value, tilt_angle=tilt_angle,
-            frame_filename=frame_filename, frame_path=frame_path,
-            mdoc_stats=mdoc_stats, date_time=section.get("DateTime"),
+            z_value=z_value,
+            tilt_angle=tilt_angle,
+            frame_filename=frame_filename,
+            frame_path=frame_path,
+            mdoc_stats=mdoc_stats,
+            date_time=section.get("DateTime"),
         )
 
-    def _extract_acquisition_params(self, mdoc_data: Dict) -> Dict:
+    def _extract_acquisition_params(self, mdoc_data: dict) -> dict:
         """Extract acquisition parameters from an mdoc's header and first ZValue section."""
-        result: Dict = {}
+        result: dict = {}
         header_text = mdoc_data.get("header", "")
         sections = mdoc_data.get("data", [])
         first = sections[0] if sections else {}
 
         # Parse header key=value lines
-        header_kv: Dict[str, str] = {}
+        header_kv: dict[str, str] = {}
         for line in header_text.split("\n"):
             if "=" in line:
                 k, v = line.split("=", 1)
@@ -275,6 +288,7 @@ class DatasetParsingService:
                     result["pixel_size"] = float(src["PixelSpacing"])
                     break
                 except (ValueError, TypeError):
+                    # Non-numeric PixelSpacing — leave unset; acquisition summary shows the gap.
                     pass
 
         # Voltage
@@ -284,6 +298,7 @@ class DatasetParsingService:
                     result["voltage"] = float(src["Voltage"])
                     break
                 except (ValueError, TypeError):
+                    # Non-numeric Voltage — leave unset; acquisition summary shows the gap.
                     pass
 
         # Dose per tilt (from ExposureDose in first section)
@@ -291,6 +306,7 @@ class DatasetParsingService:
             try:
                 result["dose_per_tilt"] = round(float(first["ExposureDose"]), 2)
             except (ValueError, TypeError):
+                # Non-numeric ExposureDose — leave unset; acquisition summary shows the gap.
                 pass
 
         # Tilt axis
@@ -298,16 +314,18 @@ class DatasetParsingService:
             try:
                 result["tilt_axis"] = float(header_kv["Tilt axis angle"])
             except (ValueError, TypeError):
+                # Non-numeric tilt-axis header value — leave unset; summary shows the gap.
                 pass
         elif "RotationAngle" in first:
             try:
                 result["tilt_axis"] = abs(float(first["RotationAngle"]))
             except (ValueError, TypeError):
+                # Non-numeric RotationAngle — leave unset; summary shows the gap.
                 pass
 
         return result
 
-    def _build_acquisition_summary(self, tilt_series_list: List[TiltSeriesInfo]) -> AcquisitionSummary:
+    def _build_acquisition_summary(self, tilt_series_list: list[TiltSeriesInfo]) -> AcquisitionSummary:
         """Collect unique acquisition parameter values across all tilt-series."""
         pxs: set = set()
         vs: set = set()
@@ -336,9 +354,9 @@ class DatasetParsingService:
             angle_ranges=sorted(ars),
         )
 
-    def _aggregate_to_positions(self, tilt_series_list: List[TiltSeriesInfo]) -> List[StagePositionInfo]:
+    def _aggregate_to_positions(self, tilt_series_list: list[TiltSeriesInfo]) -> list[StagePositionInfo]:
         """Group tilt-series by stage_position, sort by position number."""
-        groups: Dict[int, List[TiltSeriesInfo]] = defaultdict(list)
+        groups: dict[int, list[TiltSeriesInfo]] = defaultdict(list)
         for ts in tilt_series_list:
             groups[ts.stage_position].append(ts)
 
@@ -349,7 +367,7 @@ class DatasetParsingService:
         return positions
 
 
-_dataset_parsing_service: Optional[DatasetParsingService] = None
+_dataset_parsing_service: DatasetParsingService | None = None
 
 
 def get_dataset_parsing_service() -> DatasetParsingService:

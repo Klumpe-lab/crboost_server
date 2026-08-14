@@ -29,14 +29,16 @@ import logging
 import uuid
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 from nicegui import app, context, ui
 
+from services.aggregation_authoritative import extraction_params_for_species
 from services.configs.user_prefs_service import get_prefs_service
-from services.models_base import JobStatus, JobType, ListExtractionState, PickListType
-from services.project_state import PickList, get_project_state, get_state_service
+from services.models_base import InstanceId, JobStatus, JobType, ListExtractionState, PickListType
+from services.project_state import PickList, get_state_service
+from services.result import ErrorCode, err
+from ui.current_project import current_project_state
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import (
     _find_warp_tomo_preview,
@@ -44,6 +46,7 @@ from services.visualization.preview_orchestrator import (
     read_preview_manifest,
 )
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview, render_xz_slab_preview
+from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
 from ui.components.reactive import SingleFlight
 from ui.dashboard.css import ensure_assets_loaded
 from ui.dashboard.figures import (
@@ -55,26 +58,34 @@ from ui.dashboard.figures import (
     _safe_floats,
     _stats,
 )
-from ui.dashboard.data import (
-    _SPECIES_OVERLAY_COLORS,
-    _candidate_extract_instances,
-    _collect_dashboard_journey,
-    _collect_species_journey,
-    _find_job_by_type,
-    _glyph_for,
-    _job_dir_for,
-    _journey_signature,
-    _matching_subtomo_instance,
-    _position_label,
-    _read_tomograms_table,
-    _recon_mrc_map,
-    _resolve_species,
-    _resolve_volume_for_3dmod,
-    _split_species_id,
-    _template_match_instances,
-    _vis_asset_url,
+from services.dashboard_data import (
+    SPECIES_OVERLAY_COLORS,
+    alignment_registry_df,
+    collect_dashboard_journey,
+    collect_species_journey,
+    denoised_mrc_from_registry,
+    filter_kept_dropped_from_registry,
+    filter_verdicts_from_registry,
+    find_job_by_type,
+    fsm_registry_df,
+    glyph_for,
+    job_dir_for,
+    journey_signature,
+    matching_subtomo_instance,
+    position_label,
+    read_tomograms_table,
+    recon_mrc_map,
+    resolve_species,
+    resolve_volume_for_3dmod,
+    species_render_plan,
+    split_species_id,
+    template_match_instances,
+    tsctf_registry_df,
+    vis_asset_url,
+    warp_hand_from_registry,
 )
-from ui.dashboard.pixel_sanity import _apply_sanity_rules, _compute_pixel_chain, _render_pixel_sanity_table
+from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
+from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.dashboard.strip import build_strip
 
 logger = logging.getLogger(__name__)
@@ -87,7 +98,7 @@ _curation_flight = SingleFlight()
 
 
 # Default overlay color per workbench-authored list type, chosen to sit apart from
-# the per-species auto palette (_SPECIES_OVERLAY_COLORS) so a manual/imported/merged
+# the per-species auto palette (SPECIES_OVERLAY_COLORS) so a manual/imported/merged
 # layer reads as a distinct lane over the same tomogram. Persisted onto the PickList
 # at creation (PickList.color), so this is only the seed — retuning it here doesn't
 # restyle already-registered lists.
@@ -140,29 +151,6 @@ def _read_picks_json(path: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _read_per_tilt_df(per_tilt_star_path: Path) -> Optional[pd.DataFrame]:
-    """Load the per-TS tilt block from a per-tilt star file. Each per-tilt
-    star has one data block named after the TS, with one row per tilt."""
-    if not per_tilt_star_path.exists():
-        return None
-    try:
-        import starfile
-
-        data = starfile.read(per_tilt_star_path, always_dict=True)
-        for v in data.values():
-            if isinstance(v, pd.DataFrame) and "rlnTomoNominalStageTiltAngle" in v.columns:
-                return v
-    except Exception as e:
-        logger.warning("Could not read per-tilt star %s: %s", per_tilt_star_path, e)
-    return None
-
-
-def _per_tilt_star_path(job_dir: Path, ts_name: str) -> Path:
-    """Convention used by FS Motion/CTF, TS Align, TS CTF — per-tilt star
-    sits at ``<job_dir>/tilt_series/<ts_name>.star``."""
-    return job_dir / "tilt_series" / f"{ts_name}.star"
-
-
 # Atlas-index parse cache (P3): path -> (mtime, meta). The cutout sheet re-reads
 # the same index JSON on every visit; memoizing by mtime skips the parse on a warm
 # revisit AND lets the sheet skip its loading spinner when the index is already in
@@ -170,7 +158,7 @@ def _per_tilt_star_path(job_dir: Path, ts_name: str) -> Path:
 _ATLAS_INDEX_MEMO: dict[str, tuple[float, dict]] = {}
 
 
-def _read_atlas_index(index_path: Path) -> Optional[dict]:
+def _read_atlas_index(index_path: Path) -> dict | None:
     if not index_path or not Path(index_path).exists():
         return None
     key = str(index_path)
@@ -197,10 +185,10 @@ def _read_atlas_index(index_path: Path) -> Optional[dict]:
 # rail count (P2) and the cutout sheet's keep overlay (P3) need it, and collect runs
 # on every 4s refresh — so memoize by (source mtime, filtered mtime) to avoid
 # re-reading two stars per list per tick. None = no filter committed (all kept).
-_KEEP_STATE_MEMO: dict[str, tuple[tuple, Optional[set[int]]]] = {}
+_KEEP_STATE_MEMO: dict[str, tuple[tuple, set[int] | None]] = {}
 
 
-def _memoized_keep_state(source_star: Path) -> Optional[set[int]]:
+def _memoized_keep_state(source_star: Path) -> set[int] | None:
     """``picks_filter.derive_keep_state_for_list`` memoized by the two stars' mtimes
     so the table count and the cutout keep overlay share one read. Returns the kept
     ROW indices of ``source_star`` (None when no ``_filtered`` star exists)."""
@@ -305,7 +293,7 @@ def _build_panel_toggle_row(host, on_change) -> None:
 # ---------------------------------------------------------------------------
 
 
-def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
+def build_journey_panel(container, callbacks: dict | None = None) -> None:
     """Build the per-TS Journey dashboard embedded into ``container``.
 
     Formerly ``open_tomo_dashboard`` (a maximized dialog). De-dialoged in P1 so
@@ -315,7 +303,7 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
     ``callbacks``, when given, receives ``on_journey_active(bool)`` so the
     workspace can pause the live-refresh timer while the journey is hidden.
     """
-    state = get_project_state()
+    state = current_project_state()
     if state.project_path is None:
         container.clear()
         with container, ui.element("div").classes("cb-empty"):
@@ -324,7 +312,7 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         return
 
     project_path = Path(state.project_path)
-    _, ts_names0 = _collect_dashboard_journey(state, project_path)
+    _, ts_names0 = collect_dashboard_journey(state, project_path)
     selected = {"ts": ts_names0[0] if ts_names0 else None}
 
     # Per-mount auto-kick dedup. Cleared on build so a reload after the user
@@ -374,22 +362,17 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
             return ()
         return tuple(sorted(out))
 
-    def _tilt_filter_sig_for_ts(ts: str) -> tuple:
-        # Per-ts labeled/filtered star mtimes for the tilt-filter section. NOT a
-        # journey pill stage, so _journey_signature can't see it; and the
-        # standalone TiltFilter tool has no job (→ no status), so job_states below
-        # can't see it either. Reuses the section's own resolver + path layout so
-        # a re-run OR an in-place rewrite moves the sig. Scoped to the selected ts.
-        fdir = _resolve_tilt_filter_dir(state, project_path)
-        if fdir is None:
-            return ()
-        out: list[tuple[str, int]] = []
-        for sub in ("tilt_series_labeled", "tilt_series_filtered"):
-            try:
-                out.append((sub, int((fdir / sub / f"{ts}.star").stat().st_mtime)))
-            except OSError:
-                out.append((sub, 0))
-        return tuple(out)
+    def _registry_sig() -> tuple:
+        # Every migrated section (fs-motion, alignment, ts-ctf, tilt-filter,
+        # denoise path) reads the TiltSeriesRegistry; its index.json mtime moves
+        # whenever a driver ingests outputs or the filter re-stamps verdicts —
+        # exactly the events that must rebuild the pane. One stat per tick.
+        from services.tilt_series import get_registry_for
+
+        try:
+            return ("registry", int(get_registry_for(project_path).index_path.stat().st_mtime))
+        except Exception:
+            return ("registry", 0)
 
     def _main_signature() -> tuple:
         # FingerprintedView discipline for the main pane (mirrors render_strip).
@@ -402,8 +385,8 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         ts = selected["ts"]
         if ts is None:
             return ("__no_ts__",)
-        journey, _ts_names = _collect_dashboard_journey(state, project_path)
-        species_journey = _collect_species_journey(state, project_path)
+        journey, _ts_names = collect_dashboard_journey(state, project_path)
+        species_journey = collect_species_journey(state, project_path)
         # The journey sig only covers the 4 prep pill stages + per-species picks;
         # sections like tilt_filter / dataset read job state it never sees. Fold in
         # every job's execution_status (section-agnostic, cheap in-memory scan —
@@ -414,9 +397,9 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         )
         return (
             ts,
-            _journey_signature(journey, species_journey, [ts]),
+            journey_signature(journey, species_journey, [ts]),
             job_states,
-            _tilt_filter_sig_for_ts(ts),
+            _registry_sig(),
             tuple(sorted(_hidden_dashboard_panels())),
             _CURATION_SESSION_LIVE.get("on", False),
             _curation_sig_for_ts(ts),
@@ -442,8 +425,8 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
         # calls refresh_all on every background-task tick, but we only rebuild
         # when the journey data OR the selection actually changed — otherwise a
         # tick mid-click would tear down the column under the click.
-        journey, ts_names = _collect_dashboard_journey(state, project_path)
-        species_journey = _collect_species_journey(state, project_path)
+        journey, ts_names = collect_dashboard_journey(state, project_path)
+        species_journey = collect_species_journey(state, project_path)
         try:
             from services.tilt_series import get_registry_for
 
@@ -452,11 +435,11 @@ def build_journey_panel(container, callbacks: Optional[dict] = None) -> None:
             excluded_ids = set()
         # Fold the exclusion set into the signature so toggling a TS forces a
         # rebuild (the journey data itself doesn't change until the next run).
-        sig = (_journey_signature(journey, species_journey, ts_names), selected["ts"], frozenset(excluded_ids))
+        sig = (journey_signature(journey, species_journey, ts_names), selected["ts"], frozenset(excluded_ids))
         if col_els and sig == _strip_sig["sig"]:
             return
         _strip_sig["sig"] = sig
-        recon_mrc = _recon_mrc_map(state, project_path)
+        recon_mrc = recon_mrc_map(state, project_path)
         col_els.clear()
         col_els.update(
             build_strip(
@@ -714,7 +697,7 @@ def _scroll_section_into_view(section_key: str) -> None:
     )
 
 
-def _info_copy_row(key: str, value: str, copy_value: Optional[str] = None) -> None:
+def _info_copy_row(key: str, value: str, copy_value: str | None = None) -> None:
     """One key/value line in the info popover with a copy-full-value button."""
     cv = copy_value if copy_value is not None else value
     with ui.element("div").classes("cb-info-row"):
@@ -731,7 +714,7 @@ def _info_copy_row(key: str, value: str, copy_value: Optional[str] = None) -> No
         )
 
 
-def _ts_meta_line(species_list: list[dict]) -> Optional[str]:
+def _ts_meta_line(species_list: list[dict]) -> str | None:
     """Pixel size · dims line for the info popover, from the first species
     whose manifest entry carries them."""
     for sp in species_list:
@@ -747,7 +730,7 @@ def _ts_meta_line(species_list: list[dict]) -> Optional[str]:
     return None
 
 
-def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: Optional[str]) -> None:
+def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: str | None) -> None:
     """The ⓘ button → click popover: full tomo name, metadata, and the relevant
     file paths (each with a copy-full-path button). Click-opened so the copy
     buttons are actually usable (a hover tooltip dismisses as you reach them)."""
@@ -842,10 +825,10 @@ def _render_datadump_card(
     icon: str,
     title: str,
     metric_strip: str,
-    instance_id: Optional[str],
-    job_status_label: Optional[str],
+    instance_id: str | None,
+    job_status_label: str | None,
     rows: list[tuple[str, str]],
-    note: Optional[str] = None,
+    note: str | None = None,
 ) -> None:
     """Slice-C primitive section card: header + 1-line metric strip + key/value
     grid. Reused by every analytics emitter."""
@@ -879,7 +862,7 @@ def _render_datadump_card(
 
 
 def _render_chip(
-    label: str, value: str, *, status: str = "neutral", tooltip: Optional[str] = None, icon: Optional[str] = None
+    label: str, value: str, *, status: str = "neutral", tooltip: str | None = None, icon: str | None = None
 ) -> None:
     """One status chip. `status` ∈ {ok, warn, error, info, neutral}."""
     cls = f"cb-chip cb-chip-{status}"
@@ -892,7 +875,7 @@ def _render_chip(
             chip.tooltip(tooltip)
 
 
-def _read_tomohand_from_import_star(star_path: Path) -> Optional[int]:
+def _read_tomohand_from_import_star(star_path: Path) -> int | None:
     """Return `_rlnTomoHand` from an Import-job tilt_series.star, sampling the
     first data table that carries it. Returns ±1 or None on absence."""
     if not star_path.exists():
@@ -911,18 +894,18 @@ def _read_tomohand_from_import_star(star_path: Path) -> Optional[int]:
                 continue
             # Mixed values across TS are unusual but possible — surface +1/-1
             # as a magnitude (sign of the first) when uniform, else 0 sentinel.
-            uniq = sorted({int(round(x)) for x in vals})
+            uniq = sorted({round(x) for x in vals})
             if len(uniq) == 1:
                 return int(uniq[0])
             return 0  # mixed
     return None
 
 
-def _find_import_job(project_state) -> Optional[tuple[str, object]]:
+def _find_import_job(project_state) -> tuple[str, object] | None:
     """Locate the Import (relion.importtomo) job. The dataset chip needs it
     to cross-check the in-memory `invert_defocus_hand` against the actual
     `_rlnTomoHand` Import wrote into `tilt_series.star`."""
-    return _find_job_by_type(project_state, JobType.IMPORT_MOVIES)
+    return find_job_by_type(project_state, JobType.IMPORT_MOVIES)
 
 
 def _render_stage0_chips(project_state, project_path: Path) -> None:
@@ -937,10 +920,10 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
     config_hand = -1 if bool(acq.invert_defocus_hand) else 1
 
     # On-disk: read tilt_series.star from the Import job, if it exists.
-    disk_hand: Optional[int] = None
+    disk_hand: int | None = None
     imp = _find_import_job(project_state)
     if imp:
-        imp_dir = _job_dir_for(imp[0], imp[1], project_path)
+        imp_dir = job_dir_for(project_state, imp[0], imp[1], project_path)
         if imp_dir:
             disk_hand = _read_tomohand_from_import_star(imp_dir / "tilt_series.star")
 
@@ -993,6 +976,25 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
             f"convention is -1 (invert_defocus_hand=True)."
         )
 
+    # Third authority (registry): the hand Warp ACTUALLY applied (ts_defocus_hand,
+    # recorded by the tsCtf ingest). The Import star is the declared intention;
+    # this is what the data got — disagreement is a real chirality finding.
+    warp_hand = warp_hand_from_registry(project_state, project_path)
+    if warp_hand == 0:
+        if status == "ok":
+            status = "warn"
+        tooltip += " Registry: Warp applied DIFFERENT hands across tilt-series (mixed runs?) — verify per-TS."
+    elif warp_hand is not None:
+        if warp_hand != config_hand and status != "error":
+            status = "error"
+            value = f"{warp_hand:+d}"
+            tooltip += (
+                f" Registry: Warp applied ts_defocus_hand {warp_hand:+d} — this DISAGREES with the "
+                f"declared {config_hand:+d}; downstream defocus signs came from Warp's value."
+            )
+        else:
+            tooltip += f" Registry: Warp applied ts_defocus_hand {warp_hand:+d}."
+
     with ui.element("div").classes("cb-chip-strip"):
         _render_chip("TomoHand", value, status=status, tooltip=tooltip, icon="compare_arrows")
 
@@ -1034,8 +1036,8 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
     if acq.invert_defocus_hand:
         rows.append(("invert defocus hand", "yes"))
 
-    pixel_rows = _compute_pixel_chain(project_state)
-    _apply_sanity_rules(pixel_rows)
+    pixel_rows = compute_pixel_chain(project_state)
+    apply_sanity_rules(pixel_rows)
 
     collapsed = _dataset_collapsed()
     with ui.element("div").classes("cb-section-card w-full") as card:
@@ -1062,7 +1064,7 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
                 for k, v in rows:
                     ui.label(k).classes("cb-datadump-key")
                     ui.label("—" if v is None or v == "" else str(v)).classes("cb-datadump-val")
-            _render_pixel_sanity_table(pixel_rows)
+            render_pixel_sanity_table(pixel_rows)
 
         def _toggle_dataset(_=None, _body=body, _caret=caret) -> None:
             svc = get_prefs_service()
@@ -1105,7 +1107,7 @@ def _stat_strip(rows: list[tuple[str, str]]) -> None:
                 ui.html(f"<span class='cb-stat-key'>{k}</span><span class='cb-stat-val'>{v}</span>", sanitize=False)
 
 
-def _plot_cell(label: str, fig: dict, *, height_px: int = 220, wide: bool = False, hint: Optional[str] = None) -> None:
+def _plot_cell(label: str, fig: dict, *, height_px: int = 220, wide: bool = False, hint: str | None = None) -> None:
     """One plot tile inside a `.cb-plot-row` parent. `hint` is a short tooltip
     explainer attached to the title (helps newcomers parse the metric).
 
@@ -1122,10 +1124,32 @@ def _plot_cell(label: str, fig: dict, *, height_px: int = 220, wide: bool = Fals
         ui.plotly(fig).style(f"width: 100%; height: {height_px}px;")
 
 
+def _render_registry_gap(ts_name: str, status_label: str, param_rows: list[tuple[str, str]] | None = None) -> None:
+    """Loud, honest placeholder when the registry has no data for a job+TS.
+    Stage-0 decision: consumers are registry-only — a run that predates registry
+    ingest shows this marker and re-earns its dashboard data by re-running;
+    there is no silent star fallback."""
+    running = status_label.lower() in ("running", "queued", "scheduled")
+    if running:
+        ui.label("Job is running — per-tilt results land in the registry when it completes.").classes(
+            "cb-section-placeholder"
+        )
+    else:
+        ui.label(
+            f"No registry data for {ts_name} — this run predates registry ingest. "
+            "Re-run the job to populate it (per-tilt stars are no longer read)."
+        ).classes("cb-section-placeholder text-amber-700")
+    if param_rows:
+        with ui.element("div").classes("cb-datadump-grid"):
+            for k, v in param_rows:
+                ui.label(k).classes("cb-datadump-key")
+                ui.label(str(v)).classes("cb-datadump-val")
+
+
 def _per_tilt_customdata(df: pd.DataFrame) -> list[list]:
     """Build [[tilt_index, frame_basename], ...] customdata so plot hovers
     can name the specific tilt instead of just its angle."""
-    n = int(len(df))
+    n = len(df)
     if "rlnMicrographMovieName" in df.columns:
         bases = [Path(str(v)).name for v in df["rlnMicrographMovieName"].tolist()]
     else:
@@ -1171,8 +1195,9 @@ def _render_ctf_motion_plots(
     df: pd.DataFrame,
     *,
     show_motion: bool = True,
-    frameseries_dir: Optional[Path] = None,
-    dl_by_frame: Optional[dict] = None,
+    ctf_res: list | None = None,
+    motion: list | None = None,
+    dl_by_frame: dict | None = None,
 ) -> None:
     """Defocus + astigmatism (always plotted as scatter, since each tilt is an
     independent estimate). CTF max-resolution / FOM / motion are gated on
@@ -1180,26 +1205,18 @@ def _render_ctf_motion_plots(
     write `1e-6` placeholders for those columns — see
     `project_warp_relion_star_placeholders.md`.
 
-    When `frameseries_dir` (the FS-motion job's `warp_frameseries` folder) is
-    given, the CTF-resolution and motion panels read the REAL per-tilt values
-    from the WarpTools XML instead of the placeholder star columns — see
-    `docs/preprocessing-metrics-inventory.md` §4."""
+    `ctf_res` / `motion` are the REAL per-tilt series (registry QC fields,
+    XML-sourced at ingest) — the star fallback columns only render for
+    non-WarpTools exports that populate them for real."""
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
     cd = _per_tilt_customdata(df)
     if dl_by_frame:
         # Append the tilt-filter verdict (keep/drop + prob) as customdata[2] so each
         # per-tilt point's hover shows what the tilt-filter thought of that tilt.
-        cd = [row + [dl_by_frame.get(row[1], "—")] for row in cd]
+        cd = [[*row, dl_by_frame.get(row[1], "—")] for row in cd]
 
-    # Real per-tilt CTF-fit resolution + motion live in the WarpTools frameseries
-    # XML, not the star (the star columns are 1e-6 / 'None' placeholders). Read
-    # them once here so the CTF-res + motion panels show real data.
-    xml_res: Optional[list] = None
-    xml_motion: Optional[list] = None
-    if frameseries_dir is not None and "rlnMicrographMovieName" in df.columns:
-        from services.tilt_series.frameseries_quality import quality_series
-
-        xml_res, xml_motion = quality_series(frameseries_dir, df["rlnMicrographMovieName"].tolist())
+    xml_res: list | None = ctf_res
+    xml_motion: list | None = motion
 
     has_def = "rlnDefocusU" in df.columns and "rlnDefocusV" in df.columns
     has_astig = "rlnCtfAstigmatism" in df.columns
@@ -1336,7 +1353,10 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
         if has_shift:
             xs = _safe_floats(df["rlnTomoXShiftAngst"])
             ys = _safe_floats(df["rlnTomoYShiftAngst"])
-            mag = [(x * x + y * y) ** 0.5 if x is not None and y is not None else None for x, y in zip(xs, ys)]
+            mag = [
+                (x * x + y * y) ** 0.5 if x is not None and y is not None else None
+                for x, y in zip(xs, ys, strict=False)
+            ]
             if _is_meaningful_series(mag):
                 fig = _build_per_tilt_chart(
                     tilts,
@@ -1354,7 +1374,10 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
             series = []
             if has_xtilt:
                 xt = _safe_floats(df["rlnTomoXTilt"])
-                resid = [val - nt if nt is not None and val is not None else None for nt, val in zip(tilts, xt)]
+                resid = [
+                    val - nt if nt is not None and val is not None else None
+                    for nt, val in zip(tilts, xt, strict=False)
+                ]
                 if _is_meaningful_series(resid):
                     series.append({"name": "X tilt − nom", "y": resid, "color": "#dc2626"})
             if has_ytilt:
@@ -1371,11 +1394,11 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
 
 
 def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    found = _find_job_by_type(project_state, JobType.FS_MOTION_CTF)
+    found = find_job_by_type(project_state, JobType.FS_MOTION_CTF)
     if not found:
         return False
     instance_id, jm = found
-    job_dir = _job_dir_for(instance_id, jm, project_path)
+    job_dir = job_dir_for(project_state, instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
     metric_parts = [f"motion {jm.m_grid}", f"bfac {jm.m_bfac}", f"ctf {jm.c_range_min_max} Å", f"win {jm.c_window}"]
     param_rows = [
@@ -1405,7 +1428,7 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         )
         return True
 
-    df = _read_per_tilt_df(_per_tilt_star_path(job_dir, ts_name))
+    df = fsm_registry_df(project_path, instance_id, ts_name)
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "fs_motion_ctf"
         card._props["data-instance"] = instance_id
@@ -1419,29 +1442,19 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
                 ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
 
         if df is None:
-            ui.label(f"No per-tilt star at tilt_series/{ts_name}.star yet.").classes("cb-section-placeholder")
-            with ui.element("div").classes("cb-datadump-grid"):
-                for k, v in param_rows:
-                    ui.label(k).classes("cb-datadump-key")
-                    ui.label(str(v)).classes("cb-datadump-val")
+            _render_registry_gap(ts_name, status_label, param_rows)
             return True
 
-        # Real CTF-fit resolution + motion come from the frameseries XML, not the
-        # placeholder star columns (rlnCtfMaxResolution / rlnAccumMotion* = 1e-6).
-        fs_warp_dir = job_dir / "warp_frameseries"
-        ctf_res: list = []
-        motion_total: list = []
-        if "rlnMicrographMovieName" in df.columns:
-            from services.tilt_series.frameseries_quality import quality_series
-
-            r_xml, m_xml = quality_series(fs_warp_dir, df["rlnMicrographMovieName"].tolist())
-            ctf_res = [v for v in r_xml if v is not None]
-            motion_total = [v for v in m_xml if v is not None]
+        # Real CTF-fit resolution + motion: registry QC fields (XML-sourced at
+        # ingest); the star's rlnCtfMaxResolution / rlnAccumMotion* were 1e-6
+        # placeholders, which is why these never came from star columns.
+        ctf_res_series = _safe_floats(df["cbCtfResolution"])
+        motion_series = _safe_floats(df["cbMeanFrameMovement"])
         defocus_um = [v / 1.0e4 for v in _safe_floats(df.get("rlnDefocusU", [])) if v is not None]
         d_stats = _stats(defocus_um)
-        r_stats = _stats(ctf_res)
-        m_stats = _stats(motion_total)
-        strip_rows: list[tuple[str, str]] = [("tilts", str(int(len(df))))]
+        r_stats = _stats([v for v in ctf_res_series if v is not None])
+        m_stats = _stats([v for v in motion_series if v is not None])
+        strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
         if d_stats["n"]:
             strip_rows.append(
                 ("defocus", f"{d_stats['median']:.2f} µm (Q1 {d_stats['q1']:.2f} · Q3 {d_stats['q3']:.2f})")
@@ -1452,7 +1465,7 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
             strip_rows.append(("motion (max)", f"{m_stats['max']:.2f}"))
         _stat_strip(strip_rows)
 
-        _render_ctf_motion_plots(df, show_motion=True, frameseries_dir=fs_warp_dir)
+        _render_ctf_motion_plots(df, show_motion=True, ctf_res=ctf_res_series, motion=motion_series)
 
         with ui.expansion("Job parameters").classes("w-full text-[10px]").props("dense"):
             with ui.element("div").classes("cb-datadump-grid"):
@@ -1463,11 +1476,11 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
 
 
 def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    found = _find_job_by_type(project_state, JobType.TS_ALIGNMENT)
+    found = find_job_by_type(project_state, JobType.TS_ALIGNMENT)
     if not found:
         return False
     instance_id, jm = found
-    job_dir = _job_dir_for(instance_id, jm, project_path)
+    job_dir = job_dir_for(project_state, instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
     method = getattr(jm.alignment_method, "value", str(jm.alignment_method))
     metric_parts = [
@@ -1500,7 +1513,7 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
         )
         return True
 
-    df = _read_per_tilt_df(_per_tilt_star_path(job_dir, ts_name))
+    df = alignment_registry_df(project_path, instance_id, ts_name)
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "ts_alignment"
         card._props["data-instance"] = instance_id
@@ -1514,19 +1527,17 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
                 ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
 
         if df is None:
-            ui.label(f"No per-tilt star at tilt_series/{ts_name}.star yet.").classes("cb-section-placeholder")
-            with ui.element("div").classes("cb-datadump-grid"):
-                for k, v in param_rows:
-                    ui.label(k).classes("cb-datadump-key")
-                    ui.label(str(v)).classes("cb-datadump-val")
+            _render_registry_gap(ts_name, status_label, param_rows)
             return True
 
         # Stat strip: max shift magnitude + tilt-axis residual range
         x_shift = _safe_floats(df.get("rlnTomoXShiftAngst", [])) if "rlnTomoXShiftAngst" in df.columns else []
         y_shift = _safe_floats(df.get("rlnTomoYShiftAngst", [])) if "rlnTomoYShiftAngst" in df.columns else []
-        mag = [(x * x + y * y) ** 0.5 for x, y in zip(x_shift, y_shift) if x is not None and y is not None]
+        mag = [
+            (x * x + y * y) ** 0.5 for x, y in zip(x_shift, y_shift, strict=False) if x is not None and y is not None
+        ]
         m_stats = _stats(mag)
-        strip_rows: list[tuple[str, str]] = [("tilts", str(int(len(df))))]
+        strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
         if m_stats["n"]:
             strip_rows.append(("|shift| max / median", f"{m_stats['max']:.1f} / {m_stats['median']:.1f} Å"))
         if "rlnTomoYTilt" in df.columns:
@@ -1547,11 +1558,11 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
 
 
 def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    found = _find_job_by_type(project_state, JobType.TS_CTF)
+    found = find_job_by_type(project_state, JobType.TS_CTF)
     if not found:
         return False
     instance_id, jm = found
-    job_dir = _job_dir_for(instance_id, jm, project_path)
+    job_dir = job_dir_for(project_state, instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
     metric_parts = [
         f"defocus {jm.defocus_min_max} µm",
@@ -1581,7 +1592,7 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
         )
         return True
 
-    df = _read_per_tilt_df(_per_tilt_star_path(job_dir, ts_name))
+    df = tsctf_registry_df(project_path, instance_id, ts_name)
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "ts_ctf"
         card._props["data-instance"] = instance_id
@@ -1595,29 +1606,21 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
                 ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
 
         if df is None:
-            ui.label(f"No per-tilt star at tilt_series/{ts_name}.star yet.").classes("cb-section-placeholder")
-            with ui.element("div").classes("cb-datadump-grid"):
-                for k, v in param_rows:
-                    ui.label(k).classes("cb-datadump-key")
-                    ui.label(str(v)).classes("cb-datadump-val")
+            _render_registry_gap(ts_name, status_label, param_rows)
             return True
 
         defocus_um = [v / 1.0e4 for v in _safe_floats(df.get("rlnDefocusU", [])) if v is not None]
-        ctf_res = [v for v in _safe_floats(df.get("rlnCtfMaxResolution", [])) if v is not None]
         d_stats = _stats(defocus_um)
-        r_stats = _stats(ctf_res)
-        strip_rows: list[tuple[str, str]] = [("tilts", str(int(len(df))))]
+        strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
         if d_stats["n"]:
             strip_rows.append(
                 ("defocus", f"{d_stats['median']:.2f} µm (range {d_stats['min']:.2f}–{d_stats['max']:.2f})")
             )
-        if r_stats["n"]:
-            strip_rows.append(("CTF res", f"{r_stats['median']:.1f} Å (worst {r_stats['max']:.1f})"))
 
         # Tilt-filter per-tilt verdict (keep/drop + DL probability): summarised in the
         # strip and surfaced on each plot point's hover below. Silent no-op if the
-        # tilt-filter job hasn't run for this TS.
-        dl_by_frame = _tilt_filter_verdict_by_frame(project_state, project_path, ts_name)
+        # tilt-filter job hasn't stamped this TS.
+        dl_by_frame = filter_verdicts_from_registry(project_path, ts_name)
         if dl_by_frame:
             n_keep = sum(1 for v in dl_by_frame.values() if v.startswith("keep"))
             strip_rows.append(("DL keep", f"{n_keep}/{len(dl_by_frame)}"))
@@ -1642,7 +1645,7 @@ def _linear_slope_intercept(xs: list, ys: list) -> tuple:
     """OLS slope + intercept over paired (x, y), skipping None entries. Returns
     (slope, intercept) or (None, None) for < 2 points or zero x-variance.
     numpy-free (the dashboard venv has no numpy)."""
-    pts = [(x, y) for x, y in zip(xs, ys) if x is not None and y is not None]
+    pts = [(x, y) for x, y in zip(xs, ys, strict=False) if x is not None and y is not None]
     n = len(pts)
     if n < 2:
         return None, None
@@ -1656,17 +1659,17 @@ def _linear_slope_intercept(xs: list, ys: list) -> tuple:
 
 
 def _defocus_source_df(project_state, project_path: Path, ts_name: str):
-    """The per-tilt star carrying real per-tilt defocus — prefer TS CTF
-    (post-alignment, most refined), fall back to FS Motion/CTF. Returns
+    """The per-tilt defocus source — prefer TS CTF (post-alignment, most
+    refined), fall back to FS Motion/CTF. Registry reads. Returns
     (df, source_label) or (None, None)."""
-    for jt, label in ((JobType.TS_CTF, "tsCtf"), (JobType.FS_MOTION_CTF, "fsMotion")):
-        found = _find_job_by_type(project_state, jt)
+    for jt, label, reader in (
+        (JobType.TS_CTF, "tsCtf", tsctf_registry_df),
+        (JobType.FS_MOTION_CTF, "fsMotion", fsm_registry_df),
+    ):
+        found = find_job_by_type(project_state, jt)
         if not found:
             continue
-        jd = _job_dir_for(found[0], found[1], project_path)
-        if jd is None:
-            continue
-        df = _read_per_tilt_df(_per_tilt_star_path(jd, ts_name))
+        df = reader(project_path, found[0], ts_name)
         if df is not None and "rlnDefocusU" in df.columns:
             return df, label
     return None, None
@@ -1681,11 +1684,9 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
     def_df, def_src = _defocus_source_df(project_state, project_path, ts_name)
 
     align_df = None
-    align = _find_job_by_type(project_state, JobType.TS_ALIGNMENT)
+    align = find_job_by_type(project_state, JobType.TS_ALIGNMENT)
     if align:
-        ajd = _job_dir_for(align[0], align[1], project_path)
-        if ajd is not None:
-            align_df = _read_per_tilt_df(_per_tilt_star_path(ajd, ts_name))
+        align_df = alignment_registry_df(project_path, align[0], ts_name)
 
     # Defocus (µm) mean per tilt, sorted by tilt angle so the through-focus trend
     # reads as a curve (the star is acquisition-ordered).
@@ -1695,8 +1696,14 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
         raw_t = _safe_floats(def_df["rlnTomoNominalStageTiltAngle"])
         du = _safe_floats(def_df["rlnDefocusU"])
         dv = _safe_floats(def_df["rlnDefocusV"]) if "rlnDefocusV" in def_df.columns else du
-        mean_um = [((u + v) / 2.0) / 1.0e4 if u is not None and v is not None else None for u, v in zip(du, dv)]
-        pairs = sorted([(t, m) for t, m in zip(raw_t, mean_um) if t is not None and m is not None], key=lambda p: p[0])
+        mean_um = [
+            ((u + v) / 2.0) / 1.0e4 if u is not None and v is not None else None
+            for u, v in zip(du, dv, strict=False)
+        ]
+        pairs = sorted(
+            [(t, m) for t, m in zip(raw_t, mean_um, strict=False) if t is not None and m is not None],
+            key=lambda p: p[0],
+        )
         if pairs:
             def_tilts = [p[0] for p in pairs]
             def_mean = [p[1] for p in pairs]
@@ -1711,7 +1718,9 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
         sh_tilts = _safe_floats(align_df["rlnTomoNominalStageTiltAngle"])
         xs = _safe_floats(align_df["rlnTomoXShiftAngst"])
         ys = _safe_floats(align_df["rlnTomoYShiftAngst"])
-        mag = [(x * x + y * y) ** 0.5 if x is not None and y is not None else None for x, y in zip(xs, ys)]
+        mag = [
+            (x * x + y * y) ** 0.5 if x is not None and y is not None else None for x, y in zip(xs, ys, strict=False)
+        ]
         sh_mag = mag if _is_meaningful_series(mag) else None
 
     if def_mean is None and sh_mag is None:
@@ -1759,95 +1768,16 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
 # --- Tilt Filter --------------------------------------------------------------
 
 
-def _resolve_tilt_filter_dir(project_state, project_path: Path) -> Optional[Path]:
-    """Return the directory containing tiltseries_filtered.star and
-    tiltseries_labeled.star — supports both pipeline-job tilt filtering
-    (TILT_FILTER) and the standalone TiltFilter tool that writes to
-    `<project_root>/TiltFilter/`."""
-    found = _find_job_by_type(project_state, JobType.TILT_FILTER)
-    if found:
-        instance_id, jm = found
-        jd = _job_dir_for(instance_id, jm, project_path)
-        if jd is not None:
-            cand = jd / "filtered"
-            if (cand / "tiltseries_labeled.star").exists() or (cand / "tiltseries_filtered.star").exists():
-                return cand
-    standalone = project_path / "TiltFilter"
-    if (standalone / "tiltseries_labeled.star").exists() or (standalone / "tiltseries_filtered.star").exists():
-        return standalone
-    return None
-
-
-def _tilt_filter_verdict_by_frame(project_state, project_path: Path, ts_name: str) -> dict[str, str]:
-    """{frame_basename: "keep (p=0.92)" | "drop (p=0.12)"} from the tilt-filter labeled
-    star for this TS, so per-tilt CTF plots can show the DL verdict alongside each tilt.
-    Empty dict when the tilt-filter job hasn't run for this TS."""
-    filter_dir = _resolve_tilt_filter_dir(project_state, project_path)
-    if filter_dir is None:
-        return {}
-    lab = _read_per_tilt_df(filter_dir / "tilt_series_labeled" / f"{ts_name}.star")
-    if lab is None or "cryoBoostDlLabel" not in lab.columns or "rlnMicrographMovieName" not in lab.columns:
-        return {}
-    out: dict[str, str] = {}
-    for _, row in lab.iterrows():
-        base = Path(str(row["rlnMicrographMovieName"])).name
-        keep = str(row.get("cryoBoostDlLabel", "")).strip().lower() == "good"
-        try:
-            pstr = f" (p={float(row['cryoBoostDlProbability']):.2f})"
-        except (TypeError, ValueError, KeyError):
-            pstr = ""
-        out[base] = ("keep" if keep else "drop") + pstr
-    return out
-
-
-def _read_per_tilt_frame_names(per_tilt_star: Path) -> list[str]:
-    df = _read_per_tilt_df(per_tilt_star)
-    if df is None or "rlnMicrographMovieName" not in df.columns:
-        return []
-    return [str(v) for v in df["rlnMicrographMovieName"].tolist()]
-
-
-def _read_per_tilt_kept_dropped(filter_dir: Path, ts_name: str) -> Optional[dict]:
-    """Diff labeled vs filtered per-tilt star to compute kept and dropped rows.
-
-    Returns a dict with keys: n_labeled, n_kept, dropped (list of dicts with
-    `index`, `tilt_angle`, `frame`). None if the labeled file is missing."""
-    labeled_p = filter_dir / "tilt_series_labeled" / f"{ts_name}.star"
-    filtered_p = filter_dir / "tilt_series_filtered" / f"{ts_name}.star"
-    labeled_df = _read_per_tilt_df(labeled_p)
-    if labeled_df is None:
-        return None
-    kept_frames: set[str] = set()
-    if filtered_p.exists():
-        kept_frames = set(_read_per_tilt_frame_names(filtered_p))
-    n_labeled = int(len(labeled_df))
-    dropped: list[dict] = []
-    if "rlnMicrographMovieName" in labeled_df.columns and kept_frames:
-        for i, row in labeled_df.iterrows():
-            frame = str(row["rlnMicrographMovieName"])
-            if frame in kept_frames:
-                continue
-            tilt_angle = None
-            if "rlnTomoNominalStageTiltAngle" in labeled_df.columns:
-                try:
-                    tilt_angle = float(row["rlnTomoNominalStageTiltAngle"])
-                except (TypeError, ValueError):
-                    tilt_angle = None
-            dropped.append({"index": int(i), "tilt_angle": tilt_angle, "frame": Path(frame).name})
-    n_kept = n_labeled - len(dropped) if kept_frames else n_labeled
-    return {"n_labeled": n_labeled, "n_kept": n_kept, "dropped": dropped, "labeled_df": labeled_df}
-
-
 def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
-    """Per-TS tilt-filter diagnostics. Renders for either:
-      - a TILT_FILTER pipeline job (uses its `filtered/` subdir), or
-      - the standalone TiltFilter tool output at `<project_root>/TiltFilter/`.
-    Skips silently when neither is present."""
-    filter_dir = _resolve_tilt_filter_dir(project_state, project_path)
-    if filter_dir is None:
-        return False
+    """Per-TS tilt-filter diagnostics, from the registry's per-frame verdicts
+    (stamped by both the DL and manual filter paths). Renders when a
+    TILT_FILTER job exists or when this TS carries stamped verdicts; a run
+    that predates verdict stamping shows the registry-gap marker."""
+    info = filter_kept_dropped_from_registry(project_path, ts_name)
 
-    job_found = _find_job_by_type(project_state, JobType.TILT_FILTER)
+    job_found = find_job_by_type(project_state, JobType.TILT_FILTER)
+    if job_found is None and info is None:
+        return False
     instance_id = job_found[0] if job_found else "TiltFilter (standalone)"
     jm = job_found[1] if job_found else None
 
@@ -1855,7 +1785,6 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
     if jm is not None:
         metric_parts = [f"model {jm.model_name}", f"thresh {jm.prob_threshold:g}", f"action {jm.prob_action}"]
 
-    info = _read_per_tilt_kept_dropped(filter_dir, ts_name)
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "tilt_filter"
         card._props["data-instance"] = instance_id
@@ -1872,7 +1801,8 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
                     ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
 
         if info is None:
-            ui.label(f"No labeled tilt list for {ts_name} in {filter_dir}").classes("cb-section-placeholder")
+            status_label = getattr(jm.execution_status, "value", str(jm.execution_status)) if jm is not None else ""
+            _render_registry_gap(ts_name, status_label)
             return True
 
         n_labeled = info["n_labeled"]
@@ -1924,7 +1854,7 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
 _TOMO_POLARITY_CACHE: dict[tuple[str, int], dict] = {}
 
 
-def _compute_tomogram_polarity(mrc_path: Path) -> Optional[dict]:
+def _compute_tomogram_polarity(mrc_path: Path) -> dict | None:
     """Sample a center 1024×1024 Z slice from a reconstructed tomogram,
     compute %bright / %dark voxel fractions, classify polarity. Cached by
     (path, mtime). Returns None on read failure or non-3D volumes."""
@@ -1980,7 +1910,7 @@ def _compute_tomogram_polarity(mrc_path: Path) -> Optional[dict]:
     return result
 
 
-def _expected_polarity_from_templates(project_state) -> Optional[str]:
+def _expected_polarity_from_templates(project_state) -> str | None:
     """Return the consensus selected-template polarity across species
     ("white" or "black") if every species agrees, else None."""
     seen: set[str] = set()
@@ -1994,7 +1924,7 @@ def _expected_polarity_from_templates(project_state) -> Optional[str]:
     return None
 
 
-def _tomo_polarity_chip_status(polarity: str, expected: Optional[str]) -> tuple[str, str]:
+def _tomo_polarity_chip_status(polarity: str, expected: str | None) -> tuple[str, str]:
     """Return (status, hint) for the polarity chip."""
     if expected is None:
         if polarity == "symmetric":
@@ -2023,21 +1953,21 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
     """Per-TS Reconstruct card. Currently surfaces tomogram polarity; the
     WarpTools PNG + X/Z slab + 3dmod copy command are still hosted in the
     Candidate Extract section (Slice B refactor pending)."""
-    rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
+    rec = find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
     if not rec:
         return False
     rec_iid, rec_jm = rec
-    job_dir = _job_dir_for(rec_iid, rec_jm, project_path)
+    job_dir = job_dir_for(project_state, rec_iid, rec_jm, project_path)
     if not job_dir:
         return False
-    tomo_df = _read_tomograms_table(job_dir / "tomograms.star")
+    tomo_df = read_tomograms_table(job_dir / "tomograms.star")
     if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
         return False
     row = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
     if row.empty:
         return False
     tomo_row = row.iloc[0]
-    mrc_path = _resolve_volume_for_3dmod(tomo_row, project_path)
+    mrc_path = resolve_volume_for_3dmod(tomo_row, project_path)
 
     metric_parts: list[str] = []
     rescale = float(getattr(rec_jm, "rescale_angpixs", 0.0) or 0.0)
@@ -2117,7 +2047,7 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
 
 
 def _render_recon_big_preview(
-    ts_name: str, project_state, project_path: Path, mrc_path: Optional[Path], refresh
+    ts_name: str, project_state, project_path: Path, mrc_path: Path | None, refresh
 ) -> None:
     """Side-by-side tomogram preview: the WarpTools recon PNG (left) and the
     cryoCARE/IsoNet denoised X/Y slab (right).
@@ -2141,8 +2071,8 @@ def _render_recon_big_preview(
         selected = labels[0] if labels else None
     sel = next((m for m in methods if m[0] == selected), None)
 
-    dn_png: Optional[Path] = None
-    dn_mrc: Optional[Path] = None
+    dn_png: Path | None = None
+    dn_mrc: Path | None = None
     if sel is not None:
         _, dn_job_dir, dn_mrc = sel
         _auto_kick_denoise_slab(dn_job_dir, ts_name, dn_mrc, project_path, refresh)
@@ -2161,7 +2091,7 @@ def _render_recon_big_preview(
             if png_path and png_path.exists():
                 with ui.element("div").classes("cb-recon-preview"):
                     ui.html(
-                        f"<img src='{_vis_asset_url(str(png_path))}' alt='{ts_name} WarpTools recon' />", sanitize=False
+                        f"<img src='{vis_asset_url(str(png_path))}' alt='{ts_name} WarpTools recon' />", sanitize=False
                     )
                 ui.label(f"WarpTools · {png_path.name}").classes("cb-recon-preview-caption")
             else:
@@ -2188,7 +2118,7 @@ def _render_recon_big_preview(
                 if dn_png is not None:
                     with ui.element("div").classes("cb-recon-preview"):
                         ui.html(
-                            f"<img src='{_vis_asset_url(str(dn_png))}' alt='{ts_name} {selected} denoised' />",
+                            f"<img src='{vis_asset_url(str(dn_png))}' alt='{ts_name} {selected} denoised' />",
                             sanitize=False,
                         )
                     ui.label(f"{selected} · denoised X/Y slab · {dn_mrc.name}").classes("cb-recon-preview-caption")
@@ -2286,7 +2216,7 @@ def _auto_kick_recon_slabs(recon_job_dir: Path, ts_name: str, mrc_path: Path, pr
 # same renderer + percentile pipeline as the recon slab — background-built and cached
 # under the denoise job's vis/slabs. The denoised tomograms.star repoints
 # rlnTomoReconstructedTomogram at the denoised volume, so the recon volume resolver
-# (_resolve_volume_for_3dmod) works unchanged.
+# (resolve_volume_for_3dmod) works unchanged.
 _AUTO_KICKED_DENOISE_SLAB: set[str] = set()
 
 # Which denoise method's slab the user is currently viewing, keyed by project path.
@@ -2316,46 +2246,21 @@ def _denoise_method_label(job_model, instance_id: str, project_state=None) -> st
     return getattr(m, "value", None) or (str(m) if m else instance_id)
 
 
-def _resolve_denoised_mrc_for_job(job_dir: Path, project_path: Path, ts_name: str) -> Optional[Path]:
-    """Denoised-tomogram MRC for one denoisepredict job + TS, or None. Prefers the
-    job's aggregated tomograms.star (rlnTomoReconstructedTomogram); falls back to the
-    per-tomogram file under denoised/ so results surface as the SLURM array lands
-    them, before the final star is written at job end."""
-    tomo_df = _read_tomograms_table(job_dir / "tomograms.star")
-    if tomo_df is not None and "rlnTomoName" in tomo_df.columns:
-        match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
-        if not match.empty:
-            mrc = _resolve_volume_for_3dmod(match.iloc[0], project_path)
-            if mrc:
-                return Path(mrc)
-    dn_dir = job_dir / "denoised"
-    if dn_dir.is_dir():
-        # Per-tomo file is "<ts_name>_<apix>Apx.mrc"; the tail after "<ts_name>_"
-        # must be just "<apix>Apx" (no extra underscore) so Position_1 doesn't match
-        # Position_1_2's file.
-        for f in sorted(dn_dir.glob(f"{ts_name}_*Apx.mrc")):
-            tail = f.stem[len(ts_name) + 1 :]
-            if tail.endswith("Apx") and tail[:-3].replace(".", "", 1).isdigit():
-                return f
-    return None
-
-
 def _available_denoise_methods_for_ts(project_state, project_path: Path, ts_name: str) -> list[tuple[str, Path, Path]]:
     """(method_label, job_dir, denoised_mrc) for every denoisepredict job that has a
     denoised volume for this TS, ordered by label. When two jobs share a method the
     label is suffixed with the instance_id to keep selector keys unique/stable."""
     found: list[tuple[str, str, Path, Path]] = []  # (label, iid, job_dir, mrc)
     for iid, jm in (project_state.jobs or {}).items():
-        is_dn = (
-            getattr(jm, "job_type", None) == JobType.DENOISE_PREDICT
-            or iid.split("__")[0] == JobType.DENOISE_PREDICT.value
+        is_dn = getattr(jm, "job_type", None) == JobType.DENOISE_PREDICT or InstanceId.matches(
+            iid, JobType.DENOISE_PREDICT
         )
         if not is_dn:
             continue
-        job_dir = _job_dir_for(iid, jm, project_path)
+        job_dir = job_dir_for(project_state, iid, jm, project_path)
         if not job_dir:
             continue
-        mrc = _resolve_denoised_mrc_for_job(job_dir, project_path, ts_name)
+        mrc = denoised_mrc_from_registry(project_path, iid, ts_name)
         if mrc is not None:
             found.append((_denoise_method_label(jm, iid, project_state), iid, job_dir, mrc))
     label_counts: dict[str, int] = {}
@@ -2428,11 +2333,15 @@ def _list_cutout_paths(project_path: Path, species_id: str, tomo_name: str, slug
 
 def _list_cutout_box_px(sp: dict) -> int:
     """Cutout box edge in binned-recon px ≈ 2× particle diameter (context around
-    the pick), clamped. Falls back to 48 when diameter/pixel size is unknown."""
-    diameter = float(getattr(sp.get("jm"), "particle_diameter_ang", 0.0) or 0.0)
+    the pick), clamped. Falls back to 48 when diameter/pixel size is unknown — this
+    is a display window, not extraction geometry, so a generic one is honest."""
+    species = current_project_state().get_species(sp.get("species_id") or "")
+    diameter = float(getattr(sp.get("jm"), "particle_diameter_ang", 0.0) or 0.0) or float(
+        getattr(species, "diameter_ang", 0.0) or 0.0
+    )
     px = (sp.get("entry") or {}).get("pixel_size_ang")
     if diameter and px and px > 0:
-        half = max(16, min(96, int(round(diameter / px))))
+        half = max(16, min(96, round(diameter / px)))
         return half * 2
     return 48
 
@@ -2523,14 +2432,14 @@ def _atlas_index_is_current(index_path: Path) -> bool:
 def _auto_kick_list_cutouts(
     recon_mrc: Path,
     picks: list,
-    star_path: Optional[str],
+    star_path: str | None,
     atlas_path: Path,
     index_path: Path,
     box_px: int,
     project_path: Path,
     refresh,
     dedup_key: str,
-    apix_hint: Optional[float] = None,
+    apix_hint: float | None = None,
 ) -> bool:
     """True if the list's recon-cutout atlas is on disk + fresh (render now); else
     kick ONE background build (mirrors `_auto_kick_recon_slabs`) and return False
@@ -2624,7 +2533,7 @@ def _render_list_cutout_sheet(
         return
     cols = int(atlas_meta.get("cols", 8))
     rows = int(atlas_meta.get("rows", 1))
-    atlas_url = _vis_asset_url(atlas_path)
+    atlas_url = vis_asset_url(atlas_path)
     tile = 96
     bg_w, bg_h = cols * tile, rows * tile
     all_idx = sorted(int(k) for k in index.keys())
@@ -2662,12 +2571,12 @@ def _render_list_cutout_sheet(
         if not layer_ids:
             return
         _run_js(
-            "(function(){var ls=%(ls)s;var d=new Set(%(d)s);ls.forEach(function(lid){"
+            f"(function(){{var ls={json.dumps(layer_ids)};"
+            f"var d=new Set({json.dumps([str(i) for i in _dropped_now()])});ls.forEach(function(lid){{"
             "var h=document.getElementById(lid);if(!h)return;"
             "h.querySelectorAll('.cb-pick-ghost[data-pick-idx]').forEach(function(g){"
             "if(d.has(g.getAttribute('data-pick-idx')))g.classList.add('cb-pick-ghost-dropped');"
             "else g.classList.remove('cb-pick-ghost-dropped');});});})();"
-            % {"ls": json.dumps(layer_ids), "d": json.dumps([str(i) for i in _dropped_now()])}
         )
 
     def _counter_txt() -> str:
@@ -2716,10 +2625,13 @@ def _render_list_cutout_sheet(
                     logger.exception("keep/drop auto-commit failed for %s", star_path)
                     break
                 fc = None if kept == total else kept
-                pl = get_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
+                st = current_project_state()
+                pl = st.get_pick_list(lst["slug"], species_id, tomo_name)
                 if pl is not None and pl.filtered_count != fc:
                     pl.filtered_count = fc
-                    await get_state_service().save_project(force=True)
+                    from backend import get_backend
+
+                    await get_backend().save_project(st.project_path, force=True)
                 lst["filtered_count"] = fc
                 _update_count_cell(total, fc)
                 if not commit["dirty"]:
@@ -2745,11 +2657,11 @@ def _render_list_cutout_sheet(
                 t.classes(add="cb-tile-dropped")
         if layer_ids:
             _run_js(
-                "(function(){var ls=%(ls)s;var idx='%(i)s';var drop=%(drop)s;ls.forEach(function(lid){"
+                "(function(){{var ls={ls};var idx='{i}';var drop={drop};ls.forEach(function(lid){{"
                 "var h=document.getElementById(lid);if(!h)return;"
-                "h.querySelectorAll('.cb-pick-ghost[data-pick-idx=\"'+idx+'\"]').forEach(function(g){"
+                "h.querySelectorAll('.cb-pick-ghost[data-pick-idx=\"'+idx+'\"]').forEach(function(g){{"
                 "if(drop)g.classList.add('cb-pick-ghost-dropped');else g.classList.remove('cb-pick-ghost-dropped');"
-                "});});})();" % {"ls": json.dumps(layer_ids), "i": i, "drop": "false" if kept else "true"}
+                "}});}});}})();".format(ls=json.dumps(layer_ids), i=i, drop="false" if kept else "true")
             )
         counter.set_text(_counter_txt())
         await _commit_loop()  # auto-save the keep/drop → persists + feeds merge/extraction
@@ -2774,89 +2686,88 @@ def _render_list_cutout_sheet(
         if not layer_ids:
             return
         _run_js(
-            """
-            setTimeout(function() {
-                var gid = %(grid)s;
-                var lids = %(layers)s;
+            f"""
+            setTimeout(function() {{
+                var gid = {json.dumps(grid_id)};
+                var lids = {json.dumps(layer_ids)};
                 if (!document.getElementById(gid)) return;
                 var root = document.getElementById(gid).closest('.cb-section-card') || document.body;
-                function getGrid() { return document.getElementById(gid); }
-                function layers() {
-                    return lids.map(function(id) { return document.getElementById(id); }).filter(Boolean);
-                }
-                function ourGhost(el) {
+                function getGrid() {{ return document.getElementById(gid); }}
+                function layers() {{
+                    return lids.map(function(id) {{ return document.getElementById(id); }}).filter(Boolean);
+                }}
+                function ourGhost(el) {{
                     var l = el.closest && el.closest('.cb-pick-layer');
                     return !!l && lids.indexOf(l.id) !== -1;
-                }
-                function ghostsFor(idx) {
+                }}
+                function ghostsFor(idx) {{
                     var out = [];
-                    layers().forEach(function(h) {
+                    layers().forEach(function(h) {{
                         h.querySelectorAll('.cb-pick-ghost[data-pick-idx="' + idx + '"]')
-                         .forEach(function(g) { out.push(g); });
-                    });
+                         .forEach(function(g) {{ out.push(g); }});
+                    }});
                     return out;
-                }
-                function clearActive() {
-                    layers().forEach(function(h) {
+                }}
+                function clearActive() {{
+                    layers().forEach(function(h) {{
                         h.querySelectorAll('.cb-pick-ghost.cb-ghost-active')
-                         .forEach(function(g) { g.classList.remove('cb-ghost-active'); });
-                    });
+                         .forEach(function(g) {{ g.classList.remove('cb-ghost-active'); }});
+                    }});
                     var gr = getGrid();
                     if (gr) gr.querySelectorAll('.cb-tile-highlight')
-                            .forEach(function(t) { t.classList.remove('cb-tile-highlight'); });
-                }
-                function isOurs(el) {
+                            .forEach(function(t) {{ t.classList.remove('cb-tile-highlight'); }});
+                }}
+                function isOurs(el) {{
                     if (!el || !el.closest) return false;
                     var gr = getGrid();
                     var t = el.closest('.cb-gallery-tile[data-pick-idx]');
                     if (t && gr && gr.contains(t)) return true;
                     var gh = el.closest('.cb-pick-ghost[data-pick-idx]');
                     return !!(gh && ourGhost(gh));
-                }
-                if (root._cbListBridge) {
+                }}
+                if (root._cbListBridge) {{
                     root.removeEventListener('mouseover', root._cbListBridge.over);
                     root.removeEventListener('mouseout', root._cbListBridge.out);
-                }
-                var over = function(e) {
+                }}
+                var over = function(e) {{
                     if (!e.target.closest) return;
                     var gr = getGrid();
                     var t = e.target.closest('.cb-gallery-tile[data-pick-idx]');
-                    if (t && gr && gr.contains(t)) {
+                    if (t && gr && gr.contains(t)) {{
                         var idx = t.getAttribute('data-pick-idx');
                         clearActive();
-                        ghostsFor(idx).forEach(function(g) { g.classList.add('cb-ghost-active'); });
+                        ghostsFor(idx).forEach(function(g) {{ g.classList.add('cb-ghost-active'); }});
                         return;
-                    }
+                    }}
                     var gh = e.target.closest('.cb-pick-ghost[data-pick-idx]');
-                    if (gh && ourGhost(gh)) {
+                    if (gh && ourGhost(gh)) {{
                         var gi = gh.getAttribute('data-pick-idx');
                         clearActive();
-                        ghostsFor(gi).forEach(function(g) { g.classList.add('cb-ghost-active'); });
+                        ghostsFor(gi).forEach(function(g) {{ g.classList.add('cb-ghost-active'); }});
                         var g2 = getGrid();
-                        if (g2) {
+                        if (g2) {{
                             var tl = g2.querySelector('.cb-gallery-tile[data-pick-idx="' + gi + '"]');
-                            if (tl) {
+                            if (tl) {{
                                 tl.classList.add('cb-tile-highlight');
                                 var tr = tl.getBoundingClientRect(), gb = g2.getBoundingClientRect();
                                 if (tr.top < gb.top || tr.bottom > gb.bottom)
-                                    tl.scrollIntoView({block: 'nearest', behavior: 'smooth'});
-                            }
-                        }
-                    }
-                };
-                var out = function(e) {
+                                    tl.scrollIntoView({{block: 'nearest', behavior: 'smooth'}});
+                            }}
+                        }}
+                    }}
+                }};
+                var out = function(e) {{
                     if (!e.target.closest) return;
                     var lv = e.target.closest('.cb-gallery-tile[data-pick-idx]') ||
                              e.target.closest('.cb-pick-ghost[data-pick-idx]');
                     if (!lv || !isOurs(lv)) return;
                     if (!isOurs(e.relatedTarget)) clearActive();
-                };
-                root._cbListBridge = {over: over, out: out};
+                }};
+                root._cbListBridge = {{over: over, out: out}};
                 root.addEventListener('mouseover', over);
                 root.addEventListener('mouseout', out);
-            }, 60);
+            }}, 60);
             """
-            % {"grid": json.dumps(grid_id), "layers": json.dumps(layer_ids)}
         )
 
     from services.visualization.cutout_filters import get_filter_presets, keyed_path
@@ -2870,7 +2781,7 @@ def _render_list_cutout_sheet(
     def _on_list_select(key: str) -> None:
         # Swap each tile's background-image to the chosen variant atlas, in place —
         # no rebuild, so the keep/drop handlers and dot sync survive the switch.
-        url = _vis_asset_url(str(keyed_path(Path(atlas_path), key)))
+        url = vis_asset_url(str(keyed_path(Path(atlas_path), key)))
         for t in tiles.values():
             try:
                 t.style(add=f"background-image: url({url});")
@@ -2921,7 +2832,7 @@ def _render_list_extraction_bar(sp: dict, lst: dict, project_path: Path, refresh
     subset when present) into ``Curation/<species>/<tomo>/<slug>/``."""
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
-    pl = get_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
+    pl = current_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
     est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
     text, cls = _EXTRACTION_BADGE.get(est, ("", ""))
     with ui.row().classes("items-center gap-2 w-full").style("margin: 0 0 8px; padding-bottom: 6px;"):
@@ -2937,12 +2848,13 @@ def _render_list_extraction_bar(sp: dict, lst: dict, project_path: Path, refresh
 
 
 async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh) -> None:
-    """Submit + track a per-list subtomo extraction (Slice C). Resolves the species'
-    candidate optset + this list's curated star + the species subtomo params, fires
-    ``backend.extract_pick_list``, watches the out dir for completion (the qsub wrapper's
-    ``RELION_JOB_EXIT_*`` markers + the driver's ``result.json``), and records
-    ``PickList.mark_extracted`` on success. SingleFlight-guarded; the watch runs in a
-    BackgroundTask (no client context → persist by explicit ``project_path``, the W2 lesson)."""
+    """Submit + track a per-list subtomo extraction (Slice C). Resolves three things —
+    the schema source (the species' candidate optset, else the tomogram's tomograms.star
+    for a de-novo species), this list's curated star, and the extraction geometry — then
+    fires ``backend.extract_pick_list_and_wait`` (submit + await the out dir + record
+    ``PickList.mark_extracted`` + persist). A species with no committed geometry gets the
+    required dialog instead of a guessed box size (D-3). SingleFlight-guarded; the wait
+    runs in a BackgroundTask (the backend persists by explicit ``project_path``, W2)."""
     from backend import get_backend
     from services.visualization import picks_filter
 
@@ -2963,79 +2875,164 @@ async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh)
         # Prefer the curated subset so extraction consumes the KEPT picks, not all of them.
         filtered = picks_filter.filtered_list_path(Path(star))
         list_star = str(filtered) if filtered.exists() else str(star)
-        candidate_optset = Path(sp["job_dir"]) / "optimisation_set.star"
-        if not candidate_optset.exists():
-            ui.notify(
-                "Species candidate optimisation_set.star not found — cannot extract.", type="negative", timeout=5000
+
+        # Schema source: mirror the species' candidates.star when it has a
+        # candidate-extract job; otherwise synthesize from the tomogram's own star
+        # (a de-novo species never had a TM/CE job to mirror).
+        candidate_optset = None
+        tomograms_star = None
+        job_dir = sp.get("job_dir")
+        if job_dir is not None and (Path(job_dir) / "optimisation_set.star").exists():
+            candidate_optset = Path(job_dir) / "optimisation_set.star"
+        else:
+            geom = geometry_for_ts(current_project_state(), project_path, tomo_name)
+            if geom is None:
+                ui.notify(
+                    "No candidate optimisation set and no tomograms.star for this tomogram — "
+                    "nothing to build an extraction input from.",
+                    type="negative",
+                    timeout=6000,
+                )
+                return
+            tomograms_star = Path(geom.tomograms_star)
+
+        params = extraction_params_for_species(current_project_state(), species_id, sp.get("subtomo_jm"))
+        if params is None:
+            # D-3: no committed geometry anywhere. ASK — never fall back to the old
+            # silent 384/1.0/224, which cut wrong-but-plausible subtomograms.
+            _prompt_extraction_geometry(
+                sp, lst, project_path, species_id, tomo_name, slug, candidate_optset, tomograms_star, list_star, refresh
             )
             return
-        jm = sp.get("subtomo_jm")
-        params = dict(
-            box_size=int(getattr(jm, "box_size", 384) or 384),
-            binning=float(getattr(jm, "binning", 1.0) or 1.0),
-            crop_size=int(getattr(jm, "crop_size", 224) or 224),
-            max_dose=float(getattr(jm, "max_dose", -1.0)),
-            min_frames=int(getattr(jm, "min_frames", 1) or 1),
-            do_stack2d=bool(getattr(jm, "do_stack2d", True)),
-            do_float16=bool(getattr(jm, "do_float16", True)),
+
+        _submit_list_extraction(
+            backend,
+            project_path,
+            candidate_optset,
+            tomograms_star,
+            list_star,
+            tomo_name,
+            species_id,
+            slug,
+            lst.get("label") or slug,
+            params,
+            refresh,
         )
 
-        async def _run(progress_cb):
-            progress_cb(0, 0, "submitting extraction…")
-            res = await backend.extract_pick_list(
-                project_path, candidate_optset, Path(list_star), tomo_name, species_id, slug, **params
+
+def _submit_list_extraction(
+    backend,
+    project_path: Path,
+    candidate_optset: Path | None,
+    tomograms_star: Path | None,
+    list_star: str,
+    tomo_name: str,
+    species_id: str,
+    slug: str,
+    label: str,
+    params: dict,
+    refresh,
+) -> None:
+    """Fire the per-list extraction as a tracked BackgroundTask. Split out of
+    ``_handle_extract_list`` so the geometry dialog can submit the same way once the
+    user commits box/bin/crop."""
+
+    async def _run(progress_cb):
+        progress_cb(0, 0, "extracting subtomograms…")
+        return await backend.extract_pick_list_and_wait(
+            project_path,
+            candidate_optset,
+            Path(list_star),
+            tomo_name,
+            species_id,
+            slug,
+            tomograms_star=tomograms_star,
+            **params,
+        )
+
+    from ui.background_task import BackgroundTask
+
+    BackgroundTask(
+        title=f"Extract · {label}",
+        subtitle=tomo_name,
+        project_path=str(project_path),
+        dedup_key=f"extract:{species_id}:{tomo_name}:{slug}",
+    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=True)
+    ui.notify(f"Extraction submitted for '{label}' — tracking in the task tray.", type="info")
+
+
+def _prompt_extraction_geometry(
+    sp: dict,
+    lst: dict,
+    project_path: Path,
+    species_id: str,
+    tomo_name: str,
+    slug: str,
+    candidate_optset: Path | None,
+    tomograms_star: Path | None,
+    list_star: str,
+    refresh,
+) -> None:
+    """Ask for box / binning / crop before a first extraction, and persist the answer on
+    the species (D-3).
+
+    Reached only when NOTHING has committed a geometry: no SUBTOMO_EXTRACTION job model
+    and no ``species.extraction_params``. The fields open EMPTY on purpose — prefilling
+    them with the old 384/1.0/224 would just relabel a silent default as a confirmed one.
+    """
+    from backend import get_backend
+    from services.project_state import ExtractionParams
+
+    with ui.dialog() as dialog, ui.card().classes("w-[26rem] max-w-full gap-2"):
+        ui.label("Extraction geometry").classes("text-base font-bold")
+        ui.label(
+            f"'{sp.get('label') or species_id}' has no subtomo-extraction job to inherit box/binning/crop "
+            "from. Set them once — they are saved on the species and reused for every later extraction."
+        ).classes("text-xs text-gray-600")
+        box_in = ui.number("box size (px, unbinned)", min=16, step=2).props("dense outlined").classes("w-full")
+        bin_in = ui.number("binning", min=0.1, step=0.5).props("dense outlined").classes("w-full")
+        crop_in = ui.number("crop size (px)", min=16, step=2).props("dense outlined").classes("w-full")
+
+        async def _commit() -> None:
+            box, binning, crop = box_in.value, bin_in.value, crop_in.value
+            if not box or not binning or not crop:
+                ui.notify("Box size, binning and crop are all required.", type="warning")
+                return
+            backend = get_backend()
+            if backend is None:
+                ui.notify("Backend unavailable.", type="negative")
+                return
+            state = current_project_state()
+            species = state.get_species(species_id)
+            if species is None:
+                ui.notify("Species not found — reload the project.", type="negative")
+                return
+            species.extraction_params = ExtractionParams(box_size=int(box), binning=float(binning), crop_size=int(crop))
+            state.mark_dirty()
+            # Await the write: the extraction below runs in a BackgroundTask with no
+            # client context, and a fire-and-forget save can lose the geometry the
+            # user just committed.
+            await backend.save_project(state.project_path, force=True)
+            dialog.close()
+            params = extraction_params_for_species(state, species_id, sp.get("subtomo_jm"))
+            _submit_list_extraction(
+                backend,
+                project_path,
+                candidate_optset,
+                tomograms_star,
+                list_star,
+                tomo_name,
+                species_id,
+                slug,
+                lst.get("label") or slug,
+                params,
+                refresh,
             )
-            if not res.get("success"):
-                return res
-            out_dir = Path(res["out_dir"])
 
-            def _poll() -> tuple:
-                import json as _json
-
-                rj = out_dir / "result.json"
-                if (out_dir / "RELION_JOB_EXIT_FAILURE").exists():
-                    try:
-                        return ("failed", _json.loads(rj.read_text()) if rj.exists() else {})
-                    except Exception:
-                        return ("failed", {})
-                if (out_dir / "RELION_JOB_EXIT_SUCCESS").exists() or rj.exists():
-                    try:
-                        return ("done", _json.loads(rj.read_text()) if rj.exists() else {})
-                    except Exception:
-                        return ("done", {})
-                return ("running", {})
-
-            data: dict = {}
-            for _ in range(360):  # ~60 min at a 10 s cadence
-                status, d = await asyncio.to_thread(_poll)
-                if status == "failed":
-                    err = d.get("error") or "extraction job failed — see run.err in the list's out dir"
-                    return {"success": False, "error": err}
-                if status == "done":
-                    data = d
-                    break
-                progress_cb(0, 0, "extracting subtomograms…")
-                await asyncio.sleep(10)
-            else:
-                return {"success": False, "error": "extraction still running — check the SLURM job / tray"}
-            if not data.get("ok"):
-                return {"success": False, "error": data.get("error") or "extraction produced no usable result"}
-            st = get_state_service().state_for(project_path)
-            pl = st.get_pick_list(slug, species_id, tomo_name)
-            if pl is not None:
-                pl.mark_extracted(data["optimisation_set"], int(data.get("count", 0)))
-                await get_state_service().save_project(project_path=project_path, force=True)
-            return {"success": True, "count": int(data.get("count", 0))}
-
-        from ui.background_task import BackgroundTask
-
-        BackgroundTask(
-            title=f"Extract · {lst.get('label') or slug}",
-            subtitle=tomo_name,
-            project_path=str(project_path),
-            dedup_key=f"extract:{species_id}:{tomo_name}:{slug}",
-        ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=True)
-        ui.notify(f"Extraction submitted for '{lst.get('label') or slug}' — tracking in the task tray.", type="info")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button("Save & extract", icon="science", color="indigo", on_click=_commit).props("no-caps")
+    dialog.open()
 
 
 async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh) -> None:
@@ -3204,7 +3201,7 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
             r = float(radius_in.value or 0)
             stats = await backend.list_clash_stats(star, tomo_name, r)
             if not stats.get("success"):
-                note.set_text("overlap check unavailable")
+                note.set_text(f"overlap check unavailable — {stats.get('error') or 'unknown error'}")
                 return
             nt, nc, nr, na = stats["n_total"], stats["n_clashing"], stats["n_removed"], stats["n_after"]
             if nr <= 0:
@@ -3226,14 +3223,14 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
             if not res.get("success"):
                 ui.notify(f"Deduplicate failed: {res.get('error')}", type="negative")
                 return
-            state_obj = get_project_state()
+            state_obj = current_project_state()
             pl = state_obj.get_pick_list(lst["slug"], species_id, tomo_name)
             if pl is not None:
                 pl.count = int(res.get("n_after", pl.count))
                 state_obj.mark_dirty()
                 # AWAIT (force) so the dedup'd count lands on disk — a fire-and-forget
                 # create_task gets GC'd before it runs (same bug as the manual-list save).
-                await get_state_service().save_project(force=True)
+                await backend.save_project(project_path, force=True)
             ui.notify(
                 f"Removed {res.get('n_removed', 0)} overlapping picks · {res.get('n_after', 0)} kept", type="positive"
             )
@@ -3247,10 +3244,10 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
 
 # _open_merge_dialog was removed 2026-06-11 — merging is now the co-located inline
 # merge bar built in _render_list_rail (tick 2+ pills → name → Merge), no popup.
-# See W3 in services/visualization/ARTIAX_BRIDGE_PLAN.md.
+# See W3 in docs/ARTIAX_BRIDGE_PLAN.md.
 
 
-def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id: str, shape: str = "circle"):
+def _render_pick_layer(picks: list, color: str, dims: list | None, axis: str, layer_id: str, shape: str = "circle"):
     """Render one pick list's ghost-dot layer over a shared slab canvas.
 
     Carries a stable DOM `layer_id` and per-dot `data-pick-idx` plus a
@@ -3259,10 +3256,14 @@ def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id:
     does `getElementById(layer_id)` then scopes its querySelector to it).
     `shape` (circle/diamond/square/triangle) is the per-list glyph, applied on
     the layer so it cascades to every child dot. Returns the layer element so a
-    checkbox can toggle its visibility."""
-    x_dim = max(int(dims[0]), 1)
-    y_dim = max(int(dims[1]), 1)
-    z_dim = max(int(dims[2]), 1)
+    checkbox can toggle its visibility. With unknown ``dims`` the layer renders
+    empty — a dot needs the binned extent to be placed, and placing it against a
+    stand-in extent is how picks end up quietly in the wrong corner."""
+    x_dim = max(int(dims[0]), 1) if dims else 0
+    y_dim = max(int(dims[1]), 1) if dims else 0
+    z_dim = max(int(dims[2]), 1) if dims else 0
+    if not (x_dim and y_dim and z_dim):
+        picks = []
     # `--sp-color` cascades to every child .cb-pick-ghost (the restyle rule
     # reads it via var()), so the species color survives the !important dot
     # styling without per-dot inline overrides.
@@ -3292,40 +3293,15 @@ def _render_pick_layer(picks: list, color: str, dims: list, axis: str, layer_id:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_recon_mrc_for_ts(project_state, project_path: Path, ts_name: str) -> tuple[Optional[Path], Optional[Path]]:
-    """(recon_job_dir, reconstructed-tomogram MRC) for this TS, or Nones.
-
-    Falls back to the project-level imported tomograms.star (PARTICLES-header import
-    utility) for data-less / particle-only projects, which have no TS_RECONSTRUCT job."""
-    rec = _find_job_by_type(project_state, JobType.TS_RECONSTRUCT)
-    if rec:
-        recon_job_dir = _job_dir_for(rec[0], rec[1], project_path)
-        if not recon_job_dir:
-            return None, None
-        star_path = recon_job_dir / "tomograms.star"
-    else:
-        imported = project_state.imported_tomograms_star_path()
-        if not imported:
-            return None, None
-        star_path = Path(imported)
-        recon_job_dir = star_path.parent
-    tomo_df = _read_tomograms_table(star_path)
-    if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
-        return recon_job_dir, None
-    match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
-    if match.empty:
-        return recon_job_dir, None
-    mrc = _resolve_volume_for_3dmod(match.iloc[0], project_path)
-    return recon_job_dir, (Path(mrc) if mrc else None)
-
-
-def _read_pick_list_voxels(star_path: Path, dims: list, pixel_size: Optional[float]) -> list[dict]:
+def _read_pick_list_voxels(star_path: Path, dims: list | None, pixel_size: float | None) -> list[dict]:
     """Read a centered-Å pick star → voxel-space picks ``[{i, x, y, z}]`` for the
     canvas overlay, using the binned ``dims`` + ``pixel_size`` already resolved in
     the render context (no MRC re-read per render). Returns ``[]`` if the file,
     its deps, or the centered-coord columns are unavailable — so a missing/changed
-    list degrades to 'nothing drawn' rather than breaking the dashboard render."""
-    if not star_path or not Path(star_path).exists() or not pixel_size or pixel_size <= 0:
+    list degrades to 'nothing drawn' rather than breaking the dashboard render.
+    Unknown dims/pixel size land here too: no overlay beats an overlay drawn at a
+    guessed scale (the geometry chip in the section header says why)."""
+    if not star_path or not Path(star_path).exists() or not pixel_size or pixel_size <= 0 or not dims:
         return []
     try:
         import starfile
@@ -3367,7 +3343,7 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                 "label": sp["label"],
                 "list_type": PickListType.AUTO,
                 "color": sp["color"],
-                "shape": _glyph_for(PickListType.AUTO),
+                "shape": glyph_for(PickListType.AUTO),
                 "picks": auto_picks,
                 "dims": sp["dims"],
                 "visible": True,
@@ -3376,8 +3352,11 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
         )
     species_id = sp.get("species_id") or ""
     if species_id:
-        dims = sp.get("dims") or [1, 1, 1]
+        # dims / pixel_size may be None (geometry unresolved) — `_read_pick_list_voxels`
+        # then draws nothing rather than mapping picks through an invented scale.
+        dims = sp.get("dims")
         pixel_size = (sp.get("entry") or {}).get("pixel_size_ang")
+        geometry_ok = bool(dims) and bool(pixel_size and pixel_size > 0)
         for pl in project_state.get_pick_lists(species_id, ts_name):
             picks = _read_pick_list_voxels(Path(pl.path), dims, pixel_size)
             if not picks:
@@ -3411,7 +3390,10 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
             # prior session (filtered_count=None on disk) reads falsely STALE right after a
             # correct extraction of its kept subset. mark_dirty so the corrected count
             # persists for cross-session / aggregation reads that never re-render this panel.
-            if pl.filtered_count != filtered_count:
+            # Only when the geometry actually resolved: with unknown dims/apix EVERY list
+            # reads back empty, and writing that through would wipe a real cached count on
+            # a render that never looked at the picks.
+            if geometry_ok and pl.filtered_count != filtered_count:
                 pl.filtered_count = filtered_count
                 project_state.mark_dirty()
             lists.append(
@@ -3420,7 +3402,7 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                     "label": pl.label or pl.slug,
                     "list_type": pl.list_type,
                     "color": pl.color,
-                    "shape": _glyph_for(pl.list_type),
+                    "shape": glyph_for(pl.list_type),
                     "picks": picks,
                     "dims": dims,
                     "visible": pl.visible,
@@ -3432,63 +3414,149 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
     return lists
 
 
-def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str, refresh) -> list[dict]:
-    """One entry per candidate-extract instance that has a row for this TS,
-    with everything the Particles section needs (row, manifest, entry, picks,
-    color, lists). Drives both the shared canvas overlay and the per-species tabs."""
-    out: list[dict] = []
-    for idx, (iid, jm) in enumerate(_candidate_extract_instances(project_state)):
-        job_dir = _job_dir_for(iid, jm, project_path)
-        if not job_dir:
-            continue
-        ce_rows = _collect_tomo_rows_for_instance(job_dir, project_path)
-        row = next((r for r in ce_rows if r["tomo_name"] == ts_name), None)
-        if row is None:
-            continue
-        # Lazy-generate previews + IMOD overlays for this species (idempotent;
-        # refresh re-renders the dashboard when the background job lands).
-        _auto_kick_preview_generation(iid, jm, job_dir, project_path, refresh)
-        _auto_kick_imod_generation(iid, jm, job_dir, project_path, refresh)
-        manifest = read_preview_manifest(job_dir) or {}
-        entry = (manifest.get("tomograms") or {}).get(ts_name) or {}
-        picks_data = _read_picks_json(Path(entry["picks_json"])) if entry.get("picks_json") else {}
-        label = (manifest.get("template") or {}).get("species_name") or _split_species_id(iid) or iid
-        # Resolve the subtomo job for THIS species (by species_id) so the
-        # gallery's save-filter writes into the right job — the old lex-greatest
-        # heuristic mis-targeted every species at one subtomo job.
-        _, species_id = _resolve_species(project_state, jm, iid)
-        sub_match = _matching_subtomo_instance(project_state, species_id)
-        subtomo_job_dir = _job_dir_for(sub_match[0], sub_match[1], project_path) if sub_match else None
-        # Auto list's curated kept count (the subtomo-gallery keep/drop), read off the
-        # cheap reviewed sidecar so the table shows kept/total for auto like the rest.
-        auto_kept_count = None
-        if subtomo_job_dir:
-            try:
-                from services.visualization import picks_filter
+def _denovo_species_entry(species, species_id: str, idx: int, color: str, geom: TomoGeometry, ts_name: str) -> dict:
+    """Species-section entry for a species with NO candidate-extract job — picked de
+    novo, so everything comes from the tomogram's geometry plus the user's own pick
+    lists. `row` mirrors the shape `_collect_tomo_rows_for_instance` produces and
+    `entry` carries the geometry under the keys the preview manifest would have used,
+    so the whole render path below runs unchanged. No manifest, no auto picks, no job
+    dir: `jm`/`job_dir` are None and the CE-only branches skip themselves."""
+    label, (stage, beam) = position_label(ts_name)
+    row = {
+        "tomo_name": ts_name,
+        "position_label": label,
+        "stage": stage,
+        "beam": beam,
+        "vol_path": str(geom.recon_mrc) if geom.recon_mrc else None,
+        "mod_path": None,  # IMOD overlays are a candidate-extract artifact
+        "mod_exists": False,
+        "n_picks": None,
+        "score_range": None,
+        "status": "ok" if geom.recon_mrc else "missing-volume",
+        "error": None,
+    }
+    return {
+        "idx": idx,
+        # D-1: an internal key for tabs / canvas layers, never a roster job.
+        "iid": f"pick__{species_id}",
+        "jm": None,
+        "job_dir": None,
+        "species_id": species_id,
+        "subtomo_job_dir": None,
+        "subtomo_jm": None,
+        "auto_kept_count": None,
+        "row": row,
+        "manifest": {},
+        "entry": {
+            "pixel_size_ang": geom.binned_apix,
+            "tomo_dims_xyz_px": list(geom.dims_xyz_px) if geom.dims_xyz_px else None,
+        },
+        "label": str(getattr(species, "name", "") or species_id or "species"),
+        "color": color,
+        "picks": [],
+        "dims": list(geom.dims_xyz_px) if geom.dims_xyz_px else None,
+        "tomograms_star": geom.tomograms_star,
+    }
 
-                auto_kept_count = picks_filter.read_reviewed_counts(subtomo_job_dir).get(ts_name)
-            except Exception:
-                auto_kept_count = None
-        # Prescan: auto-ingest a fresh ArtiaX save at the bundle's tomo-named path
-        # so a curated list surfaces without an explicit Import click.
-        _auto_kick_coords_ingest(job_dir, project_path, species_id, str(label), ts_name, refresh)
-        sp_entry = {
-            "idx": idx,
-            "iid": iid,
-            "jm": jm,
-            "job_dir": job_dir,
-            "species_id": species_id,
-            "subtomo_job_dir": subtomo_job_dir,
-            "subtomo_jm": sub_match[1] if sub_match else None,
-            "auto_kept_count": auto_kept_count,
-            "row": row,
-            "manifest": manifest,
-            "entry": entry,
-            "label": str(label),
-            "color": _SPECIES_OVERLAY_COLORS[idx % len(_SPECIES_OVERLAY_COLORS)],
-            "picks": picks_data.get("picks") or [],
-            "dims": picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1],
-        }
+
+def _ce_species_entry(
+    ce, species_id, idx: int, color: str, geom, project_state, project_path: Path, ts_name: str, refresh
+) -> dict | None:
+    """Species-section entry backed by a candidate-extract instance — the pre-inversion
+    path, unchanged except for the color source and the dims fallback."""
+    iid, jm = ce
+    job_dir = job_dir_for(project_state, iid, jm, project_path)
+    if not job_dir:
+        return None
+    ce_rows = _collect_tomo_rows_for_instance(job_dir, project_path)
+    row = next((r for r in ce_rows if r["tomo_name"] == ts_name), None)
+    if row is None:
+        return None
+    # Lazy-generate previews + IMOD overlays for this species (idempotent;
+    # refresh re-renders the dashboard when the background job lands).
+    _auto_kick_preview_generation(iid, jm, job_dir, project_path, refresh)
+    _auto_kick_imod_generation(iid, jm, job_dir, project_path, refresh)
+    manifest = read_preview_manifest(job_dir) or {}
+    entry = (manifest.get("tomograms") or {}).get(ts_name) or {}
+    picks_data = _read_picks_json(Path(entry["picks_json"])) if entry.get("picks_json") else {}
+    label = (manifest.get("template") or {}).get("species_name") or split_species_id(iid) or iid
+    # Resolve the subtomo job for THIS species (by species_id) so the
+    # gallery's save-filter writes into the right job — the old lex-greatest
+    # heuristic mis-targeted every species at one subtomo job.
+    sub_match = matching_subtomo_instance(project_state, species_id)
+    subtomo_job_dir = job_dir_for(project_state, sub_match[0], sub_match[1], project_path) if sub_match else None
+    # Auto list's curated kept count (the subtomo-gallery keep/drop), read off the
+    # cheap reviewed sidecar so the table shows kept/total for auto like the rest.
+    auto_kept_count = None
+    if subtomo_job_dir:
+        try:
+            from services.visualization import picks_filter
+
+            auto_kept_count = picks_filter.read_reviewed_counts(subtomo_job_dir).get(ts_name)
+        except Exception:
+            auto_kept_count = None
+    # The candidate-extract job's own tomograms.star stays authoritative for this
+    # species: on a denoised chain it repoints rlnTomoReconstructedTomogram at the
+    # denoised volume, so sourcing the recon job's star instead would silently swap
+    # which volume ArtiaX opens. The geometry star is the fallback when the job copy
+    # is absent (and the only source on the de-novo path, which has no job dir).
+    ce_star = job_dir / "tomograms.star"
+    tomograms_star = ce_star if ce_star.exists() else (geom.tomograms_star if geom else ce_star)
+    return {
+        "idx": idx,
+        "iid": iid,
+        "jm": jm,
+        "job_dir": job_dir,
+        "species_id": species_id,
+        "subtomo_job_dir": subtomo_job_dir,
+        "subtomo_jm": sub_match[1] if sub_match else None,
+        "auto_kept_count": auto_kept_count,
+        "row": row,
+        "manifest": manifest,
+        "entry": entry,
+        "label": str(label),
+        "color": color,
+        "picks": picks_data.get("picks") or [],
+        # picks.json / manifest first (parity), then the geometry provider. The old
+        # `[1, 1, 1]` tail is gone: dims we don't know disable the overlay instead of
+        # collapsing every dot into the corner.
+        "dims": picks_data.get("tomo_dims_xyz_px")
+        or entry.get("tomo_dims_xyz_px")
+        or (list(geom.dims_xyz_px) if geom and geom.dims_xyz_px else None),
+        "tomograms_star": tomograms_star,
+    }
+
+
+def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str, refresh) -> list[dict]:
+    """One entry per species the Particles section renders for this TS, with
+    everything it needs (row, manifest, entry, picks, color, lists).
+    Drives both the shared canvas overlay and the per-species tabs.
+
+    Enumerates `species_render_plan` (the registry, not the candidate-extract jobs):
+    a species with a CE instance keeps the pre-inversion entry exactly; a species
+    without one gets a geometry-backed entry so it can be picked into de novo."""
+    geom = geometry_for_ts(project_state, project_path, ts_name)
+    out: list[dict] = []
+    for idx, (species, species_id, ce) in enumerate(species_render_plan(project_state)):
+        color = getattr(species, "color", "") or SPECIES_OVERLAY_COLORS[idx % len(SPECIES_OVERLAY_COLORS)]
+        if ce is None:
+            # Nothing has reconstructed or imported this tomogram, so there is no
+            # frame to pick in — the species simply doesn't appear on this TS.
+            if geom is None:
+                continue
+            sp_entry = _denovo_species_entry(species, species_id or "", idx, color, geom, ts_name)
+        else:
+            sp_entry = _ce_species_entry(
+                ce, species_id, idx, color, geom, project_state, project_path, ts_name, refresh
+            )
+            if sp_entry is None:
+                continue
+        # Prescan: auto-ingest a fresh ArtiaX save at the bundle's tomo-named path so
+        # a curated list surfaces without an explicit Import click. Both paths need
+        # it — for a de-novo species this IS how picks enter the project.
+        _auto_kick_coords_ingest(
+            sp_entry["tomograms_star"], project_path, sp_entry["species_id"], sp_entry["label"], ts_name, refresh
+        )
         sp_entry["lists"] = _collect_pick_lists_for_species(sp_entry, project_state, ts_name)
         out.append(sp_entry)
     return out
@@ -3582,7 +3650,7 @@ def _render_imported_species_row(sp_obj, project_state, ts_name: str) -> None:
     P2.2 adds the canvas overlay, which is what actually needs apix + dims."""
     color = (
         getattr(sp_obj, "color", "")
-        or _SPECIES_OVERLAY_COLORS[sum(map(ord, str(sp_obj.id))) % len(_SPECIES_OVERLAY_COLORS)]
+        or SPECIES_OVERLAY_COLORS[sum(map(ord, str(sp_obj.id))) % len(SPECIES_OVERLAY_COLORS)]
     )
     lists = project_state.get_pick_lists(sp_obj.id, ts_name)
     with ui.element("div").style("display:flex; gap:10px; align-items:center; padding:3px 2px; font-size:11px;"):
@@ -3608,7 +3676,7 @@ def _render_imported_particles_section(
     imported_star = project_state.imported_tomograms_star_path()
     if not imported_star:
         return False
-    tomo_df = _read_tomograms_table(Path(imported_star))
+    tomo_df = read_tomograms_table(Path(imported_star))
     if tomo_df is None or "rlnTomoName" not in tomo_df.columns:
         return False
     match = tomo_df[tomo_df["rlnTomoName"].astype(str) == ts_name]
@@ -3636,7 +3704,7 @@ def _render_imported_particles_section(
 
     def _binned_dim(col: str):
         try:
-            return int(round(float(row[col]) / binning)) if col in row.index else None
+            return round(float(row[col]) / binning) if col in row.index else None
         except (TypeError, ValueError):
             return None
 
@@ -3698,15 +3766,97 @@ def _render_imported_particles_section(
     return True
 
 
+def _render_geometry_chip(geom: TomoGeometry | None) -> None:
+    """The tomogram's binned pixel size + dims in the Particles header, WITH the
+    provenance of the pixel size. A missing apix (or missing dims) is shown red and
+    disables every overlay downstream — the one thing we must never do is present a
+    stand-in scale as if it were measured (CLAUDE.md, 'Surfacing uncertainty')."""
+    if geom is None:
+        return
+    if geom.dims_xyz_px:
+        ui.label("×".join(str(int(v)) for v in geom.dims_xyz_px)).classes("text-[10px] font-mono text-gray-500")
+    else:
+        _imported_wip_marker(
+            "dimensions unknown",
+            "Neither the reconstruction MRC header nor tomograms.star gives this tomogram's size, "
+            "so picks cannot be placed on the canvas.",
+        )
+    if geom.binned_apix is None:
+        _imported_wip_marker(
+            "pixel size unset",
+            "tomograms.star has no usable rlnTomoTiltSeriesPixelSize and the reconstruction MRC header "
+            "carries no voxel size. Pick overlays are disabled rather than drawn at a guessed scale — "
+            "set 'Pixel size' on the Import Tomograms job.",
+        )
+    elif geom.apix_provenance == APIX_MRC_HEADER:
+        ui.label(f"{geom.binned_apix:g} Å/px").classes("text-[10px] font-mono text-amber-600").tooltip(
+            "Pixel size read from the reconstruction MRC header — tomograms.star does not carry one."
+        )
+    else:
+        ui.label(f"{geom.binned_apix:g} Å/px").classes("text-[10px] font-mono text-gray-500").tooltip(
+            "Binned pixel size from tomograms.star (rlnTomoTiltSeriesPixelSize × rlnTomoTomogramBinning)."
+        )
+
+
+async def _prompt_new_species(project_path: Path, refresh) -> None:
+    """Create a label-only species from the Particles empty state (D-5's second
+    entry point; the roster's PARTICLES header carries the first). ``origin="manual"``
+    — no template directory, because a de-novo species may never have a template.
+    SingleFlight-guarded: this button sits in a poll-refreshed container and can be
+    rebuilt mid-click."""
+    from backend import get_backend
+    from services.project_state import get_project_state_for
+    from ui.species_workbench_panel import _prompt_species_name
+
+    async with _curation_flight(f"new_species:{project_path}") as acquired:
+        if not acquired:
+            return
+        name = await _prompt_species_name()
+        if not name:
+            return
+        species = get_project_state_for(project_path).add_species(name, origin="manual")
+        await get_backend().save_project(project_path, force=True)
+        ui.notify(f"Created species '{species.name}' — pick into it with 'Curate in ArtiaX'", type="positive")
+        refresh()
+
+
+def _render_no_species_empty_state(project_path: Path, refresh) -> None:
+    """Particles section for a tomogram nobody has declared a species for yet. The
+    de-novo entry point (D-5): picking needs a species, and this is where the user
+    is standing when they realize that."""
+    with ui.element("div").classes("cb-empty"):
+        ui.icon("scatter_plot", size="28px").classes("text-gray-400")
+        ui.label("No particle species yet.").classes("text-xs")
+        ui.label(
+            "A species is the label picks hang off. Create one to pick particles by hand in ArtiaX — "
+            "no template or template-matching job needed."
+        ).classes("text-[11px] italic text-center text-gray-500").style("max-width: 460px;")
+        ui.button("New species", icon="add", on_click=lambda: _prompt_new_species(project_path, refresh)).props(
+            "dense no-caps unelevated color=indigo size=sm"
+        )
+
+
 def _render_particles_section(ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None) -> bool:
     """Unified Particles section: a shared tomogram canvas with every species'
     picks overlaid (toggleable), plus a per-species tab carrying that species'
     gallery / scatter. Replaces the old per-species candidate-extract cards."""
+    geom = geometry_for_ts(project_state, project_path, ts_name)
     species_data = _collect_species_data_for_ts(project_state, project_path, ts_name, refresh)
     if not species_data:
-        return False
+        # A tomogram exists here but no species does — offer to create one rather
+        # than leaving the section (and the whole picking path) undiscoverable.
+        if geom is None:
+            return False
+        with ui.element("div").classes("cb-section-card w-full") as empty_card:
+            empty_card._props["data-section"] = "particles"
+            with ui.element("div").classes("cb-section-card-header"):
+                ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
+                ui.label("Particles").classes("cb-section-title")
+                _render_geometry_chip(geom)
+            _render_no_species_empty_state(project_path, refresh)
+        return True
 
-    recon_job_dir, mrc_path = _resolve_recon_mrc_for_ts(project_state, project_path, ts_name)
+    mrc_path = geom.recon_mrc if geom else None
 
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "particles"
@@ -3714,6 +3864,7 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
             ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
             ui.label("Particles").classes("cb-section-title")
             ui.label(f"{len(species_data)} species").classes("text-[10px] font-mono text-gray-500")
+            _render_geometry_chip(geom)
             ui.space()
             # Per-species generate controls (Render previews · Re-render · IMOD)
             # live in the panel toolbar, following the active tab; the canvas-wide
@@ -3739,16 +3890,14 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
             # gallery/rail column beside it always gets the majority instead of the
             # slab eating ~half the row by its vh·aspect width. All species share the
             # TS's reconstructed tomogram → take the first real dims for the aspect.
-            cdims = next((sp["dims"] for sp in species_data if sp.get("dims") and tuple(sp["dims"]) != (1, 1, 1)), None)
+            cdims = next((sp["dims"] for sp in species_data if sp.get("dims")), None)
             cx, cy = (max(int(cdims[0]), 1), max(int(cdims[1]), 1)) if cdims else (1, 1)
             canvas_col.style(f"width: min(1080px, calc({_SLAB_MAX_VH}vh * {cx} / {cy})); max-width: {_SLAB_MAX_PCT}%")
             with canvas_col:
                 # Shared canvas: lazily renders the recon slab and overlays each
                 # species' picks. Returns {iid: {"xy": layer_id, "xz": layer_id}}
                 # so each tab's gallery cross-links to its own dots.
-                canvas_layers = _render_particles_canvas(
-                    species_data, recon_job_dir, mrc_path, ts_name, project_path, refresh
-                )
+                canvas_layers = _render_particles_canvas(species_data, geom, ts_name, project_path, refresh)
 
             with ui.element("div").classes("cb-particles-tabs-col"):
                 tab_objs: list[tuple[dict, object]] = []
@@ -3786,26 +3935,24 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
 
 
 def _render_particles_canvas(
-    species_data: list[dict],
-    recon_job_dir: Optional[Path],
-    mrc_path: Optional[Path],
-    ts_name: str,
-    project_path: Path,
-    refresh,
+    species_data: list[dict], geom: TomoGeometry | None, ts_name: str, project_path: Path, refresh
 ) -> dict:
     """Maximized shared slab canvas with each species' picks overlaid as a
     color-coded, toggleable layer. Returns {iid: {"xy": layer_id, "xz":
     layer_id|None}} so each tab's gallery can cross-link to its dots."""
     layer_ids: dict[str, dict] = {}
 
-    if recon_job_dir is None or mrc_path is None:
+    if geom is None or geom.recon_mrc is None:
         ui.label("No reconstructed tomogram on disk — canvas unavailable; per-species galleries below.").classes(
             "cb-section-placeholder"
         )
         return layer_ids
 
-    _auto_kick_recon_slabs(recon_job_dir, ts_name, mrc_path, project_path, refresh)
-    xy_png, xz_png = _recon_slab_paths(recon_job_dir, ts_name)
+    # The slabs cache next to the star that declared the volume — the recon job dir
+    # for a pipeline tomogram, the Tomograms dir for an imported one.
+    slab_dir, mrc_path = geom.tomograms_star.parent, geom.recon_mrc
+    _auto_kick_recon_slabs(slab_dir, ts_name, mrc_path, project_path, refresh)
+    xy_png, xz_png = _recon_slab_paths(slab_dir, ts_name)
     if not xy_png.exists():
         with ui.element("div").classes("cb-empty"):
             ui.spinner(size="26px", color="indigo-500")
@@ -3819,10 +3966,19 @@ def _render_particles_canvas(
     if not with_picks:
         # Recon slab exists but nothing picked yet — clean slab, no overlay.
         with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style(f"max-height: {_SLAB_MAX_VH}vh;"):
-            ui.image(_vis_asset_url(str(xy_png)))
+            ui.image(vis_asset_url(str(xy_png)))
         return layer_ids
 
-    dims = with_picks[0]["dims"]
+    # All species on this TS share the one volume, so any species that resolved dims
+    # gives the canvas its aspect; the geometry provider is the backstop. Unknown
+    # extent ⇒ bare slab, no overlay (never dots placed against a stand-in size).
+    dims = next((sp["dims"] for sp in with_picks if sp.get("dims")), None) or (
+        list(geom.dims_xyz_px) if geom.dims_xyz_px else None
+    )
+    if dims is None:
+        with ui.element("div").classes("cb-recon-preview cb-recon-canvas").style(f"max-height: {_SLAB_MAX_VH}vh;"):
+            ui.image(vis_asset_url(str(xy_png)))
+        return layer_ids
     x_dim = max(int(dims[0]), 1)
     y_dim = max(int(dims[1]), 1)
     z_dim = max(int(dims[2]), 1)
@@ -3844,7 +4000,7 @@ def _render_particles_canvas(
         xy_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
         xy_host.style(f"aspect-ratio: {x_dim}/{y_dim};")
         with xy_host:
-            ui.image(_vis_asset_url(str(xy_png)))
+            ui.image(vis_asset_url(str(xy_png)))
             for sp in with_picks:
                 for lst in sp["lists"]:
                     lid = f"cb-pl-{nonce}-{sp['idx']}-{lst['slug']}-xy"
@@ -3861,7 +4017,7 @@ def _render_particles_canvas(
             xz_host = ui.element("div").classes("cb-tomo-preview cb-recon-canvas")
             xz_host.style(f"aspect-ratio: {x_dim}/{z_dim}; margin-top: 6px;")
             with xz_host:
-                ui.image(_vis_asset_url(str(xz_png)))
+                ui.image(vis_asset_url(str(xz_png)))
                 for sp in with_picks:
                     for lst in sp["lists"]:
                         lid = f"cb-pl-{nonce}-{sp['idx']}-{lst['slug']}-xz"
@@ -3879,8 +4035,11 @@ def _tm_essentials_for_species(sp: dict) -> dict:
     """Resolve the Template-Match instance matched to this candidate-extract
     species (by species_id) and pull the interpretive essentials shown in the
     tab header: matched TM instance id, angular search θ, and symmetry."""
-    state = get_project_state()
-    species, species_id = _resolve_species(state, sp["jm"], sp["iid"])
+    state = current_project_state()
+    # The collector already ran the resolve chain; re-running it here would have to
+    # cope with a de-novo species' synthetic instance id and its `jm=None`.
+    species_id = sp.get("species_id")
+    species = state.get_species(species_id) if species_id else None
     info: dict = {
         "species": species,
         "species_id": species_id,
@@ -3889,14 +4048,24 @@ def _tm_essentials_for_species(sp: dict) -> dict:
         "theta": None,
         "sym": None,
     }
-    for tm_iid, tm_jm in _template_match_instances(state):
-        _, tm_sid = _resolve_species(state, tm_jm, tm_iid)
+    for tm_iid, tm_jm in template_match_instances(state):
+        _, tm_sid = resolve_species(state, tm_jm, tm_iid)
         if tm_sid == species_id:
             info["tm_iid"], info["tm_jm"] = tm_iid, tm_jm
             info["theta"] = getattr(tm_jm, "angular_search", None)
             info["sym"] = (getattr(species, "symmetry", None) if species else None) or getattr(tm_jm, "symmetry", None)
             break
     return info
+
+
+def _artiax_inputs(sp: dict) -> tuple[Path | None, Path]:
+    """``(candidates_star, tomograms_star)`` for one species' ArtiaX round trip.
+
+    ``candidates_star`` is None for a species with no candidate-extract job — there
+    is no reference pick list to preload, and the bundle opens the tomogram with an
+    empty ArtiaX session, which is exactly the de-novo picking start."""
+    job_dir = sp.get("job_dir")
+    return (Path(job_dir) / "candidates.star" if job_dir else None), Path(sp["tomograms_star"])
 
 
 async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
@@ -3916,12 +4085,12 @@ async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
         if backend is None:
             ui.notify("Backend unavailable.", type="negative")
             return
-        job_dir = Path(sp["job_dir"])
+        candidates_star, tomograms_star = _artiax_inputs(sp)
         ui.notify(f"Preparing ArtiaX bundle for {tomo_name}…", type="info")
         bundle = await backend.prepare_curation_bundle(
             project_path,
-            job_dir / "candidates.star",
-            job_dir / "tomograms.star",
+            candidates_star,
+            tomograms_star,
             tomo_name,
             sp.get("label") or sp.get("species_id") or "",
             species_id=sp.get("species_id") or "",
@@ -3930,8 +4099,8 @@ async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
             ui.notify(f"Could not prepare picks for {tomo_name}: {bundle.get('error')}", type="negative")
             return
         bundle["tomo_name"] = tomo_name
-        bundle["candidates_star"] = str(job_dir / "candidates.star")
-        bundle["tomograms_star"] = str(job_dir / "tomograms.star")
+        bundle["candidates_star"] = str(candidates_star) if candidates_star else ""
+        bundle["tomograms_star"] = str(tomograms_star)
         bundle["species_id"] = sp.get("species_id") or ""
         bundle["species_label"] = sp.get("label") or sp.get("species_id") or ""
         await open_curation_control_center(backend, project_path, bundle=bundle)
@@ -4006,13 +4175,13 @@ async def _handle_load_into_session(sp: dict, project_path: Path) -> None:
         if not go:
             return
 
-        job_dir = Path(sp["job_dir"])
+        candidates_star, tomograms_star = _artiax_inputs(sp)
         _notify(f"Loading {tomo_name} into the running session…", type="info")
         res = await backend.load_into_session(
             active,
             project_path,
-            job_dir / "candidates.star",
-            job_dir / "tomograms.star",
+            candidates_star,
+            tomograms_star,
             tomo_name,
             sp.get("label") or species_id or "",
             species_id=species_id,
@@ -4050,12 +4219,12 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
         if not star:
             ui.notify(f"'{lst.get('label')}' has no backing file to open.", type="warning")
             return
-        job_dir = Path(sp["job_dir"])
+        candidates_star, tomograms_star = _artiax_inputs(sp)
         ui.notify(f"Preparing {lst.get('label')} for ArtiaX…", type="info")
         bundle = await backend.prepare_curation_bundle(
             project_path,
-            job_dir / "candidates.star",
-            job_dir / "tomograms.star",
+            candidates_star,
+            tomograms_star,
             tomo_name,
             sp.get("label") or species_id or "",
             species_id=species_id,
@@ -4066,8 +4235,8 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
             ui.notify(f"Could not prepare {lst.get('label')}: {bundle.get('error')}", type="negative")
             return
         bundle["tomo_name"] = tomo_name
-        bundle["candidates_star"] = str(job_dir / "candidates.star")
-        bundle["tomograms_star"] = str(job_dir / "tomograms.star")
+        bundle["candidates_star"] = str(candidates_star) if candidates_star else ""
+        bundle["tomograms_star"] = str(tomograms_star)
         bundle["species_id"] = species_id
         bundle["species_label"] = sp.get("label") or species_id or ""
         bundle["source_star"] = str(star)
@@ -4087,7 +4256,7 @@ async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: st
 
     `project_path` is REQUIRED — it resolves the real registry by path. The prescan
     auto-ingest runs in a BackgroundTask with NO client/tab context, where bare
-    `get_project_state()` returns a blank throwaway; the add + save then silently
+    `current_project_state()` returns a blank throwaway; the add + save then silently
     no-opped and the manual list never surfaced (W2)."""
     # P5: label the list after the .coords file the user named in ArtiaX (its stem),
     # not a fixed "Manual (ArtiaX)". The `manual` slug stays stable for re-ingest;
@@ -4106,7 +4275,9 @@ async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: st
             created_by=result.get("created_by", ""),
         )
     )
-    await get_state_service().save_project(project_path=project_path, force=True)
+    from backend import get_backend
+
+    await get_backend().save_project(project_path, force=True)
     return int(result.get("count", 0))
 
 
@@ -4134,7 +4305,7 @@ _CURATION_SESSION_LIVE: dict = {"on": False}
 
 def _pending_save_for_tomo(
     project_path: Path, species_label: str, species_id: str, tomo_name: str
-) -> Optional[tuple[Path, float]]:
+) -> tuple[Path, float] | None:
     """The ArtiaX `.coords` save to auto-ingest for THIS (species, tomo), or None.
 
     Saves land in the per-(species,tomo) `curation_dir`, so every `.coords` under it
@@ -4162,14 +4333,17 @@ def _pending_save_for_tomo(
 
 
 def _auto_kick_coords_ingest(
-    job_dir: Path, project_path: Path, species_id: str, species_label: str, tomo_name: str, refresh
+    tomograms_star: Path, project_path: Path, species_id: str, species_label: str, tomo_name: str, refresh
 ) -> None:
     """Prescan: if the user saved an ArtiaX `.coords` for this (species, tomo) — see
     `_pending_save_for_tomo` for how an arbitrarily-named save is safely attributed —
     and it's newer than the registered `manual` list (or there's none yet), ingest it
     in the background so the list appears without a click. An mtime-keyed dedup set +
     a created_at guard make it idempotent; the Import button stays for out-of-tree /
-    unattributable saves. Safe to call every render."""
+    unattributable saves. Safe to call every render.
+
+    Keyed on `curation_dir(...)` + the tomogram's star, never a job dir — the save
+    belongs to a (species, tomo), and a de-novo species has no job to hang it off."""
     if not species_id:
         return
     pending = _pending_save_for_tomo(project_path, species_label, species_id, tomo_name)
@@ -4181,7 +4355,7 @@ def _auto_kick_coords_ingest(
     if key in _AUTO_INGESTED_COORDS:
         logger.info("coords-prescan[%s]: save already ingested this session (mtime %.0f)", tomo_name, mtime)
         return
-    pl = get_project_state().get_pick_list("manual", species_id, tomo_name)
+    pl = current_project_state().get_pick_list("manual", species_id, tomo_name)
     if pl is not None and pl.created_at is not None and pl.created_at.timestamp() >= mtime:
         logger.info(
             "coords-prescan[%s]: manual list already current (created %.0f ≥ save %.0f)",
@@ -4198,10 +4372,10 @@ def _auto_kick_coords_ingest(
 
         backend = get_backend()
         if backend is None:
-            return {"success": False, "error": "no backend"}
+            return err("no backend")
         progress_cb(0, 0, "ingesting ArtiaX save…")
         result = await backend.import_curation_picks(
-            project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id, coords_path=coords
+            project_path, Path(tomograms_star), tomo_name, species_label, species_id, coords_path=coords
         )
         if result.get("success"):
             await _persist_manual_pick_list(result, species_id, tomo_name, project_path)
@@ -4234,12 +4408,11 @@ async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -
         if backend is None:
             ui.notify("Backend unavailable.", type="negative")
             return
-        job_dir = Path(sp["job_dir"])
         result = await backend.import_curation_picks(
-            project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id
+            project_path, Path(sp["tomograms_star"]), tomo_name, species_label, species_id
         )
         if not result.get("success"):
-            if result.get("error") == "no_coords_found":
+            if result.get("code") == ErrorCode.NO_COORDS_FOUND:
                 _open_manual_coords_path_dialog(sp, project_path, refresh)
                 return
             ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
@@ -4256,7 +4429,7 @@ def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> No
     tomo_name = sp["row"]["tomo_name"]
     species_id = sp.get("species_id") or ""
     species_label = sp.get("label") or species_id or ""
-    job_dir = Path(sp["job_dir"])
+    tomograms_star = Path(sp["tomograms_star"])
     with ui.dialog() as dialog, ui.card().classes("w-[34rem] max-w-full gap-2"):
         ui.label(f"Import ArtiaX picks — {tomo_name}").classes("text-base font-bold")
         ui.label(
@@ -4275,7 +4448,7 @@ def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> No
                 ui.notify("Backend unavailable.", type="negative")
                 return
             result = await backend.import_curation_picks(
-                project_path, job_dir / "tomograms.star", tomo_name, species_label, species_id, coords_path=Path(p)
+                project_path, tomograms_star, tomo_name, species_label, species_id, coords_path=Path(p)
             )
             if not result.get("success"):
                 ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
@@ -4294,8 +4467,13 @@ def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None
     Render previews (gen-missing) · Re-render all (cache-bypass) · (Re)generate
     IMOD overlays. Rendered into the Particles section title bar (next to the
     canvas-wide Invert switch), following the active species tab — so they sit in
-    the panel toolbar, not crammed into the tab body."""
-    iid, jm, job_dir = sp["iid"], sp["jm"], sp["job_dir"]
+    the panel toolbar, not crammed into the tab body.
+
+    All three act on a candidate-extract job; a species picked de novo has none, so
+    the toolbar is simply empty for it."""
+    iid, jm, job_dir = sp["iid"], sp["jm"], sp.get("job_dir")
+    if job_dir is None:
+        return
     imod_dir = job_dir / "vis" / "imodPartRad"
     has_imod_models = imod_dir.exists() and any(imod_dir.glob("*.mod"))
     gen_missing_btn = (
@@ -4330,7 +4508,7 @@ def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None
 
 
 def _render_species_tab_body(
-    sp: dict, layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster=None
+    sp: dict, layer_ids: dict | None, project_path: Path, refresh, refresh_roster=None
 ) -> None:
     """One species' tab: a horizontal pick-list rail ABOVE the gallery/detail (so
     the short rail doesn't leave dead space beside the tall gallery), with the
@@ -4348,8 +4526,10 @@ def _render_species_tab_body(
     # Always present an `auto` entry so the PyTOM section (incl. its zero-picks /
     # errored / generating states) stays reachable even when there are no auto
     # picks (the collector omits a 0-pick auto list to keep the canvas overlay clean).
+    # Only for a species that HAS a candidate-extract job — a de-novo species has no
+    # PyTOM section behind the chip, and an empty one would read as a failed run.
     lists = list(sp.get("lists") or [])
-    if not any(lst["slug"] == "auto" for lst in lists):
+    if sp.get("job_dir") is not None and not any(lst["slug"] == "auto" for lst in lists):
         lists.insert(
             0,
             {
@@ -4357,9 +4537,9 @@ def _render_species_tab_body(
                 "label": sp.get("label") or "auto",
                 "list_type": PickListType.AUTO,
                 "color": sp.get("color") or "#6366f1",
-                "shape": _glyph_for(PickListType.AUTO),
+                "shape": glyph_for(PickListType.AUTO),
                 "picks": sp.get("picks") or [],
-                "dims": sp.get("dims") or [1, 1, 1],
+                "dims": sp.get("dims"),
                 "visible": True,
                 "filtered_count": sp.get("auto_kept_count"),
             },
@@ -4469,7 +4649,7 @@ def _attach_auto_chip_tooltip(el, sp: dict, tm_info: dict) -> None:
                 ui.label("  ·  ".join(tm_bits)).classes("cb-tt-line")
 
 
-def _list_count_text(total: int, filtered_count: Optional[int]) -> str:
+def _list_count_text(total: int, filtered_count: int | None) -> str:
     """Table count cell text: 'kept/total' when a keep/drop filter is committed for
     this list, else just the total. `filtered_count` is None (no filter) or the kept
     count; equal-to-total is treated as no effective filter."""
@@ -4494,7 +4674,7 @@ def _render_list_rail(
     selection can re-highlight without rebuilding the table."""
     from backend import get_backend
 
-    state_obj = get_project_state()
+    state_obj = current_project_state()
     species_id = sp.get("species_id") or ""
     species_label = sp.get("label") or species_id or ""
     tomo_name = sp["row"]["tomo_name"]
@@ -4576,7 +4756,7 @@ def _render_list_rail(
         if not res.get("success"):
             ui.notify(f"Merge failed: {res.get('error')}", type="negative")
             return
-        get_project_state().add_pick_list(
+        current_project_state().add_pick_list(
             PickList(
                 slug=slug,
                 label=raw_name,
@@ -4593,7 +4773,7 @@ def _render_list_rail(
         # Persist by explicit project_path (not the client-context default) so the
         # merged list survives a restart even if this runs without a resolvable
         # client state — the same contract the manual-list persist proved out (P4).
-        await get_state_service().save_project(project_path=project_path, force=True)
+        await backend.save_project(project_path, force=True)
         _MERGE_SELECT[key] = set()  # consumed
         _SELECTED_LIST_SLUG[key] = slug  # land on the new merge
         ui.notify(f"Created '{raw_name}' — {res.get('count', 0)} picks from {len(chosen)} lists", type="positive")
@@ -4607,9 +4787,11 @@ def _render_list_rail(
     async def _set_authoritative(slug: str) -> None:
         if slug == auth_state["slug"]:
             return
-        st = get_project_state()
+        st = current_project_state()
         st.set_authoritative_slug(species_id, tomo_name, slug)
-        await get_state_service().save_project(force=True)
+        from backend import get_backend
+
+        await get_backend().save_project(project_path, force=True)
         auth_state["slug"] = slug
         for s, ic in auth_icons.items():
             if ic is None:
@@ -4748,7 +4930,7 @@ def _render_list_rail(
 
 
 async def _render_list_detail(
-    sp: dict, lst: Optional[dict], layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster
+    sp: dict, lst: dict | None, layer_ids: dict | None, project_path: Path, refresh, refresh_roster
 ) -> None:
     """Detail pane for the selected rail chip: the auto list shows the status-aware
     subtomo gallery / scatter; a workbench list shows its recon cutout sheet (whose
@@ -4765,7 +4947,7 @@ async def _render_list_detail(
 
 
 def _render_species_auto_section(
-    sp: dict, layer_ids: Optional[dict], project_path: Path, refresh, refresh_roster=None
+    sp: dict, layer_ids: dict | None, project_path: Path, refresh, refresh_roster=None
 ) -> None:
     """The status-aware AUTO (PyTOM) gallery for a species tab: the subtomo
     cutout gallery when extracted, else the scatter fallback, or an
@@ -4817,7 +4999,7 @@ def _render_species_auto_section(
     _render_picks_scatter_section(row, entry, manifest)
 
 
-def _render_zero_picks_empty_state(manifest: dict, species_name: Optional[str]) -> None:
+def _render_zero_picks_empty_state(manifest: dict, species_name: str | None) -> None:
     """Empty state for tomograms PyTOM processed but where no candidate
     exceeded the cutoff. Shows the species template + score field so users
     can tell at a glance "this species got nothing here" — distinct from the
@@ -4834,7 +5016,7 @@ def _render_zero_picks_empty_state(manifest: dict, species_name: Optional[str]) 
     with ui.element("div").classes("cb-empty"):
         with ui.row().classes("items-center gap-4 justify-center w-full flex-wrap"):
             if thumb_path:
-                ui.image(_vis_asset_url(thumb_path)).style("width: 96px; height: 96px;").classes(
+                ui.image(vis_asset_url(thumb_path)).style("width: 96px; height: 96px;").classes(
                     "rounded border border-gray-200 bg-gray-50 object-contain"
                 )
             with ui.column().classes("gap-1 items-start"):
@@ -4900,7 +5082,7 @@ def _render_reference_strip(
     """
     template_block = (manifest or {}).get("template") if isinstance(manifest, dict) else None
     template_thumb_path = template_block.get("thumb_path") if template_block else None
-    template_url = _vis_asset_url(template_thumb_path) if template_thumb_path else None
+    template_url = vis_asset_url(template_thumb_path) if template_thumb_path else None
 
     available = sorted((int(k) for k in cutout_index.keys()), reverse=True)
     worst_n = min(4, len(available))
@@ -5009,10 +5191,10 @@ def _render_peek_skeleton() -> dict:
 async def _trigger_peek_for_pick(
     pick_idx: int,
     picks: list,
-    tomo_mrc: Optional[str],
-    peek_dir: Optional[Path],
-    pixel_size_ang: Optional[float],
-    particle_diameter_ang: Optional[float],
+    tomo_mrc: str | None,
+    peek_dir: Path | None,
+    pixel_size_ang: float | None,
+    particle_diameter_ang: float | None,
     peek_refs: dict,
     state: dict,
 ) -> None:
@@ -5044,7 +5226,7 @@ async def _trigger_peek_for_pick(
     # cube) when we can't compute — works for most particles at bin 4 / bin 8.
     if pixel_size_ang and particle_diameter_ang and pixel_size_ang > 0:
         diameter_px = particle_diameter_ang / pixel_size_ang
-        half_box = int(round(diameter_px * 1.5))
+        half_box = round(diameter_px * 1.5)
     else:
         half_box = 48
     half_box = max(24, min(128, half_box))
@@ -5088,8 +5270,8 @@ def _render_gallery_body(
     gallery_id: str,
     has_xy: bool,
     has_xz: bool,
-    ce_job_dir: Optional[Path],
-    subtomo_job_dir: Optional[Path],
+    ce_job_dir: Path | None,
+    subtomo_job_dir: Path | None,
     refresh_roster=None,
 ) -> None:
     picks_json_path = entry.get("picks_json")
@@ -5100,7 +5282,7 @@ def _render_gallery_body(
     tomo_dims = picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1]
     pixel_size_ang = entry.get("pixel_size_ang")
 
-    atlas_url = _vis_asset_url(entry["cutout_atlas"])
+    atlas_url = vis_asset_url(entry["cutout_atlas"])
     cols = int(atlas_meta.get("cols", 8))
     rows = int(atlas_meta.get("rows", 1))
     cutout_index = atlas_meta.get("index", {})
@@ -5121,8 +5303,8 @@ def _render_gallery_body(
     def _variant_atlas_url(key: str) -> str:
         v = cutout_variants.get(key)
         if v and v.get("atlas"):
-            return _vis_asset_url(v["atlas"])
-        return _vis_asset_url(entry["cutout_atlas"])
+            return vis_asset_url(v["atlas"])
+        return vis_asset_url(entry["cutout_atlas"])
 
     def _on_filter_select(key: str) -> None:
         # Swap the atlas the tiles + noise-reference tiles point at, then re-render
@@ -5179,7 +5361,7 @@ def _render_gallery_body(
     # there's no filtered file at all (= "all kept implicitly"); we materialize
     # that to a None sentinel in state so the user sees an unmarked starting
     # point, and only mutate to a concrete set once they actually click a tile.
-    initial_keep_set: Optional[set[int]] = None
+    initial_keep_set: set[int] | None = None
     if subtomo_job_dir is not None and ce_job_dir is not None and ts_name:
         try:
             initial_keep_set = picks_filter.derive_keep_state_for_ts(
@@ -5385,7 +5567,7 @@ def _render_gallery_body(
         with controls_box:
             path_row = ui.row().classes("cb-filter-path w-full items-center")
 
-        def _filtered_set_path() -> Optional[str]:
+        def _filtered_set_path() -> str | None:
             if subtomo_job_dir is None:
                 return None
             p = subtomo_job_dir / picks_filter.OPTIMISATION_SET_FILTERED_NAME
@@ -5506,12 +5688,12 @@ def _render_gallery_body(
         if not layer_ids:
             return
         js = (
-            "(function(){const ls=%(layers)s;const d=new Set(%(dropped)s);"
+            f"(function(){{const ls={json.dumps(layer_ids)};const d=new Set({json.dumps([str(i) for i in dropped])});"
             "ls.forEach(function(lid){const h=document.getElementById(lid);if(!h)return;"
             "h.querySelectorAll('.cb-pick-ghost[data-pick-idx]').forEach(function(g){"
             "if(d.has(g.getAttribute('data-pick-idx')))g.classList.add('cb-pick-ghost-dropped');"
             "else g.classList.remove('cb-pick-ghost-dropped');});});})();"
-        ) % {"layers": json.dumps(layer_ids), "dropped": json.dumps([str(i) for i in dropped])}
+        )
         try:
             _gallery_client.run_javascript(js)
         except Exception:
@@ -5738,25 +5920,25 @@ def _render_gallery_body(
         # Both directions write the hover card via JS (no Python round-trip)
         # using pick_meta pre-formatted server-side. The lone Python path
         # (tile click → persistent .selected) is unchanged.
-        bridge_js = """
-        setTimeout(function() {
-            const galleryId = %(gallery_id)s;
-            const slices = %(slices)s;
-            const meta = %(meta)s;
-            const hoverCard = document.getElementById(%(card_id)s);
+        bridge_js = f"""
+        setTimeout(function() {{
+            const galleryId = {json.dumps(gallery_id)};
+            const slices = {json.dumps(slices)};
+            const meta = {json.dumps(pick_meta)};
+            const hoverCard = document.getElementById({json.dumps(hover_card_id)});
             // Layer hosts live in the always-present left canvas column, so they
             // resolve now and stay valid across tab switches. `s.id` is the
             // .cb-pick-layer id; the marker + ghost dots are its children.
-            const wired = slices.map(function(s) {
+            const wired = slices.map(function(s) {{
                 const host = document.getElementById(s.id);
                 if (!host) return null;
-                return {
+                return {{
                     host: host,
                     marker: host.querySelector('.cb-pick-marker'),
                     picks: s.picks,
                     layerId: s.id
-                };
-            }).filter(function(x) { return x && x.marker; });
+                }};
+            }}).filter(function(x) {{ return x && x.marker; }});
             if (!wired.length) return;
 
             // Delegate on the Particles card — the common ancestor of BOTH the
@@ -5767,117 +5949,117 @@ def _render_gallery_body(
             // mount the active panel, so the old one-shot getElementById(galleryId)
             // bailed for inactive tabs and never wired their listeners.)
             const root = wired[0].host.closest('.cb-section-card') || document.body;
-            const ourLayerIds = wired.map(function(w) { return w.layerId; });
-            function getGrid() { return document.getElementById(galleryId); }
-            function ourGhost(el) {
+            const ourLayerIds = wired.map(function(w) {{ return w.layerId; }});
+            function getGrid() {{ return document.getElementById(galleryId); }}
+            function ourGhost(el) {{
                 const layer = el.closest && el.closest('.cb-pick-layer');
                 return !!layer && ourLayerIds.indexOf(layer.id) !== -1;
-            }
+            }}
 
-            function placeMarkers(idx) {
-                wired.forEach(function(w) {
+            function placeMarkers(idx) {{
+                wired.forEach(function(w) {{
                     const xy = w.picks[idx];
-                    if (!xy) { w.marker.style.opacity = '0'; return; }
-                    w.marker.style.left = (xy[0] * 100).toFixed(3) + '%%';
-                    w.marker.style.top = (xy[1] * 100).toFixed(3) + '%%';
+                    if (!xy) {{ w.marker.style.opacity = '0'; return; }}
+                    w.marker.style.left = (xy[0] * 100).toFixed(3) + '%';
+                    w.marker.style.top = (xy[1] * 100).toFixed(3) + '%';
                     w.marker.style.opacity = '1';
-                });
-            }
-            function hideMarkers() {
-                wired.forEach(function(w) { w.marker.style.opacity = '0'; });
-            }
-            function setGhostActive(idx, on) {
-                wired.forEach(function(w) {
-                    w.host.querySelectorAll('.cb-pick-ghost[data-pick-idx="' + idx + '"]').forEach(function(g) {
+                }});
+            }}
+            function hideMarkers() {{
+                wired.forEach(function(w) {{ w.marker.style.opacity = '0'; }});
+            }}
+            function setGhostActive(idx, on) {{
+                wired.forEach(function(w) {{
+                    w.host.querySelectorAll('.cb-pick-ghost[data-pick-idx="' + idx + '"]').forEach(function(g) {{
                         if (on) g.classList.add('cb-ghost-active');
                         else g.classList.remove('cb-ghost-active');
-                    });
-                });
-            }
-            function setTileHighlight(idx, on, scrollIntoView) {
+                    }});
+                }});
+            }}
+            function setTileHighlight(idx, on, scrollIntoView) {{
                 const grid = getGrid();
                 if (!grid) return;
                 const tile = grid.querySelector('.cb-gallery-tile[data-pick-idx="' + idx + '"]');
                 if (!tile) return;
                 if (on) tile.classList.add('cb-tile-highlight');
                 else tile.classList.remove('cb-tile-highlight');
-                if (on && scrollIntoView) {
+                if (on && scrollIntoView) {{
                     const tr = tile.getBoundingClientRect();
                     const gr = grid.getBoundingClientRect();
-                    if (tr.top < gr.top || tr.bottom > gr.bottom) {
-                        tile.scrollIntoView({block: 'nearest', behavior: 'smooth'});
-                    }
-                }
-            }
-            function fillHover(idx) {
+                    if (tr.top < gr.top || tr.bottom > gr.bottom) {{
+                        tile.scrollIntoView({{block: 'nearest', behavior: 'smooth'}});
+                    }}
+                }}
+            }}
+            function fillHover(idx) {{
                 if (!hoverCard) return;
-                if (idx == null) {
-                    hoverCard.querySelectorAll('.cb-hover-val').forEach(function(el) {
+                if (idx == null) {{
+                    hoverCard.querySelectorAll('.cb-hover-val').forEach(function(el) {{
                         el.textContent = '—';
-                    });
+                    }});
                     return;
-                }
+                }}
                 const m = meta[idx];
                 if (!m) return;
-                ['idx','px','ang','score','z%%-tile','nn'].forEach(function(k) {
+                ['idx','px','ang','score','z%-tile','nn'].forEach(function(k) {{
                     const sel = '.cb-hover-val[data-hover-key="' + k.replace('"','\\\\"') + '"]';
                     const el = hoverCard.querySelector(sel);
                     if (el) el.textContent = m[k] != null ? m[k] : '—';
-                });
-            }
+                }});
+            }}
             // Clear ALL active state in our scope (every active ghost + every
             // highlighted tile). Called at the start of each hover so only one
             // pick is ever active — moving tile→tile no longer accumulates
             // stuck dots (the bug: mouseout only fired on full grid-exit, so a
             // tile→tile move never deactivated the one you left).
-            function clearActive() {
-                wired.forEach(function(w) {
-                    w.host.querySelectorAll('.cb-pick-ghost.cb-ghost-active').forEach(function(g) {
+            function clearActive() {{
+                wired.forEach(function(w) {{
+                    w.host.querySelectorAll('.cb-pick-ghost.cb-ghost-active').forEach(function(g) {{
                         g.classList.remove('cb-ghost-active');
-                    });
-                });
+                    }});
+                }});
                 const grid = getGrid();
-                if (grid) grid.querySelectorAll('.cb-tile-highlight').forEach(function(t) {
+                if (grid) grid.querySelectorAll('.cb-tile-highlight').forEach(function(t) {{
                     t.classList.remove('cb-tile-highlight');
-                });
-            }
-            function isOurs(el) {
+                }});
+            }}
+            function isOurs(el) {{
                 if (!el || !el.closest) return false;
                 const grid = getGrid();
                 const tile = el.closest('.cb-gallery-tile[data-pick-idx]');
                 if (tile && grid && grid.contains(tile)) return true;
                 const gh = el.closest('.cb-pick-ghost[data-pick-idx]');
                 return !!(gh && ourGhost(gh));
-            }
+            }}
 
             // Single delegated mouseover/mouseout on the card handles BOTH
             // directions: a gallery tile (filtered to OUR grid) and a ghost dot
             // (filtered to OUR species' layers). Filtering keeps the N per-species
             // bridges on the shared card from cross-firing. Every mouseover
             // resets first so exactly one pick is active at a time.
-            root.addEventListener('mouseover', function(e) {
+            root.addEventListener('mouseover', function(e) {{
                 if (!e.target.closest) return;
                 const grid = getGrid();
                 const tile = e.target.closest('.cb-gallery-tile[data-pick-idx]');
-                if (tile && grid && grid.contains(tile)) {
+                if (tile && grid && grid.contains(tile)) {{
                     const idx = tile.getAttribute('data-pick-idx');
                     clearActive();
                     placeMarkers(idx);
                     setGhostActive(idx, true);
                     fillHover(idx);
                     return;
-                }
+                }}
                 const ghost = e.target.closest('.cb-pick-ghost[data-pick-idx]');
-                if (ghost && ourGhost(ghost)) {
+                if (ghost && ourGhost(ghost)) {{
                     const idx = ghost.getAttribute('data-pick-idx');
                     clearActive();
                     placeMarkers(idx);
                     setGhostActive(idx, true);
                     setTileHighlight(idx, true, true);
                     fillHover(idx);
-                }
-            });
-            root.addEventListener('mouseout', function(e) {
+                }}
+            }});
+            root.addEventListener('mouseout', function(e) {{
                 if (!e.target.closest) return;
                 const leaving = e.target.closest('.cb-gallery-tile[data-pick-idx]') ||
                     e.target.closest('.cb-pick-ghost[data-pick-idx]');
@@ -5885,30 +6067,25 @@ def _render_gallery_body(
                 // Only tear down when the pointer leaves our interactive area
                 // entirely; tile→tile / tile→ghost moves are handled by the next
                 // mouseover's clearActive().
-                if (!isOurs(e.relatedTarget)) {
+                if (!isOurs(e.relatedTarget)) {{
                     clearActive();
                     hideMarkers();
                     fillHover(null);
-                }
-            });
+                }}
+            }});
             // Ghost-dot click → toggle keep/drop for that pick (same as a tile).
             // Dispatched as a CustomEvent on our grid so the NiceGUI handler bound
             // to grid_container picks it up (scoped to the gallery, auto-cleaned).
-            root.addEventListener('click', function(e) {
+            root.addEventListener('click', function(e) {{
                 if (!e.target.closest) return;
                 const ghost = e.target.closest('.cb-pick-ghost[data-pick-idx]');
                 if (!ghost || !ourGhost(ghost)) return;
                 const grid = getGrid();
                 if (grid) grid.dispatchEvent(new CustomEvent('cbpicktoggle',
-                    {detail: {idx: ghost.getAttribute('data-pick-idx')}}));
-            });
-        }, 80);
-        """ % {
-            "gallery_id": json.dumps(gallery_id),
-            "slices": json.dumps(slices),
-            "meta": json.dumps(pick_meta),
-            "card_id": json.dumps(hover_card_id),
-        }
+                    {{detail: {{idx: ghost.getAttribute('data-pick-idx')}}}}));
+            }});
+        }}, 80);
+        """
         ui.run_javascript(bridge_js)
 
 
@@ -5923,7 +6100,7 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict) -> Non
     tomo_dims = tuple(picks_data.get("tomo_dims_xyz_px") or entry.get("tomo_dims_xyz_px") or [1, 1, 1])
     score_field = manifest.get("score_field")
     pixel_size_ang = entry.get("pixel_size_ang")
-    xz_url = _vis_asset_url(entry["xz_preview"]) if entry.get("xz_preview") else None
+    xz_url = vis_asset_url(entry["xz_preview"]) if entry.get("xz_preview") else None
 
     x_dim, y_dim, z_dim = (max(int(d), 1) for d in tomo_dims)
     xy_aspect = min(2.5, max(0.5, x_dim / y_dim))
@@ -5972,7 +6149,7 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict) -> Non
                 xz_plot.on("plotly_hover", on_hover, throttle=0.08)
 
 
-def _build_pick_meta_for_js(picks: list, pixel_size_ang: Optional[float]) -> dict:
+def _build_pick_meta_for_js(picks: list, pixel_size_ang: float | None) -> dict:
     """Pre-compute per-pick formatted strings for the JS-driven hover card.
 
     Mirrors `_update_hover_card`'s formatting verbatim so the visual output
@@ -6091,7 +6268,7 @@ def _update_hover_card(e, picks: list, pixel_size_ang, labels: dict) -> None:
 
 def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[dict]:
     tomograms_star = job_dir / "tomograms.star"
-    tomo_df = _read_tomograms_table(tomograms_star)
+    tomo_df = read_tomograms_table(tomograms_star)
     manifest = read_preview_manifest(job_dir) or {}
     tomo_entries = manifest.get("tomograms") or {}
     summary = manifest.get("summary") or {}
@@ -6106,7 +6283,7 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
     rows: list[dict] = []
     if tomo_df is None:
         for tomo_name, entry in tomo_entries.items():
-            label, (stage, beam) = _position_label(tomo_name)
+            label, (stage, beam) = position_label(tomo_name)
             mod_path = job_dir / "vis" / "imodPartRad" / f"coords_{tomo_name}.mod"
             rows.append(
                 {
@@ -6124,7 +6301,7 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
                 }
             )
         for tomo_name in zero_picks - set(tomo_entries.keys()):
-            label, (stage, beam) = _position_label(tomo_name)
+            label, (stage, beam) = position_label(tomo_name)
             mod_path = job_dir / "vis" / "imodPartRad" / f"coords_{tomo_name}.mod"
             rows.append(
                 {
@@ -6144,9 +6321,9 @@ def _collect_tomo_rows_for_instance(job_dir: Path, project_path: Path) -> list[d
     else:
         for _, tomo_row in tomo_df.iterrows():
             tomo_name = str(tomo_row["rlnTomoName"])
-            label, (stage, beam) = _position_label(tomo_name)
+            label, (stage, beam) = position_label(tomo_name)
             entry = tomo_entries.get(tomo_name) or {}
-            vol_path = _resolve_volume_for_3dmod(tomo_row, project_path)
+            vol_path = resolve_volume_for_3dmod(tomo_row, project_path)
             mod_path = job_dir / "vis" / "imodPartRad" / f"coords_{tomo_name}.mod"
             if tomo_name in missing_volume and not entry.get("picks_json"):
                 status = "missing-volume"
@@ -6250,7 +6427,7 @@ def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, pr
     _AUTO_KICKED_PREVIEWS.add(key)
 
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
-    state = get_project_state()
+    state = current_project_state()
 
     async def _run(progress_cb):
         import asyncio as _asyncio
@@ -6371,7 +6548,7 @@ async def _handle_generate_for_instance(
         ui.notify("candidates.star or tomograms.star missing — cannot render previews", type="negative", timeout=4000)
         return
     diameter = float(getattr(job_model, "particle_diameter_ang", 0.0))
-    state = get_project_state()
+    state = current_project_state()
 
     action = "Re-render all" if force else "Render missing"
     subtitle = "Bypass cache; regenerate every tomogram" if force else "Skip tomograms with a fresh manifest entry"

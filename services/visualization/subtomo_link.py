@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
@@ -46,7 +45,7 @@ def _coord_key(x: float, y: float, z: float) -> tuple[int, int, int]:
     )
 
 
-def _parse_visible_frames(raw) -> Optional[list[int]]:
+def _parse_visible_frames(raw) -> list[int] | None:
     """Parse a `rlnTomoVisibleFrames` cell like "[0,1,1,...]" into a list of ints."""
     if raw is None:
         return None
@@ -64,7 +63,7 @@ def _parse_visible_frames(raw) -> Optional[list[int]]:
         return None
 
 
-def _read_subtomo_particles(particles_star: Path, job_dir: Path) -> Optional[pd.DataFrame]:
+def _read_subtomo_particles(particles_star: Path, job_dir: Path) -> pd.DataFrame | None:
     """Load the data_particles table from a subtomo-extract job's particles.star."""
     if not particles_star.exists():
         return None
@@ -160,6 +159,6 @@ def build_pick_to_mrcs_index(
     return index
 
 
-def lookup_for_pick(pick_index: dict, tomo_name: str, x_ang: float, y_ang: float, z_ang: float) -> Optional[dict]:
+def lookup_for_pick(pick_index: dict, tomo_name: str, x_ang: float, y_ang: float, z_ang: float) -> dict | None:
     """Look up a candidate pick's matching subtomo entry; returns None on miss."""
     return pick_index.get((tomo_name, _coord_key(x_ang, y_ang, z_ang)))

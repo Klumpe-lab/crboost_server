@@ -1,16 +1,25 @@
-# services/dataset_models.py
+# services/tilt_series/preimport.py
 """
-Pydantic models for parsed cryo-ET dataset structure.
+Pre-import representation of a cryo-ET dataset: what the mdoc/frame parser sees
+BEFORE a project exists and before registry ingest.
 
-Represents the hierarchical naming convention from the microscope:
+These models represent the hierarchical naming convention from the microscope:
   Position_{stage}_{tilt_idx}_{angle}_{timestamp}_EER.eer       (beam 1, implicit)
   Position_{stage}_{beam}_{tilt_idx}_{angle}_{timestamp}_EER.eer (beam 2+)
   Position_{stage}.mdoc       (beam 1)
   Position_{stage}_{beam}.mdoc (beam 2+)
+
+They are transient parse results (never persisted; the selection cache stores only
+{mdoc_filename: bool}). The registry entities in `services.tilt_series.models`
+(`TiltSeries`/`Frame`) are the post-import single source of truth; the conversion
+from this representation lives in `services.tilt_series.build`
+(`build_from_dataset_overview` / `_build_one_ts`, mapping `ts_label` -> `TiltSeries.id`
+and `TiltInfo` -> `Frame`). This module must stay import-light (pydantic only) —
+`build.py` imports it, and parser services import `build`, so importing either from
+here would create a cycle.
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -21,9 +30,9 @@ class TiltInfo(BaseModel):
     z_value: int
     tilt_angle: float
     frame_filename: str
-    frame_path: Optional[Path] = None
-    mdoc_stats: Dict[str, float] = Field(default_factory=dict)
-    date_time: Optional[str] = None  # raw mdoc DateTime string (mdoc_stats is float-only)
+    frame_path: Path | None = None
+    mdoc_stats: dict[str, float] = Field(default_factory=dict)
+    date_time: str | None = None  # raw mdoc DateTime string (mdoc_stats is float-only)
 
 
 class TiltSeriesInfo(BaseModel):
@@ -33,21 +42,21 @@ class TiltSeriesInfo(BaseModel):
     beam_position: int  # 1 for implicit (Position_X.mdoc), 2+ for explicit
     mdoc_filename: str
     mdoc_path: Path
-    tilts: List[TiltInfo] = Field(default_factory=list)
+    tilts: list[TiltInfo] = Field(default_factory=list)
     selected: bool = True
 
     # Per-mdoc acquisition parameters (extracted from mdoc header / first ZValue)
-    pixel_size: Optional[float] = None  # angstrom
-    voltage: Optional[float] = None  # kV
-    dose_per_tilt: Optional[float] = None  # e-/A^2
-    tilt_axis: Optional[float] = None  # degrees
+    pixel_size: float | None = None  # angstrom
+    voltage: float | None = None  # kV
+    dose_per_tilt: float | None = None  # e-/A^2
+    tilt_axis: float | None = None  # degrees
 
     @property
     def tilt_count(self) -> int:
         return len(self.tilts)
 
     @property
-    def angle_range(self) -> Tuple[float, float]:
+    def angle_range(self) -> tuple[float, float]:
         if not self.tilts:
             return (0.0, 0.0)
         angles = [t.tilt_angle for t in self.tilts]
@@ -68,7 +77,7 @@ class StagePositionInfo(BaseModel):
     """Grouping of tilt-series at one stage position."""
 
     stage_position: int
-    tilt_series: List[TiltSeriesInfo] = Field(default_factory=list)
+    tilt_series: list[TiltSeriesInfo] = Field(default_factory=list)
     selected: bool = True
 
     @property
@@ -83,12 +92,12 @@ class StagePositionInfo(BaseModel):
 class AcquisitionSummary(BaseModel):
     """Summary of unique acquisition parameters across all tilt-series."""
 
-    pixel_sizes: List[float] = Field(default_factory=list)
-    voltages: List[float] = Field(default_factory=list)
-    doses: List[float] = Field(default_factory=list)
-    tilt_axes: List[float] = Field(default_factory=list)
-    tilt_counts: List[int] = Field(default_factory=list)
-    angle_ranges: List[Tuple[float, float]] = Field(default_factory=list)
+    pixel_sizes: list[float] = Field(default_factory=list)
+    voltages: list[float] = Field(default_factory=list)
+    doses: list[float] = Field(default_factory=list)
+    tilt_axes: list[float] = Field(default_factory=list)
+    tilt_counts: list[int] = Field(default_factory=list)
+    angle_ranges: list[tuple[float, float]] = Field(default_factory=list)
 
     @property
     def is_consistent(self) -> bool:
@@ -100,23 +109,23 @@ class AcquisitionSummary(BaseModel):
             and len(self.tilt_counts) <= 1
         )
 
-    def param_warnings(self) -> List[Tuple[str, str, str]]:
+    def param_warnings(self) -> list[tuple[str, str, str]]:
         """Returns list of (param_key, label, detail) for inconsistent params."""
-        w: List[Tuple[str, str, str]] = []
+        w: list[tuple[str, str, str]] = []
         if len(self.pixel_sizes) > 1:
             vals = ", ".join(f"{v:.3f}" for v in self.pixel_sizes)
-            w.append(("pixel_size", "Mixed pixel sizes", f"{vals} \u212b"))
+            w.append(("pixel_size", "Mixed pixel sizes", f"{vals} Å"))
         if len(self.voltages) > 1:
             vals = ", ".join(f"{v:.0f}" for v in self.voltages)
             w.append(("voltage", "Mixed voltages", f"{vals} kV"))
         if len(self.doses) > 1:
             vals = ", ".join(f"{v:.1f}" for v in self.doses)
-            w.append(("dose_per_tilt", "Mixed dose/tilt", f"{vals} e\u207b/\u212b\u00b2"))
+            w.append(("dose_per_tilt", "Mixed dose/tilt", f"{vals} e⁻/Å²"))
         if len(self.tilt_axes) > 1:
             vals = ", ".join(f"{v:.1f}" for v in self.tilt_axes)
-            w.append(("tilt_axis", "Mixed tilt axes", f"{vals}\u00b0"))
+            w.append(("tilt_axis", "Mixed tilt axes", f"{vals}°"))
         if len(self.angle_ranges) > 1:
-            vals = ", ".join(f"[{lo:+.0f}\u00b0..{hi:+.0f}\u00b0]" for lo, hi in self.angle_ranges)
+            vals = ", ".join(f"[{lo:+.0f}°..{hi:+.0f}°]" for lo, hi in self.angle_ranges)
             w.append(("angle_range", "Mixed angle ranges", vals))
         return w
 
@@ -126,8 +135,8 @@ class DatasetOverview(BaseModel):
 
     source_directory: str
     frame_extension: str = ""
-    positions: List[StagePositionInfo] = Field(default_factory=list)
-    parse_warnings: List[str] = Field(default_factory=list)
+    positions: list[StagePositionInfo] = Field(default_factory=list)
+    parse_warnings: list[str] = Field(default_factory=list)
     acquisition_summary: AcquisitionSummary = Field(default_factory=AcquisitionSummary)
 
     @property
@@ -146,17 +155,17 @@ class DatasetOverview(BaseModel):
     def selected_frames(self) -> int:
         return sum(ts.tilt_count for p in self.positions for ts in p.tilt_series if ts.selected)
 
-    def get_selected_tilt_series(self) -> List[TiltSeriesInfo]:
+    def get_selected_tilt_series(self) -> list[TiltSeriesInfo]:
         return [ts for p in self.positions for ts in p.tilt_series if ts.selected]
 
     def selected_acquisition_summary(self) -> AcquisitionSummary:
         """Compute summary only from selected tilt-series."""
-        pxs: Set[float] = set()
-        vs: Set[float] = set()
-        ds: Set[float] = set()
-        tas: Set[float] = set()
-        tcs: Set[int] = set()
-        ars: Set[Tuple[float, float]] = set()
+        pxs: set[float] = set()
+        vs: set[float] = set()
+        ds: set[float] = set()
+        tas: set[float] = set()
+        tcs: set[int] = set()
+        ars: set[tuple[float, float]] = set()
         for ts in self.get_selected_tilt_series():
             if ts.pixel_size is not None:
                 pxs.add(round(ts.pixel_size, 3))

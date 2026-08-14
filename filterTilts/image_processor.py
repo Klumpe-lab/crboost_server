@@ -48,10 +48,10 @@ class ImageProcessor:
         
         slices_current = [slice(center - min(center, new_center), 
                                center + min(center, new_center)) 
-                         for center, new_center in zip(center_current, center_new)]
+                         for center, new_center in zip(center_current, center_new, strict=False)]
         slices_new = [slice(new_center - min(center, new_center), 
                            new_center + min(center, new_center)) 
-                     for center, new_center in zip(center_current, center_new)]
+                     for center, new_center in zip(center_current, center_new, strict=False)]
         
         resized_f_transform_shifted[tuple(slices_new)] = f_transform_shifted[tuple(slices_current)]
         resized_f_transform = ifftshift(resized_f_transform_shifted)

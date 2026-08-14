@@ -21,11 +21,11 @@ Register as an extra tab via the plugin system:
 """
 
 from pathlib import Path
-from typing import Dict, List
 
 from nicegui import ui
 
-from ui.components.task_utils import (
+from services.array_tasks import (
+    TaskProgress,
     shorten_ts_names,
     sort_ts_by_position,
     ts_anchor_id,
@@ -143,54 +143,48 @@ def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
 # ── Internals ──
 
 
-def _update_summary(container: ui.row, statuses: Dict[str, str], item_label: str) -> None:
-    n_ok = sum(1 for s in statuses.values() if s == _OK)
-    n_fail = sum(1 for s in statuses.values() if s == _FAIL)
-    n_running = sum(1 for s in statuses.values() if s == _RUNNING)
-    n_pending = sum(1 for s in statuses.values() if s == _PENDING)
-    n_skip = sum(1 for s in statuses.values() if s == _SKIP)
-    total = len(statuses)
+def _update_summary(container: ui.row, statuses: dict[str, str], item_label: str) -> None:
+    p = TaskProgress.from_statuses(statuses)
 
     parts = []
-    if n_ok:
-        parts.append(f'<span style="color: #16a34a; font-weight: 600;">{n_ok} done</span>')
-    if n_running:
-        parts.append(f'<span style="color: #2563eb; font-weight: 600;">{n_running} running</span>')
-    if n_fail:
-        parts.append(f'<span style="color: #dc2626; font-weight: 600;">{n_fail} failed</span>')
-    if n_skip:
-        parts.append(f'<span style="color: #94a3b8;">{n_skip} skipped</span>')
-    if n_pending:
-        parts.append(f'<span style="color: #9ca3af;">{n_pending} pending</span>')
+    if p.n_ok:
+        parts.append(f'<span style="color: #16a34a; font-weight: 600;">{p.n_ok} done</span>')
+    if p.n_running:
+        parts.append(f'<span style="color: #2563eb; font-weight: 600;">{p.n_running} running</span>')
+    if p.n_fail:
+        parts.append(f'<span style="color: #dc2626; font-weight: 600;">{p.n_fail} failed</span>')
+    if p.n_skip:
+        parts.append(f'<span style="color: #94a3b8;">{p.n_skip} skipped</span>')
+    if p.n_pending:
+        parts.append(f'<span style="color: #9ca3af;">{p.n_pending} pending</span>')
 
-    html = f'<span style="{MONO} font-size: 11px;">{" · ".join(parts)} / {total} {item_label.lower()}</span>'
+    html = f'<span style="{MONO} font-size: 11px;">{" · ".join(parts)} / {p.total} {item_label.lower()}</span>'
     container.clear()
     with container:
         ui.html(html, sanitize=False)
 
 
-def _update_progress(bar: ui.linear_progress, statuses: Dict[str, str]) -> None:
-    total = len(statuses)
-    if total == 0:
+def _update_progress(bar: ui.linear_progress, statuses: dict[str, str]) -> None:
+    p = TaskProgress.from_statuses(statuses)
+    if p.total == 0:
         bar.set_value(0)
         return
-    # Skipped items are settled (won't ever run) — count them as "done" so
-    # the bar reaches 100% when only skips + oks remain.
-    n_done = sum(1 for s in statuses.values() if s in (_OK, _FAIL, _SKIP))
-    bar.set_value(n_done / total)
-    bar.props(f"color={'negative' if any(s == _FAIL for s in statuses.values()) else 'positive'}")
+    # Settled = ok + fail + skip: skipped items won't ever run, so the bar
+    # reaches 100% when only skips + oks remain.
+    bar.set_value(p.n_settled / p.total)
+    bar.props(f"color={'negative' if p.n_fail else 'positive'}")
 
 
 # ── Row building (once) and updating (on poll) ──
 
 
 def _build_task_rows(
-    display_order: List[str],
-    item_to_task_idx: Dict[str, int],
+    display_order: list[str],
+    item_to_task_idx: dict[str, int],
     job_dir: Path,
     instance_id: str,
     focus_target: str | None,
-) -> Dict[str, dict]:
+) -> dict[str, dict]:
     """Build all expansion rows ONCE. Returns {name: {icon, label, expansion, bg_style}} refs.
 
     Rows are rendered in `display_order`. The task-output file for each row
@@ -198,7 +192,7 @@ def _build_task_rows(
     ids are tied to the manifest order.
     """
     display_names = shorten_ts_names(display_order)
-    row_widgets: Dict[str, dict] = {}
+    row_widgets: dict[str, dict] = {}
     for name in display_order:
         icon_name, icon_color, bg_color = _CHIP[_PENDING]
         short_name = display_names.get(name, name)
@@ -230,7 +224,7 @@ def _build_task_rows(
     return row_widgets
 
 
-def _apply_statuses_to_rows(row_widgets: Dict[str, dict], statuses: Dict[str, str]) -> None:
+def _apply_statuses_to_rows(row_widgets: dict[str, dict], statuses: dict[str, str]) -> None:
     """Update icon, label text, and background color on existing rows without rebuilding."""
     for name, widgets in row_widgets.items():
         status = statuses.get(name, _PENDING)

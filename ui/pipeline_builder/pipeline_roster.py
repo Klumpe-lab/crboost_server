@@ -1,15 +1,17 @@
-import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 from nicegui import ui
+from services.array_tasks import TaskProgress
 from services.models_base import JobStatus
-from services.project_state import JobType, get_project_state
+from services.project_state import JobType
+from ui.current_project import current_project_state
 
 from ui.components.reactive import FingerprintedView
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
-from ui.ui_state import get_job_display_name, get_instance_display_name, instance_id_to_job_type
+from services.models_base import InstanceId, instance_id_to_job_type
+from ui.ui_state import get_job_display_name, get_instance_display_name
 from ui.pipeline_builder.pipeline_constants import (
     PHASE_JOBS,
     PHASE_META,
@@ -63,7 +65,7 @@ def _inject_svg_color(svg: str, color: str) -> str:
     return svg
 
 
-def _resolve_array_job_dir(job_model, project_path: Optional[Path] = None) -> Optional[Path]:
+def _resolve_array_job_dir(job_model, project_path: Path | None = None) -> Path | None:
     """Resolve job directory for an array job model."""
     if not job_model:
         return None
@@ -81,67 +83,39 @@ def _resolve_array_job_dir(job_model, project_path: Optional[Path] = None) -> Op
     return None
 
 
-def _get_array_progress(job_model, project_path: Optional[Path] = None) -> Optional[Tuple[int, int, int, int]]:
-    """Return (n_done, n_failed, n_total, n_running) for array jobs, or None.
+def _get_array_progress(job_model, project_path: Path | None = None) -> TaskProgress | None:
+    """Return a TaskProgress for array jobs, or None (no job dir / no manifest).
 
-    n_done    = settled tasks (.ok + .fail)
-    n_failed  = .fail markers
-    n_total   = manifest item count
-    n_running = tasks SLURM has STARTED (task_<idx>.out exists) but not yet
-                settled. Surfacing this is what lets a fully-parallel array show
-                live work in flight instead of sitting at 0/N until a whole
-                throttle-wave of .ok markers lands at once.
+    Statuses are resolved PER MANIFEST ITEM via scan_statuses (an item can carry
+    both `.ok` and `.fail` from a superseded submission; `.ok` wins, matching
+    the per-TS sub-rows), and the tally is TaskProgress — the same settledness
+    arithmetic the task tracker uses. Skipped (muted) items count as settled, so
+    a job whose remaining items are all ok/skip reads as complete instead of
+    sitting at 5/6 forever.
     """
+    from services.array_tasks import manifest_items, progress
+
     job_dir = _resolve_array_job_dir(job_model, project_path)
     if job_dir is None:
         return None
 
-    manifest_path = job_dir / ".task_manifest.json"
-    if not manifest_path.exists():
-        return None
-    try:
-        manifest = json.loads(manifest_path.read_text())
-    except Exception:
-        return None
-    items = manifest.get("items", [])
+    items = manifest_items(job_dir)
     if not items:
         return None
-
-    status_dir = job_dir / ".task_status"
-    n_ok = 0
-    n_fail = 0
-    if status_dir.is_dir():
-        for p in status_dir.iterdir():
-            if p.suffix == ".ok":
-                n_ok += 1
-            elif p.suffix == ".fail":
-                n_fail += 1
-    # SLURM creates task_<idx>.out the moment a child task starts running, so the
-    # count of started-but-unsettled tasks is the honest "running now" signal.
-    n_started = sum(1 for _ in job_dir.glob("task_*.out"))
-    n_settled = n_ok + n_fail
-    n_running = max(0, n_started - n_settled)
-    return (n_settled, n_fail, len(items), n_running)
+    return progress(job_dir, items)
 
 
 def _get_array_ts_statuses(
-    job_model, project_path: Optional[Path] = None
-) -> Optional[Tuple[List[str], Dict[str, str], Dict[str, str]]]:
+    job_model, project_path: Path | None = None
+) -> tuple[list[str], dict[str, str], dict[str, str]] | None:
     """Return (items, statuses, display_names) for per-TS sub-rows, or None."""
-    from ui.components.task_utils import shorten_ts_names, scan_statuses
+    from services.array_tasks import manifest_items, shorten_ts_names, scan_statuses
 
     job_dir = _resolve_array_job_dir(job_model, project_path)
     if job_dir is None:
         return None
 
-    manifest_path = job_dir / ".task_manifest.json"
-    if not manifest_path.exists():
-        return None
-    try:
-        manifest = json.loads(manifest_path.read_text())
-    except Exception:
-        return None
-    items = manifest.get("items", [])
+    items = manifest_items(job_dir)
     if not items:
         return None
 
@@ -167,31 +141,30 @@ class RosterWidget(FingerprintedView):
     def __init__(self, panel: "PipelineBuilderPanel"):
         super().__init__()
         self.panel = panel
-        self._flash_phase: Optional[str] = None
+        self._flash_phase: str | None = None
         self._roster_visible: bool = True
-        self._roster_phase: Optional[str] = None
+        self._roster_phase: str | None = None
         # Which workspace view is showing (pipeline / workbench / journey).
         # Drives the nav-icon highlight; set by workspace _switch_to via
         # set_active_mode. Starts "pipeline" (the default view at load).
         self._active_mode: str = "pipeline"
-        self._refs: Dict = {}
+        self._refs: dict = {}
         # Per-instance expansion state for per-TS sub-rows, persisted across
         # roster refreshes (status_poller refreshes the roster every few seconds
         # and would otherwise collapse rows the user had opened).
-        self._expanded_instances: Dict[str, bool] = {}
+        self._expanded_instances: dict[str, bool] = {}
         # Per-tick cache of array job state. Populated by signature(), read by
         # render(). Keyed by instance_id. Avoids redundant disk reads per tick.
-        self._array_progress_cache: Dict[str, Optional[Tuple[int, int, int]]] = {}
-        self._array_ts_cache: Dict[str, Optional[Tuple[List[str], Dict[str, str], Dict[str, str]]]] = {}
+        self._array_progress_cache: dict[str, TaskProgress | None] = {}
+        self._array_ts_cache: dict[str, tuple[list[str], dict[str, str], dict[str, str]] | None] = {}
 
     def _get_container(self) -> Any:
         return self.panel.roster_panel
 
     def _status_widget(self, instance_id: str):
-        from services.project_state import get_project_state
         from ui.status_indicator import _dot_html, _running_spinner_html
 
-        job_model = get_project_state().jobs.get(instance_id)
+        job_model = current_project_state().jobs.get(instance_id)
         if not job_model:
             BoundStatusDot(instance_id)
             return
@@ -217,7 +190,7 @@ class RosterWidget(FingerprintedView):
         """
         panel = self.panel
         ui_mgr = panel.ui_mgr
-        jobs = panel.state_service.state.jobs
+        jobs = current_project_state().jobs
 
         # Populate caches that render() will re-read so the two stay in lockstep.
         # (No memoization across signature+render; they touch the same files,
@@ -305,6 +278,7 @@ class RosterWidget(FingerprintedView):
                 )
                 if phase_id == PHASE_PARTICLES:
                     ui.space()
+                    self._build_new_species_btn()
                     self._build_import_tomograms_btn()
 
             for job_type in jobs:
@@ -373,7 +347,7 @@ class RosterWidget(FingerprintedView):
 
     def _render_instance_row(self, panel, job_type, instance_id, indent=18, show_add=False):
         """Render a single job instance row — single line with icons at end."""
-        job_model = panel.state_service.state.jobs.get(instance_id)
+        job_model = current_project_state().jobs.get(instance_id)
 
         base_name = get_job_display_name(job_type)
         relion_job_name = getattr(job_model, "relion_job_name", None) if job_model else None
@@ -381,9 +355,8 @@ class RosterWidget(FingerprintedView):
             job_folder = relion_job_name.rstrip("/").split("/")[-1]
             display_text = f"{base_name} ({job_folder})"
         else:
-            parts = instance_id.split("__", 1)
-            if len(parts) > 1:
-                suffix = parts[1]
+            suffix = InstanceId.split(instance_id)[1]
+            if suffix is not None:
                 display_text = f"{base_name} #{suffix}" if suffix.isdigit() else f"{base_name} ({suffix})"
             else:
                 display_text = base_name
@@ -438,15 +411,20 @@ class RosterWidget(FingerprintedView):
             # signature can't disagree on what's being painted.
             progress = self._array_progress_cache.get(instance_id)
             if progress is not None:
-                n_done, n_fail, n_total, n_running = progress
-                n_ok = n_done - n_fail
+                n_ok, n_fail, n_skip, n_total = progress.n_ok, progress.n_fail, progress.n_skip, progress.total
                 # Live "running now" chip — shows that a parallel array is actively
                 # working even while the settled count (below) sits low between
                 # throttle-waves, so the row no longer looks frozen at 0/N.
-                if n_running > 0:
-                    ui.label(f"▸{n_running}").style(
+                if progress.n_running > 0:
+                    ui.label(f"▸{progress.n_running}").style(
                         f"{MONO} font-size: 9px; font-weight: 700; color: #2563eb; flex-shrink: 0;"
-                    ).tooltip(f"{n_running} tilt-series running now")
+                    ).tooltip(f"{progress.n_running} tilt-series running now")
+                # Skipped (muted) chip — settled by design, shown apart from the
+                # ok count so "5/6 ⊘1" isn't mistaken for an incomplete run.
+                if n_skip > 0:
+                    ui.label(f"⊘{n_skip}").style(
+                        f"{MONO} font-size: 9px; font-weight: 600; color: #94a3b8; flex-shrink: 0;"
+                    ).tooltip(f"{n_skip} tilt-series skipped (muted / nothing to do)")
                 if n_fail > 0:
                     # Show "ok/total fail!" — e.g. "17/18 1!"
                     ui.label(f"{n_ok}/{n_total}").style(
@@ -455,11 +433,11 @@ class RosterWidget(FingerprintedView):
                     ui.label(f"{n_fail}!").style(
                         f"{MONO} font-size: 9px; font-weight: 700; color: #dc2626; flex-shrink: 0;"
                     )
-                elif n_done == n_total:
+                elif progress.n_settled == n_total:
                     ui.label(f"{n_ok}/{n_total}").style(
                         f"{MONO} font-size: 9px; font-weight: 600; color: #16a34a; flex-shrink: 0;"
                     )
-                elif n_done > 0:
+                elif progress.n_settled > 0:
                     ui.label(f"{n_ok}/{n_total}").style(
                         f"{MONO} font-size: 9px; font-weight: 600; color: #2563eb; flex-shrink: 0;"
                     )
@@ -564,12 +542,12 @@ class RosterWidget(FingerprintedView):
     def _render_ts_sub_rows(
         self,
         instance_id: str,
-        items: List[str],
-        statuses: Dict[str, str],
-        display_names: Dict[str, str],
+        items: list[str],
+        statuses: dict[str, str],
+        display_names: dict[str, str],
         indent: int,
         expanded: bool = False,
-        job_dir: Optional[Path] = None,
+        job_dir: Path | None = None,
     ):
         """Render the collapsible per-tilt-series status list under an array job.
 
@@ -583,7 +561,7 @@ class RosterWidget(FingerprintedView):
         to the matching entry there — no pop-up dialog, nothing to get auto-closed
         by a background refresh.
         """
-        from ui.components.task_utils import sort_ts_by_position
+        from services.array_tasks import sort_ts_by_position
 
         _TS_COLORS = {"ok": "#16a34a", "fail": "#dc2626", "running": "#2563eb", "pending": "#d1d5db"}
         _TS_ICONS = {"ok": "check_circle", "fail": "error", "running": "sync", "pending": "radio_button_unchecked"}
@@ -726,7 +704,9 @@ class RosterWidget(FingerprintedView):
                     dialog.close()
                     try:
                         result = await panel.backend.delete_job(
-                            instance_id_to_job_type(instance_id).value, instance_id=instance_id
+                            instance_id_to_job_type(instance_id).value,
+                            project_path=panel.ui_mgr.project_path,
+                            instance_id=instance_id,
                         )
                         if result.get("success"):
                             orphans = result.get("orphaned_jobs", [])
@@ -880,7 +860,7 @@ class RosterWidget(FingerprintedView):
         if panel.primary_sidebar is None:
             return
 
-        state = get_project_state()
+        state = current_project_state()
 
         with panel.primary_sidebar:
             ui.element("div").style("height: 8px;")
@@ -1036,13 +1016,20 @@ class RosterWidget(FingerprintedView):
     def _render_dataset_ts_expansion(self, state) -> None:
         """Collapsible per-tilt-series table living on the Dataset row.
 
-        Replaces the old fixed-height, nested-scrollbar TS table.
+        Rows come from the TiltSeriesRegistry (roadmap 02 stage 4) — the
+        ProjectState mirror it used to read is gone. Pre-registry projects
+        simply have no expansion (counts in the header still render).
         """
-        ts_details = state.import_tilt_series_details
-        if not ts_details:
+        from services.tilt_series import get_registry_for
+
+        try:
+            all_ts = list(get_registry_for(state.project_path).all_tilt_series())
+        except Exception:
+            all_ts = []
+        if not all_ts:
             return
-        selected_ts = [td for td in ts_details if td.selected]
-        excluded_ts = [td for td in ts_details if not td.selected]
+        selected_ts = [t for t in all_ts if t.is_selected]
+        excluded_ts = [t for t in all_ts if not t.is_selected]
         sel = state.import_selected_tilt_series
         tot = state.import_total_tilt_series
         header_text = f"{sel} of {tot} tilt-series"
@@ -1077,7 +1064,7 @@ class RosterWidget(FingerprintedView):
                 ):
                     _ts_cell(str(td.stage_position), "#64748b")
                     _ts_cell(str(td.beam_position), "#64748b")
-                    _ts_cell(str(td.tilt_count), "#64748b")
+                    _ts_cell(str(td.frame_count), "#64748b")
                     _ts_cell(
                         td.mdoc_filename, "#94a3b8", extra="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                     )
@@ -1106,8 +1093,8 @@ class RosterWidget(FingerprintedView):
         # rather than capturing the value avoids stale closures when the
         # auto-refresh fires.
         current_base = {"path": base_path}
-        history_refs: Dict = {"container": None, "visible": False, "dropdown": None, "path_input": None}
-        overview_ref: Dict = {"comp": None}
+        history_refs: dict = {"container": None, "visible": False, "dropdown": None, "path_input": None}
+        overview_ref: dict = {"comp": None}
 
         # ── switch handler ────────────────────────────────────────────────────
 
@@ -1209,9 +1196,10 @@ class RosterWidget(FingerprintedView):
                     prefs_service.prefs.add_recent_root(new_base)
                     prefs_service.save_to_app_storage(ng_app.storage.user)
                     _render_history()
+
         # ── selected-project preview (left pane) ─────────────────────────────
         selected_ref = {"path": current_path_str}
-        left_refs: Dict = {"container": None}
+        left_refs: dict = {"container": None}
 
         async def _load_left(path_str):
             left = left_refs.get("container")
@@ -1288,8 +1276,7 @@ class RosterWidget(FingerprintedView):
             # Two-column body: left = selected project's params, right = the
             # all-projects roster (single-click previews here; arrow opens).
             with ui.element("div").style(
-                "display: flex; flex-direction: row; align-items: stretch; width: 100%; "
-                "flex: 1 1 auto; min-height: 0;"
+                "display: flex; flex-direction: row; align-items: stretch; width: 100%; flex: 1 1 auto; min-height: 0;"
             ):
                 # LEFT — parameter panel for the previewed project.
                 with ui.element("div").style(
@@ -1401,7 +1388,7 @@ class RosterWidget(FingerprintedView):
     # (_running_spinner_html); there is no server-driven advance() loop. The
     # previous 0.17 s ui.timer + ui.run_javascript broadcast lived here.
 
-    def update_status_label(self, overview: Dict):
+    def update_status_label(self, overview: dict):
         el = self._refs.get("status_label")
         if el is None:
             return
@@ -1410,7 +1397,7 @@ class RosterWidget(FingerprintedView):
         # from PHASE_JOBS / roster). Mirror that filter on the fallback so the
         # first paint -- before the first overview poll returns -- doesn't inflate.
         _hidden = {JobType.IMPORT_MOVIES.value, JobType.TS_IMPORT.value}
-        visible_selected = sum(1 for iid in self.panel.ui_mgr.selected_jobs if iid.split("__")[0] not in _hidden)
+        visible_selected = sum(1 for iid in self.panel.ui_mgr.selected_jobs if InstanceId.split(iid)[0] not in _hidden)
         total = overview.get("total", visible_selected) if overview else visible_selected
         text = f"{done}/{total}"
         # Surface SLURM queue waits so a long pending time reads as a cluster
@@ -1437,6 +1424,51 @@ class RosterWidget(FingerprintedView):
             return p.read_text()
         except FileNotFoundError:
             return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>'
+
+    def _build_new_species_btn(self):
+        """PARTICLES-header utility: create a label-only species de novo.
+
+        The de-novo path: no template, no template-matching job, possibly zero
+        parameters — the species exists so the user can start hand-picking in
+        ArtiaX immediately. The template workbench's "+" remains the
+        template-driven entry point; this one is for species that never have one.
+        """
+        from services.project_state import get_project_state_for
+        from ui.species_workbench_panel import _prompt_species_name
+
+        project_path = self.panel.ui_mgr.project_path
+
+        async def _create():
+            # SingleFlight: this button lives in a poll-refreshed container, so it can
+            # be destroyed and rebuilt mid-click — without the guard each stray click
+            # queues another dialog.
+            async with self.panel.flight("new_species") as acquired:
+                if not acquired:
+                    return
+                name = await _prompt_species_name()
+                if not name:
+                    return
+                state = get_project_state_for(project_path)
+                # origin="manual": no template dir is created here, unlike the
+                # workbench "+" — a de-novo species may never have a template.
+                species = state.add_species(name, origin="manual")
+                await self.panel.backend.save_project(project_path)
+                ui.notify(f"Created species '{species.name}'", type="positive")
+                self.panel.rebuild_pipeline_ui()
+
+        container = (
+            ui.element("div")
+            .style(
+                "width: 22px; height: 22px; border-radius: 4px; "
+                "display: flex; align-items: center; justify-content: center; "
+                "cursor: pointer; flex-shrink: 0;"
+            )
+            .on("click", _create)
+            .tooltip("New species (pick by hand — no template needed)")
+        )
+        with container:
+            ui.icon("add_circle_outline", size="15px").style("color: #6366f1; pointer-events: none;")
+        return container
 
     def _build_import_tomograms_btn(self):
         """PARTICLES-header utility: import tomograms into a data-less project. A
@@ -1529,9 +1561,9 @@ class RosterWidget(FingerprintedView):
         anchor in the sidebar instead of a button that pops in and out as
         jobs run.
         """
-        from ui.dashboard.data import has_any_previews_rendered
+        from services.dashboard_data import has_any_previews_rendered
 
-        rendered = has_any_previews_rendered()
+        rendered = has_any_previews_rendered(current_project_state())
         svg = self._load_svg(_TOMO_DASHBOARD_SVG).replace("currentColor", SB_MUTE)
 
         container = (
@@ -1599,7 +1631,7 @@ class RosterWidget(FingerprintedView):
             self._refs[ref_key] = container
         return container
 
-    def _info_popup_btn(self, icon_name: str, title: str, rows: list, icon_color: str = None):
+    def _info_popup_btn(self, icon_name: str, title: str, rows: list, icon_color: str | None = None):
         color = icon_color or SB_MUTE
         btn = (
             ui.button(icon=icon_name)

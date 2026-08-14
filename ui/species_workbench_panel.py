@@ -1,15 +1,12 @@
 from __future__ import annotations
-import asyncio
-from pathlib import Path
-from typing import Dict, Optional
 
 from nicegui import ui
 
-from services.project_state import get_project_state_for, get_state_service
+from services.project_state import get_project_state_for
 from ui.ui_state import get_ui_state_manager
 
 
-async def _prompt_species_name() -> Optional[str]:
+async def _prompt_species_name() -> str | None:
     with ui.dialog() as dialog, ui.card().classes("w-80 p-4 gap-3"):
         ui.label("New Species").classes("text-base font-bold text-gray-800")
         name_input = (
@@ -43,9 +40,9 @@ def build_species_workbench_panel(backend) -> None:
             ui.label("No project loaded").classes("text-sm text-gray-400")
         return
 
-    _active: Dict[str, Optional[str]] = {"species_id": None}
-    _workbench_containers: Dict[str, object] = {}
-    _refs: Dict[str, object] = {}
+    _active: dict[str, str | None] = {"species_id": None}
+    _workbench_containers: dict[str, object] = {}
+    _refs: dict[str, object] = {}
 
     # ── Tab strip ────────────────────────────────────────────────────────────
 
@@ -153,7 +150,7 @@ def build_species_workbench_panel(backend) -> None:
         state = get_project_state_for(project_path)
         species = state.add_species(name)
         (project_path / "templates" / species.id).mkdir(parents=True, exist_ok=True)
-        await get_state_service().save_project(project_path=project_path)
+        await backend.save_project(project_path)
         _switch_species(species.id)
 
     # ── Layout ────────────────────────────────────────────────────────────────

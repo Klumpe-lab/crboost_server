@@ -2,12 +2,11 @@ import os
 import json
 import asyncio
 import logging
-import subprocess
 from pathlib import Path
 import textwrap
-from typing import Dict, Any, Optional
-from Bio.PDB import MMCIFParser, MMCIFIO
+from typing import Any
 from services.computing.container_service import get_container_service
+from services.result import err, ok
 from services.templating.template_service import normalize_white_and_negate_to_black
 
 logger = logging.getLogger(__name__)
@@ -44,8 +43,8 @@ class PDBService:
     # =========================================================================
 
     async def _run_pymol_script(
-        self, script_content: str, output_dir: Path, additional_binds: list = None
-    ) -> Dict[str, Any]:
+        self, script_content: str, output_dir: Path, additional_binds: list | None = None
+    ) -> dict[str, Any]:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -92,7 +91,7 @@ class PDBService:
     # STRUCTURE METADATA
     # =========================================================================
 
-    async def get_structure_metadata(self, pdb_path: str) -> Dict[str, Any]:
+    async def get_structure_metadata(self, pdb_path: str) -> dict[str, Any]:
         """Extract metadata using PyMOL."""
         pdb_path = str(Path(pdb_path).resolve())
 
@@ -134,20 +133,20 @@ except Exception as e:
         result = await self._run_pymol_script(script, output_dir, [str(output_dir)])
 
         if not result.get("success"):
-            return {"success": False, "error": result.get("error", "Unknown error")}
+            return err(result.get("error") or "Unknown error")
 
         stdout = result.get("output", "")
         for line in stdout.split("\n"):
             if line.startswith("PYMOL_RESULT:"):
                 return json.loads(line.replace("PYMOL_RESULT:", ""))
 
-        return {"success": False, "error": "No result found in PyMOL output"}
+        return err("No result found in PyMOL output")
 
     # =========================================================================
     # ALIGNMENT
     # =========================================================================
 
-    async def align_to_principal_axes(self, input_path: str, output_path: str) -> Dict[str, Any]:
+    async def align_to_principal_axes(self, input_path: str, output_path: str) -> dict[str, Any]:
         """Align structure using PyMOL."""
         input_path = str(Path(input_path).resolve())
         output_path = str(Path(output_path).resolve())
@@ -198,19 +197,19 @@ except Exception as e:
         result = await self._run_pymol_script(script, output_dir, [str(input_dir), str(output_dir)])
 
         if not result.get("success"):
-            return {"success": False, "error": result.get("error", "Unknown error")}
+            return err(result.get("error") or "Unknown error")
 
         # CRITICAL: Re-parse CIF on host
         if output_path.endswith(".cif") and Path(output_path).exists():
             if not self._reparse_cif(Path(output_path)):
-                return {"success": False, "error": "CIF post-processing failed"}
+                return err("CIF post-processing failed")
 
         stdout = result.get("output", "")
         for line in stdout.split("\n"):
             if line.startswith("PYMOL_RESULT:"):
                 return json.loads(line.replace("PYMOL_RESULT:", ""))
 
-        return {"success": True, "path": output_path}
+        return ok(path=output_path)
 
     # =========================================================================
     # CISTEM SIMULATION - Fixed to match original exactly
@@ -223,20 +222,20 @@ except Exception as e:
         target_apix: float,
         target_box: int,
         resolution: float = 10.0,
-        sim_apix: Optional[float] = None,
-        sim_box: Optional[int] = None,
+        sim_apix: float | None = None,
+        sim_box: int | None = None,
         mod_scale_bf: float = 1.0,
         mod_bf: float = 0.0,
         oversample: int = 2,
         num_frames: int = 7,
         num_threads: int = 25,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Simulate density map from PDB using CISTEM."""
         try:
             # CHECK: Ensure cistem is configured (binary or container)
             cistem_config = self.container_service.config.get_tool_config("cistem")
             if not cistem_config:
-                return {"success": False, "error": "Tool 'cistem' not configured in conf.yaml"}
+                return err("Tool 'cistem' not configured in conf.yaml")
 
             pdb_path = str(Path(pdb_path).resolve())
             output_folder = str(Path(output_folder).resolve())
@@ -251,7 +250,7 @@ except Exception as e:
             if sim_box is None:
                 meta = await self.get_structure_metadata(pdb_path)
                 if not meta.get("success"):
-                    return {"success": False, "error": "Could not determine structure dimensions"}
+                    return err(f"Could not determine structure dimensions: {meta.get('error') or 'unknown error'}")
                 max_dim = meta["max_dim"]
                 sim_box = self._calculate_optimal_box(max_dim, sim_apix)
 
@@ -307,9 +306,9 @@ except Exception as e:
         except Exception as e:
             import traceback
 
-            error_detail = f"Simulation error: {str(e)}\n{traceback.format_exc()}"
+            error_detail = f"Simulation error: {e!s}\n{traceback.format_exc()}"
             logger.error("✗ %s", error_detail)
-            return {"success": False, "error": error_detail}
+            return err(error_detail)
 
     async def _run_cistem_with_pymol(
         self,
@@ -323,7 +322,7 @@ except Exception as e:
         oversample: int,
         num_frames: int,
         num_threads: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Prepare structure with PyMOL then run CISTEM.
         Uses absolute paths throughout - cisTEM supports this natively.
@@ -398,16 +397,16 @@ except Exception as e:
         pymol_result = await self._run_pymol_script(pymol_script, output_folder, binds_needed)
 
         if not pymol_result.get("success"):
-            return {"success": False, "error": f"PyMOL failed: {pymol_result.get('error')}"}
+            return err(f"PyMOL failed: {pymol_result.get('error') or 'unknown error'}")
 
         # CRITICAL: Verify file exists on HOST
         if not struct_file.exists():
-            return {"success": False, "error": f"PyMOL did not create {struct_file.name}"}
+            return err(f"PyMOL did not create {struct_file.name}")
 
         # CRITICAL: Re-parse CIF using BioPython (matches original libpdb.py lines 69-74)
         logger.info("Re-parsing CIF with BioPython...")
         if not self._reparse_cif(struct_file):
-            return {"success": False, "error": "CIF post-processing failed"}
+            return err("CIF post-processing failed")
 
         logger.info("✓ Structure prepared: %s (%s bytes)", struct_file.name, f"{struct_file.stat().st_size:,}")
 
@@ -478,10 +477,10 @@ except Exception as e:
                     process.communicate(input=stdin_input.encode("utf-8")),
                     timeout=600,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.wait()
-                return {"success": False, "error": "cisTEM timeout (>600s)"}
+                return err("cisTEM timeout (>600s)")
 
             stdout = (stdout_b or b"").decode("utf-8", errors="replace")
             stderr = (stderr_b or b"").decode("utf-8", errors="replace")
@@ -489,7 +488,7 @@ except Exception as e:
             logger.info("✓ cisTEM completed (exit code: %s)", process.returncode)
 
             if stdout:
-                lines = [l for l in stdout.strip().split("\n") if l.strip()]
+                lines = [ln for ln in stdout.strip().split("\n") if ln.strip()]
                 if len(lines) > 30:
                     logger.info("Output (last 15 lines):")
                     for line in lines[-15:]:
@@ -508,14 +507,14 @@ except Exception as e:
                 error = f"cisTEM failed with exit code {process.returncode}"
                 if stderr:
                     error += f"\nStderr: {stderr[:500]}"
-                return {"success": False, "error": error}
+                return err(error)
 
             # Verify output exists
             if not sim_output_path.exists():
                 error = f"cisTEM did not create output file: {sim_output_path}\nDirectory contents:\n"
                 for f in output_folder.iterdir():
                     error += f"  {f.name}\n"
-                return {"success": False, "error": error}
+                return err(error)
 
             # Verify MRC is valid
             try:
@@ -529,7 +528,7 @@ except Exception as e:
                         sim_output_path.name, shape, voxel_size,
                     )
             except Exception as e:
-                return {"success": False, "error": f"Invalid MRC file created: {e}"}
+                return err(f"Invalid MRC file created: {e}")
 
             # Cleanup structure file (optional - keep for debugging if needed)
             try:
@@ -538,13 +537,13 @@ except Exception as e:
             except Exception as e:
                 logger.warning("⚠ Could not delete %s: %s", struct_file.name, e)
 
-            return {"success": True, "sim_path": str(sim_output_path)}
+            return ok(sim_path=str(sim_output_path))
 
         except Exception as e:
             import traceback
 
-            error = f"cisTEM execution error: {str(e)}\n{traceback.format_exc()}"
-            return {"success": False, "error": error}
+            error = f"cisTEM execution error: {e!s}\n{traceback.format_exc()}"
+            return err(error)
 
 
     async def _process_simulated_map(
@@ -556,7 +555,7 @@ except Exception as e:
         target_apix: float,
         target_box: int,
         resolution: float,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Process CISTEM output with Relion."""
         try:
             logger.info("Step 3/3: Template Finalization (Relion)")
@@ -587,19 +586,19 @@ except Exception as e:
             )
 
             if not result_white.get("success"):
-                return {"success": False, "error": f"Relion (white) failed: {result_white.get('error')}"}
+                return err(f"Relion (white) failed: {result_white.get('error') or 'unknown error'}")
 
             # σ-normalize the resampled+lowpassed white volume and emit
             # black as its negation. Shared with process_volume_async to
             # keep all template outputs at mean=0, std=1 regardless of
             # source (RELION class / EMDB / PDB simulate / ellipsoid).
-            err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_white, path_black)
-            if err:
-                return {"success": False, "error": f"Normalization failed: {err}"}
+            norm_err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_white, path_black)
+            if norm_err:
+                return err(f"Normalization failed: {norm_err}")
 
-            return {"success": True, "path": path_black, "path_white": path_white, "path_black": path_black}
+            return ok(path=path_black, path_white=path_white, path_black=path_black)
 
         except Exception as e:
             import traceback
 
-            return {"success": False, "error": f"Processing error: {str(e)}\n{traceback.format_exc()}"}
+            return err(f"Processing error: {e!s}\n{traceback.format_exc()}")

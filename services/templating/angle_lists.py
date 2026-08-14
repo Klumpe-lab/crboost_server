@@ -82,9 +82,9 @@ def _uniform_so3_grid(angle_increment_deg: float) -> np.ndarray:
     30 × 15 × 30 = 13500 angles full-SO(3); ~225 after I1 reduction.
     """
     inc_rad = np.deg2rad(angle_increment_deg)
-    n_alpha = max(1, int(round(2 * np.pi / inc_rad)))
-    n_beta = max(1, int(round(np.pi / inc_rad)))
-    n_gamma = max(1, int(round(2 * np.pi / inc_rad)))
+    n_alpha = max(1, round(2 * np.pi / inc_rad))
+    n_beta = max(1, round(np.pi / inc_rad))
+    n_gamma = max(1, round(2 * np.pi / inc_rad))
 
     alphas = np.linspace(0.0, 2 * np.pi, n_alpha, endpoint=False)
     step = 2.0 / n_beta
@@ -159,8 +159,8 @@ def expected_angle_count(point_group: str, angle_increment_deg: float) -> int:
     """Rough estimate of the output count, before actually running the
     reduction. Used for sanity-check logging at supervisor time."""
     inc_rad = np.deg2rad(angle_increment_deg)
-    n_alpha = max(1, int(round(2 * np.pi / inc_rad)))
-    n_beta = max(1, int(round(np.pi / inc_rad)))
-    n_gamma = max(1, int(round(2 * np.pi / inc_rad)))
+    n_alpha = max(1, round(2 * np.pi / inc_rad))
+    n_beta = max(1, round(np.pi / inc_rad))
+    n_gamma = max(1, round(2 * np.pi / inc_rad))
     full_n = n_alpha * n_beta * n_gamma
     return max(1, full_n // POINT_GROUP_ORDER[point_group])

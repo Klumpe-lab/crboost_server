@@ -9,14 +9,15 @@ import mrcfile
 from scipy import fftpack
 from skimage import filters
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Any
 
 from services.computing.container_service import get_container_service
+from services.result import err, ok
 
 logger = logging.getLogger(__name__)
 
 
-def normalize_white_and_negate_to_black(path_white: str, path_black: str) -> Optional[str]:
+def normalize_white_and_negate_to_black(path_white: str, path_black: str) -> str | None:
     """Read `path_white`, σ-normalize (subtract mean, divide by std),
     write back to `path_white`, and write the negation to `path_black`.
 
@@ -66,19 +67,19 @@ class TemplateService:
     # ASYNC WRAPPERS
     # =========================================================
 
-    async def fetch_emdb_map_async(self, emdb_id: str, output_folder: str) -> Dict[str, Any]:
+    async def fetch_emdb_map_async(self, emdb_id: str, output_folder: str) -> dict[str, Any]:
         return await asyncio.to_thread(self._fetch_emdb_map_sync, emdb_id, output_folder)
 
-    async def fetch_pdb_async(self, pdb_id: str, output_folder: str) -> Dict[str, Any]:
+    async def fetch_pdb_async(self, pdb_id: str, output_folder: str) -> dict[str, Any]:
         return await asyncio.to_thread(self._fetch_pdb_sync, pdb_id, output_folder)
 
-    async def list_template_files_async(self, folder: str) -> List[str]:
+    async def list_template_files_async(self, folder: str) -> list[str]:
         return await asyncio.to_thread(self._list_files_sync, folder)
 
-    async def calculate_thresholds_async(self, input_path: str, lowpass: float = None) -> Dict[str, float]:
+    async def calculate_thresholds_async(self, input_path: str, lowpass: float | None = None) -> dict[str, float]:
         return await asyncio.to_thread(self._calculate_thresholds_sync, input_path, lowpass)
 
-    async def delete_file_async(self, file_path: str) -> Dict[str, Any]:
+    async def delete_file_async(self, file_path: str) -> dict[str, Any]:
         return await asyncio.to_thread(self._delete_file_sync, file_path)
 
     # =========================================================
@@ -91,10 +92,10 @@ class TemplateService:
         output_folder: str,
         target_apix: float,
         target_box: int,
-        resolution: float = None,
+        resolution: float | None = None,
         tag: str = "",
         normalize: bool = True,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Processes volume using relion_image_handler.
         Replaces legacy scipy zoom with Fourier-space resampling.
@@ -108,7 +109,7 @@ class TemplateService:
         """
         try:
             if not os.path.exists(input_path):
-                return {"success": False, "error": "Input file not found"}
+                return err("Input file not found")
 
             os.makedirs(output_folder, exist_ok=True)
             base = tag if tag else Path(input_path).stem
@@ -136,9 +137,9 @@ class TemplateService:
                 return res_w
 
             if normalize:
-                err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_w, path_b)
-                if err:
-                    return {"success": False, "error": f"Normalization failed: {err}"}
+                norm_err = await asyncio.to_thread(normalize_white_and_negate_to_black, path_w, path_b)
+                if norm_err:
+                    return err(f"Normalization failed: {norm_err}")
             else:
                 cmd_b = f"relion_image_handler --i {path_w} --o {path_b} --multiply_constant -1"
                 res_b = await self.backend.run_shell_command(
@@ -147,16 +148,16 @@ class TemplateService:
                 if not res_b["success"]:
                     return res_b
 
-            return {"success": True, "path_white": path_w, "path_black": path_b}
+            return ok(path_white=path_w, path_black=path_b)
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
 
     async def generate_basic_shape_async(
         self, shape_def: str, pixel_size: float, output_folder: str,
         min_box_size: int = 96, lowpass_res: float | None = None
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Generate ellipsoid with numpy and refine with RELION.
         The resulting white/black templates are zero-mean unit-variance,
         matching the old gaussian_lowpass_mrc normalisation behaviour.
@@ -203,7 +204,7 @@ class TemplateService:
             return res
 
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     # =========================================================
     # SPHERICAL MASK
@@ -216,7 +217,7 @@ class TemplateService:
         box_px: int,
         diameter_ang: float,
         soft_edge_pixels: float = 5.0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Write a soft-edged spherical mask MRC at the given apix + box.
 
         Values are 1 inside `diameter/2`, 0 outside, with a cosine soft
@@ -237,10 +238,10 @@ class TemplateService:
         box_px: int,
         diameter_ang: float,
         soft_edge_pixels: float,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         try:
             if apix_ang <= 0 or box_px <= 0 or diameter_ang <= 0:
-                return {"success": False, "error": "apix, box, and diameter must be positive"}
+                return err("apix, box, and diameter must be positive")
             if soft_edge_pixels < 0:
                 soft_edge_pixels = 0.0
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -276,15 +277,10 @@ class TemplateService:
                 m.set_data(mask)
                 m.voxel_size = apix_ang
 
-            return {
-                "success": True,
-                "path": output_path,
-                "diameter_ang": diameter_ang,
-                "soft_edge_pixels": soft_r_px,
-            }
+            return ok(path=output_path, diameter_ang=diameter_ang, soft_edge_pixels=soft_r_px)
         except Exception as e:
             logger.exception("spherical mask creation failed")
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     # =========================================================
     # RELION MASKING
@@ -308,16 +304,16 @@ class TemplateService:
             )
 
             if res["success"]:
-                return {"success": True, "path": abs_out}
-            return {"success": False, "error": res.get("error", "Unknown error")}
+                return ok(path=abs_out)
+            return err(res.get("error") or "Unknown error")
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     # =========================================================
     # INTERNAL UTILS
     # =========================================================
 
-    def _calculate_thresholds_sync(self, input_path: str, lowpass: float = None) -> Dict[str, float]:
+    def _calculate_thresholds_sync(self, input_path: str, lowpass: float | None = None) -> dict[str, float]:
         """Calculate multiple threshold methods using skimage filters."""
         try:
             with mrcfile.open(input_path) as mrc:
@@ -356,39 +352,39 @@ class TemplateService:
         filtered_vol = np.real(fftpack.ifftn(vol_fft * gaussian_filter))
         return filtered_vol.astype(np.float32)
 
-    def _list_files_sync(self, folder: str) -> List[str]:
+    def _list_files_sync(self, folder: str) -> list[str]:
         path = Path(folder)
         if not path.exists():
             return []
         extensions = {".pdb", ".cif", ".mrc", ".map", ".rec", ".ccp4", ".ent"}
         return sorted([str(f) for f in path.iterdir() if f.suffix.lower() in extensions and "_preview" not in f.name])
 
-    def _delete_file_sync(self, file_path: str) -> Dict[str, Any]:
+    def _delete_file_sync(self, file_path: str) -> dict[str, Any]:
         try:
             p = Path(file_path)
             if p.exists() and p.is_file():
                 os.remove(p)
-                return {"success": True}
-            return {"success": False, "error": "File not found"}
+                return ok()
+            return err("File not found")
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
-    def _fetch_pdb_sync(self, pdb_id: str, output_folder: str) -> Dict[str, Any]:
+    def _fetch_pdb_sync(self, pdb_id: str, output_folder: str) -> dict[str, Any]:
         try:
             pdb_id = pdb_id.lower().strip()
             out_path = Path(output_folder) / f"{pdb_id}.cif"
             if out_path.exists():
-                return {"success": True, "path": str(out_path)}
+                return ok(path=str(out_path))
 
             url = f"https://files.rcsb.org/download/{pdb_id}.cif"
             with requests.get(url, stream=True, timeout=30) as r:
                 r.raise_for_status()
                 out_path.write_bytes(r.content)
-            return {"success": True, "path": str(out_path)}
+            return ok(path=str(out_path))
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
-    def _fetch_emdb_map_sync(self, emdb_id: str, output_folder: str) -> Dict[str, Any]:
+    def _fetch_emdb_map_sync(self, emdb_id: str, output_folder: str) -> dict[str, Any]:
         try:
             emdb_id = emdb_id.upper().strip().replace("EMD-", "").replace("EMD", "")
             url = f"https://ftp.ebi.ac.uk/pub/databases/emdb/structures/EMD-{emdb_id}/map/emd_{emdb_id}.map.gz"
@@ -396,7 +392,7 @@ class TemplateService:
             map_path = os.path.join(output_folder, f"emd_{emdb_id}.map")
 
             if os.path.exists(map_path):
-                return {"success": True, "path": map_path}
+                return ok(path=map_path)
 
             with requests.get(url, stream=True, timeout=60) as r:
                 r.raise_for_status()
@@ -409,6 +405,6 @@ class TemplateService:
 
             if os.path.exists(gz_path):
                 os.remove(gz_path)
-            return {"success": True, "path": map_path}
+            return ok(path=map_path)
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))

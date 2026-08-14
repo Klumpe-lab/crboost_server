@@ -129,9 +129,9 @@ def step_config_file() -> tuple[dict, list]:
 
     # Python executable
     default_python = str(Path(config["crboost_root"]) / "venv" / "bin" / "python3")
-    info(f"Suggested python paths:")
+    info("Suggested python paths:")
     print(f"       venv:  {default_python}")
-    print(f"       conda: ~/miniconda3/envs/crboost/bin/python")
+    print("       conda: ~/miniconda3/envs/crboost/bin/python")
     config["crboost_python"] = prompt("crboost_python", default=default_python)
 
 
@@ -205,16 +205,16 @@ def step_config_file() -> tuple[dict, list]:
         if mode == "container":
             # Auto-guess path
             guess_path = f"{container_base_dir}/{tool_name}.sif"
-            path = prompt(f"  Container path (.sif)", default=guess_path)
+            path = prompt("  Container path (.sif)", default=guess_path)
             tool_config["container_path"] = path
             tool_config["bin_path"] = ""
             
-            if not path or path == guess_path and not Path(path).exists():
+            if not path or (path == guess_path and not Path(path).exists()):
                 unset_fields.append(f"tools.{tool_name}")
                 
         else:
             # Binary mode
-            path = prompt(f"  Binary path (or command name)", default=tool_name)
+            path = prompt("  Binary path (or command name)", default=tool_name)
             tool_config["bin_path"] = path
             tool_config["container_path"] = ""
             
@@ -366,7 +366,7 @@ def step_validate_tools(config: dict) -> dict:
                 path_to_test = path
             else:
                 # check `which`
-                s, o, _ = run_cmd(f"which {path}")
+                s, _o, _ = run_cmd(f"which {path}")
                 exists = s
                 path_to_test = path # assume in path
             
@@ -480,7 +480,7 @@ def step_validate_directories(config: dict) -> list:
         warn("local.DefaultProjectBase not set")
         issues.append("DefaultProjectBase")
     elif project_base.startswith("/path/to"):
-        warn(f"DefaultProjectBase is placeholder")
+        warn("DefaultProjectBase is placeholder")
         issues.append("DefaultProjectBase")
     else:
         ppath = Path(project_base)
@@ -531,7 +531,7 @@ def print_summary(config: dict, tool_results: dict, unset_fields: list, qsub_tod
     print(f"  crboost_python: {fmt_val(python_exec)}")
     print(f"  DefaultProjectBase: {fmt_val(project_base)}")
 
-    print(f"\n  Tools:")
+    print("\n  Tools:")
     for name, r in tool_results.items():
         if r.get("works"):
             print(f"    {C.G}{name}: OK{C.E}")
@@ -559,7 +559,7 @@ def main():
     print(f"{C.BOLD}CryoBoost Setup{C.E} - {SCRIPT_DIR}\n")
 
     try:
-        import yaml
+        import yaml  # noqa: F401 -- availability probe only
     except ImportError:
         fail("PyYAML not installed")
         info("Run: pip install pyyaml (or use your venv/conda)")

@@ -20,7 +20,8 @@ from __future__ import annotations
 import copy
 import logging
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -68,14 +69,14 @@ def _glob_target_exists(value: str) -> bool:
     return p.exists()
 
 
-def open_config_settings(on_saved: Optional[Callable[[], None]] = None) -> None:
+def open_config_settings(on_saved: Callable[[], None] | None = None) -> None:
     """Open the settings dialog. `on_saved` is called after a successful
     save/revert so callers (the landing strip) can refresh their status."""
     cs = get_config_service()
     eff = cs.effective_dict()
 
     # Working copy the inputs mutate in place; saved as-is (diffed vs default).
-    nv: Dict[str, Any] = {
+    nv: dict[str, Any] = {
         "crboost_root": eff.get("crboost_root", "") or "",
         "crboost_python": eff.get("crboost_python", "") or "",
         "local": dict(eff.get("local") or {}),
@@ -271,7 +272,7 @@ def _path_field(label: str, initial: str, setter: Callable[[str], None], kind: s
 # ── sections ────────────────────────────────────────────────────────────────
 
 
-def _section_environment(nv: Dict[str, Any]) -> None:
+def _section_environment(nv: dict[str, Any]) -> None:
     _section_header("Environment", "Server install dir and the Python used inside SLURM jobs")
 
     def set_root(v):
@@ -290,9 +291,9 @@ def _section_environment(nv: Dict[str, Any]) -> None:
     )
 
 
-def _section_containers(nv: Dict[str, Any]) -> None:
+def _section_containers(nv: dict[str, Any]) -> None:
     _section_header("Containers & tools", _TOOLS_HINT)
-    tools: Dict[str, Any] = nv["tools"]
+    tools: dict[str, Any] = nv["tools"]
     if not tools:
         with ui.element("div").style("padding: 8px 16px;"):
             ui.label("No tools configured.").style(
@@ -305,7 +306,7 @@ def _section_containers(nv: Dict[str, Any]) -> None:
         _tool_row(name, tc)
 
 
-def _tool_row(name: str, tc: Dict[str, Any]) -> None:
+def _tool_row(name: str, tc: dict[str, Any]) -> None:
     """One tool: exec-mode select + a single active-path input with live dot.
     Switching mode repoints the input at container_path / bin_path."""
     tc.setdefault("exec_mode", "container")
@@ -355,9 +356,9 @@ def _tool_row(name: str, tc: Dict[str, Any]) -> None:
             mode_select.on_value_change(_on_mode)
 
 
-def _section_slurm(nv: Dict[str, Any]) -> None:
+def _section_slurm(nv: dict[str, Any]) -> None:
     _section_header("SLURM defaults", "Applied when submitting jobs — takes effect on the next run")
-    sd: Dict[str, Any] = nv["slurm_defaults"]
+    sd: dict[str, Any] = nv["slurm_defaults"]
 
     # Global defaults — a compact 2-per-row grid of the common fields.
     fields = [
@@ -377,7 +378,7 @@ def _section_slurm(nv: Dict[str, Any]) -> None:
             _grid_text(sd, key, label)
 
     # Per-job overrides — only the fields actually present per profile.
-    profiles: Dict[str, Any] = nv["job_resource_profiles"]
+    profiles: dict[str, Any] = nv["job_resource_profiles"]
     if profiles:
         with ui.element("div").style("padding: 4px 16px 2px;"):
             ui.label("Per-job overrides").style(
@@ -387,7 +388,7 @@ def _section_slurm(nv: Dict[str, Any]) -> None:
             _profile_row(key, profiles[key])
 
 
-def _grid_text(store: Dict[str, Any], key: str, label: str) -> None:
+def _grid_text(store: dict[str, Any], key: str, label: str) -> None:
     with ui.row().classes("items-center").style("gap: 6px; flex-wrap: nowrap;"):
         ui.label(label).style(
             f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; width: 74px; flex-shrink: 0; text-align: right;"
@@ -405,7 +406,7 @@ def _grid_text(store: Dict[str, Any], key: str, label: str) -> None:
         )
 
 
-def _profile_row(job_key: str, profile: Dict[str, Any]) -> None:
+def _profile_row(job_key: str, profile: dict[str, Any]) -> None:
     display = _JOB_LABELS.get(job_key, job_key)
     with ui.element("div").style(
         "display: grid; grid-template-columns: 132px 1fr; gap: 8px; align-items: center; "
@@ -419,7 +420,7 @@ def _profile_row(job_key: str, profile: Dict[str, Any]) -> None:
                 _mini_field(profile, key)
 
 
-def _mini_field(store: Dict[str, Any], key: str) -> None:
+def _mini_field(store: dict[str, Any], key: str) -> None:
     short = {"cpus_per_task": "cpu", "ntasks_per_node": "ntask", "constraint": "constr"}.get(key, key)
     with ui.row().classes("items-center").style("gap: 3px; flex-wrap: nowrap;"):
         ui.label(short).style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
@@ -435,9 +436,9 @@ def _mini_field(store: Dict[str, Any], key: str) -> None:
         )
 
 
-def _section_local(nv: Dict[str, Any]) -> None:
+def _section_local(nv: dict[str, Any]) -> None:
     _section_header("Project defaults", "Landing-page defaults for new projects")
-    local: Dict[str, Any] = nv["local"]
+    local: dict[str, Any] = nv["local"]
     local.setdefault("DefaultProjectBase", "")
     local.setdefault("DefaultMoviesGlob", "")
     local.setdefault("DefaultMdocsGlob", "")

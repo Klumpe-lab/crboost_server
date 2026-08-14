@@ -27,13 +27,12 @@ from __future__ import annotations
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from collections.abc import Iterable
 
 import pandas as pd
 
-from services.configs.starfile_service import StarfileService
+from services.tilt_series.adapters._base import BaseIngestAdapter
 from services.tilt_series.models import FsMotionCtfFrameOutput, TiltSeries
-from services.tilt_series.registry import TiltSeriesRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +43,7 @@ logger = logging.getLogger(__name__)
 _LEGACY_MOTION_PLACEHOLDER = 0.000001
 
 
-def _pos_float(v: Optional[str]) -> Optional[float]:
+def _pos_float(v: str | None) -> float | None:
     """Coerce a WarpTools XML attribute to a positive float, else None. Matches
     frameseries_quality._positive_float (non-positive/unparseable → not real)."""
     try:
@@ -54,22 +53,8 @@ def _pos_float(v: Optional[str]) -> Optional[float]:
     return f if f > 0 else None
 
 
-class FsMotionCtfIngestAdapter:
-    def __init__(
-        self,
-        registry: TiltSeriesRegistry,
-        job_dir: Path,
-        *,
-        job_instance_id: str = "fsMotionAndCtf",
-        warp_folder: str = "warp_frameseries",
-        starfile_service: Optional[StarfileService] = None,
-    ):
-        self.registry = registry
-        self.job_dir = Path(job_dir)
-        self.job_instance_id = job_instance_id
-        self.warp_folder = warp_folder
-        self.warp_dir = self.job_dir / warp_folder
-        self.starfile_service = starfile_service or StarfileService()
+class FsMotionCtfIngestAdapter(BaseIngestAdapter):
+    DEFAULT_WARP_FOLDER = "warp_frameseries"
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -88,7 +73,7 @@ class FsMotionCtfIngestAdapter:
                 f"Reload the project to backfill the registry from mdocs."
             )
 
-        unresolved: List[str] = []
+        unresolved: list[str] = []
         for ts_id in expected:
             ts = self.registry.get_tilt_series(ts_id)
             for frame in ts.frames:
@@ -130,8 +115,8 @@ class FsMotionCtfIngestAdapter:
         in_star_dir = input_star_path.parent
         out_ts_df = in_ts_df.copy()
 
-        excluded = {str(t) for t in (excluded_ids or ())}
-        unresolved: List[str] = []
+        excluded = self._excluded_set(excluded_ids)
+        unresolved: list[str] = []
         for _, ts_row in in_ts_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
             # Muted TS: intentionally not ingested — drop from output, don't
@@ -164,8 +149,7 @@ class FsMotionCtfIngestAdapter:
                 + "\n  - ".join(unresolved)
             )
 
-        if excluded:
-            out_ts_df = out_ts_df[~out_ts_df["rlnTomoName"].astype(str).isin(excluded)].reset_index(drop=True)
+        out_ts_df = self._drop_excluded(out_ts_df, excluded)
 
         # Rewrite per-TS paths in the global block to point to the new tilt_dir.
         out_ts_df["rlnTomoTiltSeriesStarFile"] = out_ts_df["rlnTomoName"].apply(
@@ -219,35 +203,19 @@ class FsMotionCtfIngestAdapter:
             warp_xml_path=xml_path,
         )
 
-    def _resolve_per_ts_path(
-        self, per_ts_rel: str, in_star_dir: Path, project_root: Path
-    ) -> Optional[Path]:
-        """Try (in_star_dir / rel) then (project_root / rel). The ts_import STAR
-        uses project-root-relative paths (RELION convention); later-job STARs
-        use paths relative to the STAR itself."""
-        for base in (in_star_dir, project_root):
-            cand = (base / per_ts_rel).resolve()
-            if cand.exists():
-                return cand
-        return None
-
-    def _read_only_block(self, path: Path) -> pd.DataFrame:
-        data = self.starfile_service.read(path)
-        return next(iter(data.values())).copy()
-
     def _apply_motion_ctf_to_tilt_df(
         self, ts: TiltSeries, tilt_df: pd.DataFrame
-    ) -> tuple[pd.DataFrame, List[str]]:
+    ) -> tuple[pd.DataFrame, list[str]]:
         """Overlay per-frame motion+CTF outputs onto the tilt DataFrame.
 
         Resolution: tilt_row['rlnMicrographMovieName'] → Frame via
         TS.frame_by_filename → FsMotionCtfFrameOutput from frame.outputs."""
-        errors: List[str] = []
+        errors: list[str] = []
         if "rlnMicrographMovieName" not in tilt_df.columns:
             errors.append("per-TS STAR has no rlnMicrographMovieName column")
             return tilt_df, errors
 
-        seen_frame_ids: Dict[str, int] = {}
+        seen_frame_ids: dict[str, int] = {}
         for idx, row in tilt_df.iterrows():
             movie_name = row["rlnMicrographMovieName"]
             try:

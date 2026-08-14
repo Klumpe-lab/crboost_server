@@ -6,6 +6,7 @@ Runs on a GPU compute node. Converts MRC tilt images to PNG,
 runs the DL classifier, writes labeled + filtered star files.
 """
 
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -23,7 +24,19 @@ except ImportError as e:
 
 
 def main():
-    project_state, job_model, context_data, job_dir, project_path, job_type = get_driver_context(TiltFilterParams)
+    print("Python", sys.version, flush=True)
+    print("--- SLURM JOB START (tilt_filter) ---", flush=True)
+
+    try:
+        _project_state, job_model, _context_data, job_dir, project_path, _job_type = get_driver_context(
+            TiltFilterParams
+        )
+    except Exception as e:
+        print(f"[DRIVER] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Node: {os.uname().nodename}", flush=True)
+    print(f"CWD: {job_dir}", flush=True)
 
     success_file = job_dir / "RELION_JOB_EXIT_SUCCESS"
     failure_file = job_dir / "RELION_JOB_EXIT_FAILURE"
@@ -128,33 +141,36 @@ def main():
         # Step 9 (Stage 2): record the per-tilt verdict in the registry so it stays the
         # authoritative source of truth (the tomostar trim above is the functional cut;
         # dashboard/stars still carry it too until Stage 3 migrates consumers). Frame.id
-        # is the raw-movie stem == cryoBoostKey, so we can stamp by key. Best-effort:
-        # unknown stems (empty / pre-registry project) are skipped, and any registry
-        # failure only warns — it must never fail a filter that already trimmed the tomostar.
-        try:
-            from services.tilt_series import get_registry_for
+        # is the raw-movie stem == cryoBoostKey, so we can stamp by key.
+        #
+        # Fail-loud (maintainer decision 2026-08-14): the registry is the single source
+        # of truth for downstream reads, so a missed verdict stamp is stale-data
+        # corruption, not a cosmetic miss. A stamp failure fails the job; the trimmed
+        # tomostar stays on disk and a re-run is cheap.
+        from services.tilt_series import get_registry_for
 
-            registry = get_registry_for(project_path)
-            if registry.tilt_series_ids():
-                verdicts = zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), df["cryoBoostDlProbability"])
-                stamped = 0
-                for stem, is_filt, prob in verdicts:
-                    try:
-                        registry.set_frame_filtered(
-                            str(stem),
-                            bool(is_filt),
-                            reason="DL tilt-filter" if is_filt else None,
-                            probability=float(prob) if prob is not None else None,
-                        )
-                        stamped += 1
-                    except KeyError:
-                        pass
-                registry.save()
-                print(f"[DRIVER] Stamped tilt-filter verdict on {stamped} registry frames", flush=True)
-            else:
-                print("[DRIVER] Registry empty — skipped filter-flag stamp (tomostar trim already applied)", flush=True)
-        except Exception as e:
-            print(f"[DRIVER] WARNING: registry filter-flag stamp skipped ({e})", flush=True)
+        registry = get_registry_for(project_path)
+        if not registry.tilt_series_ids():
+            raise RuntimeError(
+                f"TiltSeries registry is empty for project {project_path}. "
+                f"Reload the project in the UI to backfill the registry from mdocs, then restart this job."
+            )
+        verdicts = zip(
+            df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), df["cryoBoostDlProbability"], strict=False
+        )
+        stamped = 0
+        for stem, is_filt, prob in verdicts:
+            # An unknown stem means the registry and the star disagree on frame
+            # identity — drift that must surface, not be skipped over.
+            registry.set_frame_filtered(
+                str(stem),
+                bool(is_filt),
+                reason="DL tilt-filter" if is_filt else None,
+                probability=float(prob) if prob is not None else None,
+            )
+            stamped += 1
+        registry.save()
+        print(f"[DRIVER] Stamped tilt-filter verdict on {stamped} registry frames", flush=True)
 
         success_file.touch()
         print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
@@ -163,6 +179,7 @@ def main():
         print(f"[DRIVER] FATAL: {e}", file=sys.stderr, flush=True)
         traceback.print_exc(file=sys.stderr)
         failure_file.touch()
+        print("--- SLURM JOB END (Exit Code: 1) ---", file=sys.stderr, flush=True)
         sys.exit(1)
 
 

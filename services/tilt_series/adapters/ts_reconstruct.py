@@ -21,31 +21,34 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from collections.abc import Iterable
 
 from services.configs.starfile_service import StarfileService
+from services.tilt_series.adapters._base import BaseIngestAdapter
 from services.tilt_series.models import TsReconstructTomogramOutput
 from services.tilt_series.registry import TiltSeriesRegistry
 
 logger = logging.getLogger(__name__)
 
 
-class TsReconstructIngestAdapter:
+class TsReconstructIngestAdapter(BaseIngestAdapter):
     def __init__(
         self,
         registry: TiltSeriesRegistry,
         job_dir: Path,
         *,
-        job_instance_id: str = "tsReconstruct",
-        warp_folder: str = "warp_tiltseries",
-        starfile_service: Optional[StarfileService] = None,
+        job_instance_id: str,
+        warp_folder: str | None = None,
+        starfile_service: StarfileService | None = None,
     ):
-        self.registry = registry
-        self.job_dir = Path(job_dir)
-        self.job_instance_id = job_instance_id
-        self.warp_folder = warp_folder
-        self.rec_dir = (self.job_dir / warp_folder / "reconstruction").resolve()
-        self.starfile_service = starfile_service or StarfileService()
+        super().__init__(
+            registry,
+            job_dir,
+            job_instance_id=job_instance_id,
+            warp_folder=warp_folder,
+            starfile_service=starfile_service,
+        )
+        self.rec_dir = (self.warp_dir / "reconstruction").resolve()
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -80,7 +83,7 @@ class TsReconstructIngestAdapter:
         rec_res = f"{rescale_angpixs:.2f}"
         binning = rescale_angpixs / frame_pixel_size
 
-        problems: Dict[str, str] = {}
+        problems: dict[str, str] = {}
         for ts_id in expected:
             rec_path = self.rec_dir / f"{ts_id}_{rec_res}Apx.mrc"
             half1_path = self.rec_dir / "even" / f"{ts_id}_{rec_res}Apx.mrc"
@@ -136,8 +139,8 @@ class TsReconstructIngestAdapter:
         in_star_dir = input_star_path.parent
         out_ts_df = in_ts_df.copy()
 
-        excluded = {str(t) for t in (excluded_ids or ())}
-        problems: List[str] = []
+        excluded = self._excluded_set(excluded_ids)
+        problems: list[str] = []
         for idx, row in out_ts_df.iterrows():
             ts_id = str(row["rlnTomoName"])
             # Muted TS: intentionally not ingested — drop from output, don't
@@ -180,8 +183,7 @@ class TsReconstructIngestAdapter:
                 + "\n  - ".join(problems)
             )
 
-        if excluded:
-            out_ts_df = out_ts_df[~out_ts_df["rlnTomoName"].astype(str).isin(excluded)].reset_index(drop=True)
+        out_ts_df = self._drop_excluded(out_ts_df, excluded)
 
         output_star_path.parent.mkdir(parents=True, exist_ok=True)
         self.starfile_service.write({"global": out_ts_df}, output_star_path)

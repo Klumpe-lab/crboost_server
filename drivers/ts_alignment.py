@@ -5,132 +5,93 @@ ts_alignment driver — supervisor + per-tilt-series SLURM array task.
 
 Mode is determined by the SLURM_ARRAY_TASK_ID env var:
 
-- Unset:  SUPERVISOR mode. Enumerates tomostar files from the tsImport job,
-          writes task manifest, submits a SLURM array with one task per TS,
-          polls until completion, then aggregates alignment metadata.
+- Unset:  SUPERVISOR mode. Refreshes the job-local snapshot of the producer's
+          tomostar dir + settings, enumerates tilt-series from the
+          TiltSeriesRegistry (the enumeration authority — census #38/#39
+          pilot), runs a dispatch-time drift check (registry vs tomostar dir
+          vs input star), writes the task manifest, submits a SLURM array with
+          one task per TS, polls until completion, then aggregates alignment
+          metadata.
 
 - Set:    TASK mode. Stages a per-TS environment (single tomostar + settings),
           runs ts_aretomo or ts_etomo_patches for one tilt-series.
+
+Enumeration/staging semantics (census #38/#39, maintainer decision):
+- The registry is the source of truth for WHICH tilt-series exist; the old
+  `*.tomostar` glob could resurrect stale files or silently omit a TS whose
+  file a partial producer write lost.
+- The whole-dir tomostar snapshot is refreshed on EVERY supervisor run (it
+  used to be copied once and reused stale across re-runs). The snapshot
+  itself stays: it marries the settings file with the possibly-different
+  producer's tomostar dir (tilt filter) and insulates a running array from
+  producer churn.
+- A live (non-muted) registry TS missing from the tomostar dir or the input
+  star is DRIFT: it stays in the manifest and its task fails fast with the
+  reason (containment rule — others proceed, job ends FAILED). Extra files
+  the registry doesn't know are warned about and never dispatched.
+
+Tolerant tally (census #41, deliberate): per-TS alignment failure is normal in
+cryo-ET — failed/missing TS are warned about and dropped from aggregation;
+only a total wipeout fails the job. The failed-TS-absent-downstream gap is
+owned by docs/roadmaps/05-per-ts-top-up.md.
+
+The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
+markers all live in ArrayDriver; this file is the alignment-specific hooks.
 """
 
-import os
 import shutil
 import sys
-import traceback
 from pathlib import Path
-from typing import List
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import (
-    apply_exclusions,
-    collect_task_results,
-    copy_tomostar_with_absolute_paths,
-    install_cancel_handler,
-    preflight_registry,
+    ArrayDriver,
+    ArrayResults,
     read_manifest,
-    submit_array_job,
-    wait_for_array_completion,
-    write_status_atomic,
-    STATUS_DIR_NAME,
+    read_tilt_series_names_from_input_star,
+    stage_per_ts_environment,
 )
-from drivers.driver_base import get_driver_context, run_command, require_producer_input
-from services.computing.container_service import get_container_service
+from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
 from services.jobs.ts_alignment import TsAlignmentParams
 from services.models_base import AlignmentMethod
 from services.tilt_series import get_registry_for
 from services.tilt_series.adapters import TsAlignmentIngestAdapter
 
 
-DRIVER_SCRIPT = Path(__file__).resolve()
+def build_alignment_command(params: TsAlignmentParams) -> ToolCommand | str:
+    """Build the alignment command to run inside the staged environment.
 
-
-# ----------------------------------------------------------------------
-# Helpers
-# ----------------------------------------------------------------------
-
-
-def enumerate_tomostar_names(tomostar_dir: Path) -> List[str]:
-    """Get sorted TS names from the tomostar directory."""
-    files = sorted(tomostar_dir.glob("*.tomostar"))
-    return [f.stem for f in files]
-
-
-def stage_alignment_environment(job_dir: Path, ts_name: str, source_tomostar_dir: Path, source_settings: Path) -> Path:
+    Returns a shell fragment (not a ToolCommand) for an unimplemented method: the
+    error shim is compound shell, not a tool invocation.
     """
-    Build a per-TS staging directory for alignment.
-
-    .staging/task_{ts_name}/
-    ├── warp_tiltseries.settings    # copy of original
-    ├── tomostar/
-    │   └── {ts_name}.tomostar      # copy with absolute movie paths
-    └── warp_tiltseries/             # empty — alignment writes here
-
-    Returns the staging root directory.
-    """
-    stage_root = job_dir / ".staging" / f"task_{ts_name}"
-    stage_root.mkdir(parents=True, exist_ok=True)
-
-    # 1. Copy settings file
-    staged_settings = stage_root / source_settings.name
-    shutil.copy2(str(source_settings), str(staged_settings))
-
-    # 2. Stage the tomostar with absolute movie paths
-    staged_tomostar_dir = stage_root / "tomostar"
-    staged_tomostar_dir.mkdir(parents=True, exist_ok=True)
-
-    src_tomostar = source_tomostar_dir / f"{ts_name}.tomostar"
-    if not src_tomostar.exists():
-        raise FileNotFoundError(f"Tomostar not found: {src_tomostar}")
-
-    dst_tomostar = staged_tomostar_dir / f"{ts_name}.tomostar"
-    copy_tomostar_with_absolute_paths(src_tomostar, dst_tomostar, source_tomostar_dir)
-
-    # 3. Create empty warp_tiltseries dir for output
-    (stage_root / "warp_tiltseries").mkdir(parents=True, exist_ok=True)
-
-    return stage_root
-
-
-def build_alignment_command(params: TsAlignmentParams, stage_root: Path) -> str:
-    """Build the alignment command to run inside the staged environment."""
     if params.alignment_method == AlignmentMethod.ARETOMO:
-        cmd_parts = [
-            "WarpTools ts_aretomo",
-            "--settings",
-            "warp_tiltseries.settings",
-            "--output_processing",
-            "warp_tiltseries",
-            "--angpix",
-            str(params.rescale_angpixs),
-            "--alignz",
-            str(int(params.sample_thickness_nm * 10)),
-            "--perdevice",
-            str(params.perdevice),
-        ]
+        cmd = (
+            ToolCommand("WarpTools ts_aretomo")
+            .opt("--settings", "warp_tiltseries.settings")
+            .opt("--output_processing", "warp_tiltseries")
+            .opt("--angpix", params.rescale_angpixs)
+            .opt("--alignz", int(params.sample_thickness_nm * 10))
+            .opt("--perdevice", params.perdevice)
+        )
         if params.patch_x > 0 and params.patch_y > 0:
-            cmd_parts.extend(["--patches", f"{params.patch_x}x{params.patch_y}"])
+            cmd.opt("--patches", f"{params.patch_x}x{params.patch_y}")
         if params.axis_iter > 0:
-            cmd_parts.extend(["--axis_iter", str(params.axis_iter)])
-            cmd_parts.extend(["--axis_batch", str(min(params.axis_batch, 1))])
+            cmd.opt("--axis_iter", params.axis_iter)
+            cmd.opt("--axis_batch", min(params.axis_batch, 1))
+        return cmd
 
-    elif params.alignment_method == AlignmentMethod.IMOD:
-        cmd_parts = [
-            "WarpTools ts_etomo_patches",
-            "--settings",
-            "warp_tiltseries.settings",
-            "--output_processing",
-            "warp_tiltseries",
-            "--angpix",
-            str(params.rescale_angpixs),
-            "--patch_size",
-            str(int(params.imod_patch_size * 10)),
-        ]
-    else:
-        return f"echo 'ERROR: Alignment method {params.alignment_method} not implemented'; exit 1;"
+    if params.alignment_method == AlignmentMethod.IMOD:
+        return (
+            ToolCommand("WarpTools ts_etomo_patches")
+            .opt("--settings", "warp_tiltseries.settings")
+            .opt("--output_processing", "warp_tiltseries")
+            .opt("--angpix", params.rescale_angpixs)
+            .opt("--patch_size", int(params.imod_patch_size * 10))
+        )
 
-    return " ".join(cmd_parts)
+    return f"echo 'ERROR: Alignment method {params.alignment_method} not implemented'; exit 1;"
 
 
 def collect_per_ts_outputs(job_dir: Path, ts_name: str) -> None:
@@ -159,8 +120,8 @@ def collect_per_ts_outputs(job_dir: Path, ts_name: str) -> None:
         shutil.copytree(str(src_tiltstack), str(dst_tiltstack))
 
 
-def has_alignment_output(job_dir: Path, ts_name: str, method: AlignmentMethod) -> bool:
-    """True if the per-TS tiltstack dir holds real alignment output.
+def has_alignment_output(warp_dir: Path, ts_name: str, method: AlignmentMethod) -> bool:
+    """True if the per-TS tiltstack dir under `warp_dir` holds real alignment output.
 
     WarpTools `ts_aretomo` / `ts_etomo_patches` exit 0 even when AreTomo or
     etomo fail to align an individual tilt-series — they just flag the item
@@ -168,7 +129,7 @@ def has_alignment_output(job_dir: Path, ts_name: str, method: AlignmentMethod) -
     signal; the alignment matrices are: `.st.aln` for AreTomo, `.xf` + `.tlt`
     for IMOD.
     """
-    tiltstack = job_dir / "warp_tiltseries" / "tiltstack" / ts_name
+    tiltstack = warp_dir / "tiltstack" / ts_name
     if not tiltstack.is_dir():
         return False
     if method == AlignmentMethod.ARETOMO:
@@ -178,247 +139,185 @@ def has_alignment_output(job_dir: Path, ts_name: str, method: AlignmentMethod) -
     return False
 
 
-# ----------------------------------------------------------------------
-# Mode dispatch
-# ----------------------------------------------------------------------
+class TsAlignmentDriver(ArrayDriver):
+    params_class = TsAlignmentParams
+    job_name = "ts_alignment"
+    driver_script = Path(__file__).resolve()
 
+    # ---------------- supervisor ----------------
 
-def main():
-    print("Python", sys.version, flush=True)
-    array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
-    if array_idx_env is None:
-        print("--- ts_alignment: SUPERVISOR mode ---", flush=True)
-        run_supervisor_mode()
-    else:
-        print(f"--- ts_alignment: TASK mode (array idx {array_idx_env}) ---", flush=True)
-        run_task_mode(int(array_idx_env))
-
-
-# ----------------------------------------------------------------------
-# Supervisor mode
-# ----------------------------------------------------------------------
-
-
-def run_supervisor_mode():
-    try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
-            TsAlignmentParams
-        )
-    except Exception as e:
-        fail_dir = Path.cwd()
-        (fail_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[SUPERVISOR] CWD (job dir): {job_dir}", flush=True)
-
-    try:
-        paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
-        instance_id = local_params_data["instance_id"]
-
-        tomostar_dir = paths["tomostar_dir"]
+    def enumerate_items(self, ctx: DriverContext[TsAlignmentParams]) -> list[str]:
+        tomostar_dir = ctx.paths["tomostar_dir"]
         require_producer_input(tomostar_dir, "Tomostar directory")
 
-        settings_file = paths["warp_tiltseries_settings"]
+        settings_file = ctx.paths["warp_tiltseries_settings"]
         require_producer_input(settings_file, "Settings file")
 
-        # Copy the tomostar dir and settings into the job dir so staged environments
-        # can reference them with stable paths
-        local_tomostar_dir = job_dir / "tomostar"
-        if not local_tomostar_dir.exists():
-            shutil.copytree(str(tomostar_dir), str(local_tomostar_dir))
-        local_settings = job_dir / settings_file.name
-        if not local_settings.exists():
-            shutil.copy2(str(settings_file), str(local_settings))
+        input_star = ctx.paths["input_star"]
+        require_producer_input(input_star, "Input STAR")
 
-        ts_names = enumerate_tomostar_names(local_tomostar_dir)
-        if not ts_names:
-            raise ValueError(f"No tomostar files found in {local_tomostar_dir}")
+        # Refresh the job-local snapshot on EVERY supervisor run (census #39):
+        # tasks stage from stable job-local paths, but a supervisor re-run must
+        # see the producer's CURRENT tomostars (re-trimmed tilts, added/removed
+        # TS), never a stale first-run copy.
+        local_tomostar_dir = ctx.job_dir / "tomostar"
+        if local_tomostar_dir.exists():
+            shutil.rmtree(str(local_tomostar_dir))
+        shutil.copytree(str(tomostar_dir), str(local_tomostar_dir))
+        local_settings = ctx.job_dir / settings_file.name
+        shutil.copy2(str(settings_file), str(local_settings))
 
-        n_tasks = len(ts_names)
-        print(f"[SUPERVISOR] Found {n_tasks} tilt-series to align", flush=True)
+        # Census #38: the registry is the enumeration authority; the sources on
+        # disk are checked against it, never trusted as the item list.
+        registry = get_registry_for(ctx.project_path)
+        reg_ids = registry.tilt_series_ids()
+        if not reg_ids:
+            raise RuntimeError(
+                f"TiltSeries registry is empty for project {ctx.project_path}. "
+                f"Reload the project in the UI to backfill the registry from mdocs, then restart this job."
+            )
+        excluded = set(registry.excluded_ids())
 
-        preflight_registry(project_path, ts_names, job_name="ts_alignment")
+        tomostar_set = {f.stem for f in local_tomostar_dir.glob("*.tomostar")}
+        star_set = set(read_tilt_series_names_from_input_star(input_star))
 
-        per_task_cfg = params.get_effective_slurm_config()
+        # Dispatch-time drift check. A live TS missing from a source fails THAT
+        # TS visibly (recorded in the manifest, its task raises the reason);
+        # extras the registry doesn't know are warned and never dispatched.
+        drift: dict[str, str] = {}
+        for ts in reg_ids:
+            if ts in excluded:
+                continue
+            missing_from = [
+                label
+                for label, present in (("tomostar dir", ts in tomostar_set), ("input star", ts in star_set))
+                if not present
+            ]
+            if missing_from:
+                drift[ts] = f"registry TS '{ts}' missing from: {', '.join(missing_from)} (producer drift)"
+                self.log(f"ERROR: {drift[ts]} — its task will FAIL")
+        extras = sorted((tomostar_set | star_set) - set(reg_ids))
+        if extras:
+            self.log(
+                f"WARNING: {len(extras)} tilt-series on disk are unknown to the registry and will "
+                f"NOT be aligned (stale files?): {extras}"
+            )
 
-        # Honor user "exclude from processing": pre-skip excluded TS so they are
-        # never dispatched and count as settled (not failures) in aggregation.
-        apply_exclusions(job_dir, project_path, ts_names)
+        self._drift = drift
+        return sorted(reg_ids)
 
-        array_job_id = submit_array_job(
-            job_dir=job_dir,
-            project_path=project_path,
-            instance_id=instance_id,
-            ts_names=ts_names,
-            per_task_cfg=per_task_cfg,
-            array_throttle=params.array_throttle,
-            driver_script=DRIVER_SCRIPT,
-        )
+    def manifest_extras(self, ctx: DriverContext[TsAlignmentParams], items: list[str]) -> dict | None:
+        return {"drift_ts": self._drift} if self._drift else None
 
-        if array_job_id is not None:
-            install_cancel_handler(array_job_id, job_dir)
-            wait_for_array_completion(array_job_id, poll_secs=30)
-        else:
-            print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
-
-        results = collect_task_results(job_dir, ts_names)
-        print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
-        if results.failed:
-            print(f"[SUPERVISOR] FAILED tilt-series: {results.failed}", flush=True)
-        if results.missing:
-            print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
-
+    def tally_acceptable(self, ctx: DriverContext[TsAlignmentParams], results: ArrayResults) -> bool:
         # Per-TS alignment failure is normal in cryo-ET — AreTomo simply can't
         # solve every tilt-series. One bad TS must NOT abort the whole job and
         # halt the pipeline: drop the failed/missing tilt-series and carry the
         # rest forward. Only a total wipeout (nothing aligned) is fatal.
-        aligned_ts = results.ok
+        if not results.ok:
+            self.log("No tilt-series aligned successfully — failing the job")
+            return False
         excluded_ts = sorted(results.failed + results.missing)
-        if not aligned_ts:
-            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED — no tilt-series aligned successfully", flush=True)
-            sys.exit(1)
         if excluded_ts:
+            n_total = len(results.ok) + len(results.skipped) + len(excluded_ts)
             print(
-                f"[SUPERVISOR] WARNING: excluding {len(excluded_ts)}/{len(ts_names)} tilt-series "
+                f"[SUPERVISOR] WARNING: excluding {len(excluded_ts)}/{n_total} tilt-series "
                 f"that failed to align: {excluded_ts}",
-                file=sys.stderr, flush=True,
+                file=sys.stderr,
+                flush=True,
             )
-            print(f"[SUPERVISOR] Continuing with {len(aligned_ts)} aligned tilt-series.", flush=True)
+            self.log(f"Continuing with {len(results.ok)} aligned tilt-series.")
+        return True
+
+    def aggregate(self, ctx: DriverContext[TsAlignmentParams], results: ArrayResults) -> None:
+        aligned_ts = results.ok
 
         # Aggregate metadata via the TiltSeries registry. Fail loud on an
         # empty registry rather than fall back to the legacy string-keyed
         # merge — that's the silent-corruption path this refactor retires.
-        print(f"[SUPERVISOR] Aggregating alignment metadata for {len(aligned_ts)} tilt-series...", flush=True)
+        self.log(f"Aggregating alignment metadata for {len(aligned_ts)} tilt-series...")
 
-        input_star_path = paths.get("input_star")
-        output_star_path = paths.get("output_star", job_dir / "aligned_tilt_series.star")
+        input_star_path = ctx.paths.get("input_star")
+        output_star_path = ctx.paths.get("output_star", ctx.job_dir / "aligned_tilt_series.star")
 
         if not input_star_path or not Path(input_star_path).exists():
-            raise FileNotFoundError(
-                f"tsAlignment aggregation requires an existing input STAR; got: {input_star_path}"
-            )
+            raise FileNotFoundError(f"tsAlignment aggregation requires an existing input STAR; got: {input_star_path}")
 
-        registry = get_registry_for(project_path)
+        registry = get_registry_for(ctx.project_path)
         if not registry.tilt_series_ids():
             raise RuntimeError(
-                f"TiltSeries registry is empty for project {project_path}. "
+                f"TiltSeries registry is empty for project {ctx.project_path}. "
                 f"Reload the project in the UI to backfill the registry from mdocs, "
                 f"then restart this job."
             )
-        adapter = TsAlignmentIngestAdapter(
-            registry=registry, job_dir=job_dir, job_instance_id=instance_id,
-        )
+        adapter = TsAlignmentIngestAdapter(registry=registry, job_dir=ctx.job_dir, job_instance_id=ctx.instance_id)
         adapter.ingest(
-            aligned_ts,
-            alignment_method=params.alignment_method,
-            alignment_angpix=params.rescale_angpixs,
+            aligned_ts, alignment_method=ctx.params.alignment_method, alignment_angpix=ctx.params.rescale_angpixs
         )
         adapter.emit_star(
             input_star_path=Path(input_star_path),
             output_star_path=Path(output_star_path),
-            project_root=project_path,
-            tomo_dimensions=params.tomo_dimensions if hasattr(params, "tomo_dimensions") else "4096x4096x2048",
+            project_root=ctx.project_path,
+            tomo_dimensions=ctx.params.tomo_dimensions if hasattr(ctx.params, "tomo_dimensions") else "4096x4096x2048",
         )
         registry.save()
-        print("[SUPERVISOR] Metadata aggregation successful.", flush=True)
+        self.log("Metadata aggregation successful.")
 
-        (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-        print("[SUPERVISOR] Job finished successfully.", flush=True)
-        sys.exit(0)
+    # ---------------- task ----------------
 
-    except Exception as e:
-        print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        sys.exit(1)
-
-
-# ----------------------------------------------------------------------
-# Task mode
-# ----------------------------------------------------------------------
-
-
-def run_task_mode(array_idx: int):
-    try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
-            TsAlignmentParams
-        )
-    except Exception as e:
-        print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    status_dir = job_dir / STATUS_DIR_NAME
-    ts_name = None
-    try:
-        manifest = read_manifest(job_dir)
-        ts_names = manifest["ts_names"]
-        if array_idx >= len(ts_names):
-            raise IndexError(f"SLURM_ARRAY_TASK_ID {array_idx} out of range (manifest has {len(ts_names)})")
-        ts_name = ts_names[array_idx]
-        print(f"[TASK {array_idx}] ts_name={ts_name}", flush=True)
-
-        additional_binds = local_params_data["additional_binds"]
-
-        local_tomostar_dir = job_dir / "tomostar"
-        local_settings = job_dir / "warp_tiltseries.settings"
-
+    def task_already_done(self, ctx: DriverContext[TsAlignmentParams], item: str) -> bool:
         # Idempotency: skip only if a PREVIOUS run left REAL alignment output
         # for this TS. The {ts}.xml alone is not proof — WarpTools writes it
         # even for tilt-series AreTomo failed on (see has_alignment_output),
         # so a bare-XML check would let a failed TS masquerade as done on retry.
-        shared_xml = job_dir / "warp_tiltseries" / f"{ts_name}.xml"
-        if shared_xml.exists() and has_alignment_output(job_dir, ts_name, params.alignment_method):
-            print(f"[TASK {array_idx}] Alignment output already exists, skipping: {ts_name}", flush=True)
-            write_status_atomic(status_dir, ts_name, ok=True)
-            sys.exit(0)
+        shared_warp = ctx.job_dir / "warp_tiltseries"
+        shared_xml = shared_warp / f"{item}.xml"
+        if shared_xml.exists() and has_alignment_output(shared_warp, item, ctx.params.alignment_method):
+            self.log(f"Alignment output already exists, skipping: {item}")
+            return True
+        return False
 
-        # Stage per-TS environment
-        stage_root = stage_alignment_environment(job_dir, ts_name, local_tomostar_dir, local_settings)
-        print(f"[TASK {array_idx}] Staged at: {stage_root}", flush=True)
+    def stage(self, ctx: DriverContext[TsAlignmentParams], item: str):
+        manifest = read_manifest(ctx.job_dir)
+        drift = manifest.get("drift_ts", {})
+        if item in drift:
+            # Recorded by the supervisor's dispatch-time drift check: fail this
+            # TS here, visibly, with the reason it cannot be aligned.
+            raise FileNotFoundError(f"Cannot align '{item}': {drift[item]}")
 
-        # Build and run alignment command
-        cmd = build_alignment_command(params, stage_root)
-        print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
-
-        wrapped = get_container_service().wrap_command_for_tool(
-            command=cmd, cwd=stage_root, tool_name=params.get_tool_name(), additional_binds=additional_binds
+        local_settings = ctx.job_dir / "warp_tiltseries.settings"
+        staged_settings, _staged_processing = stage_per_ts_environment(
+            ctx.job_dir, item, input_processing=None, settings_file=local_settings
         )
+        stage_root = staged_settings.parent
+        self.log(f"Staged at: {stage_root}")
+        return stage_root
 
-        run_command(wrapped, cwd=stage_root)
+    def build_command(self, ctx: DriverContext[TsAlignmentParams], item: str, staged) -> ToolCommand | str:
+        return build_alignment_command(ctx.params)
 
-        # Collect outputs into shared job dir
-        collect_per_ts_outputs(job_dir, ts_name)
+    def task_cwd(self, ctx: DriverContext[TsAlignmentParams], item: str, staged) -> Path:
+        return staged
 
-        # Verify REAL alignment output landed. WarpTools exits 0 and still
-        # writes {ts}.xml even when AreTomo fails to align this tilt-series,
-        # so the XML is not a success signal — check the alignment matrices.
-        if not shared_xml.exists():
-            raise FileNotFoundError(f"Alignment produced no XML for {ts_name} (expected {shared_xml})")
-        if not has_alignment_output(job_dir, ts_name, params.alignment_method):
+    def verify_outputs(self, ctx: DriverContext[TsAlignmentParams], item: str, staged) -> None:
+        # Verify REAL alignment output landed in the STAGED dir. WarpTools
+        # exits 0 and still writes {ts}.xml even when AreTomo fails to align
+        # this tilt-series, so the XML is not a success signal — check the
+        # alignment matrices.
+        staged_warp = staged / "warp_tiltseries"
+        staged_xml = staged_warp / f"{item}.xml"
+        if not staged_xml.exists():
+            raise FileNotFoundError(f"Alignment produced no XML for {item} (expected {staged_xml})")
+        if not has_alignment_output(staged_warp, item, ctx.params.alignment_method):
             raise RuntimeError(
-                f"No alignment output for {ts_name}: WarpTools produced no .st.aln/.xf in "
-                f"warp_tiltseries/tiltstack/{ts_name}/. AreTomo likely failed to align this "
+                f"No alignment output for {item}: WarpTools produced no .st.aln/.xf in "
+                f"warp_tiltseries/tiltstack/{item}/. AreTomo likely failed to align this "
                 f"tilt-series (see container output above)."
             )
 
-        write_status_atomic(status_dir, ts_name, ok=True)
-        print(f"[TASK {array_idx}] {ts_name} done", flush=True)
-        sys.exit(0)
-
-    except Exception as e:
-        label = ts_name or f"_unknown_idx{array_idx}"
-        print(f"[TASK {array_idx}] FATAL ERROR for ts={label}: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        try:
-            write_status_atomic(status_dir, label, ok=False)
-        except Exception as inner:
-            print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
-        sys.exit(1)
+    def collect(self, ctx: DriverContext[TsAlignmentParams], item: str, staged) -> None:
+        collect_per_ts_outputs(ctx.job_dir, item)
 
 
 if __name__ == "__main__":
-    main()
+    TsAlignmentDriver().main()

@@ -9,7 +9,6 @@ No GPU work — purely metadata assembly. Runs as a single SLURM job (not an arr
 """
 
 import os
-import shlex
 import sys
 import traceback
 from pathlib import Path
@@ -17,8 +16,7 @@ from pathlib import Path
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
-from drivers.driver_base import get_driver_context, run_command
-from services.computing.container_service import get_container_service
+from drivers.driver_base import ToolCommand, get_driver_context, run_tool
 from services.jobs.ts_import import TsImportParams
 
 
@@ -30,66 +28,49 @@ def build_ts_import_commands(params: TsImportParams, paths: dict, job_dir: Path)
         tomostar/               <- one .tomostar per tilt-series
         warp_tiltseries.settings <- settings for downstream TS jobs
     """
-    mdoc_dir = shlex.quote(str(paths["mdoc_dir"]))
-
     # frameseries dir relative to job_dir — WarpTools stores _wrpMovieName
     # in the tomostar relative to the tomostar file's location.
-    frameseries_rel = shlex.quote(os.path.relpath(str(paths["input_processing"]), str(job_dir)))
+    frameseries_rel = os.path.relpath(str(paths["input_processing"]), str(job_dir))
 
-    gain_path_str = ""
-    if params.gain_path and params.gain_path != "None":
-        gain_path_str = shlex.quote(params.gain_path)
+    gain_path = params.gain_path if params.gain_path and params.gain_path != "None" else ""
     gain_ops_str = params.gain_operations if hasattr(params, "gain_operations") and params.gain_operations else ""
 
     # === Step 1: ts_import ===
-    cmd_parts_import = [
-        "WarpTools ts_import",
-        "--mdocs",
-        mdoc_dir,
-        "--pattern",
-        shlex.quote(params.mdoc_pattern),
-        "--frameseries",
-        frameseries_rel,
-        "--output",
-        "tomostar",
-        "--tilt_exposure",
-        str(params.dose_per_tilt),
-        "--override_axis",
-        str(params.tilt_axis_angle),
-        "--min_intensity",
-        str(params.min_intensity),
-    ]
+    ts_import = (
+        ToolCommand("WarpTools ts_import")
+        .opt_path("--mdocs", paths["mdoc_dir"], quote=True)
+        .opt_path("--pattern", params.mdoc_pattern, quote=True)
+        .opt_path("--frameseries", frameseries_rel, quote=True)
+        .opt("--output", "tomostar")
+        .opt("--tilt_exposure", params.dose_per_tilt)
+        .opt("--override_axis", params.tilt_axis_angle)
+        .opt("--min_intensity", params.min_intensity)
+    )
     if not params.invert_tilt_angles:
-        cmd_parts_import.append("--dont_invert")
+        ts_import.flag("--dont_invert")
     if params.do_at_most > 0:
-        cmd_parts_import.extend(["--do_at_most", str(params.do_at_most)])
+        ts_import.opt("--do_at_most", params.do_at_most)
 
     # === Step 2: create_settings ===
-    cmd_parts_settings = [
-        "WarpTools create_settings",
-        "--folder_data",
-        "tomostar",
-        "--extension '*.tomostar'",
-        "--folder_processing",
-        "warp_tiltseries",
-        "--output",
-        "warp_tiltseries.settings",
-        "--angpix",
-        str(params.pixel_size),
-        "--exposure",
-        str(params.dose_per_tilt),
-        "--tomo_dimensions",
-        params.tomo_dimensions,
-    ]
-    if gain_path_str:
-        cmd_parts_settings.extend(["--gain_reference", gain_path_str])
+    create_settings = (
+        ToolCommand("WarpTools create_settings")
+        .opt("--folder_data", "tomostar")
+        .raw("--extension '*.tomostar'")
+        .opt("--folder_processing", "warp_tiltseries")
+        .opt("--output", "warp_tiltseries.settings")
+        .opt("--angpix", params.pixel_size)
+        .opt("--exposure", params.dose_per_tilt)
+        .opt("--tomo_dimensions", params.tomo_dimensions)
+    )
+    if gain_path:
+        create_settings.opt_path("--gain_reference", gain_path, quote=True)
         if gain_ops_str:
-            cmd_parts_settings.extend(["--gain_operations", gain_ops_str])
+            create_settings.opt("--gain_operations", gain_ops_str)
 
     return " && ".join(
         [
-            f"test -d tomostar && ls tomostar/*.tomostar >/dev/null 2>&1 || ({' '.join(cmd_parts_import)})",
-            f"test -f warp_tiltseries.settings || ({' '.join(cmd_parts_settings)})",
+            f"test -d tomostar && ls tomostar/*.tomostar >/dev/null 2>&1 || ({ts_import.render()})",
+            f"test -f warp_tiltseries.settings || ({create_settings.render()})",
         ]
     )
 
@@ -98,7 +79,9 @@ def main():
     print("[DRIVER] ts_import driver started.", flush=True)
 
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(TsImportParams)
+        (_project_state, params, local_params_data, job_dir, _project_path, job_type) = get_driver_context(
+            TsImportParams
+        )
     except Exception as e:
         job_dir = Path.cwd()
         (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
@@ -118,13 +101,8 @@ def main():
         command_str = build_ts_import_commands(params, paths, job_dir)
         print(f"[DRIVER] Command: {command_str}", flush=True)
 
-        container_svc = get_container_service()
-        apptainer_command = container_svc.wrap_command_for_tool(
-            command=command_str, cwd=job_dir, tool_name="warptools", additional_binds=additional_binds
-        )
-
         print("[DRIVER] Executing container...", flush=True)
-        run_command(apptainer_command, cwd=job_dir)
+        run_tool(command_str, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         # Verify outputs exist
         tomostar_dir = job_dir / "tomostar"

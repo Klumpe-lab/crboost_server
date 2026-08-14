@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, NamedTuple, Optional, Tuple
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -33,22 +33,22 @@ class TemplateHeader(NamedTuple):
     state ("is this template at std≈1 like the ellipsoid, or near zero?").
     """
 
-    apix_ang: Optional[float]
-    box_px: Optional[int]
-    nx: Optional[int]
-    ny: Optional[int]
-    nz: Optional[int]
-    dmin: Optional[float] = None
-    dmax: Optional[float] = None
-    dmean: Optional[float] = None
-    rms: Optional[float] = None
+    apix_ang: float | None
+    box_px: int | None
+    nx: int | None
+    ny: int | None
+    nz: int | None
+    dmin: float | None = None
+    dmax: float | None = None
+    dmean: float | None = None
+    rms: float | None = None
 
     @classmethod
-    def empty(cls) -> "TemplateHeader":
+    def empty(cls) -> TemplateHeader:
         return cls(None, None, None, None, None, None, None, None, None)
 
 
-_HEADER_CACHE: Dict[Tuple[str, int], TemplateHeader] = {}
+_HEADER_CACHE: dict[tuple[str, int], TemplateHeader] = {}
 
 
 def read_template_header(template_path: str) -> TemplateHeader:
@@ -143,38 +143,3 @@ def get_selected_mask(species):
         return None
     get_sel = getattr(species, "get_selected_mask", None)
     return get_sel() if callable(get_sel) else None
-
-
-def resolve_species_from_job(state, job_model, instance_id: Optional[str] = None):
-    """Find the ParticleSpecies a per-particle job is attached to, using
-    three fallbacks in order:
-
-    1. instance_id suffix (`templatematching__ribosome` -> `ribosome`).
-    2. job_model.species_id field (set even when instance_id is bare).
-    3. Single-species fallback: if exactly one species exists in the
-       project, attribute the job to it.
-
-    Returns (species or None, species_id or None). Mirrors the logic
-    that ui/tomo_dashboard_dialog.py:_resolve_species uses; consolidated
-    here so job-config plugins can reuse it without duplicating the
-    fallback chain."""
-    if instance_id:
-        parts = instance_id.split("__", 1)
-        if len(parts) > 1:
-            sid = parts[1]
-            sp = state.get_species(sid) if hasattr(state, "get_species") else None
-            if sp is not None:
-                return sp, sid
-
-    sid2 = getattr(job_model, "species_id", None)
-    if sid2:
-        sp = state.get_species(sid2) if hasattr(state, "get_species") else None
-        if sp is not None:
-            return sp, sid2
-        return None, sid2
-
-    registry = getattr(state, "species_registry", None) or []
-    if len(registry) == 1:
-        sp = registry[0]
-        return sp, sp.id
-    return None, None

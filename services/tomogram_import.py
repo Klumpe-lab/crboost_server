@@ -23,7 +23,6 @@ from __future__ import annotations
 import re
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional
 
 
 class TomoImportMode(str, Enum):
@@ -35,7 +34,7 @@ TOMO_IMPORT_REFERENCE = TomoImportMode.REFERENCE.value
 TOMO_IMPORT_SYNTHESIZE = TomoImportMode.SYNTHESIZE.value
 
 
-def probe_mrc_metadata(paths: List[Path]) -> List[dict]:
+def probe_mrc_metadata(paths: list[Path]) -> list[dict]:
     """Per-file MRC header metadata for the pre-commit preview (headers only, no data).
 
     Each entry: ``{name, path, nx, ny, nz, voxel_size, has_voxel_size, error}``. A
@@ -44,7 +43,7 @@ def probe_mrc_metadata(paths: List[Path]) -> List[dict]:
     committing (CLAUDE.md 'Surfacing uncertainty')."""
     import mrcfile
 
-    out: List[dict] = []
+    out: list[dict] = []
     for raw in paths:
         p = Path(raw)
         rec = {
@@ -117,7 +116,7 @@ def _reference_rows(reference_star: str):
     return df
 
 
-def preview_reference_metadata(reference_star: str) -> List[dict]:
+def preview_reference_metadata(reference_star: str) -> list[dict]:
     """Project an existing ``tomograms.star`` into per-row preview dicts shaped exactly
     like :func:`probe_mrc_metadata`, so the import dialog's reference-mode review table
     reuses the same renderer. Reuses ``_reference_rows`` so block-selection / absolutize /
@@ -136,7 +135,7 @@ def preview_reference_metadata(reference_star: str) -> List[dict]:
         except (TypeError, ValueError):
             return None
 
-    out: List[dict] = []
+    out: list[dict] = []
     for _, row in df.iterrows():
         px = _num(row, "rlnTomoTiltSeriesPixelSize")
         if px is None:
@@ -160,7 +159,7 @@ def preview_reference_metadata(reference_star: str) -> List[dict]:
 
 
 def _synthesize_rows(
-    mrc_paths: List[Path],
+    mrc_paths: list[Path],
     *,
     pixel_size_angstrom: float,
     tomogram_binning: float,
@@ -215,9 +214,9 @@ def _synthesize_rows(
                 "rlnTomoHand": hand,
                 "rlnOpticsGroupName": optics_group_name,
                 # Unbinned tomogram dims (RELION convention) = recon dims * binning.
-                "rlnTomoSizeX": int(round(nx * binning)),
-                "rlnTomoSizeY": int(round(ny * binning)),
-                "rlnTomoSizeZ": int(round(nz * binning)),
+                "rlnTomoSizeX": round(nx * binning),
+                "rlnTomoSizeY": round(ny * binning),
+                "rlnTomoSizeZ": round(nz * binning),
                 "rlnTomoTiltSeriesPixelSize": ts_px,
                 "rlnTomoReconstructedTomogram": str(mrc_path.resolve()),
                 "rlnTomoTomogramBinning": binning,
@@ -230,7 +229,7 @@ def write_tomograms_star(
     out_path: Path,
     *,
     mode: str = TOMO_IMPORT_SYNTHESIZE,
-    mrc_paths: Optional[List[Path]] = None,
+    mrc_paths: list[Path] | None = None,
     reference_star: str = "",
     pixel_size_angstrom: float = 0.0,
     tomogram_binning: float = 1.0,
@@ -271,4 +270,4 @@ def write_tomograms_star(
 
     # starfile maps the dict key to the block name -> 'global' becomes data_global.
     starfile.write({"global": df}, out_path, overwrite=True)
-    return int(len(df))
+    return len(df)

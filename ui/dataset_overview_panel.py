@@ -4,11 +4,11 @@ NiceGUI component that displays a parsed cryo-ET dataset as a collapsible,
 selectable table of stage positions and their tilt-series (beam positions).
 """
 
-from typing import Callable, Dict, List, Optional
+from collections.abc import Callable
 
 from nicegui import ui
 
-from services.dataset_models import DatasetOverview
+from services.tilt_series.preimport import DatasetOverview
 from ui.styles import MONO, SANS as FONT
 
 CLR_HEADING = "#0f172a"
@@ -38,7 +38,7 @@ CELL = "padding: 3px 5px;"
 COL_WIDTHS = "24px 44px 40px 40px 110px 58px 50px 50px 50px 1fr"
 
 
-def build_dataset_overview_panel(overview: DatasetOverview, on_change: Optional[Callable[[], None]] = None) -> None:
+def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[[], None] | None = None) -> None:
     """Render the dataset overview with collapsible positions and selection."""
 
     if not overview.positions:
@@ -50,10 +50,10 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Optional[
         return
 
     # Registry: ts_label -> row element (for scroll-to-highlight)
-    row_registry: Dict[str, ui.element] = {}
+    row_registry: dict[str, ui.element] = {}
 
     # --- State tracking ---
-    all_pos_cbs: List[tuple] = []
+    all_pos_cbs: list[tuple] = []
     summary_label = ui.label("")
     summary_label.style(f"{MONO} font-size: 10px; color: {CLR_SUBLABEL};")
 
@@ -163,7 +163,7 @@ def _bucket_by_param(overview, param_key):
     Returns dict of rounded_value -> list of ts_label strings,
     and the majority value.
     """
-    buckets: Dict[object, List[str]] = {}
+    buckets: dict[object, list[str]] = {}
     for p in overview.positions:
         for ts in p.tilt_series:
             if not ts.selected:

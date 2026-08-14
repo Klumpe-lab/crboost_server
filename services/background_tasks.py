@@ -40,7 +40,8 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -56,24 +57,24 @@ CoroFactory = Callable[[ProgressCallback], Awaitable[Any]]
 class BackgroundTaskRecord:
     id: str
     title: str
-    subtitle: Optional[str] = None
-    project_path: Optional[str] = None
-    dedup_key: Optional[str] = None
+    subtitle: str | None = None
+    project_path: str | None = None
+    dedup_key: str | None = None
     status: str = "running"  # "running" | "succeeded" | "failed" | "cancelled"
     progress_current: int = 0
     progress_total: int = 0
     progress_message: str = ""
     started_at: datetime = field(default_factory=datetime.now)
-    finished_at: Optional[datetime] = None
-    result_message: Optional[str] = None
-    error: Optional[str] = None
-    _asyncio_task: Optional[asyncio.Task] = field(default=None, repr=False)
+    finished_at: datetime | None = None
+    result_message: str | None = None
+    error: str | None = None
+    _asyncio_task: asyncio.Task | None = field(default=None, repr=False)
 
     @property
-    def progress_pct(self) -> Optional[int]:
+    def progress_pct(self) -> int | None:
         if self.progress_total <= 0:
             return None
-        return min(100, int(round(100.0 * self.progress_current / self.progress_total)))
+        return min(100, round(100.0 * self.progress_current / self.progress_total))
 
     @property
     def is_running(self) -> bool:
@@ -94,9 +95,9 @@ class BackgroundTaskRegistry:
         coro_factory: CoroFactory,
         *,
         title: str,
-        subtitle: Optional[str] = None,
-        project_path: Optional[str] = None,
-        dedup_key: Optional[str] = None,
+        subtitle: str | None = None,
+        project_path: str | None = None,
+        dedup_key: str | None = None,
     ) -> str:
         """Register and start a background task. `coro_factory` receives the
         progress_cb; it should return an awaitable.
@@ -154,19 +155,19 @@ class BackgroundTaskRegistry:
         record._asyncio_task = asyncio.create_task(runner(), name=f"bg-task:{task_id}")
         return task_id
 
-    def get(self, task_id: str) -> Optional[BackgroundTaskRecord]:
+    def get(self, task_id: str) -> BackgroundTaskRecord | None:
         return self._tasks.get(task_id)
 
     def all(self) -> list[BackgroundTaskRecord]:
         return list(self._tasks.values())
 
-    def for_project(self, project_path: Optional[str]) -> list[BackgroundTaskRecord]:
+    def for_project(self, project_path: str | None) -> list[BackgroundTaskRecord]:
         if not project_path:
             return self.all()
         return [t for t in self._tasks.values() if t.project_path == project_path]
 
     def snapshot_for_project(
-        self, project_path: Optional[str], *, recent_window_sec: float = 30.0
+        self, project_path: str | None, *, recent_window_sec: float = 30.0
     ) -> tuple[list[BackgroundTaskRecord], list[BackgroundTaskRecord]]:
         """Return (active, recent_finished) for the given project.
         `recent_finished` includes failed/cancelled within the window."""
@@ -220,7 +221,7 @@ class BackgroundTaskRegistry:
                 self._tasks.pop(tid, None)
 
 
-_registry: Optional[BackgroundTaskRegistry] = None
+_registry: BackgroundTaskRegistry | None = None
 
 
 def get_background_task_registry() -> BackgroundTaskRegistry:

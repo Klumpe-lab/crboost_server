@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Set, Tuple
+from typing import ClassVar
 from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
@@ -25,7 +25,7 @@ class SubtomoExtractionParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS: ClassVar[Set[str]] = {
+    USER_PARAMS: ClassVar[set[str]] = {
         "binning",
         "box_size",
         "crop_size",
@@ -45,13 +45,13 @@ class SubtomoExtractionParams(AbstractJobParams):
     #   - No automatic dirty-marking (the merge panel calls save_handler
     #     explicitly after changing them)
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(
             key="input_optimisation", accepts=[JobFileType.OPTIMISATION_SET_STAR], preferred_source="tmextractcand"
         )
     ]
 
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_particles", produces=JobFileType.PARTICLES_STAR, path_template="particles.star"),
         OutputSlot(
             key="output_optimisation", produces=JobFileType.OPTIMISATION_SET_STAR, path_template="optimisation_set.star"
@@ -76,7 +76,7 @@ class SubtomoExtractionParams(AbstractJobParams):
         ),
     ]
 
-    additional_sources: List[str] = Field(
+    additional_sources: list[str] = Field(
         default_factory=list, description="Extra optimisation_set.star files or job dirs to merge"
     )
     merge_only: bool = Field(default=False, description="If true, skip relion_tomo_subtomo and only merge")
@@ -121,11 +121,11 @@ class SubtomoExtractionParams(AbstractJobParams):
         default=16, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series subtomo extraction"
     )
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_opt = self.paths.get("input_optimisation", "")
         return [("in_optimisation", str(input_opt))]
 
-    def _get_queue_options(self) -> List[Tuple[str, str]]:
+    def _get_queue_options(self) -> list[tuple[str, str]]:
         """
         Override: extract's parent sbatch is a lightweight CPU-only supervisor
         that slices the upstream optimisation set per TS, submits an array,
@@ -153,5 +153,5 @@ class SubtomoExtractionParams(AbstractJobParams):
         return "relion"
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"optimisation_set": "tmextractcand"}
