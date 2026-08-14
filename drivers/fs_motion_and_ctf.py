@@ -14,36 +14,24 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           (symlinked), runs WarpTools create_settings + fs_motion_and_ctf on
           that subset, then copies resulting XMLs and averages into the shared
           warp_frameseries/ output directory.
+
+The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
+markers all live in ArrayDriver; this file is the fs_motion-specific hooks.
 """
 
-import os
 import shutil
 import sys
-import traceback
 from pathlib import Path
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
-from drivers.array_job_base import (
-    apply_exclusions,
-    collect_task_results,
-    install_cancel_handler,
-    preflight_registry,
-    read_manifest,
-    submit_array_job,
-    wait_for_array_completion,
-    write_status_atomic,
-    STATUS_DIR_NAME,
-)
-from drivers.driver_base import ToolCommand, get_driver_context, run_tool
+from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
+from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
 from services.configs.starfile_service import StarfileService
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.tilt_series import get_registry_for
 from services.tilt_series.adapters import FsMotionCtfIngestAdapter
-
-
-DRIVER_SCRIPT = Path(__file__).resolve()
 
 
 # ----------------------------------------------------------------------
@@ -51,7 +39,7 @@ DRIVER_SCRIPT = Path(__file__).resolve()
 # ----------------------------------------------------------------------
 
 
-def read_ts_frame_mapping(input_star: Path, project_root: Path) -> dict[str, list[str]]:
+def read_ts_frame_mapping(input_star: Path, project_root: Path) -> tuple[dict[str, list[str]], dict[str, str]]:
     """
     Parse the import STAR to build a mapping: ts_name → [frame_filename, ...].
 
@@ -60,15 +48,21 @@ def read_ts_frame_mapping(input_star: Path, project_root: Path) -> dict[str, lis
 
     rlnTomoTiltSeriesStarFile paths are relative to the project root
     (e.g. "Import/job001/tilt_series/xxx.star").
+
+    Returns (mapping, unresolved) where `unresolved` maps each TS whose per-TS
+    star could not be found to a reason string. Those TS still enter the
+    manifest so their tasks fail visibly (census #12) instead of the TS being
+    silently dropped from the run.
     """
     star_svc = StarfileService()
     star_data = star_svc.read(input_star)
     global_df = star_data.get("global")
     if global_df is None or len(global_df) == 0:
-        return {}
+        return {}, {}
 
     input_star_dir = input_star.parent
     mapping: dict[str, list[str]] = {}
+    unresolved: dict[str, str] = {}
 
     for _, row in global_df.iterrows():
         ts_name = str(row["rlnTomoName"])
@@ -83,9 +77,8 @@ def read_ts_frame_mapping(input_star: Path, project_root: Path) -> dict[str, lis
                 break
 
         if ts_star_path is None:
-            print(
-                f"[WARN] Per-TS star not found: tried {project_root / ts_star_rel} and {input_star_dir / ts_star_rel}",
-                flush=True,
+            unresolved[ts_name] = (
+                f"per-TS star not found: tried {project_root / ts_star_rel} and {input_star_dir / ts_star_rel}"
             )
             continue
 
@@ -96,7 +89,7 @@ def read_ts_frame_mapping(input_star: Path, project_root: Path) -> dict[str, lis
         # These are relative paths like "frames/xxx.eer" — extract just filenames
         mapping[ts_name] = [Path(f).name for f in frames]
 
-    return mapping
+    return mapping, unresolved
 
 
 def build_warp_commands(params: FsMotionCtfParams, frames_rel: str, extension: str) -> str:
@@ -175,6 +168,9 @@ def stage_fs_environment(job_dir: Path, ts_name: str, frame_filenames: list[str]
     ├── frames/              ← symlinks to this TS's frame files only
     ├── warp_frameseries.settings  ← created by WarpTools
     └── warp_frameseries/    ← WarpTools output dir
+
+    A missing source frame raises (census #13): motion/CTF-correcting a partial
+    frame set and green-ticking it hides data loss the operator must see.
     """
     stage_root = job_dir / ".staging" / f"task_{ts_name}"
     stage_root.mkdir(parents=True, exist_ok=True)
@@ -182,6 +178,7 @@ def stage_fs_environment(job_dir: Path, ts_name: str, frame_filenames: list[str]
     staged_frames = stage_root / "frames"
     staged_frames.mkdir(parents=True, exist_ok=True)
 
+    missing = []
     for fname in frame_filenames:
         src = project_frames_dir / fname
         dst = staged_frames / fname
@@ -189,7 +186,13 @@ def stage_fs_environment(job_dir: Path, ts_name: str, frame_filenames: list[str]
             if src.exists():
                 dst.symlink_to(src.resolve())
             else:
-                print(f"  [WARN] Frame not found: {src}", flush=True)
+                missing.append(str(src))
+
+    if missing:
+        raise FileNotFoundError(
+            f"{len(missing)}/{len(frame_filenames)} frame file(s) missing for tilt-series '{ts_name}' "
+            f"(first missing: {missing[0]}) — refusing to process a partial frame set"
+        )
 
     return stage_root
 
@@ -230,206 +233,112 @@ def collect_fs_outputs(job_dir: Path, ts_name: str) -> None:
                             shutil.copy2(str(nf), str(shared_nested / nf.name))
 
 
-# ----------------------------------------------------------------------
-# Mode dispatch
-# ----------------------------------------------------------------------
+class FsMotionCtfDriver(ArrayDriver):
+    params_class = FsMotionCtfParams
+    job_name = "fs_motion_and_ctf"
+    driver_script = Path(__file__).resolve()
 
+    # ---------------- supervisor ----------------
 
-def main():
-    print("Python", sys.version, flush=True)
-    array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
-    if array_idx_env is None:
-        print("--- fs_motion_and_ctf: SUPERVISOR mode ---", flush=True)
-        run_supervisor_mode()
-    else:
-        print(f"--- fs_motion_and_ctf: TASK mode (array idx {array_idx_env}) ---", flush=True)
-        run_task_mode(int(array_idx_env))
+    def enumerate_items(self, ctx: DriverContext[FsMotionCtfParams]) -> list[str]:
+        input_star = ctx.paths["input_star"]
+        require_producer_input(input_star, "Input STAR")
 
+        mapping, unresolved = read_ts_frame_mapping(input_star, ctx.project_path)
+        ts_names = sorted(set(mapping) | set(unresolved))
+        if not ts_names:
+            raise ValueError(f"No tilt-series/frames found in input STAR: {input_star}")
 
-# ----------------------------------------------------------------------
-# Supervisor mode
-# ----------------------------------------------------------------------
+        total_frames = sum(len(frames) for frames in mapping.values())
+        self.log(f"{total_frames} total frames across {len(ts_names)} tilt-series")
+        for ts in sorted(mapping):
+            self.log(f"  {ts}: {len(mapping[ts])} frames")
+        for ts in sorted(unresolved):
+            self.log(f"ERROR: '{ts}' has no resolvable per-TS star — its task will FAIL: {unresolved[ts]}")
 
+        self._ts_frame_map = mapping
+        self._unresolved = unresolved
+        return ts_names
 
-def run_supervisor_mode():
-    try:
-        (_project_state, params, local_params_data, job_dir, project_path, _job_type) = get_driver_context(
-            FsMotionCtfParams
-        )
-    except Exception as e:
-        fail_dir = Path.cwd()
-        (fail_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
+    def manifest_extras(self, ctx: DriverContext[FsMotionCtfParams], items: list[str]) -> dict:
+        extras = {"ts_frames": self._ts_frame_map}
+        if self._unresolved:
+            extras["unresolved_ts"] = self._unresolved
+        return extras
 
-    print(f"[SUPERVISOR] CWD (job dir): {job_dir}", flush=True)
-
-    try:
-        paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
-        instance_id = local_params_data["instance_id"]
-
-        input_star_path = paths.get("input_star")
-        if not input_star_path or not input_star_path.exists():
-            raise FileNotFoundError(f"Required input STAR file not found: {input_star_path}")
-
-        # Parse input STAR to build TS→frames mapping
-        ts_frame_map = read_ts_frame_mapping(input_star_path, project_path)
-        if not ts_frame_map:
-            raise ValueError(f"No tilt-series/frames found in input STAR: {input_star_path}")
-
-        ts_names = sorted(ts_frame_map.keys())
-        n_tasks = len(ts_names)
-        total_frames = sum(len(frames) for frames in ts_frame_map.values())
-        print(f"[SUPERVISOR] Found {n_tasks} tilt-series with {total_frames} total frames", flush=True)
-        for ts in ts_names:
-            print(f"  {ts}: {len(ts_frame_map[ts])} frames", flush=True)
-
-        # Registry preflight — fail in ~1s if the registry can't cover every
-        # TS we're about to dispatch. Stops the "burn an hour on subjobs then
-        # fail aggregation" failure mode cold.
-        preflight_registry(project_path, ts_names, job_name="fs_motion_and_ctf")
-
-        # Write the manifest with the frame mapping embedded
-        per_task_cfg = params.get_effective_slurm_config()
-
-        # Honor user "exclude from processing": pre-skip excluded TS so they are
-        # never dispatched and count as settled (not failures) in aggregation.
-        apply_exclusions(job_dir, project_path, ts_names)
-
-        array_job_id = submit_array_job(
-            job_dir=job_dir,
-            project_path=project_path,
-            instance_id=instance_id,
-            ts_names=ts_names,
-            per_task_cfg=per_task_cfg,
-            array_throttle=params.array_throttle,
-            driver_script=DRIVER_SCRIPT,
-            manifest_extra={"ts_frames": ts_frame_map},
-        )
-
-        if array_job_id is not None:
-            install_cancel_handler(array_job_id, job_dir)
-            wait_for_array_completion(array_job_id, poll_secs=30)
-        else:
-            print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
-
-        # Check results against ALL ts_names (includes previously succeeded)
-        results = collect_task_results(job_dir, ts_names)
-        print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
-        if results.failed:
-            print(f"[SUPERVISOR] FAILED tilt-series: {results.failed}", flush=True)
-        if results.missing:
-            print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
-
-        if not results.all_succeeded:
-            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
-            sys.exit(1)
+    def aggregate(self, ctx: DriverContext[FsMotionCtfParams], results: ArrayResults) -> None:
+        output_processing_dir = ctx.paths.get("output_processing", ctx.job_dir / "warp_frameseries")
+        output_processing_dir.mkdir(parents=True, exist_ok=True)
 
         # Aggregate metadata via the TiltSeries registry. If the registry is
         # empty (legacy project), fail loud rather than fall back to the old
         # string-keyed merge — that's the path that produced the
         # silent-corruption bug we explicitly guarded against.
-        print("[SUPERVISOR] All tasks succeeded; aggregating metadata via registry...", flush=True)
-
-        output_processing_dir = paths.get("output_processing", job_dir / "warp_frameseries")
-        output_processing_dir.mkdir(parents=True, exist_ok=True)
-
-        registry = get_registry_for(project_path)
+        registry = get_registry_for(ctx.project_path)
         if not registry.tilt_series_ids():
             raise RuntimeError(
-                f"TiltSeries registry is empty for project {project_path}. "
+                f"TiltSeries registry is empty for project {ctx.project_path}. "
                 f"Reload the project in the UI to backfill the registry from mdocs, "
                 f"then restart this job."
             )
         adapter = FsMotionCtfIngestAdapter(
-            registry=registry, job_dir=job_dir, job_instance_id=instance_id, warp_folder="warp_frameseries",
+            registry=registry, job_dir=ctx.job_dir, job_instance_id=ctx.instance_id, warp_folder="warp_frameseries"
         )
         adapter.ingest(results.ok)
         adapter.emit_star(
-            input_star_path, paths["output_star"], project_root=project_path, excluded_ids=set(results.skipped)
+            ctx.paths["input_star"],
+            ctx.paths["output_star"],
+            project_root=ctx.project_path,
+            excluded_ids=set(results.skipped),
         )
         registry.save()
+        self.log("Metadata processing successful.")
 
-        print("[SUPERVISOR] Metadata processing successful.", flush=True)
+    # ---------------- task ----------------
 
-        (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-        print("[SUPERVISOR] Job finished successfully.", flush=True)
-        sys.exit(0)
+    def stage(self, ctx: DriverContext[FsMotionCtfParams], item: str):
+        manifest = read_manifest(ctx.job_dir)
+        unresolved = manifest.get("unresolved_ts", {})
+        if item in unresolved:
+            # Census #12: the supervisor could not resolve this TS's per-TS star.
+            # The TS stays in the manifest so it fails HERE, visibly, instead of
+            # silently vanishing from the run.
+            raise FileNotFoundError(f"Cannot process '{item}': {unresolved[item]}")
+        frame_filenames = manifest["ts_frames"][item]
+        self.log(f"{len(frame_filenames)} frames")
 
-    except Exception as e:
-        print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        sys.exit(1)
+        project_frames_dir = ctx.paths.get("frames_dir", ctx.project_path / "frames")
+        stage_root = stage_fs_environment(ctx.job_dir, item, frame_filenames, project_frames_dir)
+        self.log(f"Staged at: {stage_root}")
 
+        ext = detect_frame_extension(stage_root / "frames")
+        return stage_root, ext
 
-# ----------------------------------------------------------------------
-# Task mode
-# ----------------------------------------------------------------------
+    def build_command(self, ctx: DriverContext[FsMotionCtfParams], item: str, staged) -> str:
+        _stage_root, ext = staged
+        # Compound shell (test/&&) — composed as a string, cwd is the staging root.
+        return build_warp_commands(ctx.params, "frames", ext)
 
+    def task_cwd(self, ctx: DriverContext[FsMotionCtfParams], item: str, staged) -> Path:
+        stage_root, _ext = staged
+        return stage_root
 
-def run_task_mode(array_idx: int):
-    try:
-        (_project_state, params, local_params_data, job_dir, project_path, _job_type) = get_driver_context(
-            FsMotionCtfParams
-        )
-    except Exception as e:
-        print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
+    def verify_outputs(self, ctx: DriverContext[FsMotionCtfParams], item: str, staged) -> None:
+        # Census #14: WarpTools writes one XML per frame; a zero/short XML count
+        # after exit 0 means degenerate output and must not green-tick.
+        stage_root, _ext = staged
+        staged_warp = stage_root / "warp_frameseries"
+        n_frames = sum(1 for _ in (stage_root / "frames").iterdir())
+        n_xml = len(list(staged_warp.glob("*.xml"))) if staged_warp.is_dir() else 0
+        if n_xml < n_frames:
+            raise FileNotFoundError(
+                f"WarpTools reported success but produced {n_xml}/{n_frames} per-frame XMLs in {staged_warp}"
+            )
 
-    status_dir = job_dir / STATUS_DIR_NAME
-    ts_name = None
-    try:
-        manifest = read_manifest(job_dir)
-        ts_names = manifest["ts_names"]
-        ts_frames = manifest["ts_frames"]
-
-        if array_idx >= len(ts_names):
-            raise IndexError(f"SLURM_ARRAY_TASK_ID {array_idx} out of range (manifest has {len(ts_names)})")
-        ts_name = ts_names[array_idx]
-        frame_filenames = ts_frames[ts_name]
-        print(f"[TASK {array_idx}] ts_name={ts_name}, {len(frame_filenames)} frames", flush=True)
-
-        paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
-        additional_binds = local_params_data["additional_binds"]
-        project_frames_dir = paths.get("frames_dir", project_path / "frames")
-
-        # Stage per-TS environment with only this TS's frames
-        stage_root = stage_fs_environment(job_dir, ts_name, frame_filenames, project_frames_dir)
-        print(f"[TASK {array_idx}] Staged at: {stage_root}", flush=True)
-
-        # Detect frame extension from staged frames
-        staged_frames_dir = stage_root / "frames"
-        ext = detect_frame_extension(staged_frames_dir)
-
-        # Build the WarpTools command — runs inside stage_root with frames in ./frames/
-        warp_command = build_warp_commands(params, "frames", ext)
-
-        print(f"[TASK {array_idx}] Command: {warp_command[:300]}...", flush=True)
-
-        run_tool(warp_command, tool_name=params.get_tool_name(), cwd=stage_root, binds=additional_binds)
-
-        # Collect outputs into shared warp_frameseries/ dir
-        print(f"[TASK {array_idx}] Collecting outputs...", flush=True)
-        collect_fs_outputs(job_dir, ts_name)
-
-        write_status_atomic(status_dir, ts_name, ok=True)
-        print(f"[TASK {array_idx}] {ts_name} done", flush=True)
-        sys.exit(0)
-
-    except Exception as e:
-        label = ts_name or f"_unknown_idx{array_idx}"
-        print(f"[TASK {array_idx}] FATAL ERROR for ts={label}: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        try:
-            write_status_atomic(status_dir, label, ok=False)
-        except Exception as inner:
-            print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
-        sys.exit(1)
+    def collect(self, ctx: DriverContext[FsMotionCtfParams], item: str, staged) -> None:
+        self.log("Collecting outputs...")
+        collect_fs_outputs(ctx.job_dir, item)
 
 
 if __name__ == "__main__":
-    main()
+    FsMotionCtfDriver().main()
