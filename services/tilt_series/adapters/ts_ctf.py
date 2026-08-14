@@ -26,13 +26,12 @@ from collections.abc import Iterable
 import pandas as pd
 
 from services.configs.metadata_service import WarpXmlParser
-from services.configs.starfile_service import StarfileService
+from services.tilt_series.adapters._base import BaseIngestAdapter
 from services.tilt_series.models import (
     TiltSeries,
     TsCtfPerFrameCtf,
     TsCtfTiltSeriesOutput,
 )
-from services.tilt_series.registry import TiltSeriesRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -48,22 +47,7 @@ CTF_COLUMNS = (
 )
 
 
-class TsCtfIngestAdapter:
-    def __init__(
-        self,
-        registry: TiltSeriesRegistry,
-        job_dir: Path,
-        *,
-        job_instance_id: str,
-        warp_folder: str = "warp_tiltseries",
-        starfile_service: StarfileService | None = None,
-    ):
-        self.registry = registry
-        self.job_dir = Path(job_dir)
-        self.job_instance_id = job_instance_id
-        self.warp_dir = self.job_dir / warp_folder
-        self.starfile_service = starfile_service or StarfileService()
-
+class TsCtfIngestAdapter(BaseIngestAdapter):
     # ── Public API ─────────────────────────────────────────────────────────
 
     def ingest(self, expected_ts_ids: Iterable[str]) -> None:
@@ -129,7 +113,7 @@ class TsCtfIngestAdapter:
             lambda x: f"{preserve_subfolder}/{Path(x).name}"
         )
 
-        excluded = {str(t) for t in (excluded_ids or ())}
+        excluded = self._excluded_set(excluded_ids)
         unresolved: list[str] = []
         for _, ts_row in in_ts_df.iterrows():
             ts_id = str(ts_row["rlnTomoName"])
@@ -181,8 +165,7 @@ class TsCtfIngestAdapter:
         }
         out_ts_df["rlnTomoHand"] = out_ts_df["rlnTomoName"].map(hand_map).fillna(1).astype(int)
 
-        if excluded:
-            out_ts_df = out_ts_df[~out_ts_df["rlnTomoName"].astype(str).isin(excluded)].reset_index(drop=True)
+        out_ts_df = self._drop_excluded(out_ts_df, excluded)
 
         self.starfile_service.write({"global": out_ts_df}, output_star_path)
         logger.info("tsCtf: wrote output STAR to %s", output_star_path)
@@ -254,10 +237,6 @@ class TsCtfIngestAdapter:
             are_angles_inverted=are_inverted,
             per_frame=per_frame,
         )
-
-    def _read_only_block(self, path: Path) -> pd.DataFrame:
-        data = self.starfile_service.read(path)
-        return next(iter(data.values())).copy()
 
     def _apply_ctf_to_tilt_df(
         self,
