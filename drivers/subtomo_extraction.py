@@ -60,7 +60,7 @@ from drivers.array_job_base import (
     write_status_atomic,
 )
 from drivers.driver_base import ToolCommand, get_driver_context, run_tool
-from drivers.subtomo_merge import (
+from services.subtomo_merge import (
     _parse_optimisation_set,
     _read_input_particles_lenient,
     _read_particles_star,
