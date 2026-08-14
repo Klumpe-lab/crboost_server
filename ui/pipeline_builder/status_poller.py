@@ -18,7 +18,7 @@ flips it.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from nicegui import ui
 
@@ -31,11 +31,11 @@ logger = logging.getLogger(__name__)
 
 
 class StatusPoller:
-    def __init__(self, panel: "PipelineBuilderPanel"):
+    def __init__(self, panel: PipelineBuilderPanel):
         self.panel = panel
         # `None` on first tick means "no prior observation"; first tick
         # only records, doesn't fire transitions.
-        self._last_active: Optional[bool] = None
+        self._last_active: bool | None = None
 
     async def check_and_update_statuses(self):
         """One UI tick. Reads in-memory state (already kept fresh by

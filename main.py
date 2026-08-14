@@ -29,7 +29,8 @@ def setup_logging(debug: bool = False):
     level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(
         level=level,
-        format="%(asctime)s [%(levelname)-7s] %(name)s: %(message)s",
+        # name:lineno makes every record trackable to its file (roadmap 03 stage 2)
+        format="%(asctime)s %(levelname).1s %(name)s:%(lineno)d %(message)s",
         datefmt="%H:%M:%S",
     )
     # Quiet down noisy third-party loggers
@@ -100,7 +101,8 @@ def setup_app():
     ui.add_head_html(f'''
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+              rel="stylesheet">
         <link rel="stylesheet" href="/static/main.css?v={css_version}">
     ''')
     
@@ -165,10 +167,13 @@ if __name__ in {"__main__", "__mp_main__"}:
     
     print("\n" + "="*60)
     print("CryoBoost Server Starting")
-    print(f"Access URLs:")
+    print("Access URLs:")
     print(f"  Local:   http://localhost:{args.port}")
     print(f"  Network: http://{local_ip}:{args.port}")
-    print("\nTo access in the browser from your local machine, establish port-forwarding from remote to your local terminal.")
+    print(
+        "\nTo access in the browser from your local machine, "
+        "establish port-forwarding from remote to your local terminal."
+    )
     print("\nRun this in a local terminal:")
     print(f"ssh -f -N -L {args.port}:localhost:{args.port} $USER@{hostname}")
     print("="*60 + "\n")

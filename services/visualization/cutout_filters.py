@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -127,11 +126,11 @@ def get_filter_presets() -> list[dict]:
     return DEFAULT_FILTER_PRESETS
 
 
-def is_raw(preset: Optional[dict]) -> bool:
+def is_raw(preset: dict | None) -> bool:
     return preset is None or preset.get("kind", "raw") == "raw"
 
 
-def resolve_apix(header_voxel_size: Optional[float], hint: Optional[float]) -> tuple[Optional[float], str]:
+def resolve_apix(header_voxel_size: float | None, hint: float | None) -> tuple[float | None, str]:
     """Resolve the pixel size (Å/px) to use for Å→px conversion, with provenance.
 
     Prefers the source MRC header's own value (so recon vs subtomo each self-report
@@ -160,7 +159,7 @@ def _butterworth(r: np.ndarray, fc: float, order: int) -> np.ndarray:
     return 1.0 / np.sqrt(1.0 + (r / fc) ** (2 * order))
 
 
-def apply_filter_2d(arr: np.ndarray, apix: Optional[float], preset: Optional[dict]) -> np.ndarray:
+def apply_filter_2d(arr: np.ndarray, apix: float | None, preset: dict | None) -> np.ndarray:
     """Apply a display filter to a 2D float frame. Returns a float32 array.
 
     `raw` (or a preset needing apix when apix is unknown) is a no-op passthrough.
@@ -241,7 +240,7 @@ def _pool_bounds(frames: list, sample_n: int = 12) -> tuple[float, float]:
 
 
 def build_filtered_atlas(
-    frames: list, fail_info: Optional[list], *, apix: Optional[float], preset: dict, tile_px: int = 192, cols: int = 8
+    frames: list, fail_info: list | None, *, apix: float | None, preset: dict, tile_px: int = 192, cols: int = 8
 ) -> dict:
     """Filter + normalize + assemble one sprite atlas from per-pick 2D float frames.
 
@@ -313,17 +312,17 @@ def keyed_path(base_path: Path, key: str) -> Path:
 
 def emit_filtered_atlases(
     frames: list,
-    fail_info: Optional[list],
+    fail_info: list | None,
     raw_atlas_path: Path,
     raw_index_path: Path,
     *,
-    apix_header: Optional[float],
-    apix_hint: Optional[float],
-    filters: Optional[list],
+    apix_header: float | None,
+    apix_hint: float | None,
+    filters: list | None,
     tile_px: int,
     cols: int,
     source: str,
-) -> Optional[dict]:
+) -> dict | None:
     """Render one atlas per filter preset from preloaded 2D float `frames`.
 
     Shared by both cutout pipelines: the caller produces `frames` (+ aligned
@@ -349,7 +348,7 @@ def emit_filtered_atlases(
 
     n = len(frames)
     variants: dict[str, dict] = {}
-    raw_meta: Optional[dict] = None
+    raw_meta: dict | None = None
     for preset in presets:
         key = preset["key"]
         built = build_filtered_atlas(frames, fail_info, apix=apix, preset=preset, tile_px=tile_px, cols=cols)
@@ -398,7 +397,7 @@ def emit_filtered_atlases(
     return raw_meta
 
 
-def save_atlas(built: dict, atlas_path: Path, index_path: Path, *, extra: Optional[dict] = None) -> None:
+def save_atlas(built: dict, atlas_path: Path, index_path: Path, *, extra: dict | None = None) -> None:
     """Write the atlas PNG + index JSON. `extra` is merged into the index payload
     (apix, apix_source, filter block, source, etc.)."""
     import json

@@ -4,8 +4,11 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Tuple
+from typing import Any
+from collections.abc import Callable
 from pydantic import BaseModel, Field, ConfigDict
+from services.jobs.spec import PIPELINE_ORDER, display_name
+from services.models_base import InstanceId, instance_id_to_job_type
 from services.project_state import JobType
 
 logger = logging.getLogger(__name__)
@@ -39,50 +42,46 @@ class DataImportFormState(BaseModel):
     mdocs_valid: bool = False
 
     # Aggregation mode: skip raw frames/mdocs, start at SubtomoExtraction.
-    # LEGACY — being replaced by particle-only + provider jobs (PARTICLE_PROJECT_ROADMAP.md P5).
+    # LEGACY — being replaced by data-less projects (empty globs) + provider jobs;
+    # retired in de-novo picking S6 (docs/roadmaps/denovo_picking/).
     is_aggregation: bool = False
-
-    # Particle-only mode: create a data-less project (no raw frames/mdocs, no
-    # ImportMovies). Tomograms / picks / particles are supplied later via provider
-    # jobs. Unlike is_aggregation this yields a *plain* project (no orphaning band-aids).
-    is_particle_only: bool = False
 
     # Create the project as shared/lab-owned (owner = SHARED_OWNER) rather than
     # belonging to the creating user.
     is_shared: bool = False
 
-    detected_pixel_size: Optional[float] = None
-    detected_voltage: Optional[float] = None
-    detected_dose_per_tilt: Optional[float] = None
-    detected_tilt_axis: Optional[float] = None
+    detected_pixel_size: float | None = None
+    detected_voltage: float | None = None
+    detected_dose_per_tilt: float | None = None
+    detected_tilt_axis: float | None = None
 
 
 class UIState(BaseModel):
     model_config = ConfigDict(use_enum_values=True, arbitrary_types_allowed=True)
 
-    current_project_path: Optional[str] = None
-    current_scheme_name: Optional[str] = None
+    current_project_path: str | None = None
+    current_scheme_name: str | None = None
     project_created: bool = False
     continuation_mode: bool = False
 
     # Instance IDs as strings — singletons use job_type.value,
     # multi-instance uses "jobtype__2", "jobtype__ribosome", etc.
-    selected_jobs: List[str] = Field(default_factory=list)
+    selected_jobs: list[str] = Field(default_factory=list)
     pipeline_running: bool = False
 
-    active_job_tab: Optional[str] = None  # instance_id string
+    active_job_tab: str | None = None  # instance_id string
 
-    job_ui_states: Dict[str, JobCardUIState] = Field(default_factory=dict)
+    job_ui_states: dict[str, JobCardUIState] = Field(default_factory=dict)
     data_import: DataImportFormState = Field(default_factory=DataImportFormState)
-    last_status_refresh: Optional[str] = None
+    last_status_refresh: str | None = None
 
 
 @dataclass
 class JobWidgetRefs:
-    logs_timer: Optional[Any] = None
-    content_container: Optional[Any] = None
-    switcher_container: Optional[Any] = None
-    monitor_logs: Dict[str, Any] = field(default_factory=dict)
+    logs_timer: Any | None = None
+    content_container: Any | None = None
+    switcher_container: Any | None = None
+    monitor_logs: dict[str, Any] = field(default_factory=dict)
 
     def cleanup(self):
         if self.logs_timer:
@@ -98,26 +97,26 @@ class JobWidgetRefs:
 
 @dataclass
 class PanelWidgetRefs:
-    job_tabs_container: Optional[Any] = None
-    job_list_container: Optional[Any] = None
-    job_tags_container: Optional[Any] = None
-    run_button: Optional[Any] = None
-    stop_button: Optional[Any] = None
-    status_label: Optional[Any] = None
-    continuation_container: Optional[Any] = None
-    job_tag_buttons: Dict[str, Any] = field(default_factory=dict)
+    job_tabs_container: Any | None = None
+    job_list_container: Any | None = None
+    job_tags_container: Any | None = None
+    run_button: Any | None = None
+    stop_button: Any | None = None
+    status_label: Any | None = None
+    continuation_container: Any | None = None
+    job_tag_buttons: dict[str, Any] = field(default_factory=dict)
 
-    movies_input: Optional[Any] = None
-    mdocs_input: Optional[Any] = None
-    project_name_input: Optional[Any] = None
-    project_path_input: Optional[Any] = None
-    create_button: Optional[Any] = None
-    load_button: Optional[Any] = None
-    autodetect_button: Optional[Any] = None
-    params_display_container: Optional[Any] = None
-    movies_hint_label: Optional[Any] = None
-    mdocs_hint_label: Optional[Any] = None
-    status_indicator: Optional[Any] = None
+    movies_input: Any | None = None
+    mdocs_input: Any | None = None
+    project_name_input: Any | None = None
+    project_path_input: Any | None = None
+    create_button: Any | None = None
+    load_button: Any | None = None
+    autodetect_button: Any | None = None
+    params_display_container: Any | None = None
+    movies_hint_label: Any | None = None
+    mdocs_hint_label: Any | None = None
+    status_indicator: Any | None = None
 
     def cleanup(self):
         self.job_tabs_container = None
@@ -141,86 +140,36 @@ class PanelWidgetRefs:
         self.status_indicator = None
 
 
-# ── Pipeline ordering ─────────────────────────────────────────────────────────
+# ── Pipeline ordering (all data lives in services.jobs.spec) ──────────────────
 
-PIPELINE_ORDER: List[JobType] = [
-    JobType.IMPORT_MOVIES,
-    JobType.FS_MOTION_CTF,
-    JobType.TS_IMPORT,
-    JobType.TILT_FILTER,
-    JobType.TS_ALIGNMENT,
-    JobType.MISS_ALIGN,
-    JobType.TS_CTF,
-    JobType.TS_RECONSTRUCT,
-    JobType.DENOISE_TRAIN,
-    JobType.DENOISE_PREDICT,
-    JobType.TEMPLATE_MATCH_PYTOM,
-    JobType.TEMPLATE_EXTRACT_PYTOM,
-    JobType.SUBTOMO_EXTRACTION,
-    JobType.RECONSTRUCT_PARTICLE,
-    JobType.CLASS3D,
-]
-
-JOB_DISPLAY_NAMES: Dict[JobType, str] = {
-    JobType.IMPORT_MOVIES: "Import",
-    JobType.FS_MOTION_CTF: "Motion & CTF",
-    JobType.TS_IMPORT: "TS Import",
-    JobType.TS_ALIGNMENT: "Alignment",
-    JobType.MISS_ALIGN: "Miss Align",
-    JobType.TS_CTF: "TS CTF",
-    JobType.TILT_FILTER: "Tilt Filter",
-    JobType.TS_RECONSTRUCT: "Reconstruct",
-    JobType.DENOISE_TRAIN: "Denoise Train",
-    JobType.DENOISE_PREDICT: "Denoise Predict",
-    JobType.TEMPLATE_MATCH_PYTOM: "Template Match",
-    JobType.TEMPLATE_EXTRACT_PYTOM: "Template Extract",
-    JobType.SUBTOMO_EXTRACTION: "Subtomo Extraction",
-    JobType.RECONSTRUCT_PARTICLE: "Reconstruct Particle",
-    JobType.CLASS3D: "Class 3D",
-    JobType.MERGED_SOURCES: "Merged Sources",
-}
+_JOB_ORDER: dict[JobType, int] = {jt: i for i, jt in enumerate(PIPELINE_ORDER)}
 
 
 def get_job_order(job_type: JobType) -> int:
-    try:
-        return PIPELINE_ORDER.index(job_type)
-    except ValueError:
-        return 999
+    return _JOB_ORDER.get(job_type, 999)
 
 
 def get_job_display_name(job_type: JobType) -> str:
-    return JOB_DISPLAY_NAMES.get(job_type, job_type.value)
+    return display_name(job_type)
 
 
-def get_ordered_jobs() -> List[JobType]:
-    return PIPELINE_ORDER.copy()
+def get_ordered_jobs() -> list[JobType]:
+    return list(PIPELINE_ORDER)
 
 
-# ── Instance ID helpers ───────────────────────────────────────────────────────
+# ── Instance ID helpers (decoding lives in services.models_base.InstanceId) ──
 
 
-def instance_id_to_job_type(instance_id: str) -> JobType:
-    """Extract JobType from an instance_id.
-
-    'templatematching'          -> JobType.TEMPLATE_MATCH_PYTOM
-    'templatematching__2'       -> JobType.TEMPLATE_MATCH_PYTOM
-    'templatematching__ribosome'-> JobType.TEMPLATE_MATCH_PYTOM
-    """
-    base = instance_id.split("__")[0]
-    return JobType(base)
-
-
-def get_instance_order(instance_id: str) -> Tuple:
+def get_instance_order(instance_id: str) -> tuple:
     """Stable sort key: (type_order, numeric_suffix_or_999, text_suffix)."""
     try:
         type_order = get_job_order(instance_id_to_job_type(instance_id))
     except ValueError:
         type_order = 999
-    parts = instance_id.split("__", 1)
-    if len(parts) == 1:
+    suffix = InstanceId.split(instance_id)[1]
+    if suffix is None:
         # base instance always sorts before any suffixed variant
         return (type_order, 0, "")
-    suffix = parts[1]
     try:
         return (type_order, int(suffix), "")
     except ValueError:
@@ -233,11 +182,10 @@ def get_instance_display_name(instance_id: str, job_model=None) -> str:
         if label:
             return label
 
-    parts = instance_id.split("__", 1)
-    base = parts[0]
+    base, suffix = InstanceId.split(instance_id)
 
     try:
-        base_name = JOB_DISPLAY_NAMES.get(JobType(base), base)
+        base_name = display_name(JobType(base))
     except ValueError:
         base_name = base
 
@@ -249,10 +197,9 @@ def get_instance_display_name(instance_id: str, job_model=None) -> str:
             return f"{base_name} ({job_dir})"
 
     # Not yet run — fall back to instance_id suffix
-    if len(parts) == 1:
+    if suffix is None:
         return base_name
 
-    suffix = parts[1]
     if suffix.isdigit():
         return f"{base_name} #{suffix}"
     return f"{base_name} ({suffix})"
@@ -266,20 +213,20 @@ class UIStateManager:
 
     def __init__(self):
         self._state = UIState()
-        self._job_widget_refs: Dict[str, JobWidgetRefs] = {}
+        self._job_widget_refs: dict[str, JobWidgetRefs] = {}
         self._panel_refs = PanelWidgetRefs()
-        self._subscribers: List[Callable[[UIState], None]] = []
-        self._status_timer: Optional[Any] = None
-        self._rebuild_callback: Optional[Callable[[], None]] = None
+        self._subscribers: list[Callable[[UIState], None]] = []
+        self._status_timer: Any | None = None
+        self._rebuild_callback: Callable[[], None] | None = None
         # Deep-link target for the Tasks tab: when the user clicks a per-TS
         # row in the roster, we set {instance_id: ts_name} here and switch
         # the job to its "tasks" tab. The tracker pops this on render to
         # auto-expand + scroll the matching row into view (one-shot).
-        self.focus_ts_by_instance: Dict[str, str] = {}
+        self.focus_ts_by_instance: dict[str, str] = {}
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
-    def load_from_storage(self, storage_dict: Dict[str, Any]):
+    def load_from_storage(self, storage_dict: dict[str, Any]):
         if not storage_dict:
             return
         try:
@@ -303,17 +250,17 @@ class UIStateManager:
         return self._panel_refs
 
     @property
-    def selected_jobs(self) -> List[str]:
+    def selected_jobs(self) -> list[str]:
         """Ordered list of selected instance_ids."""
         return list(self._state.selected_jobs)
 
     @property
-    def active_instance_id(self) -> Optional[str]:
+    def active_instance_id(self) -> str | None:
         """The instance_id of the currently focused tab."""
         return self._state.active_job_tab
 
     @property
-    def active_job(self) -> Optional[JobType]:
+    def active_job(self) -> JobType | None:
         """JobType of the active tab. Derived from active_instance_id."""
         if self._state.active_job_tab:
             try:
@@ -331,13 +278,13 @@ class UIStateManager:
         return self._state.project_created
 
     @property
-    def project_path(self) -> Optional[Path]:
+    def project_path(self) -> Path | None:
         if self._state.current_project_path:
             return Path(self._state.current_project_path)
         return None
 
     @property
-    def scheme_name(self) -> Optional[str]:
+    def scheme_name(self) -> str | None:
         return self._state.current_scheme_name
 
     @property
@@ -349,11 +296,11 @@ class UIStateManager:
         return self._state.data_import
 
     @property
-    def status_timer(self) -> Optional[Any]:
+    def status_timer(self) -> Any | None:
         return self._status_timer
 
     @status_timer.setter
-    def status_timer(self, timer: Optional[Any]):
+    def status_timer(self, timer: Any | None):
         if self._status_timer:
             try:
                 self._status_timer.cancel()
@@ -363,10 +310,9 @@ class UIStateManager:
 
     # ── Instance queries ──────────────────────────────────────────────────────
 
-    def get_instances_for_type(self, job_type: JobType) -> List[str]:
+    def get_instances_for_type(self, job_type: JobType) -> list[str]:
         """All selected instance_ids for a given job type, in pipeline order."""
-        prefix = job_type.value
-        return [s for s in self._state.selected_jobs if s == prefix or s.startswith(prefix + "__")]
+        return [s for s in self._state.selected_jobs if InstanceId.matches(s, job_type)]
 
     def is_job_type_selected(self, job_type: JobType) -> bool:
         return len(self.get_instances_for_type(job_type)) > 0
@@ -475,7 +421,7 @@ class UIStateManager:
         self._state.continuation_mode = enabled
         self._notify()
 
-    def load_from_project(self, project_path: Path, scheme_name: str, jobs: List[str]):
+    def load_from_project(self, project_path: Path, scheme_name: str, jobs: list[str]):
         self._state.current_project_path = str(project_path)
         self._state.current_scheme_name = scheme_name
         self._state.project_created = True
@@ -512,17 +458,16 @@ class UIStateManager:
 
     def update_data_import(
         self,
-        project_name: Optional[str] = None,
-        project_base_path: Optional[str] = None,
-        movies_glob: Optional[str] = None,
-        mdocs_glob: Optional[str] = None,
-        import_prefix: Optional[str] = None,
-        gain_reference_path: Optional[str] = None,
-        movies_valid: Optional[bool] = None,
-        mdocs_valid: Optional[bool] = None,
-        is_aggregation: Optional[bool] = None,
-        is_particle_only: Optional[bool] = None,
-        is_shared: Optional[bool] = None,
+        project_name: str | None = None,
+        project_base_path: str | None = None,
+        movies_glob: str | None = None,
+        mdocs_glob: str | None = None,
+        import_prefix: str | None = None,
+        gain_reference_path: str | None = None,
+        movies_valid: bool | None = None,
+        mdocs_valid: bool | None = None,
+        is_aggregation: bool | None = None,
+        is_shared: bool | None = None,
     ):
         di = self._state.data_import
         if project_name is not None:
@@ -543,17 +488,15 @@ class UIStateManager:
             di.mdocs_valid = mdocs_valid
         if is_aggregation is not None:
             di.is_aggregation = is_aggregation
-        if is_particle_only is not None:
-            di.is_particle_only = is_particle_only
         if is_shared is not None:
             di.is_shared = is_shared
 
     def update_detected_params(
         self,
-        pixel_size: Optional[float] = None,
-        voltage: Optional[float] = None,
-        dose_per_tilt: Optional[float] = None,
-        tilt_axis: Optional[float] = None,
+        pixel_size: float | None = None,
+        voltage: float | None = None,
+        dose_per_tilt: float | None = None,
+        tilt_axis: float | None = None,
     ):
         di = self._state.data_import
         if pixel_size is not None:

@@ -10,36 +10,26 @@ import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Literal, Optional, Tuple, Type, List
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny, field_validator
 
 from services.models_base import (
-    JobStatus,
-    MicroscopeType,
-    AlignmentMethod,
-    JobCategory,
+    InstanceId,
     JobType,
+    # Re-exports: many modules import these via services.project_state.
+    # The `as X` alias marks them as intentional so autofixes don't strip them.
+    JobCategory as JobCategory,
+    JobStatus as JobStatus,
     PickListType,
     ListExtractionState,
     MicroscopeParams,
     AcquisitionParams,
+    species_palette_color,
 )
 from services.computing.slurm_service import SlurmConfig
 from services.job_models import (
     AbstractJobParams,
-    CandidateExtractPytomParams,
-    Class3DParams,
-    DenoisePredictParams,
-    DenoiseTrainParams,
-    FsMotionCtfParams,
-    ImportMoviesParams,
-    ReconstructParticleParams,
-    SubtomoExtractionParams,
-    TemplateMatchPytomParams,
-    TsAlignmentParams,
-    TsCtfParams,
-    TsReconstructParams,
     jobtype_paramclass,
 )
 
@@ -55,7 +45,7 @@ logger = logging.getLogger(__name__)
 # load.  A major mismatch emits a loud warning; a missing version (pre-versioning
 # files) is treated as (0, 0).
 
-SCHEMA_VERSION: Tuple[int, int] = (3, 2)  # 3.2: +use_afterok_orchestrator + job_dir_counter (P1.A)
+SCHEMA_VERSION: tuple[int, int] = (3, 2)  # 3.2: +use_afterok_orchestrator + job_dir_counter (P1.A)
 
 
 def _afterok_global_default() -> bool:
@@ -97,7 +87,7 @@ def _sidecar_path_for(file_path: str) -> Path:
     return p.with_name(p.name + ".meta.json")
 
 
-def _sidecar_read_id(file_path: str) -> Optional[str]:
+def _sidecar_read_id(file_path: str) -> str | None:
     sp = _sidecar_path_for(file_path)
     if not sp.exists():
         return None
@@ -148,18 +138,18 @@ class TemplateMask(BaseModel):
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     mask_path: str
-    method: Optional[Literal["spherical", "cylindrical", "relion", "manual", "imported"]] = None
+    method: Literal["spherical", "cylindrical", "relion", "manual", "imported"] | None = None
 
-    threshold: Optional[float] = None
-    extend_pixels: Optional[float] = None  # --extend_inimask
-    soft_edge_pixels: Optional[float] = None  # --width_soft_edge
-    lowpass_ang: Optional[float] = None  # --lowpass
+    threshold: float | None = None
+    extend_pixels: float | None = None  # --extend_inimask
+    soft_edge_pixels: float | None = None  # --width_soft_edge
+    lowpass_ang: float | None = None  # --lowpass
 
     # Soft link back to the template the mask was derived from (UUID).
     # Optional — imported masks don't have a known source.
-    derived_from_template_id: Optional[str] = None
+    derived_from_template_id: str | None = None
 
-    created_at: Optional[datetime] = None
+    created_at: datetime | None = None
     notes: str = ""
 
 
@@ -178,12 +168,12 @@ class ParticleTemplate(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     template_path: str
     polarity: Literal["white", "black"] = "black"
-    lowpass_resolution_ang: Optional[float] = None
+    lowpass_resolution_ang: float | None = None
 
     # Provenance (all optional — populated as known, never required).
-    source: Optional[str] = None  # "PDB:6Z6J" / "EMDB-1234" / "imported" / "basic_shape:550:550:550"
-    imported_from: Optional[str] = None
-    created_at: Optional[datetime] = None
+    source: str | None = None  # "PDB:6Z6J" / "EMDB-1234" / "imported" / "basic_shape:550:550:550"
+    imported_from: str | None = None
+    created_at: datetime | None = None
     notes: str = ""
 
 
@@ -196,13 +186,36 @@ class TemplateWorkbenchUIState(BaseModel):
     basic_shape_def: str = "550:550:550"
 
 
+class ExtractionParams(BaseModel):
+    """Per-species subtomogram extraction geometry.
+
+    NO defaults on purpose. A species picked de novo has no template-matching job
+    to inherit box/bin/crop from, and guessing them silently produces
+    wrong-but-plausible extractions that are painful to trace back. Absent means
+    "the user has not decided yet" — the extract dialog must ask.
+    """
+
+    box_size: int
+    binning: float
+    crop_size: int
+
+
 class ParticleSpecies(BaseModel):
     id: str  # slug, used as folder name and instance suffix
     name: str  # display label
     color: str = "#3b82f6"
 
+    # How this species came to exist: "workbench" (template-driven), "manual"
+    # (created de novo for hand picking), "imported". Empty on species that
+    # pre-date the field — treat as "workbench".
+    origin: str = ""
+
+    # Set once the user commits extraction geometry for a de-novo species.
+    # None means undecided, never "use some default" — see ExtractionParams.
+    extraction_params: ExtractionParams | None = None
+
     # Particle-intrinsic properties; species-level (not per-job).
-    diameter_ang: Optional[float] = None
+    diameter_ang: float | None = None
     symmetry: str = "C1"
     notes: str = ""
 
@@ -210,8 +223,8 @@ class ParticleSpecies(BaseModel):
     # Templates and masks are independent registers; the workbench manages
     # both, the user selects which is "active" per category. New
     # generations APPEND (not replace) so prior work isn't lost.
-    templates: List[ParticleTemplate] = Field(default_factory=list)
-    masks: List[TemplateMask] = Field(default_factory=list)
+    templates: list[ParticleTemplate] = Field(default_factory=list)
+    masks: list[TemplateMask] = Field(default_factory=list)
     selected_template_id: str = ""
     selected_mask_id: str = ""
 
@@ -219,43 +232,24 @@ class ParticleSpecies(BaseModel):
 
     # ── Convenience accessors ────────────────────────────────────────────
 
-    def get_selected_template(self) -> Optional[ParticleTemplate]:
+    def get_selected_template(self) -> ParticleTemplate | None:
         if not self.selected_template_id:
             return None
         return next((t for t in self.templates if t.id == self.selected_template_id), None)
 
-    def get_selected_mask(self) -> Optional[TemplateMask]:
+    def get_selected_mask(self) -> TemplateMask | None:
         if not self.selected_mask_id:
             return None
         return next((m for m in self.masks if m.id == self.selected_mask_id), None)
 
-    def get_template_by_id(self, template_id: str) -> Optional[ParticleTemplate]:
+    def get_template_by_id(self, template_id: str) -> ParticleTemplate | None:
         return next((t for t in self.templates if t.id == template_id), None)
 
-    def get_mask_by_id(self, mask_id: str) -> Optional[TemplateMask]:
+    def get_mask_by_id(self, mask_id: str) -> TemplateMask | None:
         return next((m for m in self.masks if m.id == mask_id), None)
 
 
-class ImportPositionSummary(BaseModel):
-    """Per-position summary persisted at project creation."""
-
-    stage_position: int
-    beam_count: int = 1
-    tilt_count: int = 0
-    selected: bool = True
-
-
-class ImportTiltSeriesSummary(BaseModel):
-    """Per-tilt-series record persisted at project creation."""
-
-    stage_position: int
-    beam_position: int
-    tilt_count: int = 0
-    selected: bool = True
-    mdoc_filename: str = ""
-
-
-def _migrate_v1_to_v2(data: Dict[str, Any]) -> None:
+def _migrate_v1_to_v2(data: dict[str, Any]) -> None:
     """Idempotent v1→v2 migration. Mutates `data` in place.
 
     PR 1 of the template-first-class refactor is additive: old fields
@@ -269,7 +263,7 @@ def _migrate_v1_to_v2(data: Dict[str, Any]) -> None:
     if tuple(data.get("schema_version", (0, 0)))[:2] >= (2, 0):
         return
 
-    species_by_id: Dict[str, Dict[str, Any]] = {
+    species_by_id: dict[str, dict[str, Any]] = {
         s["id"]: s for s in data.get("species_registry", []) if isinstance(s, dict) and "id" in s
     }
 
@@ -282,7 +276,7 @@ def _migrate_v1_to_v2(data: Dict[str, Any]) -> None:
         if not sp.get("template") and sp.get("template_path"):
             tpath = sp["template_path"]
             polarity = "white" if "_white" in tpath else "black"
-            mask_obj: Optional[Dict[str, Any]] = None
+            mask_obj: dict[str, Any] | None = None
             if sp.get("mask_path"):
                 mask_obj = {"mask_path": sp["mask_path"]}
             sp["template"] = {
@@ -319,7 +313,7 @@ def _migrate_v1_to_v2(data: Dict[str, Any]) -> None:
     data["schema_version"] = [2, 0]
 
 
-def _migrate_v2_to_v3(data: Dict[str, Any], project_root: Optional[Path]) -> None:
+def _migrate_v2_to_v3(data: dict[str, Any], project_root: Path | None) -> None:
     """v2 → v3 migration: decouple masks from templates; promote both to
     sibling collections on the species (`species.templates` /
     `species.masks`) with UUID identity. Drop the seed concept entirely
@@ -349,9 +343,9 @@ def _migrate_v2_to_v3(data: Dict[str, Any], project_root: Optional[Path]) -> Non
         mask_paths_in_collection = {m.get("mask_path") for m in masks if isinstance(m, dict) and m.get("mask_path")}
 
         # ── Pull v2 species.template into species.templates ────────────
-        selected_template_id: Optional[str] = sp.get("selected_template_id") or None
+        selected_template_id: str | None = sp.get("selected_template_id") or None
         v2tpl = sp.get("template")
-        v2_template_id: Optional[str] = None
+        v2_template_id: str | None = None
         if isinstance(v2tpl, dict) and v2tpl.get("template_path"):
             tpath = v2tpl["template_path"]
             v2_template_id = sidecar_ensure(tpath, "template")
@@ -465,12 +459,12 @@ class AggregationSource(BaseModel):
     card can render a source without re-walking the foreign project on disk."""
 
     optset_path: str
-    tomo_names: Optional[List[str]] = None  # None = all tomos in this set
+    tomo_names: list[str] | None = None  # None = all tomos in this set
     # Tomos (by rlnTomoName) the user forced to ORIGINAL picks instead of the
     # curated/filtered set. Only meaningful for tomos that have a curated set;
     # absence => use curated where available. Per-tomo mutually-exclusive
     # curated/original choice surfaced in the merge selector.
-    original_tomos: List[str] = Field(default_factory=list)
+    original_tomos: list[str] = Field(default_factory=list)
     project_name: str = ""
     project_path: str = ""
     species_id: str = ""
@@ -486,9 +480,9 @@ class AggregationMergeSource(BaseModel):
     species_label: str = ""
     n_particles: int = 0
     n_tomograms: int = 0
-    box_size: Optional[int] = None
-    pixel_size: Optional[float] = None
-    binning: Optional[float] = None
+    box_size: int | None = None
+    pixel_size: float | None = None
+    binning: float | None = None
 
 
 class AggregationMerge(BaseModel):
@@ -504,8 +498,8 @@ class AggregationMerge(BaseModel):
     n_particles: int = 0
     n_tomograms: int = 0
     n_sources: int = 0
-    sources: List[AggregationMergeSource] = Field(default_factory=list)
-    warnings: List[str] = Field(default_factory=list)
+    sources: list[AggregationMergeSource] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class PickList(BaseModel):
@@ -526,7 +520,7 @@ class PickList(BaseModel):
     count: int = 0  # cached pick count, for display
     color: str = "#3b82f6"  # per-list overlay color
     visible: bool = True  # persisted so the toggle survives reloads
-    parent_slugs: List[str] = Field(default_factory=list)  # provenance for derived lists
+    parent_slugs: list[str] = Field(default_factory=list)  # provenance for derived lists
     created_at: datetime = Field(default_factory=datetime.now)
     created_by: str = ""
 
@@ -542,13 +536,13 @@ class PickList(BaseModel):
     # the (future) authoritative-list resolver forwards downstream.
     extracted_path: str = ""  # optimisation_set.star from extracting THIS list ("" = never extracted)
     extracted_count: int = 0  # picks covered by that extraction (≠ count ⇒ picks added/removed ⇒ stale)
-    extracted_at: Optional[datetime] = None  # when the extraction ran (vs source mtime ⇒ in-place edits ⇒ stale)
+    extracted_at: datetime | None = None  # when the extraction ran (vs source mtime ⇒ in-place edits ⇒ stale)
 
     # How many picks survive the user's keep/drop curation in the cutout sheet
     # (None = no filter committed = all `count` kept). The keep/drop auto-commits to
     # `<slug>_filtered.star`; this is the cached kept count for the table, and the
     # filtered star is what the merge + per-list extraction actually consume.
-    filtered_count: Optional[int] = None
+    filtered_count: int | None = None
 
     def extraction_state(self) -> ListExtractionState:
         """Derived per-list extraction status: NOT_EXTRACTED (coords only) / STALE
@@ -595,7 +589,7 @@ class ImportedTomograms(BaseModel):
 
     star_path: str = ""  # project-relative (or absolute) path to the committed tomograms.star
     source_mode: str = "synthesize"  # "synthesize" | "reference"
-    source_paths: List[str] = Field(default_factory=list)  # selected .mrc files (synthesize)
+    source_paths: list[str] = Field(default_factory=list)  # selected .mrc files (synthesize)
     reference_star: str = ""  # an existing tomograms.star (reference mode)
     pixel_size_angstrom: float = 0.0  # user override (0 ⇒ derived from MRC header)
     tomogram_binning: float = 1.0
@@ -607,23 +601,29 @@ class ImportedTomograms(BaseModel):
 class ProjectState(BaseModel):
     """Complete project state with direct global parameter access"""
 
-    schema_version: Tuple[int, int] = Field(default=SCHEMA_VERSION)
+    schema_version: tuple[int, int] = Field(default=SCHEMA_VERSION)
     project_name: str = "Untitled"
     # Cosmetic three-word nickname (e.g. "amber-vagrant-fermi"). Set at
     # project creation so future loads see the same mnemonic; legacy
     # projects without one get a deterministic fallback derived from the
     # project path at display time.
     mnemonic: str = ""
-    project_path: Optional[Path] = None
+    project_path: Path | None = None
     created_at: datetime = Field(default_factory=datetime.now)
     modified_at: datetime = Field(default_factory=datetime.now)
-    created_by: Optional[str] = None
+    created_by: str | None = None
     # Mutable ownership for sharing/transfer. None ⇒ owned by `created_by`;
     # SHARED_OWNER ("@lab") ⇒ shared/lab project; otherwise a username the
     # project was transferred to. Pure attribution/grouping metadata — never
     # affects the on-disk location.
-    owner: Optional[str] = None
-    job_path_mapping: Dict[str, str] = Field(default_factory=dict)
+    owner: str | None = None
+    job_path_mapping: dict[str, str] = Field(default_factory=dict)
+
+    # Transient load report (roadmap 03 stage 5): human-readable messages for every
+    # block load() had to drop or reset (schema drift, corrupt sub-payloads). Shown
+    # once in the UI after project open so silent data loss becomes visible.
+    # exclude=True — never persisted; it describes THIS load, not the project.
+    load_warnings: list[str] = Field(default_factory=list, exclude=True)
 
     movies_glob: str = ""
     mdocs_glob: str = ""
@@ -633,37 +633,37 @@ class ProjectState(BaseModel):
     # standalone workspace card (not a pipeline job). Sources persist here so
     # the user can re-merge after adding more datasets.
     is_aggregation: bool = False
-    aggregation_sources: List[AggregationSource] = Field(default_factory=list)
-    aggregation_merges: List[AggregationMerge] = Field(default_factory=list)
+    aggregation_sources: list[AggregationSource] = Field(default_factory=list)
+    aggregation_merges: list[AggregationMerge] = Field(default_factory=list)
     active_merge_slug: str = ""
 
     microscope: MicroscopeParams = Field(default_factory=MicroscopeParams)
     acquisition: AcquisitionParams = Field(default_factory=AcquisitionParams)
     slurm_defaults: SlurmConfig = Field(default_factory=SlurmConfig.from_config_defaults)
 
-    jobs: Dict[str, SerializeAsAny[AbstractJobParams]] = Field(default_factory=dict)
+    jobs: dict[str, SerializeAsAny[AbstractJobParams]] = Field(default_factory=dict)
     # Persisted pipeline membership + submit order (instance_ids). Historically the
     # participating set + order lived ONLY in UIState.selected_jobs (per-browser-tab
     # NiceGUI storage); persisting it here lets a tab-less submitter/reconciler know
     # the run set. Written through at deploy; backfilled from `jobs` on load for
     # legacy projects. See ORCHESTRATOR_REPLACEMENT_PLAN.md §6 (P1.0).
-    pipeline_order: List[str] = Field(default_factory=list)
-    species_registry: List[ParticleSpecies] = Field(default_factory=list)
+    pipeline_order: list[str] = Field(default_factory=list)
+    species_registry: list[ParticleSpecies] = Field(default_factory=list)
     # Per-(species, tomo) manual-curation workbench. Only workbench-authored
     # lists (manual/imported/merged) persist here; `auto`/`filtered` are
     # disk-backed and synthesized at render time so this never goes stale
     # against the files the resolver owns. See ARTIAX_BRIDGE_PLAN.md
     # "## Curation workbench — the multi-list model".
-    pick_lists: List[PickList] = Field(default_factory=list)
+    pick_lists: list[PickList] = Field(default_factory=list)
     # Per-(species, tomo) AUTHORITATIVE pick list: which list downstream tools
     # (per-list extraction / aggregation) consume. Keyed by `_auth_key(species, tomo)`
     # → slug ("auto" or a workbench-list slug). Absent ⇒ "auto" (the candidate set,
     # the historical default). Exactly one list is authoritative per (species, tomo).
-    authoritative_pick_lists: Dict[str, str] = Field(default_factory=dict)
+    authoritative_pick_lists: dict[str, str] = Field(default_factory=dict)
     # Tomograms injected via the PARTICLES-header import utility (particle-only projects
     # with no upstream recon). A project-level artifact, not a job — see ImportedTomograms
     # / services/tomogram_import.py. None ⇒ no import committed.
-    imported_tomograms: Optional[ImportedTomograms] = None
+    imported_tomograms: ImportedTomograms | None = None
     pipeline_active: bool = Field(default=False)
 
     # Orchestrator rework (P1.A): per-project opt-in to the SLURM afterok submit path
@@ -685,15 +685,12 @@ class ProjectState(BaseModel):
     import_selected_tilt_series: int = 0
     import_source_directory: str = ""
     import_frame_extension: str = ""
-    import_position_details: List[ImportPositionSummary] = Field(default_factory=list)
-    import_tilt_series_details: List[ImportTiltSeriesSummary] = Field(default_factory=list)
-
-    # Per-tilt MDOC metadata, keyed by frame filename stem (= cryoBoostKey)
-    tilt_metadata: Dict[str, Dict[str, float]] = Field(default_factory=dict)
-
-    # Tilt filtering (standalone tool, not a pipeline job)
-    tilt_filter_labels: Dict[str, str] = Field(default_factory=dict)
-    tilt_filter_png_dir: Optional[str] = None
+    # Per-TS/per-tilt import details + filter labels used to be mirrored here
+    # (import_position_details / import_tilt_series_details / tilt_metadata /
+    # tilt_filter_labels); the TiltSeriesRegistry is the single source now
+    # (roadmap 02 stage 4). Old JSON keys are ignored on load and dropped on
+    # the next save (forward-only migration).
+    tilt_filter_png_dir: str | None = None
 
     _dirty: bool = PrivateAttr(default=False)
 
@@ -714,7 +711,7 @@ class ProjectState(BaseModel):
         return self._dirty
 
     @property
-    def effective_owner(self) -> Optional[str]:
+    def effective_owner(self) -> str | None:
         """Attribution target: explicit `owner` if set, else `created_by`."""
         return self.owner or self.created_by
 
@@ -728,7 +725,7 @@ class ProjectState(BaseModel):
     # ProjectState — not the UI — so the path resolver can surface the active
     # merged optset as a first-class producer without a `ui.` import.
 
-    def active_merge(self) -> Optional["AggregationMerge"]:
+    def active_merge(self) -> AggregationMerge | None:
         """The merge downstream consumers wire to: the explicitly-active one, else
         the newest recorded merge (None if no merge has been recorded)."""
         merges = self.aggregation_merges or []
@@ -740,7 +737,7 @@ class ProjectState(BaseModel):
                 return m
         return merges[-1]
 
-    def active_merged_optset(self) -> Optional[Path]:
+    def active_merged_optset(self) -> Path | None:
         """Resolved optimisation_set.star of the active merge (slug folder). Falls
         back to a legacy flat MergedSources/optimisation_set.star (pre-registry
         projects). None if nothing exists on disk yet."""
@@ -755,7 +752,7 @@ class ProjectState(BaseModel):
         legacy = root / MERGED_DIR_NAME / "optimisation_set.star"
         return legacy if legacy.exists() else None
 
-    def active_merged_optset_instance_path(self) -> Optional[str]:
+    def active_merged_optset_instance_path(self) -> str | None:
         """Stable instance_path identifying the synthetic merged-sources producer for
         the active merge. Shared by the resolver candidate and `source_overrides` so
         the two always agree on the same key. Tracks the SAME file
@@ -770,16 +767,21 @@ class ProjectState(BaseModel):
         legacy = root / MERGED_DIR_NAME / "optimisation_set.star"
         return MERGED_DIR_NAME if legacy.exists() else None
 
-    def save_if_dirty(self, path: Optional[Path] = None):
+    def save_if_dirty(self, path: Path | None = None):
         if self.is_dirty:
             self.save(path)
 
-    def get_species(self, species_id: str) -> Optional[ParticleSpecies]:
+    def get_species(self, species_id: str) -> ParticleSpecies | None:
         return next((s for s in self.species_registry if s.id == species_id), None)
 
-    def add_species(self, name: str, color: str = "#3b82f6") -> ParticleSpecies:
+    def add_species(self, name: str, *, origin: str = "workbench", color: str = "") -> ParticleSpecies:
         """Create a new species entry from a display name. Caller is responsible
-        for ensuring the name is not blank before calling."""
+        for ensuring the name is not blank before calling.
+
+        `color` defaults to a deterministic palette slot for the generated id, so
+        every species is visually distinct on the shared tomogram canvas instead of
+        all sharing one blue. Pass an explicit color to override.
+        """
         sid = slugify(name)
         # Avoid id collisions by appending a counter if needed
         existing_ids = {s.id for s in self.species_registry}
@@ -788,30 +790,90 @@ class ProjectState(BaseModel):
         while sid in existing_ids:
             sid = f"{base}_{n}"
             n += 1
-        species = ParticleSpecies(id=sid, name=name, color=color)
+        species = ParticleSpecies(id=sid, name=name, color=color or species_palette_color(sid), origin=origin)
         self.species_registry.append(species)
         self.update_modified()
         return species
 
+    def species_references(self, species_id: str) -> dict[str, list[str]]:
+        """Everything in this project that points at `species_id`.
+
+        Feeds both the delete-confirmation dialog (so the user sees what a delete
+        takes with it) and `remove_species` itself, so the two can never disagree
+        about what a species owns.
+        """
+        pick_lists = [f"{pl.tomo_name}/{pl.slug}" for pl in self.pick_lists if pl.species_id == species_id]
+        authoritative = [k for k in self.authoritative_pick_lists if k.split("\x1f", 1)[0] == species_id]
+        # A per-particle job names its species EITHER on the model (`species_id`) or in
+        # its instance-id suffix (`templatematching__ribosome`) — both are explicit, and
+        # a delete that misses one leaves an orphan job in the roster. Deliberately NOT
+        # `resolve_species`: its single-species fallback would attribute every per-particle
+        # job to the last remaining species, so deleting that species would take the whole
+        # particle chain with it.
+        jobs = [
+            iid
+            for iid, jm in (self.jobs or {}).items()
+            if getattr(jm, "species_id", None) == species_id or InstanceId.split(iid)[1] == species_id
+        ]
+        # Overrides pointing at one of this species' pick-list producers. The resolver
+        # key is "<jobtype>:<instance_path>" and a per-list producer's instance path is
+        # `pick_list__<species>__<tomo>__<slug>` (path_resolution_service.
+        # pick_list_producer_id). Match on the SPECIES-scoped prefix, never on slug:
+        # every hand-picked list is slugged "manual", so a slug match would purge other
+        # species' overrides too.
+        from services.path_resolution_service import pick_list_producer_prefix_for_species
+
+        prefix = pick_list_producer_prefix_for_species(species_id)
+        overrides: list[str] = []
+        for iid, jm in (self.jobs or {}).items():
+            for slot, value in (getattr(jm, "source_overrides", None) or {}).items():
+                if prefix in str(value):
+                    overrides.append(f"{iid}:{slot}")
+        return {
+            "pick_lists": pick_lists,
+            "authoritative_pick_lists": authoritative,
+            "jobs": jobs,
+            "source_overrides": overrides,
+        }
+
     def remove_species(self, species_id: str) -> bool:
-        """Drop a species from the registry. Returns True if removed.
-        File cleanup (templates/<sid>/) is the caller's responsibility —
-        this method only mutates the in-memory registry."""
+        """Drop a species from the registry AND purge everything referencing it.
+
+        Returns True if removed. File cleanup (templates/<sid>/, Curation/<sid>/)
+        is the caller's responsibility — this method only mutates in-memory state.
+
+        Previously this dropped only the registry entry, leaving pick lists,
+        authoritative-list choices and resolver overrides pointing at a species
+        that no longer exists; those dangling refs then resolved to nothing at
+        deploy time, far from the delete that caused them.
+        """
         before = len(self.species_registry)
         self.species_registry = [s for s in self.species_registry if s.id != species_id]
         removed = len(self.species_registry) < before
-        if removed:
-            self.update_modified()
+        if not removed:
+            return False
+
+        refs = self.species_references(species_id)
+        self.pick_lists = [pl for pl in self.pick_lists if pl.species_id != species_id]
+        for key in refs["authoritative_pick_lists"]:
+            self.authoritative_pick_lists.pop(key, None)
+        for ref in refs["source_overrides"]:
+            iid, _, slot = ref.rpartition(":")
+            overrides = getattr(self.jobs.get(iid), "source_overrides", None)
+            if overrides:
+                overrides.pop(slot, None)
+
+        self.update_modified()
         return removed
 
     # ── Curation workbench: per-(species, tomo) pick-list registry ───────────
     # Only workbench-authored lists (manual/imported/merged) live here; auto/
     # filtered are disk-synthesized at render time. See PickList docstring.
 
-    def get_pick_lists(self, species_id: str, tomo_name: str) -> List[PickList]:
+    def get_pick_lists(self, species_id: str, tomo_name: str) -> list[PickList]:
         return [pl for pl in self.pick_lists if pl.species_id == species_id and pl.tomo_name == tomo_name]
 
-    def get_pick_list(self, slug: str, species_id: str, tomo_name: str) -> Optional[PickList]:
+    def get_pick_list(self, slug: str, species_id: str, tomo_name: str) -> PickList | None:
         for pl in self.pick_lists:
             if pl.slug == slug and pl.species_id == species_id and pl.tomo_name == tomo_name:
                 return pl
@@ -858,7 +920,7 @@ class ProjectState(BaseModel):
         self.imported_tomograms = record
         self.mark_dirty()
 
-    def imported_tomograms_star_path(self) -> Optional[str]:
+    def imported_tomograms_star_path(self) -> str | None:
         """Absolute path to the committed imported tomograms.star, or None. Resolves a
         project-relative star_path against project_path; returns None when it can't be
         made absolute (no project_path) rather than handing back a half-resolved path."""
@@ -873,7 +935,7 @@ class ProjectState(BaseModel):
         return str(p)
 
     def ensure_job_initialized(
-        self, job_type: JobType, instance_id: Optional[str] = None, template_path: Optional[Path] = None
+        self, job_type: JobType, instance_id: str | None = None, template_path: Path | None = None
     ):
         if instance_id is None:
             instance_id = job_type.value
@@ -906,7 +968,7 @@ class ProjectState(BaseModel):
     def update_modified(self):
         self.modified_at = datetime.now()
 
-    def save(self, path: Optional[Path] = None):
+    def save(self, path: Path | None = None):
         """Atomic file write via tempfile + rename."""
         save_path = path or (
             self.project_path / "project_params.json" if self.project_path else Path("project_params.json")
@@ -937,7 +999,7 @@ class ProjectState(BaseModel):
         if not path.exists():
             raise FileNotFoundError(f"Project params file not found: {path}")
 
-        with open(path, "r") as f:
+        with open(path) as f:
             data = json.load(f)
 
         # ── Version check ─────────────────────────────────────────────
@@ -1014,7 +1076,8 @@ class ProjectState(BaseModel):
         try:
             project_state.species_registry = [ParticleSpecies(**s) for s in data.get("species_registry", [])]
         except Exception as e:
-            logger.warning("Could not load species registry: %s", e)
+            logger.exception("Could not load species registry")
+            project_state.load_warnings.append(f"Species registry could not be loaded and was reset ({e})")
             project_state.species_registry = []
 
         it = data.get("imported_tomograms")
@@ -1022,7 +1085,8 @@ class ProjectState(BaseModel):
             try:
                 project_state.imported_tomograms = ImportedTomograms(**it)
             except Exception as e:
-                logger.warning("Could not load imported_tomograms: %s", e)
+                logger.exception("Could not load imported_tomograms")
+                project_state.load_warnings.append(f"Imported-tomograms record could not be loaded ({e})")
 
         # Restore aggregation state (cross-project merge). load() is field-by-field,
         # so these MUST be restored explicitly -- otherwise a reloaded project (a UI
@@ -1040,19 +1104,22 @@ class ProjectState(BaseModel):
                 for s in data.get("aggregation_sources", [])
             ]
         except Exception as e:
-            logger.warning("Could not load aggregation_sources: %s", e)
+            logger.exception("Could not load aggregation_sources")
+            project_state.load_warnings.append(f"Aggregation sources could not be loaded and were reset ({e})")
             project_state.aggregation_sources = []
         try:
             project_state.aggregation_merges = [AggregationMerge(**m) for m in data.get("aggregation_merges", [])]
         except Exception as e:
-            logger.warning("Could not load aggregation_merges: %s", e)
+            logger.exception("Could not load aggregation_merges")
+            project_state.load_warnings.append(f"Aggregation merges could not be loaded and were reset ({e})")
             project_state.aggregation_merges = []
 
         # Restore curation workbench pick lists (same field-by-field drop bug).
         try:
             project_state.pick_lists = [PickList(**p) for p in data.get("pick_lists", [])]
         except Exception as e:
-            logger.warning("Could not load pick_lists: %s", e)
+            logger.exception("Could not load pick_lists")
+            project_state.load_warnings.append(f"Curation pick lists could not be loaded and were reset ({e})")
             project_state.pick_lists = []
         project_state.authoritative_pick_lists = data.get("authoritative_pick_lists", {})
 
@@ -1063,23 +1130,10 @@ class ProjectState(BaseModel):
         project_state.import_selected_tilt_series = data.get("import_selected_tilt_series", 0)
         project_state.import_source_directory = data.get("import_source_directory", "")
         project_state.import_frame_extension = data.get("import_frame_extension", "")
-        try:
-            project_state.import_position_details = [
-                ImportPositionSummary(**pd) for pd in data.get("import_position_details", [])
-            ]
-            project_state.import_tilt_series_details = [
-                ImportTiltSeriesSummary(**td) for td in data.get("import_tilt_series_details", [])
-            ]
-        except Exception as e:
-            logger.warning("Could not load import details: %s", e)
-            project_state.import_position_details = []
-            project_state.import_tilt_series_details = []
+        # import_position_details / import_tilt_series_details / tilt_metadata /
+        # tilt_filter_labels keys from older projects are deliberately ignored —
+        # the TiltSeriesRegistry is the single source (dropped on next save).
 
-        # Restore per-tilt MDOC metadata
-        project_state.tilt_metadata = data.get("tilt_metadata", {})
-
-        # Restore tilt filter state
-        project_state.tilt_filter_labels = data.get("tilt_filter_labels", {})
         project_state.tilt_filter_png_dir = data.get("tilt_filter_png_dir")
 
         param_class_map = jobtype_paramclass()
@@ -1097,8 +1151,12 @@ class ProjectState(BaseModel):
                     logger.warning(
                         "No param class for job type '%s' (instance '%s'), skipping", job_type_value, instance_id
                     )
+                    project_state.load_warnings.append(
+                        f"Job '{instance_id}' skipped — unknown job type '{job_type_value}'"
+                    )
             except Exception as e:
-                logger.warning("Skipping job instance '%s' - failed to deserialize: %s", instance_id, e)
+                logger.exception("Skipping job instance '%s' - failed to deserialize", instance_id)
+                project_state.load_warnings.append(f"Job '{instance_id}' could not be loaded and was skipped ({e})")
 
         # pipeline_order (P1.0): use the persisted value; for legacy projects that
         # predate the field, backfill from the loaded job set in file order -- every
@@ -1131,7 +1189,7 @@ class ProjectState(BaseModel):
 # separate registries (separate Python processes, separate memory).
 # =========================================================================
 
-_project_states: Dict[Path, ProjectState] = {}
+_project_states: dict[Path, ProjectState] = {}
 
 
 def get_project_state_for(project_path: Path) -> ProjectState:
@@ -1162,43 +1220,11 @@ def remove_project_state(project_path: Path):
     _project_states.pop(project_path.resolve(), None)
 
 
-def get_project_state() -> ProjectState:
-    """Convenience for UI code: resolves project_path from the current
-    browser tab's UIStateManager.
-
-    Falls back to a detached blank ProjectState if no project is loaded
-    yet (landing page before create/load). This means all existing
-    get_project_state() callsites in UI code work unchanged.
-    """
-    try:
-        from ui.ui_state import get_ui_state_manager
-
-        ui_mgr = get_ui_state_manager()
-        if ui_mgr.project_path:
-            return get_project_state_for(ui_mgr.project_path)
-    except RuntimeError:
-        # No client connection (background task, server startup, etc.)
-        pass
-    return ProjectState()
-
-
-def set_project_state(new_state: ProjectState):
-    """Legacy setter -- routes into the registry if the state has a project_path,
-    otherwise falls back to replacing the tab-context entry."""
-    if new_state.project_path:
-        set_project_state_for(new_state.project_path, new_state)
-    else:
-        # Pre-creation state (landing page). Just park it in the registry
-        # under a sentinel key; get_project_state() won't find it via
-        # tab context anyway, and it'll be replaced once a real path exists.
-        pass
-
-
 class StateService:
     """Manages persistence of ProjectState to disk.
 
-    - UI code accesses .state (resolves via tab context)
-    - Backend code with an explicit path uses .state_for(path)
+    - Backend/service code uses .state_for(path) — always an explicit path.
+    - UI code resolves tab context via ui/current_project.py, never here.
     - save_project is serialized with an asyncio.Lock
     """
 
@@ -1209,12 +1235,7 @@ class StateService:
         """Explicit accessor for backend/service code that has a path."""
         return get_project_state_for(project_path)
 
-    @property
-    def state(self) -> ProjectState:
-        """Tab-context accessor. Backend code should prefer state_for(path)."""
-        return get_project_state()
-
-    async def update_from_mdoc(self, mdocs_glob: str, project_path: Optional[Path] = None):
+    async def update_from_mdoc(self, mdocs_glob: str, project_path: Path | None = None):
         from services.configs.mdoc_service import get_mdoc_service
 
         mdoc_service = get_mdoc_service()
@@ -1242,9 +1263,6 @@ class StateService:
             s.acquisition.tilt_axis_degrees = mdoc_data["tilt_axis_angle"]
         s.update_modified()
 
-    async def ensure_job_initialized(self, job_type: JobType, template_path: Optional[Path] = None):
-        self.state.ensure_job_initialized(job_type, template_path)
-
     async def load_project(self, project_json_path: Path):
         try:
             project_path = project_json_path.parent.resolve()
@@ -1262,33 +1280,22 @@ class StateService:
         except Exception:
             return False
 
-    # in StateService.save_project(), replace the final save call:
-
-    async def save_project(
-        self, save_path: Optional[Path] = None, project_path: Optional[Path] = None, force: bool = False
-    ):
+    async def save_project(self, project_path: Path, *, force: bool = False):
+        """Persist the registered ProjectState for `project_path` (skipped when
+        the state isn't dirty, unless `force`). Explicit path only — UI-triggered
+        saves go through backend.save_project (roadmap 01 stage 4)."""
         async with self._save_lock:
-            if project_path:
-                state = get_project_state_for(project_path)
-            else:
-                state = get_project_state()
-
-            if save_path:
-                target_path = save_path
-            elif state.project_path:
-                target_path = state.project_path / "project_params.json"
-            else:
+            state = get_project_state_for(project_path)
+            if not state.project_path:
+                logger.warning("save_project: state for %s has no project_path — nothing saved", project_path)
                 return
-
-            loop = asyncio.get_event_loop()
-            if force:
+            target_path = state.project_path / "project_params.json"
+            if force or state.is_dirty:
+                loop = asyncio.get_event_loop()
                 await loop.run_in_executor(None, state.save, target_path)
-            else:
-                if state.is_dirty:
-                    await loop.run_in_executor(None, state.save, target_path)
 
 
-_state_service_instance: Optional[StateService] = None
+_state_service_instance: StateService | None = None
 
 
 def get_state_service() -> StateService:

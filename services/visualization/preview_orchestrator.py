@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import numpy as np
 
@@ -82,8 +82,8 @@ SCORE_COL_PRIORITY = ("rlnLCCmax", "rlnAutopickFigureOfMerit", "rlnMaxValueProbD
 
 
 def _resolve_and_render_template(
-    preview_dir: Path, project_state, job_model, instance_id: Optional[str], force: bool
-) -> Optional[dict]:
+    preview_dir: Path, project_state, job_model, instance_id: str | None, force: bool
+) -> dict | None:
     """Resolve the species's selected template and render a thumbnail.
 
     Renders once per job (templates are per-species, not per-tomogram) into
@@ -96,16 +96,13 @@ def _resolve_and_render_template(
     if project_state is None or (instance_id is None and job_model is None):
         return None
     try:
-        from services.templating.template_metadata import (
-            get_effective_template_path,
-            read_template_header,
-            resolve_species_from_job,
-        )
+        from services.models_base import resolve_species
+        from services.templating.template_metadata import get_effective_template_path, read_template_header
     except Exception as e:
         logger.warning("Template metadata import failed: %s", e)
         return None
     try:
-        species, species_id = resolve_species_from_job(project_state, job_model, instance_id)
+        species, species_id = resolve_species(project_state, job_model, instance_id)
     except Exception as e:
         logger.warning("Species resolution failed: %s", e)
         return None
@@ -131,7 +128,7 @@ def _resolve_and_render_template(
     }
 
 
-def _resolve_tomo_mrc(tomo_row, project_root: Optional[Path]) -> Optional[Path]:
+def _resolve_tomo_mrc(tomo_row, project_root: Path | None) -> Path | None:
     """Resolve the on-disk reconstructed-tomogram path. Used for the 3dmod
     copy-command — the orchestrator never reads the MRC bytes itself."""
     if "rlnTomoReconstructedTomogram" not in tomo_row.index:
@@ -145,8 +142,8 @@ def _resolve_tomo_mrc(tomo_row, project_root: Optional[Path]) -> Optional[Path]:
 
 
 def _find_warp_tomo_preview(
-    project_root: Optional[Path], tomo_name: str, mrc_path: Optional[Path] = None
-) -> Optional[Path]:
+    project_root: Path | None, tomo_name: str, mrc_path: Path | None = None
+) -> Path | None:
     """Locate the WarpTools tomogram-preview PNG for a given tomogram.
 
     WarpTools writes one PNG per reconstructed tomogram into
@@ -173,10 +170,10 @@ def _find_warp_tomo_preview(
 
 def _render_one_tomogram(
     pick_coords_xyz: np.ndarray,
-    scores: Optional[np.ndarray],
-    score_field: Optional[str],
+    scores: np.ndarray | None,
+    score_field: str | None,
     tomo_dims_xyz: tuple,
-    pixel_size_ang: Optional[float],
+    pixel_size_ang: float | None,
     out_dir: Path,
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -215,11 +212,11 @@ def generate_candidate_previews(
     tomograms_star: Path,
     particle_diameter_ang: float,
     output_dir: Path,
-    project_root: Optional[Path] = None,
-    progress_cb: Optional[Callable[[int, int, str], None]] = None,
+    project_root: Path | None = None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
     force: bool = False,
     project_state=None,
-    instance_id: Optional[str] = None,
+    instance_id: str | None = None,
     job_model=None,
 ) -> dict:
     """Build per-tomo picks.json + sprite-atlas + manifest for one extract job.
@@ -232,7 +229,7 @@ def generate_candidate_previews(
     extract job is attached to so we can render a template reference tile in
     the gallery. The species linkage chain (instance_id suffix →
     job_model.species_id → single-species fallback) lives in
-    services.templating.template_metadata.resolve_species_from_job.
+    services.models_base.resolve_species.
     """
     candidates_star = Path(candidates_star)
     tomograms_star = Path(tomograms_star)
@@ -455,7 +452,7 @@ def generate_candidate_previews(
     }
 
 
-def read_preview_manifest(job_dir: Path) -> Optional[dict]:
+def read_preview_manifest(job_dir: Path) -> dict | None:
     p = Path(job_dir) / PREVIEW_SUBDIR / MANIFEST_NAME
     if not p.exists():
         return None

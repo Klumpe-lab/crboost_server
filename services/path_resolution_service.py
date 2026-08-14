@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
+from collections.abc import Sequence
 
 from services.io_slots import InputSlot, OutputSlot, JobFileType, ResolvedInput, ResolvedOutput, ResolvedManifest
 
-from services.job_models import TemplateMatchPytomParams
 from services.models_base import JobType, JobStatus
 
 if TYPE_CHECKING:
@@ -29,7 +29,7 @@ class OutputCandidate:
     execution_status: JobStatus
     relion_job_number: int  # 0 if unknown
 
-    species_id: Optional[str] = None  # propagated from producing job model
+    species_id: str | None = None  # propagated from producing job model
 
     # OutputSlot.prefer_if_exists — carried through so the scorer can tier-boost
     # opt-in artifacts (e.g. user-curated filtered files) over same-producer
@@ -39,7 +39,7 @@ class OutputCandidate:
     # Friendly label for synthetic (non-job) producers — e.g. "Merged sources —
     # <name>". When set, the UI dropdown shows this verbatim instead of the
     # derived "instance_path (jobtype)" form. None for ordinary job producers.
-    label: Optional[str] = None
+    label: str | None = None
 
     @property
     def source_key(self) -> str:
@@ -67,9 +67,9 @@ class InputSlotValidation:
 
     slot_key: str
     is_valid: bool
-    source_key: Optional[str]
-    resolved_path: Optional[str]
-    error_message: Optional[str] = None
+    source_key: str | None
+    resolved_path: str | None
+    error_message: str | None = None
     file_exists: bool = False
     is_user_override: bool = False
     awaiting_upstream: bool = False
@@ -79,6 +79,58 @@ class PathResolutionError(ValueError):
     pass
 
 
+# Instance-path markers for the three synthetic (non-job) producers. None of them has a
+# real JobType, so all three borrow MERGED_SOURCES and are told apart by instance path.
+PICK_LIST_PRODUCER_PREFIX = "pick_list__"
+IMPORTED_TOMOGRAMS_INSTANCE_PATH = "Tomograms"
+
+
+def pick_list_producer_id(pick_list) -> str:
+    """Stable synthetic producer id for one curation pick list.
+
+    Keyed on (species, tomo, slug), NOT slug alone: ``PickList.slug`` is only unique
+    WITHIN a (species, tomo), and the dashboard names every hand-picked list "manual"
+    (`ui/tomo_dashboard_dialog.py`), so a slug-only id would alias every species' and
+    every tomogram's manual list onto one producer — and make `remove_species` purge
+    another species' overrides.
+    """
+    return f"{PICK_LIST_PRODUCER_PREFIX}{pick_list.species_id}__{pick_list.tomo_name}__{pick_list.slug}"
+
+
+def pick_list_producer_prefix_for_species(species_id: str) -> str:
+    """Producer-id prefix owned by one species — what `remove_species` purges by."""
+    return f"{PICK_LIST_PRODUCER_PREFIX}{species_id}__"
+
+
+def is_synthetic_producer(producer_instance_id: str) -> bool:
+    """True for a producer that has no SLURM job — so it can never be an afterok
+    dependency. The aggregation merge, imported tomograms, and per-pick-list
+    extractions (which run as their own one-off job, outside the pipeline graph)."""
+    return producer_instance_id in ("mergedSources", "importedTomograms") or producer_instance_id.startswith(
+        PICK_LIST_PRODUCER_PREFIX
+    )
+
+
+def _synthetic_override_target(override_key: str) -> str:
+    """Which synthetic producer an override names: "merged" | "pick_list" | "imported" | "".
+
+    All three share the ``mergedSources:`` job-type prefix because none has its own
+    JobType; the instance path is what actually discriminates them. Routing a dangling
+    pick-list override through the merged-sources branch would tell the user
+    "merged-sources optimisation_set not found" about a list that simply needs
+    re-extracting. (Dedicated sentinels: denovo roadmap D-8; imported tomograms in S5.)
+    """
+    prefix = f"{JobType.MERGED_SOURCES.value}:"
+    if not override_key.startswith(prefix):
+        return ""
+    instance_path = override_key[len(prefix) :]
+    if instance_path.startswith(PICK_LIST_PRODUCER_PREFIX):
+        return "pick_list"
+    if instance_path == IMPORTED_TOMOGRAMS_INSTANCE_PATH:
+        return "imported"
+    return "merged"
+
+
 class PathResolutionService:
     """
     Stage 3: schema-based path resolution.
@@ -86,10 +138,10 @@ class PathResolutionService:
     and species-aware scoring.
     """
 
-    def __init__(self, state: "ProjectState", active_instance_ids: Optional[set] = None):
+    def __init__(self, state: ProjectState, active_instance_ids: set | None = None):
         self.state = state
         self._active_instance_ids = active_instance_ids
-        self._output_index: Optional[Dict[JobFileType, List[OutputCandidate]]] = None
+        self._output_index: dict[JobFileType, list[OutputCandidate]] | None = None
 
     # -------------------------------------------------------------------------
     # Public API
@@ -98,11 +150,11 @@ class PathResolutionService:
     def resolve_all_paths(
         self,
         job_type: JobType,
-        job_model: "AbstractJobParams",
+        job_model: AbstractJobParams,
         job_dir: Path,
-        instance_id: Optional[str] = None,
+        instance_id: str | None = None,
         return_manifest: bool = False,
-    ) -> Dict[str, Any] | Tuple[Dict[str, Any], ResolvedManifest]:
+    ) -> dict[str, Any] | tuple[dict[str, Any], ResolvedManifest]:
         """
         Resolve inputs + outputs using schemas and return a dict compatible with job_model.paths.
         Respects source_overrides from job_model and species-aware scoring.
@@ -119,17 +171,17 @@ class PathResolutionService:
             return paths, manifest
         return paths
 
-    def resolve_outputs(self, job_type: JobType, job_dir: Path) -> List[ResolvedOutput]:
+    def resolve_outputs(self, job_type: JobType, job_dir: Path) -> list[ResolvedOutput]:
         schema = self._get_output_schema(job_type)
-        resolved: List[ResolvedOutput] = []
+        resolved: list[ResolvedOutput] = []
         for slot in schema:
             resolved_path = str((job_dir / slot.path_template).resolve())
             resolved.append(ResolvedOutput(output_key=slot.key, produces=slot.produces, path=resolved_path))
         return resolved
 
     def resolve_inputs(
-        self, job_type: JobType, job_model: "AbstractJobParams", consumer_instance_id: Optional[str] = None
-    ) -> List[ResolvedInput]:
+        self, job_type: JobType, job_model: AbstractJobParams, consumer_instance_id: str | None = None
+    ) -> list[ResolvedInput]:
         """
         Resolve inputs for target job. Checks source_overrides first, then falls
         back to species-aware automatic selection.
@@ -142,8 +194,8 @@ class PathResolutionService:
         overrides = getattr(job_model, "source_overrides", {}) or {}
         consumer_species_id = getattr(job_model, "species_id", None)
 
-        resolved_inputs: List[ResolvedInput] = []
-        missing_required: List[str] = []
+        resolved_inputs: list[ResolvedInput] = []
+        missing_required: list[str] = []
 
         for slot in input_schema:
             chosen = None
@@ -170,15 +222,22 @@ class PathResolutionService:
                     )
                     continue
 
-                # A merged-sources override that no longer resolves (the active
-                # merge's optimisation_set.star was deleted/moved, or the active
-                # merge switched to a slug whose file is absent) must SURFACE, not
-                # silently fall through to some other optset producer (e.g. a
-                # downstream Class3D output). Mirrored in validate_input_slot.
-                if chosen is None and override_key.startswith(f"{JobType.MERGED_SOURCES.value}:"):
-                    if slot.required:
-                        missing_required.append(f"{slot.key} (merged-sources optimisation_set not found)")
-                    continue
+                # A synthetic-producer override that no longer resolves (the active
+                # merge's optimisation_set.star was deleted/moved, the active merge
+                # switched to a slug whose file is absent, or a consumed pick list
+                # went stale) must SURFACE, not silently fall through to some other
+                # optset producer (e.g. a downstream Class3D output). Mirrored in
+                # validate_input_slot.
+                if chosen is None:
+                    target = _synthetic_override_target(override_key)
+                    if target == "pick_list":
+                        if slot.required:
+                            missing_required.append(f"{slot.key}: {self._dangling_pick_list_message(override_key)}")
+                        continue
+                    if target:
+                        if slot.required:
+                            missing_required.append(f"{slot.key} (merged-sources optimisation_set not found)")
+                        continue
 
             # 2. Fall back to species-aware automatic selection
             if chosen is None:
@@ -189,6 +248,12 @@ class PathResolutionService:
             if chosen is None:
                 if slot.required:
                     missing_required.append(f"{slot.key} accepts={[t.value for t in slot.accepts]}")
+                continue
+
+            gap = self._interactive_producer_gap(chosen)
+            if gap:
+                if slot.required:
+                    missing_required.append(f"{slot.key}: {gap}")
                 continue
 
             resolved_inputs.append(
@@ -209,7 +274,7 @@ class PathResolutionService:
 
         return resolved_inputs
 
-    def resolve_edges(self, instance_ids: Optional[Sequence[str]] = None) -> List[Tuple[str, str]]:
+    def resolve_edges(self, instance_ids: Sequence[str] | None = None) -> list[tuple[str, str]]:
         """
         Derive the producer->consumer dependency edges of the pipeline DAG.
 
@@ -223,8 +288,10 @@ class PathResolutionService:
         rework; see ORCHESTRATOR_REPLACEMENT_PLAN.md §6).
 
         Producers with no SLURM job are excluded: a ``manual:`` file override
-        (user-picked file, no producing job) and the synthetic ``mergedSources``
-        aggregation producer -- an ``afterok`` on either would never be satisfiable.
+        (user-picked file, no producing job) and every synthetic producer
+        (``is_synthetic_producer`` -- the aggregation merge, imported tomograms, and
+        per-pick-list extractions) -- an ``afterok`` on any of them would never be
+        satisfiable.
         Slots that cannot be resolved yet are skipped silently (no exception), so
         this is safe on a partially-configured pipeline.
 
@@ -235,7 +302,7 @@ class PathResolutionService:
         """
         consumers = list(instance_ids) if instance_ids is not None else list(self.state.jobs.keys())
         index = self._build_output_index()
-        edges: List[Tuple[str, str]] = []
+        edges: list[tuple[str, str]] = []
         seen: set = set()
 
         for consumer_id in consumers:
@@ -261,11 +328,7 @@ class PathResolutionService:
                     continue
 
                 producer_id = chosen.producer_instance_id
-                if (
-                    not producer_id
-                    or producer_id in ("mergedSources", "importedTomograms")
-                    or producer_id == consumer_id
-                ):
+                if not producer_id or is_synthetic_producer(producer_id) or producer_id == consumer_id:
                     # synthetic / non-job producer, or a self-edge from a pathological
                     # override (the override path, unlike auto-selection, does not
                     # exclude the consumer) -- neither is a valid afterok dependency.
@@ -285,9 +348,9 @@ class PathResolutionService:
         self,
         job_type: JobType,
         slot_key: str,
-        consumer_species_id: Optional[str] = None,
-        consumer_instance_id: Optional[str] = None,
-    ) -> List[OutputCandidate]:
+        consumer_species_id: str | None = None,
+        consumer_instance_id: str | None = None,
+    ) -> list[OutputCandidate]:
         """
         Get all valid candidates for a specific input slot, sorted with
         species-matched candidates first. Unmatched candidates are included
@@ -307,7 +370,7 @@ class PathResolutionService:
         if consumer_instance_id is not None:
             candidates = [c for c in candidates if c.producer_instance_id != consumer_instance_id]
 
-        def sort_key(c: OutputCandidate) -> Tuple[int, int, int, str]:
+        def sort_key(c: OutputCandidate) -> tuple[int, int, int, str]:
             # Lower value = sorted earlier
             species_rank = 0 if (consumer_species_id and c.species_id == consumer_species_id) else 1
             status_order = {
@@ -328,8 +391,8 @@ class PathResolutionService:
         # with identical labels ("Subtomo Extraction #2 (job017)" twice). Keep one
         # row per source_key, preferring the `prefer_if_exists` (curated) sibling
         # so it matches what _resolve_override / the auto-scorer actually pick.
-        deduped: List[OutputCandidate] = []
-        pos_by_key: Dict[str, int] = {}
+        deduped: list[OutputCandidate] = []
+        pos_by_key: dict[str, int] = {}
         for c in ordered:
             key = c.source_key
             if key not in pos_by_key:
@@ -339,21 +402,21 @@ class PathResolutionService:
                 deduped[pos_by_key[key]] = c
         return deduped
 
-    def get_input_schema_for_job(self, job_type: JobType) -> List[InputSlot]:
+    def get_input_schema_for_job(self, job_type: JobType) -> list[InputSlot]:
         """Expose input schema for UI rendering."""
         return self._get_input_schema(job_type)
 
-    def get_output_schema_for_job(self, job_type: JobType) -> List[OutputSlot]:
+    def get_output_schema_for_job(self, job_type: JobType) -> list[OutputSlot]:
         """Expose output schema for UI rendering."""
         return self._get_output_schema(job_type)
 
     def validate_input_slot(
         self,
         job_type: JobType,
-        job_model: "AbstractJobParams",
+        job_model: AbstractJobParams,
         slot_key: str,
         check_filesystem: bool = True,
-        consumer_instance_id: Optional[str] = None,
+        consumer_instance_id: str | None = None,
     ) -> InputSlotValidation:
         """
         Validate a single input slot's current configuration.
@@ -395,18 +458,24 @@ class PathResolutionService:
                     error_message=None if file_exists else f"File not found: {manual_path}",
                 )
 
-            # Dangling merged-sources override (its optset is gone) -> surface red,
+            # Dangling synthetic-producer override (its optset is gone) -> surface red,
             # don't silently auto-pick a foreign optset producer. Mirrors resolve_inputs.
-            if chosen is None and override_key.startswith(f"{JobType.MERGED_SOURCES.value}:"):
-                return InputSlotValidation(
-                    slot_key=slot_key,
-                    is_valid=not slot.required,
-                    source_key=override_key,
-                    resolved_path=None,
-                    file_exists=False,
-                    is_user_override=True,
-                    error_message="Merged-sources optimisation_set not found (merge deleted or active merge switched?)",
-                )
+            if chosen is None:
+                target = _synthetic_override_target(override_key)
+                if target:
+                    return InputSlotValidation(
+                        slot_key=slot_key,
+                        is_valid=not slot.required,
+                        source_key=override_key,
+                        resolved_path=None,
+                        file_exists=False,
+                        is_user_override=True,
+                        error_message=(
+                            self._dangling_pick_list_message(override_key)
+                            if target == "pick_list"
+                            else "Merged-sources optimisation_set not found (merge deleted or active merge switched?)"
+                        ),
+                    )
 
         if chosen is None:
             chosen = self._choose_candidate_for_slot(
@@ -423,6 +492,18 @@ class PathResolutionService:
                     f"No valid source found (accepts: {[t.value for t in slot.accepts]})" if slot.required else None
                 ),
                 is_user_override=is_user_override,
+            )
+
+        gap = self._interactive_producer_gap(chosen)
+        if gap:
+            return InputSlotValidation(
+                slot_key=slot_key,
+                is_valid=not slot.required,
+                source_key=chosen.source_key,
+                resolved_path=chosen.path,
+                file_exists=False,
+                is_user_override=is_user_override,
+                error_message=gap,
             )
 
         is_pending = "pending_" in chosen.path
@@ -456,8 +537,8 @@ class PathResolutionService:
         )
 
     def validate_all_inputs(
-        self, job_type: JobType, job_model: "AbstractJobParams", check_filesystem: bool = True
-    ) -> List[InputSlotValidation]:
+        self, job_type: JobType, job_model: AbstractJobParams, check_filesystem: bool = True
+    ) -> list[InputSlotValidation]:
         """Validate all input slots for a job."""
         input_schema = self._get_input_schema(job_type)
         return [self.validate_input_slot(job_type, job_model, slot.key, check_filesystem) for slot in input_schema]
@@ -466,9 +547,22 @@ class PathResolutionService:
     # Override resolution
     # -------------------------------------------------------------------------
 
+    def _dangling_pick_list_message(self, override_key: str) -> str:
+        """Why a pick-list override stopped resolving, in the user's terms. The candidate
+        is injected only while the list is EXTRACTED, so losing it means the list was
+        re-curated (now STALE) or deleted — not that some generic input went missing."""
+        producer_id = override_key.split(":", 1)[1]
+        for pl in getattr(self.state, "pick_lists", None) or []:
+            if pick_list_producer_id(pl) == producer_id:
+                return (
+                    f"pick list '{pl.label or pl.slug}' on {pl.tomo_name} is no longer extracted "
+                    f"(its picks changed since the last extraction) — re-extract it"
+                )
+        return f"the pick list behind '{producer_id}' no longer exists — re-extract, or repoint this input"
+
     def _resolve_override(
-        self, slot: InputSlot, override_key: str, index: Dict[JobFileType, List[OutputCandidate]]
-    ) -> Optional[OutputCandidate]:
+        self, slot: InputSlot, override_key: str, index: dict[JobFileType, list[OutputCandidate]]
+    ) -> OutputCandidate | None:
         """
         Resolve a user override to a candidate.
 
@@ -502,12 +596,12 @@ class PathResolutionService:
     # Indexing producers
     # -------------------------------------------------------------------------
 
-    def _build_output_index(self) -> Dict[JobFileType, List[OutputCandidate]]:
+    def _build_output_index(self) -> dict[JobFileType, list[OutputCandidate]]:
         if self._output_index is not None:
             return self._output_index
 
         project_root = self._project_root()
-        index: Dict[JobFileType, List[OutputCandidate]] = {t: [] for t in JobFileType}
+        index: dict[JobFileType, list[OutputCandidate]] = {t: [] for t in JobFileType}
 
         for instance_id, producer_model in self.state.jobs.items():
             producer_job_type = producer_model.job_type
@@ -569,6 +663,7 @@ class PathResolutionService:
 
         self._add_merged_sources_candidates(index, project_root)
         self._add_imported_tomograms_candidates(index, project_root)
+        self._add_pick_list_optset_candidates(index)
 
         for t, lst in index.items():
             index[t] = sorted(lst, key=lambda c: (c.producer_job_type.value, c.instance_path, c.producer_output_key))
@@ -577,7 +672,7 @@ class PathResolutionService:
         return index
 
     def _add_merged_sources_candidates(
-        self, index: Dict[JobFileType, List[OutputCandidate]], project_root: Path
+        self, index: dict[JobFileType, list[OutputCandidate]], project_root: Path
     ) -> None:
         # The merged optimisation_set.star is a project-level resource produced by
         # the aggregation merge card, not a pipeline job. Surface the ACTIVE merge's
@@ -610,7 +705,7 @@ class PathResolutionService:
         )
 
     def _add_imported_tomograms_candidates(
-        self, index: Dict[JobFileType, List[OutputCandidate]], project_root: Path
+        self, index: dict[JobFileType, list[OutputCandidate]], project_root: Path
     ) -> None:
         # Imported tomograms (PARTICLES-header utility) are a project-level artifact,
         # not a pipeline job. Surface the committed tomograms.star as a synthetic
@@ -633,7 +728,7 @@ class PathResolutionService:
                 producer_job_type=JobType.MERGED_SOURCES,  # synthetic non-job marker (no IMPORT_TOMOGRAMS type)
                 producer_output_key="output_star",
                 path=str(star),
-                instance_path="Tomograms",
+                instance_path=IMPORTED_TOMOGRAMS_INSTANCE_PATH,
                 producer_instance_id="importedTomograms",
                 execution_status=JobStatus.SUCCEEDED,
                 relion_job_number=0,
@@ -641,7 +736,72 @@ class PathResolutionService:
             )
         )
 
-    def _get_instance_path(self, instance_id: str, job_model: "AbstractJobParams") -> str:
+    def _add_pick_list_optset_candidates(self, index: dict[JobFileType, list[OutputCandidate]]) -> None:
+        """Surface every EXTRACTED curation pick list as an OPTIMISATION_SET_STAR producer.
+
+        A manual/imported/merged list becomes consumable downstream only once its picks
+        have been subtomo-extracted (`backend.extract_pick_list`, which runs OUTSIDE the
+        pipeline graph); `PickList.extracted_path` is that extraction's optset. Injecting
+        it here is what lets reconstructParticle / class3d resolve a de-novo species with
+        no subtomoExtraction roster row at all (denovo roadmap D-7). The state is DERIVED
+        (`extraction_state()`), so a re-curated list drops out of the pool by itself.
+
+        Multiple EXTRACTED lists can exist for one (species, tomo). All are injected so
+        the user can override to any of them, but auto-selection must be deterministic:
+        `relion_job_number` — a free integer for synthetic producers, and already the
+        scorer's preference rank — is assigned so the authoritative slug outranks the
+        rest, then newer extractions outrank older. The winner says so in its label, which
+        the UI dropdown renders verbatim, so the choice is never silent.
+        """
+        from services.models_base import ListExtractionState
+
+        extracted = [
+            pl
+            for pl in (getattr(self.state, "pick_lists", None) or [])
+            if pl.extraction_state() == ListExtractionState.EXTRACTED
+        ]
+        if not extracted:
+            return
+
+        by_tomo: dict[tuple[str, str], list] = {}
+        for pl in extracted:
+            by_tomo.setdefault((pl.species_id, pl.tomo_name), []).append(pl)
+
+        for (species_id, tomo_name), group in by_tomo.items():
+            authoritative = self.state.get_authoritative_slug(species_id, tomo_name)
+            # Ascending, so the LAST entry is the winner and rank == list position.
+            # Ranks start at 0 so a lone pick list ties the other synthetic producers
+            # (mergedSources / importedTomograms) exactly as before; only a genuine
+            # multi-list tie spends rank to break itself.
+            ranked = sorted(
+                group,
+                key=lambda pl: (
+                    pl.slug == authoritative,
+                    pl.extracted_at.timestamp() if pl.extracted_at is not None else 0.0,
+                ),
+            )
+            for rank, pl in enumerate(ranked):
+                label = f"Pick list — {pl.label or pl.slug} · {tomo_name}"
+                if len(ranked) > 1 and rank == len(ranked) - 1:
+                    why = "authoritative" if pl.slug == authoritative else "most recently extracted"
+                    label = f"{label} [auto-selected: {why}]"
+                producer_id = pick_list_producer_id(pl)
+                index[JobFileType.OPTIMISATION_SET_STAR].append(
+                    OutputCandidate(
+                        produces=JobFileType.OPTIMISATION_SET_STAR,
+                        producer_job_type=JobType.MERGED_SOURCES,  # synthetic non-job marker
+                        producer_output_key="output_optimisation",
+                        path=pl.extracted_path,
+                        instance_path=producer_id,
+                        producer_instance_id=producer_id,
+                        execution_status=JobStatus.SUCCEEDED,
+                        relion_job_number=rank,
+                        species_id=pl.species_id or None,
+                        label=label,
+                    )
+                )
+
+    def _get_instance_path(self, instance_id: str, job_model: AbstractJobParams) -> str:
         relion_job_name = getattr(job_model, "relion_job_name", None)
         if relion_job_name:
             return relion_job_name.rstrip("/")
@@ -659,10 +819,10 @@ class PathResolutionService:
         self,
         instance_id: str,
         producer_job_type: JobType,
-        producer_model: "AbstractJobParams",
+        producer_model: AbstractJobParams,
         slot: OutputSlot,
         project_root: Path,
-    ) -> Optional[str]:
+    ) -> str | None:
         # Prefer relion_job_name + path_template over the cached producer paths dict.
         # The cached dict is a schedule-time snapshot which drifts when the relion
         # schemer allocates a different job number than the orchestrator predicted;
@@ -695,6 +855,24 @@ class PathResolutionService:
 
         return None
 
+    def _interactive_producer_gap(self, candidate: OutputCandidate) -> str | None:
+        """A `pending_<instance>` path is a promise that the dispatcher will create
+        the dir when it deploys the producer — a promise interactive jobs (never
+        dispatched) cannot make. An interactive producer in the candidate pool is
+        SUCCEEDED by construction (see _build_output_index), so a placeholder path
+        means its committed output was never recorded on the job model; wiring it
+        downstream guarantees a runtime crash. Surface the gap at resolve time."""
+        if "pending_" not in candidate.path:
+            return None
+        jm = self.state.jobs.get(candidate.producer_instance_id)
+        if jm is None or not getattr(jm, "IS_INTERACTIVE", False):
+            return None
+        return (
+            f"interactive producer '{candidate.producer_instance_id}' has no committed output on disk "
+            f"(path would be the placeholder {candidate.path}, which nothing creates) — "
+            f"open its panel, commit/save its output, then requeue"
+        )
+
     def invalidate_cache(self):
         """Call when state changes to rebuild the output index."""
         self._output_index = None
@@ -706,10 +884,10 @@ class PathResolutionService:
     def _choose_candidate_for_slot(
         self,
         slot: InputSlot,
-        index: Dict[JobFileType, List[OutputCandidate]],
-        consumer_species_id: Optional[str] = None,
-        consumer_instance_id: Optional[str] = None,
-    ) -> Optional[OutputCandidate]:
+        index: dict[JobFileType, list[OutputCandidate]],
+        consumer_species_id: str | None = None,
+        consumer_instance_id: str | None = None,
+    ) -> OutputCandidate | None:
         """
         Find best candidate among accepted types using deterministic scoring.
 
@@ -725,7 +903,7 @@ class PathResolutionService:
         in-flight output once sync_all_jobs has set its relion_job_name, because
         the scoring prefers higher job numbers before SUCCEEDED status.
         """
-        candidates: List[OutputCandidate] = []
+        candidates: list[OutputCandidate] = []
         for t in slot.accepts:
             candidates.extend(index.get(t, []))
 
@@ -737,7 +915,7 @@ class PathResolutionService:
 
         preferred_job_type = self._parse_preferred_source(slot.preferred_source)
 
-        def score(c: OutputCandidate) -> Tuple[int, int, int, int, int]:
+        def score(c: OutputCandidate) -> tuple[int, int, int, int, int]:
             succeeded = 1 if c.execution_status == JobStatus.SUCCEEDED else 0
             # Species match only counts if the candidate has actually run.
             # This prevents a job's own pending output from circularly winning
@@ -755,7 +933,7 @@ class PathResolutionService:
 
         return max(candidates, key=lambda c: (score(c), c.producer_job_type.value, c.producer_output_key, c.path))
 
-    def _parse_preferred_source(self, preferred: Optional[str]) -> Optional[JobType]:
+    def _parse_preferred_source(self, preferred: str | None) -> JobType | None:
         if not preferred:
             return None
         try:
@@ -767,14 +945,14 @@ class PathResolutionService:
     # Schema access
     # -------------------------------------------------------------------------
 
-    def _get_input_schema(self, job_type: JobType) -> List[InputSlot]:
+    def _get_input_schema(self, job_type: JobType) -> list[InputSlot]:
         from services.job_models import jobtype_paramclass
 
         cls = jobtype_paramclass().get(job_type)
         schema = getattr(cls, "INPUT_SCHEMA", None) if cls else None
         return list(schema) if schema else []
 
-    def _get_output_schema(self, job_type: JobType) -> List[OutputSlot]:
+    def _get_output_schema(self, job_type: JobType) -> list[OutputSlot]:
         from services.job_models import jobtype_paramclass
 
         cls = jobtype_paramclass().get(job_type)
@@ -792,9 +970,9 @@ class PathResolutionService:
 # -----------------------------------------------------------------------------
 
 
-def get_context_paths(job_type: JobType, job_model: "AbstractJobParams", job_dir: Path) -> Dict[str, str]:
+def get_context_paths(job_type: JobType, job_model: AbstractJobParams, job_dir: Path) -> dict[str, str]:
     project_root = job_model.project_root
-    paths: Dict[str, str] = {"job_dir": str(job_dir), "project_root": str(project_root)}
+    paths: dict[str, str] = {"job_dir": str(job_dir), "project_root": str(project_root)}
 
     if job_type in [JobType.IMPORT_MOVIES, JobType.FS_MOTION_CTF, JobType.TS_IMPORT]:
         paths["mdoc_dir"] = str(project_root / "mdoc")

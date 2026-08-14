@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Set, Tuple
+from typing import ClassVar
 from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
@@ -14,9 +14,9 @@ class TsReconstructParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS: ClassVar[Set[str]] = {"rescale_angpixs", "halfmap_frames", "deconv", "perdevice", "array_throttle"}
+    USER_PARAMS: ClassVar[set[str]] = {"rescale_angpixs", "halfmap_frames", "deconv", "perdevice", "array_throttle"}
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         # The tilt cut now propagates natively (tiltFilter trims the tomostar
         # upstream of alignment), so tsCtf's star already contains only kept tilts.
         InputSlot(key="input_star", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
@@ -33,7 +33,7 @@ class TsReconstructParams(AbstractJobParams):
             preferred_source="aligntiltsWarp",
         ),
     ]
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_star", produces=JobFileType.TOMOGRAMS_STAR, path_template="tomograms.star"),
         OutputSlot(
             key="output_processing",
@@ -51,11 +51,11 @@ class TsReconstructParams(AbstractJobParams):
         default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series reconstruction"
     )
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
 
-    def _get_queue_options(self) -> List[Tuple[str, str]]:
+    def _get_queue_options(self) -> list[tuple[str, str]]:
         """
         Override: ts_reconstruct's parent sbatch is a lightweight CPU-only supervisor.
         It only counts tilt-series, submits a child SLURM array job, polls until
@@ -83,5 +83,5 @@ class TsReconstructParams(AbstractJobParams):
         return "warptools"
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"ctf": "tsCtf"}

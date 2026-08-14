@@ -4,7 +4,6 @@ import logging
 from pathlib import Path
 import re
 import shlex
-from typing import List, Optional, Tuple
 
 from services.configs.config_service import get_config_service
 
@@ -14,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class Colors:
     @classmethod
-    def _parse_container_command(cls, command: str) -> Tuple[str, List[str], str, str]:
+    def _parse_container_command(cls, command: str) -> tuple[str, list[str], str, str]:
         """Parse the containerized command into components."""
         env_match = re.match(r"(.*?)(apptainer|singularity)", command, re.DOTALL)
         env_cleanup = env_match.group(1).strip().rstrip(";").strip() if env_match else ""
@@ -30,7 +29,7 @@ class Colors:
         return env_cleanup, bind_paths, container_path, inner_command
 
     @classmethod
-    def _format_inner_command(cls, command: str, indent: int = 3) -> List[str]:
+    def _format_inner_command(cls, command: str, indent: int = 3) -> list[str]:
         """
         Format inner command with intelligent line breaking.
         Breaks at logical points: &&, |, ;, and long argument lists.
@@ -42,7 +41,7 @@ class Colors:
         # First, split by logical operators
         logical_splits = re.split(r"(\s+&&\s+|\s+\|\|\s+|\s*;\s*)", command)
 
-        for part_idx, part in enumerate(logical_splits):
+        for _part_idx, part in enumerate(logical_splits):
             part = part.strip()
             if not part:
                 continue
@@ -87,7 +86,7 @@ class Colors:
         return lines
 
     @classmethod
-    def format_command_log(cls, tool_name: str, command: str, cwd: Path, container_path: Optional[str] = None) -> str:
+    def format_command_log(cls, tool_name: str, command: str, cwd: Path, container_path: str | None = None) -> str:
         """
         Format a command execution log with simple, clean formatting.
         """
@@ -106,7 +105,7 @@ class Colors:
             return p
 
         lines = [
-            f"--- [ CONTAINER EXECUTION ] ---",
+            "--- [ CONTAINER EXECUTION ] ---",
             f"  Tool:       {tool_name}",
             f"  CWD:        {cwd}",
             f"  Image:      {shorten_path(display_container)}",
@@ -135,7 +134,7 @@ class Colors:
                 lines.append(f"        -B {bind} \\")
 
         lines.append(f"        {shorten_path(parsed_container)} \\")
-        lines.append(f"        bash -c '")
+        lines.append("        bash -c '")
 
         if inner_command and inner_command != "unknown":
             # Indent inner command
@@ -143,7 +142,7 @@ class Colors:
             for line in formatted_lines:
                 lines.append(f"{line}")
 
-        lines.append(f"        '")
+        lines.append("        '")
         lines.append("-" * 70)
 
         return "\n".join(lines)
@@ -153,14 +152,16 @@ class ContainerService:
     def __init__(self):
         self.config = get_config_service()
 
-    def get_tool_path(self, tool_name: str) -> Optional[str]:
+    def get_tool_path(self, tool_name: str) -> str | None:
         """
         Returns the filesystem path for the tool's executable or container.
         Delegates to ConfigService to handle legacy/new logic.
         """
         return self.config.get_tool_path(tool_name)
 
-    def wrap_command_for_tool(self, command: str, cwd: Path, tool_name: str, additional_binds: List[str] = None) -> str:
+    def wrap_command_for_tool(
+        self, command: str, cwd: Path, tool_name: str, additional_binds: list[str] | None = None
+    ) -> str:
         """
         Wraps a command based on the tool's execution mode (container vs binary).
         """
@@ -177,7 +178,9 @@ class ContainerService:
         # Default to container logic
         return self._wrap_container_command(command, cwd, tool_name, tool_config.container_path, additional_binds)
 
-    def _wrap_container_command(self, command: str, cwd: Path, tool_name: str, container_path: str, additional_binds: List[str] = None) -> str:
+    def _wrap_container_command(
+        self, command: str, cwd: Path, tool_name: str, container_path: str, additional_binds: list[str] | None = None
+    ) -> str:
         """Internal method to wrap command in Apptainer/Singularity"""
         if not container_path:
             logger.warning("No container path configured for tool '%s', running natively", tool_name)
@@ -266,7 +269,7 @@ class ContainerService:
         return final_command
 
 
-_container_service: Optional[ContainerService] = None
+_container_service: ContainerService | None = None
 
 
 def get_container_service() -> ContainerService:

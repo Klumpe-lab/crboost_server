@@ -31,8 +31,7 @@ server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 try:
-    from drivers.driver_base import get_driver_context, run_command, require_producer_input
-    from services.computing.container_service import get_container_service
+    from drivers.driver_base import ToolCommand, get_driver_context, run_tool, require_producer_input
     from services.jobs.miss_align import MissAlignParams, MISS_ALIGN_SCHEDULES
 except ImportError as e:
     print(f"FATAL: Could not import services. {e}", file=sys.stderr)
@@ -178,7 +177,7 @@ def main():
     print("--- SLURM JOB START (miss_align) ---", flush=True)
 
     try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
+        (_project_state, params, local_params_data, job_dir, _project_path, _job_type) = get_driver_context(
             MissAlignParams
         )
     except Exception as e:
@@ -240,7 +239,6 @@ def main():
             shutil.copy(settings_src, job_dir / "warp_tiltseries.settings")
             shutil.copy(input_star, job_dir / "aligned_tilt_series.star")
 
-        container = get_container_service()
 
         # 2. Stamp physical dims from the settings onto every staged XML (in-container). Only on a
         #    fresh stage — on resume the XMLs are already stamped + partially refined, and
@@ -253,10 +251,8 @@ def main():
             stamp_cmd = (
                 f"python stamp_dims.py {dims['apix']} {dims['W']} {dims['H']} {dims['VX']} {dims['VY']} {dims['VZ']}"
             )
-            wrapped_stamp = container.wrap_command_for_tool(
-                command=stamp_cmd, cwd=job_dir, tool_name="miss_alignment", additional_binds=additional_binds
-            )
-            run_command(wrapped_stamp, cwd=job_dir)
+            # Purely positional args — no flag/value structure for ToolCommand to carry.
+            run_tool(stamp_cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         # 3. Write config.yaml.
         config = build_config(params, staged_processing)
@@ -310,25 +306,23 @@ def main():
         training_devices = "0"
         recon_devices = "0" if n_gpus == 1 else ",".join(str(i) for i in range(1, n_gpus))
         print(f"[DRIVER] GPUs={n_gpus}: training-devices={training_devices} recon-devices={recon_devices}", flush=True)
-        train_parts = [
-            f"env HOME={jobtmp} MPLCONFIGDIR={jobtmp}/mpl USER={username} LOGNAME={username} "
-            f"TORCHINDUCTOR_CACHE_DIR={jobtmp}/torchinductor OMP_NUM_THREADS=1 MKL_NUM_THREADS=1",
-            "miss-alignment train",
-            "--config-file config.yaml",
-            f"--training-devices {training_devices}",
-            f"--reconstruction-devices {recon_devices}",
-            f"--pool-size {params.pool_size}",
-            f"--dataloaders-per-trainer {n_dataloaders}",
-            f"--start-at-iteration {resume_from}",
-        ]
+        train_cmd = (
+            ToolCommand(
+                f"env HOME={jobtmp} MPLCONFIGDIR={jobtmp}/mpl USER={username} LOGNAME={username} "
+                f"TORCHINDUCTOR_CACHE_DIR={jobtmp}/torchinductor OMP_NUM_THREADS=1 MKL_NUM_THREADS=1"
+            )
+            .raw("miss-alignment train")
+            .opt("--config-file", "config.yaml")
+            .opt("--training-devices", training_devices)
+            .opt("--reconstruction-devices", recon_devices)
+            .opt("--pool-size", params.pool_size)
+            .opt("--dataloaders-per-trainer", n_dataloaders)
+            .opt("--start-at-iteration", resume_from)
+        )
         # (--prepare-stacks is intentionally NOT appended here: prepare_stacks_apix > 0 is refused
         #  above until P2 wires the raw-frame + tomostar binds. Re-enable it there, not here.)
-        train_cmd = " ".join(train_parts)
         print(f"[DRIVER] Train command: {train_cmd}", flush=True)
-        wrapped_train = container.wrap_command_for_tool(
-            command=train_cmd, cwd=job_dir, tool_name="miss_alignment", additional_binds=additional_binds
-        )
-        run_command(wrapped_train, cwd=job_dir)
+        run_tool(train_cmd, tool_name=params.get_tool_name(), cwd=job_dir, binds=additional_binds)
 
         # 5. Verify the refined output. The XMLs were staged in before training, so their mere
         #    presence is not proof of work; miss-alignment writes a warp_tiltseries/iterN/ snapshot

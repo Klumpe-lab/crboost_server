@@ -9,7 +9,7 @@ of the input -- and rows stack vertically inside their collapsible.
 
 from contextlib import contextmanager
 from enum import Enum
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from nicegui import ui
 
@@ -123,7 +123,7 @@ def _attach_input(inp, *, is_frozen: bool, narrow: bool):
         inp.props("readonly")
 
 
-def _label(text: str, hint: Optional[str], *, path_width: bool = False):
+def _label(text: str, hint: str | None, *, path_width: bool = False):
     style = LABEL_PATH_STYLE if path_width else LABEL_STYLE
     lbl = ui.label(text).style(style)
     if hint:
@@ -138,7 +138,7 @@ def text_field(
     *,
     is_frozen: bool,
     save_handler: Callable,
-    hint: Optional[str] = None,
+    hint: str | None = None,
     suffix: str = "",
     narrow: bool = False,
     on_change: bool = True,
@@ -164,7 +164,7 @@ def numeric_field(
     *,
     is_frozen: bool,
     save_handler: Callable,
-    hint: Optional[str] = None,
+    hint: str | None = None,
     suffix: str = "",
     fmt: str = "%.4g",
     narrow: bool = True,
@@ -186,7 +186,7 @@ def numeric_field(
 
 
 def enum_field(
-    label: str, job_model, attr: str, enum_type, *, is_frozen: bool, save_handler: Callable, hint: Optional[str] = None
+    label: str, job_model, attr: str, enum_type, *, is_frozen: bool, save_handler: Callable, hint: str | None = None
 ):
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint)
@@ -206,7 +206,7 @@ def enum_field(
 
 
 def toggle_field(
-    label: str, job_model, attr: str, *, is_frozen: bool, save_handler: Callable, hint: Optional[str] = None
+    label: str, job_model, attr: str, *, is_frozen: bool, save_handler: Callable, hint: str | None = None
 ):
     cb = ui.checkbox(label).bind_value(job_model, attr).props("dense size=xs")
     cb.style(f"{SANS} font-size: 10px; color: {CLR_HEADER};")
@@ -226,7 +226,7 @@ def path_row(
     *,
     is_frozen: bool,
     save_handler: Callable,
-    hint: Optional[str] = None,
+    hint: str | None = None,
     on_change: bool = True,
 ):
     with ui.element("div").style(ROW_STYLE):
@@ -241,7 +241,7 @@ def path_row(
     return inp
 
 
-def kv_row(label: str, value: str, *, hint: Optional[str] = None):
+def kv_row(label: str, value: str, *, hint: str | None = None):
     """Read-only label/value pair (used by the I/O readonly view)."""
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint, path_width=True)

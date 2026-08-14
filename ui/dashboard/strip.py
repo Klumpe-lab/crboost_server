@@ -9,7 +9,7 @@ far it progressed (picked → extracted). Clicking a column selects that TS and
 drives the detail pane below; the selected column is highlighted and surfaces
 its filtered count.
 
-Pure presentation over ``data.py``'s collectors — no new disk reads, and no
+Pure presentation over ``services.dashboard_data``'s collectors — no new disk reads, and no
 back-import into ``tomo_dashboard_dialog`` (the ⓘ info popover arrives as a
 callback, keeping the package DAG one-directional). Verified by py_compile +
 ruff only (no runtime test in this venv — see reference_hpc_env).
@@ -17,11 +17,11 @@ ruff only (no runtime test in this venv — see reference_hpc_env).
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from nicegui import ui
 
-from ui.dashboard.data import _PREP_STAGES, _position_label
+from services.dashboard_data import PREP_STAGES, position_label
 
 # status → human word, for cell/dot tooltips. Mirrors tomo_dashboard_dialog's
 # _PILL_TOOLTIP_LABEL; kept local so the strip doesn't back-import the shell.
@@ -57,7 +57,7 @@ def _aggregate_species(species_journey: dict, ts_names: list) -> list[dict]:
 def _compact_col_label(ts: str) -> str:
     """Tight column header for a ~52px column. Position → ``stage·beam``;
     otherwise the trailing name segment, capped. Full name lives in the tooltip."""
-    _, (stage, beam) = _position_label(ts)
+    _, (stage, beam) = position_label(ts)
     if stage:
         return f"{stage}·{beam}"
     return ts.rsplit("_", 1)[-1][:6]
@@ -96,12 +96,12 @@ def build_strip(
     journey: dict,
     species_journey: dict,
     ts_names: list,
-    selected_ts: Optional[str],
+    selected_ts: str | None,
     recon_mrc_map: dict,
     on_select: Callable[[str], object],
-    info_popover: Optional[Callable] = None,
-    excluded_ids: Optional[set] = None,
-    on_toggle_exclude: Optional[Callable[[str], object]] = None,
+    info_popover: Callable | None = None,
+    excluded_ids: set | None = None,
+    on_toggle_exclude: Callable[[str], object] | None = None,
 ) -> dict:
     """Build the heatmap strip into ``container``; return ``{ts: column element}``
     so the caller can move the selection highlight without a full rebuild.
@@ -163,7 +163,7 @@ def build_strip(
                         tog.on("click.stop", lambda t=ts: on_toggle_exclude(t))
                     jr = journey.get(ts, {})
                     with ui.element("div").classes("cb-strip-cell cb-strip-prepcell"):
-                        for key, slabel, _jt in _PREP_STAGES:
+                        for key, slabel, _jt in PREP_STAGES:
                             st = jr.get(key, "pending")
                             ui.element("div").classes(f"cb-strip-dot {st}").tooltip(
                                 f"{slabel}: {_STATUS_WORD.get(st, st)}"

@@ -16,7 +16,7 @@ import asyncio
 import getpass
 import logging
 from pathlib import Path
-from typing import Awaitable, Callable, Dict, List, Optional
+from collections.abc import Awaitable, Callable
 
 from nicegui import ui, app
 
@@ -100,15 +100,15 @@ class ProjectsOverview:
         *,
         on_open: Callable[[Path], Awaitable[None]],
         base_path_provider: Callable[[], str],
-        on_delete: Optional[Callable[[Path, str], Awaitable[None]]] = None,
-        on_transfer: Optional[Callable[[Path, Optional[str]], Awaitable[None]]] = None,
-        on_select: Optional[Callable[[Path], Awaitable[None]]] = None,
+        on_delete: Callable[[Path, str], Awaitable[None]] | None = None,
+        on_transfer: Callable[[Path, str | None], Awaitable[None]] | None = None,
+        on_select: Callable[[Path], Awaitable[None]] | None = None,
         auto_refresh_sec: float = DEFAULT_REFRESH_SEC,
-        current_path: Optional[str] = None,
-        selected_path: Optional[str] = None,
+        current_path: str | None = None,
+        selected_path: str | None = None,
         show_filter: bool = True,
         height_px: int = 380,
-        height_css: Optional[str] = None,
+        height_css: str | None = None,
         title: str = "Projects Overview",
     ):
         self.backend = backend
@@ -138,13 +138,13 @@ class ProjectsOverview:
         except Exception:
             self._selected_resolved = None
 
-        self._projects: List[Dict] = []
+        self._projects: list[dict] = []
         self._outer_container = None
         self._list_container = None
         self._counts_label = None
         self._mine_label = None
         self._timer = None
-        self._last_scanned_base: Optional[str] = None
+        self._last_scanned_base: str | None = None
         self._refresh_lock = asyncio.Lock()
         # Set while a delete is in progress -- blocks auto-refresh so the
         # greyed-out row stays visible until rmtree completes.
@@ -210,7 +210,7 @@ class ProjectsOverview:
             except Exception as e:
                 logger.info("ProjectsOverview refresh failed: %s", e)
 
-    def set_selected(self, selected_path: Optional[str]):
+    def set_selected(self, selected_path: str | None):
         """Mark a row as the previewed project (faint outline) and re-render.
         No-op-safe if the list isn't mounted yet."""
         try:
@@ -335,7 +335,7 @@ class ProjectsOverview:
             # than on every row (it used to crowd the name/mnemonic). The
             # current user floats to the top, then Lab / Shared, then the rest
             # alphabetically.
-            groups: Dict[str, List[Dict]] = {}
+            groups: dict[str, list[dict]] = {}
             for proj in visible:
                 groups.setdefault(eff(proj), []).append(proj)
 
@@ -351,7 +351,7 @@ class ProjectsOverview:
                 for proj in groups[owner]:
                     self._render_row(proj)
 
-    def _render_section_header(self, creator: str, projects: List[Dict]):
+    def _render_section_header(self, creator: str, projects: list[dict]):
         is_me = creator == CURRENT_USER
         is_lab = creator == SHARED_OWNER
         known = creator and creator != "unknown"
@@ -404,7 +404,7 @@ class ProjectsOverview:
     _W_RUNFAIL = 44
     _W_ARROW = 24
 
-    def _render_row(self, proj: Dict):
+    def _render_row(self, proj: dict):
         path_str = proj["path"]
         name = proj["name"]
         mnemonic = proj.get("mnemonic") or ""
@@ -739,7 +739,7 @@ class ProjectsOverview:
             self._pause_refresh = False
             await self.refresh()
 
-    async def _show_transfer_dialog(self, name: str) -> Optional[str]:
+    async def _show_transfer_dialog(self, name: str) -> str | None:
         """Returns the new owner (SHARED_OWNER or a username) or None on cancel.
         Username candidates come from owners/creators already seen in the scan
         (there's no user directory to enumerate); free text is allowed too."""
@@ -780,7 +780,7 @@ class ProjectsOverview:
         return result
 
     @staticmethod
-    def _eff_owner_of(p: Dict) -> str:
+    def _eff_owner_of(p: dict) -> str:
         return p.get("owner") or p.get("creator") or "unknown"
 
     @staticmethod

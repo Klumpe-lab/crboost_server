@@ -12,9 +12,10 @@ XML at ``<fsMotion job>/warp_frameseries/<frame_stem>.xml``:
 
 This module parses just those two attributes, memoized by ``(path, mtime)`` so a
 render path can read them on every tick without re-parsing. The ingest adapter
-(``services/tilt_series/adapters/fs_motion_ctf.py``) already parses the ``<CTF>``
-block of the same XMLs for defocus; this is the read-time complement for the
-quality scalars it doesn't ingest.
+(``services/tilt_series/adapters/fs_motion_ctf.py``) ingests the SAME two values
+into ``FsMotionCtfFrameOutput.ctf_resolution/mean_frame_movement`` (schema 1.2+);
+this XML read path serves runs that predate that, and is slated for retirement
+when the dashboard goes registry-only (roadmap 02 stage 3).
 
 Units note: ``MeanFrameMovement`` carries no unit in the file. Warp convention is
 Ångström (not pixels) — surfaced as unverified where displayed. See
@@ -26,7 +27,7 @@ from __future__ import annotations
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +35,8 @@ WARP_FRAMESERIES_DIR = "warp_frameseries"
 
 
 class FrameQuality(NamedTuple):
-    ctf_resolution: Optional[float]  # Å, lower is better
-    mean_frame_movement: Optional[float]  # WarpTools units (≈ Å)
+    ctf_resolution: float | None  # Å, lower is better
+    mean_frame_movement: float | None  # WarpTools units (≈ Å)
 
 
 # str(path) -> (mtime, FrameQuality). The XMLs are immutable once the job
@@ -50,7 +51,7 @@ def stem_for_movie(movie_name: object) -> str:
     return Path(str(movie_name)).stem
 
 
-def read_frame_quality(warp_dir: Path, frame_stem: str) -> Optional[FrameQuality]:
+def read_frame_quality(warp_dir: Path, frame_stem: str) -> FrameQuality | None:
     """Return the ``FrameQuality`` for one tilt movie, or ``None`` if the XML is
     missing / unparseable. ``warp_dir`` is the ``warp_frameseries`` folder of the
     FS-motion job; ``frame_stem`` is ``stem_for_movie(rlnMicrographMovieName)``."""
@@ -89,7 +90,7 @@ def quality_series(warp_dir: Path, movie_names: list) -> tuple[list, list]:
     return res, motion
 
 
-def _positive_float(v: object) -> Optional[float]:
+def _positive_float(v: object) -> float | None:
     """Coerce to float; treat non-positive as absent. WarpTools uses -1 / 0
     sentinels for "not computed", and a resolution/motion of 0 is never a real
     measurement — so we surface those as None rather than plotting a spurious

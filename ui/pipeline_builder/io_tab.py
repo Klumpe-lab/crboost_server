@@ -1,5 +1,5 @@
 # ui/pipeline_builder/io_tab.py
-from typing import Callable
+from collections.abc import Callable
 
 from services.project_state import JobType
 from ui.ui_state import UIStateManager

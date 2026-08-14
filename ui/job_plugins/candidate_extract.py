@@ -17,7 +17,7 @@ from nicegui import ui
 from services.jobs._base import ExtractionCutoffMethod
 from services.models_base import JobType
 from services.project_state import get_project_state_for
-from services.templating.template_metadata import resolve_species_from_job
+from services.models_base import resolve_species
 from ui.components.template_summary_card import render_template_summary_card
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import (
@@ -42,7 +42,7 @@ def render_candidate_extract_params(job_type, job_model, is_frozen, save_handler
     species = None
     if ui_mgr and ui_mgr.project_path:
         state = get_project_state_for(ui_mgr.project_path)
-        species, _ = resolve_species_from_job(state, job_model, instance_id)
+        species, _ = resolve_species(state, job_model, instance_id)
 
     if species is not None:
         render_template_summary_card(species)

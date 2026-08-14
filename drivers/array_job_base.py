@@ -27,27 +27,32 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
+from drivers.driver_base import DriverContext, run_tool
 from services.computing.slurm_service import SlurmConfig
 from services.configs.starfile_service import StarfileService
+from services.jobs.spec import driver_invocation
 
 
 # ----------------------------------------------------------------------
 # Manifest helpers
 # ----------------------------------------------------------------------
 
-MANIFEST_FILENAME = ".task_manifest.json"
-STATUS_DIR_NAME = ".task_status"
+# services/array_tasks.py owns the on-disk protocol names shared with the
+# UI-side readers. The `as X` re-export is load-bearing: 8 drivers import
+# these FROM this module.
+from services.array_tasks import MANIFEST_FILENAME as MANIFEST_FILENAME, STATUS_DIR_NAME as STATUS_DIR_NAME
 
 
 def write_manifest(
-    job_dir: Path, ts_names: List[str], *, ts_metadata: Optional[Dict[str, dict]] = None, extra: Optional[dict] = None
+    job_dir: Path, ts_names: list[str], *, ts_metadata: dict[str, dict] | None = None, extra: dict | None = None
 ) -> Path:
     """
     Write the task manifest that maps array indices → tilt-series names.
@@ -85,10 +90,60 @@ def update_manifest(job_dir: Path, updates: dict) -> None:
 # ----------------------------------------------------------------------
 
 
+def is_superseded_task(job_dir: Path) -> bool:
+    """True if this array task belongs to an OLDER submission than the manifest's.
+
+    A supervisor can be re-run while tasks from its previous submission are still
+    on the cluster (the old array is not scancel'd). Those orphans keep running
+    against the same job dir and, on finishing, write status for an item the new
+    run has already settled — which is how a tilt-series ends up carrying both
+    `.ok` and `.fail`, leaving the roster's red failed-count lit on a job that
+    actually succeeded.
+
+    SLURM job ids increase monotonically, so `task id < manifest id` identifies an
+    orphan unambiguously. The reverse (`task id > manifest id`) is the benign race
+    where `submit_array_job` has not yet written `array_job_id` back into the
+    manifest — that task IS current, so only a strictly-older id is rejected.
+    Anything unreadable or non-numeric (no SLURM env, hand-run driver, pre-existing
+    manifest without the key) fails open: status is written as before.
+    """
+    task_id = os.environ.get("SLURM_ARRAY_JOB_ID", "").strip()
+    if not task_id:
+        return False
+    try:
+        manifest_id = str(read_manifest(job_dir).get("array_job_id", "")).strip()
+        return int(task_id) < int(manifest_id)
+    except (OSError, ValueError, TypeError):  # JSONDecodeError is a ValueError
+        return False
+
+
 def write_status_atomic(status_dir: Path, item_name: str, ok: bool) -> None:
-    """Atomically write a per-item status file (.ok or .fail)."""
+    """Atomically write a per-item status file (.ok or .fail).
+
+    An item must end up carrying exactly ONE terminal marker, because the roster
+    tallies `.ok` and `.fail` independently: a stale `.fail` left behind by an
+    earlier attempt keeps the red failed-task badge lit forever after a
+    successful retry. So success clears any prior `.fail`/`.skip`.
+
+    Failure deliberately does NOT clear an existing `.ok`. Normal dispatch never
+    re-runs an item that already has `.ok` (see `get_previously_done`), so an
+    `.ok` present at failure time means the writer is an orphan from a superseded
+    submission and the recorded success is the trustworthy record.
+    """
+    if is_superseded_task(status_dir.parent):
+        print(
+            f"[TASK] Superseded submission (SLURM_ARRAY_JOB_ID={os.environ.get('SLURM_ARRAY_JOB_ID')}) — "
+            f"NOT writing {'ok' if ok else 'fail'} status for '{item_name}'",
+            flush=True,
+        )
+        return
+
     status_dir.mkdir(parents=True, exist_ok=True)
     suffix = "ok" if ok else "fail"
+    for stale_suffix in ("fail", "skip") if ok else ():
+        stale = status_dir / f"{item_name}.{stale_suffix}"
+        if stale.exists():
+            stale.unlink()
     target = status_dir / f"{item_name}.{suffix}"
     tmp = status_dir / f".{item_name}.{suffix}.tmp"
     tmp.write_text("")
@@ -155,10 +210,10 @@ def clean_status_dir(job_dir: Path, keep_ok: bool = False) -> Path:
 class ArrayResults:
     """Outcome of a completed SLURM array job."""
 
-    ok: List[str]
-    failed: List[str]
-    missing: List[str]
-    skipped: List[str]
+    ok: list[str]
+    failed: list[str]
+    missing: list[str]
+    skipped: list[str]
     all_succeeded: bool
 
     @property
@@ -171,7 +226,7 @@ class ArrayResults:
         return ", ".join(parts)
 
 
-def read_tilt_series_names_from_input_star(input_star: Path) -> List[str]:
+def read_tilt_series_names_from_input_star(input_star: Path) -> list[str]:
     """Sorted TS names from the input STAR's `global` block.
 
     This is the authoritative TS list for any per-TS job downstream of
@@ -188,7 +243,7 @@ def read_tilt_series_names_from_input_star(input_star: Path) -> List[str]:
     return sorted(df["rlnTomoName"].astype(str).tolist())
 
 
-def collect_task_results(job_dir: Path, ts_names: List[str]) -> ArrayResults:
+def collect_task_results(job_dir: Path, ts_names: list[str]) -> ArrayResults:
     """Read .task_status/ directory to tally per-TS outcomes.
 
     `.skip` files (intentional non-runs) are NOT failures and NOT missing —
@@ -201,9 +256,7 @@ def collect_task_results(job_dir: Path, ts_names: List[str]) -> ArrayResults:
     accounted = set(ok_files) | set(fail_files) | set(skip_files)
     missing = sorted(set(ts_names) - accounted)
     all_ok = (len(ok_files) + len(skip_files)) == len(ts_names) and not fail_files and not missing
-    return ArrayResults(
-        ok=ok_files, failed=fail_files, missing=missing, skipped=skip_files, all_succeeded=all_ok
-    )
+    return ArrayResults(ok=ok_files, failed=fail_files, missing=missing, skipped=skip_files, all_succeeded=all_ok)
 
 
 # ----------------------------------------------------------------------
@@ -227,7 +280,7 @@ def load_excluded_ts(project_path: Path) -> set:
         return set()
 
 
-def apply_exclusions(job_dir: Path, project_path: Path, ts_names: List[str]) -> List[str]:
+def apply_exclusions(job_dir: Path, project_path: Path, ts_names: list[str]) -> list[str]:
     """Pre-mark user-excluded tilt-series as `.skip` so the array never
     dispatches them and `collect_task_results` counts them as settled (not
     failures or missing).
@@ -266,7 +319,7 @@ def apply_exclusions(job_dir: Path, project_path: Path, ts_names: List[str]) -> 
 # ----------------------------------------------------------------------
 
 
-def preflight_registry(project_path: Path, expected_ts_names: List[str], job_name: str):
+def preflight_registry(project_path: Path, expected_ts_names: list[str], job_name: str):
     """Verify the TiltSeries registry covers every TS the supervisor is about
     to dispatch. Run this BEFORE `submit_array_job` so a mis-built registry
     surfaces in seconds rather than after the subjobs wasted cluster time
@@ -281,11 +334,7 @@ def preflight_registry(project_path: Path, expected_ts_names: List[str], job_nam
     registry = get_registry_for(project_path)
     reg_ids = registry.tilt_series_ids()
 
-    print(
-        f"[{job_name}] PREFLIGHT: registry has {len(reg_ids)} TS, "
-        f"{registry.frame_count()} frames total",
-        flush=True,
-    )
+    print(f"[{job_name}] PREFLIGHT: registry has {len(reg_ids)} TS, {registry.frame_count()} frames total", flush=True)
     if reg_ids:
         print(f"[{job_name}] PREFLIGHT: registry TS head: {reg_ids[:3]}", flush=True)
 
@@ -358,8 +407,8 @@ def copy_tomostar_with_absolute_paths(src: Path, dst: Path, original_dir: Path) 
 
 
 def stage_per_ts_environment(
-    job_dir: Path, ts_name: str, input_processing: Path, settings_file: Path
-) -> Tuple[Path, Path]:
+    job_dir: Path, ts_name: str, input_processing: Path | None, settings_file: Path
+) -> tuple[Path, Path]:
     """
     Build a per-TS staging directory so WarpTools only sees ONE tilt-series.
 
@@ -376,6 +425,9 @@ def stage_per_ts_environment(
     The settings file uses relative paths (DataFolder="tomostar",
     ProcessingFolder="warp_tiltseries"), so placing the copy inside the staging
     root makes them resolve to the per-TS dirs we created.
+
+    input_processing=None (ts_alignment): the job PRODUCES the warp XMLs, so the
+    warp_tiltseries dir is created empty instead of receiving an XML symlink.
 
     Returns (staged_settings_file, staged_input_processing).
     """
@@ -401,6 +453,9 @@ def stage_per_ts_environment(
     # 3. Stage the warp_tiltseries dir (input_processing) — one XML only.
     staged_processing = stage_root / "warp_tiltseries"
     staged_processing.mkdir(parents=True, exist_ok=True)
+
+    if input_processing is None:
+        return staged_settings, staged_processing
 
     src_xml = input_processing / f"{ts_name}.xml"
     if not src_xml.exists():
@@ -442,15 +497,8 @@ def build_array_sbatch_script(
 
     constraint = per_task_cfg.constraint.strip("'\"")
 
-    python_exe = server_dir / "venv" / "bin" / "python3"
-    if not python_exe.exists():
-        python_exe = Path("python3")
-
-    driver_cmd = (
-        f"export PYTHONPATH={server_dir}:${{PYTHONPATH}}; "
-        f"{python_exe} {driver_script} "
-        f"--instance_id {instance_id} "
-        f"--project_path {project_path}"
+    driver_cmd = driver_invocation(
+        server_dir=server_dir, driver_script=driver_script, instance_id=instance_id, project_path=project_path
     )
 
     array_outfile = job_dir / "task_%a.out"
@@ -536,14 +584,14 @@ def submit_array_job(
     job_dir: Path,
     project_path: Path,
     instance_id: str,
-    ts_names: List[str],
+    ts_names: list[str],
     per_task_cfg: SlurmConfig,
     array_throttle: int,
     driver_script: Path,
     *,
-    ts_metadata: Optional[Dict[str, dict]] = None,
-    manifest_extra: Optional[dict] = None,
-) -> Optional[str]:
+    ts_metadata: dict[str, dict] | None = None,
+    manifest_extra: dict | None = None,
+) -> str | None:
     """
     Complete supervisor dispatch: write manifest, clean status dir, build + submit array.
 
@@ -572,13 +620,17 @@ def submit_array_job(
         print("[SUPERVISOR] All tilt-series already settled — nothing to submit", flush=True)
         return None
 
-    # 2. Write manifest with ALL items (keeps index→name mapping stable)
+    # 2. Cancel any still-live array from a previous submission into this same job
+    # dir before writing a new manifest over it.
+    cancel_previous_array(job_dir)
+
+    # 3. Write manifest with ALL items (keeps index→name mapping stable)
     write_manifest(job_dir, ts_names, ts_metadata=ts_metadata, extra=manifest_extra)
 
-    # 3. Clean .fail files from previous run; keep .ok files intact
+    # 4. Clean .fail files from previous run; keep .ok files intact
     clean_status_dir(job_dir, keep_ok=True)
 
-    # 4. Compute array spec: only the indices that need (re)processing
+    # 5. Compute array spec: only the indices that need (re)processing
     n_to_run = len(indices_to_run)
     throttle = max(1, min(array_throttle, n_to_run))
     if n_to_run == len(ts_names):
@@ -594,7 +646,7 @@ def submit_array_job(
         flush=True,
     )
 
-    # 4. Build and submit the array sbatch
+    # 6. Build and submit the array sbatch
     run_array_path = build_array_sbatch_script(
         template_path=server_dir / "config" / "qsub.sh",
         job_dir=job_dir,
@@ -609,10 +661,43 @@ def submit_array_job(
     array_job_id = submit_array_sbatch(run_array_path, cwd=job_dir)
     print(f"[SUPERVISOR] Array job id: {array_job_id}", flush=True)
 
-    # 5. Store the array job ID in the manifest for UI cross-reference
+    # 7. Store the array job ID in the manifest for UI cross-reference
     update_manifest(job_dir, {"array_job_id": array_job_id})
 
     return array_job_id
+
+
+def cancel_previous_array(job_dir: Path) -> str | None:
+    """scancel the array job recorded in this job dir's manifest, if still live.
+
+    Re-running a supervisor does NOT stop the previous submission's tasks — they
+    keep running against the same job dir, writing outputs into shared staging and
+    status markers for items the new run is re-processing. That is how a
+    tilt-series ends up with both `.ok` and `.fail`, and it also means two tasks
+    can be computing the same TS on two GPUs at once.
+
+    Returns the cancelled job id, or None if there was nothing to cancel.
+    """
+    try:
+        prev_id = str(read_manifest(job_dir).get("array_job_id", "")).strip()
+    except (OSError, ValueError, TypeError):
+        return None
+    if not prev_id:
+        return None
+
+    # Only cancel what is actually still queued/running — scancel on a finished
+    # job is harmless but noisy, and squeue tells us whether it is worth saying.
+    probe = subprocess.run(["squeue", "-j", prev_id, "--noheader", "-h"], capture_output=True, text=True)
+    if probe.returncode != 0 or not probe.stdout.strip():
+        return None
+
+    n_live = sum(1 for line in probe.stdout.splitlines() if line.strip())
+    print(f"[SUPERVISOR] Cancelling {n_live} live task(s) from superseded array job {prev_id}", flush=True)
+    result = subprocess.run(["scancel", prev_id], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[SUPERVISOR] WARN: scancel {prev_id} failed: {result.stderr.strip()}", flush=True)
+        return None
+    return prev_id
 
 
 def install_cancel_handler(array_job_id: str, job_dir: Path) -> None:
@@ -628,3 +713,273 @@ def install_cancel_handler(array_job_id: str, job_dir: Path) -> None:
 
     signal.signal(signal.SIGTERM, _cancel)
     signal.signal(signal.SIGINT, _cancel)
+
+
+# ----------------------------------------------------------------------
+# ArrayDriver template
+# ----------------------------------------------------------------------
+
+
+class ArrayDriver(ABC):
+    """Template for the supervisor + per-item SLURM-array drivers.
+
+    The eight per-TS drivers each re-implemented the same skeleton: dispatch on
+    SLURM_ARRAY_TASK_ID, two near-identical bootstrap try/excepts, the manifest
+    index lookup, exclusion pre-marking, the results tally, the RELION_JOB_EXIT_*
+    markers, and the fail-status handler. All of that lives here now; a subclass
+    supplies only what is genuinely per-job.
+
+    Required hooks: `enumerate_items`, `build_command`, `aggregate`.
+    Optional hooks exist for the divergences the stage-0 census recorded as
+    deliberate — a supervisor-side compute step before dispatch (ts_ctf's global
+    ts_defocus_hand), in-task idempotency, per-TS staging, output verification,
+    and copy-back. Each defaults to a no-op, so a driver that does not need one
+    does not mention it.
+
+    Class attributes a subclass must set: `params_class`, `job_name`,
+    `driver_script`. `retry_attempts` > 1 routes the tool through
+    run_command_with_retries.
+    """
+
+    params_class: type
+    job_name: str
+    driver_script: Path
+    retry_attempts: int = 1
+    poll_secs: int = 30
+
+    # Log prefix for the mode currently running; hooks print through self.log()
+    # so a line reads the same whichever mode emitted it.
+    _prefix: str = "[DRIVER]"
+
+    def log(self, message: str) -> None:
+        print(f"{self._prefix} {message}", flush=True)
+
+    # ---------------- shared hooks ----------------
+
+    def post_bootstrap(self, ctx: DriverContext) -> None:
+        """Runs in BOTH modes right after context load, before any other work
+        (e.g. denoise_predict inheriting the effective method from its train job)."""
+        return None
+
+    # ---------------- supervisor hooks ----------------
+
+    def whole_job_short_circuit(self, ctx: DriverContext) -> bool:
+        """Return True to end the job SUCCESSFULLY without enumerating or
+        dispatching (subtomo_extraction's merge_only and zero-picks paths).
+        The hook does its own work; the base writes the success marker."""
+        return False
+
+    @abstractmethod
+    def enumerate_items(self, ctx: DriverContext) -> list[str]:
+        """The authoritative item list for this run (validate inputs here too)."""
+
+    def preflight_scope(self, ctx: DriverContext, items: list[str]) -> list[str]:
+        """Items preflight_registry must cover. Default: all items.
+        subtomo_extraction narrows to the TS it will actually dispatch."""
+        return items
+
+    def item_metadata(self, ctx: DriverContext, items: list[str]) -> dict[str, dict] | None:
+        """Per-item metadata to persist in the manifest (`ts_metadata`)."""
+        return None
+
+    def manifest_extras(self, ctx: DriverContext, items: list[str]) -> dict | None:
+        """Job-wide extra keys to persist in the manifest (`manifest_extra`)."""
+        return None
+
+    def pre_dispatch(self, ctx: DriverContext, items: list[str]) -> None:
+        """Supervisor-side work between preflight and array submission."""
+        return None
+
+    def per_task_slurm_config(self, ctx: DriverContext) -> SlurmConfig:
+        """Per-task SLURM resources. Override to adjust (e.g. a memory bump
+        conditional on a parameter); default is the job's effective config."""
+        return ctx.params.get_effective_slurm_config()
+
+    def tally_acceptable(self, ctx: DriverContext, results: ArrayResults) -> bool:
+        """False → job FAILED before aggregation. Default: strict (every item
+        must be `.ok`/`.skip`). ts_alignment overrides with its documented
+        tolerant policy (per-TS alignment failure is normal; only a total
+        wipeout is fatal) — census #41."""
+        return results.all_succeeded
+
+    @abstractmethod
+    def aggregate(self, ctx: DriverContext, results: ArrayResults) -> None:
+        """Post-array metadata aggregation. Runs only when the tally is acceptable."""
+
+    # ---------------- task hooks ----------------
+
+    def task_already_done(self, ctx: DriverContext, item: str) -> bool:
+        """True to record `.ok` and exit without running the tool (in-task idempotency)."""
+        return False
+
+    def stage(self, ctx: DriverContext, item: str):
+        """Build this item's isolated environment. Return value is passed to the later hooks."""
+        return None
+
+    @abstractmethod
+    def build_command(self, ctx: DriverContext, item: str, staged):
+        """The ToolCommand (or composed shell string) to run for this item."""
+
+    def task_cwd(self, ctx: DriverContext, item: str, staged) -> Path:
+        """Working directory for the tool. Defaults to the job dir."""
+        return ctx.job_dir
+
+    def task_binds(self, ctx: DriverContext, item: str, staged) -> list:
+        """Extra container bind paths for this item's tool run, appended to
+        ctx.additional_binds. The container wrapper resolves/dedups/sorts."""
+        return []
+
+    def execute(self, ctx: DriverContext, item: str, staged) -> None:
+        """Run this item's tool work: build_command → run_tool. Override when an
+        item needs multiple tool invocations (denoise_predict's IsoNet path);
+        the default covers the single-command case every other driver has."""
+        cmd = self.build_command(ctx, item, staged)
+        self.log(f"Command: {cmd}")
+        run_tool(
+            cmd,
+            tool_name=ctx.params.get_tool_name(),
+            cwd=self.task_cwd(ctx, item, staged),
+            binds=[*ctx.additional_binds, *self.task_binds(ctx, item, staged)],
+            attempts=self.retry_attempts,
+            label=f"{self.job_name} {item}",
+        )
+
+    def verify_outputs(self, ctx: DriverContext, item: str, staged) -> None:
+        """Raise if the tool exited 0 without producing what it promised."""
+        return None
+
+    def collect(self, ctx: DriverContext, item: str, staged) -> None:
+        """Move this item's outputs from its staging dir into the shared job dir."""
+        return None
+
+    # ---------------- driver skeleton ----------------
+
+    def main(self) -> None:
+        print("Python", sys.version, flush=True)
+        array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
+        if array_idx_env is None:
+            self._prefix = "[SUPERVISOR]"
+            print(f"--- {self.job_name}: SUPERVISOR mode ---", flush=True)
+            self.run_supervisor()
+        else:
+            self._prefix = f"[TASK {array_idx_env}]"
+            print(f"--- {self.job_name}: TASK mode (array idx {array_idx_env}) ---", flush=True)
+            self.run_task(int(array_idx_env))
+
+    def run_supervisor(self) -> None:
+        try:
+            ctx = DriverContext.load(self.params_class)
+        except Exception as e:
+            # No context yet, so the failure marker goes to the cwd qsub.sh cd'd into.
+            (Path.cwd() / "RELION_JOB_EXIT_FAILURE").touch()
+            print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            sys.exit(1)
+
+        print(f"[SUPERVISOR] CWD (job dir): {ctx.job_dir}", flush=True)
+
+        try:
+            self.post_bootstrap(ctx)
+            if self.whole_job_short_circuit(ctx):
+                (ctx.job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
+                print("[SUPERVISOR] Job finished successfully.", flush=True)
+                sys.exit(0)
+            items = self.enumerate_items(ctx)
+            if not items:
+                raise ValueError(f"{self.job_name}: no tilt-series to process")
+            print(f"[SUPERVISOR] Found {len(items)} tilt-series", flush=True)
+
+            preflight_registry(ctx.project_path, self.preflight_scope(ctx, items), job_name=self.job_name)
+            self.pre_dispatch(ctx, items)
+
+            # Honor user "exclude from processing": pre-skip excluded items so they are
+            # never dispatched and count as settled (not failures) in aggregation.
+            apply_exclusions(ctx.job_dir, ctx.project_path, items)
+
+            array_job_id = submit_array_job(
+                job_dir=ctx.job_dir,
+                project_path=ctx.project_path,
+                instance_id=ctx.instance_id,
+                ts_names=items,
+                per_task_cfg=self.per_task_slurm_config(ctx),
+                array_throttle=ctx.params.array_throttle,
+                driver_script=self.driver_script,
+                ts_metadata=self.item_metadata(ctx, items),
+                manifest_extra=self.manifest_extras(ctx, items),
+            )
+
+            if array_job_id is not None:
+                install_cancel_handler(array_job_id, ctx.job_dir)
+                wait_for_array_completion(array_job_id, poll_secs=self.poll_secs)
+            else:
+                print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
+
+            results = collect_task_results(ctx.job_dir, items)
+            print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
+            if results.failed:
+                print(f"[SUPERVISOR] FAILED tilt-series: {results.failed}", flush=True)
+            if results.missing:
+                print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
+
+            if not self.tally_acceptable(ctx, results):
+                (ctx.job_dir / "RELION_JOB_EXIT_FAILURE").touch()
+                print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
+                sys.exit(1)
+
+            print("[SUPERVISOR] All tasks succeeded; aggregating metadata...", flush=True)
+            self.aggregate(ctx, results)
+
+            (ctx.job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
+            print("[SUPERVISOR] Job finished successfully.", flush=True)
+            sys.exit(0)
+
+        # sys.exit above raises SystemExit (a BaseException), so it passes through here.
+        except Exception as e:
+            print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            (ctx.job_dir / "RELION_JOB_EXIT_FAILURE").touch()
+            sys.exit(1)
+
+    def run_task(self, array_idx: int) -> None:
+        try:
+            ctx = DriverContext.load(self.params_class)
+        except Exception as e:
+            print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            sys.exit(1)
+
+        status_dir = ctx.job_dir / STATUS_DIR_NAME
+        item = None
+        try:
+            self.post_bootstrap(ctx)
+            manifest = read_manifest(ctx.job_dir)
+            items = manifest["ts_names"]
+            if array_idx >= len(items):
+                raise IndexError(f"SLURM_ARRAY_TASK_ID {array_idx} out of range (manifest has {len(items)})")
+            item = items[array_idx]
+            print(f"[TASK {array_idx}] ts_name={item}", flush=True)
+
+            if self.task_already_done(ctx, item):
+                write_status_atomic(status_dir, item, ok=True)
+                sys.exit(0)
+
+            staged = self.stage(ctx, item)
+            self.execute(ctx, item, staged)
+            self.verify_outputs(ctx, item, staged)
+            self.collect(ctx, item, staged)
+
+            write_status_atomic(status_dir, item, ok=True)
+            print(f"[TASK {array_idx}] {item} done", flush=True)
+            sys.exit(0)
+
+        except Exception as e:
+            label = item or f"_unknown_idx{array_idx}"
+            print(f"[TASK {array_idx}] FATAL ERROR for ts={label}: {e}", file=sys.stderr, flush=True)
+            traceback.print_exc(file=sys.stderr)
+            try:
+                write_status_atomic(status_dir, label, ok=False)
+            except Exception as inner:
+                # Deliberately broad and last-ditch: we are already on the failure path,
+                # and masking the real error with a status-write error helps nobody.
+                print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
+            sys.exit(1)

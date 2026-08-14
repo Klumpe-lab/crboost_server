@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from nicegui import ui
 
@@ -32,7 +31,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class _CachedVolume:
     data: object  # numpy array (typed loosely so this module imports without numpy)
-    apix_ang: Optional[float]
+    apix_ang: float | None
     nx: int
     ny: int
     nz: int
@@ -41,7 +40,7 @@ class _CachedVolume:
 _VOLUME_CACHE: dict[tuple[str, int], _CachedVolume] = {}
 
 
-def _load_volume(path: str) -> Optional[_CachedVolume]:
+def _load_volume(path: str) -> _CachedVolume | None:
     if not path:
         return None
     try:
@@ -83,7 +82,7 @@ class TemplateViewerController:
 
 def render_template_viewer(
     template_path: str = "",
-    mask_path: Optional[str] = None,
+    mask_path: str | None = None,
     *,
     height_px: int = 280,
     show_mask_default: bool = True,
@@ -113,25 +112,25 @@ def render_template_viewer(
             state["y"] = state["vol"].ny // 2
             state["x"] = state["vol"].nx // 2
 
-    def _slice_xy() -> Optional[object]:
+    def _slice_xy() -> object | None:
         v = state["vol"]
         if v is None:
             return None
         return v.data[state["z"], :, :]
 
-    def _slice_xz() -> Optional[object]:
+    def _slice_xz() -> object | None:
         v = state["vol"]
         if v is None:
             return None
         return v.data[:, state["y"], :]
 
-    def _slice_yz() -> Optional[object]:
+    def _slice_yz() -> object | None:
         v = state["vol"]
         if v is None:
             return None
         return v.data[:, :, state["x"]]
 
-    def _mask_xy() -> Optional[object]:
+    def _mask_xy() -> object | None:
         if not state["show_mask"]:
             return None
         m = state["mask"]
@@ -141,7 +140,7 @@ def render_template_viewer(
             return None
         return m.data[state["z"], :, :]
 
-    def _mask_xz() -> Optional[object]:
+    def _mask_xz() -> object | None:
         if not state["show_mask"]:
             return None
         m = state["mask"]
@@ -151,7 +150,7 @@ def render_template_viewer(
             return None
         return m.data[:, state["y"], :]
 
-    def _mask_yz() -> Optional[object]:
+    def _mask_yz() -> object | None:
         if not state["show_mask"]:
             return None
         m = state["mask"]
@@ -258,7 +257,7 @@ def render_template_viewer(
         _build_body()
 
     # ---- Controller ---------------------------------------------------------
-    def _update_paths(template_path: str, mask_path: Optional[str] = None) -> None:
+    def _update_paths(template_path: str, mask_path: str | None = None) -> None:
         state["template_path"] = template_path or ""
         state["mask_path"] = mask_path or None
         _refresh_full()

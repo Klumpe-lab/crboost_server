@@ -124,7 +124,7 @@ Turns ONE pick list for ONE `(species, tomo)` into a subtomo-extracted optimisat
    - Read the species candidate `candidates.star` schema via the candidate optimisation set (`_parse_optimisation_set` resolves `rlnTomoParticlesFile` / `rlnTomoTomogramsFile`).
    - Synthesise **one particle row per list coordinate** filtered by `rlnTomoName`: **zero all template columns (orientations included)**, set `rlnTomoName`, copy the three `rlnCenteredCoordinate{X,Y,Z}Angst` (`CENTERED_COLS`), carry `rlnOpticsGroup` from the matching/first candidate row, set `rlnTomoParticleName = "<tomo>/<i+1>"`, preserve `data_optics` verbatim.
    - Write `particles.star` + a key-value `optimisation_set.star` (`# version 50001`, `_rlnTomoParticlesFile` + `_rlnTomoTomogramsFile` → the **shared** candidate `tomograms.star`). Raises if the list has no picks for the tomo or lacks coord columns.
-3. **Run** (`drivers/extract_pick_list.py`): `relion_tomo_subtomo` into `<slug>/out/`, mirroring `drivers/subtomo_extraction.py` (box/bin/crop/max_dose/min_frames/stack2d/float16), container-wrapped via `get_container_service().wrap_command_for_tool('relion')`. Box/bin/crop come from `sp['subtomo_jm']` (`SubtomoExtractionParams`) via `getattr` defaults `box=384/bin=1.0/crop=224`.
+3. **Run** (`drivers/extract_pick_list.py`): `relion_tomo_subtomo` into `<slug>/out/`, mirroring `drivers/subtomo_extraction.py` (box/bin/crop/max_dose/min_frames/stack2d/float16), container-wrapped via `get_container_service().wrap_command_for_tool('relion')`. Box/bin/crop come from `aggregation_authoritative.extraction_params_for_species` — the species' `SubtomoExtractionParams` job model, else `species.extraction_params`, else the extract dialog **asks** (denovo S3 / D-3). The old `box=384/bin=1.0/crop=224` `getattr` defaults are gone.
 4. **Finalize:** `write_extracted_optset(out_run_dir, tomograms_star)` writes the FINAL `optimisation_set.star` → `out/particles.star` + shared `tomograms.star`; `result.json = {ok, optimisation_set, particles, count}`.
 5. **Record:** `PickList.mark_extracted(optset, n)` sets `extracted_path / extracted_count / extracted_at = now()`; caller persists by explicit `project_path` (the watcher is a `BackgroundTask` with no client context → `state_for(project_path)` + `save_project(project_path=, force=True)`).
 
@@ -173,7 +173,7 @@ Curation/<species_slug>/<tomo_slug>/<slug>/
 
 ### Cross-project merge engine
 
-`drivers/subtomo_merge.merge_optimisation_sets_into_jobdir(*, job_dir, additional_sources, strict=True, allow_no_primary=False)`:
+`services/subtomo_merge.merge_optimisation_sets_into_jobdir(*, job_dir, additional_sources, strict=True, allow_no_primary=False)` (moved out of `drivers/` in roadmap 04 stage 5):
 
 - Parses each source optset → `(particles.star, tomograms.star)` (`_parse_optimisation_set`), applies per-tomo curated/original override + tomo include-filter (`_normalize_source` accepts `{path, tomos, original_path, original_tomos}`).
 - Concatenates optics/particles, **dedups tomograms by `rlnTomoName`** — **HARD-RAISES `"Tomogram name conflict"`** when the same `rlnTomoName` maps to different `rlnTomoReconstructedTomogram` paths.
@@ -212,7 +212,7 @@ The two terminal sinks of an optset: either the subtomo job's (filtered-if-exist
 10. **Cross-project key fragility.** `species_id` is a per-project `slugify()` of the display name; `tomo_name` is `rlnTomoName`. Across projects neither is guaranteed stable/aligned. "The authoritative list per `(species, tomo)` across projects" has **no project-spanning identity**.
 11. **Cross-project compatibility hazards** (inherited from the merge engine):
     - `rlnTomoName` collision: two projects routinely reuse `Position_1` with different recons → `merge_optimisation_sets_into_jobdir` **hard-aborts**. No namespacing. Same-name-but-identical-path tomos would be **wrongly fused**. `rlnImageName` (absolute) is also unscoped — assumes a shared Lustre mount.
-    - Box/bin/apix: only `CRITICAL_OPTICS_COLS` block; `rlnImageSize` (box) / `rlnImagePixelSize` (subtomo apix) / `rlnTomoSubtomogramBinning` only **warn**. Per-list extraction defaults box/bin/crop to `384/1/224` if `subtomo_jm` is `None` → cross-project mixing can fuse incompatibly-extracted particles, and Class3D's `--trust_ref_size` masks it.
+    - Box/bin/apix: only `CRITICAL_OPTICS_COLS` block; `rlnImageSize` (box) / `rlnImagePixelSize` (subtomo apix) / `rlnTomoSubtomogramBinning` only **warn**. (The half of this gap where per-list extraction *invented* `384/1/224` when `subtomo_jm` was `None` is CLOSED — see line 127. The merge-side warn-instead-of-block remains open.)
 12. **Orientations zeroed; scoreless.** `build_list_optset` zeros all orientations (manual picks are positions-only). Cross-project quality gating has nothing to rank by; no provenance flag distinguishes oriented (auto/TM) from zeroed (manual) particles in a merged optset.
 
 ---
@@ -276,7 +276,7 @@ Read the optics block of each contribution's optset and **block, not warn**, on 
 
 - `CRITICAL_OPTICS_COLS` — already hard-blocked by `subtomo_merge`; keep.
 - **Promote to hard-block at the aggregation boundary:** `rlnImageSize` (box), `rlnImagePixelSize` (subtomo apix), `rlnTomoSubtomogramBinning`. A species-level roll-up that mixes boxes is physically inconsistent and `--trust_ref_size` would mask it. The gate must list incompatible contributions and refuse them (or offer per-list re-extraction at the canonical box/bin from `sp['subtomo_jm']`).
-- Guard the `subtomo_jm is None` → default `384/1/224` path (gap 11): require an explicit box/bin/crop for the species roll-up; do not silently default.
+- ~~Guard the `subtomo_jm is None` → default `384/1/224` path (gap 11)~~ **DONE (denovo S3)**: `extraction_params_for_species` returns `None` rather than defaulting, the gate reports the list blocked with `extract_inputs_blocked_reason`, and the dashboard asks.
 
 *Reuses* the merge's `CRITICAL_OPTICS_COLS` machinery; *adds* a stricter pre-flight on the optional cols.
 

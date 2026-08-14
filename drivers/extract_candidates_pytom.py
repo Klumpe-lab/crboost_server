@@ -16,15 +16,25 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           its `{tomo}_{apix}Apx_job.json` in the staged tmResults dir, runs
           `pytom_extract_candidates.py -j <job.json>`, and atomically writes
           `.task_status/{tomo}.{ok|fail}`.
+
+Enumeration is from the TM output (one `*_job.json` per tomogram TM actually
+processed), not the input star — the coordinate list follows what TM produced.
+Interim per census #25: the star-minus-TM difference is reported LOUDLY so a
+TM-partial run can't silently narrow extraction. Staging is one shared
+job-local dir on purpose (census #26): pytom's job.json embeds output_dir and
+tasks write distinct name-keyed files, so there is nothing to isolate. Note
+the `target.exists(): continue` skip means a re-run never re-patches a changed
+upstream file.
+
+The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
+markers all live in ArrayDriver; this file is the extraction-specific hooks.
 """
 
 import json
 import os
 import shutil
 import sys
-import traceback
 from pathlib import Path
-from typing import List
 
 import pandas as pd
 import starfile
@@ -32,24 +42,10 @@ import starfile
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
-from drivers.array_job_base import (
-    apply_exclusions,
-    collect_task_results,
-    install_cancel_handler,
-    preflight_registry,
-    read_manifest,
-    submit_array_job,
-    wait_for_array_completion,
-    write_status_atomic,
-    STATUS_DIR_NAME,
-)
-from drivers.driver_base import get_driver_context, run_command
-from drivers.subtomo_merge import write_optimisation_set
-from services.computing.container_service import get_container_service
+from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
+from drivers.driver_base import DriverContext, ToolCommand
+from services.subtomo_merge import write_optimisation_set
 from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
-
-
-DRIVER_SCRIPT = Path(__file__).resolve()
 
 
 # ----------------------------------------------------------------------
@@ -62,7 +58,7 @@ def get_pixel_size_from_star(tomograms_star: Path) -> float:
     try:
         data = starfile.read(tomograms_star)
         if isinstance(data, dict):
-            df = list(data.values())[0]
+            df = next(iter(data.values()))
         else:
             df = data
         ts_pixs = float(df["rlnTomoTiltSeriesPixelSize"].iloc[0])
@@ -74,52 +70,54 @@ def get_pixel_size_from_star(tomograms_star: Path) -> float:
 
 
 def cleanup_tomo_names(candidates_star: Path, apix_fallback: float) -> int:
-    """Remove the pixel size suffix from rlnTomoName in the merged candidates STAR."""
-    try:
-        data = starfile.read(candidates_star, always_dict=True)
-        df = None
-        for val in data.values():
-            if isinstance(val, pd.DataFrame) and "rlnTomoName" in val.columns:
-                df = val
-                break
-        if df is None:
-            return 0
+    """Remove the pixel size suffix from rlnTomoName in the merged candidates STAR.
 
-        if "rlnTomoTiltSeriesPixelSize" in df.columns and "rlnTomoTomogramBinning" in df.columns:
-            apix = float(df["rlnTomoTiltSeriesPixelSize"].iloc[0]) * float(df["rlnTomoTomogramBinning"].iloc[0])
-        elif "rlnTomoTiltSeriesPixelSize" in df.columns:
-            apix = float(df["rlnTomoTiltSeriesPixelSize"].iloc[0])
-        else:
-            apix = apix_fallback
+    Raises on any failure (census #28, maintainer decision): a suffixed
+    rlnTomoName silently breaks every downstream join (subtomo/refine see zero
+    matches), which is exactly the wrong-but-plausible failure class the
+    never-fail-silently policy targets.
+    """
+    data = starfile.read(candidates_star, always_dict=True)
+    df = None
+    for val in data.values():
+        if isinstance(val, pd.DataFrame) and "rlnTomoName" in val.columns:
+            df = val
+            break
+    if df is None:
+        raise ValueError(f"No rlnTomoName data block found in {candidates_star}")
 
-        suffix = f"_{apix:.2f}Apx"
-        df["rlnTomoName"] = df["rlnTomoName"].str.replace(suffix, "", regex=False)
-        starfile.write(data, candidates_star, overwrite=True)
-        print(f"[SUPERVISOR] Cleaned rlnTomoName suffix '{suffix}' from {len(df)} particles")
-        return len(df)
-    except Exception as e:
-        print(f"[WARN] Could not clean tomo names: {e}")
-        return 0
+    if "rlnTomoTiltSeriesPixelSize" in df.columns and "rlnTomoTomogramBinning" in df.columns:
+        apix = float(df["rlnTomoTiltSeriesPixelSize"].iloc[0]) * float(df["rlnTomoTomogramBinning"].iloc[0])
+    elif "rlnTomoTiltSeriesPixelSize" in df.columns:
+        apix = float(df["rlnTomoTiltSeriesPixelSize"].iloc[0])
+    else:
+        apix = apix_fallback
+
+    suffix = f"_{apix:.2f}Apx"
+    df["rlnTomoName"] = df["rlnTomoName"].str.replace(suffix, "", regex=False)
+    starfile.write(data, candidates_star, overwrite=True)
+    print(f"[SUPERVISOR] Cleaned rlnTomoName suffix '{suffix}' from {len(df)} particles")
+    return len(df)
 
 
-def build_extract_base_cmd(params: CandidateExtractPytomParams, apix: float) -> List[str]:
-    base_cmd = [
-        "pytom_extract_candidates.py",
-        "-n", str(params.max_num_particles),
-        "--particle-diameter", str(int(params.particle_diameter_ang / 2.0 / apix) * apix),
-        "--relion5-compat",
-        "--log", "debug",
-    ]
+def build_extract_base_cmd(params: CandidateExtractPytomParams, apix: float) -> ToolCommand:
+    base_cmd = (
+        ToolCommand("pytom_extract_candidates.py")
+        .opt("-n", params.max_num_particles)
+        .opt("--particle-diameter", int(params.particle_diameter_ang / 2.0 / apix) * apix)
+        .flag("--relion5-compat")
+        .opt("--log", "debug")
+    )
     if params.cutoff_method == ExtractionCutoffMethod.FALSE_POSITIVES:
-        base_cmd.extend(["--number-of-false-positives", str(params.expected_false_positives)])
+        base_cmd.opt("--number-of-false-positives", params.expected_false_positives)
     elif params.cutoff_method == ExtractionCutoffMethod.MANUAL:
-        base_cmd.extend(["-c", str(params.cc_threshold)])
+        base_cmd.opt("-c", params.cc_threshold)
 
     if params.score_filter_method == "tophat":
-        base_cmd.append("--tophat-filter")
+        base_cmd.flag("--tophat-filter")
         if params.score_filter_value != "None" and ":" in params.score_filter_value:
             conn, bins = params.score_filter_value.split(":")
-            base_cmd.extend(["--tophat-connectivity", conn, "--tophat-bins", bins])
+            base_cmd.opt("--tophat-connectivity", conn).opt("--tophat-bins", bins)
     return base_cmd
 
 
@@ -132,7 +130,7 @@ def stage_upstream_tm_results(upstream: Path, local: Path) -> int:
         if target.exists():
             continue
         if f.suffix == ".json":
-            with open(f, "r") as src:
+            with open(f) as src:
                 data = json.load(src)
             data["output_dir"] = str(local)
             with open(target, "w") as dst:
@@ -153,71 +151,49 @@ def tomo_particles_star_path(local_tm_results: Path, tomo_name: str) -> Path:
     return local_tm_results / f"{tomo_name}_particles.star"
 
 
-# ----------------------------------------------------------------------
-# Mode dispatch
-# ----------------------------------------------------------------------
+def read_star_tomo_names(tomograms_star: Path) -> list[str]:
+    """rlnTomoName values from the input tomograms star (first DataFrame block)."""
+    data = starfile.read(tomograms_star, always_dict=True)
+    for val in data.values():
+        if isinstance(val, pd.DataFrame) and "rlnTomoName" in val.columns:
+            return sorted(val["rlnTomoName"].astype(str).tolist())
+    return []
 
 
-def main():
-    os.environ["TQDM_DISABLE"] = "1"
-    print("Python", sys.version, flush=True)
-    array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
-    if array_idx_env is None:
-        print("--- extract_candidates_pytom: SUPERVISOR mode ---", flush=True)
-        run_supervisor_mode()
-    else:
-        print(f"--- extract_candidates_pytom: TASK mode (array idx {array_idx_env}) ---", flush=True)
-        run_task_mode(int(array_idx_env))
+class ExtractCandidatesPytomDriver(ArrayDriver):
+    params_class = CandidateExtractPytomParams
+    job_name = "extract_candidates_pytom"
+    driver_script = Path(__file__).resolve()
+    poll_secs = 15
 
+    # ---------------- supervisor ----------------
 
-# ----------------------------------------------------------------------
-# Supervisor mode
-# ----------------------------------------------------------------------
-
-
-def run_supervisor_mode():
-    try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(
-            CandidateExtractPytomParams
-        )
-    except Exception as e:
-        (Path.cwd() / "RELION_JOB_EXIT_FAILURE").touch()
-        print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[SUPERVISOR] CWD (job dir): {job_dir}", flush=True)
-
-    try:
-        paths = {k: Path(v) for k, v in context["paths"].items()}
-        instance_id = context["instance_id"]
-
-        upstream_results = paths["input_tm_job"]
-        input_tomograms = paths.get("input_tomograms")
+    def enumerate_items(self, ctx: DriverContext[CandidateExtractPytomParams]) -> list[str]:
+        upstream_results = ctx.paths["input_tm_job"]
+        input_tomograms = ctx.paths.get("input_tomograms")
 
         if not upstream_results.exists():
             raise FileNotFoundError(f"Upstream tmResults not found at {upstream_results}")
         if not input_tomograms or not input_tomograms.exists():
             raise FileNotFoundError(f"Input tomograms.star not found at {input_tomograms}")
 
-        apix = None
-        if params.apix_score_map != "auto":
-            apix = float(params.apix_score_map)
+        if ctx.params.apix_score_map != "auto":
+            apix = float(ctx.params.apix_score_map)
         else:
             apix = get_pixel_size_from_star(input_tomograms)
         if apix is None:
             raise RuntimeError(
-                "Could not determine score map pixel size. "
-                "Set apix_score_map explicitly or check tomograms.star."
+                "Could not determine score map pixel size. Set apix_score_map explicitly or check tomograms.star."
             )
-        print(f"[SUPERVISOR] Score map pixel size: {apix:.2f} A/px", flush=True)
-        print(f"[SUPERVISOR] Particle diameter: {params.particle_diameter_ang} A", flush=True)
+        self._apix = apix
+        self.log(f"Score map pixel size: {apix:.2f} A/px")
+        self.log(f"Particle diameter: {ctx.params.particle_diameter_ang} A")
 
-        local_tm_results = job_dir / "tmResults"
+        local_tm_results = ctx.job_dir / "tmResults"
         linked = stage_upstream_tm_results(upstream_results, local_tm_results)
         if linked == 0 and not any(local_tm_results.iterdir()):
             raise RuntimeError("No files staged from upstream tmResults")
-        print(f"[SUPERVISOR] Staged {linked} files from upstream", flush=True)
+        self.log(f"Staged {linked} files from upstream")
 
         # Enumerate tomogram names from the staged *_job.json files — pytom
         # writes exactly one `{tomo_name}_job.json` per tomogram during TM.
@@ -226,81 +202,63 @@ def run_supervisor_mode():
             raise RuntimeError(f"No *_job.json files found under {local_tm_results}")
 
         suffix = "_job.json"
-        tomo_names: List[str] = sorted(j.name[: -len(suffix)] for j in job_jsons)
-        print(f"[SUPERVISOR] Found {len(tomo_names)} tomograms to extract", flush=True)
+        tomo_names: list[str] = sorted(j.name[: -len(suffix)] for j in job_jsons)
 
-        preflight_registry(project_path, tomo_names, job_name="extract_candidates_pytom")
+        # Census #25 (interim, maintainer decision): TM output is the
+        # enumeration source, but a tomogram present in the input star and
+        # absent from TM output must be reported LOUDLY, never dropped in
+        # silence.
+        star_only = sorted(set(read_star_tomo_names(input_tomograms)) - set(tomo_names))
+        if star_only:
+            self.log(
+                f"WARNING: {len(star_only)} tomogram(s) in the input star have NO template-matching "
+                f"output (*_job.json) and will NOT be extracted: {star_only}"
+            )
 
-        manifest_extra = {
-            "apix": apix,
-            "input_tomograms_star": str(input_tomograms),
-        }
+        return tomo_names
 
-        per_task_cfg = params.get_effective_slurm_config()
+    def manifest_extras(self, ctx: DriverContext[CandidateExtractPytomParams], items: list[str]) -> dict:
+        return {"apix": self._apix, "input_tomograms_star": str(ctx.paths["input_tomograms"])}
 
+    def per_task_slurm_config(self, ctx: DriverContext[CandidateExtractPytomParams]):
+        per_task_cfg = ctx.params.get_effective_slurm_config()
         # Tophat morphology inflates per-task memory/runtime substantially:
         # scipy.ndimage opening on a ~2 GB float32 score volume allocates
         # 6–10 GB of intermediate buffers on top of PyTOM's ~5 GB baseline
         # (scores + angles + Python + CUDA). The 8G default that's fine for
         # non-tophat extraction gets OOM-killed here. Bump only when the
         # filter is actually enabled so non-tophat runs stay efficient.
-        if params.score_filter_method == "tophat":
+        if ctx.params.score_filter_method == "tophat":
             bumped_mem = "24G"
             bumped_time = "0:30:00"
-            print(
-                f"[SUPERVISOR] tophat-filter enabled — bumping per-task SLURM "
+            self.log(
+                f"tophat-filter enabled — bumping per-task SLURM "
                 f"(mem {per_task_cfg.mem}→{bumped_mem}, time {per_task_cfg.time}→{bumped_time}) "
-                "to avoid OOM during morphological opening.",
-                flush=True,
+                "to avoid OOM during morphological opening."
             )
             per_task_cfg = per_task_cfg.model_copy(update={"mem": bumped_mem, "time": bumped_time})
+        return per_task_cfg
 
-        # Honor user "exclude from processing": pre-skip excluded TS so they are
-        # never dispatched and count as settled (not failures) in aggregation.
-        excluded_ts = apply_exclusions(job_dir, project_path, tomo_names)
-
-        array_job_id = submit_array_job(
-            job_dir=job_dir,
-            project_path=project_path,
-            instance_id=instance_id,
-            ts_names=tomo_names,
-            per_task_cfg=per_task_cfg,
-            array_throttle=params.array_throttle,
-            driver_script=DRIVER_SCRIPT,
-            manifest_extra=manifest_extra,
-        )
-
-        if array_job_id is not None:
-            install_cancel_handler(array_job_id, job_dir)
-            wait_for_array_completion(array_job_id, poll_secs=15)
-        else:
-            print("[SUPERVISOR] No array submitted (all tomograms previously succeeded)", flush=True)
-
-        results = collect_task_results(job_dir, tomo_names)
-        print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
-        if results.failed:
-            print(f"[SUPERVISOR] FAILED tomograms: {results.failed}", flush=True)
-        if results.missing:
-            print(f"[SUPERVISOR] MISSING tomograms: {results.missing}", flush=True)
-
-        if not results.all_succeeded:
-            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (some tomograms did not succeed)", flush=True)
-            sys.exit(1)
+    def aggregate(self, ctx: DriverContext[CandidateExtractPytomParams], results: ArrayResults) -> None:
+        job_dir = ctx.job_dir
+        local_tm_results = job_dir / "tmResults"
+        input_tomograms = ctx.paths["input_tomograms"]
 
         # ---- Aggregate per-tomogram particle lists ----
         candidates_star = job_dir / "candidates.star"
         star_files = sorted(local_tm_results.glob("*_particles.star"))
         # Drop any per-TS particle files for excluded tilt-series (a prior run
         # may have left them on disk; the muted TS must not re-enter the merge).
-        if excluded_ts:
-            excluded_set = set(excluded_ts)
+        if results.skipped:
+            excluded_set = set(results.skipped)
             star_files = [f for f in star_files if f.name[: -len("_particles.star")] not in excluded_set]
         if not star_files:
+            # Deliberately stricter than all_succeeded (census #27): an empty
+            # candidates.star is a poisoned contract for downstream extraction.
             raise RuntimeError("No *_particles.star files produced by tasks")
         if len(star_files) == 1:
             shutil.copy(star_files[0], candidates_star)
-            print(f"[SUPERVISOR] Single tomogram — copied {star_files[0].name}", flush=True)
+            self.log(f"Single tomogram — copied {star_files[0].name}")
         else:
             dfs = []
             for f in star_files:
@@ -311,33 +269,37 @@ def run_supervisor_mode():
                         break
             merged = pd.concat(dfs, ignore_index=True)
             starfile.write({"particles": merged}, candidates_star, overwrite=True)
-            print(f"[SUPERVISOR] Merged {len(merged)} particles from {len(star_files)} tomograms", flush=True)
+            self.log(f"Merged {len(merged)} particles from {len(star_files)} tomograms")
 
         if not candidates_star.exists():
             raise RuntimeError("candidates.star was not created")
 
-        n_particles = cleanup_tomo_names(candidates_star, apix)
-        print(f"[SUPERVISOR] Extracted {n_particles} particles total", flush=True)
+        n_particles = cleanup_tomo_names(candidates_star, self._apix)
+        self.log(f"Extracted {n_particles} particles total")
 
         output_tomograms = job_dir / "tomograms.star"
         shutil.copy2(input_tomograms, output_tomograms)
 
         try:
             from services.visualization.imod_vis import generate_candidate_vis
-            print("[SUPERVISOR] Generating IMOD visualization...", flush=True)
+
+            self.log("Generating IMOD visualization...")
             generate_candidate_vis(
                 candidates_star=candidates_star,
                 tomograms_star=output_tomograms,
-                particle_diameter_ang=float(params.particle_diameter_ang),
+                particle_diameter_ang=float(ctx.params.particle_diameter_ang),
                 output_dir=job_dir,
-                project_root=project_path,
+                project_root=ctx.project_path,
             )
         except Exception as vis_err:
+            # Visualization is a convenience artifact — its failure must not
+            # fail a job whose scientific outputs are complete.
             print(f"[SUPERVISOR WARN] Visualization generation failed (non-fatal): {vis_err}", flush=True)
 
         try:
             from services.visualization.preview_orchestrator import generate_candidate_previews
-            print("[SUPERVISOR] Rendering candidate preview PNGs...", flush=True)
+
+            self.log("Rendering candidate preview PNGs...")
             # Pass `project_state` so the orchestrator can walk this
             # project's SUBTOMO_EXTRACTION jobs and build a per-pick
             # cutout atlas. Without it the orchestrator silently sets
@@ -347,110 +309,55 @@ def run_supervisor_mode():
             preview_summary = generate_candidate_previews(
                 candidates_star=candidates_star,
                 tomograms_star=output_tomograms,
-                particle_diameter_ang=float(params.particle_diameter_ang),
+                particle_diameter_ang=float(ctx.params.particle_diameter_ang),
                 output_dir=job_dir,
-                project_root=project_path,
-                project_state=state,
-                instance_id=instance_id,
-                job_model=params,
+                project_root=ctx.project_path,
+                project_state=ctx.state,
+                instance_id=ctx.instance_id,
+                job_model=ctx.params,
             )
-            print(
-                "[SUPERVISOR] Previews: "
+            self.log(
+                "Previews: "
                 f"{len(preview_summary['ok'])} rendered, "
                 f"{len(preview_summary['skipped_cached'])} cached, "
                 f"{len(preview_summary['missing_volume'])} missing volume, "
-                f"{len(preview_summary['errored'])} errored",
-                flush=True,
+                f"{len(preview_summary['errored'])} errored"
             )
         except Exception as preview_err:
+            # Same convenience-artifact reasoning as the IMOD visualization.
             print(f"[SUPERVISOR WARN] Preview rendering failed (non-fatal): {preview_err}", flush=True)
 
         write_optimisation_set(
-            job_dir / "optimisation_set.star",
-            particles_star=candidates_star,
-            tomograms_star=output_tomograms,
+            job_dir / "optimisation_set.star", particles_star=candidates_star, tomograms_star=output_tomograms
         )
-        print("[SUPERVISOR] Created optimisation_set.star with absolute paths", flush=True)
+        self.log("Created optimisation_set.star with absolute paths")
 
-        (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-        print("[SUPERVISOR] Job finished successfully.", flush=True)
-        sys.exit(0)
+    # ---------------- task ----------------
 
-    except Exception as e:
-        print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        sys.exit(1)
-
-
-# ----------------------------------------------------------------------
-# Task mode
-# ----------------------------------------------------------------------
-
-
-def run_task_mode(array_idx: int):
-    try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(
-            CandidateExtractPytomParams
-        )
-    except Exception as e:
-        print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    status_dir = job_dir / STATUS_DIR_NAME
-    tomo_name = None
-    try:
-        manifest = read_manifest(job_dir)
-        tomo_names = manifest["ts_names"]
-        if array_idx >= len(tomo_names):
-            raise IndexError(f"SLURM_ARRAY_TASK_ID {array_idx} out of range (manifest has {len(tomo_names)})")
-        tomo_name = tomo_names[array_idx]
-        print(f"[TASK {array_idx}] tomo_name={tomo_name}", flush=True)
-
-        apix = float(manifest["apix"])
-        additional_binds = list(context.get("additional_binds", []))
-
-        local_tm_results = job_dir / "tmResults"
-        job_json = tomo_job_json_path(local_tm_results, tomo_name)
-        if not job_json.exists():
-            raise FileNotFoundError(f"Staged job.json missing for {tomo_name}: {job_json}")
-
-        out_star = tomo_particles_star_path(local_tm_results, tomo_name)
+    def task_already_done(self, ctx: DriverContext[CandidateExtractPytomParams], item: str) -> bool:
+        out_star = tomo_particles_star_path(ctx.job_dir / "tmResults", item)
         if out_star.exists() and out_star.stat().st_size > 0:
-            print(f"[TASK {array_idx}] Particles already extracted, skipping: {out_star}", flush=True)
-            write_status_atomic(status_dir, tomo_name, ok=True)
-            sys.exit(0)
+            self.log(f"Particles already extracted, skipping: {out_star}")
+            return True
+        return False
 
-        base_cmd = build_extract_base_cmd(params, apix)
-        cmd = base_cmd + ["-j", str(job_json)]
-        cmd_str = " ".join(cmd)
-        print(f"[TASK {array_idx}] Command: {cmd_str}", flush=True)
+    def stage(self, ctx: DriverContext[CandidateExtractPytomParams], item: str):
+        local_tm_results = ctx.job_dir / "tmResults"
+        job_json = tomo_job_json_path(local_tm_results, item)
+        if not job_json.exists():
+            raise FileNotFoundError(f"Staged job.json missing for {item}: {job_json}")
+        return job_json
 
-        wrapped = get_container_service().wrap_command_for_tool(
-            command=cmd_str, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
-        )
-        run_command(wrapped, cwd=job_dir)
+    def build_command(self, ctx: DriverContext[CandidateExtractPytomParams], item: str, staged) -> ToolCommand:
+        apix = float(read_manifest(ctx.job_dir)["apix"])
+        return build_extract_base_cmd(ctx.params, apix).opt_path("-j", staged, quote=False)
 
+    def verify_outputs(self, ctx: DriverContext[CandidateExtractPytomParams], item: str, staged) -> None:
+        out_star = tomo_particles_star_path(ctx.job_dir / "tmResults", item)
         if not out_star.exists():
-            raise FileNotFoundError(
-                f"pytom_extract_candidates reported success but particles STAR missing: {out_star}"
-            )
-
-        write_status_atomic(status_dir, tomo_name, ok=True)
-        print(f"[TASK {array_idx}] {tomo_name} done", flush=True)
-        sys.exit(0)
-
-    except Exception as e:
-        label = tomo_name or f"_unknown_idx{array_idx}"
-        print(f"[TASK {array_idx}] FATAL ERROR for tomo={label}: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        try:
-            write_status_atomic(status_dir, label, ok=False)
-        except Exception as inner:
-            print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
-        sys.exit(1)
+            raise FileNotFoundError(f"pytom_extract_candidates reported success but particles STAR missing: {out_star}")
 
 
 if __name__ == "__main__":
-    main()
+    os.environ["TQDM_DISABLE"] = "1"
+    ExtractCandidatesPytomDriver().main()

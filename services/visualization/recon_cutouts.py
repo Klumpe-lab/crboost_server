@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -33,7 +32,7 @@ from services.visualization.cutout_filters import emit_filtered_atlases
 logger = logging.getLogger(__name__)
 
 
-def _crop_slab(data, x: int, y: int, z: int, half_box: int, half_slab: int) -> Optional[np.ndarray]:
+def _crop_slab(data, x: int, y: int, z: int, half_box: int, half_slab: int) -> np.ndarray | None:
     """Mean over a Z slab of a box centered at voxel (x, y, z) → 2D float32 (y, x).
 
     Edge-clamped exactly like `extract_pick_subvolume`: picks near a border get a
@@ -65,9 +64,9 @@ def render_recon_cutouts_atlas(
     slab_px: int = 5,
     tile_px: int = 192,
     cols: int = 8,
-    filters: Optional[list] = None,
-    apix_hint: Optional[float] = None,
-) -> Optional[dict]:
+    filters: list | None = None,
+    apix_hint: float | None = None,
+) -> dict | None:
     """Build sprite-atlas PNG(s) + index JSON(s) of per-pick recon cutouts — one
     per display-filter preset (see services/visualization/cutout_filters.py).
 
@@ -106,7 +105,7 @@ def render_recon_cutouts_atlas(
     # falls out of bounds), plus the header pixel size for Å→px conversion.
     frames: list = []
     fail_info: list = []
-    apix_header: Optional[float] = None
+    apix_header: float | None = None
     try:
         with mrcfile.mmap(str(recon_mrc), mode="r") as m:
             data = m.data

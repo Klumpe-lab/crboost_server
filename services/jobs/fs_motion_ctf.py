@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Optional, Set, Tuple
+from typing import ClassVar
 from pydantic import Field
 
 from services.computing.slurm_service import SlurmConfig
@@ -14,7 +14,7 @@ class FsMotionCtfParams(AbstractJobParams):
     JOB_CATEGORY: ClassVar[JobCategory] = JobCategory.EXTERNAL
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
 
-    USER_PARAMS: ClassVar[Set[str]] = {
+    USER_PARAMS: ClassVar[set[str]] = {
         "m_range_min_max",
         "m_bfac",
         "m_grid",
@@ -65,16 +65,16 @@ class FsMotionCtfParams(AbstractJobParams):
     out_skip_last: int = Field(default=0, description="Skip this many final tilts")
     perdevice: int = Field(default=2, ge=0, le=8, description="Parallel tilt series per GPU")
     do_at_most: int = Field(default=-1, description="Process at most N tilt series (-1 = all)")
-    gain_operations: Optional[str] = Field(default=None, description="Gain reference operations (e.g. flip, rotate)")
+    gain_operations: str | None = Field(default=None, description="Gain reference operations (e.g. flip, rotate)")
     array_throttle: int = Field(
         default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series motion/CTF"
     )
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         input_star = self.paths.get("input_star", "")
         return [("in_mic", str(input_star))]
 
-    def _get_queue_options(self) -> List[Tuple[str, str]]:
+    def _get_queue_options(self) -> list[tuple[str, str]]:
         """
         Override: fs_motion_and_ctf supervisor is lightweight (reads STAR, dispatches array).
         The user-facing slurm config describes PER-TASK resources for the array.
@@ -122,5 +122,5 @@ class FsMotionCtfParams(AbstractJobParams):
         return float(self.c_defocus_min_max.split(":")[1])
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"import": "importmovies"}

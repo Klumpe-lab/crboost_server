@@ -1,8 +1,8 @@
 # services/models_base.py
 from __future__ import annotations
+from dataclasses import dataclass
 from enum import Enum
-from typing import Tuple, Optional
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class JobStatus(str, Enum):
@@ -87,16 +87,99 @@ class JobType(str, Enum):
     # Synthetic source: not a real pipeline job. Used by PathResolutionService to
     # surface <project>/MergedSources/optimisation_set.star as a producer candidate
     # for input_optimisation slots in aggregation projects. Never appears in
-    # state.jobs, jobtype_paramclass, or PIPELINE_ORDER.
+    # state.jobs, jobtype_paramclass, or services.jobs.spec.JOB_SPECS.
     MERGED_SOURCES = "mergedSources"
 
     @classmethod
-    def from_string(cls, value: str) -> "JobType":
+    def from_string(cls, value: str) -> JobType:
         try:
             return cls(value)
         except ValueError:
             valid = [e.value for e in cls]
-            raise ValueError(f"Unknown job type '{value}'. Valid types: {valid}")
+            raise ValueError(f"Unknown job type '{value}'. Valid types: {valid}") from None
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceId:
+    """Typed form of the job instance-id grammar: ``{job_type}`` or
+    ``{job_type}__{suffix}``, where the suffix is a species id
+    (``templatematching__ribosome``) or a numeric disambiguator
+    (``templatematching__2``). This class is the ONE place the ``__``
+    separator is known; nothing else may hand-split an instance id."""
+
+    job_type: JobType
+    species_id: str | None = None
+
+    @staticmethod
+    def split(raw: str) -> tuple[str, str | None]:
+        """Lenient ``(base, suffix)`` decode; suffix is None for bare ids.
+        Use when the base may not be a valid JobType (display of unknown ids)."""
+        base, _, suffix = raw.partition("__")
+        return base, (suffix or None)
+
+    @classmethod
+    def parse(cls, raw: str) -> InstanceId:
+        """Strict decode; raises ValueError when the base is not a JobType."""
+        base, suffix = cls.split(raw)
+        return cls(JobType(base), suffix)
+
+    @classmethod
+    def matches(cls, raw: str, job_type: JobType) -> bool:
+        """True when ``raw`` is an instance of ``job_type`` (bare or suffixed)."""
+        return cls.split(raw)[0] == job_type.value
+
+    def __str__(self) -> str:
+        if self.species_id is None:
+            return self.job_type.value
+        return f"{self.job_type.value}__{self.species_id}"
+
+
+def instance_id_to_job_type(instance_id: str) -> JobType:
+    """Extract JobType from an instance_id.
+
+    'templatematching'          -> JobType.TEMPLATE_MATCH_PYTOM
+    'templatematching__2'       -> JobType.TEMPLATE_MATCH_PYTOM
+    'templatematching__ribosome'-> JobType.TEMPLATE_MATCH_PYTOM
+    """
+    return InstanceId.parse(instance_id).job_type
+
+
+def split_species_id(instance_id: str) -> str | None:
+    """`templatematching__ribosome` → `ribosome`; bare instance_id → None."""
+    return InstanceId.split(instance_id)[1]
+
+
+def resolve_species(state, job_model, instance_id: str | None = None):
+    """Find the ParticleSpecies a per-particle job is attached to, using
+    three fallbacks in order:
+
+    1. `instance_id` suffix (`templatematching__ribosome` → `ribosome`),
+       accepted only when it names a species that exists in the registry
+       (a numeric disambiguator like `subtomoExtraction__2` falls through).
+    2. `job_model.species_id` field (set even when instance_id is bare).
+    3. Single-species fallback: if exactly one species exists in the
+       project, attribute the job to it.
+
+    Returns (species or None, species_id or None). THE canonical chain —
+    formerly triplicated across dashboard_data / template_metadata /
+    aggregation_authoritative."""
+    if instance_id:
+        sid = split_species_id(instance_id)
+        if sid:
+            sp = state.get_species(sid) if hasattr(state, "get_species") else None
+            if sp is not None:
+                return sp, sid
+    sid2 = getattr(job_model, "species_id", None)
+    if sid2:
+        sp = state.get_species(sid2) if hasattr(state, "get_species") else None
+        if sp is not None:
+            return sp, sid2
+        return None, sid2
+    registry = getattr(state, "species_registry", None) or []
+    if len(registry) == 1:
+        sp = registry[0]
+        return sp, sp.id
+    return None, None
 
 
 class PickListType(str, Enum):
@@ -137,16 +220,46 @@ class MicroscopeParams(BaseModel):
 class AcquisitionParams(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
     dose_per_tilt: float = Field(default=3.0, ge=0.1, le=9.0)
-    detector_dimensions: Tuple[int, int] = (4096, 4096)
+    detector_dimensions: tuple[int, int] = (4096, 4096)
     tilt_axis_degrees: float = Field(default=-95.0, ge=-180.0, le=180.0)
-    eer_fractions_per_frame: Optional[int] = Field(default=None, ge=1, le=100)
+    eer_fractions_per_frame: int | None = Field(default=None, ge=1, le=100)
     sample_thickness_nm: float = Field(default=300.0, ge=50.0, le=2000.0)
-    gain_reference_path: Optional[str] = None
+    gain_reference_path: str | None = None
     invert_tilt_angles: bool = False
     invert_defocus_hand: bool = True
     acquisition_software: str = Field(default="SerialEM")
-    nominal_magnification: Optional[int] = None
-    spot_size: Optional[int] = None
-    camera_name: Optional[str] = None
-    binning: Optional[int] = Field(default=1, ge=1)
-    frame_dose: Optional[float] = None
+    nominal_magnification: int | None = None
+    spot_size: int | None = None
+    camera_name: str | None = None
+    binning: int | None = Field(default=1, ge=1)
+    frame_dose: float | None = None
+
+
+# Per-species overlay palette. Lives here rather than in the dashboard because a
+# species' color is persisted model data (assigned at creation by
+# ProjectState.add_species), not a render-time choice; services.dashboard_data
+# re-exports it for the renderers that read it as an overlay constant.
+#
+# Saturated primaries on purpose: these sit over a greyscale tomogram (no
+# mid-grays) so the dots pop at either end of the backdrop.
+SPECIES_OVERLAY_COLORS = [
+    "#ff1744",  # vivid red
+    "#00e5ff",  # vivid cyan
+    "#ffea00",  # vivid yellow
+    "#d500f9",  # vivid magenta-purple
+    "#76ff03",  # neon green
+    "#2979ff",  # vivid blue
+    "#ff9100",  # vivid orange
+    "#f50057",  # vivid pink
+]
+
+
+def species_palette_color(species_id: str) -> str:
+    """Deterministic palette color for a species id.
+
+    Deliberately NOT `hash()`: PYTHONHASHSEED randomizes str hashing per process,
+    so the same species would change color between server restarts. Summing the
+    code points is stable across runs and matches what the dashboard already does
+    for workbench-authored species.
+    """
+    return SPECIES_OVERLAY_COLORS[sum(map(ord, str(species_id))) % len(SPECIES_OVERLAY_COLORS)]

@@ -16,52 +16,27 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           stages a per-TS input_processing dir (symlinking only this TS's XML),
           runs `WarpTools ts_reconstruct`, and atomically writes
           `.task_status/{ts_name}.{ok|fail}`.
+
+The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
+markers all live in ArrayDriver; this file is the ts_reconstruct-specific hooks.
 """
 
-import os
-import shlex
 import sys
-import traceback
 from pathlib import Path
-from typing import List
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import (
-    apply_exclusions,
-    collect_task_results,
-    install_cancel_handler,
-    preflight_registry,
-    read_manifest,
+    ArrayDriver,
+    ArrayResults,
+    read_tilt_series_names_from_input_star,
     stage_per_ts_environment,
-    submit_array_job,
-    wait_for_array_completion,
-    write_status_atomic,
-    STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command_with_retries, require_producer_input
-from services.computing.container_service import get_container_service
-from services.configs.starfile_service import StarfileService
+from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
 from services.job_models import TsReconstructParams
 from services.tilt_series import get_registry_for
 from services.tilt_series.adapters import TsReconstructIngestAdapter
-
-
-# ----------------------------------------------------------------------
-# Helpers
-# ----------------------------------------------------------------------
-
-DRIVER_SCRIPT = Path(__file__).resolve()
-
-
-def read_tilt_series_names_from_input_star(input_star: Path) -> List[str]:
-    """Sorted list of TS names from the input STAR's `global` block."""
-    star_data = StarfileService().read(input_star)
-    df = star_data.get("global")
-    if df is None or len(df) == 0:
-        return []
-    return sorted(df["rlnTomoName"].astype(str).tolist())
 
 
 def reconstruction_mrc_path(job_dir: Path, ts_name: str, rescale_angpixs: float) -> Path:
@@ -72,208 +47,85 @@ def reconstruction_mrc_path(job_dir: Path, ts_name: str, rescale_angpixs: float)
 
 def build_reconstruct_command(
     params: TsReconstructParams, settings_file: Path, input_processing: Path, output_processing: Path
-) -> str:
+) -> ToolCommand:
     return (
-        f"WarpTools ts_reconstruct "
-        f"--settings {shlex.quote(str(settings_file))} "
-        f"--input_processing {shlex.quote(str(input_processing))} "
-        f"--output_processing {shlex.quote(str(output_processing))} "
-        f"--angpix {params.rescale_angpixs} "
-        f"--halfmap_frames {params.halfmap_frames} "
-        f"--deconv {params.deconv} "
-        f"--perdevice {params.perdevice} "
-        f"--dont_invert"
+        ToolCommand("WarpTools ts_reconstruct")
+        .opt_path("--settings", settings_file, quote=True)
+        .opt_path("--input_processing", input_processing, quote=True)
+        .opt_path("--output_processing", output_processing, quote=True)
+        .opt("--angpix", params.rescale_angpixs)
+        .opt("--halfmap_frames", params.halfmap_frames)
+        .opt("--deconv", params.deconv)
+        .opt("--perdevice", params.perdevice)
+        .flag("--dont_invert")
     )
 
 
-# ----------------------------------------------------------------------
-# Mode dispatch
-# ----------------------------------------------------------------------
+class TsReconstructDriver(ArrayDriver):
+    params_class = TsReconstructParams
+    job_name = "ts_reconstruct"
+    driver_script = Path(__file__).resolve()
+    retry_attempts = 3
 
+    # ---------------- supervisor ----------------
 
-def main():
-    print("Python", sys.version, flush=True)
-    array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
-    if array_idx_env is None:
-        print("--- ts_reconstruct: SUPERVISOR mode ---", flush=True)
-        run_supervisor_mode()
-    else:
-        print(f"--- ts_reconstruct: TASK mode (array idx {array_idx_env}) ---", flush=True)
-        run_task_mode(int(array_idx_env))
-
-
-# ----------------------------------------------------------------------
-# Supervisor mode
-# ----------------------------------------------------------------------
-
-
-def run_supervisor_mode():
-    try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
-            TsReconstructParams
-        )
-    except Exception as e:
-        fail_dir = Path.cwd()
-        (fail_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[SUPERVISOR] CWD (job dir): {job_dir}", flush=True)
-
-    try:
-        paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
-        instance_id = local_params_data["instance_id"]
-
-        require_producer_input(paths["input_star"], "Input STAR")
-
-        ts_names = read_tilt_series_names_from_input_star(paths["input_star"])
+    def enumerate_items(self, ctx: DriverContext[TsReconstructParams]) -> list[str]:
+        input_star = ctx.paths["input_star"]
+        require_producer_input(input_star, "Input STAR")
+        ts_names = read_tilt_series_names_from_input_star(input_star)
         if not ts_names:
-            raise ValueError(f"No tilt-series found in input STAR: {paths['input_star']}")
+            raise ValueError(f"No tilt-series found in input STAR: {input_star}")
+        return ts_names
 
-        n_tasks = len(ts_names)
-        print(f"[SUPERVISOR] Found {n_tasks} tilt-series in input STAR", flush=True)
-
-        preflight_registry(project_path, ts_names, job_name="ts_reconstruct")
-
-        per_task_cfg = params.get_effective_slurm_config()
-
-        # Honor user "exclude from processing": pre-skip excluded TS so they are
-        # never dispatched and count as settled (not failures) in aggregation.
-        apply_exclusions(job_dir, project_path, ts_names)
-
-        array_job_id = submit_array_job(
-            job_dir=job_dir,
-            project_path=project_path,
-            instance_id=instance_id,
-            ts_names=ts_names,
-            per_task_cfg=per_task_cfg,
-            array_throttle=params.array_throttle,
-            driver_script=DRIVER_SCRIPT,
-        )
-
-        if array_job_id is not None:
-            install_cancel_handler(array_job_id, job_dir)
-            wait_for_array_completion(array_job_id, poll_secs=30)
-        else:
-            print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
-
-        results = collect_task_results(job_dir, ts_names)
-        print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
-        if results.failed:
-            print(f"[SUPERVISOR] FAILED tilt-series: {results.failed}", flush=True)
-        if results.missing:
-            print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
-
-        if not results.all_succeeded:
-            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
-            sys.exit(1)
-
+    def aggregate(self, ctx: DriverContext[TsReconstructParams], results: ArrayResults) -> None:
         # Aggregate metadata via the TiltSeries registry. Fail loud on an
         # empty registry rather than fall back to the legacy path.
-        print("[SUPERVISOR] All tasks succeeded; aggregating metadata via registry...", flush=True)
-        registry = get_registry_for(project_path)
+        registry = get_registry_for(ctx.project_path)
         if not registry.tilt_series_ids():
             raise RuntimeError(
-                f"TiltSeries registry is empty for project {project_path}. "
+                f"TiltSeries registry is empty for project {ctx.project_path}. "
                 f"Reload the project in the UI to backfill the registry from mdocs, "
                 f"then restart this job."
             )
         adapter = TsReconstructIngestAdapter(
-            registry=registry, job_dir=job_dir, job_instance_id=instance_id, warp_folder="warp_tiltseries",
+            registry=registry, job_dir=ctx.job_dir, job_instance_id=ctx.instance_id, warp_folder="warp_tiltseries"
         )
-        adapter.ingest(
-            results.ok,
-            rescale_angpixs=params.rescale_angpixs,
-            frame_pixel_size=params.pixel_size,
-        )
-        adapter.emit_star(paths["input_star"], paths["output_star"], excluded_ids=set(results.skipped))
+        adapter.ingest(results.ok, rescale_angpixs=ctx.params.rescale_angpixs, frame_pixel_size=ctx.params.pixel_size)
+        adapter.emit_star(ctx.paths["input_star"], ctx.paths["output_star"], excluded_ids=set(results.skipped))
         registry.save()
 
-        (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-        print("[SUPERVISOR] Job finished successfully.", flush=True)
-        sys.exit(0)
+    # ---------------- task ----------------
 
-    except Exception as e:
-        print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        sys.exit(1)
-
-
-# ----------------------------------------------------------------------
-# Task mode
-# ----------------------------------------------------------------------
-
-
-def run_task_mode(array_idx: int):
-    try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
-            TsReconstructParams
-        )
-    except Exception as e:
-        print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    status_dir = job_dir / STATUS_DIR_NAME
-    ts_name = None
-    try:
-        manifest = read_manifest(job_dir)
-        ts_names = manifest["ts_names"]
-        if array_idx >= len(ts_names):
-            raise IndexError(f"SLURM_ARRAY_TASK_ID {array_idx} out of range (manifest has {len(ts_names)})")
-        ts_name = ts_names[array_idx]
-        print(f"[TASK {array_idx}] ts_name={ts_name}", flush=True)
-
-        paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
-        additional_binds = local_params_data["additional_binds"]
-
-        out_mrc = reconstruction_mrc_path(job_dir, ts_name, params.rescale_angpixs)
-
-        # Idempotency: skip TS whose reconstruction MRC already exists.
+    def task_already_done(self, ctx: DriverContext[TsReconstructParams], item: str) -> bool:
+        # Covers the window where the artifact exists but no `.ok` was recorded
+        # (orphaned or superseded run) — the supervisor-side skip only sees status files.
+        out_mrc = reconstruction_mrc_path(ctx.job_dir, item, ctx.params.rescale_angpixs)
         if out_mrc.exists() and out_mrc.stat().st_size > 0:
-            print(f"[TASK {array_idx}] Reconstruction already exists, skipping: {out_mrc}", flush=True)
-            write_status_atomic(status_dir, ts_name, ok=True)
-            sys.exit(0)
+            self.log(f"Reconstruction already exists, skipping: {out_mrc}")
+            return True
+        return False
 
+    def stage(self, ctx: DriverContext[TsReconstructParams], item: str):
         staged_settings, staged_processing = stage_per_ts_environment(
-            job_dir, ts_name, paths["input_processing"], paths["warp_tiltseries_settings"]
+            ctx.job_dir, item, ctx.paths["input_processing"], ctx.paths["warp_tiltseries_settings"]
         )
-        print(f"[TASK {array_idx}] Staged settings: {staged_settings}", flush=True)
+        self.log(f"Staged settings: {staged_settings}")
+        return staged_settings, staged_processing
 
-        cmd = build_reconstruct_command(
-            params=params,
+    def build_command(self, ctx: DriverContext[TsReconstructParams], item: str, staged) -> ToolCommand:
+        staged_settings, staged_processing = staged
+        return build_reconstruct_command(
+            params=ctx.params,
             settings_file=staged_settings,
             input_processing=staged_processing,
-            output_processing=paths["output_processing"],
-        )
-        print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
-
-        wrapped = get_container_service().wrap_command_for_tool(
-            command=cmd, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
+            output_processing=ctx.paths["output_processing"],
         )
 
-        run_command_with_retries(wrapped, cwd=job_dir, label=f"ts_reconstruct {ts_name}")
-
+    def verify_outputs(self, ctx: DriverContext[TsReconstructParams], item: str, staged) -> None:
+        out_mrc = reconstruction_mrc_path(ctx.job_dir, item, ctx.params.rescale_angpixs)
         if not out_mrc.exists():
             raise FileNotFoundError(f"WarpTools reported success but expected output MRC missing: {out_mrc}")
 
-        write_status_atomic(status_dir, ts_name, ok=True)
-        print(f"[TASK {array_idx}] {ts_name} done", flush=True)
-        sys.exit(0)
-
-    except Exception as e:
-        label = ts_name or f"_unknown_idx{array_idx}"
-        print(f"[TASK {array_idx}] FATAL ERROR for ts={label}: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        try:
-            write_status_atomic(status_dir, label, ok=False)
-        except Exception as inner:
-            print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
-        sys.exit(1)
-
 
 if __name__ == "__main__":
-    main()
+    TsReconstructDriver().main()

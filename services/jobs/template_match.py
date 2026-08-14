@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import ClassVar, Dict, List, Set, Tuple
+from typing import ClassVar
 from pydantic import Field, field_validator
 
 from services.computing.slurm_service import SlurmConfig
@@ -13,7 +13,7 @@ from services.io_slots import InputSlot, OutputSlot, JobFileType
 # unit angle list via services.templating.angle_lists and passes it as
 # `--angular-search <file>`. Either way, the symmetry is honored during the
 # search. C1 means full SO(3) search (no symmetry exploitation).
-TM_SYMMETRY_CHOICES: List[str] = [
+TM_SYMMETRY_CHOICES: list[str] = [
     "C1", "C2", "C3", "C4", "C5", "C6",
     "D2", "D3", "D4", "D5", "D6",
     "T", "O", "I1", "I2",
@@ -26,7 +26,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = False
 
-    USER_PARAMS: ClassVar[Set[str]] = {
+    USER_PARAMS: ClassVar[set[str]] = {
         "template_path",
         "mask_path",
         "angular_search",
@@ -42,7 +42,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
         "array_throttle",
     }
 
-    INPUT_SCHEMA: ClassVar[List[InputSlot]] = [
+    INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(
             key="input_tomograms",
             accepts=[JobFileType.DENOISED_TOMOGRAMS_STAR, JobFileType.TOMOGRAMS_STAR],
@@ -52,7 +52,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
         # upstream of alignment), so tsCtf's star already contains only kept tilts.
         InputSlot(key="input_tiltseries", accepts=[JobFileType.TS_CTF_TILT_SERIES_STAR], preferred_source="tsCtf"),
     ]
-    OUTPUT_SCHEMA: ClassVar[List[OutputSlot]] = [
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
         OutputSlot(key="output_dir", produces=JobFileType.TM_RESULTS_DIR, path_template="tmResults/", is_dir=True),
         OutputSlot(key="output_tomograms", produces=JobFileType.TOMOGRAMS_STAR, path_template="tomograms.star"),
     ]
@@ -93,7 +93,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
         default=4, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tomogram template matching"
     )
 
-    def _get_job_specific_options(self) -> List[Tuple[str, str]]:
+    def _get_job_specific_options(self) -> list[tuple[str, str]]:
         return [
             ("in_mic", str(self.paths.get("input_tomograms", ""))),
             ("in_3dref", str(self.template_path or "")),
@@ -103,7 +103,7 @@ class TemplateMatchPytomParams(AbstractJobParams):
             ("in_part", ""),
         ]
 
-    def _get_queue_options(self) -> List[Tuple[str, str]]:
+    def _get_queue_options(self) -> list[tuple[str, str]]:
         """
         Override: TM's parent sbatch is a lightweight CPU-only supervisor that
         enumerates tomograms, submits a per-tomogram SLURM array, polls, and
@@ -130,5 +130,5 @@ class TemplateMatchPytomParams(AbstractJobParams):
         return "pytom"
 
     @staticmethod
-    def get_input_requirements() -> Dict[str, str]:
+    def get_input_requirements() -> dict[str, str]:
         return {"tomograms": "denoisepredict"}

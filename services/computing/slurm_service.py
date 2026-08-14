@@ -4,12 +4,13 @@ import logging
 from enum import Enum
 from pathlib import Path
 import re
-from typing import ClassVar, Dict, List, Any, Optional, Tuple
+from typing import ClassVar, Any
 from dataclasses import dataclass
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 from services.configs.config_service import get_config_service
+from services.result import err, ok
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class SlurmConfig(BaseModel):
     time: str = "3:30:00"
 
     # Standard Relion Tomography aliases for XXXextra1XXX through XXXextra8XXX
-    QSUB_EXTRA_MAPPING: ClassVar[Dict[str, str]] = {
+    QSUB_EXTRA_MAPPING: ClassVar[dict[str, str]] = {
         "partition": "qsub_extra1",
         "constraint": "qsub_extra2",
         "nodes": "qsub_extra3",
@@ -65,7 +66,7 @@ class SlurmConfig(BaseModel):
         "time": "qsub_extra8",
     }
 
-    def to_qsub_extra_dict(self) -> Dict[str, str]:
+    def to_qsub_extra_dict(self) -> dict[str, str]:
         return {self.QSUB_EXTRA_MAPPING[field]: str(getattr(self, field)) for field in self.QSUB_EXTRA_MAPPING}
 
     @classmethod
@@ -91,7 +92,7 @@ class SlurmPartition:
     default_mem_per_cpu: str
     available_cpus: int
     available_gpus: int
-    gpu_type: Optional[str] = None
+    gpu_type: str | None = None
 
 
 @dataclass
@@ -104,8 +105,8 @@ class SlurmNode:
     cpus: int
     memory_mb: int
     gpus: int
-    gpu_type: Optional[str] = None
-    features: List[str] = None
+    gpu_type: str | None = None
+    features: list[str] = None
 
 
 @dataclass
@@ -173,7 +174,7 @@ def _gpu_from_tres(tres: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def normalize_slurm_ids(job_ids: List[str]) -> List[str]:
+def normalize_slurm_ids(job_ids: list[str]) -> list[str]:
     """
     Deduplicate SLURM job IDs by normalizing array task IDs to their parent.
 
@@ -201,7 +202,7 @@ class SlurmService:
         self._cache_timestamp = {}
         self._cache_ttl = 60
 
-    async def _run_command(self, cmd: List[str]) -> tuple[bool, str, str]:
+    async def _run_command(self, cmd: list[str]) -> tuple[bool, str, str]:
         try:
             process = await asyncio.create_subprocess_exec(
                 *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -218,7 +219,7 @@ class SlurmService:
         age = (datetime.now() - self._cache_timestamp[key]).total_seconds()
         return age < self._cache_ttl
 
-    async def get_partitions_info(self, force_refresh: bool = False) -> List[SlurmPartition]:
+    async def get_partitions_info(self, force_refresh: bool = False) -> list[SlurmPartition]:
         cache_key = "partitions"
         if not force_refresh and self._is_cache_valid(cache_key):
             return self._cache[cache_key]
@@ -276,7 +277,7 @@ class SlurmService:
         self._cache_timestamp[cache_key] = datetime.now()
         return partitions
 
-    async def get_user_qos_limits(self, force_refresh: bool = False) -> List[QosLimit]:
+    async def get_user_qos_limits(self, force_refresh: bool = False) -> list[QosLimit]:
         """The QOS(es) available to this user and their per-job limits, via sacctmgr. Also refreshes
         the module-level `_qos_maxwall_cache_min` with the DEFAULT QOS's MaxWall (the limit a job
         without an explicit --qos actually hits) so sync walltime estimators can read it. Returns []
@@ -317,7 +318,7 @@ class SlurmService:
         ok2, out2, _ = await self._run_command(
             ["sacctmgr", "-nP", "show", "qos", "format=Name,MaxWall,MaxTRESPerJob,MaxTRESPerUser"]
         )
-        limits: List[QosLimit] = []
+        limits: list[QosLimit] = []
         if ok2:
             for line in out2.strip().split("\n"):
                 f = line.split("|")
@@ -351,7 +352,7 @@ class SlurmService:
         self._cache_timestamp[cache_key] = datetime.now()
         return limits
 
-    async def get_nodes_info(self, partition: Optional[str] = None, force_refresh: bool = False) -> List[SlurmNode]:
+    async def get_nodes_info(self, partition: str | None = None, force_refresh: bool = False) -> list[SlurmNode]:
         cache_key = f"nodes_{partition or 'all'}"
         if not force_refresh and self._is_cache_valid(cache_key):
             return self._cache[cache_key]
@@ -408,7 +409,7 @@ class SlurmService:
         self._cache_timestamp[cache_key] = datetime.now()
         return nodes
 
-    async def get_user_jobs(self, force_refresh: bool = False) -> List[UserJob]:
+    async def get_user_jobs(self, force_refresh: bool = False) -> list[UserJob]:
         cache_key = "user_jobs"
         if not force_refresh and self._is_cache_valid(cache_key):
             return self._cache[cache_key]
@@ -460,7 +461,7 @@ class SlurmService:
         self._cache_timestamp[cache_key] = datetime.now()
         return jobs
 
-    async def query_jobs_by_ids(self, job_ids: List[str]) -> Optional[Dict[str, Tuple[str, str]]]:
+    async def query_jobs_by_ids(self, job_ids: list[str]) -> dict[str, tuple[str, str]] | None:
         """Targeted ``squeue -j <ids>`` for specific jobs (uncached -- the afterok reconciler
         needs fresh per-tick reads). Returns ``{normalized_job_id: (state, reason)}`` for ids
         STILL in the queue.
@@ -482,7 +483,7 @@ class SlurmService:
                 return {}
             logger.error("query_jobs_by_ids: squeue failed: %s", stderr)
             return None
-        result: Dict[str, Tuple[str, str]] = {}
+        result: dict[str, tuple[str, str]] = {}
         for line in stdout.strip().split("\n"):
             if not line:
                 continue
@@ -495,7 +496,7 @@ class SlurmService:
             result.setdefault(jid, (state, reason))
         return result
 
-    async def query_terminal_states(self, job_ids: List[str]) -> Optional[Dict[str, Tuple[str, str]]]:
+    async def query_terminal_states(self, job_ids: list[str]) -> dict[str, tuple[str, str]] | None:
         """``sacct`` terminal State + ExitCode for jobs that have left the queue. Returns
         ``{normalized_job_id: (state, exit_code)}``. ``None`` on CLI error (incl. sacct
         unavailable) so the caller keeps prior status rather than fabricating a terminal one;
@@ -510,7 +511,7 @@ class SlurmService:
         if not success:
             logger.warning("query_terminal_states: sacct failed (or unavailable): %s", stderr)
             return None
-        result: Dict[str, Tuple[str, str]] = {}
+        result: dict[str, tuple[str, str]] = {}
         for line in stdout.strip().split("\n"):
             if not line:
                 continue
@@ -524,7 +525,7 @@ class SlurmService:
                 result.setdefault(jid, (state, exit_code))
         return result
 
-    async def find_slurm_job_for_directory(self, job_dir: Path) -> Optional[UserJob]:
+    async def find_slurm_job_for_directory(self, job_dir: Path) -> UserJob | None:
         """
         Find the SLURM job whose stdout file lives inside the given job directory.
         RELION sets --output=<job_dir>/run.out, so parent of stdout_path == job_dir.
@@ -555,7 +556,7 @@ class SlurmService:
         logger.info("No SLURM job found for %s", target)
         return None
 
-    async def find_all_slurm_jobs_for_directory(self, job_dir: Path) -> List[UserJob]:
+    async def find_all_slurm_jobs_for_directory(self, job_dir: Path) -> list[UserJob]:
         """
         Find ALL SLURM jobs whose stdout file or work_dir matches the given directory.
 
@@ -566,7 +567,7 @@ class SlurmService:
         """
         jobs = await self.get_user_jobs(force_refresh=True)
         target = job_dir.resolve()
-        matches: List[UserJob] = []
+        matches: list[UserJob] = []
 
         for job in jobs:
             matched = False
@@ -588,17 +589,17 @@ class SlurmService:
         logger.info("Found %d SLURM job(s) for %s: %s", len(matches), target, [j.job_id for j in matches])
         return matches
 
-    async def scancel_jobs(self, job_ids: List[str]) -> Dict[str, Any]:
+    async def scancel_jobs(self, job_ids: list[str]) -> dict[str, Any]:
         if not job_ids:
-            return {"success": True, "cancelled": []}
-        success, stdout, stderr = await self._run_command(["scancel"] + job_ids)
+            return ok(cancelled=[])
+        success, _stdout, stderr = await self._run_command(["scancel", *job_ids])
         if success:
             logger.info("Cancelled jobs: %s", job_ids)
-            return {"success": True, "cancelled": job_ids}
+            return ok(cancelled=job_ids)
         logger.info("scancel returned non-zero (may be already gone): %s", stderr.strip())
-        return {"success": False, "error": stderr.strip(), "cancelled": job_ids}
+        return err(stderr.strip(), cancelled=job_ids)
 
-    async def get_cluster_summary(self) -> Dict[str, Any]:
+    async def get_cluster_summary(self) -> dict[str, Any]:
         partitions = await self.get_partitions_info()
         user_jobs = await self.get_user_jobs()
         total_nodes = sum(p.nodes for p in partitions)
@@ -616,12 +617,11 @@ class SlurmService:
             "pending_jobs": len([j for j in user_jobs if j.state == "SCHEDULED"]),
         }
 
-    async def get_slurm_partitions(self) -> Dict[str, Any]:
+    async def get_slurm_partitions(self) -> dict[str, Any]:
         try:
             partitions = await self.get_partitions_info()
-            return {
-                "success": True,
-                "partitions": [
+            return ok(
+                partitions=[
                     {
                         "name": p.name,
                         "state": p.state,
@@ -633,17 +633,16 @@ class SlurmService:
                         "memory": p.default_mem_per_cpu,
                     }
                     for p in partitions
-                ],
-            }
+                ]
+            )
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
-    async def get_slurm_nodes(self, partition: str = None) -> Dict[str, Any]:
+    async def get_slurm_nodes(self, partition: str | None = None) -> dict[str, Any]:
         try:
             nodes = await self.get_nodes_info(partition)
-            return {
-                "success": True,
-                "nodes": [
+            return ok(
+                nodes=[
                     {
                         "name": n.name,
                         "partition": n.partition,
@@ -655,22 +654,21 @@ class SlurmService:
                         "features": n.features or [],
                     }
                     for n in nodes
-                ],
-            }
+                ]
+            )
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
     def clear_cache(self):
         self._cache.clear()
         self._cache_timestamp.clear()
 
-    async def get_user_slurm_jobs(self, force_refresh: bool = False) -> Dict[str, Any]:
+    async def get_user_slurm_jobs(self, force_refresh: bool = False) -> dict[str, Any]:
         try:
             jobs = await self.get_user_jobs(force_refresh=force_refresh)
             logger.debug("Backend returning %d jobs", len(jobs))
-            return {
-                "success": True,
-                "jobs": [
+            return ok(
+                jobs=[
                     {
                         "job_id": j.job_id,
                         "name": j.name,
@@ -683,18 +681,18 @@ class SlurmService:
                         "stdout_path": j.stdout_path,
                     }
                     for j in jobs
-                ],
-            }
+                ]
+            )
         except Exception as e:
             logger.error("Failed to get user jobs: %s", e)
             import traceback
 
             traceback.print_exc()
-            return {"success": False, "error": str(e)}
+            return err(str(e))
 
-    async def get_slurm_summary(self, force_refresh: bool = False) -> Dict[str, Any]:
+    async def get_slurm_summary(self, force_refresh: bool = False) -> dict[str, Any]:
         try:
             summary = await self.get_cluster_summary()
-            return {"success": True, "summary": summary}
+            return ok(summary=summary)
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return err(str(e))

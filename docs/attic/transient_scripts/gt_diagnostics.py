@@ -15,7 +15,6 @@ import json
 import os
 import statistics
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
 try:
     import mrcfile
@@ -152,7 +151,7 @@ def compare_templates(project_dir, gt_dir):
                 corr = float(np.corrcoef(gd.ravel(), cd.ravel())[0, 1])
                 print(f"  MAE={mae:.6f}  RMSE={rmse:.6f}  correlation={corr:.6f}")
                 if corr < 0.99:
-                    print(f"  <<< WARNING: templates differ meaningfully (corr < 0.99)")
+                    print("  <<< WARNING: templates differ meaningfully (corr < 0.99)")
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +199,7 @@ def compare_masks(project_dir, gt_dir):
             c_is_binary = set(np.unique(cd)).issubset({0.0, 1.0})
             print(f"  GT is binary: {g_is_binary}  CURRENT is binary: {c_is_binary}")
             if not g_is_binary or not c_is_binary:
-                print(f"  [NOTE] soft mask detected -- IoU is computed on thresholded (>0) version")
+                print("  [NOTE] soft mask detected -- IoU is computed on thresholded (>0) version")
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +233,7 @@ def compare_defocus(project_dir, gt_dir):
         print(f"  mean={mean:.3f}  std={std:.4f}  min={min(vs):.3f}  max={max(vs):.3f}")
         outliers = [(n, v) for n, v in vals if abs(v - mean) > 3 * std]
         if outliers:
-            print(f"  OUTLIERS (>3 sigma from mean):")
+            print("  OUTLIERS (>3 sigma from mean):")
             for n, v in outliers:
                 print(f"    {n}: {v:.4f}  (delta={v-mean:+.4f})")
         else:
@@ -277,13 +276,13 @@ def compare_ctf_ingested(project_dir, gt_dir):
         std  = statistics.stdev(defoci) if len(defoci) > 1 else 0.0
         outliers = [(i, v) for i, v in enumerate(defoci) if abs(v - mean) > 3 * std]
         if outliers:
-            print(f"  OUTLIERS (>3 sigma):")
+            print("  OUTLIERS (>3 sigma):")
             for i, v in outliers:
                 print(f"    tilt index {i}: {v:.4f} um  (delta={v-mean:+.4f})")
 
     if gt_defoci and cur_defoci and len(gt_defoci) == len(cur_defoci):
-        diffs = [abs(g - c) for g, c in zip(gt_defoci, cur_defoci)]
-        print(f"\n  per-tilt defocus delta (GT vs CURRENT):")
+        diffs = [abs(g - c) for g, c in zip(gt_defoci, cur_defoci, strict=False)]
+        print("\n  per-tilt defocus delta (GT vs CURRENT):")
         print(f"  mean_abs_diff={statistics.mean(diffs):.4f} um  max_diff={max(diffs):.4f} um")
         if max(diffs) > 0.2:
             worst = max(range(len(diffs)), key=lambda i: diffs[i])
@@ -395,7 +394,7 @@ def compare_job_jsons(project_dir, gt_dir):
         gv = get_val(gt, key)
         cv = get_val(cur, key)
         status = "OK" if gv == cv else "<<< DIFF"
-        print(f"  {key:<32} {str(gv):>16}  {str(cv):>16}  {status}")
+        print(f"  {key:<32} {gv!s:>16}  {cv!s:>16}  {status}")
 
     # version and stats
     print(f"\n  {'pytom_version':<32} {gt.get('pytom_tm_version_number','?'):>16}  "
@@ -409,10 +408,10 @@ def compare_job_jsons(project_dir, gt_dir):
         print(f"  {'job_stats.' + stat:<32} {gv:>16.8f}  {cv:>16.8f}{flag}")
 
     gs = gt.get("tomo_shape"); cs = cur.get("tomo_shape")
-    print(f"\n  {'tomo_shape':<32} {str(gs):>16}  {str(cs):>16}  "
+    print(f"\n  {'tomo_shape':<32} {gs!s:>16}  {cs!s:>16}  "
           f"{'OK' if gs == cs else '<<< DIFF'}")
     ts = gt.get("template_shape"); tc = cur.get("template_shape")
-    print(f"  {'template_shape':<32} {str(ts):>16}  {str(tc):>16}  "
+    print(f"  {'template_shape':<32} {ts!s:>16}  {tc!s:>16}  "
           f"{'OK' if ts == tc else '<<< DIFF'}")
 
 

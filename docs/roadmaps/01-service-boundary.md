@@ -1,0 +1,425 @@
+# Roadmap 01 — Service boundary: a real facade, and homes for QC/visualization logic
+
+## The two questions this roadmap answers first
+
+### Q1: Is there a downside to centralizing all services on the backend? Does it constrain us later?
+
+Split the question in two, because "on the backend" means two different things:
+
+- **Centralizing the *surface* (facade routes to services): no downside, actively helps later.**
+  The facade's methods are the natural seam for everything the platform roadmap wants: a future
+  control-plane API (`PLATFORM_ROADMAP.md` chapter 3's `ClusterBackend` split), a CLI, headless tests,
+  the post-schemer reconciler. A method like `backend.extract_pick_list(project_path, ...)` maps 1:1
+  onto a future HTTP endpoint; scattered `ui → services.*` imports map onto nothing. The one rule that
+  keeps this future open: **services must never require the facade or any UI context** — they take
+  explicit `project_path`/`ProjectState`/params. Drivers already prove this constraint is livable:
+  they run on compute nodes importing services directly with no backend, and must keep doing so.
+- **Centralizing the *implementation* (logic living in backend.py): real downside, already visible.**
+  47% of `backend.py` (lines ~536-1412) is an unextracted curation-session subsystem. A facade that
+  implements is a god object: untestable, merge-conflict-prone, and it makes the facade itself the
+  thing you'd have to rewrite for the control-plane split. So: **facade = composition root + thin
+  command methods; each domain gets a service; backend.py should trend toward ~400 lines of routing.**
+  Corollary: stop exposing service objects as facade attributes (`backend.template_service.*` from UI
+  is direct access with extra steps); expose operations.
+
+The existing `services → backend` back-references (constructor injection of `self`) are a designed
+cycle — acceptable for now, worth shrinking opportunistically (most services use only 1-2 things off
+the backend), and the orchestrator replacement will naturally reshape it. Not this roadmap's fight.
+
+### Q2: The services→ui inversion — load-bearing or safe to undo?
+
+**Safe. It is ergonomic sugar, not architecture.** What's actually there
+(`services/project_state.py:1165-1182`): the path-keyed registry `get_project_state_for(path)` is the
+real mechanism and stays untouched. The zero-arg `get_project_state()` merely asks the browser tab's
+`UIStateManager` for the active path (hence the `ui.ui_state` import), and **falls back to a blank
+throwaway `ProjectState()`** when there's no client context. That fallback is the W2 ArtiaX bug class:
+service/background code calling it silently operates on an empty project.
+`services/aggregation_authoritative.py:11` already documents "never `get_project_state()`" as a
+hard-won lesson.
+
+Measured blast radius of the undo (grep, 2026-08-10): 61 call sites in 9 `ui/` files, **zero** in
+services outside `project_state.py` itself; plus 4 uses of the equivalent `StateService.state`
+property in `backend.py` (3) and `project_service.py` (1). So: move the zero-arg accessor to
+`ui/current_project.py`, repoint the 9 UI files' imports (mechanical), convert the 4 backend/service
+sites to `state_for(path)` — each of those is a latent blank-state bug today, so this is 4 bug fixes,
+not 4 risks.
+
+## Before → After
+
+**Before:** 39/57 UI files import `services.*` directly; the facade is optional; persistence is
+called from 28 UI sites with ad-hoc policy; dashboard aggregation, pixel-sanity math, and the
+array-task status protocol live inside `ui/`; the curation subsystem lives inside the facade; the
+core state accessor depends on a browser tab.
+
+**After:** dependencies flow `ui → backend → services`, enforced by lint; QC/data-processing logic
+(dashboard collectors, pixel chain, task status) lives in `services/` where drivers, tests, and any
+future frontend can reach it; persistence policy has one owner; `backend.py` is thin routing.
+**Gain:** UI files become what `ui/curation_session_dialog.py` already is (renderers over facade
+calls); the scientific/QC logic becomes importable, testable, and reusable; the control-plane future
+stays open.
+
+## Stage 0 — gather first
+
+- Enumerate the full `ui → services` import matrix (which UI file uses which service function) —
+  the audit has counts; the migration needs the exact list per file. One grep session, recorded here.
+- For each of the 28 `save_project()` UI call sites: classify *why it saves* (user action commit /
+  post-mutation flush / defensive). The debounced saver in `ui/aggregation_merge_card.py:90` encodes a
+  real perf constraint (full save too slow on hot paths) — that policy must survive the move into the
+  facade, so document its trigger conditions before touching it.
+- Confirm no NiceGUI dependency in `ui/dashboard/data.py` and `ui/dashboard/pixel_sanity.py:34-437`
+  (audit says none; re-verify at move time — a stray `ui.notify` would need extracting first).
+
+## Stage 0 record (gathered 2026-08-11, sandbox grep)
+
+- **Zero-arg `get_project_state()` call sites** (post-roadmap-00 tree): 9 UI files —
+  `aggregation_merge_card.py` ×15, `tomo_dashboard_dialog.py` ×11, `tilt_filter_panel.py` ×10,
+  `io_config_component.py` ×11, `dashboard/data.py` ×4, `job_tab_component.py` ×3 (+1 local import),
+  `status_indicator.py` ×2, `pipeline_roster.py` ×1 (+1 local import), `config_tab.py` ×1.
+  Zero calls in `services/` outside `project_state.py` (the two `aggregation_authoritative.py`
+  mentions are warning docstrings).
+- **SURPRISE — 3 of the audit's 4 backend `.state` conversions are dead code:**
+  `backend.get_job_parameters` (:1646), `backend.update_job_parameters` (:1674), and
+  `backend.get_initial_parameters` (:1757) have **zero callers repo-wide** → deleted in stage 1
+  instead of converted. Only `project_service.delete_job:120` is live (2 UI callers via
+  `backend.delete_job`) → takes explicit `project_path` threaded from the UI callers.
+- **SURPRISE — `set_project_state` (project_state.py:1169) has zero callers** → deleted in stage 1.
+- **SURPRISE — 6 additional `.state` property uses in UI files** the audit didn't count:
+  `pipeline_builder_panel.py` :260,:351,:378,:601 and `pipeline_roster.py` :221,:377 → repointed to
+  the UI wrapper in stage 1.
+- **`save_project` UI call sites: now 22, not 28** (tree moved since audit): tomo_dashboard_dialog ×7,
+  tilt_filter_panel ×5, pipeline_builder_panel ×4, job_tab_component ×2, io_config_component ×2,
+  template_workbench ×1, species_workbench_panel ×1. Classification deferred to stage 4.
+- **NiceGUI check for stage 3:** `ui/dashboard/data.py` clean (no nicegui import; UI deps are only
+  `task_utils` + the accessor stage 1 replaces). `ui/dashboard/pixel_sanity.py` imports nicegui at
+  module top — the :34-437 pure band must be split from the renderers at move time as the audit said.
+- **ui→services import matrix** (import statements per file, top offenders): tomo_dashboard_dialog 27,
+  pipeline_roster 10, aggregation_merge_card 7, pipeline_builder_panel 6, tilt_filter_panel 5,
+  dashboard/data.py 5, io_config_component 4, job_plugins/template_match 4,
+  job_plugins/candidate_extract 4, data_import_panel 4; 39 files total import services directly.
+
+## Stage 1 record (executed 2026-08-11)
+
+Landed as planned (ui/current_project.py, 9 files repointed, 6 `.state` property uses repointed,
+`delete_job` takes explicit `project_path` threaded from both UI callers, dead
+`get_job_parameters`/`update_job_parameters`/`get_initial_parameters`/`set_project_state`/
+`StateService.ensure_job_initialized` deleted, `get_project_state()` + `StateService.state` deleted).
+Two deviations:
+
+- **`StateService.save_project`'s no-path branch kept a contained tab-context resolve** (lazy
+  `ui.ui_state` import inside the method, loudly commented): 22 UI sites still call bare
+  `save_project()` and migrating them is stage 4's job. This is now the LAST services→ui inversion;
+  stage 4 deletes it. Behavior change vs before: a path-less save with no client context now logs a
+  warning instead of silently no-opping against a blank state (same net effect, visible).
+- **Roadmap-00 fallout found during this stage:** ruff's F401 autofix had stripped load-bearing
+  *re-exports* (`JobCategory`, `JobStatus`) from `services/project_state.py` — ImportError on boot.
+  Restored with the `as X` redundant-alias idiom (autofix-proof). A repo-wide import-resolution sweep
+  (scratchpad script: every internal `from X import name` checked against X's definitions) now passes;
+  lesson for stage 7's import-linter: re-exports must use `as X` or `__all__`.
+
+## Stage 2 record (executed 2026-08-11)
+
+Landed as planned: the whole curation band (19 methods + `_CURATION_LIVE_STATES` + the three
+`__init__` state fields, 876 lines) moved verbatim to `services/curation/session_service.py`;
+`backend.py` keeps 15 same-named typed delegators (the 4 `_`-private helpers moved without
+delegation — grep confirmed zero external callers, including of the state dicts). backend.py
+1817 → 1064 lines. Notes:
+
+- **The service takes explicit deps** (`server_dir`, `username`, `slurm_service` — the shared
+  instance, preserving squeue-cache behavior; config via `get_config_service()`), NOT a backend
+  back-reference: the band touched nothing else on `self`, so the new service is born conforming
+  to Q1's "services never require the facade" rule. Lazy `services.visualization` imports kept
+  lazy, verbatim.
+- One line of pre-existing format drift rode along (`stop_curation_session`'s signature fits on
+  one 120-char line); `ruff format` applied to both touched files only.
+- One stale comment repointed (`ui/curation_session_dialog.py` referenced `backend._curation_loaded`);
+  `artiax_bridge.py`'s `backend.send_chimerax_command` docstring mentions stay true via the delegator.
+- Verification ceiling this session was ruff only (`/software` unmounted → venv python is a dangling
+  symlink; lint + format + F821/F401 clean). Runtime check owed: boot + curation session launch +
+  swap/save round-trip.
+
+## Stage 3 scope record (gathered 2026-08-11, read-only)
+
+Ordering is forced by the dependency chain `pixel_sanity → data → task_utils`: land as three commits
+3a → 3b → 3c (each runnable).
+
+**3a — `ui/components/task_utils.py` → `services/array_tasks.py`.** 153 lines, pure stdlib
+(json/re/pathlib), zero nicegui — moves wholesale. Facts:
+
+- Callers to repoint (5 files, 7 sites — 3 are pipeline_roster function-LOCAL imports, the
+  lint-dodging kind): `aggregation_merge_card:35`, `array_task_tracker:27` (8 names, some `as _x`
+  aliased), `pipeline_roster` :116 :133 :587, `dashboard/data.py:23`.
+- Constants: task_utils HARDCODES `".task_manifest.json"` (:94) / `".task_status"` (:113) as
+  literals; the named constants live only in `drivers/array_job_base.py:44-45`. Single-source:
+  `array_tasks.py` defines `MANIFEST_FILENAME`/`STATUS_DIR_NAME` (and uses them);
+  `array_job_base.py` replaces its literals with `from services.array_tasks import MANIFEST_FILENAME
+  as MANIFEST_FILENAME, ...` — the as-X re-export is LOAD-BEARING (8 drivers import
+  `STATUS_DIR_NAME` *from array_job_base*; stage-1 F401 lesson). Import direction is already proven:
+  array_job_base sys.path-bootstraps and imports `services.*` on compute nodes today.
+- Roadmap-04 coordination resolved: TaskStatusStore has NOT landed → stage 3 owns the constants.
+  The `read_manifest`/`scan_statuses` duplication vs array_job_base's own manifest/status functions
+  stays — that dedup IS TaskStatusStore, not this stage.
+
+**3b — `ui/dashboard/data.py` → `services/dashboard_data.py`.** 709 lines; the one stage-3 move that
+is not purely mechanical. Facts:
+
+- Two UI deps: task_utils (fixed by 3a) and `current_project_state` ×4 — those 4 sites are the real
+  work: `_job_dir_for` (:131, `state.job_path_mapping` fallback despite taking explicit
+  `project_path`) gains an explicit `state` param → ~12 dialog call sites + 2 internal callers
+  thread it; `has_any_previews_rendered()` gains `state` (sole caller `pipeline_roster:1535-1537`
+  fetches and passes).
+- **SURPRISE — `has_any_extract_jobs` + `has_any_dashboard_data` are DEAD** (repo-wide grep:
+  definitions only) → delete, don't move (re-verify at execution).
+- Public-API rename (drop `_`) covers exactly the cross-module surface: the dialog's 17-name import
+  (:58) + strip's 2 (`_PREP_STAGES`, `_position_label`) + pixel_sanity's 5 (union ≈ 19 names;
+  constants upcase → `SPECIES_OVERLAY_COLORS`, `PREP_STAGES`). Confirmed internal-only (keep `_`):
+  `_PILL_STAGES`, `_PICK_LIST_GLYPH`, `_ARRAY_STAGE_OUTPUT_STAR` (stage-6 table candidate), and the
+  per-TS status helpers.
+- `aggregation_authoritative.py` :14 :55 :71 docstrings cite `ui.dashboard.data._job_dir_for` /
+  `._resolve_species` → repoint the text to `services.dashboard_data`.
+- `data.py`'s `services.tilt_series.build._infer_position` import becomes services→services (fine
+  as-is; renaming that private is not this stage's fight).
+- Shim: `ui/dashboard/data.py` re-exports the NEW names under the OLD `_names` for one release.
+
+**3c — `ui/dashboard/pixel_sanity.py:33-437` → `services/pixel_chain.py`.** Facts:
+
+- Pure band = 5 defs (`_read_template_apix_box`, `_parse_tomo_dimensions`, `_scale_tomo_dims`,
+  `_compute_pixel_chain(project_state)` — state already explicit, `_apply_sanity_rules`); band greps
+  CLEAN of nicegui/render-side names (`_fmt*`, `_UNIVERSAL_STAGE_KEYS`, `ui.`) → split line at
+  :437/438 confirmed. Band's only cross-deps: 5 dashboard_data names (hence 3b first) +
+  `services.templating.template_metadata` (already services).
+- Renderers + `_fmt_*` + `_UNIVERSAL_STAGE_KEYS` + `_group_rows_by_species` stay in
+  `ui/dashboard/pixel_sanity.py`; dialog repoint (:77): compute/apply from `services.pixel_chain`,
+  de-prefixed `render_pixel_sanity_table` from `ui.dashboard.pixel_sanity`. Shim for moved names.
+
+Runtime checklist (3a–3c together): boot; open an array-history project (`projects/pos9_10` or
+`try2_after_pixShift`); roster per-TS chips (task_utils path); Journey dashboard sidebar strip +
+pills (data path); pixel-sanity table with warnings (pixel_chain path); one array-job submit if
+convenient (array_job_base import change).
+
+## Stage 3 record (executed 2026-08-11)
+
+Landed as scoped; repo-wide ruff clean, zero old-path imports left. Sizes: `services/array_tasks.py`
+158, `services/dashboard_data.py` 682, `services/pixel_chain.py` 430; shims: `task_utils.py` 18,
+`data.py` 50; `pixel_sanity.py` down to 267 (renderers only). Execution notes:
+
+- **data.py had 2 MORE function-local task_utils imports (:455-456)** the scope's site count missed —
+  caught by the post-edit grep sweep (9 sites, not 7). Reinforces stage 7's case: local imports dodge
+  every static count.
+- Dead `has_any_extract_jobs`/`has_any_dashboard_data` re-verified dead → deleted, not moved.
+- All 12 dialog `job_dir_for` sites sat inside functions already holding `project_state` → threading
+  was purely mechanical; no new accessor fetches anywhere. `has_any_previews_rendered(state)`'s one
+  caller (roster) passes `current_project_state()` at the UI edge.
+- `aggregation_authoritative`'s `_job_dir`/`_species_id_for_job` docstrings repointed; note their
+  headless re-implementations could now collapse into `services.dashboard_data.job_dir_for`/
+  `resolve_species` (both sides are headless now) — left for a deliberate later pass, not a move.
+- Shims: `task_utils` (same-name `as X`), `data.py` (old `_names` via `__all__` re-export),
+  `pixel_sanity` (re-exports + old-name alias for the renamed renderer). Delete after one release;
+  stage 7's import-linter should ban importing them from new code.
+- Pre-existing format drift observed (NOT formatted — not this change's lines): dialog (4 hunks),
+  roster, merge_card, array_job_base. All new/rewritten files are format-clean.
+- **Commit partition: 3a alone is committable; 3b+3c must land as ONE commit** — `job_dir_for`'s
+  signature change breaks an unmodified dialog at runtime (shim can't paper over an arity change),
+  and the dialog carries 3b and 3c imports together.
+
+## Stage 4 record (executed 2026-08-11)
+
+Landed; repo-wide ruff clean; zero `StateService`-direct saves left in `ui/` (20 facade calls).
+Facts + deviations:
+
+- **The audit's premise was stale in a good way:** no module-level `save_project` imports existed —
+  all 22 UI sites called the `StateService` method (13 bare/tab-resolve, 9 explicit-path). So stage
+  7's enforcement target is `get_state_service().save_project`-style *calls* in `ui/` (AST check),
+  not a banned-import — recorded here for stage 7.
+- `backend.save_project(project_path, *, force=False, debounce_s=None)` added; per-project
+  trailing-edge coalescing via `_pending_saves`. **Deviation from the sketch:** `debounce_s: float`
+  instead of `debounce: bool` — there were TWO debouncers with different windows (merge-card
+  checkboxes 0.4 s, `job_tab_component.DebouncedSaver` config fields 1.0 s); a bool would have
+  collapsed one policy into the other. Both migrated; `DebouncedSaver` deleted
+  (`create_save_handler` now returns a facade-backed trigger). Facade coalesces per *project* where
+  the old savers coalesced per widget — strictly fewer writes, same end state.
+- `StateService.save_project` → `(project_path, *, force=False)`: the tab-context resolve (the LAST
+  services→ui inversion) is DELETED, and the `save_path` param went with it. **Runtime break caught
+  by the user (project creation TypeError): `save_path` was NOT zero-caller** —
+  `project_service.initialize_new_project:493` passed it on a continuation line, invisible to the
+  single-line grep the "dead" verdict came from. The call was redundant (it also passed
+  `project_path`, and both the registry and init set `state.project_path`, so the derived target is
+  the identical file) → call site fixed. **Lesson (stage 6+ must apply): when changing a signature,
+  audit call sites with `grep -A`/AST — kwargs live on continuation lines.**
+  Path-less/blank states log a warning instead of silently returning.
+- The 13 bare sites all had a path in reach: 12 in scope (params/`self.ui_mgr.project_path`/in-scope
+  `state`), 1 via the state they'd just fetched. `force` semantics preserved per site;
+  `_persist_state` uses `force=True` because `update_modified()` does not mark dirty.
+- One wrong scope inference caught by ruff F821 (dialog `_set_authoritative` has `project_path` but
+  not `backend` in scope) → local `get_backend` import, matching the dialog's function-local idiom.
+- `pipeline_builder_panel.state_service` attribute deleted; `get_state_service` imports trimmed in 5
+  files (still legitimately imported where `state_for()` is used — that's read access, not persistence).
+- Runtime check owed: species edit save, merge-card checkbox burst (one write ~0.4 s after the last
+  click), config-field edit burst (~1 s), tilt-filter manual label save, run-pipeline (force save),
+  dedup/authoritative-list toggles in the dashboard.
+
+## Stage 5 record (executed 2026-08-11)
+
+All three strays landed; repo-wide ruff clean. Notes:
+
+- **5a** `_finalize_pipeline_output` + `_find_tsimport_tomostar_dir` →
+  `services/jobs/tilt_filter.py` as `finalize_pipeline_output(state, job_model, ts_data,
+  project_path)` returning `{"success", "error", "kept", "dropped"}`. The two `ui.notify` calls
+  stayed panel-side (`_notify_finalize`, byte-identical messages); the helper's hidden
+  `current_project_state()` call became an explicit `state` param (one more accessor purged from
+  logic). Callers' ignore-return control flow preserved.
+- **5c** `apply_aggregation_overrides` → `services/aggregation_authoritative.py` (module docstring
+  amended: read-only + ONE mutator, deliberately placed as the write-side twin of the resolution
+  logic). The card's thin `active_merged_optset` wrapper inlined to `state.active_merged_optset()`;
+  lazy imports promoted to module level (`JobFileType`, `MERGED_DIR_NAME` — no cycle). 4 callers
+  repointed. `path_resolution_service.py:590`'s comment names the function without a module → still
+  true.
+- **5b** the dialog's 48-line submit/poll/record closure → `backend.extract_pick_list_and_wait`
+  (submit via `extract_pick_list`, await via the existing `_await_extraction_outdirs`, record
+  `mark_extracted` + persist). The watcher's "mirrors the dialog" docstring is retired — it is now
+  the ONE watcher for both the batch and per-list paths. Two knowingly-accepted micro-changes: the
+  tray subtitle no longer flashes "submitting extraction…" before "extracting subtomograms…"
+  (sub-second phase), and `mark_dirty()` is now called before the force-save (equivalent under
+  force; matches the batch path).
+- Runtime check owed: tilt-filter manual-label commit (trimmed tomostar + commit toast + alignment
+  wiring), DL commit if reachable, merge → consumers auto-wired, per-list Extract button (tray
+  tracks; count + extracted state land), and one `extract_authoritative_pending` batch run.
+
+## Stage 6 record (executed 2026-08-11)
+
+Landed as three committable chunks: **6a** add `services/jobs/spec.py` (additive), **6b** convert all
+readers (behavior-preserving), **6c** quarantined behavior fix (see below). Repo-wide ruff clean.
+Scope facts + deviations:
+
+- **The 8 tables were actually 10.** Gathering found two driver tables the audit's list missed, both
+  in `pipeline_orchestrator_service.py`: the forward `driver_map` (`_build_fn_exe`, was :509) and
+  `JobTypeResolver.DRIVER_TO_JOBTYPE` (was :814). Both now derive from `JobSpec.driver` — this is the
+  "driver module" field the stage sketch wanted.
+- **SURPRISE — real desync bug found in gathering: `DRIVER_TO_JOBTYPE` was missing `tilt_filter.py`**
+  while the forward map had it, so `get_job_type_from_path` on a tiltFilter job dir returned `None`.
+  The derived reverse map includes it → quarantined as its own commit (6c) with a loud comment at the
+  definition. Runtime-verify: reconciliation over a project containing a tiltFilter job.
+- Design decisions: execution flags (`IS_INTERACTIVE`, `JOB_CATEGORY`, ...) STAY on the param class —
+  `JobSpec` is topology + identity only. `phase=None` encodes "hidden from roster" (tsImport).
+  `MERGED_SOURCES` gets no spec row (synthetic, per its enum comment); `spec.display_name()` carries a
+  `_SYNTHETIC_DISPLAY_NAMES` fallback for it. `plugins` is a tuple of `ui.job_plugins` module
+  *basenames* (pure data — services still import no ui code); `_load_plugins` derives its module list
+  from the specs. The plugin `_REGISTRY` dict itself survives (it holds UI callables, populated by
+  decorators) — what died is the hand-maintained module list.
+- Old names kept as derived views where readers were plentiful: `PHASE_JOBS` (3 files) is now a
+  comprehension over `JOB_SPECS` in `pipeline_constants`; `PIPELINE_ORDER` moved to spec.py as a
+  tuple; ui_state's `get_job_order`/`get_job_display_name`/`get_ordered_jobs` became thin wrappers
+  (23+ call sites unchanged). Deleted outright: `JOB_DISPLAY_NAMES`, `JOB_DEPENDENCIES`,
+  `_PREREQUISITES`, `_ARRAY_STAGE_OUTPUT_STAR`, both hand driver maps, the plugin module hand-list.
+- `jobtype_paramclass()` keeps its signature but returns the module-level `PARAM_CLASS_BY_TYPE`
+  `MappingProxyType` (per-call rebuild gone). All 8 call sites verified `.get()`-only readers —
+  mutation would now raise, which is correct.
+- Row-by-row equivalence verified against every old table before deletion (order, display strings,
+  dep tuples incl. `DENOISE_PREDICT`'s (train, reconstruct) order, prereqs, stars, driver names,
+  plugin-module set). Plugin module *import order* changed (spec order vs the old hand-list order) —
+  safe because no two modules register the same slot for the same job type (checked).
+- Process lessons applied: multi-line-aware greps (`grep -A`) confirmed no continuation-line imports
+  of deleted names (pipeline_roster's multi-line `pipeline_constants` import was exactly that shape,
+  all its names survive); no signature changes were made anywhere. `PHASE_PREPROCESSING`/
+  `PHASE_PARTICLES` moved to spec.py and are re-imported by `pipeline_constants` — F401-autofix-safe
+  because both are *used* there (PHASE_JOBS comprehension, PHASE_META keys), not bare re-exports.
+- **Verification ceiling this session: ruff + grep ONLY** — no python interpreter at all
+  (`/software` unmounted → venv symlink dangling, no system python). py_compile is still owed along
+  with runtime. Pre-existing format drift in `pipeline_runner.py` observed, not formatted (untouched
+  lines).
+- Stage 7 enforcement target added by this stage: new code must read `services/jobs/spec.py`, not
+  re-grow per-concern tables; consider a lint ban on new module-level `dict[JobType, ...]` literals
+  outside spec.py.
+
+Runtime checklist: boot (spec import chain + plugin auto-load); roster renders both phases with
+correct order/names; add tsAlignment or tiltFilter to a fresh pipeline (prerequisite auto-add of
+tsImport); add-button dependency gating tooltips; job tab custom renderers (fs-motion, template
+match) + Tasks tabs (array types); Journey per-TS pills on a legacy no-manifest job (array star
+fallback); deploy a scheme (driver command build); reconciliation of an existing project WITH a
+tiltFilter job (6c behavior change: its dir now resolves to a job type instead of None).
+
+## Stage 7 record (executed 2026-08-11) — ROADMAP COMPLETE
+
+`check_boundaries.py` at repo root (~160 lines, stdlib-only AST walk), run as
+`python check_boundaries.py`, exit 1 on violation; added to CLAUDE.md's lint commands. **Deviation
+from the sketch:** standalone script, NOT inside `preflight.py` — preflight is an interactive setup
+wizard, and the boundary check belongs in the fast non-interactive lint loop next to `ruff check .`.
+Ruff's flake8-tidy-imports banned-api was rejected because it can't express per-directory rules.
+Four declarative rules (lists at the top of the file, grow them as boundaries land):
+
+- **R1** `services/`, `drivers/`, `backend.py` may not import `ui.*` — `ast.walk` over every
+  Import/ImportFrom, so function-local imports (the audit's 51 dodgers) can't hide. `main.py`
+  excluded (entry point, legitimately imports ui).
+- **R2** `ui/` may not call `*.save_project()` on a receiver mentioning `state_service` (the stage-4
+  enforcement target: it's a *call* pattern, not an import). Verified all 21 current ui/ save calls
+  go through backend receivers (`backend`, `self.backend`, `panel.backend`, `bk`, `get_backend()`).
+  Known gap, accepted: an aliased `svc = get_state_service()` then `svc.save_project()` with a
+  non-obvious name escapes — full dataflow isn't worth it.
+- **R3** stage-3 shims frozen: `ui.components.task_utils` / `ui.dashboard.data` banned as whole
+  modules (verified zero importers today); `ui.dashboard.pixel_sanity`'s three shimmed old names
+  banned as (module, name) pairs (that module also holds live renderers, so no whole-module ban).
+- **R4** no new module-level dict literal keyed by ≥3 `JobType.` members outside
+  `services/jobs/spec.py` (the stage-6 target). Threshold 3 keeps small legitimate mappings legal;
+  verified zero JobType-keyed dict entries exist outside spec.py today, so current tree is clean.
+
+The stage-1 `as X`/`__all__` re-export convention is NOT machine-enforced (would need import-graph
+resolution against ruff's F401 autofix timing); it stays a review rule recorded in the stage-1 record.
+Verification ceiling: ruff + grep (no interpreter this session) — **the checker itself has never
+executed**; first `python check_boundaries.py` run is owed and should print "Boundaries clean (...)"
+with exit 0.
+
+## Stages (each committable)
+
+1. **Undo the inversion.** *(DONE 2026-08-11 — record above.)* Add `ui/current_project.py` with `current_project_state()` (tab-context
+   resolve → `get_project_state_for`); repoint the 61 UI call sites; convert the 4 backend/service
+   `.state` uses to explicit `state_for(path)`; delete `get_project_state()` and the
+   `StateService.state` property from `services/`. Blank-state fallback lives on in the UI wrapper
+   only (landing page legitimately has no project).
+2. **Extract `CurationSessionService`** *(DONE 2026-08-11 — record above.)* (`backend.py:536-1412` →
+   `services/curation/session_service.py`). Pure move: the facade keeps same-named delegating methods
+   (UI callers unchanged). The session registry file, ssh/REST plumbing, and save/load logic move wholesale.
+3. **Move the UI-resident services** *(DONE 2026-08-11 — scope + execution records above)* (pure moves
+   with thin re-export shims for one release):
+   - `ui/dashboard/data.py` → `services/dashboard_data.py` (the collectors; `ui/dashboard/` keeps
+     rendering only). Drop the `_`-prefixes on what is now a public API.
+   - `ui/dashboard/pixel_sanity.py:34-437` → `services/pixel_chain.py`; renderers stay.
+   - `ui/components/task_utils.py` → `services/array_tasks.py`, single-sourcing
+     `MANIFEST_FILENAME`/`STATUS_DIR_NAME` with `drivers/array_job_base.py` (coordinate with
+     Roadmap 04's `TaskStatusStore` — whichever lands first owns the constants).
+4. **Persistence through the facade.** *(DONE 2026-08-11 — record above.)* Add
+   `backend.save_project(project_path, *, force=False, debounce=False)` embodying the card's debounce
+   policy; migrate the 28 UI call sites; make direct `save_project` imports from `ui/` a lint error
+   (see enforcement below).
+5. **Job-lifecycle strays out of UI:** *(DONE 2026-08-11 — record above.)* `ui/tilt_filter_panel.py:185 _finalize_pipeline_output` →
+   `services/jobs/tilt_filter.py` (the manual-label path is the job's real output producer);
+   `ui/tomo_dashboard_dialog.py:2939 _handle_extract_list`'s poll-loop body → the existing
+   `backend.extract_pick_list` path; `ui/aggregation_merge_card.py:117 apply_aggregation_overrides` →
+   `services/aggregation_authoritative.py` (note: `path_resolution_service.py:590` has a comment
+   depending on this function's behavior — read it first).
+6. **One `JobSpec` table.** *(DONE 2026-08-11 — record above.)* Frozen dataclass per job type (param class, display name, phase,
+   dependencies, plugin, driver module) in `services/jobs/spec.py`, replacing the 8 unsynchronized
+   tables (`jobtype_paramclass` + `PIPELINE_ORDER` + `JOB_DISPLAY_NAMES` + `PHASE_JOBS` +
+   `JOB_DEPENDENCIES` + `_PREREQUISITES` + `_ARRAY_STAGE_OUTPUT_STAR` + plugin `_REGISTRY`).
+   Build it additively: new table first, then convert readers one commit at a time, delete old tables
+   last. Also stop rebuilding the mapping per call (`services/jobs/__init__.py:30`).
+7. **Enforcement.** *(DONE 2026-08-11 — record above.)* Add a tiny import-linter (a ~30-line AST check in `preflight.py` or a ruff
+   `flake8-tidy-imports` banned-api config): `services/` may not import `ui.*`; `ui/` may not import
+   `services.project_state.save_project` (list grows as stages land). Without this, the boundary
+   erodes again — 51 of today's violations are function-local imports that dodged review.
+
+## Modern-Python weave-in
+
+- `JobSpec` = `@dataclass(frozen=True, slots=True)`; registry as `Final[Mapping[JobType, JobSpec]]`.
+- The callback bags threaded through pipeline-builder components (10 signatures, 18 magic keys) →
+  one `PanelCallbacks` Protocol (or frozen dataclass) when stage 4/5 touches those files.
+- Facade methods gain return annotations as they're touched (they're the API surface; Roadmap 03's
+  result type will thread through here).
+- `functools.cached_property` for the facade's lazily-built service handles instead of init-time
+  construction where cheap.
+
+## Runtime checklist
+
+Per stage: boot, open project hub, open workspace, run the moved feature (curation session launch for
+stage 2; Journey dashboard for stage 3; save-heavy flows — species edit, merge card — for stage 4;
+tilt-filter manual label + list extraction for stage 5). Stage 1 specifically: verify background tasks
+(thumbnail generation, ArtiaX auto-ingest) still persist state — those were the historical blank-state
+victims.

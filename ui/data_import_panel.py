@@ -8,7 +8,7 @@ import getpass
 import glob
 import logging
 from pathlib import Path
-from typing import Dict, Callable
+from collections.abc import Callable
 
 from nicegui import ui, app
 
@@ -56,7 +56,7 @@ def _avatar_color(key: str) -> str:
 CURRENT_USER = getpass.getuser()
 
 
-def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Callable]) -> None:
+def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Callable]) -> None:
     ui_mgr = get_ui_state_manager()
     prefs_service = get_prefs_service()
 
@@ -112,7 +112,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
     # -- Async glob validation (never blocks the event loop) ----------------
 
-    _glob_tasks: Dict[str, asyncio.Task] = {}
+    _glob_tasks: dict[str, asyncio.Task] = {}
 
     def _validate_glob_quick(pattern: str) -> tuple[bool, str]:
         """Instant syntax-only check — no filesystem I/O."""
@@ -171,7 +171,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             prev.cancel()
 
         async def _finish():
-            is_valid, count, msg = await _validate_glob_full(pattern)
+            is_valid, _count, msg = await _validate_glob_full(pattern)
             if ui_mgr.data_import.movies_glob != pattern:
                 return  # pattern changed while we were checking
             ui_mgr.update_data_import(movies_valid=is_valid)
@@ -205,7 +205,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             prev.cancel()
 
         async def _finish():
-            is_valid, count, msg = await _validate_glob_full(pattern)
+            is_valid, _count, msg = await _validate_glob_full(pattern)
             if ui_mgr.data_import.mdocs_glob != pattern:
                 return
             ui_mgr.update_data_import(mdocs_valid=is_valid)
@@ -223,6 +223,16 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
         _glob_tasks["mdocs"] = asyncio.create_task(_finish())
 
+    def is_dataless() -> bool:
+        """True when the user asked for a project with no raw data.
+
+        Both globs empty is the signal — creation mechanics were already
+        glob-gated, never flag-gated, so the old `is_particle_only` toggle was a
+        transient UI field that duplicated what the globs already said.
+        """
+        di = ui_mgr.data_import
+        return not di.movies_glob and not di.mdocs_glob
+
     def get_missing_requirements() -> list[str]:
         sync_state_from_inputs()
         di = ui_mgr.data_import
@@ -231,9 +241,13 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
             missing.append("Project Name")
         if not (di.project_base_path and di.project_base_path.strip()):
             missing.append("Project Path")
-        # Data-less projects (aggregation or particle-only) skip raw frames + mdocs entirely.
-        if di.is_aggregation or di.is_particle_only:
+        # Data-less projects skip raw frames + mdocs entirely. Derived from the globs
+        # rather than a mode flag: leaving both empty IS the request for a project with
+        # no raw data (tomograms/picks arrive later from the Particles section). The
+        # legacy aggregation toggle is still an explicit flag until S6 retires it.
+        if di.is_aggregation or is_dataless():
             return missing
+        # A half-filled form is a mistake, not a data-less project — ask for the rest.
         if not di.movies_glob:
             missing.append("Data Path")
         elif not di.movies_valid:
@@ -262,8 +276,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 "letter-spacing: 0.01em;"
             )
             if status_label:
-                status_label.set_text("Ready to create")
-                status_label.style(f"{FONT} font-size: 10px; color: {CLR_SUCCESS};")
+                # Say it out loud when there is no raw data, so a data-less project is
+                # always a choice rather than an unnoticed consequence of empty globs.
+                if is_dataless() and not ui_mgr.data_import.is_aggregation:
+                    status_label.set_text("Ready to create — without raw data")
+                    status_label.style(f"{FONT} font-size: 10px; color: {CLR_ACCENT_TEXT};")
+                else:
+                    status_label.set_text("Ready to create")
+                    status_label.style(f"{FONT} font-size: 10px; color: {CLR_SUCCESS};")
         else:
             btn.disable()
             btn.classes("opacity-50 cursor-not-allowed")
@@ -673,9 +693,12 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
         selected_mdoc_paths = None
         import_summary = None
         detected_params = None
-        if overview and not (di.is_aggregation or di.is_particle_only):
+        if overview and not (di.is_aggregation or is_dataless()):
             selected_ts = overview.get_selected_tilt_series()
             selected_mdoc_paths = [str(ts.mdoc_path) for ts in selected_ts]
+            # Scalar counts only — per-position/per-TS details and per-tilt mdoc
+            # stats live in the TiltSeriesRegistry (roadmap 02 stage 4), not in
+            # a ProjectState mirror.
             import_summary = {
                 "total_positions": len(overview.positions),
                 "selected_positions": sum(1 for p in overview.positions if p.selected),
@@ -683,29 +706,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 "selected_tilt_series": overview.selected_tilt_series,
                 "source_directory": overview.source_directory or "",
                 "frame_extension": overview.frame_extension or "",
-                "position_details": [
-                    {
-                        "stage_position": p.stage_position,
-                        "beam_count": p.beam_count,
-                        "tilt_count": p.total_tilts,
-                        "selected": p.selected,
-                    }
-                    for p in overview.positions
-                ],
-                "tilt_series_details": [
-                    {
-                        "stage_position": ts.stage_position,
-                        "beam_position": ts.beam_position,
-                        "tilt_count": ts.tilt_count,
-                        "selected": ts.selected,
-                        "mdoc_filename": ts.mdoc_filename,
-                    }
-                    for p in overview.positions
-                    for ts in p.tilt_series
-                ],
-                "tilt_metadata": {
-                    Path(t.frame_filename).stem: t.mdoc_stats for ts in selected_ts for t in ts.tilts if t.mdoc_stats
-                },
             }
             sel_summary = overview.selected_acquisition_summary()
             detected_params = {}
@@ -740,8 +740,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 project_name=di.project_name,
                 project_base_path=di.project_base_path,
                 selected_jobs=[j.value for j in ui_mgr.selected_jobs],
-                movies_glob="" if (di.is_aggregation or di.is_particle_only) else di.movies_glob,
-                mdocs_glob="" if (di.is_aggregation or di.is_particle_only) else di.mdocs_glob,
+                movies_glob="" if di.is_aggregation else di.movies_glob,
+                mdocs_glob="" if di.is_aggregation else di.mdocs_glob,
                 selected_mdoc_paths=selected_mdoc_paths,
                 import_summary=import_summary,
                 detected_params=detected_params,
@@ -752,14 +752,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 project_path = Path(result["project_path"])
                 scheme_name = f"scheme_{di.project_name}"
                 ui_mgr.set_project_created(project_path, scheme_name)
-                # Aggregation projects pre-initialize SubtomoExtraction in
-                # state.jobs; mirror it into ui_mgr.selected_jobs so the
-                # workspace renders the tab on first arrival.
-                if di.is_aggregation:
-                    state = backend.state_service.state_for(project_path)
-                    ui_mgr.load_from_project(
-                        project_path=state.project_path, scheme_name=scheme_name, jobs=list(state.jobs.keys())
-                    )
+                # (Dropped: a mirror of an aggregation project's pre-initialized
+                # SubtomoExtraction into ui_mgr.selected_jobs. Aggregation projects
+                # have had no pipeline jobs at creation time since the merge moved to
+                # a standalone workspace card — see project_service.create_project —
+                # so the branch reloaded an EMPTY job list over the user's selections.)
 
                 # Show success state before navigating
                 if progress_container:
@@ -840,6 +837,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                     str(state.project_path.parent) if state.project_path else "", label=state.project_name
                 )
                 prefs_service.save_to_app_storage(app.storage.user)
+
+                # Load report (roadmap 03 stage 5): anything load() had to drop or
+                # reset is surfaced once here instead of dying in the server log.
+                if state.load_warnings:
+                    n = len(state.load_warnings)
+                    shown = "; ".join(state.load_warnings[:3])
+                    more = f" (+{n - 3} more, see server log)" if n > 3 else ""
+                    ui.notify(f"Project loaded with {n} warning(s): {shown}{more}", type="warning", timeout=10000)
 
                 if state.pipeline_active:
                     ui_mgr.set_pipeline_running(True)
@@ -1170,58 +1175,16 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                                     f"{FONT} font-size: 10px;"
                                 )
 
-                # Data-less project toggles. Both skip raw frames/mdocs and are
-                # mutually exclusive. Particle-only yields a PLAIN project (tomos/
-                # picks/particles supplied later via provider jobs); aggregation is
-                # the LEGACY merge-at-SubtomoExtraction path being phased out
-                # (PARTICLE_PROJECT_ROADMAP.md — P5 removes aggregation).
+                # There is no "particle-only" toggle any more: leaving the raw-data
+                # globs empty IS the request for a data-less project (see
+                # is_dataless()). The dataless_hint below tells the user that is what
+                # they are about to create, so it can't happen by accident.
                 def _sync_dataless_visibility():
                     di = ui_mgr.data_import
                     section = local_refs.get("raw_data_section")
                     if section:
-                        section.set_visibility(not (di.is_aggregation or di.is_particle_only))
+                        section.set_visibility(not di.is_aggregation)
                     update_create_button_state()
-
-                def on_particle_only_toggle(e):
-                    enabled = bool(e.value)
-                    ui_mgr.update_data_import(is_particle_only=enabled)
-                    # Mutually exclusive with the legacy aggregation toggle.
-                    if enabled and ui_mgr.data_import.is_aggregation:
-                        ui_mgr.update_data_import(is_aggregation=False)
-                        agg_sw = local_refs.get("aggregation_switch")
-                        if agg_sw:
-                            agg_sw.value = False
-                        agg_hint = local_refs.get("aggregation_hint")
-                        if agg_hint:
-                            agg_hint.set_visibility(False)
-                    po_hint = local_refs.get("particle_only_hint")
-                    if po_hint:
-                        po_hint.set_visibility(enabled)
-                    _sync_dataless_visibility()
-
-                with ui.row().classes("w-full items-center justify-between mb-2"):
-                    with ui.row().classes("items-center gap-1"):
-                        ui.label("Particle-only project").style(field_label_style)
-                        with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
-                            ui.tooltip(
-                                "Start with no raw data. Supply reconstructed tomograms, "
-                                "manual picks, or particle sets later from the Particles section."
-                            ).style(f"{FONT} font-size: 10px;")
-                    local_refs["particle_only_switch"] = (
-                        ui.switch(value=ui_mgr.data_import.is_particle_only, on_change=on_particle_only_toggle)
-                        .props("dense")
-                        .style("transform: scale(0.75);")
-                    )
-
-                particle_only_hint = ui.label(
-                    "Particle-only mode: this project starts empty. Add reconstructed/denoised "
-                    "tomograms, manual picks (ArtiaX), or aggregated particle sets from the Particles section."
-                ).style(
-                    f"{FONT} font-size: 10px; color: {CLR_ACCENT_TEXT}; "
-                    f"background: {CLR_ACCENT_LIGHT}; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px;"
-                )
-                particle_only_hint.set_visibility(ui_mgr.data_import.is_particle_only)
-                local_refs["particle_only_hint"] = particle_only_hint
 
                 # Aggregation mode toggle (LEGACY): when on, this project skips raw
                 # frames/mdocs and starts at SubtomoExtraction (used to merge
@@ -1229,15 +1192,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
                 def on_aggregation_toggle(e):
                     enabled = bool(e.value)
                     ui_mgr.update_data_import(is_aggregation=enabled)
-                    # Mutually exclusive with particle-only.
-                    if enabled and ui_mgr.data_import.is_particle_only:
-                        ui_mgr.update_data_import(is_particle_only=False)
-                        po_sw = local_refs.get("particle_only_switch")
-                        if po_sw:
-                            po_sw.value = False
-                        po_hint = local_refs.get("particle_only_hint")
-                        if po_hint:
-                            po_hint.set_visibility(False)
                     hint = local_refs.get("aggregation_hint")
                     if hint:
                         hint.set_visibility(enabled)
@@ -1289,9 +1243,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: Dict[str, Call
 
                 raw_data_section = ui.column().classes("w-full gap-1")
                 local_refs["raw_data_section"] = raw_data_section
-                raw_data_section.set_visibility(
-                    not (ui_mgr.data_import.is_aggregation or ui_mgr.data_import.is_particle_only)
-                )
+                raw_data_section.set_visibility(not ui_mgr.data_import.is_aggregation)
                 with raw_data_section, ui.column().classes("w-full gap-2").style(section_style):
                     # Raw Frames & Mdocs (combined input)
                     with ui.column().classes("w-full gap-0"):

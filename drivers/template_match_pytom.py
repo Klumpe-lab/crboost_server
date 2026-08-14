@@ -19,16 +19,24 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           prepared by the supervisor. Atomically writes
           `.task_status/{name}.{ok|fail}`.
 
+No per-task staging isolation on purpose (census #18): pytom takes explicit
+per-tomogram args, outputs are name-keyed, so tasks cannot collide. The task
+reads its inputs from the manifest snapshot, not the drive-time resolver
+(census #20): all array tasks of one submission must see identical,
+already-validated template/mask/star inputs even if project state changes
+mid-array.
+
 Tomograms are 1:1 with tilt-series in v1 (Tomogram.tilt_series_id == ts_id), so
 the manifest keys off ts_names / tilt_series_ids() directly.
+
+The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
+markers all live in ArrayDriver; this file is the template-match-specific hooks.
 """
 
 import os
 import shutil
 import sys
-import traceback
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import pandas as pd
 import starfile
@@ -36,27 +44,15 @@ import starfile
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
-from drivers.array_job_base import (
-    apply_exclusions,
-    collect_task_results,
-    install_cancel_handler,
-    preflight_registry,
-    read_manifest,
-    submit_array_job,
-    wait_for_array_completion,
-    write_status_atomic,
-    STATUS_DIR_NAME,
-)
-from drivers.driver_base import get_driver_context, run_command
-from services.computing.container_service import get_container_service
+from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
+from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
+from services.configs.starfile_service import StarfileService
 from services.job_models import TemplateMatchPytomParams
 
 
 # TEMPORARY: Use pytom 0.10-style text file inputs instead of --relion5-tomograms-star.
 # Set to True to replicate GT pipeline behavior for score comparison.
 LEGACY_TEXT_INPUT = True
-
-DRIVER_SCRIPT = Path(__file__).resolve()
 
 
 # ----------------------------------------------------------------------
@@ -65,6 +61,8 @@ DRIVER_SCRIPT = Path(__file__).resolve()
 
 
 def _get_df_from_star(path: Path) -> pd.DataFrame:
+    """First DataFrame block regardless of name — needed for per-tilt stars,
+    whose single block is named after the TS, not 'global'."""
     d = starfile.read(path, always_dict=True)
     for v in d.values():
         if isinstance(v, pd.DataFrame):
@@ -72,14 +70,22 @@ def _get_df_from_star(path: Path) -> pd.DataFrame:
     raise ValueError(f"No dataframe blocks found in {path}")
 
 
+def read_global_block(path: Path) -> pd.DataFrame:
+    """The 'global' block of a pipeline-written STAR (census #21: the named
+    block, via StarfileService, is the canonical read path for enumeration)."""
+    star_data = StarfileService().read(path)
+    df = star_data.get("global")
+    if df is None:
+        raise ValueError(f"No 'global' block in {path} (blocks: {list(star_data.keys())})")
+    return df
+
+
 def _resolve_star_path(base_dir: Path, p: str) -> Path:
     pp = Path(p)
     return pp if pp.is_absolute() else (base_dir / pp).resolve()
 
 
-def generate_legacy_text_files(
-    tiltseries_global_star: Path, output_dir: Path
-) -> Dict[str, Dict[str, Path]]:
+def generate_legacy_text_files(tiltseries_global_star: Path, output_dir: Path) -> dict[str, dict[str, Path]]:
     """
     Replicate old CryoBoost's generatePytomInputFiles: extract tilt angles,
     defocus (in um), and dose from per-tilt star files into plain text files
@@ -96,7 +102,7 @@ def generate_legacy_text_files(
     for d in (tlt_dir, def_dir, dose_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    result: Dict[str, Dict[str, Path]] = {}
+    result: dict[str, dict[str, Path]] = {}
     for _, row in ts_df.iterrows():
         name = str(row["rlnTomoName"])
         ts_star = _resolve_star_path(ts_base, str(row["rlnTomoTiltSeriesStarFile"]))
@@ -120,9 +126,7 @@ def generate_legacy_text_files(
     return result
 
 
-def make_pytom_tomograms_star(
-    *, tomograms_star: Path, tiltseries_global_star: Path, out_star: Path
-) -> Path:
+def make_pytom_tomograms_star(*, tomograms_star: Path, tiltseries_global_star: Path, out_star: Path) -> Path:
     """Build the patched tomograms STAR with absolute rlnTomoTiltSeriesStarFile paths."""
     tomo_df = _get_df_from_star(tomograms_star).copy()
     ts_df = _get_df_from_star(tiltseries_global_star).copy()
@@ -163,15 +167,13 @@ def make_pytom_tomograms_star(
     return out_star
 
 
-def get_gpu_split(requested_split: str) -> List[str]:
+def get_gpu_split(requested_split: str) -> list[str]:
     if requested_split in ["auto", "None", ""]:
         return ["2", "2", "1"]
     return requested_split.split(":")
 
 
-def resolve_tomogram_path(
-    raw_path: str, *, tomograms_star: Path, project_root: Path
-) -> Path:
+def resolve_tomogram_path(raw_path: str, *, tomograms_star: Path, project_root: Path) -> Path:
     """Resolve rlnTomoReconstructedTomogram against common conventions."""
     rel = Path(raw_path)
     if rel.is_absolute():
@@ -192,9 +194,9 @@ def build_pytom_base_cmd(
     template_file: Path,
     mask_file: Path,
     tm_results_dir: Path,
-    gpu_ids: List[str],
-    angle_list_file: Optional[Path] = None,
-) -> List[str]:
+    gpu_ids: list[str],
+    angle_list_file: Path | None = None,
+) -> ToolCommand:
     """The per-task base command before per-tomogram args are appended.
 
     Symmetry routing:
@@ -206,125 +208,89 @@ def build_pytom_base_cmd(
         (PyTOM's dedicated flag, simpler than rolling our own angle list).
       - C1 → `--angular-search <float>` only.
     """
-    base_cmd = [
-        "pytom_match_template.py",
-        "-t", str(template_file),
-        "-d", str(tm_results_dir),
-        "-m", str(mask_file),
-        "--voltage", str(state.microscope.acceleration_voltage_kv),
-        "--spherical-aberration", str(state.microscope.spherical_aberration_mm),
-        "--amplitude-contrast", str(state.microscope.amplitude_contrast),
-        "--per-tilt-weighting",
-        "--log", "debug",
-        "-g",
-    ] + gpu_ids
+    base_cmd = (
+        ToolCommand("pytom_match_template.py")
+        .opt_path("-t", template_file, quote=False)
+        .opt_path("-d", tm_results_dir, quote=False)
+        .opt_path("-m", mask_file, quote=False)
+        .opt("--voltage", state.microscope.acceleration_voltage_kv)
+        .opt("--spherical-aberration", state.microscope.spherical_aberration_mm)
+        .opt("--amplitude-contrast", state.microscope.amplitude_contrast)
+        .flag("--per-tilt-weighting")
+        .opt("--log", "debug")
+        .raw(" ".join(["-g", *gpu_ids]))
+    )
 
     sym = str(params.symmetry) if params.symmetry else "C1"
     if angle_list_file is not None:
-        base_cmd.extend(["--angular-search", str(angle_list_file)])
+        base_cmd.opt_path("--angular-search", angle_list_file, quote=False)
     else:
-        base_cmd.extend(["--angular-search", str(params.angular_search)])
+        base_cmd.opt("--angular-search", params.angular_search)
         if sym != "C1" and sym.startswith("C"):
-            base_cmd.extend(["--z-axis-rotational-symmetry", sym[1:]])
+            base_cmd.opt("--z-axis-rotational-symmetry", sym[1:])
 
     if params.gpu_split != "None":
-        base_cmd.extend(["-s"] + get_gpu_split(params.gpu_split))
+        base_cmd.raw(" ".join(["-s", *get_gpu_split(params.gpu_split)]))
     if params.spectral_whitening:
-        base_cmd.append("--spectral-whitening")
+        base_cmd.flag("--spectral-whitening")
     if getattr(params, "random_phase_correction", False):
-        base_cmd.append("--random-phase-correction")
+        base_cmd.flag("--random-phase-correction")
     if params.non_spherical_mask:
-        base_cmd.append("--non-spherical-mask")
+        base_cmd.flag("--non-spherical-mask")
     if params.bandpass_filter != "None" and ":" in params.bandpass_filter:
         low, high = params.bandpass_filter.split(":")
-        base_cmd.extend(["--low-pass", low, "--high-pass", high])
+        base_cmd.opt("--low-pass", low).opt("--high-pass", high)
 
     return base_cmd
 
 
-# ----------------------------------------------------------------------
-# Mode dispatch
-# ----------------------------------------------------------------------
+class TemplateMatchPytomDriver(ArrayDriver):
+    params_class = TemplateMatchPytomParams
+    job_name = "template_match_pytom"
+    driver_script = Path(__file__).resolve()
 
+    # ---------------- supervisor ----------------
 
-def main():
-    os.environ["TQDM_DISABLE"] = "1"
-    print("Python", sys.version, flush=True)
-    array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
-    if array_idx_env is None:
-        print("--- template_match_pytom: SUPERVISOR mode ---", flush=True)
-        run_supervisor_mode()
-    else:
-        print(f"--- template_match_pytom: TASK mode (array idx {array_idx_env}) ---", flush=True)
-        run_task_mode(int(array_idx_env))
+    def enumerate_items(self, ctx: DriverContext[TemplateMatchPytomParams]) -> list[str]:
+        input_star_tomos = ctx.paths["input_tomograms"]
+        input_star_ts = ctx.paths["input_tiltseries"]
+        require_producer_input(input_star_tomos, "Input tomograms STAR")
+        require_producer_input(input_star_ts, "Input tiltseries STAR")
 
-
-# ----------------------------------------------------------------------
-# Supervisor mode
-# ----------------------------------------------------------------------
-
-
-def run_supervisor_mode():
-    try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(
-            TemplateMatchPytomParams
-        )
-    except Exception as e:
-        fail_dir = Path.cwd()
-        (fail_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[SUPERVISOR] CWD (job dir): {job_dir}", flush=True)
-
-    try:
-        paths = {k: Path(v) for k, v in context["paths"].items()}
-        instance_id = context["instance_id"]
-
-        input_star_tomos = paths["input_tomograms"]
-        input_star_ts = paths["input_tiltseries"]
-        template_file = paths.get("template_path")
-        mask_file = paths.get("mask_path")
-
-        if not input_star_tomos.exists():
-            raise FileNotFoundError(f"Input tomograms STAR missing: {input_star_tomos}")
-        if not input_star_ts.exists():
-            raise FileNotFoundError(f"Input tiltseries STAR missing: {input_star_ts}")
+        template_file = ctx.paths.get("template_path")
+        mask_file = ctx.paths.get("mask_path")
         if template_file is None or not Path(template_file).exists():
             raise FileNotFoundError(f"Template file missing: {template_file}")
         if mask_file is None or not Path(mask_file).exists():
             raise FileNotFoundError(f"Mask file missing: {mask_file}")
 
-        tm_results_dir = job_dir / "tmResults"
-        tm_results_dir.mkdir(exist_ok=True)
-
-        tomo_df = _get_df_from_star(input_star_tomos)
+        tomo_df = read_global_block(input_star_tomos)
         required_cols = {"rlnTomoName", "rlnTomoReconstructedTomogram"}
         missing = required_cols - set(tomo_df.columns)
         if missing:
             raise KeyError(f"tomograms.star missing columns {missing}. Have: {list(tomo_df.columns)}")
 
-        tomo_names = sorted(tomo_df["rlnTomoName"].astype(str).tolist())
-        print(f"[SUPERVISOR] Found {len(tomo_names)} tomograms in input STAR", flush=True)
+        self._tomo_df = tomo_df
+        return sorted(tomo_df["rlnTomoName"].astype(str).tolist())
 
-        # Tomograms are 1:1 with TS in v1 — preflight the registry on TS IDs.
-        preflight_registry(project_path, tomo_names, job_name="template_match_pytom")
+    def pre_dispatch(self, ctx: DriverContext[TemplateMatchPytomParams], items: list[str]) -> None:
+        job_dir = ctx.job_dir
+        input_star_ts = ctx.paths["input_tiltseries"]
+
+        tm_results_dir = job_dir / "tmResults"
+        tm_results_dir.mkdir(exist_ok=True)
 
         # Prepare per-tomogram inputs ONCE so tasks don't each re-parse STARs.
-        legacy_files: Dict[str, Dict[str, Path]] = {}
         if LEGACY_TEXT_INPUT:
-            print("[SUPERVISOR] LEGACY MODE: generating text files for pytom 0.10", flush=True)
-            legacy_files = generate_legacy_text_files(
-                tiltseries_global_star=input_star_ts, output_dir=job_dir
-            )
+            self.log("LEGACY MODE: generating text files for pytom 0.10")
+            generate_legacy_text_files(tiltseries_global_star=input_star_ts, output_dir=job_dir)
         else:
             patched_tomos = make_pytom_tomograms_star(
-                tomograms_star=input_star_tomos,
+                tomograms_star=ctx.paths["input_tomograms"],
                 tiltseries_global_star=input_star_ts,
                 out_star=job_dir / "tomograms_for_pytom.star",
             )
-            print(f"[SUPERVISOR] Patched tomograms STAR for PyTOM: {patched_tomos}", flush=True)
+            self.log(f"Patched tomograms STAR for PyTOM: {patched_tomos}")
 
             ts_staging_dir = job_dir / "tilt_series"
             ts_staging_dir.mkdir(exist_ok=True)
@@ -341,20 +307,13 @@ def run_supervisor_mode():
                             f"Cannot stage for PyTOM. Check upstream CTF job output."
                         )
 
-        # Build per-tomogram metadata for the manifest — tasks use this to
-        # avoid re-reading the tomograms STAR.
-        raw_tomo_paths: Dict[str, str] = {}
-        for _, row in tomo_df.iterrows():
-            name = str(row["rlnTomoName"])
-            raw_tomo_paths[name] = str(row["rlnTomoReconstructedTomogram"])
-
         # Non-Cn symmetries need a custom angle list — PyTOM has no flag for
         # D/T/O/I, only the dedicated --z-axis-rotational-symmetry for Cn.
         # Generate once at supervisor start so all array tasks reuse the same
         # file; tasks rebuild build_pytom_base_cmd per-tomo but the angle file
         # is shared.
-        angle_list_path: Optional[Path] = None
-        sym = str(params.symmetry) if params.symmetry else "C1"
+        self._angle_list_path = None
+        sym = str(ctx.params.symmetry) if ctx.params.symmetry else "C1"
         from services.templating.angle_lists import (
             needs_angle_list,
             generate_asymmetric_unit_angles,
@@ -364,190 +323,116 @@ def run_supervisor_mode():
 
         if needs_angle_list(sym):
             try:
-                inc_deg = float(params.angular_search)
+                inc_deg = float(ctx.params.angular_search)
             except (TypeError, ValueError):
                 inc_deg = 12.0
             angles = generate_asymmetric_unit_angles(sym, inc_deg)
-            angle_list_path = job_dir / f"angles_{sym}.txt"
-            write_angle_list_file(angles, angle_list_path)
+            self._angle_list_path = job_dir / f"angles_{sym}.txt"
+            write_angle_list_file(angles, self._angle_list_path)
             est = expected_angle_count(sym, inc_deg)
-            print(
-                f"[SUPERVISOR] symmetry={sym}: wrote {len(angles)} angles (estimate {est}) → {angle_list_path}",
-                flush=True,
-            )
+            self.log(f"symmetry={sym}: wrote {len(angles)} angles (estimate {est}) → {self._angle_list_path}")
 
-        manifest_extra = {
-            "input_tomograms_star": str(input_star_tomos),
+    def manifest_extras(self, ctx: DriverContext[TemplateMatchPytomParams], items: list[str]) -> dict:
+        raw_tomo_paths: dict[str, str] = {}
+        for _, row in self._tomo_df.iterrows():
+            raw_tomo_paths[str(row["rlnTomoName"])] = str(row["rlnTomoReconstructedTomogram"])
+
+        return {
+            "input_tomograms_star": str(ctx.paths["input_tomograms"]),
             "raw_tomo_paths": raw_tomo_paths,
             "legacy_text_input": LEGACY_TEXT_INPUT,
-            "patched_tomograms_star": None if LEGACY_TEXT_INPUT else str(job_dir / "tomograms_for_pytom.star"),
-            "template_path": str(template_file),
-            "mask_path": str(mask_file),
-            "angle_list_path": str(angle_list_path) if angle_list_path else None,
+            "patched_tomograms_star": None if LEGACY_TEXT_INPUT else str(ctx.job_dir / "tomograms_for_pytom.star"),
+            "template_path": str(ctx.paths["template_path"]),
+            "mask_path": str(ctx.paths["mask_path"]),
+            "angle_list_path": str(self._angle_list_path) if self._angle_list_path else None,
         }
 
-        per_task_cfg = params.get_effective_slurm_config()
+    def aggregate(self, ctx: DriverContext[TemplateMatchPytomParams], results: ArrayResults) -> None:
+        # Census #19 (maintainer decision): never edit primary files — excluded
+        # tomograms stay as rows in the output star; downstream consults the
+        # registry/project state for mutedness, not row absence.
+        output_tomograms = ctx.job_dir / "tomograms.star"
+        shutil.copy2(ctx.paths["input_tomograms"], output_tomograms)
+        self.log(f"Copied tomograms.star to {output_tomograms}")
 
-        # Honor user "exclude from processing": pre-skip excluded TS so they are
-        # never dispatched and count as settled (not failures) in aggregation.
-        apply_exclusions(job_dir, project_path, tomo_names)
+    # ---------------- task ----------------
 
-        array_job_id = submit_array_job(
-            job_dir=job_dir,
-            project_path=project_path,
-            instance_id=instance_id,
-            ts_names=tomo_names,
-            per_task_cfg=per_task_cfg,
-            array_throttle=params.array_throttle,
-            driver_script=DRIVER_SCRIPT,
-            manifest_extra=manifest_extra,
-        )
+    def task_already_done(self, ctx: DriverContext[TemplateMatchPytomParams], item: str) -> bool:
+        # Covers the crash-after-output-before-status window for the most
+        # expensive per-item tool in the pipeline (census #23).
+        out_scores = scores_mrc_path(ctx.job_dir, item)
+        if out_scores.exists() and out_scores.stat().st_size > 0:
+            self.log(f"Scores already exist, skipping: {out_scores}")
+            return True
+        return False
 
-        if array_job_id is not None:
-            install_cancel_handler(array_job_id, job_dir)
-            wait_for_array_completion(array_job_id, poll_secs=30)
-        else:
-            print("[SUPERVISOR] No array submitted (all tomograms previously succeeded)", flush=True)
-
-        results = collect_task_results(job_dir, tomo_names)
-        print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
-        if results.failed:
-            print(f"[SUPERVISOR] FAILED tomograms: {results.failed}", flush=True)
-        if results.missing:
-            print(f"[SUPERVISOR] MISSING tomograms: {results.missing}", flush=True)
-
-        if not results.all_succeeded:
-            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (some tomograms did not succeed)", flush=True)
-            sys.exit(1)
-
-        output_tomograms = job_dir / "tomograms.star"
-        shutil.copy2(input_star_tomos, output_tomograms)
-        print(f"[SUPERVISOR] Copied tomograms.star to {output_tomograms}", flush=True)
-
-        (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-        print("[SUPERVISOR] Job finished successfully.", flush=True)
-        sys.exit(0)
-
-    except Exception as e:
-        print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        sys.exit(1)
-
-
-# ----------------------------------------------------------------------
-# Task mode
-# ----------------------------------------------------------------------
-
-
-def run_task_mode(array_idx: int):
-    try:
-        (state, params, context, job_dir, project_path, job_type) = get_driver_context(
-            TemplateMatchPytomParams
-        )
-    except Exception as e:
-        print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    status_dir = job_dir / STATUS_DIR_NAME
-    tomo_name = None
-    try:
-        manifest = read_manifest(job_dir)
-        tomo_names = manifest["ts_names"]
-        if array_idx >= len(tomo_names):
-            raise IndexError(f"SLURM_ARRAY_TASK_ID {array_idx} out of range (manifest has {len(tomo_names)})")
-        tomo_name = tomo_names[array_idx]
-        print(f"[TASK {array_idx}] tomo_name={tomo_name}", flush=True)
+    def stage(self, ctx: DriverContext[TemplateMatchPytomParams], item: str):
+        manifest = read_manifest(ctx.job_dir)
 
         raw_tomo_paths = manifest.get("raw_tomo_paths") or {}
-        raw_tomo_path = raw_tomo_paths.get(tomo_name)
+        raw_tomo_path = raw_tomo_paths.get(item)
         if not raw_tomo_path:
-            raise KeyError(f"manifest missing raw_tomo_paths['{tomo_name}']")
+            raise KeyError(f"manifest missing raw_tomo_paths['{item}']")
 
         input_star_tomos = Path(manifest["input_tomograms_star"])
-        template_file = Path(manifest["template_path"])
-        mask_file = Path(manifest["mask_path"])
-        use_legacy = bool(manifest.get("legacy_text_input", True))
-        patched_tomograms_star = manifest.get("patched_tomograms_star")
 
-        paths = {k: Path(v) for k, v in context["paths"].items()}
-        additional_binds = list(context.get("additional_binds", []))
-        additional_binds.append(str(template_file.parent.resolve()))
-        additional_binds.append(str(mask_file.parent.resolve()))
-        additional_binds = sorted(set(additional_binds))
-
-        tm_results_dir = job_dir / "tmResults"
+        tm_results_dir = ctx.job_dir / "tmResults"
         tm_results_dir.mkdir(exist_ok=True)
 
-        out_scores = scores_mrc_path(job_dir, tomo_name)
-        if out_scores.exists() and out_scores.stat().st_size > 0:
-            print(f"[TASK {array_idx}] Scores already exist, skipping: {out_scores}", flush=True)
-            write_status_atomic(status_dir, tomo_name, ok=True)
-            sys.exit(0)
-
-        tomo_path = resolve_tomogram_path(
-            raw_tomo_path, tomograms_star=input_star_tomos, project_root=project_path
-        )
+        tomo_path = resolve_tomogram_path(raw_tomo_path, tomograms_star=input_star_tomos, project_root=ctx.project_path)
         if not tomo_path.exists():
             raise FileNotFoundError(
-                f"Tomogram file does not exist for {tomo_name}.\n"
-                f"  STAR entry: {raw_tomo_path}\n"
-                f"  Resolved:   {tomo_path}"
+                f"Tomogram file does not exist for {item}.\n  STAR entry: {raw_tomo_path}\n  Resolved:   {tomo_path}"
             )
 
-        local_tomo = tm_results_dir / f"{tomo_name}{tomo_path.suffix or '.mrc'}"
+        local_tomo = tm_results_dir / f"{item}{tomo_path.suffix or '.mrc'}"
         if not local_tomo.exists():
             os.symlink(tomo_path.resolve(), local_tomo)
 
+        return {
+            "local_tomo": local_tomo,
+            "tm_results_dir": tm_results_dir,
+            "template_file": Path(manifest["template_path"]),
+            "mask_file": Path(manifest["mask_path"]),
+            "use_legacy": bool(manifest.get("legacy_text_input", True)),
+            "patched_tomograms_star": manifest.get("patched_tomograms_star"),
+            "angle_list_path": manifest.get("angle_list_path"),
+        }
+
+    def build_command(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> ToolCommand:
         gpu_ids = os.environ.get("CUDA_VISIBLE_DEVICES", "0").split(",")
-        angle_list_str = manifest.get("angle_list_path")
-        angle_list_file = Path(angle_list_str) if angle_list_str else None
-        base_cmd = build_pytom_base_cmd(
-            params=params, state=state, template_file=template_file,
-            mask_file=mask_file, tm_results_dir=tm_results_dir, gpu_ids=gpu_ids,
-            angle_list_file=angle_list_file,
+        angle_list_str = staged["angle_list_path"]
+        cmd = build_pytom_base_cmd(
+            params=ctx.params,
+            state=ctx.state,
+            template_file=staged["template_file"],
+            mask_file=staged["mask_file"],
+            tm_results_dir=staged["tm_results_dir"],
+            gpu_ids=gpu_ids,
+            angle_list_file=Path(angle_list_str) if angle_list_str else None,
         )
 
-        cmd = base_cmd.copy()
-        cmd.extend(["-v", str(local_tomo)])
-        if use_legacy:
-            cmd.extend(["--tilt-angles", str(job_dir / "tiltAngleFiles" / f"{tomo_name}.tlt")])
-            cmd.extend(["--defocus", str(job_dir / "defocusFiles" / f"{tomo_name}.txt")])
-            cmd.extend(["--dose-accumulation", str(job_dir / "doseFiles" / f"{tomo_name}.txt")])
+        cmd.opt_path("-v", staged["local_tomo"], quote=False)
+        if staged["use_legacy"]:
+            cmd.opt_path("--tilt-angles", ctx.job_dir / "tiltAngleFiles" / f"{item}.tlt", quote=False)
+            cmd.opt_path("--defocus", ctx.job_dir / "defocusFiles" / f"{item}.txt", quote=False)
+            cmd.opt_path("--dose-accumulation", ctx.job_dir / "doseFiles" / f"{item}.txt", quote=False)
         else:
-            if not patched_tomograms_star:
+            if not staged["patched_tomograms_star"]:
                 raise RuntimeError("Non-legacy mode requires patched_tomograms_star in manifest")
-            cmd.extend(["--relion5-tomograms-star", patched_tomograms_star])
+            cmd.opt_path("--relion5-tomograms-star", staged["patched_tomograms_star"], quote=False)
 
-        cmd_str = " ".join(cmd)
-        print(f"[TASK {array_idx}] Command: {cmd_str}", flush=True)
+        return cmd
 
-        wrapped = get_container_service().wrap_command_for_tool(
-            command=cmd_str, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
-        )
-        run_command(wrapped, cwd=job_dir)
+    def task_binds(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> list:
+        return [staged["template_file"].parent.resolve(), staged["mask_file"].parent.resolve()]
 
+    def verify_outputs(self, ctx: DriverContext[TemplateMatchPytomParams], item: str, staged) -> None:
+        out_scores = scores_mrc_path(ctx.job_dir, item)
         if not out_scores.exists():
-            raise FileNotFoundError(
-                f"pytom_match_template reported success but expected output missing: {out_scores}"
-            )
-
-        write_status_atomic(status_dir, tomo_name, ok=True)
-        print(f"[TASK {array_idx}] {tomo_name} done", flush=True)
-        sys.exit(0)
-
-    except Exception as e:
-        label = tomo_name or f"_unknown_idx{array_idx}"
-        print(f"[TASK {array_idx}] FATAL ERROR for tomo={label}: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        try:
-            write_status_atomic(status_dir, label, ok=False)
-        except Exception as inner:
-            print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
-        sys.exit(1)
+            raise FileNotFoundError(f"pytom_match_template reported success but expected output missing: {out_scores}")
 
 
 if __name__ == "__main__":
-    main()
+    os.environ["TQDM_DISABLE"] = "1"
+    TemplateMatchPytomDriver().main()

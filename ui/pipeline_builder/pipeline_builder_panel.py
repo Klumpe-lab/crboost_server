@@ -2,19 +2,22 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Callable, List, Optional
+from collections.abc import Callable
 
 from nicegui import ui
 
 from backend import CryoBoostBackend
+from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobStatus
-from services.project_state import JobType, get_state_service
+from services.project_state import JobType
 
 from ui.components.reactive import SingleFlight
+from ui.current_project import current_project_state
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, next_instance_id
 from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
-from ui.ui_state import get_ui_state_manager, get_job_display_name, instance_id_to_job_type
+from services.models_base import InstanceId, instance_id_to_job_type
+from ui.ui_state import get_ui_state_manager, get_job_display_name
 from ui.pipeline_builder.job_tab_component import render_job_tab
 
 logger = logging.getLogger(__name__)
@@ -35,12 +38,12 @@ class PipelineBuilderPanel:
     def __init__(
         self,
         backend: CryoBoostBackend,
-        callbacks: Dict[str, Callable],
+        callbacks: dict[str, Callable],
         primary_sidebar=None,
         roster_panel=None,
-        toggle_workbench: Optional[Callable] = None,
-        ensure_pipeline_mode: Optional[Callable] = None,
-        toggle_journey: Optional[Callable] = None,
+        toggle_workbench: Callable | None = None,
+        ensure_pipeline_mode: Callable | None = None,
+        toggle_journey: Callable | None = None,
     ):
         self.backend = backend
         self.callbacks = callbacks
@@ -51,10 +54,9 @@ class PipelineBuilderPanel:
         self.toggle_journey = toggle_journey
 
         self.ui_mgr = get_ui_state_manager()
-        self.state_service = get_state_service()
 
-        self._job_content_containers: Dict[str, object] = {}
-        self._content_wrapper_ref: Dict[str, object] = {}
+        self._job_content_containers: dict[str, object] = {}
+        self._content_wrapper_ref: dict[str, object] = {}
 
         self.roster = RosterWidget(self)
         self.poller = StatusPoller(self)
@@ -130,7 +132,8 @@ class PipelineBuilderPanel:
 
             if not state.species_registry:
                 ui.notify(
-                    "Register at least one particle species in the Template Workbench first.",
+                    "No particle species yet — use “+” on the PARTICLES header to create one "
+                    "(no template needed), or build a template in the Template Workbench.",
                     type="warning",
                     timeout=4000,
                 )
@@ -197,8 +200,8 @@ class PipelineBuilderPanel:
                 )
 
     def invalidate_tm_tabs(self):
-        tm_prefix = JobType.TEMPLATE_MATCH_PYTOM.value
-        stale = [iid for iid in list(self._job_content_containers.keys()) if iid.split("__")[0] == tm_prefix]
+        tm_type = JobType.TEMPLATE_MATCH_PYTOM
+        stale = [iid for iid in list(self._job_content_containers.keys()) if InstanceId.matches(iid, tm_type)]
         for iid in stale:
             container = self._job_content_containers.pop(iid, None)
             if container:
@@ -208,7 +211,7 @@ class PipelineBuilderPanel:
                     pass
 
         active = self.ui_mgr.active_instance_id
-        if active and active.split("__")[0] == tm_prefix:
+        if active and InstanceId.matches(active, tm_type):
             self._ensure_job_rendered(active)
             for iid, c in self._job_content_containers.items():
                 c.set_visibility(iid == active)
@@ -251,12 +254,12 @@ class PipelineBuilderPanel:
     # ── Job/instance management ───────────────────────────────────────────────
 
     def add_instance_to_pipeline(
-        self, job_type: JobType, instance_id: Optional[str] = None, species_id: Optional[str] = None
+        self, job_type: JobType, instance_id: str | None = None, species_id: str | None = None
     ):
         if self.ui_mgr.is_running:
             return
 
-        state = self.state_service.state
+        state = current_project_state()
 
         # Interactive jobs are singletons — if one already exists, just switch to it.
         if instance_id is None:
@@ -336,20 +339,20 @@ class PipelineBuilderPanel:
         # consumer's input_optimisation slot to the active merge's synthetic
         # `mergedSources` producer (source_overrides key) so the user doesn't
         # need to manually configure the override.
-        from ui.aggregation_merge_card import apply_aggregation_overrides
+        from services.aggregation_authoritative import apply_aggregation_overrides
 
         apply_aggregation_overrides(state)
 
         if self.ui_mgr.is_project_created:
-            asyncio.create_task(self.state_service.save_project())
+            asyncio.create_task(self.backend.save_project(self.ui_mgr.project_path))
 
         self.ui_mgr.set_active_instance(instance_id)
         self.rebuild_pipeline_ui()
 
     def _cleanup_stale_overrides_for_instance(self, instance_id: str):
-        state = self.state_service.state
+        state = current_project_state()
         removed_model = state.jobs.get(instance_id)
-        job_type_str = instance_id.split("__")[0]
+        job_type_str = InstanceId.split(instance_id)[0]
 
         refs_to_clean: set = set()
         if removed_model:
@@ -374,26 +377,20 @@ class PipelineBuilderPanel:
         self._cleanup_stale_overrides_for_instance(instance_id)
         self._job_content_containers.pop(instance_id, None)
 
-        state = self.state_service.state
+        state = current_project_state()
         job_model = state.jobs.get(instance_id)
         if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
             del state.jobs[instance_id]
             state.job_path_mapping.pop(instance_id, None)
 
         if self.ui_mgr.is_project_created:
-            asyncio.create_task(self.state_service.save_project())
+            asyncio.create_task(self.backend.save_project(self.ui_mgr.project_path))
         self.rebuild_pipeline_ui()
 
-    # Job types that require a prerequisite job to exist in the pipeline.
-    # When adding the key job type, the value job type is auto-added if missing.
-    _PREREQUISITES: Dict[JobType, JobType] = {
-        JobType.TS_ALIGNMENT: JobType.TS_IMPORT,
-        JobType.TILT_FILTER: JobType.TS_IMPORT,
-    }
-
     def _ensure_prerequisites(self, job_type: JobType, state):
-        """Auto-add prerequisite jobs that this job type depends on."""
-        prereq = self._PREREQUISITES.get(job_type)
+        """Auto-add prerequisite jobs that this job type depends on (JobSpec.prerequisite)."""
+        spec = JOB_SPEC_BY_TYPE.get(job_type)
+        prereq = spec.prerequisite if spec else None
         if prereq is None:
             return
 
@@ -412,7 +409,7 @@ class PipelineBuilderPanel:
         state.ensure_job_initialized(prereq, instance_id=prereq_id, template_path=star if star.exists() else None)
 
     @staticmethod
-    def _find_existing_interactive(job_type: JobType, state) -> Optional[str]:
+    def _find_existing_interactive(job_type: JobType, state) -> str | None:
         """Return existing instance_id for a singleton interactive job, or None."""
         from services.jobs import jobtype_paramclass
 
@@ -426,19 +423,40 @@ class PipelineBuilderPanel:
 
     @staticmethod
     def _restore_interactive_state(job_type: JobType, instance_id: str, state):
-        """Restore persisted labels/state when re-creating an interactive job."""
+        """Restore persisted labels/state when re-creating an interactive job.
+        Labels come from the registry's per-frame filter verdicts (the last
+        filter run stamped them) — the ProjectState tilt_filter_labels mirror
+        is gone (roadmap 02 stage 4)."""
         if job_type != JobType.TILT_FILTER:
             return
         job_model = state.jobs.get(instance_id)
         if not job_model:
             return
-        if state.tilt_filter_labels:
-            job_model.tilt_labels = dict(state.tilt_filter_labels)
-            job_model.execution_status = JobStatus.SUCCEEDED
-            # Restore output paths if the filtered star already exists on disk
-            filtered_p = state.project_path / "TiltFilter" / "tiltseries_filtered.star"
-            if filtered_p.exists():
-                job_model.paths["output_star"] = str(filtered_p)
+        from services.tilt_series import get_registry_for
+
+        try:
+            reg = get_registry_for(state.project_path)
+        except Exception:
+            return
+        labels = {
+            f.id: ("bad" if f.is_filtered_out else "good")
+            for ts in reg.all_tilt_series()
+            for f in ts.frames
+            if f.is_filtered_out or f.filter_probability is not None
+        }
+        if labels:
+            job_model.tilt_labels = labels
+            # Restore the committed pipeline output — the trimmed tomostar dir.
+            # `output_tomostar` is the key the resolver wires into downstream jobs
+            # (finalize_pipeline_output's contract; the legacy `output_star` key is
+            # dead — restoring it leaves the producer resolving to an
+            # External/pending_tiltFilter placeholder that nothing creates).
+            # Only a job whose committed output exists on disk may claim SUCCEEDED;
+            # otherwise the user must re-commit from the panel.
+            out_tomostar = state.project_path / "TiltFilter" / "tomostar"
+            if out_tomostar.is_dir() and any(out_tomostar.iterdir()):
+                job_model.paths["output_tomostar"] = str(out_tomostar)
+                job_model.execution_status = JobStatus.SUCCEEDED
 
     # ── Full rebuild ──────────────────────────────────────────────────────────
 
@@ -494,7 +512,7 @@ class PipelineBuilderPanel:
             _safe_notify("Create a project first", type="warning")
             return
 
-        await self.state_service.save_project(force=True)
+        await self.backend.save_project(self.ui_mgr.project_path, force=True)
 
         try:
             result = await self.backend.start_pipeline(
@@ -574,12 +592,12 @@ class PipelineBuilderPanel:
 
 def build_pipeline_builder_panel(
     backend: CryoBoostBackend,
-    callbacks: Dict[str, Callable],
+    callbacks: dict[str, Callable],
     primary_sidebar=None,
     roster_panel=None,
-    toggle_workbench: Optional[Callable] = None,
-    ensure_pipeline_mode: Optional[Callable] = None,
-    toggle_journey: Optional[Callable] = None,
+    toggle_workbench: Callable | None = None,
+    ensure_pipeline_mode: Callable | None = None,
+    toggle_journey: Callable | None = None,
 ) -> None:
     panel = PipelineBuilderPanel(
         backend=backend,
@@ -595,16 +613,16 @@ def build_pipeline_builder_panel(
     # wire any consumer jobs (Class3D/Refine3D/...) that were added before the
     # merge happened or before the auto-override hook was wired. Cheap to call
     # on every workspace render — only writes when a value would actually change.
-    from ui.aggregation_merge_card import apply_aggregation_overrides
+    from services.aggregation_authoritative import apply_aggregation_overrides
 
-    n_wired = apply_aggregation_overrides(panel.state_service.state)
+    n_wired = apply_aggregation_overrides(current_project_state())
     if n_wired and panel.ui_mgr.is_project_created:
         # Persist so the wiring survives reload — otherwise we'd self-heal in
         # memory but the next reload starts cold and the user sees the same
         # "empty input" symptom.
         import asyncio as _asyncio
 
-        _asyncio.create_task(panel.state_service.save_project())
+        _asyncio.create_task(panel.backend.save_project(panel.ui_mgr.project_path))
 
     # Must be created in the current NiceGUI rendering context before
     # panel.build() is called, since rebuild_pipeline_ui writes into it.

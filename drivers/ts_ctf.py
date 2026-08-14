@@ -13,37 +13,36 @@ Mode is determined by the SLURM_ARRAY_TASK_ID env var:
           copies result XML back to the shared output dir.
 """
 
-import os
-import shlex
 import shutil
 import sys
-import traceback
 from pathlib import Path
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import (
-    apply_exclusions,
-    collect_task_results,
+    ArrayDriver,
+    ArrayResults,
     copy_tomostar_with_absolute_paths,
-    install_cancel_handler,
-    preflight_registry,
-    read_manifest,
+    get_previously_succeeded,
     read_tilt_series_names_from_input_star,
-    submit_array_job,
-    wait_for_array_completion,
-    write_status_atomic,
-    STATUS_DIR_NAME,
 )
-from drivers.driver_base import get_driver_context, run_command, run_command_with_retries, require_producer_input
-from services.computing.container_service import get_container_service
+from drivers.driver_base import DriverContext, ToolCommand, run_tool, require_producer_input
 from services.job_models import TsCtfParams
 from services.tilt_series import get_registry_for
 from services.tilt_series.adapters import TsCtfIngestAdapter
 
 
-DRIVER_SCRIPT = Path(__file__).resolve()
+# The supervisor copies the upstream settings file and tomostar dir into the job dir
+# once; every array task then stages from those copies. They are a supervisor↔task
+# contract, NOT resolver outputs — nothing declares them as OutputSlots, and the
+# resolver's `warp_tiltseries_settings` input points at the UPSTREAM (alignment) file,
+# not at our copy of it. Both ends name them here because a task looking for a name the
+# supervisor never wrote fails staging outright (ledger #8). The literals are dictated
+# by the settings file's own relative DataFolder="tomostar" /
+# ProcessingFolder="warp_tiltseries" keys, so they are not free choices.
+LOCAL_SETTINGS_NAME = "warp_tiltseries.settings"
+LOCAL_TOMOSTAR_NAME = "tomostar"
 
 
 # ----------------------------------------------------------------------
@@ -58,15 +57,19 @@ def run_defocus_hand_globally(
     Run ts_defocus_hand on ALL tilt-series at once. This is a global step because
     the handedness decision needs statistics across multiple TS.
     """
-    settings_str = shlex.quote(str(settings_file))
-    output_str = shlex.quote(str(output_processing))
 
-    check_cmd = f"WarpTools ts_defocus_hand --settings {settings_str} --output_processing {output_str} --check"
+    def defocus_hand(mode_flag: str) -> str:
+        return (
+            ToolCommand("WarpTools ts_defocus_hand")
+            .opt_path("--settings", settings_file, quote=True)
+            .opt_path("--output_processing", output_processing, quote=True)
+            .flag(mode_flag)
+            .render()
+        )
 
-    set_flip_cmd = f"WarpTools ts_defocus_hand --settings {settings_str} --output_processing {output_str} --set_flip"
-    set_noflip_cmd = (
-        f"WarpTools ts_defocus_hand --settings {settings_str} --output_processing {output_str} --set_noflip"
-    )
+    check_cmd = defocus_hand("--check")
+    set_flip_cmd = defocus_hand("--set_flip")
+    set_noflip_cmd = defocus_hand("--set_noflip")
 
     if params.defocus_hand == "auto":
         hand_cmd = (
@@ -83,11 +86,16 @@ def run_defocus_hand_globally(
     else:
         hand_cmd = " && ".join([check_cmd, set_noflip_cmd])
 
-    container_svc = get_container_service()
-    wrapped = container_svc.wrap_command_for_tool(
-        command=hand_cmd, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
+    # Retried like every other tool invocation in these drivers: --check and
+    # set_flip/set_noflip are idempotent, so a transient GPU-worker crash self-heals.
+    run_tool(
+        hand_cmd,
+        tool_name=params.get_tool_name(),
+        cwd=job_dir,
+        binds=additional_binds,
+        attempts=3,
+        label="ts_defocus_hand",
     )
-    run_command(wrapped, cwd=job_dir)
 
 
 def stage_ctf_environment(
@@ -114,9 +122,14 @@ def stage_ctf_environment(
     staged_tomostar_dir = stage_root / "tomostar"
     staged_tomostar_dir.mkdir(parents=True, exist_ok=True)
     src_tomostar = tomostar_dir / f"{ts_name}.tomostar"
-    if src_tomostar.exists():
-        dst_tomostar = staged_tomostar_dir / f"{ts_name}.tomostar"
-        copy_tomostar_with_absolute_paths(src_tomostar, dst_tomostar, tomostar_dir)
+    # Fail loud, matching stage_per_ts_environment. WarpTools enumerates items from the
+    # settings DataFolder (= tomostar), so a missing tomostar means the tool sees zero
+    # items, leaves the staged XML untouched, and the task green-ticks having done
+    # nothing. A TS with no work to do must arrive as an explicit `.skip`, never a no-op `.ok`.
+    if not src_tomostar.exists():
+        raise FileNotFoundError(f"Tomostar not found: {src_tomostar}")
+    dst_tomostar = staged_tomostar_dir / f"{ts_name}.tomostar"
+    copy_tomostar_with_absolute_paths(src_tomostar, dst_tomostar, tomostar_dir)
 
     # 3. Stage the XML as a real copy (defocus_hand already updated it).
     # A symlink would cause WarpTools to write through to the shared file,
@@ -134,250 +147,157 @@ def stage_ctf_environment(
     return stage_root
 
 
-def build_ctf_command(params: TsCtfParams) -> str:
+def build_ctf_command(params: TsCtfParams) -> ToolCommand:
     """Build the ts_ctf command to run inside a staged environment."""
     cmd = (
-        f"WarpTools ts_ctf "
-        f"--settings warp_tiltseries.settings "
-        f"--input_processing warp_tiltseries "
-        f"--output_processing warp_tiltseries "
-        f"--window {params.window} "
-        f"--range_low {params.range_min} "
-        f"--range_high {params.range_max} "
-        f"--defocus_min {params.defocus_min} "
-        f"--defocus_max {params.defocus_max} "
-        f"--voltage {int(round(params.voltage))} "
-        f"--cs {params.spherical_aberration} "
-        f"--amplitude {params.amplitude_contrast} "
-        f"--perdevice {params.perdevice}"
+        ToolCommand("WarpTools ts_ctf")
+        .opt("--settings", "warp_tiltseries.settings")
+        .opt("--input_processing", "warp_tiltseries")
+        .opt("--output_processing", "warp_tiltseries")
+        .opt("--window", params.window)
+        .opt("--range_low", params.range_min)
+        .opt("--range_high", params.range_max)
+        .opt("--defocus_min", params.defocus_min)
+        .opt("--defocus_max", params.defocus_max)
+        .opt("--voltage", round(params.voltage))
+        .opt("--cs", params.spherical_aberration)
+        .opt("--amplitude", params.amplitude_contrast)
+        .opt("--perdevice", params.perdevice)
     )
     if params.do_phase:
-        cmd += " --fit_phase"
+        cmd.flag("--fit_phase")
     return cmd
 
 
-# ----------------------------------------------------------------------
-# Mode dispatch
-# ----------------------------------------------------------------------
+class TsCtfDriver(ArrayDriver):
+    params_class = TsCtfParams
+    job_name = "ts_ctf"
+    driver_script = Path(__file__).resolve()
+    retry_attempts = 3
 
+    # ---------------- supervisor ----------------
 
-def main():
-    print("Python", sys.version, flush=True)
-    array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
-    if array_idx_env is None:
-        print("--- ts_ctf: SUPERVISOR mode ---", flush=True)
-        run_supervisor_mode()
-    else:
-        print(f"--- ts_ctf: TASK mode (array idx {array_idx_env}) ---", flush=True)
-        run_task_mode(int(array_idx_env))
-
-
-# ----------------------------------------------------------------------
-# Supervisor mode
-# ----------------------------------------------------------------------
-
-
-def run_supervisor_mode():
-    try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(TsCtfParams)
-    except Exception as e:
-        fail_dir = Path.cwd()
-        (fail_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[SUPERVISOR] CWD (job dir): {job_dir}", flush=True)
-
-    try:
-        paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
-        instance_id = local_params_data["instance_id"]
-        additional_binds = local_params_data["additional_binds"]
-
-        input_processing = paths["input_processing"]
-        settings_file = paths["warp_tiltseries_settings"]
-        output_processing = paths.get("output_processing", job_dir / "warp_tiltseries")
-        input_star = paths.get("input_star")
-
-        require_producer_input(input_processing, "Input processing dir")
+    def enumerate_items(self, ctx: DriverContext[TsCtfParams]) -> list[str]:
+        require_producer_input(ctx.paths["input_processing"], "Input processing dir")
+        input_star = ctx.paths.get("input_star")
         if not input_star:
             raise FileNotFoundError("Input STAR path did not resolve from the upstream job")
-        require_producer_input(Path(input_star), "Input STAR")
+        require_producer_input(input_star, "Input STAR")
 
         # Authoritative TS list = input STAR (alignment output). Globbing
         # *.xml in input_processing is unsafe: WarpTools writes a {ts}.xml
         # even for tilt-series alignment failed on (they're flagged
         # "unselected" inside the XML), so an XML-glob would silently
         # resurrect excluded TS and ts_ctf would waste compute on them.
-        ts_names = read_tilt_series_names_from_input_star(Path(input_star))
+        ts_names = read_tilt_series_names_from_input_star(input_star)
         if not ts_names:
             raise ValueError(f"No tilt-series found in input STAR: {input_star}")
-        in_scope = set(ts_names)
+        return ts_names
 
-        # Step 1: Copy alignment XMLs into our output dir — but only for the
-        # in-scope TS. Excluded XMLs would also poison run_defocus_hand_globally
-        # (it operates on every XML in output_processing).
+    def pre_dispatch(self, ctx: DriverContext[TsCtfParams], items: list[str]) -> None:
+        """Stage the shared inputs, then run ts_defocus_hand across ALL tilt-series.
+
+        Handedness is a global decision (it needs statistics over many TS), so unlike
+        every other per-TS job this supervisor runs real compute before dispatch.
+        """
+        input_processing = ctx.paths["input_processing"]
+        settings_file = ctx.paths["warp_tiltseries_settings"]
+        # OUTPUT_SCHEMA declares output_processing (path_template "warp_tiltseries/"),
+        # so resolution either produced this key or already aborted the bootstrap —
+        # a local default here could only ever mask a resolver change.
+        output_processing = ctx.paths["output_processing"]
+        in_scope = set(items)
+
+        # Copy alignment XMLs into our output dir — but only for the in-scope TS.
+        # Excluded XMLs would also poison the global defocus-hand step (it operates on
+        # every XML in output_processing). TS already holding `.ok` are also excluded
+        # from the copy: they are never re-dispatched (submit_array_job skips them), so
+        # their XMLs in output_processing carry task-written CTF results that a re-copy
+        # would silently clobber.
         output_processing.mkdir(parents=True, exist_ok=True)
+        already_ok = get_previously_succeeded(ctx.job_dir)
         copied = 0
         skipped = 0
+        preserved = 0
         for xml_file in input_processing.glob("*.xml"):
-            if xml_file.stem in in_scope:
+            if xml_file.stem not in in_scope:
+                skipped += 1
+            elif xml_file.stem in already_ok:
+                preserved += 1
+            else:
                 shutil.copy2(str(xml_file), str(output_processing / xml_file.name))
                 copied += 1
-            else:
-                skipped += 1
-        msg = f"[SUPERVISOR] Copied {copied} alignment XMLs to {output_processing}"
+        msg = f"Copied {copied} alignment XMLs to {output_processing}"
+        if preserved:
+            msg += f" (preserved {preserved} CTF-updated XMLs of already-succeeded TS)"
         if skipped:
             msg += f" (skipped {skipped} excluded by alignment output STAR)"
-        print(msg, flush=True)
+        self.log(msg)
 
         # Copy settings into job dir for staging
-        local_settings = job_dir / settings_file.name
+        local_settings = ctx.job_dir / LOCAL_SETTINGS_NAME
         if not local_settings.exists():
             shutil.copy2(str(settings_file), str(local_settings))
 
         # Find tomostar dir (from the alignment job or tsImport)
-        tomostar_dir = settings_file.parent / "tomostar"
-        local_tomostar = job_dir / "tomostar"
+        tomostar_dir = settings_file.parent / LOCAL_TOMOSTAR_NAME
+        local_tomostar = ctx.job_dir / LOCAL_TOMOSTAR_NAME
         if not local_tomostar.exists() and tomostar_dir.exists():
             shutil.copytree(str(tomostar_dir), str(local_tomostar))
 
-        n_tasks = len(ts_names)
-        print(f"[SUPERVISOR] Found {n_tasks} tilt-series for CTF estimation", flush=True)
+        self.log("Running ts_defocus_hand globally...")
+        run_defocus_hand_globally(ctx.params, local_settings, output_processing, ctx.job_dir, ctx.additional_binds)
+        self.log("Defocus hand detection complete.")
 
-        # Step 2: Run defocus hand detection GLOBALLY (needs all TS)
-        print("[SUPERVISOR] Running ts_defocus_hand globally...", flush=True)
-        run_defocus_hand_globally(params, local_settings, output_processing, job_dir, additional_binds)
-        print("[SUPERVISOR] Defocus hand detection complete.", flush=True)
-
-        preflight_registry(project_path, ts_names, job_name="ts_ctf")
-
-        # Step 3: Dispatch per-TS CTF estimation
-        per_task_cfg = params.get_effective_slurm_config()
-
-        # Honor user "exclude from processing": pre-skip excluded TS so they are
-        # never dispatched and count as settled (not failures) in aggregation.
-        apply_exclusions(job_dir, project_path, ts_names)
-
-        array_job_id = submit_array_job(
-            job_dir=job_dir,
-            project_path=project_path,
-            instance_id=instance_id,
-            ts_names=ts_names,
-            per_task_cfg=per_task_cfg,
-            array_throttle=params.array_throttle,
-            driver_script=DRIVER_SCRIPT,
-        )
-
-        if array_job_id is not None:
-            install_cancel_handler(array_job_id, job_dir)
-            wait_for_array_completion(array_job_id, poll_secs=30)
-        else:
-            print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
-
-        results = collect_task_results(job_dir, ts_names)
-        print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
-        if results.failed:
-            print(f"[SUPERVISOR] FAILED tilt-series: {results.failed}", flush=True)
-        if results.missing:
-            print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
-
-        if not results.all_succeeded:
-            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
-            sys.exit(1)
-
-        # Step 4: Aggregate metadata via the TiltSeries registry. If the
-        # registry is empty (legacy project), we can't proceed — the user
-        # must reload the project so the backend backfills mdoc-derived
-        # identity. Fail loud rather than fall back to the old string-keyed
-        # merge (which is the path that produced the silent-corruption bug).
-        print("[SUPERVISOR] All tasks succeeded; aggregating metadata via registry...", flush=True)
-        registry = get_registry_for(project_path)
+    def aggregate(self, ctx: DriverContext[TsCtfParams], results: ArrayResults) -> None:
+        # If the registry is empty (legacy project), we can't proceed — the user must
+        # reload the project so the backend backfills mdoc-derived identity. Fail loud
+        # rather than fall back to the old string-keyed merge (the path that produced
+        # the silent-corruption bug).
+        registry = get_registry_for(ctx.project_path)
         if not registry.tilt_series_ids():
             raise RuntimeError(
-                f"TiltSeries registry is empty for project {project_path}. "
+                f"TiltSeries registry is empty for project {ctx.project_path}. "
                 f"Reload the project in the UI to backfill the registry from mdocs, "
                 f"then restart this job."
             )
         adapter = TsCtfIngestAdapter(
-            registry=registry, job_dir=job_dir, job_instance_id=instance_id, warp_folder="warp_tiltseries",
+            registry=registry, job_dir=ctx.job_dir, job_instance_id=ctx.instance_id, warp_folder="warp_tiltseries"
         )
         adapter.ingest(results.ok)
-        adapter.emit_star(paths["input_star"], paths["output_star"], excluded_ids=set(results.skipped))
+        adapter.emit_star(ctx.paths["input_star"], ctx.paths["output_star"], excluded_ids=set(results.skipped))
         registry.save()
 
-        (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-        print("[SUPERVISOR] Job finished successfully.", flush=True)
-        sys.exit(0)
+    # ---------------- task ----------------
 
-    except Exception as e:
-        print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        sys.exit(1)
-
-
-# ----------------------------------------------------------------------
-# Task mode
-# ----------------------------------------------------------------------
-
-
-def run_task_mode(array_idx: int):
-    try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(TsCtfParams)
-    except Exception as e:
-        print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    status_dir = job_dir / STATUS_DIR_NAME
-    ts_name = None
-    try:
-        manifest = read_manifest(job_dir)
-        ts_names = manifest["ts_names"]
-        if array_idx >= len(ts_names):
-            raise IndexError(f"SLURM_ARRAY_TASK_ID {array_idx} out of range (manifest has {len(ts_names)})")
-        ts_name = ts_names[array_idx]
-        print(f"[TASK {array_idx}] ts_name={ts_name}", flush=True)
-
-        additional_binds = local_params_data["additional_binds"]
-        output_processing = job_dir / "warp_tiltseries"
-        local_settings = job_dir / "warp_tiltseries.settings"
-        local_tomostar = job_dir / "tomostar"
-
-        # Stage per-TS environment
-        stage_root = stage_ctf_environment(job_dir, ts_name, output_processing, local_settings, local_tomostar)
-        print(f"[TASK {array_idx}] Staged at: {stage_root}", flush=True)
-
-        # Build and run CTF command
-        cmd = build_ctf_command(params)
-        print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
-
-        wrapped = get_container_service().wrap_command_for_tool(
-            command=cmd, cwd=stage_root, tool_name=params.get_tool_name(), additional_binds=additional_binds
+    def stage(self, ctx: DriverContext[TsCtfParams], item: str) -> Path:
+        stage_root = stage_ctf_environment(
+            ctx.job_dir,
+            item,
+            ctx.paths["output_processing"],
+            ctx.job_dir / LOCAL_SETTINGS_NAME,
+            ctx.job_dir / LOCAL_TOMOSTAR_NAME,
         )
-        run_command_with_retries(wrapped, cwd=stage_root, label=f"ts_ctf {ts_name}")
+        self.log(f"Staged at: {stage_root}")
+        return stage_root
 
-        # Copy the updated XML back to the shared output dir
-        staged_xml = stage_root / "warp_tiltseries" / f"{ts_name}.xml"
-        if staged_xml.exists():
-            shutil.copy2(str(staged_xml), str(output_processing / f"{ts_name}.xml"))
+    def build_command(self, ctx: DriverContext[TsCtfParams], item: str, staged: Path) -> ToolCommand:
+        return build_ctf_command(ctx.params)
 
-        write_status_atomic(status_dir, ts_name, ok=True)
-        print(f"[TASK {array_idx}] {ts_name} done", flush=True)
-        sys.exit(0)
+    def task_cwd(self, ctx: DriverContext[TsCtfParams], item: str, staged: Path) -> Path:
+        # ts_ctf runs INSIDE the staging dir: its command uses relative paths
+        # (--settings warp_tiltseries.settings) so only this TS is in scope.
+        return staged
 
-    except Exception as e:
-        label = ts_name or f"_unknown_idx{array_idx}"
-        print(f"[TASK {array_idx}] FATAL ERROR for ts={label}: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        try:
-            write_status_atomic(status_dir, label, ok=False)
-        except Exception as inner:
-            print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
-        sys.exit(1)
+    def collect(self, ctx: DriverContext[TsCtfParams], item: str, staged: Path) -> None:
+        # Copy the updated XML back to the shared output dir. Staging copied this file
+        # IN (and raises if the source was absent), so its absence now means the tool
+        # destroyed it — raise rather than skip the copy-back and still write `.ok`.
+        staged_xml = staged / "warp_tiltseries" / f"{item}.xml"
+        if not staged_xml.exists():
+            raise FileNotFoundError(f"ts_ctf reported success but the staged XML is gone: {staged_xml}")
+        shutil.copy2(str(staged_xml), str(ctx.paths["output_processing"] / f"{item}.xml"))
 
 
 if __name__ == "__main__":
-    main()
+    TsCtfDriver().main()

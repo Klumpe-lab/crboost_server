@@ -1,7 +1,8 @@
 # ui/status_indicator.py
 from pathlib import Path
 from nicegui import ui
-from services.project_state import JobStatus, get_project_state
+from services.project_state import JobStatus
+from ui.current_project import current_project_state
 
 _DOT_COLORS = {
     JobStatus.SCHEDULED: "#fbbf24",
@@ -72,8 +73,8 @@ def _dot_html(status: JobStatus, is_orphaned: bool = False) -> str:
 def _badge_html(
     status: JobStatus,
     is_orphaned: bool = False,
-    missing_inputs: list = None,
-    slurm_job_id: str = None,
+    missing_inputs: list | None = None,
+    slurm_job_id: str | None = None,
 ) -> str:
     bg, txt = _BADGE_STYLES.get(status, ("background:#f3f4f6;", "color:#1f2937;"))
     label = status.value
@@ -100,7 +101,7 @@ def _badge_html(
 class BoundStatusBadge:
     """Status badge bound to a job instance by instance_id."""
     def __init__(self, instance_id: str):
-        state = get_project_state()
+        state = current_project_state()
         job_model = state.jobs.get(instance_id)
         if not job_model:
             ui.html(_badge_html(JobStatus.SCHEDULED), sanitize=False, tag="span")
@@ -121,7 +122,7 @@ class BoundStatusDot:
     """Status dot bound to a job instance by instance_id."""
 
     def __init__(self, instance_id: str):
-        state = get_project_state()
+        state = current_project_state()
         job_model = state.jobs.get(instance_id)
 
         if not job_model:

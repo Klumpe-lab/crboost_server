@@ -4,17 +4,17 @@ import logging
 import starfile
 import pandas as pd
 from pathlib import Path
-from typing import Dict, Union, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 class StarfileService:
-    def read(self, path: Union[str, Path]) -> Dict[str, Any]:
+    def read(self, path: str | Path) -> dict[str, Any]:
         if not Path(path).exists():
             raise FileNotFoundError(f"STAR file not found: {path}")
         return starfile.read(path, always_dict=True)
 
-    def write(self, data: Union[Dict[str, Any], pd.DataFrame], path: Union[str, Path]):
+    def write(self, data: dict[str, Any] | pd.DataFrame, path: str | Path):
         try:
             if isinstance(data, dict):
                 data = self._escape_star_data(data)
@@ -24,9 +24,9 @@ class StarfileService:
             starfile.write(data, path, overwrite=True)
         except Exception as e:
             logger.error("Failed to write %s: %s", path, e)
-            starfile.write(data, path, overwrite=True)
+            raise
 
-    def _escape_star_data(self, data_dict: Dict[str, Any]) -> Dict[str, Any]:
+    def _escape_star_data(self, data_dict: dict[str, Any]) -> dict[str, Any]:
         escaped_dict = {}
         for key, value in data_dict.items():
             if isinstance(value, pd.DataFrame):

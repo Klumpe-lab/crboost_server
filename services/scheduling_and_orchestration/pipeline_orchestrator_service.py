@@ -2,14 +2,17 @@ import logging
 import os
 import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, ClassVar
 from datetime import datetime
 
 from services.computing.slurm_service import normalize_slurm_ids
 from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
+from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, driver_invocation
 from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
+from services.models_base import InstanceId
+from services.result import err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus
 from typing import TYPE_CHECKING
 
@@ -19,7 +22,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _toposort_submit_order(nodes: List[str], edges: List[tuple]) -> tuple:
+def _toposort_submit_order(nodes: list[str], edges: list[tuple]) -> tuple:
     """Kahn's topological sort over (producer, consumer) edges restricted to ``nodes``.
 
     Returns ``(ordered_nodes, predecessors)`` where ``predecessors[c]`` is the set of
@@ -30,8 +33,8 @@ def _toposort_submit_order(nodes: List[str], edges: List[tuple]) -> tuple:
 
     nodeset = set(nodes)
     indeg = {n: 0 for n in nodes}
-    succ: Dict[str, List[str]] = {n: [] for n in nodes}
-    preds: Dict[str, set] = {n: set() for n in nodes}
+    succ: dict[str, list[str]] = {n: [] for n in nodes}
+    preds: dict[str, set] = {n: set() for n in nodes}
     for producer, consumer in edges:
         if producer not in nodeset or consumer not in nodeset or producer == consumer:
             continue
@@ -42,7 +45,7 @@ def _toposort_submit_order(nodes: List[str], edges: List[tuple]) -> tuple:
         indeg[consumer] += 1
 
     queue = deque([n for n in nodes if indeg[n] == 0])
-    order: List[str] = []
+    order: list[str] = []
     while queue:
         n = queue.popleft()
         order.append(n)
@@ -64,9 +67,9 @@ class PipelineOrchestratorService:
         self.config_service = get_config_service()
         self.job_resolver = JobTypeResolver(self.star_handler)
 
-    async def deploy_and_run_scheme(self, project_dir: Path, selected_instance_ids: List[str]) -> Dict[str, Any]:
+    async def deploy_and_run_scheme(self, project_dir: Path, selected_instance_ids: list[str]) -> dict[str, Any]:
         if not selected_instance_ids:
-            return {"success": False, "message": "No jobs selected."}
+            return err("No jobs selected.")
 
         state = self.backend.state_service.state_for(project_dir)
 
@@ -75,10 +78,7 @@ class PipelineOrchestratorService:
         # by the time it's reached, relion_job_name and job_path_mapping
         # have already been clobbered, which breaks sync_all_jobs path resolution.
         if state.pipeline_active:
-            return {
-                "success": False,
-                "message": "Pipeline is already running. Wait for it to complete or cancel it first.",
-            }
+            return err("Pipeline is already running. Wait for it to complete or cancel it first.")
 
         # Persist the participating set + order for this run (P1.0 of the orchestrator
         # rework) so a tab-less submitter/reconciler has the pipeline membership
@@ -88,7 +88,7 @@ class PipelineOrchestratorService:
         state.pipeline_order = list(selected_instance_ids)
         state.mark_dirty()
 
-        instances_to_run: List[str] = []
+        instances_to_run: list[str] = []
         for instance_id in selected_instance_ids:
             job_model = state.jobs.get(instance_id)
             if not job_model or job_model.execution_status != JobStatus.SUCCEEDED:
@@ -98,12 +98,7 @@ class PipelineOrchestratorService:
                 instances_to_run.append(instance_id)
 
         if not instances_to_run:
-            return {
-                "success": True,
-                "already_complete": True,
-                "message": "All selected jobs are already finished.",
-                "pid": 0,
-            }
+            return ok(already_complete=True, message="All selected jobs are already finished.", pid=0)
 
         # Orchestrator rework (P1.A): when the project opts into the afterok DAG, submit the WHOLE
         # remaining set (FAILED + fresh) directly via SLURM dependencies. _submit_chain allocates
@@ -116,8 +111,8 @@ class PipelineOrchestratorService:
         # Schemer path -- Partition: jobs that FAILED with an existing External/jobNNN dir get
         # re-sbatched in place (preserves .task_status/*.ok for per-TS skip). Fresh jobs go through
         # the schemer as before. If both exist, retries run first; the monitor hands off on success.
-        retry_ids: List[str] = []
-        fresh_ids: List[str] = []
+        retry_ids: list[str] = []
+        fresh_ids: list[str] = []
         for iid in instances_to_run:
             job_model = state.jobs.get(iid)
             if (
@@ -149,12 +144,11 @@ class PipelineOrchestratorService:
         report_lines = [f"Scheme: {scheme_name}", f"Instances_to_run: {instances_to_run}", ""]
 
         next_job_num = current_counter
-        for i, instance_id in enumerate(instances_to_run):
+        for _i, instance_id in enumerate(instances_to_run):
             job_model = state.jobs.get(instance_id)
             if not job_model:
-                base_type_str = instance_id.split("__")[0]
                 try:
-                    job_type = JobType(base_type_str)
+                    job_type = InstanceId.parse(instance_id).job_type
                 except ValueError:
                     report_lines.append(f"[{instance_id}] UNKNOWN JOB TYPE, skipping")
                     continue
@@ -245,7 +239,7 @@ class PipelineOrchestratorService:
             project_dir=project_dir, scheme_name=scheme_name, bind_paths=list(set(bind_paths))
         )
 
-    async def _submit_chain(self, project_dir: Path, instances_to_run: List[str], state) -> Dict[str, Any]:
+    async def _submit_chain(self, project_dir: Path, instances_to_run: list[str], state) -> dict[str, Any]:
         """P1.A: submit the pipeline as a SLURM afterok DAG instead of via relion_schemer.
 
         For each fresh job: allocate a stable External/jobNNN dir from the ProjectState
@@ -279,15 +273,14 @@ class PipelineOrchestratorService:
 
         resolver = PathResolutionService(state, active_instance_ids=set(instances_to_run))
 
-        prepared: Dict[str, tuple] = {}  # instance_id -> (job_dir, script_path)
+        prepared: dict[str, tuple] = {}  # instance_id -> (job_dir, script_path)
         for instance_id in instances_to_run:
             job_model = state.jobs.get(instance_id)
             if not job_model:
-                base_type_str = instance_id.split("__")[0]
                 try:
-                    job_type = JobType(base_type_str)
+                    job_type = InstanceId.parse(instance_id).job_type
                 except ValueError:
-                    return {"success": False, "message": f"Unknown job type for instance '{instance_id}'"}
+                    return err(f"Unknown job type for instance '{instance_id}'")
                 template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
                 state.ensure_job_initialized(job_type, instance_id=instance_id, template_path=template_base)
                 job_model = state.jobs.get(instance_id)
@@ -336,7 +329,7 @@ class PipelineOrchestratorService:
             except PathResolutionError as e:
                 job_model.is_orphaned = True
                 job_model.missing_inputs = [str(e)]
-                return {"success": False, "message": f"Path resolution failed for {instance_id}: {e}"}
+                return err(f"Path resolution failed for {instance_id}: {e}")
 
             job_model.paths = {k: str(v) for k, v in resolved_paths.items() if v is not None}
             job_model.is_orphaned = False
@@ -370,7 +363,7 @@ class PipelineOrchestratorService:
                         raise ValueError(f"RUNS_INLINE set but no inline writer for {job_type}")
                 except Exception as e:
                     logger.exception("inline writer failed for %s", instance_id)
-                    return {"success": False, "message": f"Inline writer failed for {instance_id}: {e}"}
+                    return err(f"Inline writer failed for {instance_id}: {e}")
                 (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
                 job_model.execution_status = JobStatus.SUCCEEDED
                 job_model.slurm_job_id = None
@@ -391,16 +384,16 @@ class PipelineOrchestratorService:
         try:
             order, preds = _toposort_submit_order(submit_ids, edges)
         except ValueError as e:
-            return {"success": False, "message": f"Pipeline DAG is not acyclic ({e}); cannot submit afterok chain."}
+            return err(f"Pipeline DAG is not acyclic ({e}); cannot submit afterok chain.")
 
         # Prepare + toposort succeeded -> commit the allocator (these job dirs are now owned).
         state.job_dir_counter = next_job_num
 
         # Submit each supervisor in topo order, gating on its producers' supervisor ids. On a
         # mid-chain sbatch error, stop the loop but still persist what already reached SLURM below.
-        instance_to_slurm: Dict[str, str] = {}
-        submitted: List[Dict[str, Any]] = []
-        submit_error: Optional[tuple] = None
+        instance_to_slurm: dict[str, str] = {}
+        submitted: list[dict[str, Any]] = []
+        submit_error: tuple | None = None
         for instance_id in order:
             _job_dir, script_path = prepared[instance_id]
             after_ids = normalize_slurm_ids(
@@ -432,24 +425,20 @@ class PipelineOrchestratorService:
         await self.backend.state_service.save_project(project_path=project_dir, force=True)
 
         if submit_error is not None:
-            failed_iid, err = submit_error
-            return {
-                "success": False,
-                "message": (
-                    f"sbatch failed for {failed_iid}: {err}. {len(submitted)} earlier job(s) are queued "
-                    f"in SLURM and recorded; cancel them manually until the P1.B reconciler lands."
-                ),
-                "afterok": True,
-                "submitted": submitted,
-            }
+            failed_iid, exc = submit_error
+            return err(
+                f"sbatch failed for {failed_iid}: {exc}. {len(submitted)} earlier job(s) are queued "
+                f"in SLURM and recorded; cancel them manually until the P1.B reconciler lands.",
+                afterok=True,
+                submitted=submitted,
+            )
 
-        return {
-            "success": True,
-            "message": f"Submitted {len(submitted)} job(s) as a SLURM afterok DAG (schemer-free).",
-            "pid": 0,
-            "afterok": True,
-            "submitted": submitted,
-        }
+        return ok(
+            message=f"Submitted {len(submitted)} job(s) as a SLURM afterok DAG (schemer-free).",
+            pid=0,
+            afterok=True,
+            submitted=submitted,
+        )
 
     def _render_supervisor_script(
         self, job_dir: Path, job_model: AbstractJobParams, fn_exe: str, server_dir: Path
@@ -506,38 +495,16 @@ class PipelineOrchestratorService:
         if job_type == JobType.IMPORT_MOVIES:
             return self._build_import_command(job_model)
 
-        driver_map = {
-            JobType.FS_MOTION_CTF: "fs_motion_and_ctf.py",
-            JobType.TS_IMPORT: "ts_import.py",
-            JobType.TS_ALIGNMENT: "ts_alignment.py",
-            JobType.MISS_ALIGN: "miss_align.py",
-            JobType.TS_CTF: "ts_ctf.py",
-            JobType.TILT_FILTER: "tilt_filter.py",
-            JobType.TS_RECONSTRUCT: "ts_reconstruct.py",
-            JobType.DENOISE_TRAIN: "denoise_train.py",
-            JobType.DENOISE_PREDICT: "denoise_predict.py",
-            JobType.TEMPLATE_MATCH_PYTOM: "template_match_pytom.py",
-            JobType.TEMPLATE_EXTRACT_PYTOM: "extract_candidates_pytom.py",
-            JobType.SUBTOMO_EXTRACTION: "subtomo_extraction.py",
-            JobType.RECONSTRUCT_PARTICLE: "reconstruct_particle.py",
-            JobType.CLASS3D: "class3d.py",
-        }
-
-        script = driver_map.get(job_type)
+        spec = JOB_SPEC_BY_TYPE.get(job_type)
+        script = spec.driver if spec else None
         if not script:
             return "echo 'Unknown Driver'; exit 1"
 
-        python_exe = server_dir / "venv" / "bin" / "python3"
-        if not python_exe.exists():
-            python_exe = "python3"
-
-        script_path = server_dir / "drivers" / script
-
-        return (
-            f"export PYTHONPATH={server_dir}:${{PYTHONPATH}}; "
-            f"{python_exe} {script_path} "
-            f"--instance_id {instance_id} "
-            f"--project_path {project_dir}"
+        return driver_invocation(
+            server_dir=server_dir,
+            driver_script=server_dir / "drivers" / script,
+            instance_id=instance_id,
+            project_path=project_dir,
         )
 
     def _get_current_relion_counter(self, project_dir: Path) -> int:
@@ -590,12 +557,12 @@ class PipelineOrchestratorService:
         per_ts_dir = job_dir / "tilt_series"
         per_ts_dir.mkdir(parents=True, exist_ok=True)
 
-        global_rows: List[Dict[str, Any]] = []
+        global_rows: list[dict[str, Any]] = []
         for ts in sorted(registry.all_tilt_series(), key=lambda t: t.id):
             # rlnTomoNominalDefocus (mdoc TargetDefocus) is not persisted in the registry; source it
             # from the project mdoc, matched by movie basename. Non-fatal if absent (informational
             # column, not consumed by our pipeline) -> defaults to 0.0.
-            target_defocus: Dict[str, float] = {}
+            target_defocus: dict[str, float] = {}
             try:
                 for sec in mdoc_service.parse_mdoc_file(ts.mdoc_path).get("data", []):
                     sub = sec.get("SubFramePath", "").replace("\\", "/")
@@ -646,7 +613,7 @@ class PipelineOrchestratorService:
         # Kept as a harmless no-op so a stray execution can't run a wrong relion_import command.
         return "true  # crboost writes Import/tilt_series.star inline; relion import is not run"
 
-    def _write_scheme_star(self, scheme_dir: Path, scheme_name: str, job_names: List[str]):
+    def _write_scheme_star(self, scheme_dir: Path, scheme_name: str, job_names: list[str]):
         general_df = pd.DataFrame(
             {"rlnSchemeName": [f"Schemes/{scheme_name}/"], "rlnSchemeCurrentNodeName": [job_names[0]]}
         )
@@ -715,11 +682,11 @@ class PipelineOrchestratorService:
 
         self.star_handler.write(data, scheme_dir / "scheme.star")
 
-    async def delete_job(self, project_dir: Path, job_type: JobType, harsh: bool = False) -> Dict[str, Any]:
+    async def delete_job(self, project_dir: Path, job_type: JobType, harsh: bool = False) -> dict[str, Any]:
         job_numbers = self._get_all_job_numbers_for_type(project_dir, job_type)
 
         if not job_numbers:
-            return {"success": False, "error": f"No instances of {job_type.value} found to delete."}
+            return err(f"No instances of {job_type.value} found to delete.")
 
         logger.info("Found %d instances of %s to delete: %s", len(job_numbers), job_type.value, job_numbers)
 
@@ -739,11 +706,11 @@ class PipelineOrchestratorService:
                 errors.append(f"Job {job_num_str}: {result.get('error')}")
 
         if success_count == 0 and errors:
-            return {"success": False, "error": f"Failed to delete jobs: {'; '.join(errors)}"}
+            return err(f"Failed to delete jobs: {'; '.join(errors)}")
 
-        return {"success": True, "message": f"Deleted {success_count} job instances.", "deleted_aliases": job_numbers}
+        return ok(message=f"Deleted {success_count} job instances.", deleted_aliases=job_numbers)
 
-    def _get_all_job_numbers_for_type(self, project_dir: Path, target_job_type: JobType) -> List[str]:
+    def _get_all_job_numbers_for_type(self, project_dir: Path, target_job_type: JobType) -> list[str]:
         """
         Scans default_pipeline.star to find ALL job numbers matching the type.
         Returns list of strings like ["6", "7", "8"].
@@ -811,26 +778,17 @@ class PipelineOrchestratorService:
 
 
 class JobTypeResolver:
-    DRIVER_TO_JOBTYPE = {
-        "fs_motion_and_ctf.py": "fsMotionAndCtf",
-        "ts_import.py": "tsImport",
-        "ts_alignment.py": "aligntiltsWarp",
-        "miss_align.py": "missAlign",
-        "ts_ctf.py": "tsCtf",
-        "ts_reconstruct.py": "tsReconstruct",
-        "denoise_train.py": "denoisetrain",
-        "denoise_predict.py": "denoisepredict",
-        "template_match_pytom.py": "templatematching",
-        "extract_candidates_pytom.py": "tmextractcand",
-        "subtomo_extraction.py": "subtomoExtraction",
-        "reconstruct_particle.py": "reconstructParticle",
-        "class3d.py": "class3d",
+    # Reverse of JobSpec.driver. BEHAVIOR CHANGE vs the old hand-table (stage 6c,
+    # 2026-08-11): tilt_filter.py is now included — the hand-table omitted it, so
+    # tiltFilter job dirs resolved to None here.
+    DRIVER_TO_JOBTYPE: ClassVar[dict[str, str]] = {
+        s.driver: s.job_type.value for s in JOB_SPECS if s.driver is not None
     }
 
     def __init__(self, star_handler: StarfileService):
         self.star_handler = star_handler
 
-    def get_job_type_from_path(self, project_dir: Path, job_path: str) -> Optional[str]:
+    def get_job_type_from_path(self, project_dir: Path, job_path: str) -> str | None:
         if "Import/job" in job_path:
             return "importmovies"
 

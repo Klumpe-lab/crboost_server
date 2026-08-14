@@ -18,41 +18,29 @@ that dispatches on the SLURM_ARRAY_TASK_ID env var.
           .task_status/{ts}.{ok|fail}.
 
 Denoise method (cryoCARE | IsoNet) is selected per-job via params.denoise_method and only
-affects the per-task command built in TASK mode.
+affects the per-task work (the `execute` override dispatches the IsoNet multi-command path).
+
+The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
+markers all live in ArrayDriver; this file is the denoise-specific hooks.
 """
 
 import json
 import os
-import shlex
 import shutil
 import sys
 import tarfile
-import traceback
 from pathlib import Path
-from typing import Dict, List, Tuple
 
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 import starfile
 
-from drivers.array_job_base import (
-    apply_exclusions,
-    collect_task_results,
-    install_cancel_handler,
-    read_manifest,
-    submit_array_job,
-    wait_for_array_completion,
-    write_skip_status,
-    write_status_atomic,
-    STATUS_DIR_NAME,
-)
-from drivers.driver_base import get_driver_context, run_command, require_producer_input
-from services.computing.container_service import get_container_service
+from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest, write_skip_status, STATUS_DIR_NAME
+from drivers.driver_base import DriverContext, ToolCommand, run_tool, require_producer_input
 from services.job_models import DenoisePredictParams
 from services.models_base import DenoiseMethod
-
-DRIVER_SCRIPT = Path(__file__).resolve()
+from services.tilt_series import DenoisePredictTomogramOutput, get_registry_for
 
 # Column in the reconstruct tomograms.star that holds the full reconstructed tomogram path.
 TOMO_COL = "rlnTomoReconstructedTomogram"
@@ -76,74 +64,25 @@ def _global_block(data):
     return None, data
 
 
-def read_tomo_map(input_star: Path) -> Tuple[List[str], Dict[str, str]]:
+def read_tomo_map(input_star: Path) -> tuple[list[str], dict[str, str]]:
     """Return (sorted ts_names, {ts_name: reconstructed-tomogram basename}) from the
     reconstruct tomograms.star. The array maps index N -> ts_names[N]; the basename map
-    lets each task resolve its even/odd halves without re-parsing the whole STAR."""
-    _, df = _global_block(starfile.read(input_star))
-    ts_names: List[str] = []
-    tomo_basenames: Dict[str, str] = {}
+    lets each task resolve its even/odd halves without re-parsing the whole STAR.
+
+    Strict 'global'-block read (census #33): a star without one is malformed input,
+    not something to guess a block for.
+    """
+    data = starfile.read(input_star, always_dict=True)
+    df = data.get("global")
+    if df is None:
+        raise ValueError(f"No 'global' block in {input_star} (blocks: {list(data.keys())})")
+    ts_names: list[str] = []
+    tomo_basenames: dict[str, str] = {}
     for _, row in df.iterrows():
         ts = str(row["rlnTomoName"])
         tomo_basenames[ts] = Path(str(row[TOMO_COL])).name
         ts_names.append(ts)
     return sorted(ts_names), tomo_basenames
-
-
-def calculate_memory_aware_tiles(tomogram_path: Path, base_tiles=(4, 4, 4), max_tiles=(8, 8, 8)) -> tuple:
-    """Calculate optimal tiling based on tomogram dimensions. Returns (n_tiles_z, n_tiles_y, n_tiles_x)."""
-    try:
-        import mrcfile
-
-        with mrcfile.open(tomogram_path, "r") as mrc:
-            dims = mrc.data.shape  # (z, y, x) for tomograms
-        print(f"[DRIVER] Tomogram dimensions: {dims}")
-        tiles = list(base_tiles)
-        for i, dim in enumerate(dims):
-            if dim > 1000:
-                tiles[i] = min(tiles[i] * 2, max_tiles[i])
-            elif dim > 2000:
-                tiles[i] = min(tiles[i] * 3, max_tiles[i])
-        return tuple(tiles)
-    except Exception as e:
-        print(f"[WARN] Could not read tomogram for tiling calculation: {e}")
-        return base_tiles
-
-
-# ----------------------------------------------------------------------
-# Per-task command construction (method-specific)
-# ----------------------------------------------------------------------
-
-
-def build_cryocare_predict_command(
-    params: DenoisePredictParams,
-    job_dir: Path,
-    model_tar: Path,
-    even_path: Path,
-    odd_path: Path,
-    output_dir: Path,
-    idx: int,
-) -> str:
-    """cryoCARE_predict.py treats `output` as a directory and writes output_dir/basename(even)
-    inside it -- which equals output_dir/<tomo_basename>."""
-    base_tiles = (params.ntiles_z, params.ntiles_y, params.ntiles_x)
-    n_tiles_z, n_tiles_y, n_tiles_x = calculate_memory_aware_tiles(
-        even_path, base_tiles=base_tiles, max_tiles=(8, 8, 8)
-    )
-    print(f"[TASK {idx}] Tiles: z={n_tiles_z} y={n_tiles_y} x={n_tiles_x}", flush=True)
-    cfg = {
-        "path": str(model_tar),
-        "even": str(even_path),
-        "odd": str(odd_path),
-        "n_tiles": [n_tiles_z, n_tiles_y, n_tiles_x],
-        "output": str(output_dir),
-        "gpu_id": 0,
-        "overwrite": True,
-    }
-    cfg_name = f"predict_{idx}.json"
-    with open(job_dir / cfg_name, "w") as f:
-        json.dump(cfg, f, indent=4)
-    return f"TF_FORCE_GPU_ALLOW_GROWTH=true TF_GPU_ALLOCATOR=cuda_malloc_async cryoCARE_predict.py --conf {cfg_name}"
 
 
 def prepare_isonet_model(job_dir: Path, model_tar: Path) -> Path:
@@ -168,87 +107,13 @@ def prepare_isonet_model(job_dir: Path, model_tar: Path) -> Path:
     return pts[-1]
 
 
-def run_isonet_predict_task(
-    params: DenoisePredictParams,
-    job_dir: Path,
-    additional_binds: list,
-    model_pt: Path,
-    full_path: Path,
-    even_path: Path,
-    odd_path: Path,
-    output_dir: Path,
-    out_mrc: Path,
-    ts_name: str,
-    idx: int,
-) -> None:
-    """Per-tomogram IsoNet prediction. Stage this tomo's full + even/odd reconstructions into a
-    one-file-each dir and build the prep STAR with prepare_star --full --even --odd (full ->
-    rlnTomoName, even/odd -> rlnTomoReconstructedTomogramHalf1/2), mirroring denoise_train. The
-    model denoise_train produces is isonet2-n2n (noise2noise): predict reads the even/odd halves,
-    denoises each, and averages -- an isonet2 (single-map) model instead reads rlnTomoName, so
-    staging all three keeps predict correct for either method. [deconv], then predict into a
-    per-task dir and move the single corrected MRC to the canonical denoised path (out_mrc).
-    Predicting into an isolated per-task dir sidesteps IsoNet's output-filename convention --
-    ISONET-ASSUMPTION: predict writes exactly one full-size .mrc. See ISONET_INTEGRATION_PLAN.md."""
-    container = get_container_service()
-    stage = job_dir / ".staging" / f"task_{ts_name}"
-    full_dir, even_dir, odd_dir, corrected = stage / "full", stage / "even", stage / "odd", stage / "corrected"
-    for d in (full_dir, even_dir, odd_dir, corrected):
-        d.mkdir(parents=True, exist_ok=True)
-    # prepare_star matches full/even/odd by basename across the three dirs (as in denoise_train).
-    for src, dst_dir in ((full_path, full_dir), (even_path, even_dir), (odd_path, odd_dir)):
-        link = dst_dir / src.name
-        if link.exists() or link.is_symlink():
-            link.unlink()
-        link.symlink_to(src.resolve())
-
-    prep = stage / "isonet_prep.star"
-
-    def isonet(cmd: str):
-        wrapped = container.wrap_command_for_tool(
-            command=cmd, cwd=job_dir, tool_name="isonet", additional_binds=additional_binds
-        )
-        run_command(wrapped, cwd=job_dir)
-
-    isonet(
-        f"isonet.py prepare_star --full {shlex.quote(str(full_dir))} "
-        f"--even {shlex.quote(str(even_dir))} --odd {shlex.quote(str(odd_dir))} "
-        f"--star_name {shlex.quote(str(prep))} --pixel_size auto"
-    )
-    input_col = "rlnTomoName"
-    if params.isonet_deconv:
-        isonet(
-            f"isonet.py deconv --star_file {shlex.quote(str(prep))} --output_dir {shlex.quote(str(stage / 'deconv'))}"
-        )
-        input_col = "rlnDeconvTomoName"
-    isonet(
-        f"isonet.py predict --star_file {shlex.quote(str(prep))} --model {shlex.quote(str(model_pt))} "
-        f"--input_column {input_col} --output_dir {shlex.quote(str(corrected))}"
-    )
-
-    mrcs = list(corrected.glob("*.mrc"))
-    if not mrcs:
-        raise FileNotFoundError(f"IsoNet predict produced no MRC in {corrected}")
-    # predict may also drop small preview-slice MRCs (save_slices defaults True); the corrected
-    # tomogram is by far the largest volume in the per-task dir.
-    produced = max(mrcs, key=lambda p: p.stat().st_size)
-    out_mrc.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(produced), str(out_mrc))
-    print(f"[TASK {idx}] IsoNet corrected -> {out_mrc}", flush=True)
-
-
-# ----------------------------------------------------------------------
-# Supervisor mode
-# ----------------------------------------------------------------------
-
-
 def aggregate_output_star(
     input_star: Path,
     job_dir: Path,
     output_dir: Path,
     project_path: Path,
-    ok_ts_names: List[str],
-    tomo_basenames: Dict[str, str],
+    ok_ts_names: list[str],
+    tomo_basenames: dict[str, str],
 ) -> None:
     """Build job_dir/tomograms.star from the reconstruct STAR, keeping only rows whose tomogram
     was denoised (.ok), with TOMO_COL repointed at output_dir/<basename> and the now-stale
@@ -285,46 +150,43 @@ def stamp_denoise_registry(
     job_dir: Path,
     instance_id: str,
     params: DenoisePredictParams,
-    ok_ts_names: List[str],
-    tomo_basenames: Dict[str, str],
+    ok_ts_names: list[str],
+    tomo_basenames: dict[str, str],
     output_dir: Path,
     model_path: Path,
 ) -> None:
     """Record each denoised tomogram in the registry (denoise is the last tomogram-scoped
     preprocessing step). Done here in the single-threaded supervisor — never in the parallel
-    array tasks, which would race on the shared registry JSON. Best-effort: an empty or
-    pre-registry project is skipped, unknown TS are skipped, and any failure only warns — it
-    must never fail a job that already produced denoised tomograms."""
-    try:
-        from services.tilt_series import DenoisePredictTomogramOutput, get_registry_for
+    array tasks, which would race on the shared registry JSON.
 
-        registry = get_registry_for(project_path)
-        if not registry.tilt_series_ids():
-            print("[SUPERVISOR] Registry empty — skipped denoise output stamp", flush=True)
-            return
-        stamped = 0
-        for ts in ok_ts_names:
-            basename = tomo_basenames.get(ts)
-            if not basename:
-                continue
-            try:
-                registry.attach_tomogram_output(
-                    ts,
-                    DenoisePredictTomogramOutput(
-                        job_instance_id=instance_id,
-                        job_dir=job_dir,
-                        denoised_mrc=output_dir / basename,
-                        denoise_method=params.denoise_method.value,
-                        model_path=model_path,
-                    ),
-                )
-                stamped += 1
-            except KeyError:
-                pass
-        registry.save()
-        print(f"[SUPERVISOR] Stamped denoise output on {stamped} registry tomogram(s)", flush=True)
-    except Exception as e:
-        print(f"[SUPERVISOR] WARNING: denoise registry stamp skipped ({e})", flush=True)
+    Fail-loud (maintainer decision 2026-08-14): the registry is the single source of truth
+    for downstream reads, so a missed stamp is stale-data corruption, not a cosmetic miss.
+    Any failure here fails the job; the denoised MRCs stay on disk and a re-run skips the
+    already-done compute, so only this cheap recording step repeats."""
+    registry = get_registry_for(project_path)
+    if not registry.tilt_series_ids():
+        raise RuntimeError(
+            f"TiltSeries registry is empty for project {project_path}. "
+            f"Reload the project in the UI to backfill the registry from mdocs, then restart this job."
+        )
+    stamped = 0
+    for ts in ok_ts_names:
+        basename = tomo_basenames.get(ts)
+        if not basename:
+            raise ValueError(f"No tomogram basename recorded for denoised TS '{ts}'")
+        registry.attach_tomogram_output(
+            ts,
+            DenoisePredictTomogramOutput(
+                job_instance_id=instance_id,
+                job_dir=job_dir,
+                denoised_mrc=output_dir / basename,
+                denoise_method=params.denoise_method.value,
+                model_path=model_path,
+            ),
+        )
+        stamped += 1
+    registry.save()
+    print(f"[SUPERVISOR] Stamped denoise output on {stamped} registry tomogram(s)", flush=True)
 
 
 def _apply_inherited_method(project_state, params, tag: str) -> None:
@@ -346,221 +208,246 @@ def _apply_inherited_method(project_state, params, tag: str) -> None:
         params.isonet_deconv = deconv
 
 
-def run_supervisor_mode():
-    try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
-            DenoisePredictParams
-        )
-    except Exception as e:
-        (Path.cwd() / "RELION_JOB_EXIT_FAILURE").touch()
-        print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
+class DenoisePredictDriver(ArrayDriver):
+    params_class = DenoisePredictParams
+    job_name = "denoise_predict"
+    driver_script = Path(__file__).resolve()
 
-    _apply_inherited_method(project_state, params, "[SUPERVISOR]")
-    print(f"[SUPERVISOR] CWD (job dir): {job_dir}", flush=True)
-    try:
-        paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
-        instance_id = local_params_data["instance_id"]
+    def post_bootstrap(self, ctx: DriverContext[DenoisePredictParams]) -> None:
+        _apply_inherited_method(ctx.state, ctx.params, self._prefix)
 
-        require_producer_input(paths["model_path"], "Denoise model archive")
-        require_producer_input(paths["input_star"], "Input tomograms STAR")
+    # ---------------- supervisor ----------------
 
-        ts_names, tomo_basenames = read_tomo_map(paths["input_star"])
+    def enumerate_items(self, ctx: DriverContext[DenoisePredictParams]) -> list[str]:
+        require_producer_input(ctx.paths["model_path"], "Denoise model archive")
+        require_producer_input(ctx.paths["input_star"], "Input tomograms STAR")
+
+        ts_names, tomo_basenames = read_tomo_map(ctx.paths["input_star"])
         if not ts_names:
-            raise ValueError(f"No tomograms found in input STAR: {paths['input_star']}")
-        print(
-            f"[SUPERVISOR] {len(ts_names)} tomogram(s) in input STAR (method={params.denoise_method.value})", flush=True
-        )
+            raise ValueError(f"No tomograms found in input STAR: {ctx.paths['input_star']}")
+        self.log(f"{len(ts_names)} tomogram(s) in input STAR (method={ctx.params.denoise_method.value})")
+        self._tomo_basenames = tomo_basenames
+        return ts_names
 
-        status_dir = job_dir / STATUS_DIR_NAME
+    def pre_dispatch(self, ctx: DriverContext[DenoisePredictParams], items: list[str]) -> None:
+        status_dir = ctx.job_dir / STATUS_DIR_NAME
         # Pre-skip tomograms filtered out by denoising_tomo_name so they never spawn a GPU task.
-        flt = params.denoising_tomo_name
+        flt = ctx.params.denoising_tomo_name
         if flt:
-            skipped = [ts for ts in ts_names if flt not in tomo_basenames[ts]]
+            skipped = [ts for ts in items if flt not in self._tomo_basenames[ts]]
             for ts in skipped:
                 write_skip_status(status_dir, ts, reason=f"filtered out by denoising_tomo_name={flt!r}")
-            print(
-                f"[SUPERVISOR] {len(skipped)} tomogram(s) pre-skipped by filter; {len(ts_names) - len(skipped)} to run",
-                flush=True,
-            )
+            self.log(f"{len(skipped)} tomogram(s) pre-skipped by filter; {len(items) - len(skipped)} to run")
 
-        manifest_extra = {"tomo_basenames": tomo_basenames}
         # For IsoNet, untar the model ONCE here (shared NFS) and stash the .pt for the tasks.
         # cryoCARE tasks read the tar directly (cryoCARE_predict accepts the .tar.gz as "path").
-        if params.denoise_method == DenoiseMethod.ISONET:
-            model_pt = prepare_isonet_model(job_dir, paths["model_path"])
-            manifest_extra["isonet_model_pt"] = str(model_pt)
-            print(f"[SUPERVISOR] Staged IsoNet model: {model_pt}", flush=True)
+        self._isonet_model_pt = None
+        if ctx.params.denoise_method == DenoiseMethod.ISONET:
+            self._isonet_model_pt = prepare_isonet_model(ctx.job_dir, ctx.paths["model_path"])
+            self.log(f"Staged IsoNet model: {self._isonet_model_pt}")
 
-        per_task_cfg = params.get_effective_slurm_config()
-        # Honor user "exclude from processing": pre-skip excluded TS so they are
-        # never dispatched and count as settled (not failures) in aggregation.
-        apply_exclusions(job_dir, project_path, ts_names)
-        array_job_id = submit_array_job(
-            job_dir=job_dir,
-            project_path=project_path,
-            instance_id=instance_id,
-            ts_names=ts_names,
-            per_task_cfg=per_task_cfg,
-            array_throttle=params.array_throttle,
-            driver_script=DRIVER_SCRIPT,
-            manifest_extra=manifest_extra,
-        )
+    def manifest_extras(self, ctx: DriverContext[DenoisePredictParams], items: list[str]) -> dict:
+        extras = {"tomo_basenames": self._tomo_basenames}
+        if self._isonet_model_pt is not None:
+            extras["isonet_model_pt"] = str(self._isonet_model_pt)
+        return extras
 
-        if array_job_id is not None:
-            install_cancel_handler(array_job_id, job_dir)
-            wait_for_array_completion(array_job_id, poll_secs=30)
-        else:
-            print("[SUPERVISOR] No array submitted (all tomograms previously settled)", flush=True)
-
-        results = collect_task_results(job_dir, ts_names)
-        print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
-        if results.failed:
-            print(f"[SUPERVISOR] FAILED tomograms: {results.failed}", flush=True)
-        if results.missing:
-            print(f"[SUPERVISOR] MISSING tomograms: {results.missing}", flush=True)
-
-        if not results.all_succeeded:
-            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job FAILED (some tomograms did not succeed)", flush=True)
-            sys.exit(1)
-
+    def aggregate(self, ctx: DriverContext[DenoisePredictParams], results: ArrayResults) -> None:
         if not results.ok:
-            print("[SUPERVISOR] WARN: no tomograms denoised (all filtered out?); writing empty STAR", flush=True)
+            self.log("WARN: no tomograms denoised (all filtered out?); writing empty STAR")
         aggregate_output_star(
-            paths["input_star"], job_dir, paths["output_dir"], project_path, results.ok, tomo_basenames
+            ctx.paths["input_star"],
+            ctx.job_dir,
+            ctx.paths["output_dir"],
+            ctx.project_path,
+            results.ok,
+            self._tomo_basenames,
         )
         stamp_denoise_registry(
-            project_path,
-            job_dir,
-            instance_id,
-            params,
+            ctx.project_path,
+            ctx.job_dir,
+            ctx.instance_id,
+            ctx.params,
             results.ok,
-            tomo_basenames,
-            paths["output_dir"],
-            paths["model_path"],
+            self._tomo_basenames,
+            ctx.paths["output_dir"],
+            ctx.paths["model_path"],
         )
 
-        (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-        print("[SUPERVISOR] Job finished successfully.", flush=True)
-        sys.exit(0)
+    # ---------------- task ----------------
 
-    except Exception as e:
-        print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        sys.exit(1)
-
-
-# ----------------------------------------------------------------------
-# Task mode
-# ----------------------------------------------------------------------
-
-
-def run_task_mode(array_idx: int):
-    try:
-        (project_state, params, local_params_data, job_dir, project_path, job_type) = get_driver_context(
-            DenoisePredictParams
-        )
-    except Exception as e:
-        print(f"[TASK {array_idx}] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    _apply_inherited_method(project_state, params, f"[TASK {array_idx}]")
-    status_dir = job_dir / STATUS_DIR_NAME
-    ts_name = None
-    try:
-        manifest = read_manifest(job_dir)
-        ts_names = manifest["ts_names"]
-        tomo_basenames = manifest.get("tomo_basenames", {})
-        if array_idx >= len(ts_names):
-            raise IndexError(f"SLURM_ARRAY_TASK_ID {array_idx} out of range (manifest has {len(ts_names)})")
-        ts_name = ts_names[array_idx]
-        tomo_basename = tomo_basenames.get(ts_name)
+    def task_already_done(self, ctx: DriverContext[DenoisePredictParams], item: str) -> bool:
+        manifest = read_manifest(ctx.job_dir)
+        tomo_basename = manifest.get("tomo_basenames", {}).get(item)
         if not tomo_basename:
-            raise ValueError(f"No tomogram basename in manifest for ts={ts_name}")
-        print(f"[TASK {array_idx}] ts={ts_name} tomo={tomo_basename}", flush=True)
-
-        paths = {k: Path(v) for k, v in local_params_data["paths"].items()}
-        additional_binds = local_params_data["additional_binds"]
-        reconstruct_base = paths["reconstruct_base"]
-        output_dir = paths["output_dir"]
-        model_tar = paths["model_path"]
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        even_path = reconstruct_base / "reconstruction" / "even" / tomo_basename
-        odd_path = reconstruct_base / "reconstruction" / "odd" / tomo_basename
-        full_path = reconstruct_base / "reconstruction" / tomo_basename
-
-        out_mrc = output_dir / tomo_basename
+            raise ValueError(f"No tomogram basename in manifest for ts={item}")
+        out_mrc = ctx.paths["output_dir"] / tomo_basename
         # Idempotency: skip tomograms already denoised on a previous attempt.
         if out_mrc.exists() and out_mrc.stat().st_size > 0:
-            print(f"[TASK {array_idx}] Denoised output already exists, skipping: {out_mrc}", flush=True)
-            write_status_atomic(status_dir, ts_name, ok=True)
-            sys.exit(0)
+            self.log(f"Denoised output already exists, skipping: {out_mrc}")
+            return True
+        return False
 
-        if params.denoise_method == DenoiseMethod.ISONET:
+    def stage(self, ctx: DriverContext[DenoisePredictParams], item: str):
+        manifest = read_manifest(ctx.job_dir)
+        tomo_basename = manifest["tomo_basenames"][item]
+        self.log(f"ts={item} tomo={tomo_basename}")
+
+        reconstruct_base = ctx.paths["reconstruct_base"]
+        output_dir = ctx.paths["output_dir"]
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        staged = {
+            "tomo_basename": tomo_basename,
+            "even": reconstruct_base / "reconstruction" / "even" / tomo_basename,
+            "odd": reconstruct_base / "reconstruction" / "odd" / tomo_basename,
+            "full": reconstruct_base / "reconstruction" / tomo_basename,
+            "out_mrc": output_dir / tomo_basename,
+            "isonet_model_pt": manifest.get("isonet_model_pt"),
+        }
+
+        if ctx.params.denoise_method == DenoiseMethod.ISONET:
             # The isonet2-n2n model predicts on the even/odd halves (averaged); an isonet2 model
             # uses the full (rlnTomoName). Stage all three, exactly as denoise_train did.
-            for label, p in (("full", full_path), ("even", even_path), ("odd", odd_path)):
-                if not p.exists():
-                    raise FileNotFoundError(f"Missing {label} reconstruction for {tomo_basename}: {p}")
-            model_pt = manifest.get("isonet_model_pt")
-            if not model_pt:
+            for label in ("full", "even", "odd"):
+                if not staged[label].exists():
+                    raise FileNotFoundError(f"Missing {label} reconstruction for {tomo_basename}: {staged[label]}")
+            if not staged["isonet_model_pt"]:
                 raise RuntimeError("Manifest missing isonet_model_pt (supervisor did not stage the IsoNet model)")
-            run_isonet_predict_task(
-                params,
-                job_dir,
-                additional_binds,
-                Path(model_pt),
-                full_path,
-                even_path,
-                odd_path,
-                output_dir,
-                out_mrc,
-                ts_name,
-                array_idx,
-            )
         else:
-            if not even_path.exists() or not odd_path.exists():
-                raise FileNotFoundError(f"Missing even/odd halves for {tomo_basename}: {even_path} / {odd_path}")
-            cmd = build_cryocare_predict_command(params, job_dir, model_tar, even_path, odd_path, output_dir, array_idx)
-            print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
-            wrapped = get_container_service().wrap_command_for_tool(
-                command=cmd, cwd=job_dir, tool_name=params.get_tool_name(), additional_binds=additional_binds
-            )
-            run_command(wrapped, cwd=job_dir)
+            if not staged["even"].exists() or not staged["odd"].exists():
+                raise FileNotFoundError(
+                    f"Missing even/odd halves for {tomo_basename}: {staged['even']} / {staged['odd']}"
+                )
+        return staged
 
-        if not out_mrc.exists():
-            raise FileNotFoundError(f"Prediction reported success but output missing: {out_mrc}")
+    def execute(self, ctx: DriverContext[DenoisePredictParams], item: str, staged) -> None:
+        if ctx.params.denoise_method == DenoiseMethod.ISONET:
+            self._run_isonet_predict(ctx, item, staged)
+        else:
+            # Default path: build_command (cryoCARE) → run_tool with
+            # tool_name=params.get_tool_name() (method-conditional → "cryocare").
+            super().execute(ctx, item, staged)
 
-        write_status_atomic(status_dir, ts_name, ok=True)
-        print(f"[TASK {array_idx}] {ts_name} done", flush=True)
-        sys.exit(0)
+    def build_command(self, ctx: DriverContext[DenoisePredictParams], item: str, staged) -> ToolCommand:
+        """cryoCARE_predict.py treats `output` as a directory and writes output_dir/basename(even)
+        inside it -- which equals output_dir/<tomo_basename>."""
+        params = ctx.params
+        base_tiles = (params.ntiles_z, params.ntiles_y, params.ntiles_x)
+        n_tiles_z, n_tiles_y, n_tiles_x = self._calculate_memory_aware_tiles(
+            staged["even"], base_tiles=base_tiles, max_tiles=(8, 8, 8)
+        )
+        self.log(f"Tiles: z={n_tiles_z} y={n_tiles_y} x={n_tiles_x}")
+        cfg = {
+            "path": str(ctx.paths["model_path"]),
+            "even": str(staged["even"]),
+            "odd": str(staged["odd"]),
+            "n_tiles": [n_tiles_z, n_tiles_y, n_tiles_x],
+            "output": str(ctx.paths["output_dir"]),
+            "gpu_id": 0,
+            "overwrite": True,
+        }
+        # predict_{idx}.json keyed by array index — each task writes its own.
+        idx = os.environ["SLURM_ARRAY_TASK_ID"]
+        cfg_name = f"predict_{idx}.json"
+        with open(ctx.job_dir / cfg_name, "w") as f:
+            json.dump(cfg, f, indent=4)
+        # Env prefix rides in front of the executable — in-band, as the shell needs it.
+        return ToolCommand("TF_FORCE_GPU_ALLOW_GROWTH=true TF_GPU_ALLOCATOR=cuda_malloc_async cryoCARE_predict.py").opt(
+            "--conf", cfg_name
+        )
 
-    except Exception as e:
-        label = ts_name or f"_unknown_idx{array_idx}"
-        print(f"[TASK {array_idx}] FATAL ERROR for ts={label}: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
+    def _calculate_memory_aware_tiles(self, tomogram_path: Path, base_tiles=(4, 4, 4), max_tiles=(8, 8, 8)) -> tuple:
+        """Calculate optimal tiling based on tomogram dimensions. Returns (n_tiles_z, n_tiles_y, n_tiles_x)."""
         try:
-            write_status_atomic(status_dir, label, ok=False)
-        except Exception as inner:
-            print(f"[TASK {array_idx}] Could not write fail status: {inner}", file=sys.stderr, flush=True)
-        sys.exit(1)
+            import mrcfile
 
+            with mrcfile.open(tomogram_path, "r") as mrc:
+                dims = mrc.data.shape  # (z, y, x) for tomograms
+            self.log(f"Tomogram dimensions: {dims}")
+            tiles = list(base_tiles)
+            for i, dim in enumerate(dims):
+                if dim > 1000:
+                    tiles[i] = min(tiles[i] * 2, max_tiles[i])
+                elif dim > 2000:
+                    tiles[i] = min(tiles[i] * 3, max_tiles[i])
+            return tuple(tiles)
+        except Exception as e:
+            # Tiling is a performance heuristic, not correctness: fall back to
+            # the configured base tiles rather than fail the tomogram.
+            self.log(f"WARN: Could not read tomogram for tiling calculation: {e}")
+            return base_tiles
 
-def main():
-    print("Python", sys.version, flush=True)
-    array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
-    if array_idx_env is None:
-        print("--- denoise_predict: SUPERVISOR mode ---", flush=True)
-        run_supervisor_mode()
-    else:
-        print(f"--- denoise_predict: TASK mode (array idx {array_idx_env}) ---", flush=True)
-        run_task_mode(int(array_idx_env))
+    def _run_isonet_predict(self, ctx: DriverContext[DenoisePredictParams], item: str, staged) -> None:
+        """Per-tomogram IsoNet prediction. Stage this tomo's full + even/odd reconstructions into a
+        one-file-each dir and build the prep STAR with prepare_star --full --even --odd (full ->
+        rlnTomoName, even/odd -> rlnTomoReconstructedTomogramHalf1/2), mirroring denoise_train. The
+        model denoise_train produces is isonet2-n2n (noise2noise): predict reads the even/odd halves,
+        denoises each, and averages -- an isonet2 (single-map) model instead reads rlnTomoName, so
+        staging all three keeps predict correct for either method. [deconv], then predict into a
+        per-task dir and move the single corrected MRC to the canonical denoised path (out_mrc).
+        Predicting into an isolated per-task dir sidesteps IsoNet's output-filename convention --
+        ISONET-ASSUMPTION: predict writes exactly one full-size .mrc. See ISONET_INTEGRATION_PLAN.md."""
+        job_dir = ctx.job_dir
+        out_mrc = staged["out_mrc"]
+        stage = job_dir / ".staging" / f"task_{item}"
+        full_dir, even_dir, odd_dir, corrected = stage / "full", stage / "even", stage / "odd", stage / "corrected"
+        for d in (full_dir, even_dir, odd_dir, corrected):
+            d.mkdir(parents=True, exist_ok=True)
+        # prepare_star matches full/even/odd by basename across the three dirs (as in denoise_train).
+        for src, dst_dir in ((staged["full"], full_dir), (staged["even"], even_dir), (staged["odd"], odd_dir)):
+            link = dst_dir / src.name
+            if link.exists() or link.is_symlink():
+                link.unlink()
+            link.symlink_to(src.resolve())
+
+        prep = stage / "isonet_prep.star"
+
+        # tool_name stays the "isonet" literal in this IsoNet-only helper: the branch, not
+        # params, is what makes it IsoNet here, and params.get_tool_name() would answer
+        # "cryocare" if this were ever called off the ISONET branch.
+        def isonet(cmd: ToolCommand):
+            self.log(f"Command: {cmd}")
+            run_tool(cmd, tool_name="isonet", cwd=job_dir, binds=ctx.additional_binds)
+
+        isonet(
+            ToolCommand("isonet.py prepare_star")
+            .opt_path("--full", full_dir, quote=True)
+            .opt_path("--even", even_dir, quote=True)
+            .opt_path("--odd", odd_dir, quote=True)
+            .opt_path("--star_name", prep, quote=True)
+            .opt("--pixel_size", "auto")
+        )
+        input_col = "rlnTomoName"
+        if ctx.params.isonet_deconv:
+            isonet(
+                ToolCommand("isonet.py deconv")
+                .opt_path("--star_file", prep, quote=True)
+                .opt_path("--output_dir", stage / "deconv", quote=True)
+            )
+            input_col = "rlnDeconvTomoName"
+        isonet(
+            ToolCommand("isonet.py predict")
+            .opt_path("--star_file", prep, quote=True)
+            .opt_path("--model", Path(staged["isonet_model_pt"]), quote=True)
+            .opt("--input_column", input_col)
+            .opt_path("--output_dir", corrected, quote=True)
+        )
+
+        mrcs = list(corrected.glob("*.mrc"))
+        if not mrcs:
+            raise FileNotFoundError(f"IsoNet predict produced no MRC in {corrected}")
+        # predict may also drop small preview-slice MRCs (save_slices defaults True); the corrected
+        # tomogram is by far the largest volume in the per-task dir.
+        produced = max(mrcs, key=lambda p: p.stat().st_size)
+        out_mrc.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(produced), str(out_mrc))
+        self.log(f"IsoNet corrected -> {out_mrc}")
+
+    def verify_outputs(self, ctx: DriverContext[DenoisePredictParams], item: str, staged) -> None:
+        if not staged["out_mrc"].exists():
+            raise FileNotFoundError(f"Prediction reported success but output missing: {staged['out_mrc']}")
 
 
 if __name__ == "__main__":
-    main()
+    DenoisePredictDriver().main()

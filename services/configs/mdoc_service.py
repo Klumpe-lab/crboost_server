@@ -3,7 +3,7 @@ import glob
 import logging
 from pathlib import Path
 import os
-from typing import Dict, Any, Optional
+from typing import Any
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class MdocService:
     """Singleton service for all .mdoc file interactions."""
 
-    def get_autodetect_params(self, mdocs_glob: str) -> Dict[str, Any]:
+    def get_autodetect_params(self, mdocs_glob: str) -> dict[str, Any]:
         """
         Parse the first VALID mdoc file found by the glob.
         """
@@ -34,7 +34,7 @@ class MdocService:
         in_zvalue_section = False
 
         try:
-            with open(mdoc_path, "r") as f:
+            with open(mdoc_path) as f:
                 for line in f:
                     line = line.strip()
                     if not line:
@@ -118,7 +118,7 @@ class MdocService:
             logger.error("MdocService failed to parse %s: %s", mdoc_path, e)
             return {}
 
-    def parse_all_mdoc_files(self, mdocs_glob: str) -> Dict[str, Any]:
+    def parse_all_mdoc_files(self, mdocs_glob: str) -> dict[str, Any]:
         """
         Parse ALL mdoc files and return comprehensive statistics.
         """
@@ -126,7 +126,6 @@ class MdocService:
         if not mdoc_files:
             return {}
 
-        all_data = []
         result = {
             "mdoc_files": [],
             "tilt_series_count": 0,
@@ -141,7 +140,8 @@ class MdocService:
         tilt_angles = []
 
         for mdoc_file in mdoc_files:
-            if not os.path.isfile(mdoc_file): continue
+            if not os.path.isfile(mdoc_file):
+                continue
             
             mdoc_path = Path(mdoc_file)
             try:
@@ -192,7 +192,7 @@ class MdocService:
 
         return result
 
-    def parse_mdoc_file(self, mdoc_path: Path) -> Dict[str, Any]:
+    def parse_mdoc_file(self, mdoc_path: Path) -> dict[str, Any]:
         """
         Fully parse an mdoc file into headers and data sections.
         """
@@ -201,7 +201,7 @@ class MdocService:
         current_section = {}
         in_zvalue_section = False
 
-        with open(mdoc_path, "r") as f:
+        with open(mdoc_path) as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -223,7 +223,7 @@ class MdocService:
 
         return {"header": "\n".join(header_lines), "data": data_sections}
 
-    def write_mdoc_file(self, mdoc_data: Dict[str, Any], output_path: Path):
+    def write_mdoc_file(self, mdoc_data: dict[str, Any], output_path: Path):
         """
         Writes a parsed mdoc data structure back to a file.
         """
@@ -238,10 +238,10 @@ class MdocService:
                 f.write("\n")
 
 
-_mdoc_service_instance: Optional[MdocService] = None
+_mdoc_service_instance: MdocService | None = None
 
 
-@lru_cache()
+@lru_cache
 def get_mdoc_service() -> MdocService:
     """Get or create the MdocService singleton"""
     global _mdoc_service_instance

@@ -26,7 +26,6 @@ import json
 import logging
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Optional
 
 from nicegui import context, ui
 
@@ -58,7 +57,7 @@ def _copy_js(text: str) -> str:
     return "navigator.clipboard.writeText(" + json.dumps(text) + ")"
 
 
-async def open_curation_control_center(backend, project_path: Optional[Path], *, bundle: Optional[dict] = None) -> None:
+async def open_curation_control_center(backend, project_path: Path | None, *, bundle: dict | None = None) -> None:
     """Open the curation control center.
 
     ``bundle`` (from ``backend.prepare_curation_bundle``) ties the panel to one
@@ -88,7 +87,9 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
     source_star = b.get("source_star")
     coords_label = b.get("coords_label") or "auto"
     _cur_cfg = getattr(getattr(backend, "config_service", None), "curation", None)
-    can_load = bool(getattr(_cur_cfg, "rest_enabled", True)) and bool(candidates_star and tomograms_star)
+    # The tomogram is what a swap actually needs; `candidates_star` is only the
+    # reference pick list, and a species picked de novo has none.
+    can_load = bool(getattr(_cur_cfg, "rest_enabled", True)) and bool(tomograms_star)
 
     # Live session values; copy buttons read from here (closures) so they stay
     # correct as the session transitions off → starting → live without a rebuild.
@@ -186,7 +187,7 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
             ui.separator()
 
             # "Currently loaded" — what the shared live session has open via the REST
-            # swap (backend._curation_loaded). Filled on reconnect + after each Load;
+            # swap (CurationSessionService._curation_loaded). Filled on reconnect + after each Load;
             # hidden until something is loaded. The session is per-user, so this can
             # reflect a tomogram a swap loaded from a different project's dashboard.
             loaded_lbl = ui.label("").classes(
@@ -495,7 +496,7 @@ async def open_curation_control_center(backend, project_path: Optional[Path], *,
             res = await backend.load_into_session(
                 session_info,
                 project_path,
-                Path(candidates_star),
+                Path(candidates_star) if candidates_star else None,
                 Path(tomograms_star),
                 tomo_name,
                 species_label,

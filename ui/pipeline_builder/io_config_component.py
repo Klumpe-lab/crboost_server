@@ -17,14 +17,16 @@ outputs: the full path and that it is predicted until the job finishes).
 """
 
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from collections.abc import Callable
 
 from nicegui import ui
 
 from services.io_slots import JobFileType
-from services.models_base import JobType, JobStatus
+from services.models_base import InstanceId, JobType, JobStatus
 from services.path_resolution_service import PathResolutionService, InputSlotValidation
-from services.project_state import get_project_state, get_state_service, get_project_state_for
+from backend import get_backend
+from services.project_state import get_project_state_for
+from ui.current_project import current_project_state
 from ui.ui_state import get_job_display_name
 from ui.utils import snake_to_title
 from ui.components.copyable import copyable_path, copy_button
@@ -49,7 +51,7 @@ STATUS_STYLE = {
 
 # Human name + one-line meaning per artifact type, for the input-slot hover.
 # Sourced from the inline path comments in services/io_slots.py.
-_FILETYPE_INFO: Dict[JobFileType, tuple] = {
+_FILETYPE_INFO: dict[JobFileType, tuple] = {
     JobFileType.TILT_SERIES_STAR: (
         "Tilt-series star",
         "RELION tilt_series.star listing every tilt series (from Import).",
@@ -119,7 +121,7 @@ _TIP_DESC = f"{FONT} font-size: 10px; color: #94a3b8; line-height: 1.35;"
 _TIP_PATH = f"{MONO} font-size: 10px; color: #cbd5e1; word-break: break-all; white-space: normal;"
 
 
-def _safe_int(x) -> Optional[int]:
+def _safe_int(x) -> int | None:
     try:
         return int(x)
     except Exception:
@@ -155,7 +157,7 @@ def _short_instance_label(instance_path: str) -> str:
         return instance_path
 
 
-def _is_pending_path(p: Optional[str]) -> bool:
+def _is_pending_path(p: str | None) -> bool:
     return bool(p) and "pending_" in p
 
 
@@ -171,9 +173,8 @@ def _candidate_name(c) -> str:
         return c.label
     base = get_job_display_name(JobType(c.producer_job_type.value))
     iid = getattr(c, "producer_instance_id", "") or ""
-    parts = iid.split("__", 1)
-    if len(parts) > 1:
-        suffix = parts[1]
+    suffix = InstanceId.split(iid)[1]
+    if suffix is not None:
         base = f"{base} #{suffix}" if suffix.isdigit() else f"{base} · {suffix}"
     folder = _short_instance_label(c.instance_path or "")
     # Species suffix disambiguates same-type producers wired to different species
@@ -190,8 +191,8 @@ class IOConfigComponent:
         self,
         job_type: JobType,
         instance_id: str,
-        on_change: Optional[Callable[[], None]] = None,
-        active_instance_ids: Optional[set] = None,
+        on_change: Callable[[], None] | None = None,
+        active_instance_ids: set | None = None,
         read_only: bool = False,
     ):
         self.job_type = job_type
@@ -202,12 +203,12 @@ class IOConfigComponent:
         # source selectors become static faces and the edit affordances (manual
         # path, reset, gain browse) are hidden.
         self.read_only = read_only
-        self._validation_cache: Dict[str, InputSlotValidation] = {}
-        self._slot_containers: Dict[str, ui.element] = {}
-        self._gain_container: Optional[ui.element] = None
+        self._validation_cache: dict[str, InputSlotValidation] = {}
+        self._slot_containers: dict[str, ui.element] = {}
+        self._gain_container: ui.element | None = None
 
     def render(self):
-        state = get_project_state()
+        state = current_project_state()
         job_model = state.jobs.get(self.instance_id)
         if not job_model:
             ui.label(f"Job instance '{self.instance_id}' not initialized").classes("text-red-500 italic")
@@ -233,8 +234,8 @@ class IOConfigComponent:
                 ui.label("Outputs").style(_SECTION_TITLE_STYLE)
                 self._render_output_slots(output_schema, job_model)
 
-    def _get_job_dir(self, job_model) -> tuple[Optional[Path], bool]:
-        state = get_project_state()
+    def _get_job_dir(self, job_model) -> tuple[Path | None, bool]:
+        state = current_project_state()
         project_path = getattr(state, "project_path", None)
         if not project_path:
             return None, True
@@ -251,7 +252,7 @@ class IOConfigComponent:
     # ── Gain reference (project-wide external input) ─────────────────────────
 
     def _render_gain_row(self):
-        state = get_project_state()
+        state = current_project_state()
         gain = getattr(state.acquisition, "gain_reference_path", None)
         is_set = bool(gain and str(gain).strip() and str(gain) != "None")
         dot_color = "#10b981" if is_set else "#f59e0b"
@@ -293,7 +294,7 @@ class IOConfigComponent:
     async def _pick_gain(self):
         from ui.local_file_picker import local_file_picker
 
-        state = get_project_state()
+        state = current_project_state()
         cur = getattr(state.acquisition, "gain_reference_path", None)
         start = str(Path(cur).parent) if cur else (str(state.project_path) if state.project_path else "~")
         result = await local_file_picker(directory=start, mode="file")
@@ -303,12 +304,12 @@ class IOConfigComponent:
     async def _clear_gain(self):
         await self._set_gain(None)
 
-    async def _set_gain(self, value: Optional[str]):
-        state = get_project_state()
+    async def _set_gain(self, value: str | None):
+        state = current_project_state()
         project_path = state.project_path
         state.acquisition.gain_reference_path = value or None
         state.mark_dirty()
-        await get_state_service().save_project(project_path=project_path)
+        await get_backend().save_project(project_path)
         if self._gain_container is not None:
             self._gain_container.clear()
             with self._gain_container:
@@ -578,7 +579,7 @@ class IOConfigComponent:
             full_path: str = ""
             if resolved:
                 p = Path(str(resolved))
-                state = get_project_state()
+                state = current_project_state()
                 project_path = getattr(state, "project_path", None)
                 if project_path and not p.is_absolute():
                     p = project_path / p
@@ -629,7 +630,7 @@ class IOConfigComponent:
     # ── State updates ────────────────────────────────────────────────────────
 
     def _handle_source_change(self, slot, value):
-        state = get_project_state()
+        state = current_project_state()
         project_path = state.project_path
         job_model = state.jobs.get(self.instance_id)
         if not job_model:
@@ -647,7 +648,7 @@ class IOConfigComponent:
         asyncio.create_task(self._save_and_refresh(slot, project_path))
 
     def _handle_manual_path_change(self, slot, path):
-        state = get_project_state()
+        state = current_project_state()
         project_path = state.project_path
         job_model = state.jobs.get(self.instance_id)
         if not job_model:
@@ -660,7 +661,7 @@ class IOConfigComponent:
         asyncio.create_task(self._save_and_refresh(slot, project_path))
 
     def _clear_override(self, slot):
-        state = get_project_state()
+        state = current_project_state()
         project_path = state.project_path
         job_model = state.jobs.get(self.instance_id)
         if not job_model:
@@ -675,7 +676,7 @@ class IOConfigComponent:
         # The source-override handlers mutate job_model.source_overrides in place,
         # which bypasses ProjectState's dirty tracking — so force the write or the
         # user's source pick / manual path silently vanishes on the next load.
-        await get_state_service().save_project(project_path=project_path, force=True)
+        await get_backend().save_project(project_path, force=True)
         container = self._slot_containers.get(slot.key)
         job_model = None
         if container:
@@ -692,7 +693,7 @@ class IOConfigComponent:
     async def _open_file_picker(self, slot):
         from ui.local_file_picker import local_file_picker
 
-        state = get_project_state()
+        state = current_project_state()
         overrides = getattr(state.jobs.get(self.instance_id), "source_overrides", {}) or {}
         cur = overrides.get(slot.key, "")
         cur_path = cur[7:] if isinstance(cur, str) and cur.startswith("manual:") else ""
@@ -710,8 +711,8 @@ class IOConfigComponent:
 def render_io_config(
     job_type: JobType,
     instance_id: str,
-    on_change: Optional[Callable[[], None]] = None,
-    active_instance_ids: Optional[set] = None,
+    on_change: Callable[[], None] | None = None,
+    active_instance_ids: set | None = None,
     read_only: bool = False,
 ):
     component = IOConfigComponent(job_type, instance_id, on_change, active_instance_ids, read_only=read_only)
