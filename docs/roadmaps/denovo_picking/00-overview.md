@@ -197,6 +197,16 @@ Honest assessment, on request:
 
 Spine (the de-novo happy path): **S1 → S2 → S3**. S4/S5/S6 are independent trailers.
 
+> **UI-pass entry point (recorded 2026-08-14):** the next session is the UI pass. Its FIRST slice
+> is `../07-extract-pick-list-job-identity.md` (census #68 — per-list extraction becomes a real,
+> UI-visible job; its §1 inventories exactly what the UI cannot show today, its S4 covers the two
+> known wiring gaps: the hardcoded `subtomo_status: "pending"` for de-novo journey rows at
+> `services/dashboard_data.py:832`, and the missing default radio in the rail's authoritative-list
+> column). After 07, continue with S4 below. Prerequisite context: the driver refactor (roadmap 04)
+> is code-complete as of 2026-08-14 — nothing on that front blocks or is owed by the UI work, but
+> the 6 freshly migrated drivers + fail-loud registry stamps are PENDING RUNTIME, so run a sandbox
+> chain before relying on pipeline runs during UI testing.
+
 | Session | Doc | Goal | Depends on |
 |---|---|---|---|
 | S1 | `01-species-and-creation.md` | Species creation UX + registry hygiene + data-less project creation (kills `is_particle_only`) | — |
@@ -205,6 +215,7 @@ Spine (the de-novo happy path): **S1 → S2 → S3**. S4/S5/S6 are independent t
 | S4 | `02-geometry-and-inversion.md` §S4 | Journey unification: delete fallback renderer, strip signature, empty-state copy, spinner failure paths | S2 |
 | S5 | `04-tomo-import.md` | Import hardening: producer sentinel, multi-import, formats, perf, runtime shake | — (reads benefit from S2) |
 | S6 | `05-aggregation-module.md` | Aggregation factor-out + de-global + `is_aggregation` removal | — |
+| 07 | `../07-extract-pick-list-job-identity.md` | extract_pick_list job identity + per-list status UI (census #68; closes #73) | S3 (spine landed) |
 
 ## Risk register
 
