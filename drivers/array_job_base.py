@@ -256,9 +256,7 @@ def collect_task_results(job_dir: Path, ts_names: list[str]) -> ArrayResults:
     accounted = set(ok_files) | set(fail_files) | set(skip_files)
     missing = sorted(set(ts_names) - accounted)
     all_ok = (len(ok_files) + len(skip_files)) == len(ts_names) and not fail_files and not missing
-    return ArrayResults(
-        ok=ok_files, failed=fail_files, missing=missing, skipped=skip_files, all_succeeded=all_ok
-    )
+    return ArrayResults(ok=ok_files, failed=fail_files, missing=missing, skipped=skip_files, all_succeeded=all_ok)
 
 
 # ----------------------------------------------------------------------
@@ -336,11 +334,7 @@ def preflight_registry(project_path: Path, expected_ts_names: list[str], job_nam
     registry = get_registry_for(project_path)
     reg_ids = registry.tilt_series_ids()
 
-    print(
-        f"[{job_name}] PREFLIGHT: registry has {len(reg_ids)} TS, "
-        f"{registry.frame_count()} frames total",
-        flush=True,
-    )
+    print(f"[{job_name}] PREFLIGHT: registry has {len(reg_ids)} TS, {registry.frame_count()} frames total", flush=True)
     if reg_ids:
         print(f"[{job_name}] PREFLIGHT: registry TS head: {reg_ids[:3]}", flush=True)
 
@@ -413,7 +407,7 @@ def copy_tomostar_with_absolute_paths(src: Path, dst: Path, original_dir: Path) 
 
 
 def stage_per_ts_environment(
-    job_dir: Path, ts_name: str, input_processing: Path, settings_file: Path
+    job_dir: Path, ts_name: str, input_processing: Path | None, settings_file: Path
 ) -> tuple[Path, Path]:
     """
     Build a per-TS staging directory so WarpTools only sees ONE tilt-series.
@@ -431,6 +425,9 @@ def stage_per_ts_environment(
     The settings file uses relative paths (DataFolder="tomostar",
     ProcessingFolder="warp_tiltseries"), so placing the copy inside the staging
     root makes them resolve to the per-TS dirs we created.
+
+    input_processing=None (ts_alignment): the job PRODUCES the warp XMLs, so the
+    warp_tiltseries dir is created empty instead of receiving an XML symlink.
 
     Returns (staged_settings_file, staged_input_processing).
     """
@@ -456,6 +453,9 @@ def stage_per_ts_environment(
     # 3. Stage the warp_tiltseries dir (input_processing) — one XML only.
     staged_processing = stage_root / "warp_tiltseries"
     staged_processing.mkdir(parents=True, exist_ok=True)
+
+    if input_processing is None:
+        return staged_settings, staged_processing
 
     src_xml = input_processing / f"{ts_name}.xml"
     if not src_xml.exists():
@@ -745,6 +745,7 @@ class ArrayDriver(ABC):
     job_name: str
     driver_script: Path
     retry_attempts: int = 1
+    poll_secs: int = 30
 
     # Log prefix for the mode currently running; hooks print through self.log()
     # so a line reads the same whichever mode emitted it.
@@ -753,11 +754,29 @@ class ArrayDriver(ABC):
     def log(self, message: str) -> None:
         print(f"{self._prefix} {message}", flush=True)
 
+    # ---------------- shared hooks ----------------
+
+    def post_bootstrap(self, ctx: DriverContext) -> None:
+        """Runs in BOTH modes right after context load, before any other work
+        (e.g. denoise_predict inheriting the effective method from its train job)."""
+        return None
+
     # ---------------- supervisor hooks ----------------
+
+    def whole_job_short_circuit(self, ctx: DriverContext) -> bool:
+        """Return True to end the job SUCCESSFULLY without enumerating or
+        dispatching (subtomo_extraction's merge_only and zero-picks paths).
+        The hook does its own work; the base writes the success marker."""
+        return False
 
     @abstractmethod
     def enumerate_items(self, ctx: DriverContext) -> list[str]:
         """The authoritative item list for this run (validate inputs here too)."""
+
+    def preflight_scope(self, ctx: DriverContext, items: list[str]) -> list[str]:
+        """Items preflight_registry must cover. Default: all items.
+        subtomo_extraction narrows to the TS it will actually dispatch."""
+        return items
 
     def item_metadata(self, ctx: DriverContext, items: list[str]) -> dict[str, dict] | None:
         """Per-item metadata to persist in the manifest (`ts_metadata`)."""
@@ -771,9 +790,21 @@ class ArrayDriver(ABC):
         """Supervisor-side work between preflight and array submission."""
         return None
 
+    def per_task_slurm_config(self, ctx: DriverContext) -> SlurmConfig:
+        """Per-task SLURM resources. Override to adjust (e.g. a memory bump
+        conditional on a parameter); default is the job's effective config."""
+        return ctx.params.get_effective_slurm_config()
+
+    def tally_acceptable(self, ctx: DriverContext, results: ArrayResults) -> bool:
+        """False → job FAILED before aggregation. Default: strict (every item
+        must be `.ok`/`.skip`). ts_alignment overrides with its documented
+        tolerant policy (per-TS alignment failure is normal; only a total
+        wipeout is fatal) — census #41."""
+        return results.all_succeeded
+
     @abstractmethod
     def aggregate(self, ctx: DriverContext, results: ArrayResults) -> None:
-        """Post-array metadata aggregation. Runs only when every item settled."""
+        """Post-array metadata aggregation. Runs only when the tally is acceptable."""
 
     # ---------------- task hooks ----------------
 
@@ -792,6 +823,26 @@ class ArrayDriver(ABC):
     def task_cwd(self, ctx: DriverContext, item: str, staged) -> Path:
         """Working directory for the tool. Defaults to the job dir."""
         return ctx.job_dir
+
+    def task_binds(self, ctx: DriverContext, item: str, staged) -> list:
+        """Extra container bind paths for this item's tool run, appended to
+        ctx.additional_binds. The container wrapper resolves/dedups/sorts."""
+        return []
+
+    def execute(self, ctx: DriverContext, item: str, staged) -> None:
+        """Run this item's tool work: build_command → run_tool. Override when an
+        item needs multiple tool invocations (denoise_predict's IsoNet path);
+        the default covers the single-command case every other driver has."""
+        cmd = self.build_command(ctx, item, staged)
+        self.log(f"Command: {cmd}")
+        run_tool(
+            cmd,
+            tool_name=ctx.params.get_tool_name(),
+            cwd=self.task_cwd(ctx, item, staged),
+            binds=[*ctx.additional_binds, *self.task_binds(ctx, item, staged)],
+            attempts=self.retry_attempts,
+            label=f"{self.job_name} {item}",
+        )
 
     def verify_outputs(self, ctx: DriverContext, item: str, staged) -> None:
         """Raise if the tool exited 0 without producing what it promised."""
@@ -828,12 +879,17 @@ class ArrayDriver(ABC):
         print(f"[SUPERVISOR] CWD (job dir): {ctx.job_dir}", flush=True)
 
         try:
+            self.post_bootstrap(ctx)
+            if self.whole_job_short_circuit(ctx):
+                (ctx.job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
+                print("[SUPERVISOR] Job finished successfully.", flush=True)
+                sys.exit(0)
             items = self.enumerate_items(ctx)
             if not items:
                 raise ValueError(f"{self.job_name}: no tilt-series to process")
             print(f"[SUPERVISOR] Found {len(items)} tilt-series", flush=True)
 
-            preflight_registry(ctx.project_path, items, job_name=self.job_name)
+            preflight_registry(ctx.project_path, self.preflight_scope(ctx, items), job_name=self.job_name)
             self.pre_dispatch(ctx, items)
 
             # Honor user "exclude from processing": pre-skip excluded items so they are
@@ -845,7 +901,7 @@ class ArrayDriver(ABC):
                 project_path=ctx.project_path,
                 instance_id=ctx.instance_id,
                 ts_names=items,
-                per_task_cfg=ctx.params.get_effective_slurm_config(),
+                per_task_cfg=self.per_task_slurm_config(ctx),
                 array_throttle=ctx.params.array_throttle,
                 driver_script=self.driver_script,
                 ts_metadata=self.item_metadata(ctx, items),
@@ -854,7 +910,7 @@ class ArrayDriver(ABC):
 
             if array_job_id is not None:
                 install_cancel_handler(array_job_id, ctx.job_dir)
-                wait_for_array_completion(array_job_id, poll_secs=30)
+                wait_for_array_completion(array_job_id, poll_secs=self.poll_secs)
             else:
                 print("[SUPERVISOR] No array submitted (all tasks previously succeeded)", flush=True)
 
@@ -865,7 +921,7 @@ class ArrayDriver(ABC):
             if results.missing:
                 print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
 
-            if not results.all_succeeded:
+            if not self.tally_acceptable(ctx, results):
                 (ctx.job_dir / "RELION_JOB_EXIT_FAILURE").touch()
                 print("[SUPERVISOR] Marking job as FAILED (some tilt-series did not succeed)", flush=True)
                 sys.exit(1)
@@ -895,6 +951,7 @@ class ArrayDriver(ABC):
         status_dir = ctx.job_dir / STATUS_DIR_NAME
         item = None
         try:
+            self.post_bootstrap(ctx)
             manifest = read_manifest(ctx.job_dir)
             items = manifest["ts_names"]
             if array_idx >= len(items):
@@ -907,18 +964,7 @@ class ArrayDriver(ABC):
                 sys.exit(0)
 
             staged = self.stage(ctx, item)
-            cmd = self.build_command(ctx, item, staged)
-            print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
-
-            run_tool(
-                cmd,
-                tool_name=ctx.params.get_tool_name(),
-                cwd=self.task_cwd(ctx, item, staged),
-                binds=ctx.additional_binds,
-                attempts=self.retry_attempts,
-                label=f"{self.job_name} {item}",
-            )
-
+            self.execute(ctx, item, staged)
             self.verify_outputs(ctx, item, staged)
             self.collect(ctx, item, staged)
 
