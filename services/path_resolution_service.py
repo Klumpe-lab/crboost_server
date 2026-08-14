@@ -79,6 +79,58 @@ class PathResolutionError(ValueError):
     pass
 
 
+# Instance-path markers for the three synthetic (non-job) producers. None of them has a
+# real JobType, so all three borrow MERGED_SOURCES and are told apart by instance path.
+PICK_LIST_PRODUCER_PREFIX = "pick_list__"
+IMPORTED_TOMOGRAMS_INSTANCE_PATH = "Tomograms"
+
+
+def pick_list_producer_id(pick_list) -> str:
+    """Stable synthetic producer id for one curation pick list.
+
+    Keyed on (species, tomo, slug), NOT slug alone: ``PickList.slug`` is only unique
+    WITHIN a (species, tomo), and the dashboard names every hand-picked list "manual"
+    (`ui/tomo_dashboard_dialog.py`), so a slug-only id would alias every species' and
+    every tomogram's manual list onto one producer — and make `remove_species` purge
+    another species' overrides.
+    """
+    return f"{PICK_LIST_PRODUCER_PREFIX}{pick_list.species_id}__{pick_list.tomo_name}__{pick_list.slug}"
+
+
+def pick_list_producer_prefix_for_species(species_id: str) -> str:
+    """Producer-id prefix owned by one species — what `remove_species` purges by."""
+    return f"{PICK_LIST_PRODUCER_PREFIX}{species_id}__"
+
+
+def is_synthetic_producer(producer_instance_id: str) -> bool:
+    """True for a producer that has no SLURM job — so it can never be an afterok
+    dependency. The aggregation merge, imported tomograms, and per-pick-list
+    extractions (which run as their own one-off job, outside the pipeline graph)."""
+    return producer_instance_id in ("mergedSources", "importedTomograms") or producer_instance_id.startswith(
+        PICK_LIST_PRODUCER_PREFIX
+    )
+
+
+def _synthetic_override_target(override_key: str) -> str:
+    """Which synthetic producer an override names: "merged" | "pick_list" | "imported" | "".
+
+    All three share the ``mergedSources:`` job-type prefix because none has its own
+    JobType; the instance path is what actually discriminates them. Routing a dangling
+    pick-list override through the merged-sources branch would tell the user
+    "merged-sources optimisation_set not found" about a list that simply needs
+    re-extracting. (Dedicated sentinels: denovo roadmap D-8; imported tomograms in S5.)
+    """
+    prefix = f"{JobType.MERGED_SOURCES.value}:"
+    if not override_key.startswith(prefix):
+        return ""
+    instance_path = override_key[len(prefix) :]
+    if instance_path.startswith(PICK_LIST_PRODUCER_PREFIX):
+        return "pick_list"
+    if instance_path == IMPORTED_TOMOGRAMS_INSTANCE_PATH:
+        return "imported"
+    return "merged"
+
+
 class PathResolutionService:
     """
     Stage 3: schema-based path resolution.
@@ -170,15 +222,22 @@ class PathResolutionService:
                     )
                     continue
 
-                # A merged-sources override that no longer resolves (the active
-                # merge's optimisation_set.star was deleted/moved, or the active
-                # merge switched to a slug whose file is absent) must SURFACE, not
-                # silently fall through to some other optset producer (e.g. a
-                # downstream Class3D output). Mirrored in validate_input_slot.
-                if chosen is None and override_key.startswith(f"{JobType.MERGED_SOURCES.value}:"):
-                    if slot.required:
-                        missing_required.append(f"{slot.key} (merged-sources optimisation_set not found)")
-                    continue
+                # A synthetic-producer override that no longer resolves (the active
+                # merge's optimisation_set.star was deleted/moved, the active merge
+                # switched to a slug whose file is absent, or a consumed pick list
+                # went stale) must SURFACE, not silently fall through to some other
+                # optset producer (e.g. a downstream Class3D output). Mirrored in
+                # validate_input_slot.
+                if chosen is None:
+                    target = _synthetic_override_target(override_key)
+                    if target == "pick_list":
+                        if slot.required:
+                            missing_required.append(f"{slot.key}: {self._dangling_pick_list_message(override_key)}")
+                        continue
+                    if target:
+                        if slot.required:
+                            missing_required.append(f"{slot.key} (merged-sources optimisation_set not found)")
+                        continue
 
             # 2. Fall back to species-aware automatic selection
             if chosen is None:
@@ -229,8 +288,10 @@ class PathResolutionService:
         rework; see ORCHESTRATOR_REPLACEMENT_PLAN.md §6).
 
         Producers with no SLURM job are excluded: a ``manual:`` file override
-        (user-picked file, no producing job) and the synthetic ``mergedSources``
-        aggregation producer -- an ``afterok`` on either would never be satisfiable.
+        (user-picked file, no producing job) and every synthetic producer
+        (``is_synthetic_producer`` -- the aggregation merge, imported tomograms, and
+        per-pick-list extractions) -- an ``afterok`` on any of them would never be
+        satisfiable.
         Slots that cannot be resolved yet are skipped silently (no exception), so
         this is safe on a partially-configured pipeline.
 
@@ -267,11 +328,7 @@ class PathResolutionService:
                     continue
 
                 producer_id = chosen.producer_instance_id
-                if (
-                    not producer_id
-                    or producer_id in ("mergedSources", "importedTomograms")
-                    or producer_id == consumer_id
-                ):
+                if not producer_id or is_synthetic_producer(producer_id) or producer_id == consumer_id:
                     # synthetic / non-job producer, or a self-edge from a pathological
                     # override (the override path, unlike auto-selection, does not
                     # exclude the consumer) -- neither is a valid afterok dependency.
@@ -401,18 +458,24 @@ class PathResolutionService:
                     error_message=None if file_exists else f"File not found: {manual_path}",
                 )
 
-            # Dangling merged-sources override (its optset is gone) -> surface red,
+            # Dangling synthetic-producer override (its optset is gone) -> surface red,
             # don't silently auto-pick a foreign optset producer. Mirrors resolve_inputs.
-            if chosen is None and override_key.startswith(f"{JobType.MERGED_SOURCES.value}:"):
-                return InputSlotValidation(
-                    slot_key=slot_key,
-                    is_valid=not slot.required,
-                    source_key=override_key,
-                    resolved_path=None,
-                    file_exists=False,
-                    is_user_override=True,
-                    error_message="Merged-sources optimisation_set not found (merge deleted or active merge switched?)",
-                )
+            if chosen is None:
+                target = _synthetic_override_target(override_key)
+                if target:
+                    return InputSlotValidation(
+                        slot_key=slot_key,
+                        is_valid=not slot.required,
+                        source_key=override_key,
+                        resolved_path=None,
+                        file_exists=False,
+                        is_user_override=True,
+                        error_message=(
+                            self._dangling_pick_list_message(override_key)
+                            if target == "pick_list"
+                            else "Merged-sources optimisation_set not found (merge deleted or active merge switched?)"
+                        ),
+                    )
 
         if chosen is None:
             chosen = self._choose_candidate_for_slot(
@@ -483,6 +546,19 @@ class PathResolutionService:
     # -------------------------------------------------------------------------
     # Override resolution
     # -------------------------------------------------------------------------
+
+    def _dangling_pick_list_message(self, override_key: str) -> str:
+        """Why a pick-list override stopped resolving, in the user's terms. The candidate
+        is injected only while the list is EXTRACTED, so losing it means the list was
+        re-curated (now STALE) or deleted — not that some generic input went missing."""
+        producer_id = override_key.split(":", 1)[1]
+        for pl in getattr(self.state, "pick_lists", None) or []:
+            if pick_list_producer_id(pl) == producer_id:
+                return (
+                    f"pick list '{pl.label or pl.slug}' on {pl.tomo_name} is no longer extracted "
+                    f"(its picks changed since the last extraction) — re-extract it"
+                )
+        return f"the pick list behind '{producer_id}' no longer exists — re-extract, or repoint this input"
 
     def _resolve_override(
         self, slot: InputSlot, override_key: str, index: dict[JobFileType, list[OutputCandidate]]
@@ -587,6 +663,7 @@ class PathResolutionService:
 
         self._add_merged_sources_candidates(index, project_root)
         self._add_imported_tomograms_candidates(index, project_root)
+        self._add_pick_list_optset_candidates(index)
 
         for t, lst in index.items():
             index[t] = sorted(lst, key=lambda c: (c.producer_job_type.value, c.instance_path, c.producer_output_key))
@@ -651,13 +728,78 @@ class PathResolutionService:
                 producer_job_type=JobType.MERGED_SOURCES,  # synthetic non-job marker (no IMPORT_TOMOGRAMS type)
                 producer_output_key="output_star",
                 path=str(star),
-                instance_path="Tomograms",
+                instance_path=IMPORTED_TOMOGRAMS_INSTANCE_PATH,
                 producer_instance_id="importedTomograms",
                 execution_status=JobStatus.SUCCEEDED,
                 relion_job_number=0,
                 species_id=None,
             )
         )
+
+    def _add_pick_list_optset_candidates(self, index: dict[JobFileType, list[OutputCandidate]]) -> None:
+        """Surface every EXTRACTED curation pick list as an OPTIMISATION_SET_STAR producer.
+
+        A manual/imported/merged list becomes consumable downstream only once its picks
+        have been subtomo-extracted (`backend.extract_pick_list`, which runs OUTSIDE the
+        pipeline graph); `PickList.extracted_path` is that extraction's optset. Injecting
+        it here is what lets reconstructParticle / class3d resolve a de-novo species with
+        no subtomoExtraction roster row at all (denovo roadmap D-7). The state is DERIVED
+        (`extraction_state()`), so a re-curated list drops out of the pool by itself.
+
+        Multiple EXTRACTED lists can exist for one (species, tomo). All are injected so
+        the user can override to any of them, but auto-selection must be deterministic:
+        `relion_job_number` — a free integer for synthetic producers, and already the
+        scorer's preference rank — is assigned so the authoritative slug outranks the
+        rest, then newer extractions outrank older. The winner says so in its label, which
+        the UI dropdown renders verbatim, so the choice is never silent.
+        """
+        from services.models_base import ListExtractionState
+
+        extracted = [
+            pl
+            for pl in (getattr(self.state, "pick_lists", None) or [])
+            if pl.extraction_state() == ListExtractionState.EXTRACTED
+        ]
+        if not extracted:
+            return
+
+        by_tomo: dict[tuple[str, str], list] = {}
+        for pl in extracted:
+            by_tomo.setdefault((pl.species_id, pl.tomo_name), []).append(pl)
+
+        for (species_id, tomo_name), group in by_tomo.items():
+            authoritative = self.state.get_authoritative_slug(species_id, tomo_name)
+            # Ascending, so the LAST entry is the winner and rank == list position.
+            # Ranks start at 0 so a lone pick list ties the other synthetic producers
+            # (mergedSources / importedTomograms) exactly as before; only a genuine
+            # multi-list tie spends rank to break itself.
+            ranked = sorted(
+                group,
+                key=lambda pl: (
+                    pl.slug == authoritative,
+                    pl.extracted_at.timestamp() if pl.extracted_at is not None else 0.0,
+                ),
+            )
+            for rank, pl in enumerate(ranked):
+                label = f"Pick list — {pl.label or pl.slug} · {tomo_name}"
+                if len(ranked) > 1 and rank == len(ranked) - 1:
+                    why = "authoritative" if pl.slug == authoritative else "most recently extracted"
+                    label = f"{label} [auto-selected: {why}]"
+                producer_id = pick_list_producer_id(pl)
+                index[JobFileType.OPTIMISATION_SET_STAR].append(
+                    OutputCandidate(
+                        produces=JobFileType.OPTIMISATION_SET_STAR,
+                        producer_job_type=JobType.MERGED_SOURCES,  # synthetic non-job marker
+                        producer_output_key="output_optimisation",
+                        path=pl.extracted_path,
+                        instance_path=producer_id,
+                        producer_instance_id=producer_id,
+                        execution_status=JobStatus.SUCCEEDED,
+                        relion_job_number=rank,
+                        species_id=pl.species_id or None,
+                        label=label,
+                    )
+                )
 
     def _get_instance_path(self, instance_id: str, job_model: AbstractJobParams) -> str:
         relion_job_name = getattr(job_model, "relion_job_name", None)

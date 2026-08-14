@@ -33,6 +33,7 @@ from pathlib import Path
 import pandas as pd
 from nicegui import app, context, ui
 
+from services.aggregation_authoritative import extraction_params_for_species
 from services.configs.user_prefs_service import get_prefs_service
 from services.models_base import InstanceId, JobStatus, JobType, ListExtractionState, PickListType
 from services.project_state import PickList, get_state_service
@@ -2847,11 +2848,13 @@ def _render_list_extraction_bar(sp: dict, lst: dict, project_path: Path, refresh
 
 
 async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh) -> None:
-    """Submit + track a per-list subtomo extraction (Slice C). Resolves the species'
-    candidate optset + this list's curated star + the species subtomo params, then fires
-    ``backend.extract_pick_list_and_wait`` (submit + await the out dir + record
-    ``PickList.mark_extracted`` + persist). SingleFlight-guarded; the wait runs in a
-    BackgroundTask (the backend persists by explicit ``project_path``, the W2 lesson)."""
+    """Submit + track a per-list subtomo extraction (Slice C). Resolves three things —
+    the schema source (the species' candidate optset, else the tomogram's tomograms.star
+    for a de-novo species), this list's curated star, and the extraction geometry — then
+    fires ``backend.extract_pick_list_and_wait`` (submit + await the out dir + record
+    ``PickList.mark_extracted`` + persist). A species with no committed geometry gets the
+    required dialog instead of a guessed box size (D-3). SingleFlight-guarded; the wait
+    runs in a BackgroundTask (the backend persists by explicit ``project_path``, W2)."""
     from backend import get_backend
     from services.visualization import picks_filter
 
@@ -2872,49 +2875,164 @@ async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh)
         # Prefer the curated subset so extraction consumes the KEPT picks, not all of them.
         filtered = picks_filter.filtered_list_path(Path(star))
         list_star = str(filtered) if filtered.exists() else str(star)
+
+        # Schema source: mirror the species' candidates.star when it has a
+        # candidate-extract job; otherwise synthesize from the tomogram's own star
+        # (a de-novo species never had a TM/CE job to mirror).
+        candidate_optset = None
+        tomograms_star = None
         job_dir = sp.get("job_dir")
-        if job_dir is None:
-            # S3 gives the candidate-free extraction path (build the optset from the
-            # tomograms.star). Until then, say so rather than failing obscurely.
-            ui.notify(
-                "This species has no candidate-extract job, so there is no optimisation set to extract "
-                "against yet — candidate-free extraction is not wired up.",
-                type="warning",
-                timeout=6000,
+        if job_dir is not None and (Path(job_dir) / "optimisation_set.star").exists():
+            candidate_optset = Path(job_dir) / "optimisation_set.star"
+        else:
+            geom = geometry_for_ts(current_project_state(), project_path, tomo_name)
+            if geom is None:
+                ui.notify(
+                    "No candidate optimisation set and no tomograms.star for this tomogram — "
+                    "nothing to build an extraction input from.",
+                    type="negative",
+                    timeout=6000,
+                )
+                return
+            tomograms_star = Path(geom.tomograms_star)
+
+        params = extraction_params_for_species(current_project_state(), species_id, sp.get("subtomo_jm"))
+        if params is None:
+            # D-3: no committed geometry anywhere. ASK — never fall back to the old
+            # silent 384/1.0/224, which cut wrong-but-plausible subtomograms.
+            _prompt_extraction_geometry(
+                sp, lst, project_path, species_id, tomo_name, slug, candidate_optset, tomograms_star, list_star, refresh
             )
             return
-        candidate_optset = Path(job_dir) / "optimisation_set.star"
-        if not candidate_optset.exists():
-            ui.notify(
-                "Species candidate optimisation_set.star not found — cannot extract.", type="negative", timeout=5000
-            )
-            return
-        jm = sp.get("subtomo_jm")
-        params = dict(
-            box_size=int(getattr(jm, "box_size", 384) or 384),
-            binning=float(getattr(jm, "binning", 1.0) or 1.0),
-            crop_size=int(getattr(jm, "crop_size", 224) or 224),
-            max_dose=float(getattr(jm, "max_dose", -1.0)),
-            min_frames=int(getattr(jm, "min_frames", 1) or 1),
-            do_stack2d=bool(getattr(jm, "do_stack2d", True)),
-            do_float16=bool(getattr(jm, "do_float16", True)),
+
+        _submit_list_extraction(
+            backend,
+            project_path,
+            candidate_optset,
+            tomograms_star,
+            list_star,
+            tomo_name,
+            species_id,
+            slug,
+            lst.get("label") or slug,
+            params,
+            refresh,
         )
 
-        async def _run(progress_cb):
-            progress_cb(0, 0, "extracting subtomograms…")
-            return await backend.extract_pick_list_and_wait(
-                project_path, candidate_optset, Path(list_star), tomo_name, species_id, slug, **params
+
+def _submit_list_extraction(
+    backend,
+    project_path: Path,
+    candidate_optset: Path | None,
+    tomograms_star: Path | None,
+    list_star: str,
+    tomo_name: str,
+    species_id: str,
+    slug: str,
+    label: str,
+    params: dict,
+    refresh,
+) -> None:
+    """Fire the per-list extraction as a tracked BackgroundTask. Split out of
+    ``_handle_extract_list`` so the geometry dialog can submit the same way once the
+    user commits box/bin/crop."""
+
+    async def _run(progress_cb):
+        progress_cb(0, 0, "extracting subtomograms…")
+        return await backend.extract_pick_list_and_wait(
+            project_path,
+            candidate_optset,
+            Path(list_star),
+            tomo_name,
+            species_id,
+            slug,
+            tomograms_star=tomograms_star,
+            **params,
+        )
+
+    from ui.background_task import BackgroundTask
+
+    BackgroundTask(
+        title=f"Extract · {label}",
+        subtitle=tomo_name,
+        project_path=str(project_path),
+        dedup_key=f"extract:{species_id}:{tomo_name}:{slug}",
+    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=True)
+    ui.notify(f"Extraction submitted for '{label}' — tracking in the task tray.", type="info")
+
+
+def _prompt_extraction_geometry(
+    sp: dict,
+    lst: dict,
+    project_path: Path,
+    species_id: str,
+    tomo_name: str,
+    slug: str,
+    candidate_optset: Path | None,
+    tomograms_star: Path | None,
+    list_star: str,
+    refresh,
+) -> None:
+    """Ask for box / binning / crop before a first extraction, and persist the answer on
+    the species (D-3).
+
+    Reached only when NOTHING has committed a geometry: no SUBTOMO_EXTRACTION job model
+    and no ``species.extraction_params``. The fields open EMPTY on purpose — prefilling
+    them with the old 384/1.0/224 would just relabel a silent default as a confirmed one.
+    """
+    from backend import get_backend
+    from services.project_state import ExtractionParams
+
+    with ui.dialog() as dialog, ui.card().classes("w-[26rem] max-w-full gap-2"):
+        ui.label("Extraction geometry").classes("text-base font-bold")
+        ui.label(
+            f"'{sp.get('label') or species_id}' has no subtomo-extraction job to inherit box/binning/crop "
+            "from. Set them once — they are saved on the species and reused for every later extraction."
+        ).classes("text-xs text-gray-600")
+        box_in = ui.number("box size (px, unbinned)", min=16, step=2).props("dense outlined").classes("w-full")
+        bin_in = ui.number("binning", min=0.1, step=0.5).props("dense outlined").classes("w-full")
+        crop_in = ui.number("crop size (px)", min=16, step=2).props("dense outlined").classes("w-full")
+
+        async def _commit() -> None:
+            box, binning, crop = box_in.value, bin_in.value, crop_in.value
+            if not box or not binning or not crop:
+                ui.notify("Box size, binning and crop are all required.", type="warning")
+                return
+            backend = get_backend()
+            if backend is None:
+                ui.notify("Backend unavailable.", type="negative")
+                return
+            state = current_project_state()
+            species = state.get_species(species_id)
+            if species is None:
+                ui.notify("Species not found — reload the project.", type="negative")
+                return
+            species.extraction_params = ExtractionParams(box_size=int(box), binning=float(binning), crop_size=int(crop))
+            state.mark_dirty()
+            # Await the write: the extraction below runs in a BackgroundTask with no
+            # client context, and a fire-and-forget save can lose the geometry the
+            # user just committed.
+            await backend.save_project(state.project_path, force=True)
+            dialog.close()
+            params = extraction_params_for_species(state, species_id, sp.get("subtomo_jm"))
+            _submit_list_extraction(
+                backend,
+                project_path,
+                candidate_optset,
+                tomograms_star,
+                list_star,
+                tomo_name,
+                species_id,
+                slug,
+                lst.get("label") or slug,
+                params,
+                refresh,
             )
 
-        from ui.background_task import BackgroundTask
-
-        BackgroundTask(
-            title=f"Extract · {lst.get('label') or slug}",
-            subtitle=tomo_name,
-            project_path=str(project_path),
-            dedup_key=f"extract:{species_id}:{tomo_name}:{slug}",
-        ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=True)
-        ui.notify(f"Extraction submitted for '{lst.get('label') or slug}' — tracking in the task tray.", type="info")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat")
+            ui.button("Save & extract", icon="science", color="indigo", on_click=_commit).props("no-caps")
+    dialog.open()
 
 
 async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh) -> None:

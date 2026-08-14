@@ -255,3 +255,14 @@ its §8.9 steps 4–7 are absorbed by `05-aggregation-module.md`.
 ## Stage log (append-only)
 
 - 2026-08-11 — scoped; decisions D-1/D-7/D-10 locked with the user; doc set written. No code yet.
+- 2026-08-13 — S1 + S2 committed. **S3 code-complete, pending runtime** (see `03-extraction-and-
+  resolver.md` §"S3 CODE-COMPLETE"). The spine S1→S2→S3 now has no code left; what remains on it is
+  cluster verification. Two register updates fall out of S3:
+  - **D-8 amended.** The `pick_list__<slug>` convention in the register is unsafe as written — every
+    hand-picked list is slugged `"manual"`, so slug alone aliases across species AND tomograms. The
+    producer id is `pick_list__<species>__<tomo>__<slug>`; the risk-#3 override-key masquerade is
+    closed by discriminating on instance path (`_synthetic_override_target`), so the dedicated
+    imported-tomograms sentinel stays an S5 cleanup rather than a correctness fix.
+  - **Risk #7 was live, not latent.** `remove_species`'s override purge matched by slug, so deleting
+    one species would have purged another's `pick_list__*` overrides the moment those producers
+    existed. Fixed to match the species-scoped prefix.

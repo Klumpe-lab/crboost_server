@@ -815,15 +815,19 @@ class ProjectState(BaseModel):
             for iid, jm in (self.jobs or {}).items()
             if getattr(jm, "species_id", None) == species_id or InstanceId.split(iid)[1] == species_id
         ]
-        # Overrides pointing at one of this species' pick-list producers. The
-        # resolver key is "<jobtype>:<instance_path>" and per-list producers carry
-        # a `pick_list__<slug>` instance path (see the resolver's merged/pick-list
-        # candidates), so a species' lists are identifiable by slug.
-        slugs = {pl.slug for pl in self.pick_lists if pl.species_id == species_id}
+        # Overrides pointing at one of this species' pick-list producers. The resolver
+        # key is "<jobtype>:<instance_path>" and a per-list producer's instance path is
+        # `pick_list__<species>__<tomo>__<slug>` (path_resolution_service.
+        # pick_list_producer_id). Match on the SPECIES-scoped prefix, never on slug:
+        # every hand-picked list is slugged "manual", so a slug match would purge other
+        # species' overrides too.
+        from services.path_resolution_service import pick_list_producer_prefix_for_species
+
+        prefix = pick_list_producer_prefix_for_species(species_id)
         overrides: list[str] = []
         for iid, jm in (self.jobs or {}).items():
             for slot, value in (getattr(jm, "source_overrides", None) or {}).items():
-                if any(f"pick_list__{slug}" in str(value) for slug in slugs):
+                if prefix in str(value):
                     overrides.append(f"{iid}:{slot}")
         return {
             "pick_lists": pick_lists,
