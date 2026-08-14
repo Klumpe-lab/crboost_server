@@ -76,6 +76,18 @@ only globally broken inputs (unreadable input star) fail the supervisor outright
   `get_driver_context`, status surfaced in the per-list extraction UI. Explicitly NO hidden/synthetic
   instances invisible to the UI.
 
+### ASK decisions round 2 (maintainer, 2026-08-14)
+
+- **Registry-stamp failure (stage-4 ASK; touches #31, #50, supersedes the tolerant half of #30)** —
+  FAIL LOUD in denoise_predict AND tilt_filter: the registry is the single source of truth, so a
+  missed stamp is stale-data corruption. Empty registry raises; `except KeyError: pass` swallows
+  removed (unknown TS/stem = identity drift, surfaces). denoise_predict additionally gets the base
+  `preflight_registry` (its #30 omission is moot once the registry is load-bearing).
+- **#68 timing** — first slice of the de-novo/Journey UI pass, backend + UI together (never a
+  hidden backend half): `docs/roadmaps/07-extract-pick-list-job-identity.md`. #73 stays gated on it.
+- **#38/#39 scope** — pilot included in ts_alignment's migration: registry enumeration, per-run
+  snapshot refresh, dispatch-time drift check with per-TS containment (manifest `drift_ts`).
+
 ## Divergence ledger (by driver, in stage-3 migration risk order)
 
 ### ts_reconstruct (4)

@@ -214,6 +214,44 @@ inconsistencies (live injection-hazard class) disappear.
    > four `WARP_TILTSERIES_SETTINGS` producers use that `path_template`, but a fail-hard mismatch the
    > moment one didn't. The staged-dir literals inside `.staging/task_*/` are left alone on purpose:
    > those are dictated by the settings file's own relative `DataFolder`/`ProcessingFolder` keys.
+   >
+   > **ALL 8 DRIVERS MIGRATED 2026-08-14, PENDING RUNTIME** (remaining 6 in one session; runtime
+   > checklist below owed for each). The base grew six hooks the long tail needed, each defaulting
+   > to prior behavior: `post_bootstrap` (both modes, right after ctx load — denoise's inherited
+   > method), `whole_job_short_circuit` (subtomo's merge_only + zero-picks SUCCESS paths),
+   > `preflight_scope` (subtomo preflights only dispatched TS), `per_task_slurm_config`
+   > (extract_candidates' tophat mem/time bump), `task_binds` (template/mask + staging binds),
+   > `execute` (default build_command→run_tool; denoise's IsoNet path overrides for its 3-command
+   > sequence), plus `poll_secs` class attr (15 s for the two pick-stage drivers) and a
+   > `tally_acceptable` policy hook (default strict; ts_alignment's documented tolerant tally —
+   > ledger #41 — is the only override). `stage_per_ts_environment` gained `input_processing=None`
+   > (alignment produces the XMLs — ledger #40).
+   >
+   > Decided ALIGNs landed with the migrations: fs_motion #12 (unresolvable per-TS star → manifest
+   > `unresolved_ts`, task fails with the reason), #13 (missing frame raises — no partial-frame
+   > green ticks), #14 (per-frame XML count verified before `.ok`), #15+#17; template_match #21
+   > (strict `global`-block enumeration; producer confirmed to write `global`) + #24; ledger #19
+   > applied as decided (verbatim tomograms.star copy KEPT — excluded rows stay);
+   > extract_candidates #25-interim (LOUD star-minus-TM-output report), #28 (`cleanup_tomo_names`
+   > now raises — was warn-and-continue); denoise #33 (strict `global` read) + #36 (prefixed logs,
+   > IsoNet `Command:` echoes); subtomo #42 (`ts_names` key), #43 (raise-inside-try), #44 (base
+   > `apply_exclusions` — closes the stale `.ok`+`.skip` double-marking defect), #46, #48.
+   >
+   > **Two deliberate behavioral deltas beyond the ledger**, both flagged: (1) denoise_predict now
+   > gets the base's `preflight_registry` (ledger #30 had blessed the omission) — superseded by the
+   > 2026-08-14 fail-loud registry decision, which makes the registry load-bearing for denoise, so
+   > failing at dispatch beats failing after GPU-hours. (2) `cleanup_tomo_names`' df-missing case
+   > raises instead of returning 0 (same #28 decision).
+   >
+   > **ts_alignment carries the #38/#39 DESIGN pilot in the same change** (maintainer approved
+   > 2026-08-14): enumeration comes from the TiltSeriesRegistry (glob dropped); the tomostar-dir +
+   > settings snapshot is refreshed on EVERY supervisor run (was copied once, reused stale); a
+   > dispatch-time drift check compares registry vs tomostar dir vs input star — a live TS missing
+   > from a source is recorded in the manifest (`drift_ts`) and its task fails with the reason
+   > (containment: others proceed, job ends FAILED); on-disk extras unknown to the registry are
+   > warned and never dispatched (stale files no longer resurrect). The snapshot itself is KEPT on
+   > purpose: it marries the settings file with the possibly-different producer's tomostar dir
+   > (tilt filter) and insulates a running array from producer churn.
 4. **`BaseIngestAdapter`** in `services/tilt_series/adapters/_base.py`: shared `__init__`,
    `_read_only_block`, `_resolve_per_ts_path`, excluded-ids filtering; the four adapters shrink to
    their parsing cores; `denoise_predict` and `tilt_filter` get real adapters replacing hand-rolled
@@ -239,6 +277,15 @@ inconsistencies (live injection-hazard class) disappear.
    > `tilt_filter` also has no adapter *shape*: it calls `set_frame_filtered` per frame stem, with no
    > typed output attachment and no `emit_star`. **ASK:** should a registry-stamp failure fail those
    > two jobs (adopt the family's fail-loud contract) or keep warning (and stay outside the family)?
+   >
+   > **DECIDED 2026-08-14: fail loud, both jobs — LANDED, PENDING RUNTIME.** The registry is the
+   > single source of truth for downstream reads, so a missed stamp is stale-data corruption, not
+   > a cosmetic miss. `stamp_denoise_registry` and tilt_filter's frame-verdict stamp now raise on
+   > any failure (empty registry included) and their `except KeyError: pass` swallows are gone —
+   > an unknown TS/stem is identity drift that must surface. The real outputs stay on disk and a
+   > re-run skips completed compute, so only the cheap recording step repeats. Building proper
+   > adapter *shapes* for these two remains roadmap-02 territory; the failure-semantics gap that
+   > kept them outside the family is closed.
 5. **Library relocations:** `drivers/subtomo_merge.py` → `services/` (then
    `services/visualization/list_extraction.py:38-90` imports it instead of mirroring — its docstrings
    already apologize for the copy); single-source the driver-invocation command string
@@ -275,6 +322,11 @@ inconsistencies (live injection-hazard class) disappear.
    > runs full IO-slot path resolution. Everything this driver *can* share it already does
    > (`ToolCommand`, `run_tool`, and now the launch prefix). Genuinely blocked on census #68 giving it
    > a job identity; re-open this item there.
+   >
+   > **#68 scheduled 2026-08-14** → `docs/roadmaps/07-extract-pick-list-job-identity.md`: full
+   > design + the shadow-zone inventory (what the UI cannot show today). Lands as the first slice
+   > of the de-novo/Journey UI pass so the job identity and its UI visibility arrive together;
+   > closes census #73 and this item when it does.
 
 ## Modern-Python weave-in
 
