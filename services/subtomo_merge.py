@@ -1,6 +1,11 @@
-#!/usr/bin/env python3
 """
 Auxiliary merge logic for STA subtomo extraction outputs.
+
+A library, not a driver: it runs on the compute node inside subtomo_extraction /
+extract_candidates, AND in the server process behind the aggregation merge card.
+It lived in `drivers/` until roadmap 04 stage 5, which forced `ui/` to import from
+`drivers/` and made `services/visualization/list_extraction.py` hand-mirror two of
+its functions to dodge a services→drivers import. Both are gone now.
 
 Input: optimisation_set.star files (or directories containing one)
 Each optimisation_set.star points to:

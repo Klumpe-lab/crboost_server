@@ -725,7 +725,7 @@ async def _pick_manual_path() -> None:
 
 
 def _run_merge_sync(merged_dir: Path, sources: list) -> dict:
-    from drivers.subtomo_merge import merge_optimisation_sets_into_jobdir
+    from services.subtomo_merge import merge_optimisation_sets_into_jobdir
 
     merged_dir.mkdir(parents=True, exist_ok=True)
     return merge_optimisation_sets_into_jobdir(

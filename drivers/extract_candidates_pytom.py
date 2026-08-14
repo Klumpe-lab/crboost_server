@@ -43,7 +43,7 @@ from drivers.array_job_base import (
     STATUS_DIR_NAME,
 )
 from drivers.driver_base import ToolCommand, get_driver_context, run_tool
-from drivers.subtomo_merge import write_optimisation_set
+from services.subtomo_merge import write_optimisation_set
 from services.job_models import CandidateExtractPytomParams, ExtractionCutoffMethod
 
 
