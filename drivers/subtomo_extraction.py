@@ -20,6 +20,11 @@ Mode is determined by `SLURM_ARRAY_TASK_ID`:
 slicing and array submission — used by aggregation projects to fuse
 additional optimisation sets into the job without an extraction pass.
 
+Supervisor-side staging is deliberate (census #45): slicing a RELION
+optimisation set needs the full particles/tomograms tables in memory, which
+only the supervisor parses — per-task re-parsing of the whole upstream star
+N times would be waste.
+
 Output layout after the supervisor merge:
   <job_dir>/
     particles.star           # merged across all TS
@@ -33,13 +38,14 @@ Output layout after the supervisor merge:
                              # idempotent re-run of failed tasks)
     .task_manifest.json
     .task_status/{ts}.{ok,fail}
+
+The mode dispatch, both bootstraps, manifest lookup, exclusions, tally and exit
+markers all live in ArrayDriver; this file is the subtomo-specific hooks.
 """
 
 import json
-import os
 import shutil
 import sys
-import traceback
 from pathlib import Path
 
 import pandas as pd
@@ -47,19 +53,8 @@ import pandas as pd
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from drivers.array_job_base import (
-    STATUS_DIR_NAME,
-    collect_task_results,
-    install_cancel_handler,
-    load_excluded_ts,
-    preflight_registry,
-    read_manifest,
-    submit_array_job,
-    wait_for_array_completion,
-    write_skip_status,
-    write_status_atomic,
-)
-from drivers.driver_base import ToolCommand, get_driver_context, run_tool
+from drivers.array_job_base import ArrayDriver, ArrayResults, load_excluded_ts, write_skip_status, STATUS_DIR_NAME
+from drivers.driver_base import DriverContext, ToolCommand
 from services.subtomo_merge import (
     _parse_optimisation_set,
     _read_input_particles_lenient,
@@ -71,233 +66,6 @@ from services.subtomo_merge import (
     write_optimisation_set,
 )
 from services.job_models import SubtomoExtractionParams
-
-DRIVER_SCRIPT = Path(__file__).resolve()
-
-
-# ----------------------------------------------------------------------
-# Entry
-# ----------------------------------------------------------------------
-
-
-def main():
-    print("--- SLURM JOB START (Subtomogram Extraction) ---", flush=True)
-    array_idx_env = os.environ.get("SLURM_ARRAY_TASK_ID")
-    if array_idx_env is None:
-        print("--- subtomo_extraction: SUPERVISOR mode ---", flush=True)
-        run_supervisor_mode()
-    else:
-        print(f"--- subtomo_extraction: TASK mode (array idx {array_idx_env}) ---", flush=True)
-        run_task_mode(int(array_idx_env))
-
-
-# ----------------------------------------------------------------------
-# Supervisor mode
-# ----------------------------------------------------------------------
-
-
-def run_supervisor_mode():
-    try:
-        (_state, params, context, job_dir, project_path, _job_type) = get_driver_context(SubtomoExtractionParams)
-    except Exception as e:
-        (Path.cwd() / "RELION_JOB_EXIT_FAILURE").touch()
-        print(f"[SUPERVISOR] FATAL BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    print(f"[SUPERVISOR] CWD (job dir): {job_dir}", flush=True)
-
-    try:
-        # Aggregation short-circuit: skip extraction entirely, just merge
-        # supplied optimisation sets into job_dir. Mirrors the original
-        # one-shot driver's merge_only branch verbatim.
-        if params.merge_only:
-            print("[SUPERVISOR] merge_only=True, skipping extraction.", flush=True)
-            if not params.additional_sources:
-                raise RuntimeError("merge_only=True but no additional_sources to merge.")
-            _run_additional_sources_merge(params, job_dir)
-            (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-            print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
-            return
-
-        paths = {k: Path(v) for k, v in context["paths"].items()}
-        instance_id = context["instance_id"]
-
-        input_optimisation = paths["input_optimisation"]
-        if not input_optimisation.exists():
-            raise FileNotFoundError(f"Input optimisation_set.star not found: {input_optimisation}")
-
-        upstream_particles_star, upstream_tomograms_star = _parse_optimisation_set(input_optimisation)
-        print(
-            f"[SUPERVISOR] Upstream particles: {upstream_particles_star}\n"
-            f"[SUPERVISOR] Upstream tomograms: {upstream_tomograms_star}",
-            flush=True,
-        )
-
-        # Lenient read: upstream may be a TM `candidates.star` (particles-
-        # only, no optics) or a real RELION particles.star (optics +
-        # particles). relion_tomo_subtomo sources optics from
-        # tomograms.star, so missing optics in the input is fine.
-        particles_df, optics_df, general_kv = _read_input_particles_lenient(upstream_particles_star)
-        tomograms_df = _read_tomograms_star(upstream_tomograms_star)
-
-        # The manifest covers EVERY upstream tilt-series — the ones with
-        # picks get extracted, the empty ones get a .skip marker so the
-        # per-TS UI tracker shows them as deliberately blank rather than
-        # silently dropping the rows. Without this the user sees N reconstructions
-        # but suddenly fewer subtomo rows and can't tell whether the gap is
-        # intentional or a bug.
-        ts_with_picks = sorted(particles_df["rlnTomoName"].astype(str).unique().tolist())
-        all_upstream_ts = sorted(tomograms_df["rlnTomoName"].astype(str).unique().tolist())
-        if not ts_with_picks:
-            # Whole-job equivalent of the per-TS .skip path: upstream picking
-            # produced 0 candidates across every tomogram, so there is nothing
-            # to extract. Mark every TS as .skip and a sidecar so the UI can
-            # render a clear "no picks anywhere — skipped" banner. We exit
-            # SUCCESS rather than fail because (a) the schemer would otherwise
-            # halt the whole pipeline on an upstream-data condition that's
-            # diagnostic, not a job bug, and (b) it mirrors the existing per-TS
-            # SKIP semantics which are also "succeeded but did no work".
-            status_dir = job_dir / STATUS_DIR_NAME
-            status_dir.mkdir(parents=True, exist_ok=True)
-            if status_dir.is_dir():
-                for f in status_dir.glob("*.skip"):
-                    f.unlink()
-            for ts in all_upstream_ts:
-                write_skip_status(status_dir, ts, reason="no candidates anywhere (upstream picks=0)")
-            sentinel = job_dir / ".skipped_no_candidates.json"
-            sentinel.write_text(json.dumps({
-                "reason": "upstream_particles_empty",
-                "upstream_particles_star": str(upstream_particles_star),
-                "upstream_tomograms_star": str(upstream_tomograms_star),
-                "n_upstream_tomograms": len(all_upstream_ts),
-                "n_with_picks": 0,
-                "message": (
-                    "Upstream candidate extraction produced 0 picks across all tomograms. "
-                    "Subtomo extraction has nothing to extract; this job is a no-op skip."
-                ),
-            }, indent=2))
-            print(
-                "[SUPERVISOR] Upstream produced 0 picks across all "
-                f"{len(all_upstream_ts)} tomograms. Marking job as skipped (no work); "
-                f"wrote sentinel {sentinel.name}.",
-                flush=True,
-            )
-            (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-            print("--- SLURM JOB END (Exit Code: 0) ---", flush=True)
-            return
-        # Manifest order: keep upstream tomograms.star order as authoritative.
-        # Fall back to including any extra TS that show up only in particles
-        # (defensive — shouldn't happen, but don't drop them silently).
-        extra_pick_only = sorted(set(ts_with_picks) - set(all_upstream_ts))
-        ts_names = all_upstream_ts + extra_pick_only
-        with_picks_set = set(ts_with_picks)
-        empty_ts = [t for t in ts_names if t not in with_picks_set]
-
-        # Honor user "exclude from processing": excluded TS are muted — never
-        # staged, dispatched, or merged. They get a .skip marker (like empty TS)
-        # so they stay visible in the manifest/strip but count as settled.
-        excluded_set = load_excluded_ts(project_path)
-        excluded_ts = [t for t in ts_names if t in excluded_set]
-        ts_with_picks = [t for t in ts_with_picks if t not in excluded_set]
-
-        print(
-            f"[SUPERVISOR] {len(ts_with_picks)} TS with picks to extract; "
-            f"{len(empty_ts)} empty TS will be marked SKIP (no upstream candidates); "
-            f"{len(excluded_ts)} excluded from processing",
-            flush=True,
-        )
-        if empty_ts:
-            print(f"[SUPERVISOR] Empty TS (skipped): {empty_ts}", flush=True)
-        if excluded_ts:
-            print(f"[SUPERVISOR] Excluded TS (skipped): {excluded_ts}", flush=True)
-
-        # Clear stale .skip markers, then pre-write fresh ones for the
-        # currently-empty TS. submit_array_job's sparse-array logic treats
-        # .skip the same as .ok — those indices never get dispatched, but
-        # they remain in the manifest so the UI renders 1 row per upstream TS.
-        status_dir = job_dir / STATUS_DIR_NAME
-        if status_dir.is_dir():
-            for f in status_dir.glob("*.skip"):
-                f.unlink()
-        for ts in empty_ts:
-            if ts in excluded_set:
-                continue
-            write_skip_status(status_dir, ts, reason="no candidates above template-matching threshold")
-        for ts in excluded_ts:
-            write_skip_status(status_dir, ts, reason="excluded from processing")
-
-        # Stage per-TS optimisation sets ONLY for the TS that have picks.
-        # Skipped TS never get a staging dir — no task will run for them.
-        staging_root = job_dir / ".staging"
-        staging_root.mkdir(parents=True, exist_ok=True)
-        for ts_name in ts_with_picks:
-            _stage_per_ts(staging_root, ts_name, optics_df, particles_df, tomograms_df, general_kv)
-        print(f"[SUPERVISOR] Staged per-TS inputs for {len(ts_with_picks)} TS under {staging_root}", flush=True)
-
-        # Preflight only the TS we'll actually dispatch.
-        preflight_registry(project_path, ts_with_picks, job_name="subtomo_extraction")
-
-        manifest_extra = {
-            "input_optimisation_star": str(input_optimisation),
-            "upstream_particles_star": str(upstream_particles_star),
-            "upstream_tomograms_star": str(upstream_tomograms_star),
-        }
-
-        per_task_cfg = params.get_effective_slurm_config()
-
-        array_job_id = submit_array_job(
-            job_dir=job_dir,
-            project_path=project_path,
-            instance_id=instance_id,
-            ts_names=ts_names,
-            per_task_cfg=per_task_cfg,
-            array_throttle=params.array_throttle,
-            driver_script=DRIVER_SCRIPT,
-            manifest_extra=manifest_extra,
-        )
-
-        if array_job_id is not None:
-            install_cancel_handler(array_job_id, job_dir)
-            wait_for_array_completion(array_job_id, poll_secs=15)
-        else:
-            print("[SUPERVISOR] No array submitted (all TS previously succeeded)", flush=True)
-
-        results = collect_task_results(job_dir, ts_names)
-        print(f"[SUPERVISOR] Status: {results.summary}", flush=True)
-        if results.failed:
-            print(f"[SUPERVISOR] FAILED tilt-series: {results.failed}", flush=True)
-        if results.missing:
-            print(f"[SUPERVISOR] MISSING tilt-series: {results.missing}", flush=True)
-
-        if not results.all_succeeded:
-            (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-            print("[SUPERVISOR] Marking job as FAILED (some TS did not succeed)", flush=True)
-            sys.exit(1)
-
-        # Merge per-TS outputs into job_dir's canonical particles.star /
-        # Subtomograms/ tree. Only the TS with picks produced outputs;
-        # skipped TS never staged or wrote anything.
-        _merge_per_ts_outputs(job_dir, ts_with_picks, general_kv, upstream_tomograms_star)
-
-        # Aggregation merge (additional_sources) — opt-in, runs only if the
-        # job model has sources configured.
-        if params.additional_sources:
-            print(
-                f"[SUPERVISOR] Merging {len(params.additional_sources)} additional source(s) on top of extraction...",
-                flush=True,
-            )
-            _run_additional_sources_merge(params, job_dir)
-
-        (job_dir / "RELION_JOB_EXIT_SUCCESS").touch()
-        print("[SUPERVISOR] Job finished successfully.", flush=True)
-        sys.exit(0)
-
-    except Exception as e:
-        print(f"[SUPERVISOR] FATAL ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        (job_dir / "RELION_JOB_EXIT_FAILURE").touch()
-        sys.exit(1)
 
 
 # ----------------------------------------------------------------------
@@ -327,13 +95,10 @@ def _stage_per_ts(
     ts_tomograms = tomograms_df[tomograms_df["rlnTomoName"].astype(str) == ts_name].reset_index(drop=True)
 
     if len(ts_particles) == 0:
-        raise RuntimeError(
-            f"No particles for TS {ts_name} (supervisor enumerated from this column; should not happen)"
-        )
+        raise RuntimeError(f"No particles for TS {ts_name} (supervisor enumerated from this column; should not happen)")
     if len(ts_tomograms) == 0:
         raise RuntimeError(
-            f"No tomogram row for TS {ts_name} in upstream tomograms.star — "
-            f"upstream pipeline is inconsistent."
+            f"No tomogram row for TS {ts_name} in upstream tomograms.star — upstream pipeline is inconsistent."
         )
 
     # Preserve only the optics groups actually referenced by this TS's
@@ -359,114 +124,12 @@ def _stage_per_ts(
 
 
 # ----------------------------------------------------------------------
-# Task mode — one TS per array index
-# ----------------------------------------------------------------------
-
-
-def run_task_mode(array_idx: int):
-    try:
-        (_state, params, context, job_dir, _project_path, _job_type) = get_driver_context(SubtomoExtractionParams)
-    except Exception as e:
-        print(f"[TASK {array_idx}] BOOTSTRAP ERROR: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        manifest = read_manifest(job_dir)
-    except FileNotFoundError:
-        print(f"[TASK {array_idx}] Manifest missing — supervisor never wrote one", file=sys.stderr, flush=True)
-        sys.exit(1)
-
-    ts_names = manifest.get("items") or []
-    if array_idx >= len(ts_names):
-        print(f"[TASK {array_idx}] Array index out of range ({len(ts_names)} items)", file=sys.stderr, flush=True)
-        sys.exit(1)
-
-    ts_name = ts_names[array_idx]
-    status_dir = job_dir / STATUS_DIR_NAME
-    print(f"[TASK {array_idx}] TS: {ts_name}", flush=True)
-
-    try:
-        staging_dir = job_dir / ".staging" / f"task_{ts_name}"
-        per_ts_optset = staging_dir / "optimisation_set.star"
-        if not per_ts_optset.exists():
-            raise FileNotFoundError(f"Staged optimisation set not found: {per_ts_optset}")
-
-        # RELION writes Subtomograms/<TS>/*.mrcs and particles.star relative
-        # to --o. We put per-TS output into <staging>/task_<ts>/out/ so the
-        # supervisor can collect from there without worrying about cross-TS
-        # collisions. Subtomogram numbering is per-TS independent (RELION
-        # restarts the counter at 1 inside each TS subdir).
-        out_dir = staging_dir / "out"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        # Idempotent skip: if a prior run already produced outputs, just
-        # write .ok and exit. (submit_array_job already filters previously-
-        # OK items at the SLURM-array level, so this is belt-and-braces.)
-        if (out_dir / "particles.star").exists() and (out_dir / "Subtomograms").exists():
-            print(f"[TASK {array_idx}] {ts_name} already extracted — skipping", flush=True)
-            write_status_atomic(status_dir, ts_name, ok=True)
-            return
-
-        cmd = (
-            ToolCommand("relion_tomo_subtomo")
-            .opt_path("--o", f"{out_dir}/", quote=False)
-            .opt_path("--i", per_ts_optset, quote=False)
-            .opt("--b", params.box_size)
-            .opt("--bin", int(params.binning))
-        )
-        if params.crop_size > 0:
-            cmd.opt("--crop", params.crop_size)
-        if params.max_dose > 0:
-            cmd.opt("--max_dose", params.max_dose)
-        if params.min_frames > 1:
-            cmd.opt("--min_frames", params.min_frames)
-        if params.do_stack2d:
-            cmd.flag("--stack2d")
-        if params.do_float16:
-            cmd.flag("--float16")
-
-        print(f"[TASK {array_idx}] Command: {cmd}", flush=True)
-
-        # Bind both the staging dir (read input optimisation set) and the
-        # upstream optimisation set's directory (relion follows the
-        # absolute paths inside it).
-        additional_binds = list(context["additional_binds"])
-        additional_binds.append(str(staging_dir.resolve()))
-        additional_binds.append(str(per_ts_optset.parent.resolve()))
-
-        run_tool(cmd, tool_name=params.get_tool_name(), cwd=out_dir, binds=additional_binds)
-
-        if not (out_dir / "particles.star").exists():
-            raise RuntimeError(f"relion_tomo_subtomo did not produce particles.star in {out_dir}")
-        # Subtomograms dir is the actual stack output; if missing the
-        # particles file is referencing files that don't exist.
-        if not (out_dir / "Subtomograms").exists():
-            raise RuntimeError(f"relion_tomo_subtomo did not produce Subtomograms/ in {out_dir}")
-
-        write_status_atomic(status_dir, ts_name, ok=True)
-        print(f"[TASK {array_idx}] {ts_name} OK", flush=True)
-
-    except Exception as e:
-        print(f"[TASK {array_idx}] FAILED for {ts_name}: {e}", file=sys.stderr, flush=True)
-        traceback.print_exc(file=sys.stderr)
-        try:
-            write_status_atomic(status_dir, ts_name, ok=False)
-        except Exception:
-            pass
-        sys.exit(1)
-
-
-# ----------------------------------------------------------------------
 # Supervisor merge — per-TS outputs → canonical job_dir layout
 # ----------------------------------------------------------------------
 
 
 def _merge_per_ts_outputs(
-    job_dir: Path,
-    ts_names: list[str],
-    upstream_general_kv: dict,
-    upstream_tomograms_star: Path,
+    job_dir: Path, ts_names: list[str], upstream_general_kv: dict, upstream_tomograms_star: Path
 ) -> None:
     """Concatenate per-TS particles.star into job_dir/particles.star and
     move each task's Subtomograms/<TS>/ subdir into job_dir/Subtomograms/.
@@ -547,9 +210,7 @@ def _merge_per_ts_outputs(
     shutil.copy2(upstream_tomograms_star, target_tomograms)
 
     write_optimisation_set(
-        job_dir / "optimisation_set.star",
-        particles_star=job_dir / "particles.star",
-        tomograms_star=target_tomograms,
+        job_dir / "optimisation_set.star", particles_star=job_dir / "particles.star", tomograms_star=target_tomograms
     )
 
     extracted_ts = len(ts_names) - len(empty_extracts)
@@ -592,5 +253,242 @@ def _run_additional_sources_merge(params, job_dir: Path) -> None:
     )
 
 
+class SubtomoExtractionDriver(ArrayDriver):
+    params_class = SubtomoExtractionParams
+    job_name = "subtomo_extraction"
+    driver_script = Path(__file__).resolve()
+    poll_secs = 15
+
+    # ---------------- supervisor ----------------
+
+    def whole_job_short_circuit(self, ctx: DriverContext[SubtomoExtractionParams]) -> bool:
+        # Aggregation short-circuit: skip extraction entirely, just merge
+        # supplied optimisation sets into job_dir. Mirrors the original
+        # one-shot driver's merge_only branch verbatim.
+        if ctx.params.merge_only:
+            self.log("merge_only=True, skipping extraction.")
+            if not ctx.params.additional_sources:
+                raise RuntimeError("merge_only=True but no additional_sources to merge.")
+            _run_additional_sources_merge(ctx.params, ctx.job_dir)
+            return True
+
+        input_optimisation = ctx.paths["input_optimisation"]
+        if not input_optimisation.exists():
+            raise FileNotFoundError(f"Input optimisation_set.star not found: {input_optimisation}")
+
+        upstream_particles_star, upstream_tomograms_star = _parse_optimisation_set(input_optimisation)
+        self.log(f"Upstream particles: {upstream_particles_star}")
+        self.log(f"Upstream tomograms: {upstream_tomograms_star}")
+
+        # Lenient read: upstream may be a TM `candidates.star` (particles-
+        # only, no optics) or a real RELION particles.star (optics +
+        # particles). relion_tomo_subtomo sources optics from
+        # tomograms.star, so missing optics in the input is fine.
+        particles_df, optics_df, general_kv = _read_input_particles_lenient(upstream_particles_star)
+        tomograms_df = _read_tomograms_star(upstream_tomograms_star)
+
+        self._input_optimisation = input_optimisation
+        self._upstream_particles_star = upstream_particles_star
+        self._upstream_tomograms_star = upstream_tomograms_star
+        self._particles_df = particles_df
+        self._optics_df = optics_df
+        self._general_kv = general_kv
+        self._tomograms_df = tomograms_df
+
+        ts_with_picks = sorted(particles_df["rlnTomoName"].astype(str).unique().tolist())
+        all_upstream_ts = sorted(tomograms_df["rlnTomoName"].astype(str).unique().tolist())
+        if not ts_with_picks:
+            # Whole-job equivalent of the per-TS .skip path: upstream picking
+            # produced 0 candidates across every tomogram, so there is nothing
+            # to extract. Mark every TS as .skip and a sidecar so the UI can
+            # render a clear "no picks anywhere — skipped" banner. We exit
+            # SUCCESS rather than fail because (a) the schemer would otherwise
+            # halt the whole pipeline on an upstream-data condition that's
+            # diagnostic, not a job bug, and (b) it mirrors the existing per-TS
+            # SKIP semantics which are also "succeeded but did no work".
+            status_dir = ctx.job_dir / STATUS_DIR_NAME
+            status_dir.mkdir(parents=True, exist_ok=True)
+            for f in status_dir.glob("*.skip"):
+                f.unlink()
+            for ts in all_upstream_ts:
+                write_skip_status(status_dir, ts, reason="no candidates anywhere (upstream picks=0)")
+            sentinel = ctx.job_dir / ".skipped_no_candidates.json"
+            sentinel.write_text(
+                json.dumps(
+                    {
+                        "reason": "upstream_particles_empty",
+                        "upstream_particles_star": str(upstream_particles_star),
+                        "upstream_tomograms_star": str(upstream_tomograms_star),
+                        "n_upstream_tomograms": len(all_upstream_ts),
+                        "n_with_picks": 0,
+                        "message": (
+                            "Upstream candidate extraction produced 0 picks across all tomograms. "
+                            "Subtomo extraction has nothing to extract; this job is a no-op skip."
+                        ),
+                    },
+                    indent=2,
+                )
+            )
+            self.log(
+                f"Upstream produced 0 picks across all {len(all_upstream_ts)} tomograms. "
+                f"Marking job as skipped (no work); wrote sentinel {sentinel.name}."
+            )
+            return True
+
+        return False
+
+    def enumerate_items(self, ctx: DriverContext[SubtomoExtractionParams]) -> list[str]:
+        # The manifest covers EVERY upstream tilt-series — the ones with
+        # picks get extracted, the empty ones get a .skip marker so the
+        # per-TS UI tracker shows them as deliberately blank rather than
+        # silently dropping the rows. Without this the user sees N reconstructions
+        # but suddenly fewer subtomo rows and can't tell whether the gap is
+        # intentional or a bug.
+        ts_with_picks = sorted(self._particles_df["rlnTomoName"].astype(str).unique().tolist())
+        all_upstream_ts = sorted(self._tomograms_df["rlnTomoName"].astype(str).unique().tolist())
+
+        # Manifest order: keep upstream tomograms.star order as authoritative.
+        # Fall back to including any extra TS that show up only in particles
+        # (defensive — shouldn't happen, but don't drop them silently).
+        extra_pick_only = sorted(set(ts_with_picks) - set(all_upstream_ts))
+        ts_names = all_upstream_ts + extra_pick_only
+        with_picks_set = set(ts_with_picks)
+        self._empty_ts = [t for t in ts_names if t not in with_picks_set]
+
+        # Excluded TS are muted — never staged, dispatched, or merged. The
+        # base's apply_exclusions writes their .skip markers (and clears any
+        # stale .ok/.fail — census #44); here we only need the filter.
+        self._excluded_set = load_excluded_ts(ctx.project_path)
+        excluded_ts = [t for t in ts_names if t in self._excluded_set]
+        self._ts_with_picks = [t for t in ts_with_picks if t not in self._excluded_set]
+
+        self.log(
+            f"{len(self._ts_with_picks)} TS with picks to extract; "
+            f"{len(self._empty_ts)} empty TS will be marked SKIP (no upstream candidates); "
+            f"{len(excluded_ts)} excluded from processing"
+        )
+        if self._empty_ts:
+            self.log(f"Empty TS (skipped): {self._empty_ts}")
+        if excluded_ts:
+            self.log(f"Excluded TS (skipped): {excluded_ts}")
+
+        return ts_names
+
+    def preflight_scope(self, ctx: DriverContext[SubtomoExtractionParams], items: list[str]) -> list[str]:
+        # Preflight only the TS we'll actually dispatch.
+        return self._ts_with_picks
+
+    def pre_dispatch(self, ctx: DriverContext[SubtomoExtractionParams], items: list[str]) -> None:
+        # Clear stale .skip markers, then pre-write fresh ones for the
+        # currently-empty TS. submit_array_job's sparse-array logic treats
+        # .skip the same as .ok — those indices never get dispatched, but
+        # they remain in the manifest so the UI renders 1 row per upstream TS.
+        # (The base's apply_exclusions re-writes the excluded TS's markers
+        # right after this hook.)
+        status_dir = ctx.job_dir / STATUS_DIR_NAME
+        if status_dir.is_dir():
+            for f in status_dir.glob("*.skip"):
+                f.unlink()
+        for ts in self._empty_ts:
+            if ts in self._excluded_set:
+                continue
+            write_skip_status(status_dir, ts, reason="no candidates above template-matching threshold")
+
+        # Stage per-TS optimisation sets ONLY for the TS that have picks.
+        # Skipped TS never get a staging dir — no task will run for them.
+        staging_root = ctx.job_dir / ".staging"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        for ts_name in self._ts_with_picks:
+            _stage_per_ts(
+                staging_root, ts_name, self._optics_df, self._particles_df, self._tomograms_df, self._general_kv
+            )
+        self.log(f"Staged per-TS inputs for {len(self._ts_with_picks)} TS under {staging_root}")
+
+    def manifest_extras(self, ctx: DriverContext[SubtomoExtractionParams], items: list[str]) -> dict:
+        return {
+            "input_optimisation_star": str(self._input_optimisation),
+            "upstream_particles_star": str(self._upstream_particles_star),
+            "upstream_tomograms_star": str(self._upstream_tomograms_star),
+        }
+
+    def aggregate(self, ctx: DriverContext[SubtomoExtractionParams], results: ArrayResults) -> None:
+        # Merge per-TS outputs into job_dir's canonical particles.star /
+        # Subtomograms/ tree. Only the TS with picks produced outputs;
+        # skipped TS never staged or wrote anything.
+        _merge_per_ts_outputs(ctx.job_dir, self._ts_with_picks, self._general_kv, self._upstream_tomograms_star)
+
+        # Aggregation merge (additional_sources) — opt-in, runs only if the
+        # job model has sources configured.
+        if ctx.params.additional_sources:
+            self.log(f"Merging {len(ctx.params.additional_sources)} additional source(s) on top of extraction...")
+            _run_additional_sources_merge(ctx.params, ctx.job_dir)
+
+    # ---------------- task ----------------
+
+    def task_already_done(self, ctx: DriverContext[SubtomoExtractionParams], item: str) -> bool:
+        # Idempotent skip: if a prior run already produced outputs, just
+        # write .ok and exit. (submit_array_job already filters previously-
+        # OK items at the SLURM-array level, so this is belt-and-braces.)
+        out_dir = ctx.job_dir / ".staging" / f"task_{item}" / "out"
+        if (out_dir / "particles.star").exists() and (out_dir / "Subtomograms").exists():
+            self.log(f"{item} already extracted — skipping")
+            return True
+        return False
+
+    def stage(self, ctx: DriverContext[SubtomoExtractionParams], item: str):
+        staging_dir = ctx.job_dir / ".staging" / f"task_{item}"
+        per_ts_optset = staging_dir / "optimisation_set.star"
+        if not per_ts_optset.exists():
+            raise FileNotFoundError(f"Staged optimisation set not found: {per_ts_optset}")
+
+        # RELION writes Subtomograms/<TS>/*.mrcs and particles.star relative
+        # to --o. We put per-TS output into <staging>/task_<ts>/out/ so the
+        # supervisor can collect from there without worrying about cross-TS
+        # collisions. Subtomogram numbering is per-TS independent (RELION
+        # restarts the counter at 1 inside each TS subdir).
+        out_dir = staging_dir / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return {"staging_dir": staging_dir, "per_ts_optset": per_ts_optset, "out_dir": out_dir}
+
+    def build_command(self, ctx: DriverContext[SubtomoExtractionParams], item: str, staged) -> ToolCommand:
+        params = ctx.params
+        cmd = (
+            ToolCommand("relion_tomo_subtomo")
+            .opt_path("--o", f"{staged['out_dir']}/", quote=False)
+            .opt_path("--i", staged["per_ts_optset"], quote=False)
+            .opt("--b", params.box_size)
+            .opt("--bin", int(params.binning))
+        )
+        if params.crop_size > 0:
+            cmd.opt("--crop", params.crop_size)
+        if params.max_dose > 0:
+            cmd.opt("--max_dose", params.max_dose)
+        if params.min_frames > 1:
+            cmd.opt("--min_frames", params.min_frames)
+        if params.do_stack2d:
+            cmd.flag("--stack2d")
+        if params.do_float16:
+            cmd.flag("--float16")
+        return cmd
+
+    def task_binds(self, ctx: DriverContext[SubtomoExtractionParams], item: str, staged) -> list:
+        # Bind both the staging dir (read input optimisation set) and the
+        # upstream optimisation set's directory (relion follows the
+        # absolute paths inside it).
+        return [staged["staging_dir"].resolve(), staged["per_ts_optset"].parent.resolve()]
+
+    def task_cwd(self, ctx: DriverContext[SubtomoExtractionParams], item: str, staged) -> Path:
+        return staged["out_dir"]
+
+    def verify_outputs(self, ctx: DriverContext[SubtomoExtractionParams], item: str, staged) -> None:
+        out_dir = staged["out_dir"]
+        if not (out_dir / "particles.star").exists():
+            raise RuntimeError(f"relion_tomo_subtomo did not produce particles.star in {out_dir}")
+        # Subtomograms dir is the actual stack output; if missing the
+        # particles file is referencing files that don't exist.
+        if not (out_dir / "Subtomograms").exists():
+            raise RuntimeError(f"relion_tomo_subtomo did not produce Subtomograms/ in {out_dir}")
+
+
 if __name__ == "__main__":
-    main()
+    SubtomoExtractionDriver().main()
