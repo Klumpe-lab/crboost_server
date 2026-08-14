@@ -9,7 +9,7 @@ from services.computing.slurm_service import normalize_slurm_ids
 from services.configs.config_service import get_config_service
 from services.configs.starfile_service import StarfileService
 from services.job_models import ImportMoviesParams
-from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS
+from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, driver_invocation
 from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
 from services.models_base import InstanceId
 from services.result import err, ok
@@ -500,17 +500,11 @@ class PipelineOrchestratorService:
         if not script:
             return "echo 'Unknown Driver'; exit 1"
 
-        python_exe = server_dir / "venv" / "bin" / "python3"
-        if not python_exe.exists():
-            python_exe = "python3"
-
-        script_path = server_dir / "drivers" / script
-
-        return (
-            f"export PYTHONPATH={server_dir}:${{PYTHONPATH}}; "
-            f"{python_exe} {script_path} "
-            f"--instance_id {instance_id} "
-            f"--project_path {project_dir}"
+        return driver_invocation(
+            server_dir=server_dir,
+            driver_script=server_dir / "drivers" / script,
+            instance_id=instance_id,
+            project_path=project_dir,
         )
 
     def _get_current_relion_counter(self, project_dir: Path) -> int:

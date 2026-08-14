@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Final
 
@@ -229,3 +230,41 @@ def display_name(job_type: JobType) -> str:
     if spec is not None:
         return spec.display_name
     return _SYNTHETIC_DISPLAY_NAMES.get(job_type, job_type.value)
+
+
+def driver_launch_prefix(*, server_dir: Path, driver_script: Path) -> str:
+    """`export PYTHONPATH=…; <python> <script>` — everything a driver launch shares
+    before its arguments.
+
+    Lives next to `JobSpec.driver` because this module already owns *which* script
+    runs a job type; this is *how* it gets started. Three callers need it and must not
+    drift on the interpreter choice or the PYTHONPATH export: the two pipeline entry
+    points below, plus `backend.extract_pick_list`, which launches a driver that is
+    not a pipeline job and so passes its own argument set instead of `--instance_id`.
+
+    The venv interpreter is used when the repo has one, else bare `python3` from PATH.
+    """
+    python_exe = server_dir / "venv" / "bin" / "python3"
+    if not python_exe.exists():
+        python_exe = Path("python3")
+    return f"export PYTHONPATH={server_dir}:${{PYTHONPATH}}; {python_exe} {driver_script}"
+
+
+def driver_invocation(*, server_dir: Path, driver_script: Path, instance_id: str, project_path: Path) -> str:
+    """The shell command that launches one PIPELINE driver process.
+
+    Two callers build it and must not drift, since a driver cannot tell which entry
+    point started it:
+
+      - the orchestrator's `fn_exe` (what RELION runs for the job), and
+      - `drivers/array_job_base.build_array_sbatch_script`'s `XXXcommandXXX`, where
+        a supervisor re-invokes its OWN script per array task.
+
+    Identity travels as `--instance_id` + `--project_path`, which is exactly what
+    `get_driver_context` parses.
+    """
+    return (
+        f"{driver_launch_prefix(server_dir=server_dir, driver_script=driver_script)} "
+        f"--instance_id {instance_id} "
+        f"--project_path {project_path}"
+    )

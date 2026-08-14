@@ -38,6 +38,7 @@ sys.path.insert(0, str(server_dir))
 from drivers.driver_base import DriverContext, run_tool
 from services.computing.slurm_service import SlurmConfig
 from services.configs.starfile_service import StarfileService
+from services.jobs.spec import driver_invocation
 
 
 # ----------------------------------------------------------------------
@@ -496,15 +497,8 @@ def build_array_sbatch_script(
 
     constraint = per_task_cfg.constraint.strip("'\"")
 
-    python_exe = server_dir / "venv" / "bin" / "python3"
-    if not python_exe.exists():
-        python_exe = Path("python3")
-
-    driver_cmd = (
-        f"export PYTHONPATH={server_dir}:${{PYTHONPATH}}; "
-        f"{python_exe} {driver_script} "
-        f"--instance_id {instance_id} "
-        f"--project_path {project_path}"
+    driver_cmd = driver_invocation(
+        server_dir=server_dir, driver_script=driver_script, instance_id=instance_id, project_path=project_path
     )
 
     array_outfile = job_dir / "task_%a.out"
