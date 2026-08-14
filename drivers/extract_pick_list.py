@@ -1,11 +1,15 @@
 """Standalone per-pick-list subtomogram extraction (Slice C).
 
 Runs OUTSIDE the pipeline graph: given a curation pick list's coordinate star, build
-a per-list ``optimisation_set`` (mirroring the species' candidate-extract schema via
-``services.visualization.list_extraction.build_list_optset``) and run
-``relion_tomo_subtomo`` on it, landing the extracted particles + a final
-``optimisation_set.star`` under ``<out-dir>/out/`` so each curated list extracts
-independently and never overwrites another.
+a per-list ``optimisation_set`` and run ``relion_tomo_subtomo`` on it, landing the
+extracted particles + a final ``optimisation_set.star`` under ``<out-dir>/out/`` so
+each curated list extracts independently and never overwrites another.
+
+The optset is built one of two ways, and exactly one source must be given:
+``--candidate-optset`` mirrors the species' candidate-extract schema
+(``list_extraction.build_list_optset``); ``--tomograms-star`` synthesizes the schema
+and optics for a de-novo species that has no candidate-extract job
+(``build_list_optset_from_tomograms``).
 
 Submitted as a one-off SLURM job by ``backend.extract_pick_list`` (NOT an array, NOT a
 pipeline job — one tomogram, one list, via ``config/qsub.sh`` like ``drivers/tilt_filter.py``).
@@ -29,7 +33,11 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from drivers.driver_base import ToolCommand, run_tool
-from services.visualization.list_extraction import build_list_optset, write_extracted_optset
+from services.visualization.list_extraction import (
+    build_list_optset,
+    build_list_optset_from_tomograms,
+    write_extracted_optset,
+)
 
 
 def _build_subtomo_cmd(optset: Path, out_run: Path, args) -> ToolCommand:
@@ -60,8 +68,15 @@ def _run(args) -> dict:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) Per-list INPUT optimisation_set (candidate schema + this list's coords).
-    prep = build_list_optset(Path(args.candidate_optset), Path(args.list_star), args.tomo, out_dir)
+    # 1) Per-list INPUT optimisation_set: mirror the species' candidate schema, or —
+    #    for a de-novo species with no candidate-extract job — synthesize it from the
+    #    tomograms.star. argparse guarantees exactly one source is set.
+    if args.tomograms_star:
+        source_dir = Path(args.tomograms_star).resolve().parent
+        prep = build_list_optset_from_tomograms(Path(args.list_star), args.tomo, out_dir, Path(args.tomograms_star))
+    else:
+        source_dir = Path(args.candidate_optset).resolve().parent
+        prep = build_list_optset(Path(args.candidate_optset), Path(args.list_star), args.tomo, out_dir)
     input_optset = Path(prep["optimisation_set"])
     tomograms_star = Path(prep["tomograms"])
     n = int(prep["count"])
@@ -76,13 +91,13 @@ def _run(args) -> dict:
         cmd = _build_subtomo_cmd(input_optset, out_run, args)
         print(f"[extract-list] command: {cmd}", flush=True)
         # Bind the project tree (tilt series / tomograms the optset points at), the
-        # out dir, and the tomograms.star + candidate-optset dirs (may sit outside it).
+        # out dir, and the tomograms.star + schema-source dirs (may sit outside it).
         binds = sorted(
             {
                 str(Path(args.project_root).resolve()),
                 str(out_dir.resolve()),
                 str(tomograms_star.parent.resolve()),
-                str(Path(args.candidate_optset).resolve().parent),
+                str(source_dir),
             }
         )
         # tool_name stays a literal here: this driver has no param class to ask
@@ -101,7 +116,11 @@ def _run(args) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Extract one curation pick list's subtomograms (relion_tomo_subtomo).")
-    ap.add_argument("--candidate-optset", required=True, help="species' candidate-extract optimisation_set.star")
+    # Exactly one schema source: mirror the species' candidates.star, or synthesize
+    # from a tomograms.star when the species has no candidate-extract job.
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--candidate-optset", help="species' candidate-extract optimisation_set.star")
+    src.add_argument("--tomograms-star", help="tomograms.star to synthesize schema + optics from (de-novo species)")
     ap.add_argument("--list-star", required=True, help="the pick list's coords star (prefer its _filtered.star)")
     ap.add_argument("--tomo", required=True, help="rlnTomoName to extract")
     ap.add_argument("--out-dir", required=True, help="Curation/<species>/<tomo>/<slug>/")

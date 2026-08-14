@@ -220,42 +220,104 @@ def enumerate_authoritative(state, project_path: Path, species_id: str) -> list[
 # ── extraction inputs + the §8.3 gate ────────────────────────────────────────────────────
 
 
+def extraction_params_for_species(state, species_id: str, subtomo_jm=None) -> dict | None:
+    """The ``backend.extract_pick_list`` geometry kwargs for one species, or **None** when
+    the species has no committed extraction geometry.
+
+    Precedence: the species' SUBTOMO_EXTRACTION job model (whatever the auto set was cut
+    with, so a manual list stays mixable with it) → ``species.extraction_params``
+    (committed through the extract dialog for a de-novo species). There is deliberately NO
+    third branch: the old ``384/1.0/224`` fallback silently cut wrong-but-plausible
+    subtomograms for every species that never ran a subtomo job, and a box size is not
+    ours to guess (denovo roadmap D-3). None means "ask the user", never "use a default".
+
+    ``max_dose=-1`` / ``min_frames=1`` ARE defaults, legitimately: they are the tool's own
+    "no limit" sentinels (the driver omits the flags entirely at those values), and
+    stack2d/float16 are output-representation choices, not sample geometry.
+    """
+    jm = subtomo_jm
+    if jm is None:
+        sub = _subtomo_instance_for_species(state, species_id)
+        jm = sub[1] if sub else None
+
+    box = binning = crop = None
+    if jm is not None:
+        box, binning, crop = getattr(jm, "box_size", None), getattr(jm, "binning", None), getattr(jm, "crop_size", None)
+    if not (box and binning and crop):
+        species = state.get_species(species_id) if hasattr(state, "get_species") else None
+        ep = getattr(species, "extraction_params", None) if species is not None else None
+        if ep is None:
+            return None
+        box, binning, crop = ep.box_size, ep.binning, ep.crop_size
+
+    return dict(
+        box_size=int(box),
+        binning=float(binning),
+        crop_size=int(crop),
+        max_dose=float(getattr(jm, "max_dose", -1.0)),
+        min_frames=int(getattr(jm, "min_frames", 1) or 1),
+        do_stack2d=bool(getattr(jm, "do_stack2d", True)),
+        do_float16=bool(getattr(jm, "do_float16", True)),
+    )
+
+
 def extract_inputs_for_list(state, project_path: Path, species_id: str, pl) -> dict | None:
     """Resolve everything ``backend.extract_pick_list`` needs for ONE workbench pick list:
-    the species candidate ``optimisation_set.star`` (TEMPLATE_EXTRACT_PYTOM job — its
-    ``candidates.star`` schema is mirrored), the consumed list star (prefer
-    ``<stem>_filtered.star``), and box/bin/crop from the SUBTOMO_EXTRACTION job model
-    (defaulting like the dashboard's ``_handle_extract_list`` when there's no subtomo job).
-    Returns ``{candidate_optset, list_star, params}``, or None when a required job/file is
-    missing (so the gate reports the list BLOCKED rather than submitting a doomed job)."""
+    the schema source, the consumed list star (prefer ``<stem>_filtered.star``), and the
+    extraction geometry. Returns ``{candidate_optset | tomograms_star, list_star, params}``,
+    or None when something required is missing (so the gate reports the list BLOCKED rather
+    than submitting a doomed job) — see ``extract_inputs_blocked_reason`` for which.
+
+    Schema source: the species' candidate ``optimisation_set.star``
+    (TEMPLATE_EXTRACT_PYTOM — its ``candidates.star`` schema is mirrored) when it exists;
+    otherwise the tomogram's ``tomograms.star``, which the candidate-free builder
+    synthesizes schema + optics from (a de-novo species has no candidate-extract job)."""
     project_path = Path(project_path)
-    cand = _candidate_instance_for_species(state, species_id)
-    if cand is None:
-        return None
-    cand_dir = _job_dir(state, cand[0], cand[1], project_path)
-    if cand_dir is None:
-        return None
-    candidate_optset = cand_dir / "optimisation_set.star"
-    if not candidate_optset.exists():
-        return None
     star = getattr(pl, "path", "")
     if not star:
         return None
     filtered = picks_filter.filtered_list_path(Path(star))
     list_star = str(filtered) if filtered.exists() else str(star)
 
-    sub = _subtomo_instance_for_species(state, species_id)
-    jm = sub[1] if sub else None
-    params = dict(
-        box_size=int(getattr(jm, "box_size", 384) or 384),
-        binning=float(getattr(jm, "binning", 1.0) or 1.0),
-        crop_size=int(getattr(jm, "crop_size", 224) or 224),
-        max_dose=float(getattr(jm, "max_dose", -1.0)),
-        min_frames=int(getattr(jm, "min_frames", 1) or 1),
-        do_stack2d=bool(getattr(jm, "do_stack2d", True)),
-        do_float16=bool(getattr(jm, "do_float16", True)),
-    )
-    return {"candidate_optset": str(candidate_optset), "list_star": list_star, "params": params}
+    params = extraction_params_for_species(state, species_id)
+    if params is None:
+        return None
+
+    source = _schema_source_for_list(state, project_path, species_id, pl)
+    if source is None:
+        return None
+    return {**source, "list_star": list_star, "params": params}
+
+
+def _schema_source_for_list(state, project_path: Path, species_id: str, pl) -> dict | None:
+    """``{"candidate_optset": ...}`` or ``{"tomograms_star": ...}`` — exactly one, matching
+    ``backend.extract_pick_list``'s two schema sources. None when neither is on disk."""
+    cand = _candidate_instance_for_species(state, species_id)
+    if cand is not None:
+        cand_dir = _job_dir(state, cand[0], cand[1], project_path)
+        if cand_dir is not None and (cand_dir / "optimisation_set.star").exists():
+            return {"candidate_optset": str(cand_dir / "optimisation_set.star")}
+
+    # No candidate-extract job (or it never produced an optset): fall back to the
+    # tomogram's own star, which carries the optics the synthesized block needs.
+    from services.visualization.tomo_geometry import geometry_for_ts
+
+    geom = geometry_for_ts(state, project_path, getattr(pl, "tomo_name", ""))
+    if geom is None:
+        return None
+    return {"tomograms_star": str(geom.tomograms_star)}
+
+
+def extract_inputs_blocked_reason(state, project_path: Path, species_id: str, pl) -> str:
+    """Why ``extract_inputs_for_list`` returned None, in the user's terms. Kept next to it
+    so the gate's blocked entry names the actual gap instead of one catch-all string."""
+    if not getattr(pl, "path", ""):
+        return "the list has no backing star file"
+    if extraction_params_for_species(state, species_id) is None:
+        return "no extraction geometry — set box/binning/crop on the species before extracting"
+    if _schema_source_for_list(state, Path(project_path), species_id, pl) is None:
+        return "no candidate optimisation_set and no tomograms.star for this tomogram"
+    return "unknown"
 
 
 def handle_to_dict(h: AuthoritativeHandle) -> dict:

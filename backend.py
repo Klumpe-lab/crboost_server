@@ -17,6 +17,7 @@ from services.scheduling_and_orchestration.pipeline_orchestrator_service import 
 from services.computing.container_service import get_container_service
 from services.scheduling_and_orchestration.pipeline_runner import PipelineRunnerService
 from services.scheduling_and_orchestration.pipeline_monitor import PipelineMonitor
+from services.jobs.spec import driver_launch_prefix
 from services.project_state import get_state_service
 from services.result import err, ok
 from services.computing.slurm_service import SlurmService
@@ -225,15 +226,16 @@ class CryoBoostBackend:
     async def extract_pick_list(
         self,
         project_path: Path,
-        candidate_optset: Path,
+        candidate_optset: Path | None,
         list_star: Path,
         tomo_name: str,
         species_id: str,
         slug: str,
         *,
-        box_size: int = 384,
-        binning: float = 1.0,
-        crop_size: int = 224,
+        box_size: int,
+        binning: float,
+        crop_size: int,
+        tomograms_star: Path | None = None,
         max_dose: float = -1.0,
         min_frames: int = 1,
         do_stack2d: bool = True,
@@ -246,9 +248,17 @@ class CryoBoostBackend:
         job id + the dir to watch (``RELION_JOB_EXIT_SUCCESS/FAILURE`` + ``result.json``
         appear there; the caller records ``PickList.mark_extracted`` on success).
 
-        Box/bin/crop default to the RELION subtomo defaults but the caller passes the
-        species' subtomo-job params so a list extracts compatibly with the auto set."""
+        Exactly one schema source: ``candidate_optset`` mirrors the species'
+        candidate-extract schema; ``tomograms_star`` synthesizes it for a de-novo
+        species with no candidate-extract job.
+
+        ``box_size``/``binning``/``crop_size`` are REQUIRED — they used to default to
+        384/1.0/224, which silently cut wrong-but-plausible subtomograms for any species
+        without a subtomo job. The caller resolves them from the species (see
+        ``aggregation_authoritative.extraction_params_for_species``) or asks the user."""
         project_path = Path(project_path)
+        if (candidate_optset is None) == (tomograms_star is None):
+            return err("extract_pick_list needs exactly one of candidate_optset / tomograms_star")
         out_dir = Path(list_star).parent / slug
         out_dir.mkdir(parents=True, exist_ok=True)
         for marker in ("RELION_JOB_EXIT_SUCCESS", "RELION_JOB_EXIT_FAILURE", "result.json"):
@@ -260,19 +270,22 @@ class CryoBoostBackend:
         # run_extract.sh directly (bypassing this) and still benefits from that skip.
         shutil.rmtree(out_dir / "out", ignore_errors=True)
 
-        python_exe = self.server_dir / "venv" / "bin" / "python3"
-        if not python_exe.exists():
-            python_exe = "python3"
-        script_path = self.server_dir / "drivers" / "extract_pick_list.py"
         flags = ""
         if do_stack2d:
             flags += " --stack2d"
         if do_float16:
             flags += " --float16"
+        launch = driver_launch_prefix(
+            server_dir=self.server_dir, driver_script=self.server_dir / "drivers" / "extract_pick_list.py"
+        )
+        source_flag = (
+            f"--candidate-optset {shlex.quote(str(candidate_optset))}"
+            if candidate_optset is not None
+            else f"--tomograms-star {shlex.quote(str(tomograms_star))}"
+        )
         driver_cmd = (
-            f"export PYTHONPATH={self.server_dir}:${{PYTHONPATH}}; "
-            f"{python_exe} {script_path} "
-            f"--candidate-optset {shlex.quote(str(candidate_optset))} "
+            f"{launch} "
+            f"{source_flag} "
             f"--list-star {shlex.quote(str(list_star))} "
             f"--tomo {shlex.quote(str(tomo_name))} "
             f"--out-dir {shlex.quote(str(out_dir))} "
@@ -328,7 +341,7 @@ class CryoBoostBackend:
     async def extract_pick_list_and_wait(
         self,
         project_path: Path,
-        candidate_optset: Path,
+        candidate_optset: Path | None,
         list_star: Path,
         tomo_name: str,
         species_id: str,
@@ -537,6 +550,7 @@ class CryoBoostBackend:
         from services.aggregation_authoritative import (
             compute_gate_report,
             enumerate_authoritative,
+            extract_inputs_blocked_reason,
             extract_inputs_for_list,
         )
 
@@ -556,15 +570,23 @@ class CryoBoostBackend:
             pl = state.get_pick_list(h.slug, species_id, h.tomo_name)
             inputs = extract_inputs_for_list(state, project_path, species_id, pl) if pl is not None else None
             if inputs is None:
-                blocked.append({"tomo": h.tomo_name, "slug": h.slug, "reason": "no candidate/subtomo job or list star"})
+                reason = (
+                    extract_inputs_blocked_reason(state, project_path, species_id, pl)
+                    if pl is not None
+                    else "no pick list registered for this slug"
+                )
+                blocked.append({"tomo": h.tomo_name, "slug": h.slug, "reason": reason})
                 continue
+            cand = inputs.get("candidate_optset")
+            tomo_star = inputs.get("tomograms_star")
             res = await self.extract_pick_list(
                 project_path,
-                Path(inputs["candidate_optset"]),
+                Path(cand) if cand else None,
                 Path(inputs["list_star"]),
                 h.tomo_name,
                 species_id,
                 h.slug,
+                tomograms_star=Path(tomo_star) if tomo_star else None,
                 **inputs["params"],
             )
             if not res.get("success"):
