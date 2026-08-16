@@ -528,3 +528,34 @@ def discard_filtered_list(source_star: Path, filtered_star: Path | None = None) 
         except OSError as e:
             logger.warning("Failed to remove %s: %s", filtered_star, e)
     return False
+
+
+def merge_source_for(
+    slug: str, lists: list[dict], *, ce_job_dir: str | Path | None, subtomo_job_dir: str | Path | None
+) -> dict | None:
+    """Which star a pick list contributes to a MERGE — its KEPT subset, so the user's
+    keep/drop never bleeds dropped picks into a merge:
+
+    - ``auto`` → the subtomo job's ``particles_filtered.star`` (centered-Å coords +
+      rlnTomoName, i.e. exactly the kept auto picks for this tomo) when a filter is
+      committed, else the candidate-extract job's full ``candidates.star``;
+    - workbench lists → ``<slug>_filtered.star`` when the cutout sheet committed drops,
+      else the full list star.
+
+    ``lists`` are the dashboard's render dicts (``slug`` / ``path`` / ``list_type``).
+    Returns ``{"path", "type", "slug"}`` in the shape ``merge_pick_lists`` consumes, or
+    None for a slug that is not a sourced list. Raises for ``auto`` without a
+    candidate-extract job dir (nothing to source candidates.star from)."""
+    if slug == "auto":
+        if subtomo_job_dir and has_filtered_set(Path(subtomo_job_dir)):
+            return {"path": str(Path(subtomo_job_dir) / PARTICLES_FILTERED_NAME), "type": "auto", "slug": "auto"}
+        if not ce_job_dir:
+            raise ValueError("auto list has no candidate-extract job dir to source candidates.star from")
+        return {"path": str(Path(ce_job_dir) / "candidates.star"), "type": "auto", "slug": "auto"}
+    lst = next((x for x in lists if x.get("slug") == slug), None)
+    if not lst or not lst.get("path"):
+        return None
+    lt = lst.get("list_type")
+    filtered = filtered_list_path(Path(lst["path"]))
+    path = str(filtered) if filtered.exists() else lst["path"]
+    return {"path": path, "type": (lt.value if hasattr(lt, "value") else str(lt)), "slug": slug}

@@ -35,7 +35,8 @@ from nicegui import app, context, ui
 
 from services.aggregation_authoritative import extraction_params_for_species
 from services.configs.user_prefs_service import get_prefs_service
-from services.models_base import InstanceId, JobStatus, JobType, ListExtractionState, PickListType
+from services.models_base import InstanceId, JobStatus, JobType, ListExtractionState, PickListType, PickSourceKind
+from services.particles.ingest import register_manual_pick_list
 from services.project_state import PickList, get_state_service
 from services.result import ErrorCode, err
 from ui.current_project import current_project_state
@@ -96,17 +97,6 @@ logger = logging.getLogger(__name__)
 # See ui/components/reactive.py and CLAUDE.md "UI reactivity patterns".
 _curation_flight = SingleFlight()
 
-
-# Default overlay color per workbench-authored list type, chosen to sit apart from
-# the per-species auto palette (SPECIES_OVERLAY_COLORS) so a manual/imported/merged
-# layer reads as a distinct lane over the same tomogram. Persisted onto the PickList
-# at creation (PickList.color), so this is only the seed — retuning it here doesn't
-# restyle already-registered lists.
-_PICK_LIST_DEFAULT_COLOR = {
-    PickListType.MANUAL: "#00e676",  # emerald — human picks
-    PickListType.IMPORTED: "#ffea00",  # yellow — external
-    PickListType.MERGED: "#ff6d00",  # deep orange — committed merge
-}
 
 # Extraction-state badge shown on each workbench list chip (Slice A surfaces it;
 # the per-list Extract action that flips it is Slice C). Auto lists show none.
@@ -3368,6 +3358,8 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                 "dims": sp["dims"],
                 "visible": True,
                 "filtered_count": sp.get("auto_kept_count"),
+                "source_kind": PickSourceKind.TM.value,
+                "source_ref": sp.get("iid") or "",
             }
         )
     species_id = sp.get("species_id") or ""
@@ -3421,7 +3413,9 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                     "slug": pl.slug,
                     "label": pl.label or pl.slug,
                     "list_type": pl.list_type,
-                    "color": pl.color,
+                    # Species color for every list (09-S2): PickList.color is legacy; the
+                    # glyph (shape) tells the list types apart on the shared canvas.
+                    "color": sp["color"],
                     "shape": glyph_for(pl.list_type),
                     "picks": picks,
                     "dims": dims,
@@ -3429,6 +3423,8 @@ def _collect_pick_lists_for_species(sp: dict, project_state, ts_name: str) -> li
                     "path": pl.path,
                     "parent_slugs": pl.parent_slugs,
                     "filtered_count": filtered_count,
+                    "source_kind": pl.source_kind,
+                    "source_ref": pl.source_ref,
                 }
             )
     return lists
@@ -4274,31 +4270,15 @@ async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: st
     `manual` list per (species, tomo) — a re-import replaces it (the raw .coords are
     still archived per-import for provenance).
 
-    `project_path` is REQUIRED — it resolves the real registry by path. The prescan
-    auto-ingest runs in a BackgroundTask with NO client/tab context, where bare
-    `current_project_state()` returns a blank throwaway; the add + save then silently
-    no-opped and the manual list never surfaced (W2)."""
-    # P5: label the list after the .coords file the user named in ArtiaX (its stem),
-    # not a fixed "Manual (ArtiaX)". The `manual` slug stays stable for re-ingest;
-    # only the display label tracks the source filename. Falls back when unknown.
-    src_stem = Path(result.get("coords_source") or "").stem
-    get_state_service().state_for(project_path).add_pick_list(
-        PickList(
-            slug="manual",
-            label=src_stem or "Manual (ArtiaX)",
-            list_type=PickListType.MANUAL,
-            species_id=species_id,
-            tomo_name=tomo_name,
-            path=result["out_star"],
-            count=int(result.get("count", 0)),
-            color=_PICK_LIST_DEFAULT_COLOR.get(PickListType.MANUAL, "#00e676"),
-            created_by=result.get("created_by", ""),
-        )
-    )
+    `project_path` is REQUIRED — it resolves the real registry by path (a bare
+    `current_project_state()` is a blank throwaway outside a client/tab context, W2).
+    The upsert itself lives in `services.particles.ingest` (shared with the server-side
+    curation watcher); this wrapper only resolves the state and persists."""
+    pl = register_manual_pick_list(get_state_service().state_for(project_path), result, species_id, tomo_name)
     from backend import get_backend
 
     await get_backend().save_project(project_path, force=True)
-    return int(result.get("count", 0))
+    return pl.count
 
 
 async def _register_manual_pick_list(sp: dict, result: dict, refresh, project_path: Path) -> None:
@@ -4711,27 +4691,13 @@ def _render_list_rail(
         )
 
     def _source_for(slug: str):
-        # Each ticked list contributes its KEPT subset to the merge — the user's
-        # keep/drop must NOT bleed unselected picks into a merge:
-        #   • auto  → particles_filtered.star (the curated subtomo set; it carries
-        #     centered-Å coords + rlnTomoName, so the merge reads exactly the kept
-        #     auto picks for this tomo) when filtered, else the full candidates.star.
-        #   • workbench → <slug>_filtered.star when the cutout sheet committed drops,
-        #     else the full list star.
+        # Each ticked list contributes its KEPT subset to the merge (the user's keep/drop
+        # must not bleed dropped picks into it) — see picks_filter.merge_source_for.
         from services.particles import picks_filter
 
-        if slug == "auto":
-            sub = sp.get("subtomo_job_dir")
-            if sub and picks_filter.has_filtered_set(Path(sub)):
-                return {"path": str(Path(sub) / picks_filter.PARTICLES_FILTERED_NAME), "type": "auto", "slug": "auto"}
-            return {"path": str(Path(sp["job_dir"]) / "candidates.star"), "type": "auto", "slug": "auto"}
-        lst = next((x for x in lists if x["slug"] == slug), None)
-        if not lst or not lst.get("path"):
-            return None
-        lt = lst.get("list_type")
-        filtered = picks_filter.filtered_list_path(Path(lst["path"]))
-        path = str(filtered) if filtered.exists() else lst["path"]
-        return {"path": path, "type": (lt.value if hasattr(lt, "value") else str(lt)), "slug": slug}
+        return picks_filter.merge_source_for(
+            slug, lists, ce_job_dir=sp.get("job_dir"), subtomo_job_dir=sp.get("subtomo_job_dir")
+        )
 
     def _update_merge_bar() -> None:
         n = len(_MERGE_SELECT.get(key, set()))
@@ -4785,8 +4751,9 @@ def _render_list_rail(
                 tomo_name=tomo_name,
                 path=res["out_star"],
                 count=int(res.get("count", 0)),
-                color=_PICK_LIST_DEFAULT_COLOR.get(PickListType.MERGED, "#ff6d00"),
                 parent_slugs=[c["slug"] for c in chosen],
+                source_kind=PickSourceKind.MERGE.value,
+                source_ref="+".join(c["slug"] for c in chosen),
                 created_by=getattr(backend, "username", ""),
             )
         )
