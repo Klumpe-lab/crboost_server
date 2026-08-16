@@ -1,13 +1,13 @@
-"""The Species page (roadmap 10 S1) — `[rail 200px | detail]`.
+"""The Species page (roadmap 10) — `[rail 200px | detail]`.
 
 Detail = header row (active species' pill + segmented tabs) + one container per
 (species, tab), built lazily on first selection and cached; a switch only flips
-visibility. Tabs: Overview · Templates & masks (the mounted workbench, S2) · Picks ·
-Curation (roadmap 11) · Jobs (S4). The page owns the 3-s registry observe (species
-created / deleted elsewhere — roster "+", another browser tab, the workbench's own
-delete) and the `on_workbench_active` / `workbench_select_species` hooks the workspace
-registers (`workspace_page._switch_to` / `_open_species`); the internal mode string
-stays "workbench" (roster `set_active_mode` compares it).
+visibility. Tabs: Overview (S3: identity editor, status, sanity, delete) · Templates &
+masks (the mounted workbench, S2) · Picks · Curation (roadmap 11) · Jobs (S4). The page
+owns the 3-s registry observe (species created / deleted elsewhere — roster "+", another
+browser tab, the Overview's delete) and the `on_workbench_active` / `workbench_select_species`
+hooks the workspace registers (`workspace_page._switch_to` / `_open_species`); the
+internal mode string stays "workbench" (roster `set_active_mode` compares it).
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.segmented import Segmented, render_segmented
 from ui.components.species_pill import render_species_pill
 from ui.dashboard.css import ensure_assets_loaded
+from ui.species.jobs_tab import JobsTab
 from ui.species.overview_tab import OverviewTab
 from ui.species.prompt import create_species
 from ui.species.rail import SpeciesRail
@@ -181,7 +182,7 @@ class SpeciesPage:
             case "curation":
                 return PlaceholderTab("Curation — session, save-dir contract and watcher log land in roadmap 11 S4.")
             case "jobs":
-                return PlaceholderTab("Jobs — this species' pipeline jobs land in roadmap 10 S4.")
+                return JobsTab(ctx)
         raise KeyError(f"unknown Species tab {key!r}")
 
     def _apply_visibility(self) -> None:

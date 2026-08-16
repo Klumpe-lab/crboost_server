@@ -13,7 +13,7 @@ from services.project_state import JobType
 
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
-from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, next_instance_id
+from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, missing_deps, next_instance_id
 from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -79,6 +79,9 @@ class PipelineBuilderPanel:
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
         self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
         self.callbacks["set_active_mode"] = self.roster.set_active_mode
+        # Species page (roadmap 10 S4): open a job in the pipeline view / add one for a species.
+        self.callbacks["open_job"] = self.switch_tab
+        self.callbacks["add_instance_for_species"] = self.add_instance_for_species
 
         self.rebuild_pipeline_ui()
 
@@ -165,6 +168,28 @@ class PipelineBuilderPanel:
             if not confirmed:
                 return
             self.add_instance_to_pipeline(job_type, species_id=chosen["id"])
+
+    async def add_instance_for_species(self, job_type: JobType, species_id: str) -> None:
+        """One-click add from the Species page's Jobs tab: the species is known, so no
+        chooser dialog — straight to `add_instance_to_pipeline(job_type, species_id=)`.
+        SingleFlight-guarded like `prompt_species_and_add`; the roster's missing-
+        dependency warning is repeated here since that surface isn't visible."""
+        async with self.flight(f"add_for_species:{job_type.value}:{species_id}") as acquired:
+            if not acquired:
+                return
+            if self.ui_mgr.is_running:
+                ui.notify("Pipeline is running — stop it before adding jobs.", type="warning")
+                return
+            missing = missing_deps(job_type, set(self.ui_mgr.selected_jobs))
+            if missing:
+                ui.notify(
+                    f"{get_job_display_name(job_type)} typically requires: "
+                    + ", ".join(get_job_display_name(d) for d in missing),
+                    type="warning",
+                    timeout=3000,
+                )
+            self.add_instance_to_pipeline(job_type, species_id=species_id)
+            ui.notify(f"Added {get_job_display_name(job_type)} for species '{species_id}'", type="positive")
 
     # ── Tab management ────────────────────────────────────────────────────────
 
