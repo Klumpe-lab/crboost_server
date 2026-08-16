@@ -46,7 +46,8 @@ logger = logging.getLogger(__name__)
 # load.  A major mismatch emits a loud warning; a missing version (pre-versioning
 # files) is treated as (0, 0).
 
-SCHEMA_VERSION: tuple[int, int] = (3, 3)  # 3.3: +PickList.source_kind/source_ref + ParticleSpecies.catalog_id (09-S2)
+# 3.3: +PickList.source_kind/source_ref + ParticleSpecies.catalog_id (09-S2); 3.4: +ParticleSpecies.created_at (10-S3)
+SCHEMA_VERSION: tuple[int, int] = (3, 4)
 
 
 def _afterok_global_default() -> bool:
@@ -214,6 +215,10 @@ class ParticleSpecies(BaseModel):
     # Roadmap-12 hook: the lab-catalog entry this species was instantiated from
     # (None = project-local, the only case today). Written by nothing yet.
     catalog_id: str | None = None
+
+    # When the species was registered (stamped by `add_species`); None on species that
+    # pre-date the field. Provenance only — nothing branches on it.
+    created_at: datetime | None = None
 
     # Set once the user commits extraction geometry for a de-novo species.
     # None means undecided, never "use some default" — see ExtractionParams.
@@ -835,7 +840,9 @@ class ProjectState(BaseModel):
         while sid in existing_ids:
             sid = f"{base}_{n}"
             n += 1
-        species = ParticleSpecies(id=sid, name=name, color=color or species_palette_color(sid), origin=origin)
+        species = ParticleSpecies(
+            id=sid, name=name, color=color or species_palette_color(sid), origin=origin, created_at=datetime.now()
+        )
         self.species_registry.append(species)
         self.update_modified()
         # mark_dirty: StateService.save_project writes only when dirty (or forced) —

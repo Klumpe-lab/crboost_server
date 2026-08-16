@@ -23,7 +23,7 @@ server timers, FingerprintedView/SingleFlight for anything timer- or dialog-driv
 | id | surface | peeve (short) | category | home | status |
 |---|---|---|---|---|---|
 | P-01 | Journey / roster / workbench | changing a species' overlay color must change it everywhere (job-row chip, journey tabs, strip, workbench strip) | bug | 08-S0 (identity in signatures) | code-complete 2026-08-16, PENDING RUNTIME |
-| P-02 | Workbench header | notes / Ø / symmetry inputs trigger a full project save on every keystroke | cosmetic (perf) | 10-S3 (identity editor: `debounce_s` + input debounce) | scoped |
+| P-02 | Workbench header | notes / Ø / symmetry inputs trigger a full project save on every keystroke | cosmetic (perf) | 10-S3 (identity editor: `debounce_s` + input debounce) | code-complete 2026-08-16 (Overview identity editor: `debounce=400` inputs + `save_project(debounce_s=1.0)`), PENDING RUNTIME |
 | P-03 | Job roster / add dialog | "Template Extract" label — it picks candidates from TM scores, cuts nothing | bug (naming) | 08-S1 | code-complete 2026-08-16 ("Pick candidates") |
 | P-04 | Job tabs (TM / pick / subtomo) | the same read-only species card ×3 clogs the parameter form | structural | 08-S1 | code-complete 2026-08-16 (one species line; card deleted) |
 | P-05 | Workbench | de-novo species created from the roster "+" not shown until reload | bug | 08-S0 | code-complete 2026-08-16, PENDING RUNTIME |
@@ -41,7 +41,7 @@ Add rows as the walkthrough produces them; keep the peeve text short and put the
 - (none yet beyond P-08's structural move)
 
 ### Species page / Template Workbench
-- P-02 debounce
+- P-02 debounce — done in 10-S3 (identity editor)
 
 ### Job tabs
 - P-09 drop the explicit `array_throttle` field from the pick-candidates Advanced group (SLURM section owns it)
@@ -54,3 +54,5 @@ Add rows as the walkthrough produces them; keep the peeve text short and put the
 - 2026-08-16 — sheet created with the peeves surfaced by the species-registry scoping (P-01…P-08).
 - 2026-08-16 — 08-S0 + 08-S1 code-complete: P-01/P-05/P-06 (S0, pending runtime), P-03/P-04 (S1) moved to
   code-complete; P-09 added (pick-candidates `array_throttle` duplicate — TM/subtomo variants fixed in S1).
+- 2026-08-16 — 10-S3 code-complete: P-02 (per-keystroke saves) closed by the Overview tab's identity
+  editor (pending runtime).

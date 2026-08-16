@@ -1,22 +1,22 @@
 """Template Workbench — v3 layout, density pass.
 
-Visual structure (top → bottom):
-  1. Species header strip — particle metadata inline.
-  2. Templates section — selectable cards with file-icon copy affordance.
-  3. Source — text-only tabs (shape / pdb-emdb / import / edit current).
-  4. Masks section — selectable cards (parallel visual to templates).
-  5. Mask creation — text-only tabs (relion / import).
-  6. Viewer — molstar (3D), with a slice fallback toggle.
-  7. Activity log (collapsed).
+Visual structure (top → bottom; the species header moved to the Species page's
+Overview tab in roadmap 10 S3):
+  1. Templates section — selectable cards with file-icon copy affordance.
+  2. Source — text-only tabs (shape / pdb-emdb / import / edit current).
+  3. Masks section — selectable cards (parallel visual to templates).
+  4. Mask creation — text-only tabs (relion / import).
+  5. Viewer — molstar (3D), with a slice fallback toggle.
+  6. Activity log (collapsed).
 
 Design rules enforced here:
   - Color palette is gray + indigo (templates) + purple (masks) +
     white/black polarity chips. No blue/emerald/amber tints elsewhere.
   - Font scale collapsed to three: text-sm (section titles),
     text-xs (body / form labels), text-[10px] (captions / chips / mono).
-  - Outer cards reserved for items in a list (one card per template / mask),
-    the species identity, and the viewer container. Section panels are
-    drawn with a header row + spacing — no nested borders.
+  - Outer cards reserved for items in a list (one card per template / mask)
+    and the viewer container. Section panels are drawn with a header row +
+    spacing — no nested borders.
   - All template-producing actions (shape, pdb, emdb, import, resample,
     apply-lowpass, flip-polarity) write to canonical paths and skip the
     write if a registered entry already exists at that path — no
@@ -41,8 +41,6 @@ import mrcfile
 from fastapi.responses import FileResponse, HTMLResponse
 from nicegui import app, context, ui
 
-from services.jobs._base import SymmetryGroup
-from services.models_base import SPECIES_OVERLAY_COLORS, InstanceId
 from services.project_state import (
     ParticleSpecies,
     ParticleTemplate,
@@ -50,6 +48,7 @@ from services.project_state import (
     get_project_state_for,
     sidecar_ensure,
 )
+from services.species_admin import delete_file_with_sidecar
 from services.templating.template_metadata import read_template_header
 from ui.components.template_viewer import TemplateViewerController, render_template_viewer
 from ui.local_file_picker import local_file_picker
@@ -134,17 +133,15 @@ _CARD_W = 260
 
 
 class TemplateWorkbench:
-    """Per-species workbench. Public constructor signature preserved."""
+    """Per-species workbench — templates, masks and the viewer of ONE species. Mounted
+    by the Species page's Templates & masks tab (`ui/species/templates_tab.py`); the
+    species' identity (name, color, Ø, symmetry, notes) and its delete cascade live on
+    the page's Overview tab since roadmap 10 S3."""
 
-    def __init__(self, backend, project_path: str, species_id: str, *, on_species_deleted=None):
-        """The workbench owns one species. `on_species_deleted` is called
-        after the user confirms deletion (and the model+files are gone);
-        the surrounding panel uses it to drop the workbench container and
-        switch the active tab."""
+    def __init__(self, backend, project_path: str, species_id: str):
         self.backend = backend
         self.project_path = project_path
         self.species_id = species_id
-        self.on_species_deleted = on_species_deleted
         self.output_folder = os.path.join(project_path, "templates", species_id)
         os.makedirs(self.output_folder, exist_ok=True)
 
@@ -501,110 +498,12 @@ class TemplateWorkbench:
         asyncio.create_task(self._after_register())
         self._log(f"Deleted mask: {os.path.basename(path)}")
 
-    # ── Species-level delete (cascade through templates + masks + folder) ──
-
-    def _request_delete_species(self) -> None:
-        sp = self._get_species()
-        if sp is None:
-            return
-        n_tpl = len(sp.templates)
-        n_mask = len(sp.masks)
-        state = get_project_state_for(Path(self.project_path))
-        refs = state.species_references(sp.id)
-        with ui.dialog() as dialog, ui.card().classes("p-4 gap-2"):
-            ui.label(f"Delete species '{sp.name}'?").classes(_TITLE_CLS)
-            with ui.column().classes("gap-0 mt-1"):
-                ui.label(f"• {n_tpl} template{'s' if n_tpl != 1 else ''} on disk").classes(_BODY_CLS)
-                ui.label(f"• {n_mask} mask{'es' if n_mask != 1 else ''} on disk").classes(_BODY_CLS)
-                n_lists = len(refs["pick_lists"])
-                if n_lists:
-                    ui.label(f"• {n_lists} pick list{'s' if n_lists != 1 else ''} (curation)").classes(_BODY_CLS)
-                n_auth = len(refs["authoritative_pick_lists"])
-                if n_auth:
-                    ui.label(f"• {n_auth} authoritative-list choice{'s' if n_auth != 1 else ''}").classes(_BODY_CLS)
-                n_ovr = len(refs["source_overrides"])
-                if n_ovr:
-                    ui.label(f"• {n_ovr} downstream input override{'s' if n_ovr != 1 else ''}").classes(_BODY_CLS)
-                ui.label(f"• Folder: {self.output_folder}").classes(_MONO_CLS)
-            # Jobs cascade: their job dirs and default_pipeline.star rows go with
-            # the species, so the roster is left clean rather than holding rows
-            # that point at a species which no longer exists.
-            if refs["jobs"]:
-                ui.label(f"• {len(refs['jobs'])} pipeline job(s), with their job folders: ").classes(_BODY_CLS)
-                ui.label(", ".join(refs["jobs"])).classes(_MONO_CLS + " text-red-600")
-            ui.label(
-                "All registered files (+ sidecars) get removed. The folder is "
-                "removed only if empty afterwards (manual drops are preserved)."
-            ).classes(_HINT_CLS + " mt-1")
-            ui.label("This cannot be undone.").classes(_HINT_CLS + " text-red-600")
-            with ui.row().classes("w-full justify-end gap-2 mt-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat dense no-caps")
-
-                async def _confirm():
-                    dialog.close()
-                    await self._do_delete_species()
-
-                ui.button("Delete species", on_click=_confirm).props(
-                    "unelevated dense color=negative no-caps"
-                )
-        dialog.open()
-
-    async def _do_delete_species(self) -> None:
-        sp = self._get_species()
-        if sp is None:
-            return
-        sid = sp.id
-        state = get_project_state_for(Path(self.project_path))
-        # Pipeline jobs attached to this species go first: `delete_job` reads the
-        # job model to find its job dir, so it has to run while the state still
-        # describes them. Each failure is reported and the rest continue — a
-        # half-deleted species is still better than one whose registry entry
-        # survives while its jobs are gone.
-        job_iids = state.species_references(sid)["jobs"]
-        for iid in job_iids:
-            job_name = InstanceId.split(iid)[0]
-            result = await self.backend.delete_job(job_name, Path(self.project_path), instance_id=iid)
-            if not result.get("success"):
-                logger.warning("Deleting job %s with species %s failed: %s", iid, sid, result.get("error"))
-                ui.notify(f"Could not delete job {iid}: {result.get('error')}", type="warning", timeout=5000)
-        # Cascade: delete each template's + mask's file + sidecar.
-        for tpl in list(sp.templates):
-            self._delete_file_with_sidecar(tpl.template_path)
-        for mask in list(sp.masks):
-            self._delete_file_with_sidecar(mask.mask_path)
-        # Try to remove the folder. rmdir only succeeds when empty —
-        # leftover files (manually-dropped MRCs, RELION run logs) keep
-        # the folder around. That's intentional; user can rm -rf later.
-        try:
-            os.rmdir(self.output_folder)
-        except OSError:
-            logger.info("Species folder %s not empty after cascade; left in place", self.output_folder)
-
-        state.remove_species(sid)
-        # Awaited, not fire-and-forget: a create_task here can be GC'd before it
-        # runs, which would leave the deleted species back on disk after a reload.
-        await self._save_state()
-        self._log(f"Deleted species: {sid}")
-
-        if callable(self.on_species_deleted):
-            try:
-                self.on_species_deleted(sid)
-            except Exception as e:
-                logger.warning("on_species_deleted callback failed: %s", e)
-
     def _delete_file_with_sidecar(self, file_path: str) -> None:
-        try:
-            if os.path.exists(file_path):
-                os.remove(file_path)
-        except OSError as e:
-            logger.warning("Could not remove %s: %s", file_path, e)
-            ui.notify(f"Could not remove {os.path.basename(file_path)}", type="warning")
-        sidecar = Path(file_path).with_name(Path(file_path).name + ".meta.json")
-        try:
-            if sidecar.exists():
-                sidecar.unlink()
-        except OSError as e:
-            logger.warning("Could not remove sidecar %s: %s", sidecar, e)
+        # The file work lives in services.species_admin (shared with the species delete
+        # cascade); this wrapper only surfaces a leftover to the user.
+        problem = delete_file_with_sidecar(file_path)
+        if problem is not None:
+            ui.notify(problem, type="warning")
 
     # ==================================================================
     # MOLSTAR BRIDGE (Slice A — see MOLSTAR_VIEWER_PLAN.md)
@@ -1001,7 +900,6 @@ class TemplateWorkbench:
         # to keep paired sections (templates+source, masks+mask-tabs)
         # visually unified.
         with ui.column().classes("w-full gap-5 p-2"):
-            self._render_species_header()
             with ui.column().classes("w-full gap-2"):
                 self._render_templates_section()
                 self._render_source_panel()
@@ -1026,137 +924,6 @@ class TemplateWorkbench:
             }});
             """
         )
-
-    # ------------------------------------------------------------------
-    # 1. SPECIES HEADER
-    # ------------------------------------------------------------------
-
-    def _render_color_swatch(self, current: str) -> None:
-        """The species' overlay color, click to change.
-
-        Species share one tomogram canvas, so color is how a user tells two
-        picks apart — it needs to be editable, and constrained to the palette
-        that stays legible over greyscale (see SPECIES_OVERLAY_COLORS).
-        """
-        def _dot_style(color: str) -> str:
-            return (
-                f"width: 10px; height: 10px; border-radius: 50%; background: {color}; "
-                f"flex-shrink: 0; cursor: pointer; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #e5e7eb;"
-            )
-
-        dot = ui.element("div").style(_dot_style(current)).tooltip("Overlay color")
-        with dot, ui.menu().props("auto-close"):
-            with ui.row().classes("p-2 gap-1 flex-wrap").style("max-width: 128px;"):
-                for color in SPECIES_OVERLAY_COLORS:
-                    selected = color.lower() == (current or "").lower()
-
-                    def _pick(c=color):
-                        def _apply(s: ParticleSpecies) -> None:
-                            s.color = c
-
-                        self._mutate_species(_apply)
-                        asyncio.create_task(self._save_state())
-                        # Repaint just the swatch — one attribute driving one visual
-                        # property needs no rebuild, and rebuilding here would destroy
-                        # the menu mid-click.
-                        dot.style(_dot_style(c))
-
-                    (
-                        ui.element("div")
-                        .style(
-                            f"width: 16px; height: 16px; border-radius: 50%; background: {color}; "
-                            f"cursor: pointer; "
-                            f"box-shadow: 0 0 0 2px #fff, 0 0 0 {'3px #111827' if selected else '3px #e5e7eb'};"
-                        )
-                        .on("click", _pick)
-                    )
-
-    def _render_species_header(self) -> None:
-        sp = self._get_species()
-        if sp is None:
-            return
-        species_color = getattr(sp, "color", "#3b82f6") or "#3b82f6"
-        species_name = getattr(sp, "name", None) or self.species_id
-        diameter = getattr(sp, "diameter_ang", None)
-        symmetry = getattr(sp, "symmetry", "C1") or "C1"
-        notes = getattr(sp, "notes", "") or ""
-
-        with ui.card().tight().classes("w-full overflow-hidden").style(
-            f"border: 1px solid #e5e7eb; border-left: 4px solid {_INDIGO}; box-shadow: none;"
-        ):
-            with ui.row().classes("w-full items-center px-3 py-1 gap-3"):
-                self._render_color_swatch(species_color)
-                ui.label(species_name).classes(_TITLE_CLS)
-                ui.label("species particle metadata").classes(_HINT_CLS)
-
-                with ui.row().classes("items-center gap-1 ml-3"):
-                    ui.label("Ø").classes(_BODY_CLS)
-                    diam_input = (
-                        ui.number(value=diameter, placeholder="e.g. 250", step=10, min=0, suffix="Å")
-                        .props("dense outlined")
-                        .classes("w-24")
-                    )
-
-                    def _on_diam(e):
-                        try:
-                            new_val = float(e.value) if e.value not in (None, "") else None
-                        except (TypeError, ValueError):
-                            return
-
-                        def _apply(s: ParticleSpecies) -> None:
-                            s.diameter_ang = new_val
-
-                        self._mutate_species(_apply)
-                        asyncio.create_task(self._save_state())
-
-                    diam_input.on_value_change(_on_diam)
-
-                with ui.row().classes("items-center gap-1"):
-                    ui.label("sym").classes(_BODY_CLS)
-                    sym_select = (
-                        ui.select(options=[g.value for g in SymmetryGroup], value=symmetry)
-                        .props("dense outlined")
-                        .classes("w-20")
-                    )
-
-                    def _on_sym(e):
-                        new_val = e.value or "C1"
-
-                        def _apply(s: ParticleSpecies) -> None:
-                            s.symmetry = new_val
-
-                        self._mutate_species(_apply)
-                        asyncio.create_task(self._save_state())
-
-                    sym_select.on_value_change(_on_sym)
-
-                with ui.row().classes("items-center gap-1 flex-1"):
-                    notes_input = (
-                        ui.input(value=notes, placeholder="notes (free-form, optional)")
-                        .props("dense outlined")
-                        .classes("flex-1")
-                    )
-
-                    def _on_notes(e):
-                        v = e.value or ""
-
-                        def _apply(s: ParticleSpecies) -> None:
-                            s.notes = v
-
-                        self._mutate_species(_apply)
-                        asyncio.create_task(self._save_state())
-
-                    notes_input.on_value_change(_on_notes)
-
-                delete_btn = ui.button(icon="delete_forever", on_click=self._request_delete_species).props(
-                    "flat round dense size=sm color=grey-7"
-                )
-                delete_btn.tooltip("Delete this species (registry + files)")
-
-            ui.label(
-                "Defaults for new TM (symmetry) and candidate-extract (diameter) jobs. "
-                "Existing jobs aren't auto-updated."
-            ).classes(_HINT_CLS + " px-3 pb-1")
 
     # ------------------------------------------------------------------
     # 2. TEMPLATES — selectable cards

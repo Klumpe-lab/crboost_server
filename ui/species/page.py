@@ -24,6 +24,7 @@ from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.segmented import Segmented, render_segmented
 from ui.components.species_pill import render_species_pill
 from ui.dashboard.css import ensure_assets_loaded
+from ui.species.overview_tab import OverviewTab
 from ui.species.prompt import create_species
 from ui.species.rail import SpeciesRail
 from ui.species.tab import PlaceholderTab, SpeciesTab, TabContext
@@ -39,9 +40,7 @@ TABS: tuple[tuple[str, str], ...] = (
     ("curation", "Curation"),
     ("jobs", "Jobs"),
 )
-# S1: the workbench is the only built tab, so the page opens on it (S3 flips this to
-# "overview" once the identity editor + status block live there).
-DEFAULT_TAB = "templates"
+DEFAULT_TAB = "overview"
 
 
 class _PillView(FingerprintedView):
@@ -68,6 +67,10 @@ class SpeciesPage:
         self.callbacks = callbacks
         self.active_species_id: str | None = None
         self.active_tab: str = DEFAULT_TAB
+        # Whether the workspace currently shows this view (`on_workbench_active`); tab
+        # refreshes (the Overview's disk-backed recompute) only run while shown — the
+        # 3-s observe itself is in-memory and keeps ticking.
+        self.visible: bool = False
         # (species_id, tab_key) → (container, tab object); built on first selection, kept.
         self._tabs: dict[tuple[str, str], tuple[ui.element, SpeciesTab]] = {}
         self._refs: dict[str, ui.element] = {}
@@ -127,6 +130,7 @@ class SpeciesPage:
         self.callbacks["workbench_select_species"] = self.select_species
 
     def _set_active(self, on: bool) -> None:
+        self.visible = on
         if on:
             self.observe()
 
@@ -171,7 +175,7 @@ class SpeciesPage:
             case "templates":
                 return TemplatesTab(ctx)
             case "overview":
-                return PlaceholderTab("Overview — identity editor, status block and sanity row land in roadmap 10 S3.")
+                return OverviewTab(ctx)
             case "picks":
                 return PlaceholderTab("Picks — the cross-tomogram list table lands in roadmap 11 S2.")
             case "curation":
@@ -194,7 +198,7 @@ class SpeciesPage:
             self._pill.refresh()
 
     def _refresh_visible_tab(self) -> None:
-        if self.active_species_id is None:
+        if not self.visible or self.active_species_id is None:
             return
         entry = self._tabs.get((self.active_species_id, self.active_tab))
         if entry is not None:

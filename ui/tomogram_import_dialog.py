@@ -18,23 +18,13 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+from ui.components.chip import render_chip
 from ui.dashboard.css import ensure_assets_loaded
 from ui.glob_directory_input import GlobDirectoryInput
 from ui.local_file_picker import local_file_picker
 
 _MONO = "font-family: ui-monospace, monospace;"
 _ACT = "color: #4f46e5;"  # indigo, for flat text actions
-
-
-def _chip(label: str, value: str, *, status: str = "neutral", tooltip: str | None = None) -> None:
-    """One compact status chip (mirrors the dashboard ``_render_chip``; kept local so this
-    dialog doesn't pull in the heavy tomo_dashboard_dialog module). ``status`` ∈
-    {ok, warn, error, info, neutral}."""
-    with ui.element("span").classes(f"cb-chip cb-chip-{status}") as chip:
-        ui.label(label).classes("cb-chip-label")
-        ui.label(value).classes("cb-chip-value")
-        if tooltip:
-            chip.tooltip(tooltip)
 
 
 def _start_dir(glob_or_path: str) -> str | None:
@@ -96,13 +86,13 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                 ui.label("—").classes("cb-ltable-cell").style(f"{_MONO} font-size: 11px; color: #cbd5e1;")
             with ui.element("div").classes("cb-ltable-cell"):
                 if is_err:
-                    _chip("file", "unreadable", status="error", tooltip=f.get("error") or "Not a readable MRC.")
+                    render_chip("file", "unreadable", status="error", tooltip=f.get("error") or "Not a readable MRC.")
                 elif f.get("has_voxel_size"):
                     # Pixel size is independent of dims — a reference star may carry apix but
                     # no rlnTomoSize* columns, so don't gate this on has_dims.
                     ui.label(f"{f['voxel_size']:.3g} Å/px").style(f"{_MONO} font-size: 11px; color: #64748b;")
                 elif has_dims or f.get("path"):
-                    _chip(
+                    render_chip(
                         "apix",
                         "missing",
                         status="warn",

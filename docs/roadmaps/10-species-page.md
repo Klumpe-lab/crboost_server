@@ -1,6 +1,6 @@
 # Roadmap 10 — the Species page (replaces the "Template Workbench" view)
 
-**Status:** S1+S2 code-complete 2026-08-16 (one commit, PENDING RUNTIME); S3/S4 next. **Depends on:** 08 (identity/rev gates, `species_pill`),
+**Status:** S1+S2 (one commit) + S3 code-complete 2026-08-16 (PENDING RUNTIME); S4 next. **Depends on:** 08 (identity/rev gates, `species_pill`),
 09-S2/S3 (ingest service, `species_overview`). **Unblocks:** 11 (Picks / Curation tabs live here).
 **Risk:** medium (new page shell; the workbench module itself is mounted, not changed).
 Four commits: S1 shell + rail + tabs · S2 Templates & masks tab (mounted workbench) · S3 Overview
@@ -186,3 +186,37 @@ Frozen slotted dataclasses for rail rows; `Protocol` for the tab objects (`build
   idempotent per client (the page injects it at workspace build, the Journey later — one `<style>`).
   Verification = §1 + §2 lists (species list = registry, "+" creates + selects, switch = visibility
   flip, molstar iframe not re-inited on switch-and-back).
+- 2026-08-16 — **S3 CODE-COMPLETE** (same session; `ruff check .` clean; `py_compile` +
+  `check_boundaries.py` owed). NEW `services/species_admin.py` (headless): `delete_file_with_sidecar
+  (path) -> str | None` (moved from the workbench; returns the leftover as text) and `async
+  delete_species(backend, project_path, species_id) -> dict` = the §3 cascade (jobs via
+  `species_references(...)["jobs"]` → `backend.delete_job` each; template + mask files + sidecars;
+  empty-only `os.rmdir(templates/<sid>)` — `FileNotFoundError` tolerated for de-novo species that
+  never mounted the workbench; `remove_species`; forced save) → `ok(deleted_jobs, deleted_files,
+  errors)` (`err` only for an unknown id). NEW `ui/species/overview_tab.py`: `render_identity_editor`
+  (swatch menu · **name** (new: `species_identity()` already fingerprints it, nothing keys on the
+  label) · Ø · symmetry · notes; every write = `mutate_species` + `save_project(debounce_s=1.0)`,
+  text/number inputs `debounce=400` — P-02 closed) built once per species outside every gate; the
+  provenance line (`origin` — first reader — · `created_at` · `catalog_id`, template/mask sources on
+  hover); `_StatusView(FingerprintedView)` over an off-loop `_compute` (`species_overview` +
+  `compute_pixel_chain`/`apply_sanity_rules` filtered to the species, in `asyncio.to_thread`) with sig
+  `(sid, (overview, sanity_json, error), in-memory species terms)` — chips: tomos with picks · picks ·
+  kept · extracted lists · gate (READY ok / PENDING warn / BLOCKED error) · pick-candidates iid ·
+  subtomo iid · extraction geometry ("not set", warn, never defaulted) · templates · masks; then
+  `render_pixel_sanity_table` on the species' rows; recompute when `(registry_rev, job statuses)`
+  moves, else at most every 15 s while shown (the page now carries `visible` from
+  `on_workbench_active` and refreshes tabs only while shown); compute failures are logged with the
+  traceback and rendered as a red one-liner. Delete = the workbench's confirm dialog moved here →
+  `species_admin.delete_species` → per-error `ui.notify` warnings → `ctx.on_species_deleted`.
+  Workbench (`ui/template_workbench.py`): `_render_species_header`, `_render_color_swatch`,
+  `_request_delete_species`, `_do_delete_species` DELETED (deviation from §3's "becomes a call into
+  it": with the header gone nothing could reach it); `_delete_file_with_sidecar` = 3-line wrapper
+  (service call + `ui.notify` of the leftover); `on_species_deleted` constructor kwarg removed
+  (`templates_tab` adjusted); imports `SymmetryGroup` / `SPECIES_OVERLAY_COLORS` / `InstanceId`
+  dropped; docstring updated. Model: `ParticleSpecies.created_at: datetime | None` stamped by
+  `add_species` (`SCHEMA_VERSION` 3.3 → 3.4, minor). Shared chip: NEW `ui/components/chip.py::
+  render_chip` — the Journey's `_render_chip` (6 call sites) and the tomogram-import dialog's
+  `_chip` copy repointed (the Overview would have been the third copy). `DEFAULT_TAB` → `"overview"`.
+  Verification = §3 (header gone from the workbench, present on Overview; one save per pause; delete
+  from Overview removes jobs / files / registry and re-selects) + `python -m
+  services.particles.species_overview --project … --species …` matches the STATUS chips.
