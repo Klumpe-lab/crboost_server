@@ -30,7 +30,7 @@ from pathlib import Path
 from services.io_slots import JobFileType
 from services.models_base import JobType, ListExtractionState, resolve_species
 from services.project_state import MERGED_DIR_NAME
-from services.visualization import picks_filter
+from services.particles import picks_filter
 
 logger = logging.getLogger(__name__)
 

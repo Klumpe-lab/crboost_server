@@ -6,7 +6,7 @@ reconstructParticle.
 
 ## Candidate-free extraction (old D3)
 
-- `services/visualization/list_extraction.py`: factor the row-synthesis + `_write_optimisation_set`
+- `services/particles/list_extraction.py`: factor the row-synthesis + `_write_optimisation_set`
   core out of `build_list_optset` (:127-194) and add
 
   ```python
@@ -72,7 +72,7 @@ python symlink is dead and there is no system `python3` this session.
 
 ### Landed
 
-**Candidate-free extraction.** `services/visualization/list_extraction.py` grew a shared core —
+**Candidate-free extraction.** `services/particles/list_extraction.py` grew a shared core —
 `_coords_for_tomo`, `_synthesize_particle_rows`, `_write_list_optset` — that `build_list_optset` now
 routes through unchanged, plus `build_list_optset_from_tomograms(list_star, tomo_name, out_dir,
 tomograms_star)`. The synthesized schema is declared as `SYNTHESIZED_PARTICLE_COLS` (identity,

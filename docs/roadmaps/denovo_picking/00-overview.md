@@ -23,7 +23,7 @@ Bundled into the same arc because they share the seams:
 
 The manual-picking machinery is **already template-free**:
 
-- coordinate math: `services/visualization/coords.py` — `pixel_size = rlnTomoTiltSeriesPixelSize ×
+- coordinate math: `services/particles/coords.py` — `pixel_size = rlnTomoTiltSeriesPixelSize ×
   rlnTomoTomogramBinning`, dims from the recon MRC header, exact centered-Å↔voxel round-trip;
 - recon-sourced cutout atlas: `services/visualization/recon_cutouts.py` (recon MRC + voxel coords +
   box, no scores, no manifest);
@@ -48,7 +48,7 @@ The blockage is **enumeration and input sourcing**, concentrated in a handful of
 3. Per-list extraction hard-requires `<ce_job>/optimisation_set.star` (UI gate
    `ui/tomo_dashboard_dialog.py:2983`; driver `--candidate-optset` required,
    `drivers/extract_pick_list.py:110`). `build_list_optset`
-   (`services/visualization/list_extraction.py:127`) uses it only for (a) the particles.star column
+   (`services/particles/list_extraction.py:127`) uses it only for (a) the particles.star column
    schema + `data_optics` block, (b) the tomograms.star reference — both synthesizable.
 4. The resolver never consumes `PickList.extracted_path` — manual-list extractions are invisible to
    downstream jobs.
@@ -207,6 +207,13 @@ Spine (the de-novo happy path): **S1 → S2 → S3**. S4/S5/S6 are independent t
 > the 6 freshly migrated drivers + fail-loud registry stamps are PENDING RUNTIME, so run a sandbox
 > chain before relying on pipeline runs during UI testing.
 
+> **RE-SEQUENCED 2026-08-16 — the species-registry arc goes first.** The UI pass now starts with
+> `../08-species-reactive-spine.md` (S0 fixes the "de-novo species not shown in the workbench" bug
+> that S1's verification step 2 would have caught, plus a real persistence hazard), then 09 → 10 →
+> 11 → 12 (see `../README.md`). Roadmap 07 keeps its content and remains the dependency for *live*
+> per-list extraction status (11-S2); its S4 strip fix (`dashboard_data.py:832`) is picked up by
+> 11-S3 if 07 hasn't landed. S4 (journey unification) below is absorbed by 11-S3; S5/S6 unchanged.
+
 | Session | Doc | Goal | Depends on |
 |---|---|---|---|
 | S1 | `01-species-and-creation.md` | Species creation UX + registry hygiene + data-less project creation (kills `is_particle_only`) | — |
@@ -277,3 +284,8 @@ its §8.9 steps 4–7 are absorbed by `05-aggregation-module.md`.
   - **Risk #7 was live, not latent.** `remove_species`'s override purge matched by slug, so deleting
     one species would have purged another's `pick_list__*` overrides the moment those producers
     existed. Fixed to match the species-scoped prefix.
+- 2026-08-16 — UI pass re-sequenced behind the species-registry arc (roadmaps 08–12; see the
+  RE-SEQUENCED note in §Session index). Trigger: a roster-created de-novo species did not appear in
+  the Template Workbench (build-once panel, CSS-only view switch, no registry input in any refresh
+  gate) and `add_species`/`remove_species` never mark the state dirty (non-forced saves → species
+  may not persist). Both are 08-S0. No code in this doc's scope changed.

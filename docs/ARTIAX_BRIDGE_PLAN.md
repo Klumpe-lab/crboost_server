@@ -175,7 +175,7 @@ bullets are kept below; each is annotated [LANDED] with what was actually done +
 
 **▶▶▶ SLICE C — CORE LANDED (S17, 2026-06-12; code-clean, PENDING RUNTIME). The runnable per-list extraction +
 status UI is built; the downstream RESOLVER-FORWARDING merge is the one deferred capstone.** Files:
-`services/visualization/list_extraction.py`, `drivers/extract_pick_list.py` (NEW), `backend.py`,
+`services/particles/list_extraction.py`, `drivers/extract_pick_list.py` (NEW), `backend.py`,
 `services/project_state.py`, `ui/tomo_dashboard_dialog.py`, `ui/dashboard/css.py`.
 - **What runs now:** select a workbench list → its detail pane shows an **Extraction** bar (derived badge ○/✓/⚠ +
   Extract/Re-extract). Clicking submits a one-off SLURM job: `backend.extract_pick_list` builds the per-list optset
@@ -478,7 +478,7 @@ building.**
   wiring (Slice C)** — consume `<slug>_filtered.star`/the list star downstream — or polish (lasso, shared-bridge carve,
   styling).
 - **W4 — Generalize selection/filtering to ALL lists (auto, manual, merged) — the real new work.** HAVE:
-  `services/visualization/picks_filter.py` curates the AUTO list ONLY — hard-wired to the subtomo-extraction job dir
+  `services/particles/picks_filter.py` curates the AUTO list ONLY — hard-wired to the subtomo-extraction job dir
   (`save_filtered_picks_for_ts(subtomo_job_dir, …)` → `particles_filtered.star`; downstream prefers `_filtered` via
   the IO-slot resolver). GAP: the gallery keep/discard + "save filtered" must operate on ANY chosen list's star,
   writing a per-list `<slug>_filtered` variant the per-list extraction ([[feedback_per_list_extraction]]) consumes —
@@ -831,7 +831,7 @@ INTERIM SAFETY until done: do NOT trust generic-save auto-import across tomos. T
 unaffected — it takes an explicit list-star + tomo.
 
 **Slice C — STARTED 2026-06-09 (session 11): per-list extraction.** Step 1 (the format-sensitive core) LANDED:
-`services/visualization/list_extraction.py::build_list_optset` builds a per-list `optimisation_set` by MIRRORING
+`services/particles/list_extraction.py::build_list_optset` builds a per-list `optimisation_set` by MIRRORING
 the candidate-extract `candidates.star` schema (reuse its columns + any non-particle blocks verbatim; synthesise
 one row per list coord; orientations→0; `rlnOpticsGroup` from the candidate; generated `rlnTomoParticleName`) +
 a `__main__` CLI to eyeball the generated `particles.star`/`optimisation_set.star` WITHOUT submitting a SLURM job
@@ -919,7 +919,7 @@ re-extraction on every merge) and NOT manually tedious:
   `mark_extracted()` (`project_state`).
 
 **Merge + radius dedup — LANDED 2026-06-08 (decomposed per user: merge = union, dedup = separate user action).**
-`services/visualization/pick_merge.py` (pure numpy/starfile; compile-only here): `merge_lists_to_star` unions 2+
+`services/particles/pick_merge.py` (pure numpy/starfile; compile-only here): `merge_lists_to_star` unions 2+
 lists' centered-Å coords in TYPE-PRIORITY order (manual/imported/merged before auto — the row order is the ONLY
 thing encoding "manual wins", so greedy dedup keeps it; no merge-time dedup); `clash_stats_*` reports, at a CHOSEN
 radius, how many picks clash + what dedup would remove/keep; `deduplicate_star` greedy keep-first radius dedup in
@@ -1178,7 +1178,7 @@ SLURM job and surface the tunnel.
   real submit + tunnel + eyeball — same gate as the appliance).
 
 ### Landed (session 1)
-- **`services/visualization/coords.py`** — canonical centered-Å ↔ voxel math + `TomoFrame`;
+- **`services/particles/coords.py`** — canonical centered-Å ↔ voxel math + `TomoFrame`;
   gallery `imod_vis.py:46-92` deduped onto it. ruff + parity-independent round-trip verified.
 - **`services/visualization/artiax_bridge.py`** — `.coords` read/write + centered-Å↔ArtiaX
   converters + CLI (`export`, `selftest`). Run in the user's module-loaded env (needs
@@ -1657,7 +1657,7 @@ at the MRC-header pixel size (ChimeraX read 6.2 correctly — no manual pixel-si
 axis flip** — checked by exporting our picks and confirming they sit on density.
 
 **Single source of truth:** factor the centered-Å ↔ voxel math out of `imod_vis.py` into one
-shared helper (`services/visualization/coords.py`) used by viz, export, and import. One
+shared helper (`services/particles/coords.py`) used by viz, export, and import. One
 definition, no drift (same discipline as `picks_filter.resolve_canonical_optset`).
 
 ## ArtiaX setup + the `.cxc` auto-config
@@ -1785,7 +1785,7 @@ In `ui/tomo_dashboard_dialog.py`, per tomogram:
 
 - Coords math (factor out): `services/visualization/imod_vis.py:46-112`
 - Pick star I/O + samples: `drivers/subtomo_merge.py:188-258`; `projects/try2_after_pixShift/External/job007/candidates.star`
-- Curation siblings + canonical resolver: `services/visualization/picks_filter.py:146-269`
+- Curation siblings + canonical resolver: `services/particles/picks_filter.py:146-269`
 - IO-slot tiering (`prefer_if_exists`): `services/jobs/subtomo_extraction.py:65-77`; `services/path_resolution_service.py`
 - Gallery UI: `ui/tomo_dashboard_dialog.py`
 - Aggregation reuse: `drivers/subtomo_merge.py:348`; `ui/aggregation_merge_card.py`; `services/aggregation_discovery.py`

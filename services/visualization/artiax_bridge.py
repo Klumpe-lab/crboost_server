@@ -7,7 +7,7 @@ ArtiaX ``.coords`` format (decoded from a real ArtiaX 0.6 save, 2026-06-02):
       using the tomogram's pixel size (ArtiaX reads it from the MRC header — confirmed 6.2 Å). A
       mid-slice click on a 512-voxel-thick tomogram saved ``Z = 1584.1 Å = 255.5 * 6.2``.
 
-Mapping to our RELION-5 centered-Å convention (see :mod:`services.visualization.coords`)::
+Mapping to our RELION-5 centered-Å convention (see :mod:`services.particles.coords`)::
 
     voxel               = artiax_corner_angst / pixel_size
     centered_angst      = (voxel - N / 2) * pixel_size          # = artiax_corner_angst - (N/2)*pixel_size
@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 import starfile
 
-from services.visualization.coords import TomogramGeometry, centered_angst_dataframe, picks_centered_angst
+from services.particles.coords import TomogramGeometry, centered_angst_dataframe, picks_centered_angst
 
 logger = logging.getLogger(__name__)
 

@@ -873,7 +873,8 @@ class CurationSessionService:
         `Curation/<species>/<tomo>/<slug>.star`; the caller registers a `merged`
         PickList. Disk I/O + numpy off the event loop.
         """
-        from services.visualization import artiax_bridge, pick_merge
+        from services.particles import pick_merge
+        from services.visualization import artiax_bridge
 
         out_star = (
             artiax_bridge.curation_dir(
@@ -892,7 +893,7 @@ class CurationSessionService:
     async def list_clash_stats(self, star_path: Path, tomo_name: str, radius_ang: float) -> dict[str, Any]:
         """Overlap overview for a list at a chosen radius (Å): how many picks clash
         and how many a dedup would remove/keep. Read-only — never mutates the list."""
-        from services.visualization import pick_merge
+        from services.particles import pick_merge
 
         try:
             stats = await asyncio.to_thread(pick_merge.clash_stats_star, Path(star_path), tomo_name, float(radius_ang))
@@ -905,7 +906,7 @@ class CurationSessionService:
         """Greedy radius-dedup a list's star in place — drop every pick within
         `radius_ang` Å of a higher-priority (earlier) pick. Rewrites the star; the
         caller updates the PickList count + (it becomes stale → re-extract)."""
-        from services.visualization import pick_merge
+        from services.particles import pick_merge
 
         try:
             info = await asyncio.to_thread(pick_merge.deduplicate_star, Path(star_path), tomo_name, float(radius_ang))

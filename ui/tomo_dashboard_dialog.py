@@ -192,7 +192,7 @@ def _memoized_keep_state(source_star: Path) -> set[int] | None:
     """``picks_filter.derive_keep_state_for_list`` memoized by the two stars' mtimes
     so the table count and the cutout keep overlay share one read. Returns the kept
     ROW indices of ``source_star`` (None when no ``_filtered`` star exists)."""
-    from services.visualization import picks_filter
+    from services.particles import picks_filter
 
     src = Path(source_star)
     filt = picks_filter.filtered_list_path(src)
@@ -2546,7 +2546,7 @@ def _render_list_cutout_sheet(
     rail table's count cell live-updates to kept/total. "Reset" clears the filter (all
     kept). These lists are scoreless, so keep/discard IS the filter — there is no score
     threshold ([[feedback_per_list_extraction]])."""
-    from services.visualization import picks_filter
+    from services.particles import picks_filter
 
     index = atlas_meta.get("index", {})
     if not index:
@@ -2876,7 +2876,7 @@ async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh)
     required dialog instead of a guessed box size (D-3). SingleFlight-guarded; the wait
     runs in a BackgroundTask (the backend persists by explicit ``project_path``, W2)."""
     from backend import get_backend
-    from services.visualization import picks_filter
+    from services.particles import picks_filter
 
     slug = lst["slug"]
     species_id = sp.get("species_id") or ""
@@ -3326,7 +3326,7 @@ def _read_pick_list_voxels(star_path: Path, dims: list | None, pixel_size: float
     try:
         import starfile
 
-        from services.visualization.coords import CENTERED_COLS, centered_angst_to_voxel
+        from services.particles.coords import CENTERED_COLS, centered_angst_to_voxel
 
         data = starfile.read(star_path, always_dict=True)
         df = None
@@ -3510,7 +3510,7 @@ def _ce_species_entry(
     auto_kept_count = None
     if subtomo_job_dir:
         try:
-            from services.visualization import picks_filter
+            from services.particles import picks_filter
 
             auto_kept_count = picks_filter.read_reviewed_counts(subtomo_job_dir).get(ts_name)
         except Exception:
@@ -4718,7 +4718,7 @@ def _render_list_rail(
         #     auto picks for this tomo) when filtered, else the full candidates.star.
         #   • workbench → <slug>_filtered.star when the cutout sheet committed drops,
         #     else the full list star.
-        from services.visualization import picks_filter
+        from services.particles import picks_filter
 
         if slug == "auto":
             sub = sp.get("subtomo_job_dir")
@@ -5358,7 +5358,7 @@ def _render_gallery_body(
     # subtomo via a lex-greatest heuristic that mis-targeted every species at one
     # job. Both are now correct for any number of registered species.
     ts_name = row.get("tomo_name") or ""
-    from services.visualization import picks_filter
+    from services.particles import picks_filter
 
     # Degenerate picks: candidates that produced no cutout (no subtomo match /
     # render failed). Surfaced as greyed tiles at the end of the grid so the

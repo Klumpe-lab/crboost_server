@@ -854,7 +854,7 @@ def collect_species_journey(project_state, project_path: Path) -> dict[str, list
         if sub_match is not None:
             sub_jd = job_dir_for(project_state, sub_match[0], sub_match[1], project_path)
             if sub_jd is not None:
-                from services.visualization import picks_filter
+                from services.particles import picks_filter
 
                 sub_star = str(sub_jd / "particles.star")
                 reviewed = picks_filter.read_reviewed_counts(sub_jd)

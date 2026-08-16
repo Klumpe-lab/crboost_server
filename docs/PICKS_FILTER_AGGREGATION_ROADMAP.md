@@ -34,7 +34,7 @@ metadata-preserving concatenation + tomogram dedup; the box/apix/binning warning
 
 ## Where we are (2026-05-21)
 
-`services/visualization/picks_filter.py` curates one SUBTOMO_EXTRACTION job at a time:
+`services/particles/picks_filter.py` curates one SUBTOMO_EXTRACTION job at a time:
 
 - Writes a sibling pair next to the job's canonical outputs — `particles_filtered.star`
   + `optimisation_set_filtered.star` (originals never touched).
