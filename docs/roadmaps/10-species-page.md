@@ -1,6 +1,6 @@
 # Roadmap 10 — the Species page (replaces the "Template Workbench" view)
 
-**Status:** S1+S2 (one commit) + S3 code-complete 2026-08-16 (PENDING RUNTIME); S4 next. **Depends on:** 08 (identity/rev gates, `species_pill`),
+**Status:** CODE-COMPLETE 2026-08-16 — S1+S2 (one commit), S3, S4 (PENDING RUNTIME; checklist at the end of the stage log). **Depends on:** 08 (identity/rev gates, `species_pill`),
 09-S2/S3 (ingest service, `species_overview`). **Unblocks:** 11 (Picks / Curation tabs live here).
 **Risk:** medium (new page shell; the workbench module itself is mounted, not changed).
 Four commits: S1 shell + rail + tabs · S2 Templates & masks tab (mounted workbench) · S3 Overview
@@ -220,3 +220,49 @@ Frozen slotted dataclasses for rail rows; `Protocol` for the tab objects (`build
   Verification = §3 (header gone from the workbench, present on Overview; one save per pause; delete
   from Overview removes jobs / files / registry and re-selects) + `python -m
   services.particles.species_overview --project … --species …` matches the STATUS chips.
+- 2026-08-16 — **S4 CODE-COMPLETE** (same session; `ruff check .` clean; `py_compile` +
+  `check_boundaries.py` owed). NEW `services/particles/species_jobs.py`: `PARTICLE_JOB_TYPES`
+  (from `JOB_SPECS`, phase = particles), `particle_instances(state)` (pipeline order · iid),
+  `jobs_by_species(state) -> (by_species, unclaimed)` (the `ce_instances_by_species` inversion over
+  every particle-phase type, same unclaimed rule) and `jobs_for_species(state, sid)`. NEW
+  `ui/species/jobs_tab.py`: `_JobsView(FingerprintedView)`, sig `(sid, registry_rev, ((iid, status,
+  orphaned)…), drift messages, is_running)`; rows = status dot (`status_indicator._dot_html` /
+  running SMIL spinner) · type display name · iid · status text · drift chips (`match` on job type:
+  TM `symmetry` / `template_path` / `mask_path` vs species symmetry / selected template / mask; Pick
+  candidates `particle_diameter_ang` vs Ø when set; Reconstruct / Class3D `symmetry`) as
+  `.cb-chip-warn` "drift" chips with the divergence in the tooltip — display only, D-5 · "open ↗" →
+  `callbacks["open_job"]`; add row = one flat button per `PARTICLE_JOB_TYPES` →
+  `callbacks["add_instance_for_species"]` (hidden while `is_running`, with a one-line notice).
+  `PipelineBuilderPanel` registers both hooks in `build()`: `open_job = self.switch_tab`
+  (`ensure_pipeline_mode` + select + render — no new selection API needed) and NEW `async
+  add_instance_for_species(job_type, species_id)` (SingleFlight `add_for_species:<type>:<sid>`,
+  running → notify, repeats the roster's missing-dependency warning, then
+  `add_instance_to_pipeline(job_type, species_id=)` + a "Added …" toast; the Species page stays
+  in front, the new row appears on the next tick / the tab's own refresh).
+  `services/particles/__init__.py` docstring lists `species_jobs`. The Picks / Curation tabs keep
+  their one-line placeholders (roadmap 11). Verification = §4 (a species with TM+CE+subtomo shows
+  three rows with the right dots; change the species symmetry → drift chip on the TM row; "Add
+  Reconstruct Particle" adds a bound instance and "open ↗" lands on it in the pipeline view).
+- 2026-08-16 — **ROADMAP 10 CODE-COMPLETE** (S1+S2 in one commit, S3, S4 — three commits). Runtime
+  checklist for the user, on a TM project (e.g. `agg_20260311_412_Grid3`) and a de-novo one:
+  1. vial nav → label "Species"; rail = registry order with pill + "n tpl · n lists"; page opens on
+     Overview; segmented tabs switch without rebuilding (molstar iframe survives switch-and-back).
+  2. "+ New species" (rail) creates + selects (origin workbench); roster "+" and Journey empty state
+     still create with origin manual and the rail picks them up within 3 s (or instantly on show).
+  3. Overview: swatch/name/Ø/sym/notes edits persist with ONE save per pause (watch the log — no
+     per-keystroke saves); rename shows in roster pills + Journey tabs; STATUS chips match
+     `python -m services.particles.species_overview --project <p> --species <id>`; sanity table =
+     the Journey's rows for that species; provenance line shows origin/created (created "—" on old
+     species).
+  4. Overview → Delete species on a species with a bound job: job dirs + registry + files gone,
+     the page re-selects the remainder / empty state; a species deleted from ANOTHER browser tab
+     disappears here within 3 s.
+  5. Templates & masks = the old workbench minus its header; eye click loads molstar; activity log
+     per species stays separate.
+  6. Jobs: rows + status dots track the roster; change species symmetry → drift chip on the TM /
+     Reconstruct rows; "Add Reconstruct Particle" → new instance bound to the species; "open ↗"
+     switches to the pipeline view on it; while the pipeline runs the add row is replaced by the
+     notice.
+  7. "open in Species ↗" on a job's Config tab lands on the Species page with that species selected
+     (current tab kept).
+  8. `venv/bin/python3 -m compileall -q services ui backend.py main.py` + `python check_boundaries.py`.
