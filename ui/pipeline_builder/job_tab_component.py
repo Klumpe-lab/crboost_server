@@ -10,6 +10,7 @@ from services.project_state import JobStatus, JobType
 from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
+from ui.components.species_pill import render_species_pill
 from ui.status_indicator import BoundStatusDot
 from services.models_base import instance_id_to_job_type
 from ui.ui_state import UIStateManager, MonitorTab, get_job_display_name, get_instance_display_name
@@ -60,6 +61,7 @@ def _render_tab_content(
     save_handler: Callable,
     backend,
     ui_mgr: UIStateManager,
+    callbacks: dict[str, Callable] | None = None,
 ):
     if tab_key == MonitorTab.CONFIG.value:
         # q-expansion content padding zeroed so we control inner spacing
@@ -91,7 +93,14 @@ def _render_tab_content(
                     params_exp.props(f'header-class="{header_cls}"')
                     with ui.column().classes("w-full gap-0").style(section_pad):
                         render_config_tab(
-                            job_type, job_model, is_frozen, ui_mgr, backend, save_handler, instance_id=instance_id
+                            job_type,
+                            job_model,
+                            is_frozen,
+                            ui_mgr,
+                            backend,
+                            save_handler,
+                            instance_id=instance_id,
+                            callbacks=callbacks,
                         )
                 # ── I/O (collapsed by default) ──
                 with ui.expansion("I/O", value=False).props("dense").classes("w-full").style(section_style) as io_exp:
@@ -161,18 +170,7 @@ def render_job_tab(
         _sp_id = getattr(job_model, "species_id", None)
         _species = state.get_species(_sp_id) if _sp_id else None
         if _species is not None:
-            with (
-                ui.element("div")
-                .style(
-                    f"display: inline-flex; align-items: center; flex-shrink: 0; "
-                    f"background: {_species.color}18; border: 1px solid {_species.color}55; "
-                    f"border-radius: 999px; padding: 1px 8px;"
-                )
-                .tooltip(f"Species: {_species.name}")
-            ):
-                ui.label(_species.name).style(
-                    f"font-size: 9px; color: {_species.color}; font-weight: 600; white-space: nowrap;"
-                )
+            render_species_pill(_species, tooltip=f"Species: {_species.name}")
 
         if job_type in _EXPERIMENTAL_JOB_TYPES:
             with (
@@ -227,7 +225,9 @@ def render_job_tab(
     save_handler = create_save_handler()
 
     with content_container:
-        _render_tab_content(active_tab, job_type, instance_id, job_model, frozen, save_handler, backend, ui_mgr)
+        _render_tab_content(
+            active_tab, job_type, instance_id, job_model, frozen, save_handler, backend, ui_mgr, callbacks
+        )
 
 
 def _render_interactive_job(
@@ -334,7 +334,9 @@ def _handle_tab_switch(
         save_handler = create_save_handler()
         content_container.clear()
         with content_container:
-            _render_tab_content(tab_key, job_type, instance_id, job_model, frozen, save_handler, backend, ui_mgr)
+            _render_tab_content(
+                tab_key, job_type, instance_id, job_model, frozen, save_handler, backend, ui_mgr, callbacks
+            )
 
 
 async def _handle_stop_job(

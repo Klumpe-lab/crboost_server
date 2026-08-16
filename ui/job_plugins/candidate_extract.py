@@ -1,4 +1,5 @@
-"""Candidate Extraction plugin.
+"""Candidate Extraction ("Pick candidates") plugin — peak picking on the TM score
+volumes; no volume is cut here (that is subtomo extraction).
 
 IMOD model generation, MIP previews, and 3dmod copy commands live inside
 the unified Tomogram Dashboard's Candidate Extract section card
@@ -6,10 +7,11 @@ the unified Tomogram Dashboard's Candidate Extract section card
 instances and want to be inspectable without first navigating to a specific
 job tab.
 
-The v2 template summary card at the top surfaces the species's particle
-metadata (diameter, symmetry) the user is picking for. particle_diameter_ang
-on this job remains as a per-job override; new v2 projects should leave
-it at the default and edit species.diameter_ang via the workbench.
+The Config tab opens with the one species line (pill + "open in Species");
+species facts (Ø, symmetry, templates) live on the species itself, not here
+(roadmap 08 S1). particle_diameter_ang on this job remains as a per-job
+override; new projects should leave it at the default and edit
+species.diameter_ang via the workbench.
 """
 
 from nicegui import ui
@@ -18,7 +20,7 @@ from services.jobs._base import ExtractionCutoffMethod
 from services.models_base import JobType
 from services.project_state import get_project_state_for
 from services.models_base import resolve_species
-from ui.components.template_summary_card import render_template_summary_card
+from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins import register_params_renderer
 from ui.job_plugins._field_styles import (
     LABEL_STYLE,
@@ -44,18 +46,7 @@ def render_candidate_extract_params(job_type, job_model, is_frozen, save_handler
         state = get_project_state_for(ui_mgr.project_path)
         species, _ = resolve_species(state, job_model, instance_id)
 
-    if species is not None:
-        render_template_summary_card(species)
-    else:
-        with ui.card().classes("w-full border border-dashed border-amber-300 bg-amber-50 mt-1"):
-            with ui.row().classes("w-full items-center px-3 py-2 gap-2"):
-                ui.icon("warning", size="14px").classes("text-amber-600")
-                ui.label("No species linked to this job").classes("text-xs text-amber-800 font-semibold")
-            with ui.column().classes("w-full px-3 pb-2 gap-1"):
-                ui.label(
-                    "Without a species link the candidate-extract summary can't be shown. "
-                    "Assign a species or use a `__<species_id>` instance suffix."
-                ).classes("text-[11px] text-amber-700")
+    render_species_line(species, on_open=species_opener(ctx.get("callbacks"), species.id) if species else None)
 
     common = dict(job_model=job_model, is_frozen=is_frozen, save_handler=save_handler)
 

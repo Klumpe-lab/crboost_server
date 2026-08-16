@@ -18,6 +18,11 @@ We mirror the per-TS .skip pattern at the whole-job level — banner
 here so the user knows before they touch Run, and the driver writes a
 .skipped_no_candidates.json sidecar + RELION_JOB_EXIT_SUCCESS rather
 than a hard fail (see drivers/subtomo_extraction.py).
+
+Layout (roadmap 08 S1): one species line on top (pill + "open in Species"),
+the two sanity checks as one-line chips (same rules + text, less chrome — the
+box / crop / binning explainer lives in the Journey's Dataset pixel table
+tooltips), then the plain parameter form.
 """
 
 import json
@@ -29,11 +34,13 @@ from nicegui import ui
 from services.models_base import JobType
 from services.project_state import get_project_state_for
 from services.models_base import resolve_species
-from ui.components.template_summary_card import render_template_summary_card
+from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins import register_params_renderer
-from ui.job_plugins.default_renderer import render_default_params_card
+from ui.job_plugins.default_renderer import render_config_preamble, render_default_params
 
 logger = logging.getLogger(__name__)
+
+_CHIP_STYLE = "border-radius: 4px; padding: 3px 8px; margin-top: 4px; flex-wrap: nowrap;"
 
 
 @register_params_renderer(JobType.SUBTOMO_EXTRACTION)
@@ -45,119 +52,29 @@ def render_subtomo_extraction_params(job_type, job_model, is_frozen, save_handle
         state = get_project_state_for(ui_mgr.project_path)
         species, _ = resolve_species(state, job_model, instance_id)
 
-    # Loud, top-of-panel banner if upstream picks are empty across the board.
-    # Goes first so it shadows everything else — the user shouldn't be tweaking
-    # box_size for a job that has nothing to extract.
+    render_species_line(species, on_open=species_opener(ctx.get("callbacks"), species.id) if species else None)
+
+    # Top-of-panel chip if upstream picks are empty across the board — the user
+    # shouldn't be tweaking box_size for a job that has nothing to extract.
     _render_empty_upstream_banner(job_model)
 
-    if species is not None:
-        render_template_summary_card(species)
-    else:
-        with ui.card().classes("w-full border border-dashed border-amber-300 bg-amber-50 mt-1"):
-            with ui.row().classes("w-full items-center px-3 py-2 gap-2"):
-                ui.icon("warning", size="14px").classes("text-amber-600")
-                ui.label("No species linked to this job").classes("text-xs text-amber-800 font-semibold")
-            with ui.column().classes("w-full px-3 pb-2 gap-1"):
-                ui.label(
-                    "Without a species link the box-vs-diameter check can't run. "
-                    "Assign a species or use a `__<species_id>` instance suffix."
-                ).classes("text-[11px] text-amber-700")
-
-    # Inline box-vs-diameter warning. Mirrors the dashboard's sanity rule
-    # so a user editing box_size sees the same advice before submission.
-    warning_container = ui.column().classes("w-full")
+    # Inline box-vs-diameter chip. Mirrors the dashboard's sanity rule so a
+    # user editing box_size sees the same advice before submission.
+    warning_container = ui.column().classes("w-full gap-0")
     _render_box_vs_diameter_warning(warning_container, state, species, job_model)
 
-    # Wrap save_handler so the warning re-renders when box_size / binning changes.
+    # Wrap save_handler so the chip re-renders when box_size / binning changes.
     def _on_save():
         save_handler()
         _render_box_vs_diameter_warning(warning_container, state, species, job_model)
 
-    # Collapsed explainer (box vs crop vs binning + worked scenarios) sitting
-    # directly above the fields it describes. Mirrors the dashboard's box/crop
-    # header tooltips so the same guidance is one hover/click away here.
-    _render_box_crop_help()
-    render_default_params_card(job_type, job_model, is_frozen, _on_save, ui_mgr=ui_mgr)
-
-
-def _render_box_crop_help() -> None:
-    """Collapsed explainer for box / crop / binning, with a few worked
-    scenarios. The numbers are illustrative (fixed Ø + unbinned px) — the live
-    box-vs-diameter check above already uses the project's real values; this
-    block is the conceptual "what do these two numbers even mean" reference.
-    Kept in sync with the dashboard's box/crop header tooltips (ui/dashboard/
-    pixel_sanity.py)."""
-    defs = [
-        (
-            "box",
-            "reconstruction box — the cube RELION builds each pseudo-subtomogram in. Big "
-            "enough to hold the particle PLUS the CTF-delocalized signal high defocus smears "
-            "outward; too small truncates high-res info.",
-        ),
-        (
-            "crop",
-            "output box — the central cube kept after reconstruction (what Refine3D / Class3D "
-            "load; sets file size + memory). The rebuild re-localizes signal to the center, "
-            "so the outer rim is redundant and safe to trim. -1 = no cropping.",
-        ),
-        (
-            "binning",
-            "voxel size = unbinned px × binning. box & crop are counted in these voxels, so "
-            "Å = N × voxel. Higher binning → coarser voxels, smaller & faster subtomos, "
-            "lower attainable resolution.",
-        ),
-    ]
-    scenarios = [
-        (
-            "✅",
-            "#16a34a",
-            "Balanced · bin 4 (4 Å voxel)",
-            "box 192 vox = 768 Å (2.6× Ø) · crop 112 vox = 448 Å (1.5× Ø)",
-        ),
-        (
-            "❌",
-            "#dc2626",
-            "Box too small · bin 4",
-            "box 64 vox = 256 Å (0.85× Ø) — particle clipped, delocalized signal lost. Raise box ≥ 150 vox.",
-        ),
-        (
-            "⚠",
-            "#d97706",
-            "Crop too tight · bin 2 (2 Å voxel)",
-            "box 320 vox = 640 Å (2.1× Ø ✓) · crop 160 vox = 320 Å (1.07× Ø) — almost no shift "
-            "margin. Raise crop ≥ 225 vox (1.5×).",
-        ),
-    ]
-    with (
-        ui.expansion("Box & crop sizing — what these mean", icon="straighten")
-        .classes("w-full text-[11px] mt-1")
-        .props("dense")
-    ):
-        with ui.column().classes("w-full gap-1 px-1 pb-1"):
-            with ui.element("div").style("display: grid; grid-template-columns: 54px 1fr; gap: 2px 8px; width: 100%;"):
-                for term, body in defs:
-                    ui.label(term).classes("text-[11px] font-mono font-semibold text-indigo-700")
-                    ui.label(body).classes("text-[11px] text-gray-600")
-            ui.label(
-                "Rules: crop ≤ box · box ≈ 2–3× particle Ø (1.5× floor) · crop ≥ ~1.5× Ø · prefer even numbers."
-            ).classes("text-[11px] text-gray-500 mt-1")
-            ui.label("Examples — particle Ø ≈ 300 Å, unbinned 1.0 Å/px:").classes(
-                "text-[11px] font-semibold text-gray-700 mt-1"
-            )
-            for icon, color, title, detail in scenarios:
-                with (
-                    ui.row()
-                    .classes("w-full items-baseline gap-2")
-                    .style(f"border-left: 2px solid {color}; padding-left: 6px;")
-                ):
-                    ui.label(icon).style(f"color: {color}; font-size: 11px; flex-shrink: 0;")
-                    with ui.column().classes("gap-0").style("flex: 1; min-width: 0;"):
-                        ui.label(title).classes("text-[11px] font-semibold text-gray-700")
-                        ui.label(detail).classes("text-[11px] text-gray-500 font-mono")
+    render_config_preamble(job_model)
+    # ctx exclude = array_throttle (rendered in the SLURM section, not here).
+    render_default_params(job_type, job_model, is_frozen, _on_save, exclude=set(ctx.get("exclude") or ()))
 
 
 def _render_empty_upstream_banner(job_model) -> None:
-    """Render a red banner when upstream picks are zero across every TS.
+    """Render a red chip when upstream picks are zero across every TS.
 
     Two states are surfaced:
       - Post-run: this job already ran and exited via the all-skip path
@@ -194,21 +111,20 @@ def _render_empty_upstream_banner(job_model) -> None:
 
 
 def _draw_banner(title: str, body: str, ran_already: bool) -> None:
-    bg = "bg-red-50 border-red-300"
-    icon_color = "text-red-700"
-    text_color = "text-red-900"
-    icon = "block" if not ran_already else "info"
+    """One-line red chip: icon · title · state pill; the explanation is the tooltip."""
+    icon = "info" if ran_already else "block"
     label_pill = "ran with no work" if ran_already else "blocked"
-    with ui.row().classes(f"w-full {bg} border-2 rounded px-3 py-2 gap-2 items-start mt-1"):
-        ui.icon(icon, size="18px").classes(f"{icon_color} mt-0.5")
-        with ui.column().classes("gap-1 flex-1"):
-            with ui.row().classes("items-center gap-2"):
-                ui.label(title).classes(f"text-sm font-bold {text_color}")
-                ui.label(label_pill).classes(
-                    "text-[10px] uppercase tracking-wide font-mono px-1.5 py-0.5 "
-                    "rounded bg-red-200 text-red-900"
-                )
-            ui.label(body).classes(f"text-[11px] {text_color}")
+    with (
+        ui.row()
+        .classes("w-full items-center gap-2")
+        .style(f"background: #fef2f2; border: 1px solid #fca5a5; {_CHIP_STYLE}")
+        .tooltip(body)
+    ):
+        ui.icon(icon, size="14px").classes("text-red-700")
+        ui.label(title).classes("text-[11px] font-semibold text-red-900")
+        ui.label(label_pill).classes(
+            "text-[9px] uppercase tracking-wide font-mono px-1.5 rounded bg-red-200 text-red-900"
+        )
 
 
 def _resolve_upstream_paths(job_model):
@@ -330,18 +246,28 @@ def _render_box_vs_diameter_warning(container, state, species, job_model) -> Non
     if level is None:
         return
 
+    # One-line chip; the arithmetic + the sizing rules are the tooltip. The full
+    # box / crop / binning explainer is the Journey → Dataset pixel table (hover
+    # the box / crop column headers).
+    tooltip = (
+        f"box_size={bx} px • binning={binning:g} • effective apix={eff_px:.3g} Å/px. "
+        "Rules: box ≈ 2–3× particle Ø (1.5× floor) · crop ≥ ~1.5× Ø · crop ≤ box · prefer even "
+        "numbers. Full box / crop / binning explainer: Journey → Dataset → pixel table (box / crop "
+        "header tooltips)."
+    )
     with container:
-        bg = "bg-red-50 border-red-200" if level == "error" else "bg-amber-50 border-amber-200"
-        icon_color = "text-red-600" if level == "error" else "text-amber-600"
-        text_color = "text-red-800" if level == "error" else "text-amber-800"
-        with ui.row().classes(f"w-full {bg} border rounded px-3 py-2 gap-2 items-start mt-1"):
-            ui.icon("error" if level == "error" else "warning", size="16px").classes(f"{icon_color} mt-0.5")
-            with ui.column().classes("gap-0.5"):
-                ui.label("Box vs particle diameter").classes(f"text-xs font-semibold {text_color}")
-                ui.label(msg).classes(f"text-[11px] {text_color}")
-                ui.label(
-                    f"box_size={bx} px • binning={binning:g} • effective apix={eff_px:.3g} Å/px"
-                ).classes("text-[11px] text-gray-500 font-mono")
+        is_err = level == "error"
+        bg = (
+            "background: #fef2f2; border: 1px solid #fecaca;"
+            if is_err
+            else "background: #fffbeb; border: 1px solid #fde68a;"
+        )
+        icon_color = "text-red-600" if is_err else "text-amber-600"
+        text_color = "text-red-800" if is_err else "text-amber-800"
+        with ui.row().classes("w-full items-center gap-2").style(f"{bg} {_CHIP_STYLE}").tooltip(tooltip):
+            ui.icon("error" if is_err else "warning", size="14px").classes(icon_color)
+            ui.label("Box vs Ø").classes(f"text-[11px] font-semibold {text_color}")
+            ui.label(msg).classes(f"text-[11px] {text_color}")
 
 
 def _native_pixel_size(state) -> float | None:

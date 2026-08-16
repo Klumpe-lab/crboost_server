@@ -693,6 +693,10 @@ class ProjectState(BaseModel):
     tilt_filter_png_dir: str | None = None
 
     _dirty: bool = PrivateAttr(default=False)
+    # Non-persisted change counter for species / templates / masks / pick lists /
+    # authoritative choices (roadmap 08 §1). Wake-up input for poll gates only;
+    # DOM gates use precise tuples (species_identity). Never bumped by mark_dirty.
+    _registry_rev: int = PrivateAttr(default=0)
 
     @field_validator("aggregation_sources", mode="before")
     @classmethod
@@ -709,6 +713,34 @@ class ProjectState(BaseModel):
     @property
     def is_dirty(self) -> bool:
         return self._dirty
+
+    @property
+    def registry_rev(self) -> int:
+        return self._registry_rev
+
+    def bump_registry_rev(self) -> None:
+        """Non-persisted change counter for species / templates / masks / pick lists /
+        authoritative choices. Wake-up input for poll gates (the journey's 4 s outer
+        gate, the workbench panel's 3 s observe); DOM gates use precise tuples
+        (species_identity) so a bump alone never rebuilds a pane."""
+        self._registry_rev += 1
+
+    def species_identity(self) -> tuple:
+        """Precise fingerprint of what species pills / tabs / dots draw (id, name,
+        color per species) — the DOM-gate input for those renders."""
+        return tuple((s.id, s.name, s.color) for s in self.species_registry)
+
+    def mutate_species(self, species_id: str, fn) -> bool:
+        """The one way to edit a species in place (workbench header, swatch, template
+        / mask appends, selects). Marks dirty + bumps the rev; caller persists.
+        Returns False when the species is unknown."""
+        sp = self.get_species(species_id)
+        if sp is None:
+            return False
+        fn(sp)
+        self.mark_dirty()
+        self.bump_registry_rev()
+        return True
 
     @property
     def effective_owner(self) -> str | None:
@@ -793,6 +825,10 @@ class ProjectState(BaseModel):
         species = ParticleSpecies(id=sid, name=name, color=color or species_palette_color(sid), origin=origin)
         self.species_registry.append(species)
         self.update_modified()
+        # mark_dirty: StateService.save_project writes only when dirty (or forced) —
+        # without this a created species was silently not persisted (roadmap 08 H1).
+        self.mark_dirty()
+        self.bump_registry_rev()
         return species
 
     def species_references(self, species_id: str) -> dict[str, list[str]]:
@@ -864,6 +900,8 @@ class ProjectState(BaseModel):
                 overrides.pop(slot, None)
 
         self.update_modified()
+        self.mark_dirty()
+        self.bump_registry_rev()
         return removed
 
     # ── Curation workbench: per-(species, tomo) pick-list registry ───────────
@@ -885,6 +923,7 @@ class ProjectState(BaseModel):
         self.remove_pick_list(pick_list.slug, pick_list.species_id, pick_list.tomo_name)
         self.pick_lists.append(pick_list)
         self.mark_dirty()
+        self.bump_registry_rev()
         return pick_list
 
     def remove_pick_list(self, slug: str, species_id: str, tomo_name: str) -> bool:
@@ -896,6 +935,7 @@ class ProjectState(BaseModel):
         removed = len(self.pick_lists) != before
         if removed:
             self.mark_dirty()
+            self.bump_registry_rev()
         return removed
 
     @staticmethod
@@ -913,6 +953,7 @@ class ProjectState(BaseModel):
         'auto' is stored explicitly so a switch back from a workbench list persists."""
         self.authoritative_pick_lists[self._auth_key(species_id, tomo_name)] = slug
         self.mark_dirty()
+        self.bump_registry_rev()
 
     def set_imported_tomograms(self, record: ImportedTomograms) -> None:
         """Record the committed tomogram-import artifact (replaces any prior import).

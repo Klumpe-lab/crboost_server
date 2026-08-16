@@ -894,7 +894,9 @@ def journey_signature(journey: dict, species_journey: dict, ts_names: list) -> t
         jr = journey.get(ts, {})
         prep = tuple(jr.get(k, "") for k, _, _ in PREP_STAGES)
         sps = tuple(
-            (s["label"], s["pick_status"], s["subtomo_status"], s["n_picks"], s.get("filtered_count"))
+            # color: the strip draws the per-species dot from it (ui/dashboard/strip.py),
+            # so a workbench recolor must move this signature (roadmap 08 S0.3).
+            (s["label"], s["color"], s["pick_status"], s["subtomo_status"], s["n_picks"], s.get("filtered_count"))
             for s in species_journey.get(ts, [])
         )
         parts.append((ts, prep, sps))

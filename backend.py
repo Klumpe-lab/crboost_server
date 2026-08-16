@@ -376,6 +376,7 @@ class CryoBoostBackend:
         if pl is not None:
             pl.mark_extracted(data["optimisation_set"], int(data.get("count", 0)))
             state.mark_dirty()
+            state.bump_registry_rev()
             await self.state_service.save_project(project_path=project_path, force=True)
         return ok(count=int(data.get("count", 0)))
 
@@ -619,6 +620,7 @@ class CryoBoostBackend:
                 )
         if changed:
             state.mark_dirty()
+            state.bump_registry_rev()
             await self.state_service.save_project(project_path=project_path, force=True)
 
         handles2 = await asyncio.to_thread(enumerate_authoritative, state, project_path, species_id)

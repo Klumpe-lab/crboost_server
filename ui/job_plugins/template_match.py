@@ -13,8 +13,10 @@ job-creation time but the user can override here. The default-renderer
 skips template_path / mask_path / symmetry because we render all three
 in the dedicated card below.
 
-If species.templates is empty the dropdown shows an empty-state hint
-pointing the user to the workbench.
+The Config tab opens with the one species line (pill + "open in Species");
+species facts (templates, masks, Ø, symmetry) live on the species itself, not
+here (roadmap 08 S1). If species.templates is empty the dropdown shows an
+empty-state hint pointing the user to the workbench.
 """
 
 from pathlib import Path
@@ -26,41 +28,28 @@ from services.models_base import JobType
 from services.project_state import get_project_state_for
 from services.models_base import resolve_species
 from services.templating.template_metadata import read_template_header
-from ui.components.template_summary_card import render_template_summary_card
+from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins import register_params_renderer
-from ui.job_plugins.default_renderer import render_default_params_card, render_species_badge
+from ui.job_plugins.default_renderer import render_config_preamble, render_default_params
 
 
 @register_params_renderer(JobType.TEMPLATE_MATCH_PYTOM)
 def render_template_match_params(job_type, job_model, is_frozen, save_handler, *, ui_mgr=None, backend=None, **_ctx):
-    project_path = str(ui_mgr.project_path) if ui_mgr and ui_mgr.project_path else None
     instance_id = _ctx.get("instance_id")
-
-    render_species_badge(job_model, project_path)
 
     species = None
     if ui_mgr and ui_mgr.project_path:
         state = get_project_state_for(ui_mgr.project_path)
         species, _resolved_sid = resolve_species(state, job_model, instance_id)
 
-    if species is not None:
-        render_template_summary_card(species)
-    else:
-        with ui.card().classes("w-full border border-dashed border-amber-300 bg-amber-50 mt-1"):
-            with ui.row().classes("w-full items-center px-3 py-2 gap-2"):
-                ui.icon("warning", size="14px").classes("text-amber-600")
-                ui.label("No species linked to this job").classes("text-xs text-amber-800 font-semibold")
-            with ui.column().classes("w-full px-3 pb-2 gap-1"):
-                ui.label(
-                    "Without a species link the template / mask dropdowns can't populate. "
-                    "Assign a species via the species workbench, or add a `__<species_id>` suffix to the instance id."
-                ).classes("text-[11px] text-amber-700")
+    render_species_line(species, on_open=species_opener(_ctx.get("callbacks"), species.id) if species else None)
 
     # Render the regular params with template_path/mask_path/symmetry excluded —
-    # we handle these specially below (or via the species header).
-    render_default_params_card(
-        job_type, job_model, is_frozen, save_handler, exclude={"template_path", "mask_path", "symmetry"}, ui_mgr=ui_mgr
-    )
+    # we handle these specially below (or via the species header). The ctx
+    # exclude (array_throttle → SLURM section) is honored too.
+    exclude = {"template_path", "mask_path", "symmetry"} | set(_ctx.get("exclude") or ())
+    render_config_preamble(job_model)
+    render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
 
     if species is None:
         return

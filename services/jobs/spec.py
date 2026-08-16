@@ -179,7 +179,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
     JobSpec(
         JobType.TEMPLATE_EXTRACT_PYTOM,
         CandidateExtractPytomParams,
-        "Template Extract",
+        "Pick candidates",
         PHASE_PARTICLES,
         dependencies=(JobType.TEMPLATE_MATCH_PYTOM,),
         driver="extract_candidates_pytom.py",
