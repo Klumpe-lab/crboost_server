@@ -23,6 +23,7 @@ from services.result import err, ok
 from services.computing.slurm_service import SlurmService
 from services.configs.config_service import get_config_service
 from services.curation.session_service import CurationSessionService
+from services.curation.watcher import CurationWatcher
 from services.tilt_series import TiltSeriesRegistry, get_registry_for
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,9 @@ class CryoBoostBackend:
         self.curation_service = CurationSessionService(
             server_dir=self.server_dir, username=self.username, slurm_service=self.slurm_service
         )
+        # CurationWatcher registers ArtiaX .coords saves as `manual` pick lists server-side
+        # (roadmap 09-S4); same lifecycle as the monitor — started/stopped in main.py.
+        self.curation_watcher = CurationWatcher(self)
         # Pending debounced saves, keyed by project path — see save_project().
         self._pending_saves: dict[str, asyncio.Task] = {}
 

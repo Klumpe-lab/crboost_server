@@ -693,6 +693,18 @@ class CurationSessionService:
                 saved=saved,
             )
 
+    def loaded_curation_dirs(self, project_path: Path) -> list[Path]:
+        """Curation dirs a live ArtiaX session currently has open for THIS project — the
+        watcher's hot set. `_curation_loaded` is per live session and per-user (a shared
+        session may point at another project), hence the project filter."""
+        want = Path(project_path).resolve()
+        out: list[Path] = []
+        for info in list(self._curation_loaded.values()):
+            cur = info.get("curation_dir")
+            if cur and Path(info.get("project_path") or "").resolve() == want:
+                out.append(Path(cur))
+        return out
+
     def get_curation_loaded(self, session_info: dict[str, Any]) -> dict[str, Any] | None:
         """What (species, tomo) the live session currently has open via the REST swap,
         or None. Keyed exactly as load_into_session records it, so a reconnecting dialog
@@ -764,18 +776,11 @@ class CurationSessionService:
         (e.g. `particles.coords`)."""
         from services.visualization import artiax_bridge
 
-        d = artiax_bridge.curation_dir(
-            Path(project_path), tomo_name, species_id=species_id, species_label=species_label
+        return artiax_bridge.user_coords_saves(
+            artiax_bridge.curation_dir(
+                Path(project_path), tomo_name, species_id=species_id, species_label=species_label
+            )
         )
-        if not d.is_dir():
-            return []
-        found: list[Path] = []
-        for c in d.glob("*.coords"):
-            if c.name == "auto.coords" or c.name.endswith("_ref.coords"):
-                continue  # crboost's reference exports, not the user's save
-            found.append(c)
-        found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return found
 
     async def import_curation_picks(
         self,

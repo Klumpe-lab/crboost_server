@@ -38,7 +38,7 @@ from services.configs.user_prefs_service import get_prefs_service
 from services.models_base import InstanceId, JobStatus, JobType, ListExtractionState, PickListType, PickSourceKind
 from services.particles.ingest import register_manual_pick_list
 from services.project_state import PickList, get_state_service
-from services.result import ErrorCode, err
+from services.result import ErrorCode
 from ui.current_project import current_project_state
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import (
@@ -329,29 +329,6 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     col_els: dict[str, object] = {}
     _sel_gen = {"n": 0}
 
-    def _curation_sig_for_ts(ts: str) -> tuple:
-        # Newest .coords mtime under Curation/<species>/<ts>/, scoped to the
-        # SELECTED ts. An external ArtiaX save is not a background task, so the
-        # gate must fold its mtime in or the auto-ingest prescan never runs on
-        # the timer path; scoping means a save for another tomo won't rebuild.
-        base = Path(project_path) / "Curation"
-        out: list[tuple[str, int]] = []
-        try:
-            for sp_dir in base.iterdir():
-                tdir = sp_dir / ts
-                if not tdir.is_dir():
-                    continue
-                newest = 0.0
-                for c in tdir.glob("*.coords"):
-                    try:
-                        newest = max(newest, c.stat().st_mtime)
-                    except OSError:
-                        pass
-                out.append((f"{sp_dir.name}/{ts}", int(newest)))
-        except OSError:
-            return ()
-        return tuple(sorted(out))
-
     def _registry_sig() -> tuple:
         # Every migrated section (fs-motion, alignment, ts-ctf, tilt-filter,
         # denoise path) reads the TiltSeriesRegistry; its index.json mtime moves
@@ -403,7 +380,6 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             _registry_sig(),
             tuple(sorted(_hidden_dashboard_panels())),
             _CURATION_SESSION_LIVE.get("on", False),
-            _curation_sig_for_ts(ts),
             # A fresh species with no rows yet must still surface as a species tab.
             state.species_identity(),
             pick_lists_sig,
@@ -551,33 +527,6 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     _active = {"on": True}
     _curation_tick = {"n": 0}
 
-    def _curation_bundles_sig() -> tuple:
-        # Newest .coords mtime per per-(species,tomo) curation dir. An ArtiaX save
-        # is an EXTERNAL process — it never appears as a background task, so the
-        # registry signature below can't see it. Folding these mtimes into the
-        # signature is what lets a fresh save move it → triggers a rebuild →
-        # `_auto_kick_coords_ingest` finally runs and ingests WITHOUT a click.
-        # Runs OFF-loop (see _maybe_refresh) — globs a handful of small dirs.
-        base = Path(project_path) / "Curation"
-        out: list[tuple[str, int]] = []
-        try:
-            for sp_dir in base.iterdir():
-                if not sp_dir.is_dir():
-                    continue
-                for tomo_dir in sp_dir.iterdir():
-                    if not tomo_dir.is_dir():
-                        continue
-                    newest = 0.0
-                    for c in tomo_dir.glob("*.coords"):
-                        try:
-                            newest = max(newest, c.stat().st_mtime)
-                        except OSError:
-                            pass
-                    out.append((f"{sp_dir.name}/{tomo_dir.name}", int(newest)))
-        except OSError:
-            return ()
-        return tuple(sorted(out))
-
     async def _maybe_refresh() -> None:
         if not _active["on"]:
             return
@@ -601,10 +550,6 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                 for t in proj_tasks
                 if not t.is_running and t.finished_at and (t.finished_at - t.started_at).total_seconds() < 86400
             )
-            # External ArtiaX .coords saves aren't registry tasks — fold the
-            # bundle-dir mtimes in (off-loop) so a fresh save still triggers the
-            # rebuild that runs the auto-ingest prescan.
-            curation = await asyncio.to_thread(_curation_bundles_sig)
             # Curation-session liveness drives the toolbox 'Curate' button color (gray
             # = none / green = live). It shells out to squeue, so poll at a slow cadence
             # (~every 4th 4 s tick ≈ 16 s) and fold the bool into the signature so a
@@ -621,8 +566,10 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             # registry_rev: coarse in-memory counter of species / pick-list / template
             # mutations (roadmap 08 §1). It only WAKES this gate; the strip / main
             # sigs below are precise (species_identity, per-TS pick-list tuple), so a
-            # bump that changes nothing drawn is a no-op rebuild-wise.
-            sig = (running, finished, curation, _CURATION_SESSION_LIVE["on"], state.registry_rev)
+            # bump that changes nothing drawn is a no-op rebuild-wise. An ArtiaX save
+            # reaches the pane THROUGH it: the server-side CurationWatcher registers the
+            # `manual` list (add_pick_list → rev++), so no .coords mtime is folded here.
+            sig = (running, finished, _CURATION_SESSION_LIVE["on"], state.registry_rev)
             if sig != _last_signature["sig"]:
                 prev = _last_signature["sig"]
                 _last_signature["sig"] = sig
@@ -634,11 +581,9 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                         moved.append("tasks")
                     if finished != prev[1]:
                         moved.append("tasks-done")
-                    if curation != prev[2]:
-                        moved.append("curation-save")
-                    if len(prev) > 3 and sig[3] != prev[3]:
+                    if sig[2] != prev[2]:
                         moved.append("curation-session")
-                    if len(prev) > 4 and sig[4] != prev[4]:
+                    if sig[3] != prev[3]:
                         moved.append("registry")
                     logger.info("journey live-refresh rebuild (changed: %s)", ", ".join(moved) or "unknown")
                 request_refresh(force_main=False)  # timer tick — let render_main self-gate
@@ -3567,12 +3512,6 @@ def _collect_species_data_for_ts(project_state, project_path: Path, ts_name: str
             )
             if sp_entry is None:
                 continue
-        # Prescan: auto-ingest a fresh ArtiaX save at the bundle's tomo-named path so
-        # a curated list surfaces without an explicit Import click. Both paths need
-        # it — for a de-novo species this IS how picks enter the project.
-        _auto_kick_coords_ingest(
-            sp_entry["tomograms_star"], project_path, sp_entry["species_id"], sp_entry["label"], ts_name, refresh
-        )
         sp_entry["lists"] = _collect_pick_lists_for_species(sp_entry, project_state, ts_name)
         out.append(sp_entry)
     return out
@@ -4265,10 +4204,11 @@ async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: st
     result and persist ProjectState — AWAITED with force=True so the registry
     actually lands on disk. A fire-and-forget `create_task(save_project())` was
     getting GC'd before it ran, leaving `pick_lists: []` in project_params.json and
-    forcing a re-import on every reopen. Returns the imported pick count. UI-free so
-    both the explicit-import click path and the prescan auto-ingest share it. One
-    `manual` list per (species, tomo) — a re-import replaces it (the raw .coords are
-    still archived per-import for provenance).
+    forcing a re-import on every reopen. Returns the imported pick count. Explicit
+    "Import picks" click path only — ArtiaX saves are otherwise picked up by the
+    server-side CurationWatcher (roadmap 09-S4). One `manual` list per (species, tomo)
+    — a re-import replaces it (the raw .coords are still archived per-import for
+    provenance).
 
     `project_path` is REQUIRED — it resolves the real registry by path (a bare
     `current_project_state()` is a blank throwaway outside a client/tab context, W2).
@@ -4295,100 +4235,10 @@ async def _register_manual_pick_list(sp: dict, result: dict, refresh, project_pa
     refresh()
 
 
-_AUTO_INGESTED_COORDS: set[str] = set()
-
 # Whether the user has a live ChimeraX+ArtiaX curation session right now. Polled at a
 # slow cadence by the journey's _maybe_refresh (squeue is the source of truth) and read
 # by the rail toolbox to color the 'Curate' button (gray = none / green = live).
 _CURATION_SESSION_LIVE: dict = {"on": False}
-
-
-def _pending_save_for_tomo(
-    project_path: Path, species_label: str, species_id: str, tomo_name: str
-) -> tuple[Path, float] | None:
-    """The ArtiaX `.coords` save to auto-ingest for THIS (species, tomo), or None.
-
-    Saves land in the per-(species,tomo) `curation_dir`, so every `.coords` under it
-    is THIS tomogram's by construction — the newest one that isn't a crboost export
-    (`auto.coords` / `*_ref.coords`) is the user's save, no name/single-tomo heuristic
-    needed (that ambiguity was the old per-species cross-tomo bleed). Returns
-    (path, mtime) of the newest qualifying save, for the caller's guards."""
-    from services.visualization import artiax_bridge
-
-    d = artiax_bridge.curation_dir(project_path, tomo_name, species_id=species_id, species_label=species_label)
-    if not d.is_dir():
-        return None
-    saves: list[tuple[Path, float]] = []
-    for c in d.glob("*.coords"):
-        if c.name == "auto.coords" or c.name.endswith("_ref.coords"):
-            continue  # crboost's reference exports, not the user's save
-        try:
-            saves.append((c, c.stat().st_mtime))
-        except OSError:
-            continue
-    if not saves:
-        return None
-    saves.sort(key=lambda t: t[1], reverse=True)
-    return saves[0]
-
-
-def _auto_kick_coords_ingest(
-    tomograms_star: Path, project_path: Path, species_id: str, species_label: str, tomo_name: str, refresh
-) -> None:
-    """Prescan: if the user saved an ArtiaX `.coords` for this (species, tomo) — see
-    `_pending_save_for_tomo` for how an arbitrarily-named save is safely attributed —
-    and it's newer than the registered `manual` list (or there's none yet), ingest it
-    in the background so the list appears without a click. An mtime-keyed dedup set +
-    a created_at guard make it idempotent; the Import button stays for out-of-tree /
-    unattributable saves. Safe to call every render.
-
-    Keyed on `curation_dir(...)` + the tomogram's star, never a job dir — the save
-    belongs to a (species, tomo), and a de-novo species has no job to hang it off."""
-    if not species_id:
-        return
-    pending = _pending_save_for_tomo(project_path, species_label, species_id, tomo_name)
-    if pending is None:
-        logger.info("coords-prescan[%s/%s]: no attributable ArtiaX .coords save in bundle", species_label, tomo_name)
-        return
-    coords, mtime = pending
-    key = f"{species_id}:{tomo_name}:{mtime}"
-    if key in _AUTO_INGESTED_COORDS:
-        logger.info("coords-prescan[%s]: save already ingested this session (mtime %.0f)", tomo_name, mtime)
-        return
-    pl = current_project_state().get_pick_list("manual", species_id, tomo_name)
-    if pl is not None and pl.created_at is not None and pl.created_at.timestamp() >= mtime:
-        logger.info(
-            "coords-prescan[%s]: manual list already current (created %.0f ≥ save %.0f)",
-            tomo_name,
-            pl.created_at.timestamp(),
-            mtime,
-        )
-        return  # the registered manual list already reflects this (or a newer) save
-    _AUTO_INGESTED_COORDS.add(key)
-    logger.info("coords-prescan[%s]: ingesting %s (mtime %.0f) in background", tomo_name, coords.name, mtime)
-
-    async def _run(progress_cb):
-        from backend import get_backend
-
-        backend = get_backend()
-        if backend is None:
-            return err("no backend")
-        progress_cb(0, 0, "ingesting ArtiaX save…")
-        result = await backend.import_curation_picks(
-            project_path, Path(tomograms_star), tomo_name, species_label, species_id, coords_path=coords
-        )
-        if result.get("success"):
-            await _persist_manual_pick_list(result, species_id, tomo_name, project_path)
-        return result
-
-    from ui.background_task import BackgroundTask
-
-    BackgroundTask(
-        title=f"Ingest ArtiaX save · {tomo_name}",
-        subtitle=species_label or species_id,
-        project_path=str(project_path),
-        dedup_key=f"coords-ingest:{species_id}:{tomo_name}:{mtime}",
-    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=False)
 
 
 async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -> None:
@@ -6392,7 +6242,6 @@ def reset_auto_kick_state() -> None:
     _AUTO_KICKED_IMOD.clear()
     _AUTO_KICKED_RECON_SLABS.clear()
     _AUTO_KICKED_LIST_CUTOUTS.clear()
-    _AUTO_INGESTED_COORDS.clear()
 
 
 def _auto_kick_preview_generation(instance_id: str, job_model, job_dir: Path, project_path: Path, refresh) -> bool:
