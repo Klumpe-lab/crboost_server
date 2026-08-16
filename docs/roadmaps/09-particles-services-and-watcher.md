@@ -1,6 +1,6 @@
 # Roadmap 09 — `services/particles/` + server-side curation watcher
 
-**Status:** S1 + S2 + S3 CODE-COMPLETE 2026-08-16 (`py_compile` + `check_boundaries.py` owed — no python in the sandbox); scoped 2026-08-16. **Depends on:** 08-S0 (`registry_rev`, `species_identity`).
+**Status:** S1–S4 CODE-COMPLETE 2026-08-16 (all PENDING RUNTIME — `py_compile` + `check_boundaries.py` + §4 runtime list owed; no python in the sandbox); scoped 2026-08-16. **Depends on:** 08-S0 (`registry_rev`, `species_identity`).
 **Unblocks:** 10 (Species page reads `species_overview`, ingest service), 11 (Picks/Curation tabs).
 **Risk:** low-medium (one behavior change — ingest moves server-side — quarantined in its own commit).
 Four commits: S1 move-only · S2 ingest service (+ small model additions) · S3 overview reader ·
@@ -256,3 +256,28 @@ is picked up on the next full sweep; (5) a dir whose slug matches nothing shows 
   (so the overview reads `particles.star` once, not twice) and `aggregation_discovery._counts_by_tomo`
   → public `counts_by_tomo` (2 internal callers repointed). `services/particles/__init__.py`
   docstring lists `ingest` + `species_overview`.
+- 2026-08-16 — **S4 CODE-COMPLETE** (same session; `ruff check .` clean; `py_compile` +
+  `check_boundaries.py` + the §4 runtime list (1)–(5) owed). NEW `services/curation/watcher.py::
+  CurationWatcher` on the `PipelineMonitor` skeleton (`TICK_SEC=5`, `FULL_SWEEP_EVERY=6`,
+  `SETTLE_SEC=2`; `events(project)` / `unattributed(project)` read API), constructed in `backend.py`
+  as `backend.curation_watcher` right after `curation_service`, started/stopped in `main.py` beside
+  the monitor. Per open project: hot dirs from the NEW `CurationSessionService.loaded_curation_dirs
+  (project_path)` every tick + `Curation/*/*/` on the first and every 6th tick; scan + slug-match
+  attribution + geometry lookup off-loop (`_collect`), ingest sequential on-loop:
+  `backend.import_curation_picks(..., coords_path=)` → `register_manual_pick_list` → `backend.
+  save_project(project_path, force=True)`. Geometry = CE job's `tomograms.star` when the species has
+  one, else `geometry_for_ts(...).tomograms_star`; none → "no-geometry" event, retried next sweep.
+  Dedup: `_seen` keyed `(project, dir, int(mtime))` (deviation from §4's `(project, sid, tomo,
+  mtime)` — same semantics, but lets the off-loop scan drop handled saves BEFORE attribution, so a
+  stale save costs one glob per tick) + the `manual` list's `created_at >= mtime` guard (restart-safe);
+  a failed import is not retried until the file's mtime changes. Unattributed / no-geometry are
+  logged + recorded ONCE per (dir, reason); slug collisions map to nothing (`_by_slug`). The `.coords`
+  discovery rule moved to `artiax_bridge.user_coords_saves(dir)` (newest first, excludes
+  `auto.coords` / `*_ref.coords`, non-recursive) and `session_service._discover_manual_coords`
+  delegates to it — one rule for the click and the watcher. **Deleted from the Journey (same
+  commit):** `_auto_kick_coords_ingest`, `_pending_save_for_tomo`, `_AUTO_INGESTED_COORDS` (+ its
+  `reset_auto_kick_state` clear), the prescan call in `_collect_species_data_for_ts`,
+  `_curation_bundles_sig` + the `curation` term of the 4-s outer gate (diagnostics indices shifted:
+  `curation-session` = sig[2], `registry` = sig[3]), `_curation_sig_for_ts` + its `_main_signature`
+  term; `_persist_manual_pick_list` is now the explicit-click path only. The UI learns through
+  `add_pick_list → registry_rev++ → outer gate → _pick_lists_sig` (08-S0), as §4 planned.

@@ -171,6 +171,27 @@ def curation_dir(project_root, tomo_name: str, *, species_id: str = "", species_
     return Path(project_root) / "Curation" / sp_slug / _safe_slug(tomo_name)
 
 
+def user_coords_saves(curation_dir: Path) -> list[Path]:
+    """The user's saved ArtiaX ``.coords`` in ONE tomogram's curation dir, newest first.
+
+    Every ``.coords`` under a ``curation_dir`` is that tomogram's by construction, so
+    newest-wins is bleed-proof. EXCLUDES crboost's own exports (``auto.coords``,
+    ``*_ref.coords``); the non-recursive glob skips the ``imports/`` archive. Match is by
+    extension + mtime, NOT a fixed name — the user may name the save anything. Shared by
+    the explicit import (``session_service._discover_manual_coords``) and the server-side
+    ``CurationWatcher`` so both apply ONE rule. Empty when the dir does not exist."""
+    d = Path(curation_dir)
+    if not d.is_dir():
+        return []
+    found: list[Path] = []
+    for c in d.glob("*.coords"):
+        if c.name == "auto.coords" or c.name.endswith("_ref.coords"):
+            continue  # crboost's reference exports, not the user's save
+        found.append(c)
+    found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return found
+
+
 def session_chimerax_commands(recon_mrc, auto_coords: Path | None = None) -> list[str]:
     """The ChimeraX command lines that load a tomogram + our picks into ArtiaX.
 
