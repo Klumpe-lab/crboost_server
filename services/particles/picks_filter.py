@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from services.visualization.subtomo_link import _coord_key, _read_subtomo_particles
+from services.particles.subtomo_link import _coord_key, _read_subtomo_particles
 
 logger = logging.getLogger(__name__)
 
@@ -416,7 +416,7 @@ def _list_particle_block(data: dict):
     """(key, df) of the pick table in a centered-Å list star: prefer 'particles',
     else the first block carrying the centered-Å coord columns (or rlnTomoName).
     Returns (None, None) if no table-like block is present."""
-    from services.visualization.coords import CENTERED_COLS
+    from services.particles.coords import CENTERED_COLS
 
     if "particles" in data and isinstance(data["particles"], pd.DataFrame):
         return "particles", data["particles"]
@@ -462,7 +462,7 @@ def derive_keep_state_for_list(source_star: Path, filtered_star: Path | None = N
     exists (= all rows implicitly kept); a (possibly empty) set otherwise."""
     import starfile
 
-    from services.visualization.coords import CENTERED_COLS
+    from services.particles.coords import CENTERED_COLS
 
     source_star = Path(source_star)
     filtered_star = Path(filtered_star) if filtered_star is not None else filtered_list_path(source_star)

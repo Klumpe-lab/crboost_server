@@ -35,7 +35,7 @@ from services.visualization.preview_render import (
     render_xz_slab_preview,
     write_picks_data,
 )
-from services.visualization.subtomo_link import build_pick_to_mrcs_index, lookup_for_pick, subtomo_particles_stars
+from services.particles.subtomo_link import build_pick_to_mrcs_index, lookup_for_pick, subtomo_particles_stars
 
 logger = logging.getLogger(__name__)
 

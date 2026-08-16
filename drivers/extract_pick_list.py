@@ -33,7 +33,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from drivers.driver_base import ToolCommand, run_tool
-from services.visualization.list_extraction import (
+from services.particles.list_extraction import (
     build_list_optset,
     build_list_optset_from_tomograms,
     write_extracted_optset,

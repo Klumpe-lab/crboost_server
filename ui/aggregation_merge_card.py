@@ -742,7 +742,7 @@ def _build_merge_sources(state) -> list:
     `original_path` so the driver can pull those tomos' rows from the original.
     Manually-added directory sources are passed through for the driver to
     resolve and don't support per-tomo overrides."""
-    from services.visualization.picks_filter import resolve_canonical_optset
+    from services.particles.picks_filter import resolve_canonical_optset
 
     out = []
     for s in state.aggregation_sources or []:

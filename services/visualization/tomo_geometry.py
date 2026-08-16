@@ -21,7 +21,7 @@ star row (``"star"``) -> the recon MRC header's voxel size when it is > 0
 (``"mrc_header"``) -> ``None`` (``"missing"``).
 
 ``dims_xyz_px``: the recon MRC header whenever the volume is on disk. That is what
-:func:`services.visualization.coords.binned_tomo_size_from_tomo_row` reads, and
+:func:`services.particles.coords.binned_tomo_size_from_tomo_row` reads, and
 that function backs the ArtiaX bridge's coordinate transform — so an overlay can
 never disagree with the picks it round-trips. Only when the volume is absent do we
 fall back to ``rlnTomoSize{X,Y,Z} / rlnTomoTomogramBinning``: those columns hold

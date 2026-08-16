@@ -209,7 +209,7 @@ def load_tomo_curation(job_dir: str) -> list[TomoCuration]:
     Tomogram universe comes from tomograms.star so tomos with zero kept picks
     still appear; totals from the original particles.star, kept from the
     curated `particles_filtered.star` (None when no curation exists)."""
-    from services.visualization.picks_filter import read_reviewed_counts
+    from services.particles.picks_filter import read_reviewed_counts
 
     jd = Path(job_dir)
     totals = _counts_by_tomo(jd / "particles.star")
