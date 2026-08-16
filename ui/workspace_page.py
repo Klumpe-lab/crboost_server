@@ -6,7 +6,7 @@ from backend import CryoBoostBackend
 from ui.background_task_tray import mount_background_task_tray
 from ui.components.reactive import SingleFlight
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
-from ui.species_workbench_panel import build_species_workbench_panel
+from ui.species.page import build_species_page
 from ui.ui_state import get_ui_state_manager
 
 
@@ -113,7 +113,7 @@ def build_workspace_page(backend: CryoBoostBackend):
         if on_journey:
             on_journey(_mode["current"] == "journey")
 
-        # Instant registry observe when the workbench is shown (species created
+        # Instant registry observe when the Species page is shown (species created
         # from the roster / another tab appear without waiting for its 3 s poll).
         on_wb = callbacks.get("on_workbench_active")
         if on_wb:
@@ -123,8 +123,8 @@ def build_workspace_page(backend: CryoBoostBackend):
         _switch_to("workbench")
 
     def _open_species(species_id: str):
-        """The 'open in Species' link of a job's Config tab: show the workbench view
-        ON that species (the Species page from roadmap 10 re-targets this hook)."""
+        """The 'open in Species' link of a job's Config tab: show the Species page ON
+        that species (the view keeps its internal mode name "workbench")."""
         if _mode["current"] != "workbench":
             _switch_to("workbench")
         select = callbacks.get("workbench_select_species")
@@ -227,7 +227,7 @@ def build_workspace_page(backend: CryoBoostBackend):
             )
             _refs["workbench_container"] = workbench_container
             with workbench_container:
-                build_species_workbench_panel(backend, callbacks)
+                build_species_page(backend, callbacks)
 
             # Journey: built lazily on first switch (see _show_journey) so the
             # heavy per-TS render doesn't tax every workspace load. Starts hidden.

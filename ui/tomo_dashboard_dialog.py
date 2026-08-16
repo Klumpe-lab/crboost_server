@@ -3760,17 +3760,14 @@ async def _prompt_new_species(project_path: Path, refresh) -> None:
     SingleFlight-guarded: this button sits in a poll-refreshed container and can be
     rebuilt mid-click."""
     from backend import get_backend
-    from services.project_state import get_project_state_for
-    from ui.species_workbench_panel import _prompt_species_name
+    from ui.species.prompt import create_species
 
     async with _curation_flight(f"new_species:{project_path}") as acquired:
         if not acquired:
             return
-        name = await _prompt_species_name()
-        if not name:
+        species = await create_species(get_backend(), project_path, origin="manual")
+        if species is None:
             return
-        species = get_project_state_for(project_path).add_species(name, origin="manual")
-        await get_backend().save_project(project_path, force=True)
         ui.notify(f"Created species '{species.name}' — pick into it with 'Curate in ArtiaX'", type="positive")
         refresh()
 

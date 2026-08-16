@@ -872,7 +872,7 @@ class RosterWidget(FingerprintedView):
 
             if panel.toggle_workbench is not None:
                 ui.element("div").style("height: 1px;")
-                wb_btn = self._sb_svg_btn("vial.svg", "Template Workbench", panel.toggle_workbench, ref_key="wb_btn")
+                wb_btn = self._sb_svg_btn("vial.svg", "Species", panel.toggle_workbench, ref_key="wb_btn")
                 panel.callbacks["wb_btn"] = wb_btn
 
             # Tomogram Dashboard — unified per-TS inspection surface that replaces
@@ -1427,11 +1427,10 @@ class RosterWidget(FingerprintedView):
 
         The de-novo path: no template, no template-matching job, possibly zero
         parameters — the species exists so the user can start hand-picking in
-        ArtiaX immediately. The template workbench's "+" remains the
-        template-driven entry point; this one is for species that never have one.
+        ArtiaX immediately. The Species page's "+" remains the template-driven
+        entry point (`origin="workbench"`); this one is for species that never have one.
         """
-        from services.project_state import get_project_state_for
-        from ui.species_workbench_panel import _prompt_species_name
+        from ui.species.prompt import create_species
 
         project_path = self.panel.ui_mgr.project_path
 
@@ -1442,14 +1441,10 @@ class RosterWidget(FingerprintedView):
             async with self.panel.flight("new_species") as acquired:
                 if not acquired:
                     return
-                name = await _prompt_species_name()
-                if not name:
+                # origin="manual": a de-novo species may never have a template.
+                species = await create_species(self.panel.backend, project_path, origin="manual")
+                if species is None:
                     return
-                state = get_project_state_for(project_path)
-                # origin="manual": no template dir is created here, unlike the
-                # workbench "+" — a de-novo species may never have a template.
-                species = state.add_species(name, origin="manual")
-                await self.panel.backend.save_project(project_path)
                 ui.notify(f"Created species '{species.name}'", type="positive")
                 self.panel.rebuild_pipeline_ui()
 
