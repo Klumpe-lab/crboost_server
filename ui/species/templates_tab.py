@@ -24,9 +24,7 @@ class TemplatesTab:
     def build(self, container: ui.element) -> None:
         ctx = self._ctx
         with container:
-            self.workbench = TemplateWorkbench(
-                ctx.backend, str(ctx.project_path), species_id=ctx.species_id, on_species_deleted=ctx.on_species_deleted
-            )
+            self.workbench = TemplateWorkbench(ctx.backend, str(ctx.project_path), species_id=ctx.species_id)
 
     def refresh(self) -> None:
         # The workbench observes its own species (rev-driven header edits, template /

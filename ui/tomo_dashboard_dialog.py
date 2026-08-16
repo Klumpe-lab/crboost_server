@@ -48,6 +48,7 @@ from services.visualization.preview_orchestrator import (
 )
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview, render_xz_slab_preview
 from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
+from ui.components.chip import render_chip
 from ui.components.reactive import SingleFlight
 from ui.dashboard.css import ensure_assets_loaded
 from ui.dashboard.figures import (
@@ -816,20 +817,6 @@ def _render_datadump_card(
 # ---------------------------------------------------------------------------
 
 
-def _render_chip(
-    label: str, value: str, *, status: str = "neutral", tooltip: str | None = None, icon: str | None = None
-) -> None:
-    """One status chip. `status` ∈ {ok, warn, error, info, neutral}."""
-    cls = f"cb-chip cb-chip-{status}"
-    with ui.element("span").classes(cls) as chip:
-        if icon:
-            ui.icon(icon, size="11px").classes("cb-chip-icon")
-        ui.label(label).classes("cb-chip-label")
-        ui.label(value).classes("cb-chip-value")
-        if tooltip:
-            chip.tooltip(tooltip)
-
-
 def _read_tomohand_from_import_star(star_path: Path) -> int | None:
     """Return `_rlnTomoHand` from an Import-job tilt_series.star, sampling the
     first data table that carries it. Returns ±1 or None on absence."""
@@ -951,7 +938,7 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
             tooltip += f" Registry: Warp applied ts_defocus_hand {warp_hand:+d}."
 
     with ui.element("div").classes("cb-chip-strip"):
-        _render_chip("TomoHand", value, status=status, tooltip=tooltip, icon="compare_arrows")
+        render_chip("TomoHand", value, status=status, tooltip=tooltip, icon="compare_arrows")
 
 
 def _render_dataset_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
@@ -1950,7 +1937,7 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
 
         if mrc_path is None or not Path(mrc_path).exists():
             with ui.element("div").classes("cb-chip-strip"):
-                _render_chip(
+                render_chip(
                     "polarity",
                     "no MRC",
                     status="neutral",
@@ -1963,7 +1950,7 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
         polarity = _compute_tomogram_polarity(Path(mrc_path))
         with ui.element("div").classes("cb-chip-strip"):
             if polarity is None:
-                _render_chip(
+                render_chip(
                     "polarity",
                     "read error",
                     status="warn",
@@ -1973,7 +1960,7 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
             else:
                 expected = _expected_polarity_from_templates(project_state)
                 status, hint = _tomo_polarity_chip_status(polarity["polarity"], expected)
-                _render_chip(
+                render_chip(
                     "polarity",
                     polarity["polarity"],
                     status=status,
@@ -1985,13 +1972,13 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
                     ),
                     icon="brightness_medium",
                 )
-                _render_chip(
+                render_chip(
                     "bright %",
                     f"{polarity['pct_bright']:.1f}",
                     status="neutral",
                     tooltip="Fraction of voxels above mean + 1.5σ in the sampled Z slice.",
                 )
-                _render_chip(
+                render_chip(
                     "dark %",
                     f"{polarity['pct_dark']:.1f}",
                     status="neutral",
