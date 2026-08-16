@@ -255,12 +255,9 @@ class TemplateWorkbench:
         return state.get_species(self.species_id)
 
     def _mutate_species(self, fn) -> None:
-        state = get_project_state_for(Path(self.project_path))
-        sp = state.get_species(self.species_id)
-        if sp is None:
-            return
-        fn(sp)
-        state.mark_dirty()
+        # Model-level mutation: marks dirty + bumps registry_rev so the roster /
+        # journey / workbench-strip gates see the edit (roadmap 08 S0.2).
+        get_project_state_for(Path(self.project_path)).mutate_species(self.species_id, fn)
 
     async def _save_state(self) -> None:
         await self.backend.save_project(Path(self.project_path))

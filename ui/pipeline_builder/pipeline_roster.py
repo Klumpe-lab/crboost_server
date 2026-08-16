@@ -8,6 +8,7 @@ from services.project_state import JobType
 from ui.current_project import current_project_state
 
 from ui.components.reactive import FingerprintedView
+from ui.components.species_pill import render_species_pill
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -239,6 +240,9 @@ class RosterWidget(FingerprintedView):
             ui_mgr.is_running,
             per_job,
             array_state,
+            # Species pill draws name + color: a rename / recolor in the workbench
+            # must repaint the row (roadmap 08 S0.3).
+            current_project_state().species_identity(),
         )
 
     def refresh(self):
@@ -398,14 +402,7 @@ class RosterWidget(FingerprintedView):
                 )
             # Species badge
             if species:
-                with ui.element("div").style(
-                    f"display: inline-flex; align-items: center; flex-shrink: 0; "
-                    f"background: {species.color}18; border: 1px solid {species.color}55; "
-                    f"border-radius: 999px; padding: 1px 6px;"
-                ):
-                    ui.label(species.name).style(
-                        f"font-size: 8px; color: {species.color}; font-weight: 600; white-space: nowrap;"
-                    )
+                render_species_pill(species, compact=True)
             # Inline array progress (e.g., "17/18" green, or "17/18 1!" red).
             # Read from the per-tick cache populated by signature() so render and
             # signature can't disagree on what's being painted.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from nicegui import ui
 
 from services.project_state import get_project_state_for
+from ui.components.reactive import FingerprintedView
 from ui.ui_state import get_ui_state_manager
 
 
@@ -32,7 +33,11 @@ async def _prompt_species_name() -> str | None:
     return await dialog
 
 
-def build_species_workbench_panel(backend) -> None:
+def build_species_workbench_panel(backend, callbacks: dict | None = None) -> None:
+    """Build the Template Workbench view. ``callbacks``, when given, receives
+    ``on_workbench_active(bool)`` (instant registry observe when the view is shown;
+    the 3 s poll covers the rest) and ``workbench_select_species(species_id)`` (the
+    "open in Species" link of a job's Config tab)."""
     ui_mgr = get_ui_state_manager()
     project_path = ui_mgr.project_path
     if not project_path:
@@ -45,14 +50,19 @@ def build_species_workbench_panel(backend) -> None:
     _refs: dict[str, object] = {}
 
     # ── Tab strip ────────────────────────────────────────────────────────────
+    # A FingerprintedView so every strip repaint goes through ONE gate: species
+    # created / renamed / recolored / deleted anywhere (roster "+", another tab,
+    # the workbench swatch) show up here without a browser reload (roadmap 08 S0.4).
 
-    def _refresh_tab_strip():
-        strip = _refs.get("strip")
-        if not strip:
-            return
-        strip.clear()
-        state = get_project_state_for(project_path)
-        with strip:
+    class _StripView(FingerprintedView):
+        def _get_container(self):
+            return _refs.get("strip")
+
+        def signature(self):
+            return (_active["species_id"], get_project_state_for(project_path).species_identity())
+
+        def render(self):
+            state = get_project_state_for(project_path)
             for species in state.species_registry:
                 is_active = _active["species_id"] == species.id
                 with (
@@ -78,11 +88,11 @@ def build_species_workbench_panel(backend) -> None:
                 "color: #6b7280; margin: 0 6px;"
             ).tooltip("Add species")
 
+    strip_view = _StripView()
+
     # ── Species rendering ─────────────────────────────────────────────────────
 
-    def _handle_species_deleted(species_id: str):
-        """Workbench just confirmed deletion. Drop its container and
-        switch to whatever remains (or fall back to the empty state)."""
+    def _drop_container(species_id: str):
         container = _workbench_containers.pop(species_id, None)
         if container is not None:
             content = _refs.get("content")
@@ -91,6 +101,11 @@ def build_species_workbench_panel(backend) -> None:
                     content.remove(container)
                 except Exception:
                     container.set_visibility(False)
+
+    def _handle_species_deleted(species_id: str):
+        """Workbench just confirmed deletion. Drop its container and
+        switch to whatever remains (or fall back to the empty state)."""
+        _drop_container(species_id)
         # State already mutated by the workbench — re-read to find remainder.
         state = get_project_state_for(project_path)
         if state.species_registry:
@@ -100,7 +115,7 @@ def build_species_workbench_panel(backend) -> None:
             empty = _refs.get("empty")
             if empty:
                 empty.set_visibility(True)
-            _refresh_tab_strip()
+            strip_view.refresh()
 
     def _ensure_species_rendered(species_id: str):
         if species_id in _workbench_containers:
@@ -141,7 +156,25 @@ def build_species_workbench_panel(backend) -> None:
         _ensure_species_rendered(species_id)
         for sid, c in _workbench_containers.items():
             c.set_visibility(sid == species_id)
-        _refresh_tab_strip()
+        strip_view.refresh()
+
+    def _observe():
+        """3 s poll + on-show: reconcile the panel with the live registry. Species
+        created elsewhere (roster "+", another tab) get selected; ones deleted
+        elsewhere lose their container (a same-id re-create must not reuse it) and the
+        panel falls back to the remainder / the empty state; the strip repaints only
+        when its signature moved. The steady-state tick is an in-memory id list + a
+        tuple compare, so it is fine while hidden."""
+        ids = [s.id for s in get_project_state_for(project_path).species_registry]
+        for sid in [s for s in _workbench_containers if s not in ids]:
+            _drop_container(sid)
+        if not ids:
+            if _active["species_id"] is not None:  # deleted elsewhere → empty state
+                _active["species_id"] = None
+                _refs["empty"].set_visibility(True)
+        elif _active["species_id"] not in ids:  # created elsewhere / active deleted → pick first
+            _switch_species(ids[0])
+        strip_view.refresh()
 
     async def _add_species():
         name = await _prompt_species_name()
@@ -190,7 +223,19 @@ def build_species_workbench_panel(backend) -> None:
                 "unelevated no-caps"
             ).style("background: #3b82f6; color: white; border-radius: 6px; padding: 6px 16px;")
 
-    _refresh_tab_strip()
+    strip_view.refresh()
 
     if state.species_registry:
         _switch_species(state.species_registry[0].id)
+
+    # Observe the registry: 3 s poll (in-memory tuple only) + instant on show.
+    ui.timer(3.0, _observe)
+
+    def _set_active(on: bool) -> None:
+        if on:
+            _observe()
+
+    if callbacks is not None:
+        callbacks["on_workbench_active"] = _set_active
+        # "open in Species" from a job's Config tab (workspace_page._open_species).
+        callbacks["workbench_select_species"] = _switch_species

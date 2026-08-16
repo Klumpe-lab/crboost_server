@@ -395,6 +395,17 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         job_states = tuple(
             (iid, str(getattr(jm, "execution_status", ""))) for iid, jm in sorted((state.jobs or {}).items())
         )
+        # Per-TS pick-list facts the pane renders (rail table rows). Deliberately
+        # EXCLUDES filtered_count (in-pane keep/drop commits) and the authoritative
+        # choice (in-place radio repaint) — and NOT the coarse registry_rev — so a
+        # keep/drop burst or a radio click never tears the pane down (roadmap 08 §1).
+        pick_lists_sig = tuple(
+            sorted(
+                (pl.species_id, pl.slug, pl.count, str(pl.path), str(pl.extracted_at))
+                for pl in (state.pick_lists or [])
+                if pl.tomo_name == ts
+            )
+        )
         return (
             ts,
             journey_signature(journey, species_journey, [ts]),
@@ -403,6 +414,9 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             tuple(sorted(_hidden_dashboard_panels())),
             _CURATION_SESSION_LIVE.get("on", False),
             _curation_sig_for_ts(ts),
+            # A fresh species with no rows yet must still surface as a species tab.
+            state.species_identity(),
+            pick_lists_sig,
         )
 
     def render_main(force: bool = False) -> None:
@@ -614,7 +628,11 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                     _CURATION_SESSION_LIVE["on"] = bool(await bk.find_active_curation_session_any()) if bk else False
                 except Exception:
                     pass
-            sig = (running, finished, curation, _CURATION_SESSION_LIVE["on"])
+            # registry_rev: coarse in-memory counter of species / pick-list / template
+            # mutations (roadmap 08 §1). It only WAKES this gate; the strip / main
+            # sigs below are precise (species_identity, per-TS pick-list tuple), so a
+            # bump that changes nothing drawn is a no-op rebuild-wise.
+            sig = (running, finished, curation, _CURATION_SESSION_LIVE["on"], state.registry_rev)
             if sig != _last_signature["sig"]:
                 prev = _last_signature["sig"]
                 _last_signature["sig"] = sig
@@ -630,6 +648,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                         moved.append("curation-save")
                     if len(prev) > 3 and sig[3] != prev[3]:
                         moved.append("curation-session")
+                    if len(prev) > 4 and sig[4] != prev[4]:
+                        moved.append("registry")
                     logger.info("journey live-refresh rebuild (changed: %s)", ", ".join(moved) or "unknown")
                 request_refresh(force_main=False)  # timer tick — let render_main self-gate
         except RuntimeError:
