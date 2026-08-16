@@ -180,7 +180,7 @@ def discover_subtomo_optimisation_sets(base_paths: Iterable[str]) -> list[Subtom
     return candidates
 
 
-def _counts_by_tomo(star_path: Path) -> dict:
+def counts_by_tomo(star_path: Path) -> dict:
     """{rlnTomoName: row_count} from a particles .star. Empty on any failure."""
     if not star_path.exists():
         return {}
@@ -212,11 +212,11 @@ def load_tomo_curation(job_dir: str) -> list[TomoCuration]:
     from services.particles.picks_filter import read_reviewed_counts
 
     jd = Path(job_dir)
-    totals = _counts_by_tomo(jd / "particles.star")
+    totals = counts_by_tomo(jd / "particles.star")
 
     filtered_path = jd / "particles_filtered.star"
     has_filter = filtered_path.exists()
-    kept_counts = _counts_by_tomo(filtered_path) if has_filter else {}
+    kept_counts = counts_by_tomo(filtered_path) if has_filter else {}
     reviewed = set(read_reviewed_counts(jd).keys())
 
     # Universe of tomo names: prefer tomograms.star, fall back to particles.

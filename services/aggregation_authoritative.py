@@ -181,22 +181,28 @@ def resolve_authoritative_optset(
     )
 
 
-def enumerate_authoritative(state, project_path: Path, species_id: str) -> list[AuthoritativeHandle]:
+def enumerate_authoritative(
+    state, project_path: Path, species_id: str, *, curation_by_tomo: dict | None = None
+) -> list[AuthoritativeHandle]:
     """Every ``(species, tomo)``'s authoritative list resolved to a handle + extraction
     state — the read-only basis for the aggregation gate (doc §8.1). The tomo universe is
     the subtomo job's tomograms (``load_tomo_curation``) ∪ every tomo with a persisted
-    workbench list for this species, so manual-only tomos are not missed."""
+    workbench list for this species, so manual-only tomos are not missed.
+
+    ``curation_by_tomo`` (``{ts_name: {kept, total, reviewed}}`` for the subtomo job) lets a
+    caller that already ran ``load_tomo_curation`` pass it in instead of re-reading
+    ``particles.star`` (``services.particles.species_overview``)."""
     project_path = Path(project_path)
     subtomo_dir = subtomo_job_dir_for_species(state, species_id, project_path)
 
-    curation_by_tomo: dict = {}
-    tomo_names: set = set()
-    if subtomo_dir is not None:
-        from services.aggregation_discovery import load_tomo_curation
+    if curation_by_tomo is None:
+        curation_by_tomo = {}
+        if subtomo_dir is not None:
+            from services.aggregation_discovery import load_tomo_curation
 
-        for tc in load_tomo_curation(str(subtomo_dir)):
-            curation_by_tomo[tc.ts_name] = {"kept": tc.kept, "total": tc.total, "reviewed": tc.reviewed}
-            tomo_names.add(tc.ts_name)
+            for tc in load_tomo_curation(str(subtomo_dir)):
+                curation_by_tomo[tc.ts_name] = {"kept": tc.kept, "total": tc.total, "reviewed": tc.reviewed}
+    tomo_names: set = set(curation_by_tomo)
     for pl in getattr(state, "pick_lists", []):
         if pl.species_id == species_id:
             tomo_names.add(pl.tomo_name)

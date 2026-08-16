@@ -1,6 +1,6 @@
 # Roadmap 09 — `services/particles/` + server-side curation watcher
 
-**Status:** S1 + S2 CODE-COMPLETE 2026-08-16 (`py_compile` + `check_boundaries.py` owed — no python in the sandbox); scoped 2026-08-16. **Depends on:** 08-S0 (`registry_rev`, `species_identity`).
+**Status:** S1 + S2 + S3 CODE-COMPLETE 2026-08-16 (`py_compile` + `check_boundaries.py` owed — no python in the sandbox); scoped 2026-08-16. **Depends on:** 08-S0 (`registry_rev`, `species_identity`).
 **Unblocks:** 10 (Species page reads `species_overview`, ingest service), 11 (Picks/Curation tabs).
 **Risk:** low-medium (one behavior change — ingest moves server-side — quarantined in its own commit).
 Four commits: S1 move-only · S2 ingest service (+ small model additions) · S3 overview reader ·
@@ -243,3 +243,16 @@ is picked up on the next full sweep; (5) a dir whose slug matches nothing shows 
   `manual` / default `workbench`). **Deviation:** `_PICK_LIST_DEFAULT_COLOR` was DELETED, not moved
   to `models_base.PICK_LIST_DEFAULT_COLOR` — with `PickList.color` no longer written its only two
   users vanished, so the move would have installed a dead constant.
+- 2026-08-16 — **S3 CODE-COMPLETE** (same session; `ruff check .` clean, `py_compile` owed; the
+  CLI run on `agg_20260311_412_Grid3 --species 412` owed with the mount). NEW
+  `services/particles/species_overview.py` exactly per §3 (`ListRow` / `SpeciesOverview` frozen
+  slotted dataclasses, `species_overview` / `all_species_overview`, `__main__` CLI). Rows: one
+  `auto` row per tomo the subtomo job accounts for (`load_tomo_curation` totals/kept; EXTRACTED iff
+  the canonical optset exists) — for a CE-only species the auto counts come from the CE job's
+  `candidates.star` with `extraction_state="n/a"`; one row per persisted workbench list after a
+  headless `sync_filtered_count`. Gate = BLOCKED > PENDING > READY from `compute_gate_report`
+  (vacuously READY with no rows). Two small enabling touches outside the new file:
+  `enumerate_authoritative(..., *, curation_by_tomo=None)` accepts the already-loaded per-tomo map
+  (so the overview reads `particles.star` once, not twice) and `aggregation_discovery._counts_by_tomo`
+  → public `counts_by_tomo` (2 internal callers repointed). `services/particles/__init__.py`
+  docstring lists `ingest` + `species_overview`.
