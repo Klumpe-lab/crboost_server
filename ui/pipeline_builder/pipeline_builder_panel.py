@@ -133,7 +133,7 @@ class PipelineBuilderPanel:
             if not state.species_registry:
                 ui.notify(
                     "No particle species yet — use “+” on the PARTICLES header to create one "
-                    "(no template needed), or build a template in the Template Workbench.",
+                    "(no template needed), or create one on the Species page.",
                     type="warning",
                     timeout=4000,
                 )

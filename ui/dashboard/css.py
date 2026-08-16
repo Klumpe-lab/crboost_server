@@ -5,7 +5,7 @@ Extracted verbatim from ``ui/tomo_dashboard_dialog.py`` (R0 refactor). A single
 Pure presentation; no logic.
 """
 
-from nicegui import ui
+from nicegui import context, ui
 
 
 _CB_CSS = """
@@ -909,8 +909,57 @@ _CB_CSS = """
 .cb-strip-pickcell.zero { background: rgba(148, 163, 184, 0.14); color: #94a3b8; }
 .cb-strip-pickcell.fail { background: rgba(220, 38, 38, 0.12); color: #b91c1c; }
 .cb-strip-pickcell.pending { color: #cbd5e1; }
+/* ── Species page (roadmap 10) ─────────────────────────────────────────────── */
+/* Segmented control (`ui/components/segmented.py`): the job tab's flat dense
+ * switcher as one bordered strip; the active segment is tinted, never a Quasar tab. */
+.cb-seg {
+    display: inline-flex; align-items: stretch; flex-shrink: 0;
+    border: 1px solid #e2e8f0; border-radius: 4px; overflow: hidden; background: #ffffff;
+}
+.cb-seg-btn {
+    font-size: 9px; font-weight: 500; line-height: 16px; padding: 2px 8px;
+    color: #64748b; background: #ffffff; cursor: pointer; user-select: none;
+    border-right: 1px solid #e2e8f0; white-space: nowrap;
+}
+.cb-seg-btn:last-child { border-right: none; }
+.cb-seg-btn:hover { background: #f8fafc; }
+.cb-seg-btn.active { background: #f1f5f9; color: #1e293b; font-weight: 600; }
+/* Species header row: active pill left, segmented tabs right. */
+.cb-species-header {
+    display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    padding: 5px 10px; border-bottom: 1px solid #e5e7eb; background: #fafbfc; min-height: 30px;
+}
+/* Species rail: 200 px column, one row per species (pill + counts), "+" at the
+ * bottom. Selected row = tinted + a left border in the species color. */
+.cb-srail {
+    width: 200px; min-width: 200px; flex-shrink: 0; height: 100%; overflow-y: auto; overflow-x: hidden;
+    display: flex; flex-direction: column; border-right: 1px solid #e5e7eb; background: #fafafa;
+}
+.cb-srail-row {
+    display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 7px;
+    border-bottom: 1px solid #f1f5f9; border-left: 3px solid transparent; cursor: pointer;
+    min-width: 0;
+}
+.cb-srail-row:hover { background: #f8fafc; }
+.cb-srail-row.selected { background: #ffffff; }
+.cb-srail-meta {
+    margin-left: auto; font-size: 9px; color: #94a3b8; white-space: nowrap; flex-shrink: 0;
+    font-family: ui-monospace, monospace;
+}
+.cb-srail-add {
+    display: flex; align-items: center; gap: 4px; padding: 7px 10px; cursor: pointer;
+    font-size: 10px; color: #6366f1; border-bottom: 1px solid #f1f5f9;
+}
+.cb-srail-add:hover { background: #eef2ff; }
 """
 
 
 def ensure_assets_loaded() -> None:
+    """Inject the stylesheet once per client. The Species page (built with the workspace)
+    and the Journey / tomogram-import dialog (built later, lazily) share it, so a second
+    caller on the same page must not append a second copy to the head."""
+    client = context.client
+    if getattr(client, "_cb_assets_loaded", False):
+        return
+    client._cb_assets_loaded = True
     ui.add_head_html(f"<style>{_CB_CSS}</style>")

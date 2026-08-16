@@ -199,7 +199,7 @@ class SpeciesOrigin(StrEnum):
     plain str — `""` on species that pre-date the field means WORKBENCH — and
     validated at the write site (`ProjectState.add_species`)."""
 
-    WORKBENCH = "workbench"  # template-driven (workbench "+")
+    WORKBENCH = "workbench"  # template-driven (the Species page "+", formerly the workbench "+")
     MANUAL = "manual"  # created de novo for hand picking (roster "+", Journey empty state)
     IMPORTED = "imported"
 

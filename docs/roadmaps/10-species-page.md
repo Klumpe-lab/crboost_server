@@ -1,6 +1,6 @@
 # Roadmap 10 — the Species page (replaces the "Template Workbench" view)
 
-**Status:** scoped 2026-08-16; no code. **Depends on:** 08 (identity/rev gates, `species_pill`),
+**Status:** S1+S2 code-complete 2026-08-16 (one commit, PENDING RUNTIME); S3/S4 next. **Depends on:** 08 (identity/rev gates, `species_pill`),
 09-S2/S3 (ingest service, `species_overview`). **Unblocks:** 11 (Picks / Curation tabs live here).
 **Risk:** medium (new page shell; the workbench module itself is mounted, not changed).
 Four commits: S1 shell + rail + tabs · S2 Templates & masks tab (mounted workbench) · S3 Overview
@@ -158,3 +158,31 @@ Frozen slotted dataclasses for rail rows; `Protocol` for the tab objects (`build
 ## Stage log (append-only)
 
 - 2026-08-16 — scoped. No code.
+- 2026-08-16 — **S1 + S2 CODE-COMPLETE in one commit** (branch `denovo_picking`; sandbox ceiling was
+  `ruff check .` — no python again, so `py_compile` + `check_boundaries.py` are owed with the runtime
+  pass). **Deviation:** S1's "behavior-preserving swap of the view" is impossible without the mounted
+  workbench (§1 lists only Picks/Curation/Jobs as placeholders), and once the page's generic
+  lazy-build-and-cache mechanism exists the S2 tab is a 20-line class — so `templates_tab.py` lands
+  with the shell instead of as a separate move commit. NEW `ui/species/{__init__,page,rail,prompt,
+  tab,templates_tab}.py` + `ui/components/segmented.py`; DELETED `ui/species_workbench_panel.py`.
+  `page.SpeciesPage`: `[rail 200px | detail]`, header = active pill (`_PillView`, sig `(active,
+  species_identity())`) + `Segmented` tabs (`Overview | Templates & masks | Picks | Curation | Jobs`),
+  `{(species_id, tab): (container, tab)}` built on first selection, visibility-flipped, never rebuilt;
+  `observe()` = 3-s timer + `on_workbench_active` (drops containers of species deleted elsewhere,
+  selects ones created elsewhere, refreshes the visible tab's `refresh()`); `workbench_select_species`
+  = `select_species` (hook names kept, mode string stays `"workbench"`, nav label → "Species").
+  `DEFAULT_TAB = "templates"` until S3. `tab.py`: `TabContext` (frozen, slotted) + `SpeciesTab`
+  Protocol (`build(container)` / `refresh()`) + `PlaceholderTab` (one italic line, no affordances).
+  `rail.SpeciesRail(FingerprintedView)`: pill + "n tpl · n lists" per row, "+ New species", sig
+  `(active, species_identity(), (id, n_templates, n_lists)…)`. `prompt.create_species(backend,
+  project_path, *, origin)` = prompt → `add_species` → forced save; the three paths repointed (roster
+  "+" and Journey empty state keep `origin="manual"` + their SingleFlight guards; page "+" =
+  `SpeciesOrigin.WORKBENCH`, guarded by the page's flight); the workbench-only `templates/<sid>` mkdir
+  now happens only in `TemplateWorkbench.__init__` on first mount. `segmented.py`: `Segmented` /
+  `render_segmented(tabs, active, on_switch)` — a click flips the `active` class via `set_active`, no
+  clear()+rebuild (deviation from §1's `segmented(container, …)` signature: no container needed once
+  nothing is rebuilt); the job tab's `_render_tab_switcher` is left in place. CSS `.cb-seg*`,
+  `.cb-species-header`, `.cb-srail*` in `ui/dashboard/css.py`; `ensure_assets_loaded()` is now
+  idempotent per client (the page injects it at workspace build, the Journey later — one `<style>`).
+  Verification = §1 + §2 lists (species list = registry, "+" creates + selects, switch = visibility
+  flip, molstar iframe not re-inited on switch-and-back).
