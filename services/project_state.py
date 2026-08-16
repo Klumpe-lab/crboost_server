@@ -22,6 +22,7 @@ from services.models_base import (
     JobCategory as JobCategory,
     JobStatus as JobStatus,
     PickListType,
+    SpeciesOrigin,
     ListExtractionState,
     MicroscopeParams,
     AcquisitionParams,
@@ -45,7 +46,7 @@ logger = logging.getLogger(__name__)
 # load.  A major mismatch emits a loud warning; a missing version (pre-versioning
 # files) is treated as (0, 0).
 
-SCHEMA_VERSION: tuple[int, int] = (3, 2)  # 3.2: +use_afterok_orchestrator + job_dir_counter (P1.A)
+SCHEMA_VERSION: tuple[int, int] = (3, 3)  # 3.3: +PickList.source_kind/source_ref + ParticleSpecies.catalog_id (09-S2)
 
 
 def _afterok_global_default() -> bool:
@@ -209,6 +210,10 @@ class ParticleSpecies(BaseModel):
     # (created de novo for hand picking), "imported". Empty on species that
     # pre-date the field — treat as "workbench".
     origin: str = ""
+
+    # Roadmap-12 hook: the lab-catalog entry this species was instantiated from
+    # (None = project-local, the only case today). Written by nothing yet.
+    catalog_id: str | None = None
 
     # Set once the user commits extraction geometry for a de-novo species.
     # None means undecided, never "use some default" — see ExtractionParams.
@@ -518,11 +523,18 @@ class PickList(BaseModel):
     tomo_name: str = ""
     path: str = ""  # the .star/.coords file backing this list
     count: int = 0  # cached pick count, for display
-    color: str = "#3b82f6"  # per-list overlay color
+    color: str = "#3b82f6"  # LEGACY (roadmap 09-S2): lists render in species.color; kept so old JSON loads
     visible: bool = True  # persisted so the toggle survives reloads
     parent_slugs: list[str] = Field(default_factory=list)  # provenance for derived lists
     created_at: datetime = Field(default_factory=datetime.now)
     created_by: str = ""
+
+    # Provenance (roadmap 09-S2): where the coordinates came from. `source_kind` is a
+    # PickSourceKind value ("tm" | "artiax" | "import" | "merge"; "" on lists that
+    # pre-date the field), `source_ref` names the source (CE instance id · .coords
+    # stem · imported path · "a+b+c" parent slugs).
+    source_kind: str = ""
+    source_ref: str = ""
 
     # ── Per-list subtomo extraction tracking ─────────────────────────────────
     # Manual/imported/merged lists are raw COORDINATES (never extracted), so they
@@ -806,7 +818,7 @@ class ProjectState(BaseModel):
     def get_species(self, species_id: str) -> ParticleSpecies | None:
         return next((s for s in self.species_registry if s.id == species_id), None)
 
-    def add_species(self, name: str, *, origin: str = "workbench", color: str = "") -> ParticleSpecies:
+    def add_species(self, name: str, *, origin: str = SpeciesOrigin.WORKBENCH, color: str = "") -> ParticleSpecies:
         """Create a new species entry from a display name. Caller is responsible
         for ensuring the name is not blank before calling.
 
@@ -814,6 +826,7 @@ class ProjectState(BaseModel):
         every species is visually distinct on the shared tomogram canvas instead of
         all sharing one blue. Pass an explicit color to override.
         """
+        origin = SpeciesOrigin(origin).value  # validate at the write site; the field stays a plain str
         sid = slugify(name)
         # Avoid id collisions by appending a counter if needed
         existing_ids = {s.id for s in self.species_registry}

@@ -1,6 +1,6 @@
 # Roadmap 09 — `services/particles/` + server-side curation watcher
 
-**Status:** S1 CODE-COMPLETE 2026-08-16 (`py_compile` + `check_boundaries.py` owed — no python in the sandbox); scoped 2026-08-16. **Depends on:** 08-S0 (`registry_rev`, `species_identity`).
+**Status:** S1 + S2 CODE-COMPLETE 2026-08-16 (`py_compile` + `check_boundaries.py` owed — no python in the sandbox); scoped 2026-08-16. **Depends on:** 08-S0 (`registry_rev`, `species_identity`).
 **Unblocks:** 10 (Species page reads `species_overview`, ingest service), 11 (Picks/Curation tabs).
 **Risk:** low-medium (one behavior change — ingest moves server-side — quarantined in its own commit).
 Four commits: S1 move-only · S2 ingest service (+ small model additions) · S3 overview reader ·
@@ -225,3 +225,21 @@ is picked up on the next full sweep; (5) a dir whose slug matches nothing shows 
   `denovo_picking/03-extraction-and-resolver`) — dated records (architecture assessment, roadmap
   02/04 + census) keep the old paths on purpose. `imod_vis.py`'s import collapsed to one line under
   `ruff format` (shorter path). Zero logic change.
+- 2026-08-16 — **S2 CODE-COMPLETE** (same session; `ruff check .` clean, `py_compile` +
+  `check_boundaries.py` owed). Landed per §2 with one deviation: NEW
+  `services/particles/ingest.py::register_manual_pick_list(state, result, species_id, tomo_name) -> PickList`
+  (upsert via `add_pick_list`, stamps `source_kind` = `artiax` when the .coords sits in the
+  tomogram's own curation dir — same parent as `out_star` — else `import`; `source_ref` = stem resp.
+  path); dashboard `_persist_manual_pick_list` is the 3-line wrapper. `picks_filter.merge_source_for(slug,
+  lists, *, ce_job_dir, subtomo_job_dir)` replaces the dashboard's `_source_for` body (kept as a
+  one-line delegating local; `auto` without a CE job dir now raises `ValueError` instead of a
+  `KeyError`). Models: `PickList.source_kind/source_ref` (defaults `""`), `ParticleSpecies.catalog_id:
+  str | None = None`, `SCHEMA_VERSION` 3.2 → 3.3 (minor, info-log only), `PickList.color` marked
+  LEGACY (kept for old JSON, no writer, no reader — both render dicts in
+  `_collect_pick_lists_for_species` now carry `sp["color"]`, glyph distinguishes types); the merge
+  stamps `source_kind="merge"`, `source_ref="a+b+c"`; the synthesized `auto` render dict carries
+  `source_kind="tm"`, `source_ref=<CE iid>`. `StrEnum`s `SpeciesOrigin` / `PickSourceKind` in
+  `models_base.py`; `add_species` validates `origin` through `SpeciesOrigin(...)` (callers pass
+  `manual` / default `workbench`). **Deviation:** `_PICK_LIST_DEFAULT_COLOR` was DELETED, not moved
+  to `models_base.PICK_LIST_DEFAULT_COLOR` — with `PickList.color` no longer written its only two
+  users vanished, so the move would have installed a dead constant.
