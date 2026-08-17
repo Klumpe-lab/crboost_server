@@ -27,19 +27,18 @@ import asyncio
 import json
 import logging
 import uuid
-from contextlib import nullcontext
 from pathlib import Path
 
 import pandas as pd
-from nicegui import app, context, ui
+from nicegui import app, ui
 
-from services.aggregation_authoritative import extraction_params_for_species
 from services.configs.user_prefs_service import get_prefs_service
 from services.models_base import InstanceId, JobStatus, JobType, ListExtractionState, PickListType, PickSourceKind
-from services.particles.ingest import register_manual_pick_list
-from services.project_state import PickList, get_state_service
+from services.particles.list_ref import ListRef, fs_slug
 from services.result import ErrorCode
 from ui.current_project import current_project_state
+from ui.particles import list_actions
+from ui.particles.list_actions import extraction_badge
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import (
     _find_warp_tomo_preview,
@@ -92,20 +91,13 @@ from ui.dashboard.strip import build_strip
 
 logger = logging.getLogger(__name__)
 
-# Guards the per-tomo "Curate in ArtiaX" handler against re-entry: the button can
-# be destroyed + rebuilt mid-click by a dashboard refresh, so several clicks may
-# land before one does — without this each would prep a bundle + open a dialog.
+# Guards the Journey's own click handlers (new-species prompt, auto-discover import,
+# open-list-in-ArtiaX) against re-entry: a button can be destroyed + rebuilt mid-click
+# by a dashboard refresh, so several clicks may land before one does — without this
+# each would open a dialog. The shared pick-list actions (extract / merge / dedup / ⚡ /
+# import-by-path) carry their own guard in ui/particles/list_actions.py.
 # See ui/components/reactive.py and CLAUDE.md "UI reactivity patterns".
 _curation_flight = SingleFlight()
-
-
-# Extraction-state badge shown on each workbench list chip (Slice A surfaces it;
-# the per-list Extract action that flips it is Slice C). Auto lists show none.
-_EXTRACTION_BADGE = {
-    ListExtractionState.EXTRACTED: ("✓ extracted", "cb-badge-ok"),
-    ListExtractionState.NOT_EXTRACTED: ("○ not extracted", "cb-badge-todo"),
-    ListExtractionState.STALE: ("⚠ stale · re-extract", "cb-badge-stale"),
-}
 
 # Per-chip type tag (Slice B item 3): distinguishes the pytom auto list from the
 # manual/imported/merged workbench lists at a glance.
@@ -2261,15 +2253,10 @@ def _auto_kick_denoise_slab(denoise_job_dir: Path, ts_name: str, mrc_path: Path,
 _AUTO_KICKED_LIST_CUTOUTS: set[str] = set()
 
 
-def _fs_slug(name: str) -> str:
-    """Filesystem-safe slug (no regex dep) for cutout cache filenames."""
-    return "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(name)).strip("_") or "x"
-
-
 def _list_cutout_paths(project_path: Path, species_id: str, tomo_name: str, slug: str) -> tuple[Path, Path]:
     """(atlas PNG, index JSON) cache paths for one workbench list's recon cutouts."""
-    base = Path(project_path) / ".curation_sessions" / "cutouts" / _fs_slug(species_id)
-    stem = f"{_fs_slug(tomo_name)}__{_fs_slug(slug)}"
+    base = Path(project_path) / ".curation_sessions" / "cutouts" / fs_slug(species_id)
+    stem = f"{fs_slug(tomo_name)}__{fs_slug(slug)}"
     return base / f"{stem}.png", base / f"{stem}.json"
 
 
@@ -2767,16 +2754,54 @@ def _render_list_cutout_sheet(
     _install_hover_bridge()
 
 
+def _list_ref(sp: dict, lst: dict | None, project_path: Path) -> ListRef:
+    """The shared-action identity (``services/particles/list_ref.ListRef``) of one rail
+    list of species ``sp`` on this tomogram — ``lst`` None = the tomogram's own reference
+    slot (the ``auto`` list, or an empty one for a de-novo species), which the per-tomo
+    actions (Curate / ⚡ / Import) take. Built from the render dicts the collectors
+    already produced; the Species page builds the same ref from a ``PickList``."""
+    job_dir = sp.get("job_dir")
+    sub_dir = sp.get("subtomo_job_dir")
+    slug = lst["slug"] if lst else "auto"
+    if slug == "auto":
+        star = str(Path(job_dir) / "candidates.star") if job_dir else None
+        list_type = PickListType.AUTO
+        label = (lst or {}).get("label") or sp.get("label") or "auto"
+    else:
+        star = lst.get("path") or None
+        list_type = lst.get("list_type") or PickListType.MANUAL
+        label = lst.get("label") or slug
+    species_id = sp.get("species_id") or ""
+    tomograms_star = sp.get("tomograms_star")
+    return ListRef(
+        project_path=Path(project_path),
+        species_id=species_id,
+        species_label=sp.get("label") or species_id or "",
+        tomo_name=sp["row"]["tomo_name"],
+        slug=slug,
+        label=label,
+        list_type=list_type,
+        star_path=star,
+        ce_job_dir=Path(job_dir) if job_dir else None,
+        subtomo_job_dir=Path(sub_dir) if sub_dir else None,
+        subtomo_iid=sp.get("subtomo_iid"),
+        tomograms_star=Path(tomograms_star) if tomograms_star else None,
+    )
+
+
 def _render_list_extraction_bar(sp: dict, lst: dict, project_path: Path, refresh) -> None:
     """Slice C: per-list extraction status + action. Shows the DERIVED extraction badge
     (○ not extracted / ✓ extracted / ⚠ stale, from ``PickList.extraction_state()``) and
     an Extract / Re-extract button that subtomo-extracts THIS list (its ``_filtered``
-    subset when present) into ``Curation/<species>/<tomo>/<slug>/``."""
+    subset when present) into ``Curation/<species>/<tomo>/<slug>/`` — the action itself
+    is ``list_actions.extract_list`` (shared with the Species page)."""
+    from backend import get_backend
+
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
     pl = current_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
     est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
-    text, cls = _EXTRACTION_BADGE.get(est, ("", ""))
+    text, cls = extraction_badge(est)
     with ui.row().classes("items-center gap-2 w-full").style("margin: 0 0 8px; padding-bottom: 6px;"):
         ui.icon("dataset", size="15px").classes("text-slate-400")
         ui.label("Extraction").classes("text-[11px] font-semibold text-slate-600")
@@ -2784,197 +2809,15 @@ def _render_list_extraction_bar(sp: dict, lst: dict, project_path: Path, refresh
             ui.label(text).classes(cls).style("font-size: 11px; font-weight: 700;")
         ui.space()
         label = "Extract" if est == ListExtractionState.NOT_EXTRACTED else "Re-extract"
-        btn = ui.button(label, icon="science", on_click=lambda: _handle_extract_list(sp, lst, project_path, refresh))
+        btn = ui.button(
+            label,
+            icon="science",
+            on_click=lambda: list_actions.extract_list(
+                get_backend(), _list_ref(sp, lst, project_path), on_done=refresh
+            ),
+        )
         btn.props("dense no-caps size=sm unelevated color=indigo")
         btn.tooltip("Subtomo-extract this list's kept picks for downstream refinement (one SLURM job)")
-
-
-async def _handle_extract_list(sp: dict, lst: dict, project_path: Path, refresh) -> None:
-    """Submit + track a per-list subtomo extraction (Slice C). Resolves three things —
-    the schema source (the species' candidate optset, else the tomogram's tomograms.star
-    for a de-novo species), this list's curated star, and the extraction geometry — then
-    fires ``backend.extract_pick_list_and_wait`` (submit + await the out dir + record
-    ``PickList.mark_extracted`` + persist). A species with no committed geometry gets the
-    required dialog instead of a guessed box size (D-3). SingleFlight-guarded; the wait
-    runs in a BackgroundTask (the backend persists by explicit ``project_path``, W2)."""
-    from backend import get_backend
-    from services.particles import picks_filter
-
-    slug = lst["slug"]
-    species_id = sp.get("species_id") or ""
-    tomo_name = sp["row"]["tomo_name"]
-    async with _curation_flight(f"extract:{species_id}:{tomo_name}:{slug}") as acquired:
-        if not acquired:
-            return
-        backend = get_backend()
-        if backend is None:
-            ui.notify("Backend unavailable.", type="negative")
-            return
-        star = lst.get("path")
-        if not star:
-            ui.notify(f"'{lst.get('label')}' has no backing star to extract.", type="warning")
-            return
-        # Prefer the curated subset so extraction consumes the KEPT picks, not all of them.
-        filtered = picks_filter.filtered_list_path(Path(star))
-        list_star = str(filtered) if filtered.exists() else str(star)
-
-        # Schema source: mirror the species' candidates.star when it has a
-        # candidate-extract job; otherwise synthesize from the tomogram's own star
-        # (a de-novo species never had a TM/CE job to mirror).
-        candidate_optset = None
-        tomograms_star = None
-        job_dir = sp.get("job_dir")
-        if job_dir is not None and (Path(job_dir) / "optimisation_set.star").exists():
-            candidate_optset = Path(job_dir) / "optimisation_set.star"
-        else:
-            geom = geometry_for_ts(current_project_state(), project_path, tomo_name)
-            if geom is None:
-                ui.notify(
-                    "No candidate optimisation set and no tomograms.star for this tomogram — "
-                    "nothing to build an extraction input from.",
-                    type="negative",
-                    timeout=6000,
-                )
-                return
-            tomograms_star = Path(geom.tomograms_star)
-
-        params = extraction_params_for_species(current_project_state(), species_id, sp.get("subtomo_jm"))
-        if params is None:
-            # D-3: no committed geometry anywhere. ASK — never fall back to the old
-            # silent 384/1.0/224, which cut wrong-but-plausible subtomograms.
-            _prompt_extraction_geometry(
-                sp, lst, project_path, species_id, tomo_name, slug, candidate_optset, tomograms_star, list_star, refresh
-            )
-            return
-
-        _submit_list_extraction(
-            backend,
-            project_path,
-            candidate_optset,
-            tomograms_star,
-            list_star,
-            tomo_name,
-            species_id,
-            slug,
-            lst.get("label") or slug,
-            params,
-            refresh,
-        )
-
-
-def _submit_list_extraction(
-    backend,
-    project_path: Path,
-    candidate_optset: Path | None,
-    tomograms_star: Path | None,
-    list_star: str,
-    tomo_name: str,
-    species_id: str,
-    slug: str,
-    label: str,
-    params: dict,
-    refresh,
-) -> None:
-    """Fire the per-list extraction as a tracked BackgroundTask. Split out of
-    ``_handle_extract_list`` so the geometry dialog can submit the same way once the
-    user commits box/bin/crop."""
-
-    async def _run(progress_cb):
-        progress_cb(0, 0, "extracting subtomograms…")
-        return await backend.extract_pick_list_and_wait(
-            project_path,
-            candidate_optset,
-            Path(list_star),
-            tomo_name,
-            species_id,
-            slug,
-            tomograms_star=tomograms_star,
-            **params,
-        )
-
-    from ui.background_task import BackgroundTask
-
-    BackgroundTask(
-        title=f"Extract · {label}",
-        subtitle=tomo_name,
-        project_path=str(project_path),
-        dedup_key=f"extract:{species_id}:{tomo_name}:{slug}",
-    ).submit(_run, on_complete=lambda _t: refresh(), show_start_toast=True)
-    ui.notify(f"Extraction submitted for '{label}' — tracking in the task tray.", type="info")
-
-
-def _prompt_extraction_geometry(
-    sp: dict,
-    lst: dict,
-    project_path: Path,
-    species_id: str,
-    tomo_name: str,
-    slug: str,
-    candidate_optset: Path | None,
-    tomograms_star: Path | None,
-    list_star: str,
-    refresh,
-) -> None:
-    """Ask for box / binning / crop before a first extraction, and persist the answer on
-    the species (D-3).
-
-    Reached only when NOTHING has committed a geometry: no SUBTOMO_EXTRACTION job model
-    and no ``species.extraction_params``. The fields open EMPTY on purpose — prefilling
-    them with the old 384/1.0/224 would just relabel a silent default as a confirmed one.
-    """
-    from backend import get_backend
-    from services.project_state import ExtractionParams
-
-    with ui.dialog() as dialog, ui.card().classes("w-[26rem] max-w-full gap-2"):
-        ui.label("Extraction geometry").classes("text-base font-bold")
-        ui.label(
-            f"'{sp.get('label') or species_id}' has no subtomo-extraction job to inherit box/binning/crop "
-            "from. Set them once — they are saved on the species and reused for every later extraction."
-        ).classes("text-xs text-gray-600")
-        box_in = ui.number("box size (px, unbinned)", min=16, step=2).props("dense outlined").classes("w-full")
-        bin_in = ui.number("binning", min=0.1, step=0.5).props("dense outlined").classes("w-full")
-        crop_in = ui.number("crop size (px)", min=16, step=2).props("dense outlined").classes("w-full")
-
-        async def _commit() -> None:
-            box, binning, crop = box_in.value, bin_in.value, crop_in.value
-            if not box or not binning or not crop:
-                ui.notify("Box size, binning and crop are all required.", type="warning")
-                return
-            backend = get_backend()
-            if backend is None:
-                ui.notify("Backend unavailable.", type="negative")
-                return
-            state = current_project_state()
-            species = state.get_species(species_id)
-            if species is None:
-                ui.notify("Species not found — reload the project.", type="negative")
-                return
-            species.extraction_params = ExtractionParams(box_size=int(box), binning=float(binning), crop_size=int(crop))
-            state.mark_dirty()
-            # Await the write: the extraction below runs in a BackgroundTask with no
-            # client context, and a fire-and-forget save can lose the geometry the
-            # user just committed.
-            await backend.save_project(state.project_path, force=True)
-            dialog.close()
-            params = extraction_params_for_species(state, species_id, sp.get("subtomo_jm"))
-            _submit_list_extraction(
-                backend,
-                project_path,
-                candidate_optset,
-                tomograms_star,
-                list_star,
-                tomo_name,
-                species_id,
-                slug,
-                lst.get("label") or slug,
-                params,
-                refresh,
-            )
-
-        with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Save & extract", icon="science", color="indigo", on_click=_commit).props("no-caps")
-    dialog.open()
 
 
 async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh) -> None:
@@ -3105,7 +2948,6 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
     star = lst.get("path")
     if not star:
         return
-    species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
 
     with (
@@ -3156,27 +2998,11 @@ def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> Non
                 dedup_btn.props(remove="disable")
 
         async def _do_dedup(_e=None):
-            backend = get_backend()
-            if backend is None:
-                ui.notify("Backend unavailable.", type="negative")
-                return
-            r = float(radius_in.value or 0)
-            res = await backend.deduplicate_pick_list(star, tomo_name, r)
-            if not res.get("success"):
-                ui.notify(f"Deduplicate failed: {res.get('error')}", type="negative")
-                return
-            state_obj = current_project_state()
-            pl = state_obj.get_pick_list(lst["slug"], species_id, tomo_name)
-            if pl is not None:
-                pl.count = int(res.get("n_after", pl.count))
-                state_obj.mark_dirty()
-                # AWAIT (force) so the dedup'd count lands on disk — a fire-and-forget
-                # create_task gets GC'd before it runs (same bug as the manual-list save).
-                await backend.save_project(project_path, force=True)
-            ui.notify(
-                f"Removed {res.get('n_removed', 0)} overlapping picks · {res.get('n_after', 0)} kept", type="positive"
+            # Shared action: the backend rewrites the star, updates the count, persists
+            # and bumps the rev; `refresh` re-renders the sheet + rail count.
+            await list_actions.dedup_list(
+                get_backend(), _list_ref(sp, lst, project_path), float(radius_in.value or 0), on_done=refresh
             )
-            refresh()
 
         radius_in.on_value_change(_recompute)
         import asyncio as _asyncio
@@ -3392,6 +3218,7 @@ def _denovo_species_entry(species, species_id: str, idx: int, color: str, geom: 
         "species_id": species_id,
         "subtomo_job_dir": None,
         "subtomo_jm": None,
+        "subtomo_iid": None,
         "auto_kept_count": None,
         "row": row,
         "manifest": {},
@@ -3458,6 +3285,7 @@ def _ce_species_entry(
         "species_id": species_id,
         "subtomo_job_dir": subtomo_job_dir,
         "subtomo_jm": sub_match[1] if sub_match else None,
+        "subtomo_iid": sub_match[0] if sub_match else None,
         "auto_kept_count": auto_kept_count,
         "row": row,
         "manifest": manifest,
@@ -4007,138 +3835,9 @@ def _artiax_inputs(sp: dict) -> tuple[Path | None, Path]:
     return (Path(job_dir) / "candidates.star" if job_dir else None), Path(sp["tomograms_star"])
 
 
-async def _handle_curate_in_artiax(sp: dict, project_path: Path) -> None:
-    """Per-tomo 'Curate in ArtiaX': export this (species, tomo)'s picks to a
-    `.coords` + `.cxc`, then open the curation control center bound to this
-    tomogram. The control center is status-first — it shows the live session's
-    connection info + the load commands, or a Start button that preloads this
-    tomogram. SingleFlight-guarded so repeated clicks prep only one bundle."""
-    from backend import get_backend
-    from ui.curation_session_dialog import open_curation_control_center
-
-    tomo_name = sp["row"]["tomo_name"]
-    async with _curation_flight(f"{sp.get('species_id')}:{tomo_name}") as acquired:
-        if not acquired:
-            return
-        backend = get_backend()
-        if backend is None:
-            ui.notify("Backend unavailable.", type="negative")
-            return
-        candidates_star, tomograms_star = _artiax_inputs(sp)
-        ui.notify(f"Preparing ArtiaX bundle for {tomo_name}…", type="info")
-        bundle = await backend.prepare_curation_bundle(
-            project_path,
-            candidates_star,
-            tomograms_star,
-            tomo_name,
-            sp.get("label") or sp.get("species_id") or "",
-            species_id=sp.get("species_id") or "",
-        )
-        if not bundle.get("success"):
-            ui.notify(f"Could not prepare picks for {tomo_name}: {bundle.get('error')}", type="negative")
-            return
-        bundle["tomo_name"] = tomo_name
-        bundle["candidates_star"] = str(candidates_star) if candidates_star else ""
-        bundle["tomograms_star"] = str(tomograms_star)
-        bundle["species_id"] = sp.get("species_id") or ""
-        bundle["species_label"] = sp.get("label") or sp.get("species_id") or ""
-        await open_curation_control_center(backend, project_path, bundle=bundle)
-
-
-async def _handle_load_into_session(sp: dict, project_path: Path) -> None:
-    """Per-tomo 'Load into running session': swap the user's ALREADY-running
-    ChimeraX/ArtiaX to THIS (species, tomo) over the REST channel — the reuse path
-    that avoids relaunching a viewer per tomogram (the session is per-user, found
-    across all projects). No live session → point the user at 'Curate in ArtiaX'."""
-    from backend import get_backend
-
-    tomo_name = sp["row"]["tomo_name"]
-    species_id = sp.get("species_id") or ""
-    async with _curation_flight(f"loadinto:{species_id}:{tomo_name}") as acquired:
-        if not acquired:
-            return
-        # This handler awaits a ~20 s load; during it the dashboard's periodic
-        # main_area.clear() deletes the slot this coroutine was entered under, so a later
-        # bare ui.notify dies with "parent element ... has been deleted". Capture the page
-        # LAYOUT slot (never cleared) up front and route every notify through it; swallow
-        # the residual race so a stale toast never surfaces a traceback.
-        try:
-            host = context.client.layout.default_slot
-        except Exception:
-            host = nullcontext()
-
-        def _notify(msg: str, **kw) -> None:
-            try:
-                with host:
-                    ui.notify(msg, **kw)
-            except Exception:
-                logger.info("load-into-session: dropped notify (slot gone): %s", msg)
-
-        backend = get_backend()
-        if backend is None:
-            _notify("Backend unavailable.", type="negative")
-            return
-        active = await backend.find_active_curation_session_any()
-        if not active:
-            active = await backend.find_active_curation_session(project_path)
-        if not active or not active.get("rest_port"):
-            _notify(
-                "No running ChimeraX session yet — click ‘Curate in ArtiaX’ to start one, then load tomograms into it.",
-                type="warning",
-                timeout=6000,
-            )
-            return
-
-        # Confirm — `close session` wipes unsaved manual picks. Layout-parented so
-        # the 4 s dashboard refresh can't clear the dialog mid-interaction.
-        with host:
-            with ui.dialog().props("persistent") as confirm, ui.card().classes("w-[26rem] max-w-full gap-2"):
-                ui.label("Load into running session?").classes("text-sm font-bold")
-                ui.label(
-                    f"Swap the running ArtiaX (on {active.get('node') or '?'}) to {tomo_name} + its picks, clearing "
-                    "what's open now. Any manual picks you haven't saved for the current tomogram would be lost."
-                ).classes("text-[12px] text-gray-600")
-                save_cb = ui.checkbox("Save my current picks first", value=True).props("dense").classes("text-[12px]")
-                ui.label("crboost saves your open lists to the current tomogram's folder before switching.").classes(
-                    "text-[10px] text-gray-400"
-                )
-                with ui.row().classes("w-full justify-end gap-2"):
-                    ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
-                    ui.button("Load", color="indigo", on_click=lambda: confirm.submit(True)).props("dense no-caps")
-        go = await confirm
-        do_save = bool(save_cb.value) if go else False
-        try:
-            confirm.delete()
-        except Exception:
-            pass
-        if not go:
-            return
-
-        candidates_star, tomograms_star = _artiax_inputs(sp)
-        _notify(f"Loading {tomo_name} into the running session…", type="info")
-        res = await backend.load_into_session(
-            active,
-            project_path,
-            candidates_star,
-            tomograms_star,
-            tomo_name,
-            sp.get("label") or species_id or "",
-            species_id=species_id,
-            save_first=do_save,
-        )
-        if res.get("success"):
-            n = res.get("auto_count")
-            _notify(
-                f"Loaded {tomo_name}{f' ({n} picks)' if n is not None else ''} into the running session.",
-                type="positive",
-            )
-        else:
-            _notify(f"Load failed: {res.get('error') or 'unknown error'}", type="negative", timeout=7000)
-
-
 async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -> None:
     """Per-list 'Open in ArtiaX': preload a CHOSEN workbench list (its centered-Å
-    star) into a curation session for another pass. Mirrors `_handle_curate_in_artiax`
+    star) into a curation session for another pass. Mirrors `list_actions.curate_in_artiax`
     but exports the list's own picks (labelled by slug so its reference `.coords`
     is named apart from the user's save). Saving in ArtiaX yields a NEW `.coords`
     → re-import via the tab's 'Import picks'; this list's star is untouched."""
@@ -4183,42 +3882,6 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
         await open_curation_control_center(backend, project_path, bundle=bundle)
 
 
-async def _persist_manual_pick_list(result: dict, species_id: str, tomo_name: str, project_path: Path) -> int:
-    """Upsert the `manual` PickList for this (species, tomo) from a backend import
-    result and persist ProjectState — AWAITED with force=True so the registry
-    actually lands on disk. A fire-and-forget `create_task(save_project())` was
-    getting GC'd before it ran, leaving `pick_lists: []` in project_params.json and
-    forcing a re-import on every reopen. Returns the imported pick count. Explicit
-    "Import picks" click path only — ArtiaX saves are otherwise picked up by the
-    server-side CurationWatcher (roadmap 09-S4). One `manual` list per (species, tomo)
-    — a re-import replaces it (the raw .coords are still archived per-import for
-    provenance).
-
-    `project_path` is REQUIRED — it resolves the real registry by path (a bare
-    `current_project_state()` is a blank throwaway outside a client/tab context, W2).
-    The upsert itself lives in `services.particles.ingest` (shared with the server-side
-    curation watcher); this wrapper only resolves the state and persists."""
-    pl = register_manual_pick_list(get_state_service().state_for(project_path), result, species_id, tomo_name)
-    from backend import get_backend
-
-    await get_backend().save_project(project_path, force=True)
-    return pl.count
-
-
-async def _register_manual_pick_list(sp: dict, result: dict, refresh, project_path: Path) -> None:
-    """Explicit-import click path: persist the `manual` list, toast, and refresh so
-    the new diamond layer appears on the canvas."""
-    tomo_name = sp["row"]["tomo_name"]
-    count = await _persist_manual_pick_list(result, sp.get("species_id") or "", tomo_name, project_path)
-    src = Path(result.get("coords_source", "")).name
-    ui.notify(
-        f"Imported {count} manual picks for {tomo_name}" + (f" (from {src})" if src else ""),
-        type="positive",
-        timeout=3000,
-    )
-    refresh()
-
-
 # Whether the user has a live ChimeraX+ArtiaX curation session right now. Polled at a
 # slow cadence by the journey's _maybe_refresh (squeue is the source of truth) and read
 # by the rail toolbox to color the 'Curate' button (gray = none / green = live).
@@ -4228,14 +3891,13 @@ _CURATION_SESSION_LIVE: dict = {"on": False}
 async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -> None:
     """Per-tomo 'Import picks': find the .coords the user saved in ArtiaX (any
     filename, newest first), convert → the tomo's manual.star, register a `manual`
-    PickList. If nothing is found in the curation dir, prompt for an explicit
-    path (ArtiaX's save dialog may default anywhere). SingleFlight-guarded."""
+    PickList (``list_actions.register_imported_picks``). If nothing is found in the
+    curation dir, prompt for an explicit path (``list_actions.import_picks_from_path`` —
+    ArtiaX's save dialog may default anywhere). SingleFlight-guarded."""
     from backend import get_backend
 
-    tomo_name = sp["row"]["tomo_name"]
-    species_id = sp.get("species_id") or ""
-    species_label = sp.get("label") or species_id or ""
-    async with _curation_flight(f"import:{species_id}:{tomo_name}") as acquired:
+    ref = _list_ref(sp, None, project_path)
+    async with _curation_flight(f"import:{ref.species_id}:{ref.tomo_name}") as acquired:
         if not acquired:
             return
         backend = get_backend()
@@ -4243,57 +3905,15 @@ async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -
             ui.notify("Backend unavailable.", type="negative")
             return
         result = await backend.import_curation_picks(
-            project_path, Path(sp["tomograms_star"]), tomo_name, species_label, species_id
+            project_path, ref.tomograms_star, ref.tomo_name, ref.species_label, ref.species_id
         )
         if not result.get("success"):
             if result.get("code") == ErrorCode.NO_COORDS_FOUND:
-                _open_manual_coords_path_dialog(sp, project_path, refresh)
+                list_actions.import_picks_from_path(backend, ref, on_done=refresh)
                 return
             ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
             return
-        await _register_manual_pick_list(sp, result, refresh, project_path)
-
-
-def _open_manual_coords_path_dialog(sp: dict, project_path: Path, refresh) -> None:
-    """Fallback when no saved .coords was auto-found: let the user paste the full
-    path to the file they saved in ArtiaX (we don't control where its save dialog
-    defaults). Imports via the same backend path + registers the manual list."""
-    from backend import get_backend
-
-    tomo_name = sp["row"]["tomo_name"]
-    species_id = sp.get("species_id") or ""
-    species_label = sp.get("label") or species_id or ""
-    tomograms_star = Path(sp["tomograms_star"])
-    with ui.dialog() as dialog, ui.card().classes("w-[34rem] max-w-full gap-2"):
-        ui.label(f"Import ArtiaX picks — {tomo_name}").classes("text-base font-bold")
-        ui.label(
-            "No saved .coords was found in this project's curation dirs. Paste the full path to the "
-            ".coords you saved from ArtiaX (any filename)."
-        ).classes("text-xs text-gray-600")
-        path_in = ui.input("path to .coords").props("dense outlined").classes("w-full font-mono text-xs")
-
-        async def _do_import():
-            p = (path_in.value or "").strip()
-            if not p:
-                ui.notify("Enter a path", type="warning")
-                return
-            backend = get_backend()
-            if backend is None:
-                ui.notify("Backend unavailable.", type="negative")
-                return
-            result = await backend.import_curation_picks(
-                project_path, tomograms_star, tomo_name, species_label, species_id, coords_path=Path(p)
-            )
-            if not result.get("success"):
-                ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
-                return
-            dialog.close()
-            await _register_manual_pick_list(sp, result, refresh, project_path)
-
-        with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Import", icon="download", color="indigo", on_click=_do_import).props("no-caps")
-    dialog.open()
+        await list_actions.register_imported_picks(backend, ref, result, on_done=refresh)
 
 
 def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None:
@@ -4510,7 +4130,6 @@ def _render_list_rail(
 
     state_obj = current_project_state()
     species_id = sp.get("species_id") or ""
-    species_label = sp.get("label") or species_id or ""
     tomo_name = sp["row"]["tomo_name"]
     key = (species_id, tomo_name)
     _MERGE_SELECT.setdefault(key, set())
@@ -4522,15 +4141,6 @@ def _render_list_rail(
             " background:#6366f1; border:1.5px solid #6366f1;"
             if checked
             else " background:transparent; border:1.5px solid #cbd5e1;"
-        )
-
-    def _source_for(slug: str):
-        # Each ticked list contributes its KEPT subset to the merge (the user's keep/drop
-        # must not bleed dropped picks into it) — see picks_filter.merge_source_for.
-        from services.particles import picks_filter
-
-        return picks_filter.merge_source_for(
-            slug, lists, ce_job_dir=sp.get("job_dir"), subtomo_job_dir=sp.get("subtomo_job_dir")
         )
 
     def _update_merge_bar() -> None:
@@ -4553,51 +4163,15 @@ def _render_list_rail(
         _update_merge_bar()
 
     async def _do_inline_merge() -> None:
-        chosen = [s for s in (_source_for(sl) for sl in _MERGE_SELECT.get(key, set())) if s]
-        if len(chosen) < 2:
-            ui.notify("Tick at least 2 lists to merge.", type="warning")
+        # Each ticked list contributes its KEPT subset (list_actions.merge_source_for);
+        # the shared action writes the star, registers + persists the merged PickList.
+        ticked = _MERGE_SELECT.get(key, set())
+        refs = [_list_ref(sp, lst, project_path) for lst in lists if lst["slug"] in ticked]
+        slug = await list_actions.merge_lists(get_backend(), refs, name_in.value)
+        if slug is None:
             return
-        backend = get_backend()
-        if backend is None:
-            ui.notify("Backend unavailable.", type="negative")
-            return
-        # NAME → slug: re-using a name replaces that merge (upsert); a new name makes a
-        # distinct merged list (own slug → own star, chip, curation), so no clobber.
-        raw_name = (name_in.value or "").strip() or "Merged"
-        slug = f"merged__{_fs_slug(raw_name)}"
-        res = await backend.merge_pick_lists(
-            project_path,
-            species_id,
-            species_label,
-            tomo_name,
-            [{"path": c["path"], "type": c["type"]} for c in chosen],
-            out_slug=slug,
-        )
-        if not res.get("success"):
-            ui.notify(f"Merge failed: {res.get('error')}", type="negative")
-            return
-        current_project_state().add_pick_list(
-            PickList(
-                slug=slug,
-                label=raw_name,
-                list_type=PickListType.MERGED,
-                species_id=species_id,
-                tomo_name=tomo_name,
-                path=res["out_star"],
-                count=int(res.get("count", 0)),
-                parent_slugs=[c["slug"] for c in chosen],
-                source_kind=PickSourceKind.MERGE.value,
-                source_ref="+".join(c["slug"] for c in chosen),
-                created_by=getattr(backend, "username", ""),
-            )
-        )
-        # Persist by explicit project_path (not the client-context default) so the
-        # merged list survives a restart even if this runs without a resolvable
-        # client state — the same contract the manual-list persist proved out (P4).
-        await backend.save_project(project_path, force=True)
         _MERGE_SELECT[key] = set()  # consumed
         _SELECTED_LIST_SLUG[key] = slug  # land on the new merge
-        ui.notify(f"Created '{raw_name}' — {res.get('count', 0)} picks from {len(chosen)} lists", type="positive")
         refresh()
 
     # Authoritative-list selector (one per species,tomo): which list downstream
@@ -4675,7 +4249,7 @@ def _render_list_rail(
                         if slug != "auto":
                             pl = state_obj.get_pick_list(slug, species_id, tomo_name)
                             est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
-                            text, cls = _EXTRACTION_BADGE.get(est, ("", ""))
+                            text, cls = extraction_badge(est)
                             if text:
                                 # Symbol only in the table (○/✓/⚠); full label on hover.
                                 ui.label(text.split(" ", 1)[0]).classes(f"cb-ltable-badge {cls}").tooltip(text)
@@ -4710,7 +4284,10 @@ def _render_list_rail(
             # session is up, green when one is running (polled into _CURATION_SESSION_LIVE).
             _sess_live = _CURATION_SESSION_LIVE.get("on", False)
             (
-                ui.button(icon="view_in_ar", on_click=lambda: _handle_curate_in_artiax(sp, project_path))
+                ui.button(
+                    icon="view_in_ar",
+                    on_click=lambda: list_actions.curate_in_artiax(get_backend(), _list_ref(sp, None, project_path)),
+                )
                 .props("flat dense round size=sm")
                 .classes("cb-curate-live" if _sess_live else "cb-curate-off")
                 .tooltip(
@@ -4720,7 +4297,12 @@ def _render_list_rail(
                 )
             )
             (
-                ui.button(icon="swap_horiz", on_click=lambda: _handle_load_into_session(sp, project_path))
+                ui.button(
+                    icon="swap_horiz",
+                    on_click=lambda: list_actions.load_tomo_into_session(
+                        get_backend(), _list_ref(sp, None, project_path)
+                    ),
+                )
                 .props("flat dense round size=sm color=indigo")
                 .tooltip("Load into running session — swap the live ArtiaX to this tomogram (reuse one session)")
             )
