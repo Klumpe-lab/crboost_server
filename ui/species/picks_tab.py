@@ -13,9 +13,10 @@ Overview tab's cadence: when the in-memory key (registry rev + job statuses) mov
 show, and at most every `_DISK_REFRESH_S` while shown. The view itself is a
 `FingerprintedView` over that computed value.
 
-Every action is `ui/particles/list_actions` — the same code the Journey drives (11-S1), so
-the two surfaces cannot drift. `on_done` is a no-op here: the actions bump the registry
-rev, and the rev is what repaints this view.
+Every action is `ui/particles/list_actions` — carved out of the Journey in 11-S1 and, since
+11-S3, driven from HERE alone (the Journey keeps only ⚡, which shares
+`load_tomo_into_session` / `curate_in_artiax`). `on_done` is a no-op here: the actions bump
+the registry rev, and the rev is what repaints this view.
 
 Extraction status is DERIVED (`PickList.extraction_state()`) until roadmap 07 makes
 per-list extraction a real job; after 07 the badge's hover gains the instance's execution

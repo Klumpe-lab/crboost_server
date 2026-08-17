@@ -21,6 +21,7 @@ from services.models_base import (
     InstanceId,
     JobStatus,
     JobType,
+    ListExtractionState,
     PickListType,
     # Re-export: the renderers read this as a dashboard overlay constant, but a
     # species' color is persisted model data (assigned by ProjectState.add_species),
@@ -787,6 +788,38 @@ def pick_list_counts_for_species(state, species_id: str | None) -> dict[str, int
     return out
 
 
+def pick_list_subtomo_status(state, species_id: str, tomo_name: str) -> str:
+    """Strip ``subtomo_status`` for one (species, tomogram) DERIVED from its pick lists'
+    extraction state — the only extraction fact a de-novo species has, since it owns no
+    subtomo-extraction job whose out dir could be probed. ``ok`` once ANY list has an
+    extraction output on disk, else ``pending``. Before roadmap 11-S3 / 07 §3-S4 this was
+    hardcoded ``"pending"``, so a per-list extraction never moved the strip for a de-novo
+    species.
+
+    TWO states, not three — deliberately coarser than 11-S3 §3's "STALE → warn" (see its
+    stage record). Telling STALE from EXTRACTED needs ``PickList.filtered_count`` synced
+    from the list's ``_filtered.star`` (``picks_filter.sync_filtered_count``, a pandas read
+    per list); without that sync a list filtered in a PRIOR session reads falsely STALE
+    right after a correct extraction of its kept subset — the failure
+    ``aggregation_authoritative`` and ``species_overview`` each call the sync to avoid. The
+    strip derives this for EVERY tomogram on a render path, so it can afford neither the
+    reads nor a wrong-but-plausible amber cell: freshness is the Picks tab's per-list badge,
+    which does sync. What is shared is the authority — ``extraction_state()`` is called
+    here, never re-implemented.
+
+    Costs nothing for a list that was never extracted (``extracted_path`` empty
+    short-circuits before any syscall) and a few stats for one that was; callers still
+    scope which tomograms they ask about (``collect_species_journey``'s ``only_ts``)."""
+    return (
+        "ok"
+        if any(
+            pl.extraction_state() is not ListExtractionState.NOT_EXTRACTED
+            for pl in state.get_pick_lists(species_id, tomo_name)
+        )
+        else "pending"
+    )
+
+
 def recon_mrc_map(state, project_path: Path) -> dict[str, str]:
     """{ts_name: reconstructed-tomogram path} read once from the recon job's
     tomograms.star, so the roster info popover can list the volume without a
@@ -808,7 +841,7 @@ def recon_mrc_map(state, project_path: Path) -> dict[str, str]:
     return out
 
 
-def collect_species_journey(project_state, project_path: Path) -> dict[str, list[dict]]:
+def collect_species_journey(project_state, project_path: Path, only_ts: str | None = None) -> dict[str, list[dict]]:
     """Per-TS per-species particle-track data for the roster.
 
     {ts: [{idx, label, color, species_id, pick_status, subtomo_status, n_picks,
@@ -816,12 +849,19 @@ def collect_species_journey(project_state, project_path: Path) -> dict[str, list
     follow `species_render_plan`, so the roster dot matches the canvas overlay and
     the species tabs everywhere. A species with no candidate-extract job (picked de
     novo) contributes a row for each tomogram it has pick lists on — its only per-TS
-    fact until those lists are extracted."""
+    fact, with `subtomo_status` derived from those lists' extraction state.
+
+    ``only_ts`` restricts the rows to ONE tilt series. The Journey's main-pane signature
+    fingerprints just the selected TS, so it asks for just that one and skips the
+    per-list extraction stats of every other tomogram; the strip, which draws them all,
+    passes None."""
     out: dict[str, list[dict]] = {}
     for idx, (species, species_id, ce) in enumerate(species_render_plan(project_state)):
         color = getattr(species, "color", "") or SPECIES_OVERLAY_COLORS[idx % len(SPECIES_OVERLAY_COLORS)]
         if ce is None:
             for ts, n_picks in pick_list_counts_for_species(project_state, species_id).items():
+                if only_ts is not None and ts != only_ts:
+                    continue
                 out.setdefault(ts, []).append(
                     {
                         "idx": idx,
@@ -829,7 +869,7 @@ def collect_species_journey(project_state, project_path: Path) -> dict[str, list
                         "color": color,
                         "species_id": species_id,
                         "pick_status": "ok" if n_picks else "pending",
-                        "subtomo_status": "pending",
+                        "subtomo_status": pick_list_subtomo_status(project_state, species_id, ts),
                         "n_picks": n_picks,
                         "filtered_count": None,
                         "ce_star": None,
@@ -862,6 +902,8 @@ def collect_species_journey(project_state, project_path: Path) -> dict[str, list
                 sub_status = _subtomo_extract_status_per_ts(sub_jd, sub_match[1], expected_ts=picked_ok)
         ce_star = str(jd / "candidates.star")
         for ts in set(pick_status) | set(sub_status):
+            if only_ts is not None and ts != only_ts:
+                continue
             entry = entries.get(ts) or {}
             out.setdefault(ts, []).append(
                 {
