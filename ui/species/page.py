@@ -3,7 +3,7 @@
 Detail = header row (active species' pill + segmented tabs) + one container per
 (species, tab), built lazily on first selection and cached; a switch only flips
 visibility. Tabs: Overview (S3: identity editor, status, sanity, delete) · Templates &
-masks (the mounted workbench, S2) · Picks · Curation (roadmap 11) · Jobs (S4). The page
+masks (the mounted workbench, S2) · Picks (11-S2) · Curation (11-S4) · Jobs (S4). The page
 owns the 3-s registry observe (species created / deleted elsewhere — roster "+", another
 browser tab, the Overview's delete) and the `on_workbench_active` / `workbench_select_species`
 hooks the workspace registers (`workspace_page._switch_to` / `_open_species`); the
@@ -26,6 +26,7 @@ from ui.components.species_pill import render_species_pill
 from ui.dashboard.css import ensure_assets_loaded
 from ui.species.jobs_tab import JobsTab
 from ui.species.overview_tab import OverviewTab
+from ui.species.picks_tab import PicksTab
 from ui.species.prompt import create_species
 from ui.species.rail import SpeciesRail
 from ui.species.tab import PlaceholderTab, SpeciesTab, TabContext
@@ -129,6 +130,9 @@ class SpeciesPage:
         self.callbacks["on_workbench_active"] = self._set_active
         # "open in Species" from a job's Config tab (workspace_page._open_species).
         self.callbacks["workbench_select_species"] = self.select_species
+        # Cross-tab links inside this page (the Picks tab's empty state points at
+        # Curation / Jobs) — a tab never reaches into the page object itself.
+        self.callbacks["species_select_tab"] = self.select_tab
 
     def _set_active(self, on: bool) -> None:
         self.visible = on
@@ -178,7 +182,7 @@ class SpeciesPage:
             case "overview":
                 return OverviewTab(ctx)
             case "picks":
-                return PlaceholderTab("Picks — the cross-tomogram list table lands in roadmap 11 S2.")
+                return PicksTab(ctx)
             case "curation":
                 return PlaceholderTab("Curation — session, save-dir contract and watcher log land in roadmap 11 S4.")
             case "jobs":

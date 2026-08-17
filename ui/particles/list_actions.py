@@ -13,6 +13,7 @@ poll-refreshed containers, so several clicks can land before one does.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from contextlib import nullcontext
@@ -53,6 +54,20 @@ def extraction_badge(state: ListExtractionState) -> tuple[str, str]:
 
 def _no_backend() -> None:
     ui.notify("Backend unavailable.", type="negative")
+
+
+def dialog_host():
+    """The slot a dialog must be parented at: the page LAYOUT slot, never the element that
+    opened it. NiceGUI runs an event handler "within the context of the parent slot of the
+    sender" (``events.handle_event``), and both callers put these buttons inside containers
+    a refresh clears — the Journey's rail rebuild, the Species page's rev-gated Picks table
+    — so a dialog parented there dies mid-interaction ("parent element ... has been
+    deleted"). ``nullcontext`` when there is no client layout (a background task, a
+    non-page context): the caller's current slot is then the only option."""
+    try:
+        return context.client.layout.default_slot
+    except (RuntimeError, AttributeError):
+        return nullcontext()
 
 
 # ── Extraction ────────────────────────────────────────────────────────────────
@@ -146,6 +161,39 @@ def _submit_list_extraction(
     ui.notify(f"Extraction submitted for '{ref.label}' — tracking in the task tray.", type="info")
 
 
+def geometry_inputs() -> tuple[ui.number, ui.number, ui.number]:
+    """The three extraction-geometry fields (box / binning / crop), EMPTY on purpose —
+    prefilling them with the old 384/1.0/224 would just relabel a silent default as a
+    confirmed one. Shared by the per-list prompt and the Picks tab's extract-all pre-flight."""
+    box_in = ui.number("box size (px, unbinned)", min=16, step=2).props("dense outlined").classes("w-full")
+    bin_in = ui.number("binning", min=0.1, step=0.5).props("dense outlined").classes("w-full")
+    crop_in = ui.number("crop size (px)", min=16, step=2).props("dense outlined").classes("w-full")
+    return box_in, bin_in, crop_in
+
+
+async def commit_extraction_geometry(backend, project_path: Path, species_id: str, box, binning, crop) -> bool:
+    """Validate the three fields and persist ``species.extraction_params`` (D-3) through
+    ``mutate_species`` (dirty + rev) and an AWAITED forced save — the extraction that follows
+    runs in a BackgroundTask with no client context, and a fire-and-forget save can lose the
+    geometry the user just committed. False = not committed (the reason was toasted)."""
+    if not box or not binning or not crop:
+        ui.notify("Box size, binning and crop are all required.", type="warning")
+        return False
+    if backend is None:
+        _no_backend()
+        return False
+    geometry = ExtractionParams(box_size=int(box), binning=float(binning), crop_size=int(crop))
+
+    def _apply(species) -> None:
+        species.extraction_params = geometry
+
+    if not get_project_state_for(project_path).mutate_species(species_id, _apply):
+        ui.notify("Species not found — reload the project.", type="negative")
+        return False
+    await backend.save_project(project_path, force=True)
+    return True
+
+
 def prompt_extraction_geometry(
     backend,
     ref: ListRef,
@@ -159,41 +207,23 @@ def prompt_extraction_geometry(
     the species (D-3).
 
     Reached only when NOTHING has committed a geometry: no SUBTOMO_EXTRACTION job model
-    and no ``species.extraction_params``. The fields open EMPTY on purpose — prefilling
-    them with the old 384/1.0/224 would just relabel a silent default as a confirmed one.
+    and no ``species.extraction_params``.
     """
-    with ui.dialog() as dialog, ui.card().classes("w-[26rem] max-w-full gap-2"):
+    with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[26rem] max-w-full gap-2"):
         ui.label("Extraction geometry").classes("text-base font-bold")
         ui.label(
             f"'{ref.species_label or ref.species_id}' has no subtomo-extraction job to inherit box/binning/crop "
             "from. Set them once — they are saved on the species and reused for every later extraction."
         ).classes("text-xs text-gray-600")
-        box_in = ui.number("box size (px, unbinned)", min=16, step=2).props("dense outlined").classes("w-full")
-        bin_in = ui.number("binning", min=0.1, step=0.5).props("dense outlined").classes("w-full")
-        crop_in = ui.number("crop size (px)", min=16, step=2).props("dense outlined").classes("w-full")
+        box_in, bin_in, crop_in = geometry_inputs()
 
         async def _commit() -> None:
-            box, binning, crop = box_in.value, bin_in.value, crop_in.value
-            if not box or not binning or not crop:
-                ui.notify("Box size, binning and crop are all required.", type="warning")
+            if not await commit_extraction_geometry(
+                backend, ref.project_path, ref.species_id, box_in.value, bin_in.value, crop_in.value
+            ):
                 return
-            if backend is None:
-                _no_backend()
-                return
-            state = get_project_state_for(ref.project_path)
-            geometry = ExtractionParams(box_size=int(box), binning=float(binning), crop_size=int(crop))
-
-            def _apply(species) -> None:
-                species.extraction_params = geometry
-
-            if not state.mutate_species(ref.species_id, _apply):
-                ui.notify("Species not found — reload the project.", type="negative")
-                return
-            # Await the write: the extraction below runs in a BackgroundTask with no
-            # client context, and a fire-and-forget save can lose the geometry the
-            # user just committed.
-            await backend.save_project(ref.project_path, force=True)
             dialog.close()
+            state = get_project_state_for(ref.project_path)
             subtomo_jm = state.jobs.get(ref.subtomo_iid) if ref.subtomo_iid else None
             params = extraction_params_for_species(state, ref.species_id, subtomo_jm)
             _submit_list_extraction(backend, ref, candidate_optset, tomograms_star, list_star, params, on_done)
@@ -280,6 +310,64 @@ async def dedup_list(backend, ref: ListRef, radius_ang: float, *, on_done: OnDon
     on_done()
 
 
+def open_dedup_dialog(backend, ref: ListRef, *, default_radius_ang: float, on_done: OnDone) -> None:
+    """Overlap overview + 'Deduplicate' for a merged list, as a dialog (the Journey's inline
+    clash panel, for the Picks tab). At the CHOSEN radius it shows how many picks clash;
+    the user varies the radius and clicks Deduplicate to remove them (manual kept over
+    auto). Nothing dedups automatically."""
+    if not ref.star_path:
+        ui.notify(f"'{ref.label}' has no backing star.", type="warning")
+        return
+    star = ref.star_path
+    with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[26rem] max-w-full gap-2"):
+        with ui.row().classes("items-center gap-2"):
+            ui.icon("join_inner", size="16px").classes("text-orange-700")
+            ui.label(f"Overlap — {ref.label} · {ref.tomo_name}").classes("text-sm font-bold")
+        radius_in = (
+            ui.number("overlap radius", value=default_radius_ang, step=1, min=0)
+            .props("dense outlined suffix=Å debounce=600")
+            .classes("w-full text-xs")
+            .tooltip("Two picks closer than this (Å) are treated as the same particle")
+        )
+        note = ui.label("checking overlaps…").classes("text-[11px] text-gray-600")
+
+        async def _recompute(_e=None):
+            if backend is None:
+                return
+            r = float(radius_in.value or 0)
+            stats = await backend.list_clash_stats(star, ref.tomo_name, r)
+            if not stats.get("success"):
+                note.set_text(f"overlap check unavailable — {stats.get('error') or 'unknown error'}")
+                return
+            nt, nc, nr, na = stats["n_total"], stats["n_clashing"], stats["n_removed"], stats["n_after"]
+            if nr <= 0:
+                note.set_text(f"no overlaps at {r:g} Å · {nt} picks")
+                note.classes(replace="text-[11px] text-emerald-700")
+                dedup_btn.props("disable")
+            else:
+                note.set_text(f"{nc} of {nt} clash at {r:g} Å → dedup keeps {na}")
+                note.classes(replace="text-[11px] text-orange-800 font-medium")
+                dedup_btn.props(remove="disable")
+
+        async def _do_dedup():
+            dialog.close()
+            await dedup_list(backend, ref, float(radius_in.value or 0), on_done=on_done)
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=dialog.close).props("flat dense no-caps")
+            dedup_btn = (
+                ui.button("Deduplicate", icon="cleaning_services", on_click=_do_dedup)
+                .props("dense no-caps color=orange-7")
+                .tooltip(
+                    "Remove every pick within the radius of a higher-priority pick (manual kept over auto). "
+                    "Rewrites this merged list — re-extract after."
+                )
+            )
+        radius_in.on_value_change(_recompute)
+        asyncio.create_task(_recompute())
+    dialog.open()
+
+
 # ── ArtiaX ────────────────────────────────────────────────────────────────────
 
 
@@ -332,10 +420,7 @@ async def load_tomo_into_session(backend, ref: ListRef) -> None:
         # bare ui.notify dies with "parent element ... has been deleted". Capture the page
         # LAYOUT slot (never cleared) up front and route every notify through it; swallow
         # the residual race so a stale toast never surfaces a traceback.
-        try:
-            host = context.client.layout.default_slot
-        except Exception:
-            host = nullcontext()
+        host = dialog_host()
 
         def _notify(msg: str, **kw) -> None:
             try:
@@ -430,21 +515,42 @@ async def register_imported_picks(backend, ref: ListRef, result: dict, *, on_don
     on_done()
 
 
-def import_picks_from_path(backend, ref: ListRef, *, on_done: OnDone) -> None:
+def import_picks_from_path(
+    backend, ref: ListRef, *, on_done: OnDone, tomo_options: dict[str, ListRef] | None = None, intro: str | None = None
+) -> None:
     """Import a ``.coords`` by explicit path (ArtiaX's save dialog may default anywhere,
     and an external file has no curation dir at all): paste the full path → the same
-    backend import → register the ``manual`` list. Also the fallback of the Journey's
-    auto-discover import when no saved .coords was found."""
-    if ref.tomograms_star is None:
+    backend import → register the ``manual`` list of the target tomogram. Also the
+    fallback of the Journey's auto-discover import when no saved .coords was found.
+
+    ``tomo_options`` (``{tomo_name: ref}``, the Species page's species-level entry) adds a
+    tomogram picker — the .coords maps into ONE tomogram's frame, and the tomogram may have
+    no picks yet, so the caller supplies the universe; ``ref`` is the initial choice."""
+    if tomo_options is None and ref.tomograms_star is None:
         ui.notify(f"No tomograms.star resolved for {ref.tomo_name} — cannot map .coords into it.", type="warning")
         return
-    tomograms_star = ref.tomograms_star
-    with ui.dialog() as dialog, ui.card().classes("w-[34rem] max-w-full gap-2"):
-        ui.label(f"Import ArtiaX picks — {ref.tomo_name}").classes("text-base font-bold")
+    target = {"ref": ref}
+    with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[34rem] max-w-full gap-2"):
+        title = "Import ArtiaX picks" if tomo_options else f"Import ArtiaX picks — {ref.tomo_name}"
+        ui.label(title).classes("text-base font-bold")
         ui.label(
-            "No saved .coords was found in this project's curation dirs. Paste the full path to the "
+            intro
+            or "No saved .coords was found in this project's curation dirs. Paste the full path to the "
             ".coords you saved from ArtiaX (any filename)."
         ).classes("text-xs text-gray-600")
+        if tomo_options:
+            names = list(tomo_options)
+            tomo_sel = (
+                ui.select(names, value=ref.tomo_name if ref.tomo_name in tomo_options else names[0], label="tomogram")
+                .props("dense outlined options-dense")
+                .classes("w-full text-xs")
+            )
+            target["ref"] = tomo_options[tomo_sel.value]
+
+            def _pick(e):
+                target["ref"] = tomo_options[e.value]
+
+            tomo_sel.on_value_change(_pick)
         path_in = ui.input("path to .coords").props("dense outlined").classes("w-full font-mono text-xs")
 
         async def _do_import():
@@ -455,19 +561,23 @@ def import_picks_from_path(backend, ref: ListRef, *, on_done: OnDone) -> None:
             if backend is None:
                 _no_backend()
                 return
+            r = target["ref"]
+            if r.tomograms_star is None:
+                ui.notify(f"No tomograms.star resolved for {r.tomo_name} — cannot map .coords into it.", type="warning")
+                return
             result = await backend.import_curation_picks(
-                ref.project_path,
-                tomograms_star,
-                ref.tomo_name,
-                ref.species_label or ref.species_id,
-                ref.species_id,
+                r.project_path,
+                r.tomograms_star,
+                r.tomo_name,
+                r.species_label or r.species_id,
+                r.species_id,
                 coords_path=Path(p),
             )
             if not result.get("success"):
                 ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
                 return
             dialog.close()
-            await register_imported_picks(backend, ref, result, on_done=on_done)
+            await register_imported_picks(backend, r, result, on_done=on_done)
 
         with ui.row().classes("w-full justify-end gap-2"):
             ui.button("Cancel", on_click=dialog.close).props("flat")
