@@ -1,6 +1,12 @@
 # Roadmap 11 — Picks tab, Curation tab, Journey declutter
 
-**Status:** S1 + S2 code-complete (S1 2026-08-16, S2 2026-08-17) — both PENDING RUNTIME; S3–S4 next. **Depends on:** 10-S1/S2 (page shell), 09 (services,
+**Status:** S1 + S2 + S4 code-complete (S1 2026-08-16, S2 + S4 2026-08-17) — all PENDING RUNTIME.
+**S3 (Journey declutter) is NEXT and no longer gated.** It was held for one session on the grounds
+that it DELETES working affordances (merge ticks, extraction bar, clash panel, import, Curate) while
+the replacing tabs had never rendered; the maintainer lifted that gate on 2026-08-17 ("no worries
+about unverified things… I'll take a double look after we are done with all the relevant roadmaps"),
+so S3 lands on code-review confidence and the whole arc is verified in one pass at the end.
+**Depends on:** 10-S1/S2 (page shell), 09 (services,
 watcher, `species_overview`), 08 (rev). **Soft dependency:** roadmap 07 (extract_pick_list becomes
 a real job) for *live* extraction status; until then the Picks tab shows the derived
 `PickList.extraction_state()` only.
@@ -273,3 +279,36 @@ appear ≤ 35 s; a hand-dropped file in a wrong dir shows under "unattributed".
   (5) As planned: no live-session flag in the signature; the ⚡ button does not know whether a session
   is up until S4's shared `session_status` lands (today it reports that through
   `load_tomo_into_session`'s own toast).
+- 2026-08-17 — **S4 CODE-COMPLETE** (`ruff check .` clean, `ruff format` clean; `py_compile` +
+  `check_boundaries.py` still owed — no python in the sandbox). Stage order deviates from the doc: S4
+  landed BEFORE S3 on purpose (see the Status note — S3 is the only destructive stage and is held for
+  the runtime pass; S4 is additive and is what makes S3 safe, since it gives "Curate in ArtiaX" and
+  "Import picks" the home S3 removes them from).
+  NEW `ui/particles/session_status.py`: the Journey's `_CURATION_SESSION_LIVE` dict + its `% 4` tick
+  gate replaced by a process-wide cache with a `POLL_S = 16 s` self-throttle, so N observers cost at
+  most one `squeue`. **Three states, not two** — a poll that RAISES now reports `unknown` with the
+  error text instead of `off`; reading a squeue failure as "no session" would invite the user to
+  launch a second ChimeraX. The Journey reads `session_status.status()` in both its signatures and
+  `is_live()` for the Curate-button color; `_CURATION_SESSION_LIVE` and `_curation_tick` deleted.
+  NEW `ui/species/curation_tab.py`: session chip + "Open control center"
+  (`open_curation_control_center`, project-level — the inline split stays v2 as scoped) · the save
+  contract stated once per species (`Curation/<species-slug>/<tomogram>/`, `.coords` positions-only
+  corner-Å, any filename except `auto.coords` / `*_ref.coords`, newest wins) with the pickup times
+  DERIVED from the watcher's own `TICK_SEC` / `FULL_SWEEP_EVERY` / `SETTLE_SEC` (~7 s for a tomogram
+  loaded in the session, ~32 s otherwise) rather than the retyped "≤ 35 s" · per-tomogram rows
+  (name · geometry-missing chip · lists · saves-on-disk · curate · ⚡ · import-by-path · copy the save
+  dir) · the watcher log filtered to this species (newest 12) · and the project-wide **unattributed
+  saves** block with each dir's reason.
+  Supporting changes: `CurationWatcher.unattributed()` now returns `{"dir", "reason"}` dicts — the
+  09-S4 signature dropped the reason on the floor, which is exactly the thing this block exists to
+  show (no callers existed, so the change is free). NEW `list_ref.species_tomo_map()` (anchors + one
+  `{tomo: tomograms.star | None}` map in a single disk pass) and `list_ref.auto_ref()` (the per-tomo
+  reference slot); both Species-page tabs now build refs from them and `picks_tab._compute` was cut
+  over — one policy for "which tomograms could this species have picks on", not two.
+  **Findings:** (a) `PlaceholderTab` (`ui/species/tab.py`) now has zero callers — all five tabs are
+  real. Left in place (surgical-diff rule); it is a dead-code candidate for a later sweep.
+  (b) The Curation tab needs NO timer of its own: the page only ticks the visible tab, so
+  `refresh()` kicks the shared session poll when stale and the 15-s disk recompute otherwise — polls
+  observe, they do not rebuild.
+  **Not done, by design:** the inline control-center panel (v2), and any per-tomogram "start session
+  here" beyond what `curate_in_artiax` already does.

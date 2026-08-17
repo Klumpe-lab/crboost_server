@@ -106,10 +106,13 @@ class CurationWatcher:
         capped at EVENTS_PER_PROJECT)."""
         return list(self._events.get(_key(project_path), ()))
 
-    def unattributed(self, project_path: Path) -> list[Path]:
+    def unattributed(self, project_path: Path) -> list[dict]:
         """Curation dirs holding a user save that maps to no (registered species, known
-        tomogram) — surfaced, never guessed."""
-        return [Path(d) for d in sorted(self._unattributed.get(_key(project_path), {}))]
+        tomogram) — surfaced, never guessed. ``{"dir": str, "reason": str}`` per dir, sorted
+        by dir; the reason is what the Curation tab shows so the user can fix the name
+        rather than wonder why a save did nothing (11-S4)."""
+        found = self._unattributed.get(_key(project_path), {})
+        return [{"dir": d, "reason": found[d]} for d in sorted(found)]
 
     # ── tick ──────────────────────────────────────────────────────────────────────
 

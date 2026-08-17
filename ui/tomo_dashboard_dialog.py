@@ -37,7 +37,7 @@ from services.models_base import InstanceId, JobStatus, JobType, ListExtractionS
 from services.particles.list_ref import ListRef, fs_slug
 from services.result import ErrorCode
 from ui.current_project import current_project_state
-from ui.particles import list_actions
+from ui.particles import list_actions, session_status
 from ui.particles.list_actions import extraction_badge
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import (
@@ -372,7 +372,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             job_states,
             _registry_sig(),
             tuple(sorted(_hidden_dashboard_panels())),
-            _CURATION_SESSION_LIVE.get("on", False),
+            session_status.status(),
             # A fresh species with no rows yet must still surface as a species tab.
             state.species_identity(),
             pick_lists_sig,
@@ -518,7 +518,6 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
 
     _last_signature = {"sig": None}
     _active = {"on": True}
-    _curation_tick = {"n": 0}
 
     async def _maybe_refresh() -> None:
         if not _active["on"]:
@@ -544,25 +543,20 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                 if not t.is_running and t.finished_at and (t.finished_at - t.started_at).total_seconds() < 86400
             )
             # Curation-session liveness drives the toolbox 'Curate' button color (gray
-            # = none / green = live). It shells out to squeue, so poll at a slow cadence
-            # (~every 4th 4 s tick ≈ 16 s) and fold the bool into the signature so a
-            # session started/stopped anywhere repaints the rail.
-            _curation_tick["n"] += 1
-            if _curation_tick["n"] % 4 == 1:
-                try:
-                    from backend import get_backend
+            # = none / green = live) and is folded into the signature so a session
+            # started/stopped anywhere repaints the rail. The squeue call and its ~16 s
+            # throttle live in `ui/particles/session_status` now (11-S4) — the Species
+            # page's Curation tab observes the same cache, so this tick can just ask.
+            from backend import get_backend
 
-                    bk = get_backend()
-                    _CURATION_SESSION_LIVE["on"] = bool(await bk.find_active_curation_session_any()) if bk else False
-                except Exception:
-                    pass
+            await session_status.poll(get_backend())
             # registry_rev: coarse in-memory counter of species / pick-list / template
             # mutations (roadmap 08 §1). It only WAKES this gate; the strip / main
             # sigs below are precise (species_identity, per-TS pick-list tuple), so a
             # bump that changes nothing drawn is a no-op rebuild-wise. An ArtiaX save
             # reaches the pane THROUGH it: the server-side CurationWatcher registers the
             # `manual` list (add_pick_list → rev++), so no .coords mtime is folded here.
-            sig = (running, finished, _CURATION_SESSION_LIVE["on"], state.registry_rev)
+            sig = (running, finished, session_status.status(), state.registry_rev)
             if sig != _last_signature["sig"]:
                 prev = _last_signature["sig"]
                 _last_signature["sig"] = sig
@@ -3897,12 +3891,6 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
         await open_curation_control_center(backend, project_path, bundle=bundle)
 
 
-# Whether the user has a live ChimeraX+ArtiaX curation session right now. Polled at a
-# slow cadence by the journey's _maybe_refresh (squeue is the source of truth) and read
-# by the rail toolbox to color the 'Curate' button (gray = none / green = live).
-_CURATION_SESSION_LIVE: dict = {"on": False}
-
-
 async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -> None:
     """Per-tomo 'Import picks': find the .coords the user saved in ArtiaX (any
     filename, newest first), convert → the tomo's manual.star, register a `manual`
@@ -4296,8 +4284,8 @@ def _render_list_rail(
         # vertical side toolbox (Curate in ArtiaX / Load into session / Import).
         with ui.element("div").classes("cb-list-toolbox"):
             # Curate button reflects live-session state: muted gray when no ChimeraX
-            # session is up, green when one is running (polled into _CURATION_SESSION_LIVE).
-            _sess_live = _CURATION_SESSION_LIVE.get("on", False)
+            # session is up, green when one is running (shared cache in `session_status`).
+            _sess_live = session_status.is_live()
             (
                 ui.button(
                     icon="view_in_ar",

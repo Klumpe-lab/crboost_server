@@ -37,14 +37,7 @@ from services.aggregation_authoritative import extraction_params_for_species
 from services.dashboard_data import glyph_for
 from services.models_base import ListExtractionState, PickListType
 from services.particles.list_admin import delete_pick_list, pick_list_files
-from services.particles.list_ref import (
-    AUTO_SLUG,
-    ListRef,
-    known_tomograms,
-    list_ref_for,
-    species_anchors,
-    tomograms_star_for,
-)
+from services.particles.list_ref import AUTO_SLUG, ListRef, auto_ref, list_ref_for, species_tomo_map
 from services.particles.species_overview import NOT_APPLICABLE, ListRow, SpeciesOverview, species_overview
 from services.project_state import get_project_state_for
 from ui.background_task import BackgroundTask
@@ -98,14 +91,11 @@ def _compute(state, project_path: Path, species_id: str) -> _Computed:
     """Thread body: `species_overview`, the per-tomogram `tomograms.star` resolution and
     the import picker's tomogram universe all read star files."""
     ov = species_overview(state, project_path, species_id)
-    anchors = species_anchors(state, project_path, species_id)
     sp = state.get_species(species_id)
     color = str(getattr(sp, "color", "") or "#3b82f6")
-
     # Universe = tomograms with rows ∪ every tomogram the project describes: a .coords can
     # be imported into a tomogram that has no picks yet.
-    tomos = sorted({r.tomo_name for r in ov.rows} | set(known_tomograms(state, project_path)))
-    stars = {t: tomograms_star_for(state, project_path, species_id, t) for t in tomos}
+    anchors, stars = species_tomo_map(state, project_path, species_id, tuple(r.tomo_name for r in ov.rows))
 
     refs = tuple(
         (
@@ -125,24 +115,7 @@ def _compute(state, project_path: Path, species_id: str) -> _Computed:
         )
         for r in ov.rows
     )
-    auto_star = str(anchors.ce_job_dir / "candidates.star") if anchors.ce_job_dir else None
-    tomo_refs = tuple(
-        (
-            t,
-            list_ref_for(
-                project_path,
-                anchors,
-                species_id,
-                t,
-                AUTO_SLUG,
-                label="candidates",
-                list_type=PickListType.AUTO,
-                star_path=auto_star,
-                tomograms_star=stars.get(t),
-            ),
-        )
-        for t in tomos
-    )
+    tomo_refs = tuple((t, auto_ref(project_path, anchors, species_id, t, star)) for t, star in stars.items())
     return _Computed(ov, refs, tomo_refs, color, None)
 
 
