@@ -765,8 +765,29 @@ class CryoBoostBackend:
     async def list_clash_stats(self, star_path: Path, tomo_name: str, radius_ang: float) -> dict[str, Any]:
         return await self.curation_service.list_clash_stats(star_path, tomo_name, radius_ang)
 
-    async def deduplicate_pick_list(self, star_path: Path, tomo_name: str, radius_ang: float) -> dict[str, Any]:
-        return await self.curation_service.deduplicate_pick_list(star_path, tomo_name, radius_ang)
+    async def deduplicate_pick_list(
+        self, project_path: Path, species_id: str, tomo_name: str, slug: str, radius_ang: float
+    ) -> dict[str, Any]:
+        """Greedy radius-dedup ONE registered pick list in place (roadmap 11-S1): rewrite
+        its star (``CurationSessionService.deduplicate_pick_list``), then update the
+        ``PickList`` count, persist by explicit path and bump the registry rev — the list
+        reads STALE afterwards (extracted_count ≠ count) until it is re-extracted. Returns
+        the service's ``{n_total, n_removed, n_after, ...}``."""
+        project_path = Path(project_path)
+        state = self.state_service.state_for(project_path)
+        pl = state.get_pick_list(slug, species_id, tomo_name)
+        if pl is None or not pl.path:
+            return err(f"no registered pick list '{slug}' for {species_id}/{tomo_name}")
+        res = await self.curation_service.deduplicate_pick_list(Path(pl.path), tomo_name, radius_ang)
+        if not res.get("success"):
+            return res
+        pl.count = int(res.get("n_after", pl.count))
+        state.mark_dirty()
+        state.bump_registry_rev()
+        # AWAIT (force) so the dedup'd count lands on disk — a fire-and-forget
+        # create_task gets GC'd before it runs (same bug as the manual-list save).
+        await self.state_service.save_project(project_path=project_path, force=True)
+        return res
 
     async def get_default_data_globs(self) -> dict[str, str]:
         """Get default glob patterns from config."""

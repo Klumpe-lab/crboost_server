@@ -1,6 +1,6 @@
 # Roadmap 11 — Picks tab, Curation tab, Journey declutter
 
-**Status:** scoped 2026-08-16; no code. **Depends on:** 10-S1/S2 (page shell), 09 (services,
+**Status:** S1 code-complete 2026-08-16 (PENDING RUNTIME parity walkthrough); S2–S4 in progress. **Depends on:** 10-S1/S2 (page shell), 09 (services,
 watcher, `species_overview`), 08 (rev). **Soft dependency:** roadmap 07 (extract_pick_list becomes
 a real job) for *live* extraction status; until then the Picks tab shows the derived
 `PickList.extraction_state()` only.
@@ -165,3 +165,38 @@ appear ≤ 35 s; a hand-dropped file in a wrong dir shows under "unattributed".
 ## Stage log (append-only)
 
 - 2026-08-16 — scoped. No code.
+- 2026-08-16 — **S1 CODE-COMPLETE** (branch `denovo_picking`; sandbox ceiling was `ruff check .` again
+  — no python, so `py_compile` + `check_boundaries.py` are owed with the runtime pass; R1–R4 grep-
+  approximated clean). Refactor-only carve, Journey behavior unchanged. NEW
+  `services/particles/list_ref.py`: `ListRef` (frozen, slotted) = `project_path · species_id ·
+  species_label · tomo_name · slug · label · list_type · star_path · ce_job_dir · subtomo_job_dir ·
+  subtomo_iid · tomograms_star` (+ `is_auto`, `candidates_star`, `merge_source_dict()`), and `fs_slug`
+  (the Journey's `_fs_slug`, moved — it names merged-list slugs and the cutout cache). Deviation from
+  §1: `list_type` + `tomograms_star` added (the ArtiaX round trip needs the tomogram's star even for a
+  job-less species; the merge source needs the type), `subtomo_iid` kept as written (the geometry job
+  is resolved through `state.jobs[iid]`, not carried as a model). NEW `ui/particles/list_actions.py`
+  (module `SingleFlight`, same keys as before): `extract_list(backend, ref, *, on_done)` (+
+  `_submit_list_extraction`, `prompt_extraction_geometry` — now persists through `state.mutate_species`
+  so the rev moves and the Overview's "extraction" chip repaints; state by
+  `get_project_state_for(ref.project_path)`, subtomo model = `state.jobs.get(ref.subtomo_iid)`),
+  `merge_source_for(ref)` (→ `picks_filter.merge_source_for` with `ref.merge_source_dict()`),
+  `merge_lists(backend, refs, name) -> slug | None` (deviation: RETURNS the new slug and takes no
+  `on_done` — the Journey must land `_SELECTED_LIST_SLUG` / clear `_MERGE_SELECT` before its rebuild),
+  `dedup_list(backend, ref, radius, *, on_done)`, `curate_in_artiax(backend, ref)` (carved too — S3's
+  ⚡ falls back to it when no session is live), `load_tomo_into_session(backend, ref)`,
+  `register_imported_picks(backend, ref, result, *, on_done)` (= `_persist_manual_pick_list` +
+  `_register_manual_pick_list` folded), `import_picks_from_path(backend, ref, *, on_done)`, and
+  `extraction_badge(state)` (the `_EXTRACTION_BADGE` table, moved). `backend.deduplicate_pick_list`
+  → `(project_path, species_id, tomo_name, slug, radius_ang)`: resolves the list's star from the
+  registry, rewrites it, updates `pl.count`, persists by path and bumps the rev (only caller was the
+  Journey). Journey (`ui/tomo_dashboard_dialog.py`, 6425 → 6045 lines): NEW `_list_ref(sp, lst | None,
+  project_path)` (None = the tomo's `auto` slot for the per-tomo actions); `subtomo_iid` added to both
+  species entries; call sites repointed (extraction bar button, clash panel `_do_dedup`, rail
+  `_do_inline_merge` + toolbox Curate / ⚡, `_handle_import_curation_picks` fallback + registration);
+  DELETED `_handle_extract_list`, `_submit_list_extraction`, `_prompt_extraction_geometry`,
+  `_handle_curate_in_artiax`, `_handle_load_into_session`, `_persist_manual_pick_list`,
+  `_register_manual_pick_list`, `_open_manual_coords_path_dialog`, `_source_for`, `_fs_slug`,
+  `_EXTRACTION_BADGE`; kept: `_artiax_inputs` + the caller-less `_handle_open_list_in_artiax` (W1
+  foundation, per its docstring), `_curation_flight` (new-species prompt, auto-discover import).
+  Verification = §1 parity walkthrough (merge → new chip + selected; dedup → count drops + STALE;
+  extract → badge ✓; ⚡ swaps the viewer; import-by-path registers `manual`).

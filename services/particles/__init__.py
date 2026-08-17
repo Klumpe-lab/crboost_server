@@ -4,6 +4,7 @@ The load-bearing half of the former ``services/visualization/`` package: coordin
 math (``coords``), pick-list merge (``pick_merge``), curated-subset filtering
 (``picks_filter``), per-list extraction (``list_extraction``) and the pick → subtomo
 linkage (``subtomo_link``); plus ``ingest`` (register on-disk lists on ``ProjectState``),
-``species_overview`` (headless per-species read model) and ``species_jobs`` (species ↔
-particle-phase job attribution). Rendering helpers stay in ``services/visualization/``.
+``species_overview`` (headless per-species read model), ``species_jobs`` (species ↔
+particle-phase job attribution) and ``list_ref`` (the ``ListRef`` identity the shared
+pick-list actions take, roadmap 11). Rendering helpers stay in ``services/visualization/``.
 """
