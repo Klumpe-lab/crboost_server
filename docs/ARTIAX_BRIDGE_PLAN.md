@@ -7,6 +7,18 @@ dialogs consolidated into one status-first control center; container relocated t
 `/groups/klumpe/software/containers/{defs,sifs}`. Remaining: ingest UI/registry + auto-watch; the multi-list
 pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the contract.
 
+> **SUPERSEDED IN PART — read `docs/roadmaps/11-picks-actions-consolidation.md` first (2026-08-17).** This
+> doc is append-only session history, and its entries describe the Journey rail as it was: a 3-icon toolbox
+> (Curate · Load · Import), per-row merge ticks with an inline merge bar, a per-list extraction bar, a
+> merged-list clash/dedup panel, and a clickable authoritative radio. Roadmap 11 split those apart —
+> **Journey = look & curate** (canvas, galleries, keep/drop, one ⚡ into ArtiaX, a read-only ◉) and
+> **Species page = manage & act** (`ui/species/picks_tab.py` + `ui/species/curation_tab.py`, driving the
+> shared `ui/particles/list_actions.py`). Handlers named below and deleted in 11-S1/S3: `_source_for`,
+> `_fs_slug`, `_do_inline_merge`, `_MERGE_SELECT`, `_render_list_extraction_bar`, `_render_clash_panel`,
+> `_handle_curate_in_artiax`, `_handle_load_into_session`, `_handle_import_curation_picks`,
+> `_open_manual_coords_path_dialog`, `_set_authoritative`. The history is kept as written; only the
+> location of the actions changed.
+
 ## NEXT SESSION — start here (prioritized)
 
 **▶ S18 RUNTIME (2026-06-12) — Slice C extraction CONFIRMED WORKING; stale-badge bug ROOT-CAUSED + FIXED; new aggregation doc.**

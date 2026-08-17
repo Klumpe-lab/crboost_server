@@ -35,7 +35,6 @@ from nicegui import app, ui
 from services.configs.user_prefs_service import get_prefs_service
 from services.models_base import InstanceId, JobStatus, JobType, ListExtractionState, PickListType, PickSourceKind
 from services.particles.list_ref import ListRef, fs_slug
-from services.result import ErrorCode
 from ui.current_project import current_project_state
 from ui.particles import list_actions, session_status
 from ui.particles.list_actions import extraction_badge
@@ -91,11 +90,11 @@ from ui.dashboard.strip import build_strip
 
 logger = logging.getLogger(__name__)
 
-# Guards the Journey's own click handlers (new-species prompt, auto-discover import,
-# open-list-in-ArtiaX) against re-entry: a button can be destroyed + rebuilt mid-click
-# by a dashboard refresh, so several clicks may land before one does — without this
-# each would open a dialog. The shared pick-list actions (extract / merge / dedup / ⚡ /
-# import-by-path) carry their own guard in ui/particles/list_actions.py.
+# Guards the Journey's own click handlers (new-species prompt, open-list-in-ArtiaX)
+# against re-entry: a button can be destroyed + rebuilt mid-click by a dashboard
+# refresh, so several clicks may land before one does — without this each would open a
+# dialog. The shared pick-list actions (⚡ load / curate) carry their own guard in
+# ui/particles/list_actions.py.
 # See ui/components/reactive.py and CLAUDE.md "UI reactivity patterns".
 _curation_flight = SingleFlight()
 
@@ -112,11 +111,6 @@ _LIST_TYPE_TAG = {
 # Sticky per-(species_id, tomo) selected list slug so a background-render refresh
 # (which rebuilds the whole tab body) doesn't bounce the user back to the auto list.
 _SELECTED_LIST_SLUG: dict[tuple[str, str], str] = {}
-
-# Sticky per-(species_id, tomo) set of slugs ticked for an inline merge. Module-level
-# so the rail rebuild on refresh doesn't drop a half-made selection (cf. the selected-
-# slug above). Cleared after a merge lands. Drives the co-located merge bar.
-_MERGE_SELECT: dict[tuple[str, str], set[str]] = {}
 
 
 def _read_picks_json(path: Path) -> dict:
@@ -284,7 +278,11 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     workbench views, instead of an overlay that covered the 60px icon strip.
     ``container`` is the workspace's ``journey_container`` (a flex column).
     ``callbacks``, when given, receives ``on_journey_active(bool)`` so the
-    workspace can pause the live-refresh timer while the journey is hidden.
+    workspace can pause the live-refresh timer while the journey is hidden, and
+    supplies ``open_species`` + ``species_select_tab`` — composed here into the
+    Particles section's route to the Species page, which owns the pick-list actions
+    since 11-S3. Read here and passed DOWN rather than stashed module-level: those
+    callbacks close over one client's page.
     """
     state = current_project_state()
     if state.project_path is None:
@@ -295,6 +293,20 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         return
 
     project_path = Path(state.project_path)
+    _open_species = (callbacks or {}).get("open_species")
+
+    def _manage_species(species_id: str) -> None:
+        """The Particles section's 'manage in Species ↗'. Composed here, where the
+        workspace's callbacks are in scope: select the species AND land on Picks — the
+        page otherwise reuses its last tab (Overview on a fresh workspace), and none of
+        the actions 11-S3 moved are on Overview, so the link would strand the user one
+        step short of what its tooltip promises."""
+        _open_species(species_id)
+        select_tab = (callbacks or {}).get("species_select_tab")
+        if select_tab is not None:
+            select_tab("picks")
+
+    manage_species = _manage_species if _open_species is not None else None
     _, ts_names0 = collect_dashboard_journey(state, project_path)
     selected = {"ts": ts_names0[0] if ts_names0 else None}
 
@@ -346,7 +358,11 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         if ts is None:
             return ("__no_ts__",)
         journey, _ts_names = collect_dashboard_journey(state, project_path)
-        species_journey = collect_species_journey(state, project_path)
+        # Only the SELECTED ts is fingerprinted below, so collect only its rows: a
+        # de-novo species' subtomo_status is derived per pick list and costs a few
+        # stats each (11-S3), and this runs on every refresh — no reason to pay it for
+        # the other 39 tomograms. The strip's own collect (unfiltered) draws them all.
+        species_journey = collect_species_journey(state, project_path, only_ts=ts)
         # The journey sig only covers the 4 prep pill stages + per-species picks;
         # sections like tilt_filter / dataset read job state it never sees. Fold in
         # every job's execution_status (section-agnostic, cheap in-memory scan —
@@ -356,9 +372,8 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             (iid, str(getattr(jm, "execution_status", ""))) for iid, jm in sorted((state.jobs or {}).items())
         )
         # Per-TS pick-list facts the pane renders (rail table rows). Deliberately
-        # EXCLUDES filtered_count (in-pane keep/drop commits) and the authoritative
-        # choice (in-place radio repaint) — and NOT the coarse registry_rev — so a
-        # keep/drop burst or a radio click never tears the pane down (roadmap 08 §1).
+        # EXCLUDES filtered_count (in-pane keep/drop commits) — and NOT the coarse
+        # registry_rev — so a keep/drop burst never tears the pane down (roadmap 08 §1).
         pick_lists_sig = tuple(
             sorted(
                 (pl.species_id, pl.slug, pl.count, str(pl.path), str(pl.extracted_at))
@@ -366,6 +381,13 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                 if pl.tomo_name == ts
             )
         )
+        # The rail's authoritative ◉ became display-only in 11-S3, so nothing repaints it
+        # in place any more — it HAS to move this fingerprint, or setting it on the
+        # Species page leaves the Journey lighting the old row, which is the exact drift
+        # the manage/look split exists to prevent. (It was excluded while the Journey
+        # owned the click, to keep a radio click from tearing the pane down.) In-memory
+        # dict lookups per species — no disk.
+        auth_sig = tuple(sorted((s.id, state.get_authoritative_slug(s.id, ts)) for s in state.species_registry))
         return (
             ts,
             journey_signature(journey, species_journey, [ts]),
@@ -376,6 +398,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             # A fresh species with no rows yet must still surface as a species tab.
             state.species_identity(),
             pick_lists_sig,
+            auth_sig,
         )
 
     def render_main(force: bool = False) -> None:
@@ -391,7 +414,9 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             if selected["ts"] is None:
                 _render_no_data_empty_state()
             else:
-                _render_main_pane_for_ts(selected["ts"], state, project_path, request_refresh, render_strip)
+                _render_main_pane_for_ts(
+                    selected["ts"], state, project_path, request_refresh, render_strip, manage_species
+                )
 
     def render_strip() -> None:
         # Signature-gated (FingerprintedView discipline): the 4 s live timer
@@ -542,9 +567,10 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                 for t in proj_tasks
                 if not t.is_running and t.finished_at and (t.finished_at - t.started_at).total_seconds() < 86400
             )
-            # Curation-session liveness drives the toolbox 'Curate' button color (gray
-            # = none / green = live) and is folded into the signature so a session
-            # started/stopped anywhere repaints the rail. The squeue call and its ~16 s
+            # Curation-session liveness drives the toolbox ⚡ button's color and its
+            # branch (gray = none, opens the control center / green = live, swaps it) and
+            # is folded into the signature so a session started/stopped anywhere repaints
+            # the rail. The squeue call and its ~16 s
             # throttle live in `ui/particles/session_status` now (11-S4) — the Species
             # page's Curation tab observes the same cache, so this tick can just ask.
             from backend import get_backend
@@ -714,12 +740,16 @@ def _render_ts_info_popover(ts_name: str, species_list: list[dict], recon_mrc: s
 # ---------------------------------------------------------------------------
 
 
-def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None) -> None:
+def _render_main_pane_for_ts(
+    ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None, manage_species=None
+) -> None:
     """Render the main-pane section stack for the selected TS. Sections emit
     in pipeline order; each is a no-op if the corresponding job isn't in the
     pipeline (per ROADMAP §2.1 contract). `refresh_roster` is a sidebar-only
     refresh the gallery calls after save/discard so the roster review column
-    updates without rebuilding the main pane (which would reset the active tab)."""
+    updates without rebuilding the main pane (which would reset the active tab).
+    `manage_species(species_id)` is the workspace's route to the Species page's Picks
+    tab — threaded (not stashed module-level) because it closes over ONE client's page."""
     rendered_any = False
     hidden = _hidden_dashboard_panels()
 
@@ -749,7 +779,7 @@ def _render_main_pane_for_ts(ts_name: str, project_state, project_path: Path, re
         # Candidate-extract path first; if it renders nothing (no TEMPLATE_EXTRACT
         # jobs — e.g. a particle-only project), fall back to the imported-tomogram
         # manual-picking section so the imported tomos still surface.
-        if _render_particles_section(ts_name, project_state, project_path, refresh, refresh_roster):
+        if _render_particles_section(ts_name, project_state, project_path, refresh, refresh_roster, manage_species):
             rendered_any = True
         elif _render_imported_particles_section(ts_name, project_state, project_path, refresh, refresh_roster):
             rendered_any = True
@@ -2425,8 +2455,8 @@ def _auto_kick_list_cutouts(
 def _render_list_header(lst: dict, sp: dict, project_path: Path) -> None:
     """Swatch + label (+ merge provenance) for one workbench list, rendered inside a
     caller-provided row so the contact sheet and the building/empty states share one
-    header. The 'Open in ArtiaX' action lived here too but was REDUNDANT with the
-    rail toolbox's Curate/Load (both open this tomo in ArtiaX) — removed per the user;
+    header. The 'Open in ArtiaX' action lived here too but was REDUNDANT with the rail
+    toolbox's ⚡ (both open this tomo in ArtiaX) — removed per the user;
     `_handle_open_list_in_artiax` stays as the W1 round-trip-edit foundation."""
     ui.element("div").classes(f"cb-species-swatch cb-swatch-{lst['shape']}").style(f"background: {lst['color']};")
     ui.label(lst["label"]).classes("cb-section-title")
@@ -2763,23 +2793,15 @@ def _render_list_cutout_sheet(
     _install_hover_bridge()
 
 
-def _list_ref(sp: dict, lst: dict | None, project_path: Path) -> ListRef:
-    """The shared-action identity (``services/particles/list_ref.ListRef``) of one rail
-    list of species ``sp`` on this tomogram — ``lst`` None = the tomogram's own reference
-    slot (the ``auto`` list, or an empty one for a de-novo species), which the per-tomo
-    actions (Curate / ⚡ / Import) take. Built from the render dicts the collectors
-    already produced; the Species page builds the same ref from a ``PickList``."""
+def _tomo_ref(sp: dict, project_path: Path) -> ListRef:
+    """The shared-action identity (``services/particles/list_ref.ListRef``) of this
+    tomogram's REFERENCE slot for species ``sp`` — the ``auto`` list, or an empty one for
+    a de-novo species. Since 11-S3 the Journey's only per-list actions are look-and-curate
+    ones (keep/drop, eyes), so the single ref it still needs is the per-tomogram one the ⚡
+    button takes; every per-LIST action lives on the Species page, which builds the same
+    ref from a ``PickList`` (``list_ref.auto_ref`` / ``list_ref_for``)."""
     job_dir = sp.get("job_dir")
     sub_dir = sp.get("subtomo_job_dir")
-    slug = lst["slug"] if lst else "auto"
-    if slug == "auto":
-        star = str(Path(job_dir) / "candidates.star") if job_dir else None
-        list_type = PickListType.AUTO
-        label = (lst or {}).get("label") or sp.get("label") or "auto"
-    else:
-        star = lst.get("path") or None
-        list_type = lst.get("list_type") or PickListType.MANUAL
-        label = lst.get("label") or slug
     species_id = sp.get("species_id") or ""
     tomograms_star = sp.get("tomograms_star")
     return ListRef(
@@ -2787,10 +2809,10 @@ def _list_ref(sp: dict, lst: dict | None, project_path: Path) -> ListRef:
         species_id=species_id,
         species_label=sp.get("label") or species_id or "",
         tomo_name=sp["row"]["tomo_name"],
-        slug=slug,
-        label=label,
-        list_type=list_type,
-        star_path=star,
+        slug="auto",
+        label=sp.get("label") or "auto",
+        list_type=PickListType.AUTO,
+        star_path=str(Path(job_dir) / "candidates.star") if job_dir else None,
         ce_job_dir=Path(job_dir) if job_dir else None,
         subtomo_job_dir=Path(sub_dir) if sub_dir else None,
         subtomo_iid=sp.get("subtomo_iid"),
@@ -2798,50 +2820,19 @@ def _list_ref(sp: dict, lst: dict | None, project_path: Path) -> ListRef:
     )
 
 
-def _render_list_extraction_bar(sp: dict, lst: dict, project_path: Path, refresh) -> None:
-    """Slice C: per-list extraction status + action. Shows the DERIVED extraction badge
-    (○ not extracted / ✓ extracted / ⚠ stale, from ``PickList.extraction_state()``) and
-    an Extract / Re-extract button that subtomo-extracts THIS list (its ``_filtered``
-    subset when present) into ``Curation/<species>/<tomo>/<slug>/`` — the action itself
-    is ``list_actions.extract_list`` (shared with the Species page)."""
-    from backend import get_backend
-
-    species_id = sp.get("species_id") or ""
-    tomo_name = sp["row"]["tomo_name"]
-    pl = current_project_state().get_pick_list(lst["slug"], species_id, tomo_name)
-    est = pl.extraction_state() if pl is not None else ListExtractionState.NOT_EXTRACTED
-    text, cls = extraction_badge(est)
-    with ui.row().classes("items-center gap-2 w-full").style("margin: 0 0 8px; padding-bottom: 6px;"):
-        ui.icon("dataset", size="15px").classes("text-slate-400")
-        ui.label("Extraction").classes("text-[11px] font-semibold text-slate-600")
-        if text:
-            ui.label(text).classes(cls).style("font-size: 11px; font-weight: 700;")
-        ui.space()
-        label = "Extract" if est == ListExtractionState.NOT_EXTRACTED else "Re-extract"
-        btn = ui.button(
-            label,
-            icon="science",
-            on_click=lambda: list_actions.extract_list(
-                get_backend(), _list_ref(sp, lst, project_path), on_done=refresh
-            ),
-        )
-        btn.props("dense no-caps size=sm unelevated color=indigo")
-        btn.tooltip("Subtomo-extract this list's kept picks for downstream refinement (one SLURM job)")
-
-
 async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh) -> None:
     """Detail pane for ONE workbench list (manual/imported/merged): a read-only
     recon-sourced cutout sheet (these lists were never subtomo-extracted, so tiles
-    are cut from the binned recon at each pick voxel) + the overlap/dedup panel for
-    a merged list. Carved from the old per-list loop so the rail's detail pane can
-    show a single selected list.
+    are cut from the binned recon at each pick voxel). Carved from the old per-list
+    loop so the rail's detail pane can show a single selected list.
+
+    Look-and-curate only since 11-S3: the extraction bar and the merged-list
+    overlap/dedup panel moved to the Species page's Picks tab, which acts on every
+    tomogram at once. What is left here is the sheet and its keep/drop.
 
     The read-only disk probes (recon/star stat, atlas staleness, atlas-index read)
     run OFF the event loop via ``asyncio.to_thread`` so selecting a list doesn't
     freeze the whole UI on Lustre latency — a spinner shows until they return."""
-    # Slice C: per-list extraction status + Extract/Re-extract action (shown for every
-    # workbench list, even with no recon preview below).
-    _render_list_extraction_bar(sp, lst, project_path, refresh)
     recon = (sp.get("row") or {}).get("vol_path")
 
     def _no_recon() -> None:
@@ -2851,8 +2842,6 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
             ui.label("This list's dots still overlay the slab canvas on the left.").classes(
                 "text-[11px] italic text-gray-500"
             )
-        if lst.get("list_type") == PickListType.MERGED:
-            _render_clash_panel(lst, sp, project_path, refresh)
 
     if not recon:
         _no_recon()
@@ -2935,93 +2924,13 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
         # No tiles yet: a written index means the build ran (empty result);
         # no index means it's still in flight.
         _render_list_cutouts_status(lst, sp, project_path, building=not io["index_exists"])
-    # Merged lists carry the overlap/dedup panel (the user-driven radius dedup).
-    if lst.get("list_type") == PickListType.MERGED:
-        _render_clash_panel(lst, sp, project_path, refresh)
 
 
-def _dedup_default_radius(sp: dict) -> float:
-    """Default overlap radius (Å) ≈ particle_diameter / 2 from the candidate-extract
-    job; 100 Å when the diameter is unknown."""
-    d = float(getattr(sp.get("jm"), "particle_diameter_ang", 0.0) or 0.0)
-    return round(d / 2.0, 1) if d > 0 else 100.0
-
-
-def _render_clash_panel(lst: dict, sp: dict, project_path: Path, refresh) -> None:
-    """Overlap overview + 'Deduplicate' for a merged list. At the CHOSEN radius it
-    shows how many picks clash; the user varies the radius and clicks Deduplicate to
-    remove them (manual kept over auto). Nothing dedups automatically. Calm styling —
-    informational, not an alarm."""
-    from backend import get_backend
-
-    star = lst.get("path")
-    if not star:
-        return
-    tomo_name = sp["row"]["tomo_name"]
-
-    with (
-        ui.element("div")
-        .classes("w-full")
-        .style(
-            "margin: 4px 0 2px; padding: 6px 8px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 6px;"
-        )
-    ):
-        with ui.row().classes("items-center gap-2 w-full"):
-            ui.icon("join_inner", size="14px").classes("text-orange-700")
-            ui.label("Overlap").classes("text-[11px] font-semibold text-orange-800")
-            radius_in = (
-                ui.number(value=_dedup_default_radius(sp), step=1, min=0)
-                .props("dense outlined suffix=Å debounce=600")
-                .classes("text-xs")
-                .style("width: 92px;")
-                .tooltip("Two picks closer than this (Å) are treated as the same particle")
-            )
-            note = ui.label("checking overlaps…").classes("text-[11px] text-gray-600")
-            ui.space()
-            dedup_btn = (
-                ui.button("Deduplicate", icon="cleaning_services", on_click=lambda: _do_dedup())
-                .props("dense no-caps size=sm color=orange-7")
-                .tooltip(
-                    "Remove every pick within the radius of a higher-priority pick (manual kept over auto). "
-                    "Rewrites this merged list — re-extract after."
-                )
-            )
-
-        async def _recompute(_e=None):
-            backend = get_backend()
-            if backend is None:
-                return
-            r = float(radius_in.value or 0)
-            stats = await backend.list_clash_stats(star, tomo_name, r)
-            if not stats.get("success"):
-                note.set_text(f"overlap check unavailable — {stats.get('error') or 'unknown error'}")
-                return
-            nt, nc, nr, na = stats["n_total"], stats["n_clashing"], stats["n_removed"], stats["n_after"]
-            if nr <= 0:
-                note.set_text(f"no overlaps at {r:g} Å · {nt} picks")
-                note.classes(replace="text-[11px] text-emerald-700")
-                dedup_btn.props("disable")
-            else:
-                note.set_text(f"{nc} of {nt} clash at {r:g} Å → dedup keeps {na}")
-                note.classes(replace="text-[11px] text-orange-800 font-medium")
-                dedup_btn.props(remove="disable")
-
-        async def _do_dedup(_e=None):
-            # Shared action: the backend rewrites the star, updates the count, persists
-            # and bumps the rev; `refresh` re-renders the sheet + rail count.
-            await list_actions.dedup_list(
-                get_backend(), _list_ref(sp, lst, project_path), float(radius_in.value or 0), on_done=refresh
-            )
-
-        radius_in.on_value_change(_recompute)
-        import asyncio as _asyncio
-
-        _asyncio.create_task(_recompute())
-
-
-# _open_merge_dialog was removed 2026-06-11 — merging is now the co-located inline
-# merge bar built in _render_list_rail (tick 2+ pills → name → Merge), no popup.
-# See W3 in docs/ARTIAX_BRIDGE_PLAN.md.
+# Merging and the merged-list overlap/dedup panel left the Journey in 11-S3: both are
+# per-list ACTIONS, and the Species page's Picks tab owns those across every tomogram
+# (`ui/species/picks_tab.py` → `list_actions.merge_lists` / `open_dedup_dialog`). The
+# popup that preceded the inline merge bar died 2026-06-11; see W3 in
+# docs/ARTIAX_BRIDGE_PLAN.md.
 
 
 def _render_pick_layer(picks: list, color: str, dims: list | None, axis: str, layer_id: str, shape: str = "circle"):
@@ -3592,7 +3501,12 @@ async def _prompt_new_species(project_path: Path, refresh) -> None:
         species = await create_species(get_backend(), project_path, origin="manual")
         if species is None:
             return
-        ui.notify(f"Created species '{species.name}' — pick into it with 'Curate in ArtiaX'", type="positive")
+        ui.notify(
+            f"Created species '{species.name}' — pick into it with ⚡ on this tomogram, or from the species "
+            "page's Curation tab",
+            type="positive",
+            timeout=5000,
+        )
         refresh()
 
 
@@ -3612,10 +3526,17 @@ def _render_no_species_empty_state(project_path: Path, refresh) -> None:
         )
 
 
-def _render_particles_section(ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None) -> bool:
+def _render_particles_section(
+    ts_name: str, project_state, project_path: Path, refresh, refresh_roster=None, manage_species=None
+) -> bool:
     """Unified Particles section: a shared tomogram canvas with every species'
     picks overlaid (toggleable), plus a per-species tab carrying that species'
-    gallery / scatter. Replaces the old per-species candidate-extract cards."""
+    gallery / scatter. Replaces the old per-species candidate-extract cards.
+
+    Look & curate only since 11-S3 — merge / dedup / extract / import / delete and the
+    authoritative choice moved to the Species page, so the header carries the route
+    there (``manage_species``); a removed action the user cannot navigate to reads as a
+    lost feature rather than a moved one."""
     geom = geometry_for_ts(project_state, project_path, ts_name)
     species_data = _collect_species_data_for_ts(project_state, project_path, ts_name, refresh)
     if not species_data:
@@ -3641,6 +3562,9 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
             ui.label("Particles").classes("cb-section-title")
             ui.label(f"{len(species_data)} species").classes("text-[10px] font-mono text-gray-500")
             _render_geometry_chip(geom)
+            # Route to the tab that owns this species' pick-list actions; follows the
+            # active species tab, like the admin buttons.
+            manage_host = ui.row().classes("items-center gap-0")
             ui.space()
             # Per-species generate controls (Render previews · Re-render · IMOD)
             # live in the panel toolbar, following the active tab; the canvas-wide
@@ -3649,10 +3573,30 @@ def _render_particles_section(ts_name: str, project_state, project_path: Path, r
             if mrc_path is not None:
                 _render_invert_switch(card)
 
+        def _show_manage_link_for(sp: dict) -> None:
+            """'manage in Species ↗' for the active species (11-S3). The Journey no longer
+            merges / dedups / extracts / imports or sets the authoritative list — this is
+            the one-click route to where those now live (the Picks tab, selected by
+            `manage_species`), so their removal reads as a move. Absent when the workspace
+            gave us no route (a standalone journey mount) or the species has no id."""
+            manage_host.clear()
+            sid = sp.get("species_id")
+            if manage_species is None or not sid:
+                return
+            with manage_host:
+                ui.label("manage in Species ↗").classes(
+                    "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
+                ).on("click", lambda _e, s=sid: manage_species(s)).tooltip(
+                    "Merge · dedup · extract · delete · choose the authoritative list — opens this "
+                    "species' Picks tab. Starting an ArtiaX session and importing a .coords by path "
+                    "are one segment over, on Curation."
+                )
+
         def _show_admin_for(sp: dict) -> None:
             admin_host.clear()
             with admin_host:
                 _render_species_admin_buttons(sp, project_path, refresh)
+            _show_manage_link_for(sp)
 
         _show_admin_for(species_data[0])
 
@@ -3848,8 +3792,9 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
     """Per-list 'Open in ArtiaX': preload a CHOSEN workbench list (its centered-Å
     star) into a curation session for another pass. Mirrors `list_actions.curate_in_artiax`
     but exports the list's own picks (labelled by slug so its reference `.coords`
-    is named apart from the user's save). Saving in ArtiaX yields a NEW `.coords`
-    → re-import via the tab's 'Import picks'; this list's star is untouched."""
+    is named apart from the user's save). Saving in ArtiaX yields a NEW `.coords` —
+    picked up by the curation watcher, or imported by path from the species page's
+    Curation tab; this list's star is untouched."""
     from backend import get_backend
     from ui.curation_session_dialog import open_curation_control_center
 
@@ -3889,34 +3834,6 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
         bundle["source_star"] = str(star)
         bundle["coords_label"] = lst["slug"]
         await open_curation_control_center(backend, project_path, bundle=bundle)
-
-
-async def _handle_import_curation_picks(sp: dict, project_path: Path, refresh) -> None:
-    """Per-tomo 'Import picks': find the .coords the user saved in ArtiaX (any
-    filename, newest first), convert → the tomo's manual.star, register a `manual`
-    PickList (``list_actions.register_imported_picks``). If nothing is found in the
-    curation dir, prompt for an explicit path (``list_actions.import_picks_from_path`` —
-    ArtiaX's save dialog may default anywhere). SingleFlight-guarded."""
-    from backend import get_backend
-
-    ref = _list_ref(sp, None, project_path)
-    async with _curation_flight(f"import:{ref.species_id}:{ref.tomo_name}") as acquired:
-        if not acquired:
-            return
-        backend = get_backend()
-        if backend is None:
-            ui.notify("Backend unavailable.", type="negative")
-            return
-        result = await backend.import_curation_picks(
-            project_path, ref.tomograms_star, ref.tomo_name, ref.species_label, ref.species_id
-        )
-        if not result.get("success"):
-            if result.get("code") == ErrorCode.NO_COORDS_FOUND:
-                list_actions.import_picks_from_path(backend, ref, on_done=refresh)
-                return
-            ui.notify(f"Import failed: {result.get('error')}", type="negative", timeout=4000)
-            return
-        await list_actions.register_imported_picks(backend, ref, result, on_done=refresh)
 
 
 def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None:
@@ -4034,14 +3951,7 @@ def _render_species_tab_body(
 
     with rail_host:
         _render_list_rail(
-            sp,
-            lists,
-            project_path,
-            refresh,
-            tm_info=tm_info,
-            selected_slug=sel["slug"],
-            on_select=_select,
-            chip_els=chip_els,
+            sp, lists, project_path, tm_info=tm_info, selected_slug=sel["slug"], on_select=_select, chip_els=chip_els
         )
     # The detail pane renders one tick later via a once-timer: _render_detail is
     # async now (its workbench-list branch probes disk off-loop), so it can't be
@@ -4116,99 +4026,49 @@ def _list_count_text(total: int, filtered_count: int | None) -> str:
 
 
 def _render_list_rail(
-    sp: dict, lists: list[dict], project_path: Path, refresh, *, tm_info: dict, selected_slug, on_select, chip_els: dict
+    sp: dict, lists: list[dict], project_path: Path, *, tm_info: dict, selected_slug, on_select, chip_els: dict
 ) -> None:
     """The pick-list subpanel header: a compact aligned TABLE (header + one row per
-    list: merge-check · swatch · name · count(kept/total) · authoritative-radio ·
-    extracted-mark · visibility eye) on the left + a vertical action toolbox (Curate /
-    Load / Import) on the right. Every row shares one grid template so the columns line
-    up under the header. The auto (pytom) row's name carries a hover tooltip with its
-    pick stats + template-match essentials. The authoritative radio is one-per-(species,
-    tomo) — clicking it sets which list downstream extraction/aggregation consume.
-    Clicking a row selects it → drives the detail; the eye, the auth radio and the
-    merge-check use click.stop so they don't also select. Ticking 2+ rows reveals an
-    INLINE merge bar (name → Merge). `chip_els` is filled {slug: row-element} so
-    selection can re-highlight without rebuilding the table."""
+    list: swatch · name · count(kept/total) · authoritative-radio · extracted-mark ·
+    copy-path · visibility eye) on the left + the single ⚡ ArtiaX action on the right.
+    Every row shares one grid template so the columns line up under the header. The auto
+    (pytom) row's name carries a hover tooltip with its pick stats + template-match
+    essentials. Clicking a row selects it → drives the detail; the copy button and the
+    eye use click.stop so they don't also select. `chip_els` is filled {slug:
+    row-element} so selection can re-highlight without rebuilding the table.
+
+    Look & curate only (11-S3). The auth radio here is a READ-ONLY indicator of which
+    list downstream consumes — it is SET on the Species page's Picks tab, so the two
+    surfaces cannot disagree about it — and merge / dedup / extract / import / delete
+    live there too, where they act across every tomogram at once."""
     from backend import get_backend
 
     state_obj = current_project_state()
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
-    key = (species_id, tomo_name)
-    _MERGE_SELECT.setdefault(key, set())
-    merge_boxes: dict[str, object] = {}
+    auth_slug = state_obj.get_authoritative_slug(species_id, tomo_name)
 
-    def _box_style(checked: bool) -> str:
-        base = "width:13px; height:13px; border-radius:3px; cursor:pointer; flex-shrink:0;"
-        return base + (
-            " background:#6366f1; border:1.5px solid #6366f1;"
-            if checked
-            else " background:transparent; border:1.5px solid #cbd5e1;"
-        )
-
-    def _update_merge_bar() -> None:
-        n = len(_MERGE_SELECT.get(key, set()))
-        merge_bar.style(f"display: {'flex' if n >= 2 else 'none'}; align-items:center; gap:6px; margin-top:6px;")
-        merge_btn.set_text(f"Merge {n} lists" if n >= 2 else "Merge")
-
-    def _clear_merge() -> None:
-        _MERGE_SELECT[key] = set()
-        for b in merge_boxes.values():
-            b.style(_box_style(False))
-        _update_merge_bar()
-
-    def _toggle_merge(slug: str) -> None:
-        selset = _MERGE_SELECT.setdefault(key, set())
-        selset.discard(slug) if slug in selset else selset.add(slug)
-        box = merge_boxes.get(slug)
-        if box is not None:
-            box.style(_box_style(slug in selset))
-        _update_merge_bar()
-
-    async def _do_inline_merge() -> None:
-        # Each ticked list contributes its KEPT subset (list_actions.merge_source_for);
-        # the shared action writes the star, registers + persists the merged PickList.
-        ticked = _MERGE_SELECT.get(key, set())
-        refs = [_list_ref(sp, lst, project_path) for lst in lists if lst["slug"] in ticked]
-        slug = await list_actions.merge_lists(get_backend(), refs, name_in.value)
-        if slug is None:
-            return
-        _MERGE_SELECT[key] = set()  # consumed
-        _SELECTED_LIST_SLUG[key] = slug  # land on the new merge
-        refresh()
-
-    # Authoritative-list selector (one per species,tomo): which list downstream
-    # extraction/aggregation consume. Default 'auto'. Radio-style — exactly one on.
-    auth_state = {"slug": state_obj.get_authoritative_slug(species_id, tomo_name)}
-    auth_icons: dict[str, object] = {}
-
-    async def _set_authoritative(slug: str) -> None:
-        if slug == auth_state["slug"]:
-            return
-        st = current_project_state()
-        st.set_authoritative_slug(species_id, tomo_name, slug)
-        from backend import get_backend
-
-        await get_backend().save_project(project_path, force=True)
-        auth_state["slug"] = slug
-        for s, ic in auth_icons.items():
-            if ic is None:
-                continue
-            on = s == slug
-            ic.name = "radio_button_checked" if on else "radio_button_unchecked"
-            ic.classes(add="cb-auth-on" if on else "cb-auth-off", remove="cb-auth-off" if on else "cb-auth-on")
-        label = next((x["label"] for x in lists if x["slug"] == slug), slug)
-        ui.notify(f"Authoritative → {label} — downstream extraction/aggregation will use it", type="positive")
+    async def _open_in_artiax() -> None:
+        """The Journey's single per-tomogram ArtiaX action (11-S3). A session already up →
+        SWAP it to this tomogram (the reuse path that avoids one viewer per tomogram). No
+        session — or liveness `unknown` because `squeue` could not be asked — → the
+        curation control center, which is status-first and offers to start one preloaded
+        with this tomogram. Which of the two the user needs is not theirs to work out, and
+        an `unknown` must not silently pick 'start another one'."""
+        ref = _tomo_ref(sp, project_path)
+        if session_status.is_live():
+            await list_actions.load_tomo_into_session(get_backend(), ref)
+        else:
+            await list_actions.curate_in_artiax(get_backend(), ref)
 
     with ui.element("div").classes("cb-list-top"):
-        # The list TABLE: one aligned row per pick list — [merge-check · swatch · name ·
-        # count(kept/total) · authoritative-radio · extracted-mark · eye]. A row click
-        # selects it → drives the detail gallery; the merge-check, the auth radio and the
-        # eye use click.stop so they don't also select. Every row shares the .cb-ltable-row
-        # grid template, so the columns line up under the header.
+        # The list TABLE: one aligned row per pick list — [swatch · name ·
+        # count(kept/total) · authoritative-radio · extracted-mark · path · eye]. A row
+        # click selects it → drives the detail gallery; the copy button and the eye use
+        # click.stop so they don't also select. Every row shares the .cb-ltable-row grid
+        # template, so the columns line up under the header.
         with ui.element("div").classes("cb-ltable"):
             with ui.element("div").classes("cb-ltable-row cb-ltable-head"):
-                ui.element("div")  # merge-check col
                 ui.element("div")  # swatch col
                 ui.label("list").classes("cb-ltable-h-name")
                 ui.label("picks").classes("cb-ltable-h-num")
@@ -4224,11 +4084,6 @@ def _render_list_rail(
                     row.classes(add="selected")
                 row.on("click", lambda e, s=slug: on_select(s))
                 with row:
-                    with ui.element("div").classes("cb-ltable-cell"):
-                        mbox = ui.element("div").style(_box_style(slug in _MERGE_SELECT[key]))
-                        mbox.tooltip("Tick to include this list in a merge")
-                        mbox.on("click.stop", lambda e, s=slug: _toggle_merge(s))
-                        merge_boxes[slug] = mbox
                     ui.element("div").classes(f"cb-ltable-swatch cb-swatch-{lst['shape']}").style(
                         f"background: {lst['color']};"
                     )
@@ -4241,13 +4096,18 @@ def _render_list_rail(
                     cnt.tooltip("kept / total picks after keep-drop curation")
                     lst["_count_el"] = cnt  # so the cutout sheet can live-update it on keep/drop
                     with ui.element("div").classes("cb-ltable-cell"):
-                        on = slug == auth_state["slug"]
-                        ic = ui.icon("radio_button_checked" if on else "radio_button_unchecked", size="15px").classes(
-                            "cb-auth " + ("cb-auth-on" if on else "cb-auth-off")
+                        # Display-only since 11-S3: two places to SET the authoritative
+                        # list would drift, so it is set on the Species page's Picks tab
+                        # and only shown here. The legacy 'filtered' slug lights the auto
+                        # row — the same rule `species_overview` applies, so the two
+                        # surfaces cannot disagree about which row is authoritative.
+                        on = slug == auth_slug or (slug == "auto" and auth_slug == PickListType.FILTERED.value)
+                        ui.icon("radio_button_checked" if on else "radio_button_unchecked", size="15px").classes(
+                            "cb-auth cb-auth-static " + ("cb-auth-on" if on else "cb-auth-off")
+                        ).tooltip(
+                            "Authoritative list — downstream extraction/aggregation consumes this one. "
+                            "Set it on the species page's Picks tab."
                         )
-                        ic.tooltip("Authoritative list — downstream tools consume this one. Click to set.")
-                        ic.on("click.stop", lambda e, s=slug: _set_authoritative(s))
-                        auth_icons[slug] = ic
                     with ui.element("div").classes("cb-ltable-cell"):
                         if slug != "auto":
                             pl = state_obj.get_pick_list(slug, species_id, tomo_name)
@@ -4280,59 +4140,43 @@ def _render_list_rail(
                     with ui.element("div").classes("cb-ltable-cell"):
                         if lst.get("_layer_els"):
                             _render_list_eye(lst, sp)
-        # The per-(species,tomo) curation actions, pulled OUT of the table into a
-        # vertical side toolbox (Curate in ArtiaX / Load into session / Import).
+        # The ONE per-(species,tomo) action the Journey keeps: ⚡ into ArtiaX. Everything
+        # else that used to sit in this toolbox (Curate, Import) is on the Species page's
+        # Curation tab, where the whole round trip — session, save contract, watcher log —
+        # is in one place.
         with ui.element("div").classes("cb-list-toolbox"):
-            # Curate button reflects live-session state: muted gray when no ChimeraX
-            # session is up, green when one is running (shared cache in `session_status`).
-            _sess_live = session_status.is_live()
-            (
-                ui.button(
-                    icon="view_in_ar",
-                    on_click=lambda: list_actions.curate_in_artiax(get_backend(), _list_ref(sp, None, project_path)),
+            _sess = session_status.status()
+            _live = _sess == session_status.LIVE
+            _err = session_status.last_error()
+            if _live:
+                _why = "ArtiaX session running — load this tomogram + its picks into it"
+            elif _sess == session_status.OFF:
+                _why = (
+                    "No ArtiaX session running — opens the curation control center, which can start one "
+                    "already holding this tomogram"
                 )
+            elif _err:
+                # `unknown` WITH an error: squeue actually failed. Say so — reading it as
+                # "no session" is what invites a second ChimeraX.
+                _why = (
+                    f"Could not ask SLURM whether a session is running ({_err}) — opens the curation "
+                    "control center, which checks for itself"
+                )
+            else:
+                # `unknown` with no error: the shared poll simply has not run yet (this is
+                # the state on the Journey's very first paint). Not a cluster failure.
+                _why = (
+                    "Checking for a running ArtiaX session — opens the curation control center, which checks for itself"
+                )
+            (
+                ui.button(icon="bolt", on_click=_open_in_artiax)
                 .props("flat dense round size=sm")
-                .classes("cb-curate-live" if _sess_live else "cb-curate-off")
-                .tooltip(
-                    "Curate in ArtiaX — a session is running; open this tomogram + its picks in it"
-                    if _sess_live
-                    else "Curate in ArtiaX — start a ChimeraX + ArtiaX session for this tomogram + its picks"
-                )
+                # Muted gray when no session is up (or the answer is unknown), green when
+                # one is live — the shared cache in `session_status`, folded into
+                # `_main_signature` so a session started anywhere repaints this.
+                .classes("cb-curate-live" if _live else "cb-curate-off")
+                .tooltip(_why)
             )
-            (
-                ui.button(
-                    icon="swap_horiz",
-                    on_click=lambda: list_actions.load_tomo_into_session(
-                        get_backend(), _list_ref(sp, None, project_path)
-                    ),
-                )
-                .props("flat dense round size=sm color=indigo")
-                .tooltip("Load into running session — swap the live ArtiaX to this tomogram (reuse one session)")
-            )
-            (
-                ui.button(icon="download", on_click=lambda: _handle_import_curation_picks(sp, project_path, refresh))
-                .props("flat dense round size=sm")
-                .classes("text-slate-500")
-                .tooltip("Import picks — ingest a .coords you saved in ArtiaX as a manual pick list")
-            )
-    # Inline merge bar — co-located replacement for the merge popup. A SIBLING of the
-    # table+toolbox row (both children of the full-width rail_host block → it stacks
-    # BELOW them); hidden until 2+ rows are ticked, shown/labeled by _update_merge_bar.
-    merge_bar = (
-        ui.element("div").classes("cb-merge-bar").style("display:none; align-items:center; gap:6px; width:100%;")
-    )
-    with merge_bar:
-        ui.icon("join_inner", size="16px").classes("text-indigo-600").tooltip(
-            "Union the ticked lists into a named merged list (dedup overlaps after, in its own panel)"
-        )
-        name_in = (
-            ui.input(placeholder="merge name").props("dense outlined").classes("text-xs").style("max-width:150px;")
-        )
-        merge_btn = ui.button("Merge", on_click=_do_inline_merge).props("dense no-caps unelevated color=indigo size=sm")
-        ui.button(icon="close", on_click=lambda: _clear_merge()).props("flat dense round size=sm").classes(
-            "text-slate-400"
-        ).tooltip("Clear merge selection")
-    _update_merge_bar()
 
 
 async def _render_list_detail(

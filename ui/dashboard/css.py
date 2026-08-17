@@ -339,7 +339,10 @@ _CB_CSS = """
 }
 .cb-ltable-row {
     display: grid;
-    grid-template-columns: 16px 14px minmax(0, 1fr) 48px 30px 26px 22px 20px;
+    /* swatch · name · picks · auth · ext · path · eye. The Journey's merge-tick column
+     * went with 11-S3 (merging is a Species-page action now); the Picks tab re-adds a
+     * tick + an actions column through .cb-ptable-row's own template below. */
+    grid-template-columns: 14px minmax(0, 1fr) 48px 30px 26px 22px 20px;
     align-items: center; gap: 8px;
     padding: 3px 7px; border-radius: 5px; cursor: pointer;
     border: 1px solid transparent; transition: background 0.12s, border-color 0.12s;
@@ -367,28 +370,32 @@ _CB_CSS = """
     font-size: 11px; font-family: ui-monospace, monospace; color: #334155; justify-self: end;
 }
 .cb-ltable-badge { font-size: 12px; font-weight: 700; cursor: help; line-height: 1; }
-/* Authoritative-list radio (one per species,tomo): indigo when set, slate when not. */
+/* Authoritative-list radio (one per species,tomo): indigo when set, slate when not.
+ * Clickable on the Species page's Picks tab, which OWNS the choice; `.cb-auth-static`
+ * is the Journey's read-only copy (11-S3), so it must not offer a pointer or a hover. */
 .cb-auth { cursor: pointer; transition: color 0.12s; }
 .cb-auth-on { color: #6366f1; }
 .cb-auth-off { color: #cbd5e1; }
 .cb-auth-off:hover { color: #94a3b8; }
-/* Vertical action toolbox beside the table — the per-(species,tomo) curation
- * actions (Curate in ArtiaX / Load into session / Import), pulled OUT of the row
- * so the list table stays clean and the actions read as one toolbox. */
+.cb-auth-static { cursor: help; }
+.cb-auth-static.cb-auth-off:hover { color: #cbd5e1; }
+/* Vertical action toolbox beside the table — since 11-S3 it holds the Journey's ONE
+ * per-(species,tomo) action, ⚡ into ArtiaX; kept OUT of the row so the list table stays
+ * clean and the action reads as a toolbox rather than a column. */
 .cb-list-toolbox {
     flex: 0 0 auto;
     display: flex; flex-direction: column; align-items: center; gap: 2px;
     padding: 3px; background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px;
 }
-/* 'Curate in ArtiaX' button state: muted gray when no ChimeraX session is running,
- * a soft green pill when one is live (so the toolbox signals session state at a glance). */
+/* ⚡ button state: muted gray when no ChimeraX session is running (or liveness is
+ * unknown), a soft green pill when one is live — so the toolbox signals session state at
+ * a glance, and the button's meaning (swap vs. open the control center) is visible. */
 .cb-curate-off { color: #94a3b8 !important; }
 .cb-curate-off:hover { color: #6366f1 !important; }
 .cb-curate-live { color: #15803d !important; background: #dcfce7 !important; }
 .cb-curate-live:hover { background: #bbf7d0 !important; }
-/* Inline merge bar (shown when 2+ rows are ticked): a contained indigo strip below
- * the table, matching the table/toolbox chrome. display:flex/none is toggled inline
- * by _update_merge_bar; width/chrome live here so they survive that style rewrite. */
+/* Merge bar (Picks tab, shown when 2+ rows of one tomogram are ticked): a contained
+ * indigo strip below the table, matching the table/toolbox chrome. */
 .cb-merge-bar {
     width: 100%; padding: 5px 8px;
     background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 8px;
@@ -419,7 +426,7 @@ _CB_CSS = """
 .cb-ptable-tick.on { background: #6366f1; border-color: #6366f1; }
 /* Shared small metadata text in the per-list detail chrome (provenance, pick
  * counts, sub-labels) — one slate tone + size instead of ad-hoc inline font
- * styles, so the list header / extraction bar / status rows read as one block. */
+ * styles, so the list header / provenance / status rows read as one block. */
 .cb-detail-meta { font-size: 10px; color: #94a3b8; line-height: 1.2; }
 /* Rich pytom-chip info tooltip: a light card (overrides Quasar's dark default)
  * with an auto-pick-stats section + a template-match section. */

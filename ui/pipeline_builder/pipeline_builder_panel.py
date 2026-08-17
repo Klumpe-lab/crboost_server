@@ -102,8 +102,8 @@ class PipelineBuilderPanel:
 
             # One control center: it checks liveness itself and shows status →
             # connect (tunnel+password) when live, or a Start button when off.
-            # No bundle here (no specific tomo) — preload comes from the gallery's
-            # per-tomo "Curate in ArtiaX" button.
+            # No bundle here (no specific tomo) — preload comes from the species page's
+            # Curation tab (per-tomogram "curate"), or the journey's ⚡.
             await open_curation_control_center(self.backend, self.ui_mgr.project_path)
 
     # ── Species gate ──────────────────────────────────────────────────────────

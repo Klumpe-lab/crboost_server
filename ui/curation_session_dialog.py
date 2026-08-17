@@ -282,8 +282,8 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                         ui.label(cmd_block).classes(_BLOCK)
                     else:
                         ui.label(
-                            "Open a tomogram from a species gallery's “Curate in ArtiaX” to preload it + its "
-                            "picks here."
+                            "Open a tomogram with “curate” on the species page's Curation tab (or ⚡ in the "
+                            "journey) to preload it + its picks here."
                         ).classes("text-[11px] text-gray-500")
 
                 # ── SECTION 3 · PICK & SAVE (crboost files your lists for you) ──

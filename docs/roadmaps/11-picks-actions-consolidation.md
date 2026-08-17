@@ -1,11 +1,12 @@
 # Roadmap 11 — Picks tab, Curation tab, Journey declutter
 
-**Status:** S1 + S2 + S4 code-complete (S1 2026-08-16, S2 + S4 2026-08-17) — all PENDING RUNTIME.
-**S3 (Journey declutter) is NEXT and no longer gated.** It was held for one session on the grounds
-that it DELETES working affordances (merge ticks, extraction bar, clash panel, import, Curate) while
-the replacing tabs had never rendered; the maintainer lifted that gate on 2026-08-17 ("no worries
-about unverified things… I'll take a double look after we are done with all the relevant roadmaps"),
-so S3 lands on code-review confidence and the whole arc is verified in one pass at the end.
+**Status:** ALL FOUR STAGES CODE-COMPLETE (S1 2026-08-16; S2, S4, S3 2026-08-17) — PENDING RUNTIME,
+to be verified in ONE pass with the rest of the arc. S3 was held for one session on the grounds that
+it DELETES working affordances (merge ticks, extraction bar, clash panel, import, Curate) while the
+replacing tabs had never rendered; the maintainer lifted that gate on 2026-08-17 ("no worries about
+unverified things… I'll take a double look after we are done with all the relevant roadmaps"), so it
+landed on code-review confidence — see the S3 stage record for what that review caught, and for the
+list of things reported but deliberately NOT fixed inside this stage.
 **Depends on:** 10-S1/S2 (page shell), 09 (services,
 watcher, `species_overview`), 08 (rev). **Soft dependency:** roadmap 07 (extract_pick_list becomes
 a real job) for *live* extraction status; until then the Picks tab shows the derived
@@ -54,6 +55,7 @@ Backend/services reused as-is: `backend.extract_pick_list_and_wait` (:341),
 
 Journey strip: de-novo rows hardcode `subtomo_status: "pending"` (`services/dashboard_data.py:832`)
 — per-list extraction never moves the strip for a de-novo species (roadmap 07 §1 item 3).
+**[FIXED by S3 — `dashboard_data.pick_list_subtomo_status`.]**
 
 ## 1. Stage S1 — refactor-only carve (Journey behavior unchanged)
 
@@ -110,29 +112,51 @@ pending" submits N jobs and refreshes; auth radio persists across reload.
 
 ## 3. Stage S3 — Journey declutter (behavior change, own commit)
 
+*Line numbers below are pre-S1 and are stale by ~600 lines after S1's carve — go by symbol name.
+§3 was amended on landing (2026-08-17) with two additions the original spec did not call for; both
+are marked ADDED and argued in the stage log.*
+
 Remove from the Particles section (each replaced by nothing — the Species page owns it):
 - toolbox items Curate-in-ArtiaX + Import picks (`.cb-list-toolbox` :4887); keep ⚡ as the single
-  per-tomo action (`list_actions.load_tomo_into_session`; when no session is live it opens the
-  control center — today's behavior);
+  per-tomo action. ADDED: ⚡ is not a bare `list_actions.load_tomo_into_session` — with a live
+  session it swaps, and with `off`/`unknown` it falls through to `list_actions.curate_in_artiax`,
+  i.e. the control center (which checks liveness itself, so `unknown` cannot cause a second
+  ChimeraX). Without that branch, removing the Curate button leaves `load_tomo_into_session`'s
+  no-session toast pointing at a button that no longer exists;
 - merge tick-boxes + inline merge bar (:4727, :4915) and `_MERGE_SELECT`;
 - extraction bar in the list detail (:2828 call site);
 - clash/dedup panel (:3156 call site);
 - authoritative radio → display-only ◉ (indicator stays in the table, click removed; set on the
-  Species page).
+  Species page). It applies `species_overview`'s rule, legacy `filtered` included, so the two
+  surfaces cannot light different rows;
+- ADDED: a "manage in Species ↗" link in the Particles section header, following the active species
+  tab (`callbacks["open_species"]`, threaded down — never stashed module-level, it closes over ONE
+  client's page). Species → Journey already existed (11-S2); without the reverse route a user
+  standing in the rail has no in-app path to any removed action, and the stage reads as a loss
+  rather than a move.
 Keep: rail table + eyes, species admin toolbar (render previews / IMOD), galleries + keep/drop +
 lasso + brushing + display filter + Save/Reset, cutout sheet auto-commit, hover bridge, 3dmod row,
 geometry chip, "New species" empty state (routes to `create_species`).
 - Strip: de-novo `subtomo_status` derived from per-list extraction state
-  (`dashboard_data.py:832`: any EXTRACTED list for (species, tomo) → "ok"; STALE → "warn"; else
-  "pending") — this is roadmap 07 S4's first bullet; do it here if 07 hasn't landed, and note it
-  there.
+  (`dashboard_data.py:832`) — this is roadmap 07 S4's first bullet; do it here if 07 hasn't landed,
+  and note it there. AMENDED on landing: the spec said "any EXTRACTED → ok; STALE → warn; else
+  pending", but `warn` was dropped and the strip is TWO-state (`ok` / `pending`). Telling STALE from
+  EXTRACTED requires `PickList.filtered_count` synced from disk (`picks_filter.sync_filtered_count`,
+  a pandas read per list — which is why both headless readers call it); the strip derives this for
+  EVERY tomogram on a render path, so it can afford neither the reads nor the wrong-but-plausible
+  amber cell an unsynced cache produces for a list filtered in a prior session. Freshness stays on
+  the Picks tab's per-list badge, which does sync. Also amended: the collector now takes `only_ts`,
+  because it runs inside the main pane's signature. See the stage log.
 - Delete the now-unused Journey handlers left after S1 (`_render_list_extraction_bar`,
   `_render_clash_panel`, `_toggle_merge`, merge-bar builders, `_handle_curate_in_artiax`'s toolbox
   wiring) — grep for zero callers before deleting.
 
 Verification (parity for CE-rich projects per the denovo S2 contract): canvas/layers/galleries/
 keep-drop/3dmod identical; the rail shows the same rows minus the click affordances; ⚡ works; no
-`_MERGE_SELECT` references remain.
+`_MERGE_SELECT` references remain. Plus: with no ChimeraX up, ⚡ opens the control center (it must
+NOT toast "click Curate in ArtiaX"); "manage in Species ↗" lands on the active species' PICKS tab;
+setting the authoritative list there repaints the Journey's ◉ within a tick; a de-novo species' strip
+cell moves off "not started" once any of its lists is extracted.
 
 ## 4. Stage S4 — Curation tab v1 (`ui/species/curation_tab.py`)
 
@@ -279,6 +303,108 @@ appear ≤ 35 s; a hand-dropped file in a wrong dir shows under "unattributed".
   (5) As planned: no live-session flag in the signature; the ⚡ button does not know whether a session
   is up until S4's shared `session_status` lands (today it reports that through
   `load_tomo_into_session`'s own toast).
+- 2026-08-17 — **S3 CODE-COMPLETE** (`ruff check .` clean, `ruff format` clean on every touched file;
+  `py_compile` + `check_boundaries.py` still owed — `venv/bin/python3` is a dangling symlink into an
+  unmounted `/software`). Landed under the lifted per-stage runtime gate, so CODE REVIEW WAS THE
+  VERIFICATION: a 5-agent preflight audit before editing, then a 4-dimension adversarial review of the
+  diff against `notes/11-stage-snap/s4/` with an independent refuter per finding. Four defects the
+  review caught are fixed in this same stage and are called out below — none would have been caught by
+  ruff.
+  `ui/tomo_dashboard_dialog.py` 6010 → 5861 lines. DELETED: `_render_list_extraction_bar`,
+  `_render_clash_panel`, `_dedup_default_radius` (the Journey's copy — `picks_tab`'s same-named helper
+  is a different function and stays), `_handle_import_curation_picks`, `_MERGE_SELECT` +
+  `_box_style`/`_update_merge_bar`/`_clear_merge`/`_toggle_merge`/`_do_inline_merge` + the merge bar,
+  `_set_authoritative` + `auth_icons`, the toolbox Curate + Import buttons, the `ErrorCode` import.
+  `_list_ref(sp, lst, project_path)` → `_tomo_ref(sp, project_path)`: after S3 the only surviving
+  caller passed `lst=None`, so the per-list branch was dead. `_render_list_rail` lost its `refresh`
+  parameter (nothing in it refreshed any more). KEPT and verified still-used: `_SELECTED_LIST_SLUG`
+  (sticky rail selection), `_curation_flight` (new-species prompt + `_handle_open_list_in_artiax`),
+  `_list_count_text`, `_artiax_inputs` + the deliberately caller-less `_handle_open_list_in_artiax`
+  (W1 foundation), and the rail's per-list extraction BADGE (read-only, unlike the bar).
+  CSS (`ui/dashboard/css.py`): `.cb-ltable-row` 8 → 7 grid tracks (the merge-tick column); NEW
+  `.cb-auth-static` (the read-only radio must not offer a pointer or a hover) and
+  `.cb-strip-pickcell.warn`; `.cb-merge-bar` KEPT — the Picks tab reuses it; `.cb-ptable-row` still
+  overrides the grid for the Picks tab's 8 columns (later rule, same specificity — checked).
+  Strip (`services/dashboard_data.py` + `ui/dashboard/strip.py`): NEW
+  `pick_list_subtomo_status(state, species_id, tomo_name)` — `ok` once ANY list of the (species,
+  tomogram) has an extraction output on disk, else `pending`, via `PickList.extraction_state()` (the
+  one authority, never re-derived); the de-novo branch of `collect_species_journey` uses it instead of
+  the hardcoded `"pending"`.
+  **Deviations / findings:**
+  (1) **`warn` DROPPED — the spec's three-state rule was not implementable honestly here.** Two
+  problems, found in that order. First, `"warn"` was not a legal strip token at all: `_STATUS_WORD` had
+  no entry (the tooltip would print the raw word) and `_cell_class` had no branch (the cell would be
+  styled `has` — identical to a healthy one — because a de-novo row's `pick_status` is `ok` whenever it
+  has picks). Adding the token was easy. The second problem was not: STALE-vs-EXTRACTED turns on
+  `PickList.filtered_count`, a CACHE that only self-heals when the Journey renders that tomogram's
+  species tab (`_collect_pick_lists_for_species`) — which is exactly why `aggregation_authoritative`
+  and `species_overview` each call `picks_filter.sync_filtered_count` first, and why that call's
+  docstring names the failure: a list filtered in a PRIOR session reads falsely STALE right after a
+  correct extraction. The strip derives this for EVERY tomogram on a render path, so syncing (a pandas
+  read per list) is unaffordable and not syncing paints a wrong-but-plausible amber cell — the thing
+  CLAUDE.md's surfacing-uncertainty rule exists to prevent. So the strip answers the question it can
+  answer correctly and cheaply ("has extraction happened here"), and freshness stays on the Picks tab's
+  per-list badge, which syncs. §3 amended above. `_STATUS_WORD` still gained `"skip"` —
+  `services/array_tasks.scan_statuses` has always been able to emit it and it was rendering as the raw
+  token (opportunistic, per the never-silent policy).
+  (2) NEW `only_ts` parameter on `collect_species_journey`, passed by `_main_signature`. That signature
+  fingerprints ONE tilt series but was collecting the whole project, so the new per-list stats would
+  have been paid ~40× over for rows it never reads. The strip's own collect stays unfiltered — it draws
+  every column.
+  (3) ADDED, not in §3: the ⚡ fallback to `curate_in_artiax` and the "manage in Species ↗" link. §3 is
+  amended above with the argument for each.
+  (4) **Caught by review — the display-only radio would have gone stale.** `_main_signature`
+  deliberately EXCLUDED the authoritative choice, which was correct only while the Journey repainted it
+  in place through `auth_icons`. With the click gone, setting it on the Picks tab moved nothing the
+  main pane fingerprints, so the Journey would have kept lighting the old row indefinitely — the exact
+  drift §5 lists as the reason to have one setter. Fixed: `auth_sig` (in-memory dict lookups per
+  species) folded into the signature, and the stale comment corrected.
+  (5) **Caught by review — the ⚡ tooltip lied on first paint.** `session_status` starts `unknown` with
+  an EMPTY error (never polled ≠ poll failed), and the Journey paints before the first poll, so the
+  tooltip read "Could not ask SLURM whether a session is running () — …". Now three-way: live / off /
+  errored-with-reason / not-yet-polled.
+  (6) **Caught by review — the link landed on the wrong tab.** `open_species` reuses the page's last
+  tab (`DEFAULT_TAB = "overview"` on a fresh workspace), so the link advertising merge/extract/dedup
+  arrived where none of them are. It now composes `open_species` + `species_select_tab("picks")`.
+  (7) **Caught by review — legacy `filtered` auth slug.** `species_overview` lights the auto row when
+  the stored slug is `auto` OR `filtered`; a strict equality here would have disagreed on legacy
+  projects. The Journey now mirrors the tuple.
+  (8) Stale user-facing copy that S3 falsified, all fixed: the new-species toast ("pick into it with
+  'Curate in ArtiaX'"), `load_tomo_into_session`'s no-session toast (named a button the Journey no
+  longer has — now surface-neutral, and the ⚡ pre-empts it anyway), the control center's "open from a
+  species gallery's Curate in ArtiaX" line, `pipeline_builder_panel`'s comment, and three docstrings
+  (`_render_list_header`, `_handle_open_list_in_artiax`, `.cb-detail-meta`'s CSS comment).
+  **Owed / reported, NOT fixed here (the maintainer's call during the verification pass):**
+  (a) `render_strip` calls `collect_species_journey` UNFILTERED on the event loop, and it is also what
+  `refresh_roster` calls on every keep/drop Save. The new derivation costs 0 stats for a never-extracted
+  list and ~4 for an extracted one, so a fully-extracted de-novo project with 40 tomograms × 2 lists
+  pays ~320 stats per Save. Nothing else in that function is memoized either (see (b), (c)), so a memo
+  here alone would be inconsistent; the fix that pays for all of it at once is hoisting the collectors
+  so `refresh_all` computes `journey`/`species_journey` ONCE instead of twice (`_main_signature` and
+  `render_strip` each call both, and `render_main` computes the signature before its `force`
+  short-circuit).
+  (b) `_candidate_extract_status_per_ts` re-scans every `tmResults/*_particles.star` on EVERY call
+  because `if not zero_picks:` treats a manifest's `"zero_picks": []` — what real manifests on disk
+  carry — as a cache miss. One-line fix: `if "zero_picks" not in summary:`.
+  (c) `read_preview_manifest(jd)` is parsed twice per CE species per call (once in
+  `collect_species_journey`, once inside `_candidate_extract_status_per_ts`).
+  (d) `PickList.extraction_state()` does one redundant `src.exists()` before `src.stat()` inside a
+  `try/except OSError` that already covers the missing file (4 stats → 3 in the EXTRACTED case).
+  (e) An UNCLAIMED candidate-extract instance draws a full species tab in the Journey but has no
+  Species-page presence at all (the page's universe is `state.species_registry`), so after S3 it has no
+  home for the moved actions. Either suppress it or mark it, per the surfacing-uncertainty rule.
+  (f) `curation_tab`'s `species_tomo_map` is called with no `extra_tomos` (unlike `picks_tab`), so a
+  tomogram described only by a CE job's own `tomograms.star` gets a Journey rail row but no Curation-tab
+  row; related, `tomograms_star_for` returns a CE species' star for every tomogram without checking the
+  tomogram is a row in it, so `has_geometry` can read True and fail later inside
+  `prepare_curation_bundle`.
+  (g) `picks_tab` renders a merge tick on the AUTO row unconditionally; merging an auto row of a species
+  with a subtomo job but no candidate-extract job reaches `picks_filter`'s `raise ValueError` uncaught.
+  (h) Capability delta, roadmap-sanctioned: the removed Import button auto-discovered the newest
+  `.coords`; both Species-page entries are path-only. The `CurationWatcher` ingests the same file
+  automatically and the Curation tab shows its log + unattributed dirs, so nothing is silent — but there
+  is no longer a "scan for saves now" button anywhere.
+  (i) `PlaceholderTab` (`ui/species/tab.py`) still has zero callers (noted at S4).
 - 2026-08-17 — **S4 CODE-COMPLETE** (`ruff check .` clean, `ruff format` clean; `py_compile` +
   `check_boundaries.py` still owed — no python in the sandbox). Stage order deviates from the doc: S4
   landed BEFORE S3 on purpose (see the Status note — S3 is the only destructive stage and is held for

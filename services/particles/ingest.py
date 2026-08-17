@@ -1,8 +1,8 @@
 """Pick-list ingest: register what the curation / import machinery wrote on disk as
 ``PickList`` entries on ``ProjectState`` (roadmap 09-S2).
 
-Pure state mutation, UI-free — shared by the dashboard's explicit "Import picks"
-click and the server-side curation watcher. Callers persist: the UI through
+Pure state mutation, UI-free — shared by the species page's explicit "Import picks
+from path…" click and the server-side curation watcher. Callers persist: the UI through
 ``backend.save_project(project_path, force=True)``, server loops through
 ``StateService.save_project(project_path=...)`` (no client context there).
 """

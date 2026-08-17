@@ -101,11 +101,13 @@ For a single `(species, tomo)`, `pick_merge.merge_lists_to_star` unions 2+ lists
 
 - `sources = [{path, priority}]`, sorted ascending by priority (lower = higher priority = earlier rows). Priority comes from `_TYPE_PRIORITY` = `{merged:0, manual:1, imported:2, filtered:3, auto:4}`. **Row order is the only thing encoding "manual beats auto."**
 - `np.concatenate`, write one `data_particles` block = `rlnTomoName` + `CENTERED_COLS`. **No merge-time dedup.**
-- Inputs are the *kept* subsets: `_source_for` sends `<slug>_filtered.star` / `particles_filtered.star` when a filter is committed, else the base star.
+- Inputs are the *kept* subsets: `list_actions.merge_source_for` (was the Journey's `_source_for`, moved in roadmap 11-S1) sends `<slug>_filtered.star` / `particles_filtered.star` when a filter is committed, else the base star.
 
-Backend: `merge_pick_lists` (`backend.py:1095`) resolves `out_star = artiax_bridge.curation_dir(...)/<safe_slug>.star`, maps `type → priority`, runs off-loop. The UI handler `_do_inline_merge` (`ui/tomo_dashboard_dialog.py:3761`) then registers the `PickList(list_type=MERGED, parent_slugs=[chosen slugs], ...)`.
+Backend: `merge_pick_lists` (`backend.py:1095`) resolves `out_star = artiax_bridge.curation_dir(...)/<safe_slug>.star`, maps `type → priority`, runs off-loop. `ui/particles/list_actions.merge_lists` then registers the `PickList(list_type=MERGED, parent_slugs=[chosen slugs], ...)` and persists it.
 
-**Optional radius dedup** (`_render_clash_panel`, only for `MERGED` lists): `clash_stats_star` previews `{n_total, n_clashing, n_removed, n_after}` at a radius (default `particle_diameter_ang/2`, else 100 Å); `deduplicate_star` greedy-keeps earlier (higher-priority) rows in place. `deduplicate_pick_list` updates `PickList.count = n_after` — **the panel tooltip explicitly says "Rewrites this merged list — re-extract after."**
+**Optional radius dedup** (`list_actions.open_dedup_dialog`, only for `MERGED` lists): `clash_stats_star` previews `{n_total, n_clashing, n_removed, n_after}` at a radius (default `particle_diameter_ang/2` — from the SPECIES since roadmap 11-S2, a de-novo species having no candidate-extract job — else 100 Å); `deduplicate_star` greedy-keeps earlier (higher-priority) rows in place. `deduplicate_pick_list` updates `PickList.count = n_after`, persists and bumps the registry rev — **the dialog's tooltip explicitly says "Rewrites this merged list — re-extract after."**
+
+> **UI location (roadmap 11, 2026-08-17):** merge, dedup, per-list extract, delete, import-by-path and the authoritative choice all live on the **Species page's Picks tab** (`ui/species/picks_tab.py`), across every tomogram at once. The Journey is look-and-curate: canvas, galleries, keep/drop, and one ⚡ into ArtiaX. Anything below that names a Journey handler for these actions (`_do_inline_merge`, `_render_clash_panel`, `_render_list_extraction_bar`, `_handle_import_curation_picks`) is describing code deleted in 11-S3.
 
 **Provenance** = `parent_slugs` only (contributing slugs). The source *types/paths/priorities*, the dedup radius, and whether inputs were the filtered subsets are **not** stored.
 

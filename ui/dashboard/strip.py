@@ -31,6 +31,9 @@ _STATUS_WORD = {
     "running": "running",
     "zero": "ran, 0 above cutoff",
     "pending": "not started",
+    # Emitted by the per-TS task scanner for a tilt series excluded from processing.
+    # It has always been able to reach here; without an entry the raw token showed.
+    "skip": "skipped",
 }
 
 

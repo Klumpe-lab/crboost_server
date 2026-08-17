@@ -311,8 +311,8 @@ async def dedup_list(backend, ref: ListRef, radius_ang: float, *, on_done: OnDon
 
 
 def open_dedup_dialog(backend, ref: ListRef, *, default_radius_ang: float, on_done: OnDone) -> None:
-    """Overlap overview + 'Deduplicate' for a merged list, as a dialog (the Journey's inline
-    clash panel, for the Picks tab). At the CHOSEN radius it shows how many picks clash;
+    """Overlap overview + 'Deduplicate' for a merged list, as a dialog (the Journey's former
+    inline clash panel, now the Picks tab's). At the CHOSEN radius it shows how many picks clash;
     the user varies the radius and clicks Deduplicate to remove them (manual kept over
     auto). Nothing dedups automatically."""
     if not ref.star_path:
@@ -411,7 +411,8 @@ async def load_tomo_into_session(backend, ref: ListRef) -> None:
     """Per-tomo ⚡ 'Load into running session': swap the user's ALREADY-running
     ChimeraX/ArtiaX to THIS (species, tomo) over the REST channel — the reuse path
     that avoids relaunching a viewer per tomogram (the session is per-user, found
-    across all projects). No live session → point the user at 'Curate in ArtiaX'."""
+    across all projects). No live session → point the user at the Curation tab (the
+    Journey's ⚡ pre-empts this by routing to ``curate_in_artiax`` itself, 11-S3)."""
     async with _flight(f"loadinto:{ref.species_id}:{ref.tomo_name}") as acquired:
         if not acquired:
             return
@@ -439,8 +440,14 @@ async def load_tomo_into_session(backend, ref: ListRef) -> None:
         if not active:
             active = await backend.find_active_curation_session(ref.project_path)
         if not active or not active.get("rest_port"):
+            # Three callers, three surfaces: the Curation tab (a 'curate' button sits next
+            # to ⚡), the Picks tab's per-tomogram ⚡, and the Journey — where 11-S3 removed
+            # the Curate button, and ⚡ reaches here only when the ~16 s liveness cache says
+            # a session is up, i.e. just after one died. So name WHERE the action is, not a
+            # button that exists on only one of them.
             _notify(
-                "No running ChimeraX session yet — click ‘Curate in ArtiaX’ to start one, then load tomograms into it.",
+                "No running ChimeraX session — start one with 'curate' on the species page's Curation tab "
+                "(it opens the control center for that tomogram).",
                 type="warning",
                 timeout=6000,
             )
