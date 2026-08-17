@@ -219,7 +219,8 @@ appear ≤ 35 s; a hand-dropped file in a wrong dir shows under "unattributed".
   `extraction_badge(state)` (the `_EXTRACTION_BADGE` table, moved). `backend.deduplicate_pick_list`
   → `(project_path, species_id, tomo_name, slug, radius_ang)`: resolves the list's star from the
   registry, rewrites it, updates `pl.count`, persists by path and bumps the rev (only caller was the
-  Journey). Journey (`ui/tomo_dashboard_dialog.py`, 6425 → 6045 lines): NEW `_list_ref(sp, lst | None,
+  Journey). Journey (`ui/tomo_dashboard_dialog.py`, 6007 lines after the carve — this
+  entry first recorded "6425 → 6045", which matches no artifact; the S1 snapshot is 6007): NEW `_list_ref(sp, lst | None,
   project_path)` (None = the tomo's `auto` slot for the per-tomo actions); `subtomo_iid` added to both
   species entries; call sites repointed (extraction bar button, clash panel `_do_dedup`, rail
   `_do_inline_merge` + toolbox Curate / ⚡, `_handle_import_curation_picks` fallback + registration);
@@ -310,7 +311,10 @@ appear ≤ 35 s; a hand-dropped file in a wrong dir shows under "unattributed".
   diff against `notes/11-stage-snap/s4/` with an independent refuter per finding. Four defects the
   review caught are fixed in this same stage and are called out below — none would have been caught by
   ruff.
-  `ui/tomo_dashboard_dialog.py` 6010 → 5861 lines. DELETED: `_render_list_extraction_bar`,
+  `ui/tomo_dashboard_dialog.py` 6010 → 5861 lines, and 5854 once the two `ruff format` reflows this
+  stage's own edits left behind (the `_render_list_rail` call that lost its `refresh` argument, and
+  the rewritten ⚡ tooltip) were folded in — the "`ruff format` clean on every touched file" claim
+  above was false for this one file until then; the other 3 format hunks in it are inherited. DELETED: `_render_list_extraction_bar`,
   `_render_clash_panel`, `_dedup_default_radius` (the Journey's copy — `picks_tab`'s same-named helper
   is a different function and stays), `_handle_import_curation_picks`, `_MERGE_SELECT` +
   `_box_style`/`_update_merge_bar`/`_clear_merge`/`_toggle_merge`/`_do_inline_merge` + the merge bar,
@@ -322,8 +326,9 @@ appear ≤ 35 s; a hand-dropped file in a wrong dir shows under "unattributed".
   `_list_count_text`, `_artiax_inputs` + the deliberately caller-less `_handle_open_list_in_artiax`
   (W1 foundation), and the rail's per-list extraction BADGE (read-only, unlike the bar).
   CSS (`ui/dashboard/css.py`): `.cb-ltable-row` 8 → 7 grid tracks (the merge-tick column); NEW
-  `.cb-auth-static` (the read-only radio must not offer a pointer or a hover) and
-  `.cb-strip-pickcell.warn`; `.cb-merge-bar` KEPT — the Picks tab reuses it; `.cb-ptable-row` still
+  `.cb-auth-static` (the read-only radio must not offer a pointer or a hover) — and NO
+  `.cb-strip-pickcell.warn`, since deviation (1) below dropped `warn` (this entry first claimed the
+  rule; it was never added); `.cb-merge-bar` KEPT — the Picks tab reuses it; `.cb-ptable-row` still
   overrides the grid for the Picks tab's 8 columns (later rule, same specificity — checked).
   Strip (`services/dashboard_data.py` + `ui/dashboard/strip.py`): NEW
   `pick_list_subtomo_status(state, species_id, tomo_name)` — `ok` once ANY list of the (species,

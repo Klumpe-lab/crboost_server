@@ -70,11 +70,15 @@ has no entry in `project_state.jobs`, no `--instance_id`, no param class. Concre
 4. **S4 — UI:** per-list row gets a live status chip (queued/running/ok/failed with the error on
    hover) + log access; ~~de-novo Journey rows derive `subtomo_status` from per-list extraction
    state instead of the hardcoded `"pending"` (dashboard_data.py:832)~~ **DONE 2026-08-17 in roadmap
-   11-S3** — `services/dashboard_data.pick_list_subtomo_status` (any EXTRACTED → `ok`, else any
-   STALE → `warn`, else `pending`), plus the `warn` token the strip did not have
-   (`ui/dashboard/strip.py` `_STATUS_WORD` + `_cell_class` + `.cb-strip-pickcell.warn`) and an
-   `only_ts` scope on `collect_species_journey` so the main pane's signature does not pay the
-   per-list stats for every tomogram. See roadmap 11's S3 stage record; pre-check the
+   11-S3** — `services/dashboard_data.pick_list_subtomo_status`, landed TWO-state (any list of the
+   (species, tomogram) with an extraction output → `ok`, else `pending`). The three-state rule this
+   bullet originally specified was NOT built: telling STALE from EXTRACTED turns on
+   `PickList.filtered_count`, a cache that needs `picks_filter.sync_filtered_count` (a pandas read
+   per list) — unaffordable on a path that derives every tomogram, and wrong-but-plausible amber if
+   left unsynced. Freshness stays on the Picks tab's per-list badge, which does sync. So NO `warn`
+   token was added (`ui/dashboard/strip.py` `_STATUS_WORD` gained only `"skip"`, and there is no
+   `.cb-strip-pickcell.warn` rule). Plus an `only_ts` scope on `collect_species_journey` so the main
+   pane's signature does not pay the per-list stats for every tomogram. See roadmap 11's S3 stage record; pre-check the
    authoritative-list radio for single-list de-novo species while in this code. NOTE for whoever
    lands 07: the Journey's authoritative radio is DISPLAY-ONLY since 11-S3 — the pre-check belongs on
    `ui/species/picks_tab.py`, and the Journey's `_main_signature` already folds the choice in
