@@ -33,10 +33,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from services.dashboard_data import ce_instance_for_species, job_dir_for
 from services.particles.ingest import register_manual_pick_list
+from services.particles.list_ref import tomograms_star_for
 from services.visualization import artiax_bridge
-from services.visualization.tomo_geometry import geometry_for_ts, read_tomo_table, tomogram_star_sources
+from services.visualization.tomo_geometry import read_tomo_table, tomogram_star_sources
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
@@ -227,25 +227,12 @@ class CurationWatcher:
             if reasons:
                 out.append(_Save(d, coords, mtime, None, "", None, None, "; ".join(reasons)))
                 continue
-            star = self._tomograms_star_for(state, project_path, sp.id, tomo)
+            star = tomograms_star_for(state, project_path, sp.id, tomo)
             reason = ""
             if star is None:
                 reason = f"no tomograms.star carries {tomo} (nothing reconstructed or imported yet)"
             out.append(_Save(d, coords, mtime, sp.id, sp.name, tomo, star, reason))
         return out
-
-    @staticmethod
-    def _tomograms_star_for(state, project_path: Path, species_id: str, tomo_name: str) -> Path | None:
-        """The candidate-extract job's own tomograms.star when this species has one (a
-        denoised chain repoints the volume there — it must stay authoritative, as in the
-        Journey), else the geometry provider's star; None when nothing describes the tomo."""
-        ce = ce_instance_for_species(state, species_id)
-        if ce is not None:
-            jd = job_dir_for(state, ce[0], ce[1], project_path)
-            if jd is not None and (jd / "tomograms.star").exists():
-                return jd / "tomograms.star"
-        geom = geometry_for_ts(state, project_path, tomo_name)
-        return Path(geom.tomograms_star) if geom is not None else None
 
     # ── bookkeeping ───────────────────────────────────────────────────────────────
 

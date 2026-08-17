@@ -17,7 +17,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from services.dashboard_data import ce_instance_for_species, job_dir_for, matching_subtomo_instance
 from services.models_base import PickListType
+from services.visualization.tomo_geometry import geometry_for_ts, read_tomo_table, tomogram_star_sources
 
 AUTO_SLUG = "auto"
 
@@ -56,3 +58,95 @@ class ListRef:
     def merge_source_dict(self) -> dict:
         """The render-dict shape ``picks_filter.merge_source_for`` looks a list up by."""
         return {"slug": self.slug, "path": self.star_path, "list_type": self.list_type}
+
+
+# ── Building refs from ProjectState (the Species page path) ───────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class SpeciesAnchors:
+    """The job anchors every ref of one species shares: resolved once per compute."""
+
+    species_label: str
+    ce_job_dir: Path | None
+    subtomo_job_dir: Path | None
+    subtomo_iid: str | None
+
+
+def species_anchors(state, project_path: Path, species_id: str) -> SpeciesAnchors:
+    """Resolve the species' candidate-extract / subtomo instances to (label, dirs, iid) the
+    same way the Journey's collectors do (``ce_instance_for_species`` /
+    ``matching_subtomo_instance`` + ``job_dir_for``)."""
+    project_path = Path(project_path)
+    species = state.get_species(species_id)
+    ce = ce_instance_for_species(state, species_id)
+    sub = matching_subtomo_instance(state, species_id)
+    return SpeciesAnchors(
+        species_label=str(getattr(species, "name", "") or species_id),
+        ce_job_dir=job_dir_for(state, ce[0], ce[1], project_path) if ce else None,
+        subtomo_job_dir=job_dir_for(state, sub[0], sub[1], project_path) if sub else None,
+        subtomo_iid=sub[0] if sub else None,
+    )
+
+
+def tomograms_star_for(state, project_path: Path, species_id: str, tomo_name: str) -> Path | None:
+    """The ``tomograms.star`` an ArtiaX round trip / .coords import maps this tomogram
+    through: the candidate-extract job's own copy when this species has one (a denoised
+    chain repoints the volume there — it must stay authoritative, as in the Journey), else
+    the geometry provider's star; None when nothing describes the tomo. Reads disk — run
+    off the event loop."""
+    project_path = Path(project_path)
+    ce = ce_instance_for_species(state, species_id)
+    if ce is not None:
+        jd = job_dir_for(state, ce[0], ce[1], project_path)
+        if jd is not None and (jd / "tomograms.star").exists():
+            return jd / "tomograms.star"
+    geom = geometry_for_ts(state, project_path, tomo_name)
+    return Path(geom.tomograms_star) if geom is not None else None
+
+
+def list_ref_for(
+    project_path: Path,
+    anchors: SpeciesAnchors,
+    species_id: str,
+    tomo_name: str,
+    slug: str,
+    *,
+    label: str,
+    list_type: PickListType | str,
+    star_path: str | None,
+    tomograms_star: Path | None,
+) -> ListRef:
+    """A ref from ``species_overview`` row facts (``ListRow``) + the species anchors."""
+    lt = list_type if isinstance(list_type, PickListType) else PickListType(list_type)
+    return ListRef(
+        project_path=Path(project_path),
+        species_id=species_id,
+        species_label=anchors.species_label,
+        tomo_name=tomo_name,
+        slug=slug,
+        label=label,
+        list_type=lt,
+        star_path=star_path,
+        ce_job_dir=anchors.ce_job_dir,
+        subtomo_job_dir=anchors.subtomo_job_dir,
+        subtomo_iid=anchors.subtomo_iid,
+        tomograms_star=tomograms_star,
+    )
+
+
+def known_tomograms(state, project_path: Path) -> list[str]:
+    """Every tomogram name a ``tomograms.star`` of this project describes (reconstruct job
+    ∪ imported), in source order — the picker universe for "import picks into <tomo>".
+    Reads disk — run off the event loop."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for _source, star_path in tomogram_star_sources(state, Path(project_path)):
+        df = read_tomo_table(star_path)
+        if df is None or "rlnTomoName" not in df.columns:
+            continue
+        for name in df["rlnTomoName"].astype(str):
+            if name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out

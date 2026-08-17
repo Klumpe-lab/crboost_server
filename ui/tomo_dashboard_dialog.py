@@ -617,8 +617,23 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         except Exception:
             pass
 
+    async def _show_ts(ts: str, section: str | None = None) -> None:
+        """The Species page's "open in Journey" (roadmap 11-S2): select this
+        tilt-series' column and optionally scroll one section card into view. The
+        workspace has already switched to (and built) the journey by the time this runs.
+        A tomogram with no column is reported, not silently ignored — the strip only
+        holds tilt-series the project's array-job manifests describe."""
+        if ts and ts not in col_els:
+            ui.notify(f"{ts} has no column in the journey strip yet (no processed data for it).", type="warning")
+            return
+        if ts:
+            await select_ts(ts)
+        if section:
+            _scroll_section_into_view(section)
+
     if callbacks is not None:
         callbacks["on_journey_active"] = _set_journey_active
+        callbacks["journey_show_ts"] = _show_ts
 
 
 def _render_no_data_empty_state() -> None:

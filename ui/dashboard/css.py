@@ -396,6 +396,27 @@ _CB_CSS = """
 .cb-badge-ok { color: #059669; }
 .cb-badge-todo { color: #94a3b8; }
 .cb-badge-stale { color: #d97706; }
+/* Species page · Picks tab (roadmap 11-S2): the rail table's chrome (.cb-ltable*), one
+ * grid per row: tick · auth · swatch · name · kept/total · ext · source · actions. Rows
+ * are not selectable there (no detail pane), so no pointer cursor / selected state. */
+.cb-ptable-row {
+    grid-template-columns: 16px 18px 14px minmax(0, 1fr) 56px 26px minmax(80px, 160px) auto;
+    cursor: default;
+}
+.cb-ptable-group {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 4px 6px 2px; margin-top: 4px;
+}
+.cb-ptable-group-name { font-size: 11px; font-weight: 700; color: #334155; font-family: ui-monospace, monospace; }
+.cb-ptable-source {
+    font-size: 10px; color: #64748b; cursor: help;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cb-ptable-tick {
+    width: 13px; height: 13px; border-radius: 3px; cursor: pointer; flex-shrink: 0;
+    background: transparent; border: 1.5px solid #cbd5e1;
+}
+.cb-ptable-tick.on { background: #6366f1; border-color: #6366f1; }
 /* Shared small metadata text in the per-list detail chrome (provenance, pick
  * counts, sub-labels) — one slate tone + size instead of ad-hoc inline font
  * styles, so the list header / extraction bar / status rows read as one block. */

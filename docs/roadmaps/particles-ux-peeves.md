@@ -28,8 +28,8 @@ server timers, FingerprintedView/SingleFlight for anything timer- or dialog-driv
 | P-04 | Job tabs (TM / pick / subtomo) | the same read-only species card ×3 clogs the parameter form | structural | 08-S1 | code-complete 2026-08-16 (one species line; card deleted) |
 | P-05 | Workbench | de-novo species created from the roster "+" not shown until reload | bug | 08-S0 | code-complete 2026-08-16, PENDING RUNTIME |
 | P-06 | Any | species created from roster/workbench may not persist across restart (no dirty mark) | bug | 08-S0 | code-complete 2026-08-16, PENDING RUNTIME |
-| P-07 | Journey › Particles | ArtiaX saves only auto-ingest while the Journey is open on that tomo | structural | 09-S4 (watcher) | scoped |
-| P-08 | Journey › Particles | curation control center / import / merge / extraction / dedup / auth radio crowd the per-tomo view | structural | 11-S3 (declutter) after 11-S2 | scoped |
+| P-07 | Journey › Particles | ArtiaX saves only auto-ingest while the Journey is open on that tomo | structural | 09-S4 (watcher) | code-complete 2026-08-16 (`CurationWatcher` replaces the Journey prescan), PENDING RUNTIME |
+| P-08 | Journey › Particles | curation control center / import / merge / extraction / dedup / auth radio crowd the per-tomo view | structural | 11-S3 (declutter) after 11-S2 | unblocked 2026-08-17 — 11-S2 landed the Species-page home for all of them |
 | P-09 | Job tabs (pick candidates) | `array_throttle` rendered twice — in the plugin's Advanced group AND the SLURM Resources section (TM / subtomo had the same duplicate; fixed in 08-S1 by honoring the ctx `exclude`) | cosmetic | Job tabs checklist (one-line delete in `candidate_extract.py` Advanced) | open |
 
 Add rows as the walkthrough produces them; keep the peeve text short and put the long form in
@@ -56,3 +56,9 @@ Add rows as the walkthrough produces them; keep the peeve text short and put the
   code-complete; P-09 added (pick-candidates `array_throttle` duplicate — TM/subtomo variants fixed in S1).
 - 2026-08-16 — 10-S3 code-complete: P-02 (per-keystroke saves) closed by the Overview tab's identity
   editor (pending runtime).
+- 2026-08-17 — row correction: P-07 had been left at "scoped" although 09-S4 landed the watcher the
+  same day; it is code-complete (pending runtime). P-08 marked unblocked: 11-S2 gives every crowding
+  affordance a home on the Species page, so 11-S3 can delete them from the Journey.
+- 2026-08-17 — still ONE raw peeve intake so far. The walkthrough (Journey / Species / roster →
+  `q_denovo_picking_interface.md`) has not happened; the cosmetic checklists stay near-empty until it
+  does, and the cosmetics batch waits for 11-S3/S4 to stop moving the surfaces.

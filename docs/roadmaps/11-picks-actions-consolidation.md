@@ -1,6 +1,6 @@
 # Roadmap 11 — Picks tab, Curation tab, Journey declutter
 
-**Status:** S1 code-complete 2026-08-16 (PENDING RUNTIME parity walkthrough); S2–S4 in progress. **Depends on:** 10-S1/S2 (page shell), 09 (services,
+**Status:** S1 + S2 code-complete (S1 2026-08-16, S2 2026-08-17) — both PENDING RUNTIME; S3–S4 next. **Depends on:** 10-S1/S2 (page shell), 09 (services,
 watcher, `species_overview`), 08 (rev). **Soft dependency:** roadmap 07 (extract_pick_list becomes
 a real job) for *live* extraction status; until then the Picks tab shows the derived
 `PickList.extraction_state()` only.
@@ -200,3 +200,76 @@ appear ≤ 35 s; a hand-dropped file in a wrong dir shows under "unattributed".
   foundation, per its docstring), `_curation_flight` (new-species prompt, auto-discover import).
   Verification = §1 parity walkthrough (merge → new chip + selected; dedup → count drops + STALE;
   extract → badge ✓; ⚡ swaps the viewer; import-by-path registers `manual`).
+- 2026-08-16 — **S2 IN PROGRESS (checkpoint, session ended on usage limit; `ruff check .` clean, all
+  new helpers unused-but-importable — safe to leave in the tree, NOT to commit yet).** Landed so far:
+  `services/particles/list_ref.py` + `SpeciesAnchors` / `species_anchors(state, project_path, sid)`
+  · `tomograms_star_for(state, project_path, sid, tomo)` (the watcher's private
+  `_tomograms_star_for` moved here and the watcher repointed — one policy) · `list_ref_for(...)` (a
+  ref from `ListRow` facts + anchors) · `known_tomograms(state, project_path)` (import-picker
+  universe); NEW `services/particles/list_admin.py`: `pick_list_files(pl)` (stars · `<slug>/` out
+  dir · a `manual` list's `.coords` saves — the watcher would re-register them after a restart) +
+  `async delete_pick_list(project_path, sid, tomo, slug)` (files → `remove_pick_list` → forced save;
+  the authoritative choice is left DANGLING on purpose, the gate surfaces it); `list_actions`:
+  `geometry_inputs()` + `commit_extraction_geometry(...)` factored out of the per-list prompt (for the
+  extract-all pre-flight), `import_picks_from_path(..., tomo_options={tomo: ref}, intro=)` (tomogram
+  picker for the species-level entry — the tomo may have no picks yet), `open_dedup_dialog(backend,
+  ref, *, default_radius_ang, on_done)` (the clash panel as a dialog); CSS `.cb-ptable-row` /
+  `.cb-ptable-group*` / `.cb-ptable-source` / `.cb-ptable-tick` in `ui/dashboard/css.py`.
+  **Still to write:** `ui/species/picks_tab.py` (`PicksTab` + rev-gated `_PicksView`, off-loop
+  `_compute` = `species_overview` rows → refs via `species_anchors` + `tomograms_star_for` per tomo +
+  `known_tomograms`, recompute on `(registry_rev, job statuses)` else ≤ 15 s while shown — the
+  Overview pattern; per-tomo groups: header = tomo · ⚡ `load_tomo_into_session` · "journey ↗"; rows
+  = tick · auth radio (`set_authoritative_slug` + forced save + in-place icon flip) · swatch · label ·
+  kept/total · ext badge · source (hover kind/ref) · actions extract / dedup (merged) / delete
+  (confirm dialog listing `pick_list_files`); per-tomo merge bar when ≥ 2 ticked; header actions
+  "Extract all pending" (pre-flight dialog = `backend.get_authoritative_gate_report` counts + blocked
+  notes + `geometry_inputs()` when `extraction_params_for_species` is None → BackgroundTask
+  `extract_authoritative_pending`, string summary) · "Import picks from path…" (`tomo_options`) ·
+  "Open in Journey ↗"; empty state with links via a NEW page hook `callbacks["species_select_tab"]`);
+  `ui/species/page.py` (`_make_tab("picks")` → `PicksTab(ctx)`, register `species_select_tab`);
+  `ui/tomo_dashboard_dialog.py` (register `callbacks["journey_show_ts"](ts, section=None)` =
+  `select_ts` + `_scroll_section_into_view`, next to `on_journey_active`); README row; S2 snapshot
+  under `notes/11-stage-snap/s2/`. Deviation planned: no live-session flag in the S2 signature (S4's
+  shared `session_status` adds it).
+- 2026-08-17 — **S2 CODE-COMPLETE** (branch `denovo_picking`; `ruff check .` clean + `ruff format`
+  clean on the touched files — the sandbox has ruff but `venv/bin/python3` is a dangling symlink to an
+  unmounted `/software` tree, so `py_compile` + `check_boundaries.py` are STILL owed with the runtime
+  pass). NEW `ui/species/picks_tab.py` (~470 lines): `PicksTab` + rev-gated `_PicksView` over an
+  off-loop `_Computed` (`species_overview` rows + one `ListRef` per row + one per-tomo reference ref +
+  species color), recomputed when `(registry_rev, job statuses)` moves / on show / at most every 15 s —
+  the Overview tab's cadence, verbatim. Layout: per-tomo group header (name · n lists · ⚡
+  `load_tomo_into_session` · "journey ↗") over a `.cb-ltable` whose rows use the landed
+  `.cb-ptable-row` grid (tick · auth radio · swatch by `glyph_for` in the species color · label ·
+  kept/total · ext badge · source with `kind · ref` hover · actions), then a merge bar that appears at
+  ≥ 2 ticks of ONE tomogram. Per-row actions: extract / re-extract, dedup (merged lists only, via
+  `open_dedup_dialog`, default radius Ø/2 from the SPECIES — the Journey reads it off the CE job,
+  which a de-novo species has not got), delete (confirm dialog listing `pick_list_files` and naming
+  the dangling-authoritative consequence). Header actions: "Extract all pending" (gate report as the
+  pre-flight — counts, per-list lines, blocked reasons from `notes`, and `geometry_inputs()` inline
+  when the species has no committed geometry — then a tray-visible BackgroundTask), "Import picks from
+  path…" (`tomo_options` = rows ∪ `known_tomograms`, so a tomogram with no picks yet is a valid
+  target), "Open in Journey". Empty state links to the Curation / Jobs tabs through the new
+  `callbacks["species_select_tab"]`. Wiring: `ui/species/page.py` (`_make_tab("picks")` → `PicksTab`,
+  hook registered); `ui/tomo_dashboard_dialog.py` `callbacks["journey_show_ts"](ts, section=None)` =
+  membership check → `select_ts` → `_scroll_section_into_view` (a tomogram with no strip column is
+  toasted, not silently ignored).
+  **Deviations / findings:**
+  (1) NEW `list_actions.dialog_host()` and every dialog of that module (geometry prompt, dedup,
+  import) plus the two new Picks dialogs now open inside the page LAYOUT slot. `nicegui/events.py:406`
+  is explicit that "the handler is called within the context of the parent slot of the sender", so a
+  dialog opened from a row of a `FingerprintedView` table dies the moment a rev bump clears it —
+  `load_tomo_into_session` had already hand-rolled this capture; it now shares the helper. This also
+  hardens the Journey's copies of those dialogs against its own rail rebuild.
+  (2) Row model = the checkpoint spec (per-row action icons AND merge ticks), NOT the one-toolbar-
+  per-tomo variant floated in the session before it: the `.cb-ptable-row` grid landed in the tree
+  already encodes 8 columns ending in `auto` for actions. Switching to a single per-tomo action bar is
+  a contained change (drop `_render_actions`, widen the merge bar into a selection toolbar) if the
+  walkthrough prefers it.
+  (3) `build()` only paints "computing…"; the first compute is kicked by the page's
+  `_refresh_visible_tab` — `asyncio.create_task` during page construction is not the tab's business
+  (matches `OverviewTab`).
+  (4) The merge name is held on the tab (`merge_names`) so ticking one more list — which is part of
+  the view signature and therefore rebuilds — cannot eat a half-typed name.
+  (5) As planned: no live-session flag in the signature; the ⚡ button does not know whether a session
+  is up until S4's shared `session_status` lands (today it reports that through
+  `load_tomo_into_session`'s own toast).
