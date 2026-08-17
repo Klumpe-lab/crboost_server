@@ -24,12 +24,13 @@ from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.segmented import Segmented, render_segmented
 from ui.components.species_pill import render_species_pill
 from ui.dashboard.css import ensure_assets_loaded
+from ui.species.curation_tab import CurationTab
 from ui.species.jobs_tab import JobsTab
 from ui.species.overview_tab import OverviewTab
 from ui.species.picks_tab import PicksTab
 from ui.species.prompt import create_species
 from ui.species.rail import SpeciesRail
-from ui.species.tab import PlaceholderTab, SpeciesTab, TabContext
+from ui.species.tab import SpeciesTab, TabContext
 from ui.species.templates_tab import TemplatesTab
 from ui.ui_state import get_ui_state_manager
 
@@ -184,7 +185,7 @@ class SpeciesPage:
             case "picks":
                 return PicksTab(ctx)
             case "curation":
-                return PlaceholderTab("Curation — session, save-dir contract and watcher log land in roadmap 11 S4.")
+                return CurationTab(ctx)
             case "jobs":
                 return JobsTab(ctx)
         raise KeyError(f"unknown Species tab {key!r}")

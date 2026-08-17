@@ -135,6 +135,40 @@ def list_ref_for(
     )
 
 
+def species_tomo_map(
+    state, project_path: Path, species_id: str, extra_tomos: tuple[str, ...] = ()
+) -> tuple[SpeciesAnchors, dict[str, Path | None]]:
+    """``(anchors, {tomo: tomograms.star | None})`` for every tomogram this species could
+    hold picks on: ``extra_tomos`` (the caller's own rows) ∪ every tomogram the project
+    describes. ONE disk pass that both Species-page tabs build their refs from — the Picks
+    table needs a star per row's tomogram, the Curation tab per tomogram it lists, and a
+    tomogram with no picks yet is a legitimate import target for both. Reads disk — run off
+    the event loop."""
+    tomos = sorted(set(extra_tomos) | set(known_tomograms(state, project_path)))
+    anchors = species_anchors(state, project_path, species_id)
+    return anchors, {t: tomograms_star_for(state, project_path, species_id, t) for t in tomos}
+
+
+def auto_ref(
+    project_path: Path, anchors: SpeciesAnchors, species_id: str, tomo_name: str, star: Path | None
+) -> ListRef:
+    """The tomogram's REFERENCE slot as a ref: the species' ``auto`` list (its
+    candidates.star when a candidate-extract job exists, nothing for a de-novo species).
+    What the per-tomo actions take — ⚡ load into session, Curate in ArtiaX, import a
+    ``.coords`` — none of which need a pick list to exist yet."""
+    return list_ref_for(
+        project_path,
+        anchors,
+        species_id,
+        tomo_name,
+        AUTO_SLUG,
+        label="candidates",
+        list_type=PickListType.AUTO,
+        star_path=str(anchors.ce_job_dir / "candidates.star") if anchors.ce_job_dir else None,
+        tomograms_star=star,
+    )
+
+
 def known_tomograms(state, project_path: Path) -> list[str]:
     """Every tomogram name a ``tomograms.star`` of this project describes (reconstruct job
     ∪ imported), in source order — the picker universe for "import picks into <tomo>".
