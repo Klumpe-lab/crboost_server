@@ -24,6 +24,7 @@ from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.segmented import Segmented, render_segmented
 from ui.components.species_pill import render_species_pill
 from ui.dashboard.css import ensure_assets_loaded
+from ui.species.catalog import import_from_catalog
 from ui.species.curation_tab import CurationTab
 from ui.species.jobs_tab import JobsTab
 from ui.species.overview_tab import OverviewTab
@@ -94,6 +95,7 @@ class SpeciesPage:
                 active_id=lambda: self.active_species_id,
                 on_select=self.select_species,
                 on_add=self.add_species,
+                on_add_from_catalog=self.add_species_from_catalog,
             )
             with ui.element("div").style(
                 "display: flex; flex-direction: column; flex: 1 1 0%; min-width: 0; height: 100%; min-height: 0;"
@@ -252,6 +254,13 @@ class SpeciesPage:
             species = await create_species(self.backend, self.project_path, origin=SpeciesOrigin.WORKBENCH)
             if species is not None:
                 self.select_species(species.id)
+
+    async def add_species_from_catalog(self) -> None:
+        """Rail "From catalog" (roadmap 12): pick a lab-catalog species and instantiate it
+        here. Only rendered when `species_catalog_root` is configured; the import itself is
+        SingleFlight-guarded inside `ui.species.catalog`."""
+        await import_from_catalog(self.backend, self.project_path, on_done=self.select_species)
+        self.observe()
 
 
 def build_species_page(backend, callbacks: dict | None = None) -> None:

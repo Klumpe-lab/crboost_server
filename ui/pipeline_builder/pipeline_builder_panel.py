@@ -360,11 +360,11 @@ class PipelineBuilderPanel:
                             if getattr(sp, "diameter_ang", None):
                                 job_model.particle_diameter_ang = float(sp.diameter_ang)
 
-        # Aggregation projects: if the merge has been done, wire any new
-        # consumer's input_optimisation slot to the active merge's synthetic
-        # `mergedSources` producer (source_overrides key) so the user doesn't
-        # need to manually configure the override.
-        from services.aggregation_authoritative import apply_aggregation_overrides
+        # If a merge is active, wire this new consumer's input_optimisation slot to the
+        # active merge's synthetic `mergedSources` producer (source_overrides key) so the
+        # user doesn't have to configure the override by hand. No-ops when there is no
+        # active merged optset, which is every project that has never merged.
+        from services.aggregation.authoritative import apply_aggregation_overrides
 
         apply_aggregation_overrides(state)
 
@@ -634,20 +634,13 @@ def build_pipeline_builder_panel(
         toggle_journey=toggle_journey,
     )
 
-    # Idempotent: for aggregation projects with a completed merge, retroactively
-    # wire any consumer jobs (Class3D/Refine3D/...) that were added before the
-    # merge happened or before the auto-override hook was wired. Cheap to call
-    # on every workspace render — only writes when a value would actually change.
-    from services.aggregation_authoritative import apply_aggregation_overrides
-
-    n_wired = apply_aggregation_overrides(current_project_state())
-    if n_wired and panel.ui_mgr.is_project_created:
-        # Persist so the wiring survives reload — otherwise we'd self-heal in
-        # memory but the next reload starts cold and the user sees the same
-        # "empty input" symptom.
-        import asyncio as _asyncio
-
-        _asyncio.create_task(panel.backend.save_project(panel.ui_mgr.project_path))
+    # The render-scoped self-heal of `apply_aggregation_overrides` was REMOVED here by
+    # de-novo S6. It existed to retro-wire consumer jobs added before the merge hook was
+    # wired, and it was safe only because `is_aggregation` kept it to a handful of projects.
+    # With that flag deleted it would have become a mutator running on every workspace render
+    # of every project — a behaviour change smuggled in as a cleanup. The wiring now happens
+    # where the user acts: adding a consumer job (above), finishing a merge, and switching
+    # the active merge (both in ui/aggregation/merge_card.py).
 
     # Must be created in the current NiceGUI rendering context before
     # panel.build() is called, since rebuild_pipeline_ui writes into it.

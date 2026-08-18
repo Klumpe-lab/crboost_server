@@ -18,9 +18,14 @@ Every action is `ui/particles/list_actions` — carved out of the Journey in 11-
 `load_tomo_into_session` / `curate_in_artiax`). `on_done` is a no-op here: the actions bump
 the registry rev, and the rev is what repaints this view.
 
-Extraction status is DERIVED (`PickList.extraction_state()`) until roadmap 07 makes
-per-list extraction a real job; after 07 the badge's hover gains the instance's execution
-status and failure text.
+Two columns tell the extraction story, and the split is deliberate: `ext` is DERIVED
+(`PickList.extraction_state()` — is there a RECORDED extraction output that still exists and
+is current with the picks?), while `job` reports the per-list extraction JOB behind it
+(roadmap 07-S4) — queued / running / succeeded / failed, with the failure text and the
+geometry it cut with on hover and its logs on click. Neither is a disk sweep: an extraction
+whose awaiter died is recorded by nobody, so both columns go stale together (see
+`backend._await_extraction_outdirs`) and re-extracting is the recovery — which is why nothing
+here hard-blocks that action. This table is the only place either column is visible.
 """
 
 from __future__ import annotations
@@ -34,12 +39,19 @@ from typing import Any
 
 from nicegui import ui
 
-from services.aggregation_authoritative import extraction_params_for_species
+from services.aggregation.authoritative import extraction_params_for_species
 from services.dashboard_data import glyph_for
-from services.models_base import ListExtractionState, PickListType
+from services.models_base import JobStatus, ListExtractionState, PickListType
 from services.particles.list_admin import delete_pick_list, pick_list_files
 from services.particles.list_ref import AUTO_SLUG, ListRef, auto_ref, list_ref_for, species_tomo_map
-from services.particles.species_overview import NOT_APPLICABLE, ListRow, SpeciesOverview, species_overview
+from services.particles.species_overview import (
+    NOT_APPLICABLE,
+    ExtractJob,
+    ListRow,
+    SpeciesOverview,
+    extract_job_for,
+    species_overview,
+)
 from services.project_state import get_project_state_for
 from ui.background_task import BackgroundTask
 from ui.components.chip import render_chip
@@ -55,6 +67,32 @@ _HINT_CLS = "text-[10px] text-gray-400"
 _LINK_CLS = "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
 
 _GATE_STATUS = {"READY": "ok", "PENDING": "warn", "BLOCKED": "error"}
+
+# The `job` column's mark per extraction-job status: (glyph, css class, words for the hover).
+# RUNNING carries no glyph — a spinner replaces it, the one honest way to say "right now".
+_JOB_CHIP = {
+    JobStatus.SCHEDULED: ("◌", "cb-badge-stale", "submitting"),
+    JobStatus.QUEUED: ("◌", "cb-badge-queued", "queued in SLURM"),
+    JobStatus.RUNNING: ("", "", "running"),
+    JobStatus.SUCCEEDED: ("✓", "cb-badge-todo", "last run succeeded"),
+    JobStatus.FAILED: ("✕", "cb-badge-err", "last run FAILED"),
+    JobStatus.UNKNOWN: ("?", "cb-badge-todo", "status unknown"),
+}
+
+
+def _job_tooltip(job: ExtractJob, status: JobStatus) -> str:
+    """One actionable line for the `job` mark: what the extraction is doing, the SLURM id to
+    check, the geometry it cut with (nothing else in the project records that — before roadmap
+    07 it lived only in the launch command line) and the failure text when there is one.
+    Quasar tooltips collapse newlines, so it stays a single line."""
+    bits = [f"extraction {_JOB_CHIP.get(status, ('', '', status.value))[2]}"]
+    if job.slurm_job_id:
+        bits.append(f"SLURM {job.slurm_job_id}")
+    bits.append(list_actions.extraction_geometry_text(job))
+    if job.error:
+        bits.append(job.error if len(job.error) <= 240 else job.error[:240] + " …")
+    bits.append("click for logs" if job.job_dir else "no log dir recorded for this submit")
+    return " — ".join(bits)
 
 
 def _count_text(count: int, kept: int | None) -> str:
@@ -207,6 +245,23 @@ class _PicksView(FingerprintedView):
         with ui.element("div").classes("cb-ptable-group"):
             ui.label(tomo).classes("cb-ptable-group-name")
             ui.label(f"{len(rows)} list{'s' if len(rows) != 1 else ''}").classes(_HINT_CLS)
+            if not any(r.is_authoritative for r in rows):
+                # PER TOMOGRAM, not per species: `get_authoritative_slug` falls back to 'auto',
+                # and whether that resolves is a property of THIS group — a species with a
+                # candidate-extract job still has no auto row on a tomogram where the CE
+                # returned no picks, which is the same dead end as a de-novo species. A choice
+                # left dangling by a deleted list lands here too, which is right: in every one
+                # of those cases every row reads unchecked, the gate reads BLOCKED, and without
+                # this nothing says a decision is outstanding. Deliberately NOT pre-checked on
+                # the user's behalf, even with a single candidate list: the gate reads the
+                # STORED choice, so a checked-looking radio that persisted nothing would show
+                # "chosen" next to a BLOCKED roll-up.
+                ui.label("no authoritative list").classes("text-[10px] text-orange-700 font-medium").tooltip(
+                    "Nothing downstream consumes this tomogram until one list is marked authoritative — click a "
+                    "row's radio in the 'auth' column. The default is the auto candidate set, which does not "
+                    "exist here (no candidate-extract job, or it found nothing on this tomogram); a choice whose "
+                    "list was deleted reads the same way."
+                )
             ui.space()
             if tomo_ref is not None:
                 ui.button(
@@ -226,6 +281,10 @@ class _PicksView(FingerprintedView):
                 ui.label("list").classes("cb-ltable-h-name")
                 ui.label("picks").classes("cb-ltable-h-num")
                 ui.label("ext").classes("cb-ltable-h-cell").tooltip("Subtomo-extracted state")
+                ui.label("job").classes("cb-ltable-h-cell").tooltip(
+                    "The per-list extraction JOB behind that state — queued / running / succeeded / failed. "
+                    "Hover a mark for the geometry it cut with and any failure text; click it for the logs."
+                )
                 ui.label("source").classes("cb-ltable-h-name")
                 ui.element("div")  # actions
             for row in rows:
@@ -260,6 +319,7 @@ class _PicksView(FingerprintedView):
             )
             with ui.element("div").classes("cb-ltable-cell"):
                 self._render_ext_badge(row)
+            self._render_job_chip(row)
             if row.source_kind:
                 ui.label(row.source_kind).classes("cb-ptable-source").tooltip(
                     f"{row.source_kind} · {row.source_ref or '—'}"
@@ -280,6 +340,28 @@ class _PicksView(FingerprintedView):
         text, cls = list_actions.extraction_badge(ListExtractionState(row.extraction_state))
         if text:
             ui.label(text.split(" ", 1)[0]).classes(f"cb-ltable-badge {cls}").tooltip(text)
+
+    def _render_job_chip(self, row: ListRow) -> None:
+        """The `job` column: what the per-list extraction INSTANCE is doing (roadmap 07-S4).
+
+        ALWAYS emits exactly one grid child — the cell stays empty for a list with no
+        instance (the `auto` list never gets one, and a list that was never submitted has
+        nothing to add to `ext`), because a skipped child would slide every later column of
+        that row one place left. Clicking opens the job's logs: this job deliberately has no
+        roster row, so the mark is the only door to them."""
+        cell = ui.element("div").classes("cb-ltable-cell")
+        job = row.extract_job
+        if job is None:
+            return
+        status = JobStatus(job.status)
+        glyph, cls, _ = _JOB_CHIP.get(status, ("?", "cb-badge-todo", status.value))
+        with cell:
+            if status == JobStatus.RUNNING:
+                ui.spinner("dots", size="xs").classes("text-blue-500")
+            else:
+                ui.label(glyph).classes(f"cb-ltable-badge {cls}")
+        cell.classes(add="cb-ptable-job").tooltip(_job_tooltip(job, status))
+        cell.on("click", lambda _e, r=row: self._tab.open_logs(r))
 
     def _render_actions(self, tomo: str, row: ListRow, ref: ListRef | None) -> None:
         if ref is None or row.slug == AUTO_SLUG:
@@ -382,6 +464,13 @@ class PicksTab:
             if not acquired:
                 return
             ctx = self.ctx
+            if self.backend is not None:
+                # Settle any extraction instance whose awaiter is gone BEFORE reading the rows
+                # off it (roadmap 07 review, finding A): otherwise the `job` chip asserts
+                # Queued/Running for a job that left the SLURM queue long ago, and a finished
+                # one stays unrecorded. No-op — and no squeue call — when nothing is
+                # non-terminal, which is the normal case; runs at most per `_DISK_REFRESH_S`.
+                await self.backend.reconcile_pick_list_extractions(ctx.project_path, ctx.species_id)
             state = get_project_state_for(ctx.project_path)
             try:
                 computed = await asyncio.to_thread(_compute, state, ctx.project_path, ctx.species_id)
@@ -484,6 +573,21 @@ class PicksTab:
             on_done=self.refresh,
         )
 
+    async def open_logs(self, row: ListRow) -> None:
+        """This list's extraction job: its logs, the geometry it cut with, its failure text
+        (roadmap 07-S4). SingleFlight-guarded like every dialog opener here — the mark lives
+        in a rev-gated container a refresh can replace mid-click, so a user can legitimately
+        land several clicks before one opens."""
+        job = row.extract_job
+        if job is None:
+            return
+        async with self._flight(f"logs:{job.instance_id}") as acquired:
+            if not acquired:
+                return
+            await list_actions.open_extraction_logs(
+                self.backend, self.ctx.project_path, job, title=f"{row.label} · {row.tomo_name}"
+            )
+
     def import_from_path(self) -> None:
         """Species-level import: the .coords maps into ONE tomogram's frame, and that
         tomogram may have no picks yet — so the picker gets every tomogram the project
@@ -516,6 +620,8 @@ class PicksTab:
                 ui.notify(f"'{ref.label}' is not a registered list — nothing to delete.", type="warning")
                 return
             files = await asyncio.to_thread(pick_list_files, pl)
+            job = extract_job_for(state, ref.species_id, ref.tomo_name, ref.slug)
+            live_job = job is not None and job.is_live
             with list_actions.dialog_host(), ui.dialog() as confirm, ui.card().classes("w-[30rem] max-w-full gap-2"):
                 ui.label(f"Delete '{ref.label}' on {ref.tomo_name}?").classes("text-sm font-bold")
                 for kind, label in (("stars", "star file"), ("dirs", "extraction output"), ("coords", "ArtiaX save")):
@@ -533,6 +639,12 @@ class PicksTab:
                         "This is the authoritative list for the tomogram — the choice is left dangling (the gate "
                         "will flag it) rather than silently falling back."
                     ).classes("text-[10px] text-orange-700")
+                if live_job:
+                    ui.label(
+                        f"An extraction for this list is {job.status.lower()} (SLURM {job.slurm_job_id or '—'}) — "
+                        "it is cancelled first. Left running it would re-create the output directory this delete "
+                        "removes, and its instance goes with the list, so nothing would be left to stop it with."
+                    ).classes("text-[10px] text-orange-700")
                 ui.label("This cannot be undone.").classes(_HINT_CLS + " text-red-600")
                 with ui.row().classes("w-full justify-end gap-2"):
                     ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
@@ -543,6 +655,19 @@ class PicksTab:
             confirm.delete()
             if not go:
                 return
+            if live_job and self.backend is None:
+                ui.notify(
+                    "Backend unavailable — the in-flight extraction was NOT cancelled and may re-create the "
+                    "directory this delete removes.",
+                    type="warning",
+                    timeout=6000,
+                )
+            elif live_job:
+                cancelled = await self.backend.cancel_pick_list_extraction(
+                    ref.project_path, ref.species_id, ref.tomo_name, ref.slug
+                )
+                if not cancelled.get("success"):
+                    ui.notify(cancelled["error"], type="warning", timeout=6000)
             result = await delete_pick_list(ref.project_path, ref.species_id, ref.tomo_name, ref.slug)
             if not result.get("success"):
                 ui.notify(result["error"], type="negative")

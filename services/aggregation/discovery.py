@@ -27,12 +27,15 @@ class SubtomoCandidate:
     job_dir: str
     optset_path: str
     species_label: str | None  # e.g. "copia" or "Copia (viral)"; None for default instance
-    is_aggregation: bool
     n_tomograms: int | None  # None if we couldn't read tomograms.star
     species_id: str | None = None
     species_color: str | None = None
     mnemonic: str = ""
     has_filter: bool = False  # True if a curated particles_filtered.star exists
+    # The lab-catalog entry this project's species was instantiated from (roadmap 12), when
+    # any. It is what makes "the same species in another project" a fact rather than a guess:
+    # every project mints its own local species id, so matching on THAT finds nothing.
+    catalog_id: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -85,7 +88,6 @@ def _scan_project(proj_dir: Path, seen_optsets: set) -> list[SubtomoCandidate]:
 
     project_name = data.get("project_name") or proj_dir.name
     mnemonic = data.get("mnemonic") or ""
-    is_aggregation = bool(data.get("is_aggregation", False))
     jobs = data.get("jobs") or {}
     species_list = [s for s in (data.get("species_registry") or []) if isinstance(s, dict) and s.get("id")]
     species_by_id = {s["id"]: s for s in species_list}
@@ -132,6 +134,7 @@ def _scan_project(proj_dir: Path, seen_optsets: set) -> list[SubtomoCandidate]:
         species_id = sp["id"] if sp else (sid if (sid and not sid.isdigit()) else None)
         species_label = (sp.get("name") if sp else None) or species_id
         species_color = sp.get("color") if sp else None
+        catalog_id = sp.get("catalog_id") if sp else None
 
         out.append(
             SubtomoCandidate(
@@ -141,12 +144,12 @@ def _scan_project(proj_dir: Path, seen_optsets: set) -> list[SubtomoCandidate]:
                 job_dir=str(job_dir),
                 optset_path=key,
                 species_label=species_label,
-                is_aggregation=is_aggregation,
                 n_tomograms=_count_tomograms(job_dir),
                 species_id=species_id,
                 species_color=species_color,
                 mnemonic=mnemonic,
                 has_filter=(job_dir / "particles_filtered.star").exists(),
+                catalog_id=catalog_id,
             )
         )
     return out

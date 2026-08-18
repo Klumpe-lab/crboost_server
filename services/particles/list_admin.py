@@ -22,6 +22,7 @@ from pathlib import Path
 
 from services.models_base import PickListType
 from services.particles import picks_filter
+from services.particles.list_ref import extract_pick_list_instance_id
 from services.project_state import PickList, get_project_state_for, get_state_service
 from services.result import err, ok
 from services.visualization import artiax_bridge
@@ -77,6 +78,16 @@ async def delete_pick_list(project_path: Path, species_id: str, tomo_name: str, 
             logger.warning("Could not remove %s: %s", d, e)
             errors.append(f"Could not remove {d.name}/: {e}")
 
+    # The per-list extraction instance describes THIS list (roadmap 07) and its out dir has
+    # just gone with `files["dirs"]`. It has to go too: a `manual` list is re-minted under the
+    # same slug by the curation watcher on the next save, and would otherwise inherit the
+    # deleted list's status and failure text until something resubmits it.
+    # PRECONDITION the caller owns: any in-flight extraction of this list is already cancelled
+    # (`backend.cancel_pick_list_extraction`). Popping the instance discards the only record of
+    # its SLURM id, and the job would re-create the directory just deleted — so a delete that
+    # skips the cancel leaves an orphan nothing in the project can stop or explain. Kept out of
+    # here rather than done here: this module is UI-free and holds no SlurmService.
+    state.jobs.pop(extract_pick_list_instance_id(species_id, tomo_name, slug), None)
     state.remove_pick_list(slug, species_id, tomo_name)
     # Awaited, not fire-and-forget: a create_task here could be GC'd before it runs and
     # leave the deleted list back on disk after a reload.

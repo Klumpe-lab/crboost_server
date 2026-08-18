@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from services.dashboard_data import ce_instance_for_species, job_dir_for, matching_subtomo_instance
-from services.models_base import PickListType
+from services.models_base import InstanceId, JobType, PickListType
 from services.visualization.tomo_geometry import geometry_for_ts, read_tomo_table, tomogram_star_sources
 
 AUTO_SLUG = "auto"
@@ -28,6 +28,24 @@ def fs_slug(name: str) -> str:
     """Filesystem-safe slug (no regex dep): merged-list slugs (``merged__<name>``) and the
     Journey's cutout-cache file names."""
     return "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(name)).strip("_") or "x"
+
+
+def extract_pick_list_instance_id(species_id: str, tomo_name: str, slug: str) -> str:
+    """Instance id of the per-list extraction job for ONE pick list (roadmap 07).
+
+    Keyed on the full ``(species, tomo, slug)`` triple for the same reason
+    ``path_resolution_service.pick_list_producer_id`` is: ``PickList.slug`` is unique only
+    WITHIN a (species, tomogram), and every hand-picked list is minted with the literal
+    ``slug="manual"`` (``services/particles/ingest.py``), so a slug-only id would collapse
+    every manual list in the project onto ONE instance — the second submit silently
+    overwriting the first's geometry, status and error.
+
+    Not string-equal to the producer id and not derivable from it: the tomogram name is
+    slugged here because this id is interpolated unquoted into the driver launch command
+    (``services.jobs.spec.driver_invocation``), whereas the producer id embeds the raw
+    name. Both are built from the triple; neither is parsed out of the other.
+    """
+    return str(InstanceId(JobType.EXTRACT_PICK_LIST, f"{species_id}__{fs_slug(tomo_name)}__{slug}"))
 
 
 @dataclass(frozen=True, slots=True)

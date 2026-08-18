@@ -46,3 +46,59 @@ dedup only within one import call; no half-maps; TM-on-imported blocked (no
 2. Re-open the dialog on a large directory — responsive.
 3. `grep` the resolver debug/report output: imported candidates carry the dedicated sentinel, and a
    deleted imported star surfaces as a dangling source instead of silently disappearing.
+
+## Stage record
+
+- 2026-08-18 — **S5 CODE-COMPLETE** (`ruff check .` / `ruff format --check` clean; `py_compile`,
+  `check_boundaries.py` and the runtime pass above are owed, like the rest of the arc).
+
+  **1. Dedicated producer identity (D-8) — done.** `JobType.IMPORTED_TOMOGRAMS` ("importedTomograms")
+  joins `MERGED_SOURCES` as a synthetic, spec-less type (`_SYNTHETIC_DISPLAY_NAMES` gives it a name;
+  nothing iterates `JobType` expecting a `JobSpec`). `_add_imported_tomograms_candidates` stops
+  claiming to be MERGED_SOURCES and carries a real label ("Imported tomograms — N tomogram(s)"), so
+  the resolver dropdown names the artifact instead of showing a merge that does not exist. A dangling
+  imported override now gets `_dangling_imported_message()` in BOTH surfacing paths (`resolve_inputs`
+  and `validate_input_slot`) instead of "merged-sources optimisation_set not found" — which named the
+  wrong artifact and the wrong file type. Compatibility is read-time, not a migration: the legacy
+  `mergedSources:Tomograms` override key is still recognised by `_synthetic_override_target` and
+  rewritten inside `_resolve_override`, because an override lives on every job model that holds one
+  and a load-time migration would miss any project that is only ever read.
+
+  **2. Multi-import batches — done.** `ImportBatch` (source, geometry, count, `imported_at`, plus its
+  own `renamed`/`skipped` report) is the new unit; `ImportedTomograms.batches` is the source of truth
+  and `effective_batches()` folds a pre-S5 record into one synthetic batch, so an additional import
+  cannot silently drop what was already there. `write_tomograms_star` now takes the batch LIST and
+  rebuilds the whole star from it — a pure function of the batches, so dropping one later needs no
+  in-place surgery. Cross-batch collisions are resolved and REPORTED, never merged silently:
+  same recon file ⇒ the row is dropped ("already imported"); same tomo name, different file ⇒ the new
+  row is renamed `<name>__2` and **the incumbent keeps its name**, because picks, curation saves and
+  pick lists are keyed on it. `commit_imported_tomograms(replace=…)` keeps the old
+  replace-everything behaviour as an explicit choice. A PRIOR batch that has become unreadable (its
+  source directory moved) contributes zero rows and its error is returned under `batch_errors` rather
+  than failing the commit — but the batch being added right now still raises, because that is the one
+  the user can fix, and the "no silently defaulted apix" contract lives there.
+
+  **3. Formats — done.** `TOMOGRAM_SUFFIXES = (".mrc", ".rec")`; `list_tomogram_candidates` filters
+  both the directory and the glob branch through it. The directory widget composes `*` rather than
+  `*.mrc` (a glob expresses one suffix; an etomo `.rec` directory used to read as empty), and
+  `local_file_picker` learned comma-separated glob patterns (`"*.mrc,*.rec"`) since fnmatch has no
+  alternation.
+
+  **4. Perf shake — done, one deviation.** Header probes were ALREADY off the event loop
+  (`asyncio.to_thread` in `probe_tomogram_metadata`), so the "laggy, terrible" report was the other
+  two halves: one 3000-file await behind a motionless "Probing…" (now chunked at 100/await with a
+  live count), and one DOM row per file (now capped at 300 rendered, with an explicit line saying how
+  many are not drawn and that they are still selected and still imported — a silent cap would read as
+  "that is all of them"). **`FingerprintedView` on the preview table was NOT built**: it gates
+  repaints against a signature on a POLL, and nothing polls this table — it is rebuilt only by an
+  explicit scan/browse/toggle. Adding one would have been ceremony around a rebuild that already
+  happens exactly as often as it must.
+
+  **5. Half-map slots (D-9)** — still deliberately out of scope.
+
+- 2026-08-18 (same session, self-review) — **one defect found and fixed in the batch rebuild.**
+  `write_tomograms_star` wrote the merged star and *then* the backend raised on the new batch's
+  error, so a failed import had already rewritten the committed star from the prior batches —
+  quietly dropping the rows of any prior batch that had since become unreadable. The
+  fail-on-last-batch guard (`require_last=True`) now runs BEFORE the write, and the backend's
+  duplicate raise is gone: a failed import leaves both the file and the recorded state untouched.

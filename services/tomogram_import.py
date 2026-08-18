@@ -30,6 +30,12 @@ class TomoImportMode(str, Enum):
     SYNTHESIZE = "synthesize"
 
 
+# What counts as a reconstructed tomogram on disk. `.rec` is IMOD/etomo's own name for the
+# same MRC container and is what a tilt-series reconstructed outside Warp usually arrives as
+# — excluding it made half the plausible source directories look empty (de-novo S5).
+TOMOGRAM_SUFFIXES: tuple[str, ...] = (".mrc", ".rec")
+
+
 TOMO_IMPORT_REFERENCE = TomoImportMode.REFERENCE.value
 TOMO_IMPORT_SYNTHESIZE = TomoImportMode.SYNTHESIZE.value
 
@@ -225,49 +231,128 @@ def _synthesize_rows(
     return pd.DataFrame(rows)
 
 
+def _fold_batch_rows(df, seen_names: set, seen_paths: set) -> tuple:
+    """Fold ONE batch's rows into the merged star, against what earlier batches already put
+    there. Returns ``(rows, renamed, skipped)``.
+
+    Two collisions, both reported and neither silent (same rule as
+    ``drivers/subtomo_merge.py``'s cross-project guard):
+
+      * **same recon file** — already imported by an earlier batch, so the row is DROPPED.
+        Re-importing a directory you imported before must not double every tomogram.
+      * **same tomogram name, different file** — the row is RENAMED (``<name>__2``). The
+        EARLIER row keeps the name on purpose: picks, curation saves and pick lists are
+        keyed on it, and renaming the incumbent would strand every one of them.
+    """
+    renamed: list[dict] = []
+    skipped: list[dict] = []
+    keep: list[int] = []
+    final_names: list[str] = []
+    names = df["rlnTomoName"].astype(str).tolist()
+    if "rlnTomoReconstructedTomogram" in df.columns:
+        paths = df["rlnTomoReconstructedTomogram"].astype(str).tolist()
+    else:
+        paths = [""] * len(names)
+
+    for i, (name, path) in enumerate(zip(names, paths, strict=True)):
+        if path and path in seen_paths:
+            skipped.append({"name": name, "path": path, "reason": "already imported by an earlier batch"})
+            continue
+        final = name
+        if final in seen_names:
+            j = 2
+            while f"{name}__{j}" in seen_names:
+                j += 1
+            final = f"{name}__{j}"
+            renamed.append({"name": name, "renamed_to": final, "path": path})
+        seen_names.add(final)
+        if path:
+            seen_paths.add(path)
+        keep.append(i)
+        final_names.append(final)
+
+    rows = df.iloc[keep].copy()
+    rows["rlnTomoName"] = final_names
+    return rows, renamed, skipped
+
+
 def write_tomograms_star(
     out_path: Path,
     *,
-    mode: str = TOMO_IMPORT_SYNTHESIZE,
-    mrc_paths: list[Path] | None = None,
-    reference_star: str = "",
-    pixel_size_angstrom: float = 0.0,
-    tomogram_binning: float = 1.0,
-    optics_group_name: str = "opticsGroup1",
+    batches: list[dict],
     voltage: float = 300.0,
     spherical_aberration: float = 2.7,
     amplitude_contrast: float = 0.10,
     invert_defocus_hand: bool = True,
     project_tag: str = "",
-) -> int:
-    """Write ``out_path`` (a ``tomograms.star``). Returns the tomogram row count.
+    require_last: bool = True,
+) -> dict:
+    """Write ``out_path`` (a ``tomograms.star``) from a LIST of import batches, in order.
 
-    ``synthesize`` builds it from ``mrc_paths``; ``reference`` copies an existing
-    ``tomograms.star`` (absolutizing its file paths). Raises on no rows / unreadable
-    inputs / a missing voxel size with no override (never silently defaults apix)."""
+    Each batch is a dict of the fields ``ProjectState.ImportBatch`` carries
+    (``source_mode``, ``source_paths`` | ``reference_star``, ``pixel_size_angstrom``,
+    ``tomogram_binning``, ``optics_group_name``); ``synthesize`` builds rows from the recon
+    files, ``reference`` copies an existing ``tomograms.star`` (absolutizing its paths).
+
+    The whole star is rebuilt from the whole list on every commit — it is a pure function of
+    the batches, so a batch can be dropped later without any in-place surgery, and the
+    re-read cost (MRC headers) is paid off the event loop by the caller.
+
+    Returns ``{"count": total_rows, "per_batch": [{"count", "renamed", "skipped", "error"}]}``.
+    A PRIOR batch that cannot be read (its reference star moved, its recon files are gone)
+    contributes ``error`` and zero rows instead of failing the whole rebuild — nothing in the
+    import dialog can repair a source directory that moved. The LAST batch is the one being
+    added right now, and ``require_last`` makes its failure fatal BEFORE anything is written:
+    otherwise a failed import would still have rewritten the committed star from the prior
+    batches, quietly dropping the rows of any prior batch that had gone unreadable. Also
+    raises when nothing at all could be written."""
+    import pandas as pd
     import starfile
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if mode == TOMO_IMPORT_REFERENCE:
-        df = _reference_rows(reference_star)
-    else:
-        df = _synthesize_rows(
-            mrc_paths or [],
-            pixel_size_angstrom=pixel_size_angstrom,
-            tomogram_binning=tomogram_binning,
-            optics_group_name=optics_group_name,
-            voltage=voltage,
-            spherical_aberration=spherical_aberration,
-            amplitude_contrast=amplitude_contrast,
-            invert_defocus_hand=invert_defocus_hand,
-            project_tag=project_tag,
-        )
+    frames = []
+    reports: list[dict] = []
+    seen_names: set = set()
+    seen_paths: set = set()
+    for spec in batches:
+        report = {"count": 0, "renamed": [], "skipped": [], "error": ""}
+        try:
+            if (spec.get("source_mode") or TOMO_IMPORT_SYNTHESIZE) == TOMO_IMPORT_REFERENCE:
+                df = _reference_rows(spec.get("reference_star") or "")
+            else:
+                df = _synthesize_rows(
+                    [Path(p) for p in (spec.get("source_paths") or [])],
+                    pixel_size_angstrom=float(spec.get("pixel_size_angstrom") or 0.0),
+                    tomogram_binning=float(spec.get("tomogram_binning") or 1.0),
+                    optics_group_name=spec.get("optics_group_name") or "opticsGroup1",
+                    voltage=voltage,
+                    spherical_aberration=spherical_aberration,
+                    amplitude_contrast=amplitude_contrast,
+                    invert_defocus_hand=invert_defocus_hand,
+                    project_tag=project_tag,
+                )
+        except (OSError, ValueError) as e:
+            # Reported, not swallowed: the batch's own row in the dialog carries this text.
+            report["error"] = str(e)
+            df = None
+        if df is not None and len(df):
+            rows, renamed, skipped = _fold_batch_rows(df, seen_names, seen_paths)
+            frames.append(rows)
+            report.update(count=len(rows), renamed=renamed, skipped=skipped)
+        reports.append(report)
 
-    if df is None or len(df) == 0:
-        raise ValueError(f"tomogram import produced no rows (mode={mode!r})")
+    # Both guards run BEFORE the write: out_path is the committed star, and rewriting it
+    # from a rebuild the caller is about to reject would be a silent side effect of a
+    # failed import.
+    if require_last and reports and reports[-1]["error"]:
+        raise ValueError(reports[-1]["error"])
+    if not frames:
+        problems = "; ".join(r["error"] for r in reports if r["error"])
+        raise ValueError(f"tomogram import produced no rows{f' ({problems})' if problems else ''}")
 
+    merged = pd.concat(frames, ignore_index=True)
     # starfile maps the dict key to the block name -> 'global' becomes data_global.
-    starfile.write({"global": df}, out_path, overwrite=True)
-    return len(df)
+    starfile.write({"global": merged}, out_path, overwrite=True)
+    return {"count": len(merged), "per_batch": reports}

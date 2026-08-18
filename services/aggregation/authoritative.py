@@ -198,7 +198,7 @@ def enumerate_authoritative(
     if curation_by_tomo is None:
         curation_by_tomo = {}
         if subtomo_dir is not None:
-            from services.aggregation_discovery import load_tomo_curation
+            from services.aggregation.discovery import load_tomo_curation
 
             for tc in load_tomo_curation(str(subtomo_dir)):
                 curation_by_tomo[tc.ts_name] = {"kept": tc.kept, "total": tc.total, "reviewed": tc.reviewed}
@@ -390,7 +390,7 @@ def compute_gate_report(handles: list[AuthoritativeHandle]) -> GateReport:
 
 # ── CLI (verification) ─────────────────────────────────────────────────────────────────
 # Read-only. Run in the module env (needs pandas/starfile, which Claude's venv lacks):
-#   python -m services.aggregation_authoritative --project <proj-root> [--species <id>]
+#   python -m services.aggregation.authoritative --project <proj-root> [--species <id>]
 
 
 def _main() -> None:
@@ -455,14 +455,18 @@ def apply_aggregation_overrides(state) -> int:
     Also clears stale `is_orphaned` / `missing_inputs` markers since they
     were written before the override existed.
 
-    Called from three sites:
-      - When a new RP/Class3D/Refine3D is added in an aggregation project.
-      - After a successful merge (retro-wires already-added consumers).
-      - On every workspace render (idempotent self-heal for jobs that pre-date
-        either of the above hooks).
+    INVOCATION-scoped, deliberately (de-novo S6). Callers:
+      - a new RP/Class3D/Refine3D is added while a merge is active;
+      - a merge finished (retro-wires already-added consumers);
+      - the merge card set a different merge active.
+
+    It used to be render-scoped as well ("self-heal on every workspace render") and gated on
+    `state.is_aggregation`. That flag is gone, so a render-scoped mutator would now run for
+    EVERY project on every render — new, riskier behaviour rather than the same behaviour
+    with one fewer flag. A project with an active merge opted into this wiring by creating
+    the merge; nothing needs to re-decide it on a render. The early return below is now the
+    only guard: no active merged optset ⇒ nothing to wire.
     """
-    if not getattr(state, "is_aggregation", False):
-        return 0
     optset = state.active_merged_optset()
     if optset is None or not optset.exists():
         logger.debug("apply_aggregation_overrides: no active merged optset")

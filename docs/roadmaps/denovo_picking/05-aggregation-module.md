@@ -70,3 +70,52 @@ running a mutator on every render for all projects would be new, riskier behavio
 3. GateReport pre-flight shows BLOCKED/stale lists before merge.
 4. `grep -rn is_aggregation` → 0 hits (modulo tolerate-on-load shim); old aggregation projects
    still open.
+
+## Stage record
+
+- 2026-08-18 — **S6 CODE-COMPLETE**, both commits (`ruff check .` clean; `py_compile`,
+  `check_boundaries.py` and the runtime pass are owed with the rest of the arc).
+
+  **Correction to this doc first:** it says `drivers/subtomo_merge.py` "stays in `drivers/`". That
+  move already happened — roadmap 04-S5 put the merge logic in `services/subtomo_merge.py` with
+  `drivers/subtomo_merge.py` as its node-side entry point, and the entry point has since gone too.
+  Nothing was moved out of `drivers/` here.
+
+  **Commit 1 — the move, no logic change.** `services/aggregation/{discovery,authoritative}.py` and
+  `ui/aggregation/merge_card.py`, each package with a docstring saying what lives there and why the
+  merge itself does not. **No shims**: all 13 import sites were repointed, which is what the F401
+  boot-break lesson recommends when the importer list is small enough to enumerate. Stale references
+  in five docstrings and the `python -m` CLI header went with them.
+
+  **Commit 2 — de-global + de-flag.**
+  · `_MergeDialog` replaces `_DIALOG_REFS` + `_registry_expanded` + a dozen `current_project_state()`
+  reaches. Those globals were per-PROCESS describing a per-TAB thing: a second tab opening the dialog
+  overwrote the first's element refs, so the first tab's "add a manual path" rebuilt a destroyed
+  selector, and a registry row expanded in one tab expanded in the other. `state` now comes from an
+  explicit `project_path` at open — which is also what makes the merge safe to run off a request,
+  since `current_project_state()` in a background task silently returns a blank throwaway.
+  · `SingleFlight` on the merge submit and on the manual-path picker. The merge is minutes of driver
+  work behind a button that a selection change rebuilds, so a second click used to start a second
+  merge into the same output directory.
+  · **GateReport pre-flight wired** (absorbs `docs/LIST_EXTRACTION_AND_AGGREGATION.md` §8.9 steps 4-7):
+  before merging, every selected source that belongs to THIS project is run through
+  `compute_gate_report`, and pending/blocked authoritative lists are named in a confirm dialog. A
+  question, not a block — merging an older extraction on purpose is legitimate. Sources from OTHER
+  projects are deliberately not gated: this project's state cannot answer for them, and a fabricated
+  verdict is worse than silence.
+  · **`is_aggregation` deleted.** The field, the load-path read (tolerated-and-ignored for old
+  projects), the creation parameter through `backend` → `project_service`, the `UIState` field and its
+  `update_data_import` keyword, the landing-page toggle + hint + raw-data hiding, the sidebar button
+  gate, and the now-dead `SubtomoCandidate.is_aggregation` (nothing ever read it). Project creation
+  now has **no type switches at all** — the particle-only toggle went in 08-S1, this was the last one.
+  · The merge button moved from the sidebar to the **PARTICLES phase header**, beside "new species" and
+  "import tomograms" — all three answer "where do this project's particles come from" — and is now
+  available in every project instead of only ones whose creator ticked a box.
+  · **`apply_aggregation_overrides` is invocation-scoped now**, as this doc requires. Its render-scoped
+  self-heal in `pipeline_builder_panel` was REMOVED rather than left to run flagless: with the gate
+  gone it would have become a mutator firing on every workspace render of every project — a behaviour
+  change smuggled in as a cleanup. It runs where the user acts: adding a consumer job, finishing a
+  merge, switching the active merge. Its only remaining guard is "no active merged optset ⇒ 0".
+  · Stale citations fixed in `docs/PICKS_FILTER_AGGREGATION_ROADMAP.md` (the deleted
+  `merge_panel_component.py`, the moved modules, the moved merge button) and in
+  `docs/LIST_EXTRACTION_AND_AGGREGATION.md`.

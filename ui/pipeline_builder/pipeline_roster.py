@@ -284,6 +284,7 @@ class RosterWidget(FingerprintedView):
                     ui.space()
                     self._build_new_species_btn()
                     self._build_import_tomograms_btn()
+                    self._build_aggregation_merge_btn()
 
             for job_type in jobs:
                 instances = panel.ui_mgr.get_instances_for_type(job_type)
@@ -896,11 +897,6 @@ class RosterWidget(FingerprintedView):
             )
             self._refs["run_slot"] = run_slot
 
-            # Aggregation projects: open the merge-sources dialog from the
-            # sidebar instead of taking up half the workspace inline.
-            if getattr(state, "is_aggregation", False):
-                self._build_aggregation_merge_btn()
-
             self._sb_svg_btn("cross.svg", "Close project", lambda: ui.navigate.to("/"))
 
             ui.element("div").style("flex: 1;")
@@ -1485,7 +1481,7 @@ class RosterWidget(FingerprintedView):
         tip = (
             "Tomograms already come from the pipeline above"
             if has_upstream
-            else ("Re-import tomograms" if already else "Import tomograms")
+            else ("Import more tomograms" if already else "Import tomograms")
         )
 
         def _open():
@@ -1516,25 +1512,36 @@ class RosterWidget(FingerprintedView):
         return container
 
     def _build_aggregation_merge_btn(self):
-        """Sidebar button that opens the merge-sources dialog. Shows a small
-        green dot when MergedSources/optimisation_set.star already exists so
-        you can see at a glance whether the merge has been done."""
-        from ui.aggregation_merge_card import has_merged_outputs, open_aggregation_merge_dialog
+        """PARTICLES-header utility: open the merge-sources dialog. Shows a small green dot
+        when a merged optimisation_set already exists, so you can see at a glance whether
+        the merge has been done.
 
-        merged = has_merged_outputs()
+        Was a sidebar button gated on `state.is_aggregation` (de-novo S6 deleted that flag):
+        it belongs beside the other two PARTICLES-header utilities — new species, import
+        tomograms — because all three answer "where do this project's particles come from",
+        and it is now available in every project rather than only in ones whose creator
+        happened to tick a box."""
+        from services.project_state import get_project_state_for
+        from ui.aggregation.merge_card import has_merged_outputs, open_aggregation_merge_dialog
+
+        project_path = self.panel.ui_mgr.project_path
+        merged = False
+        try:
+            merged = has_merged_outputs(get_project_state_for(project_path))
+        except Exception as e:
+            logger.debug("merge-sources header button: could not read project state: %s", e)
         container = (
             ui.element("div")
             .style(
-                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                "background: transparent; "
+                "width: 22px; height: 22px; border-radius: 4px; "
                 "display: flex; align-items: center; justify-content: center; "
                 "cursor: pointer; flex-shrink: 0; position: relative;"
             )
-            .on("click", lambda: open_aggregation_merge_dialog())
-            .tooltip("Merge sources" + (" (merged)" if merged else ""))
+            .on("click", lambda: open_aggregation_merge_dialog(project_path))
+            .tooltip("Merge particle sources from several projects" + (" (merged)" if merged else ""))
         )
         with container:
-            ui.icon("merge_type", size="18px").style(
+            ui.icon("merge_type", size="14px").style(
                 "color: #9333ea; pointer-events: none;"  # purple-600
             )
             if merged:

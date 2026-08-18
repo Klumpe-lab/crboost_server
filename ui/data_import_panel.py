@@ -77,8 +77,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         "parsing_spinner": None,
         "parse_progress_timer": None,
         "data_history_container": None,
-        "raw_data_section": None,  # whole frames+mdocs+overview block; hidden in aggregation mode
-        "aggregation_hint": None,  # inline hint shown when aggregation mode is on
+        "raw_data_section": None,  # whole frames+mdocs+overview block
         "gain_input": None,  # optional project-wide gain-reference path input
     }
 
@@ -245,7 +244,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         # rather than a mode flag: leaving both empty IS the request for a project with
         # no raw data (tomograms/picks arrive later from the Particles section). The
         # legacy aggregation toggle is still an explicit flag until S6 retires it.
-        if di.is_aggregation or is_dataless():
+        if is_dataless():
             return missing
         # A half-filled form is a mistake, not a data-less project — ask for the rest.
         if not di.movies_glob:
@@ -278,7 +277,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             if status_label:
                 # Say it out loud when there is no raw data, so a data-less project is
                 # always a choice rather than an unnoticed consequence of empty globs.
-                if is_dataless() and not ui_mgr.data_import.is_aggregation:
+                if is_dataless():
                     status_label.set_text("Ready to create — without raw data")
                     status_label.style(f"{FONT} font-size: 10px; color: {CLR_ACCENT_TEXT};")
                 else:
@@ -693,7 +692,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         selected_mdoc_paths = None
         import_summary = None
         detected_params = None
-        if overview and not (di.is_aggregation or is_dataless()):
+        if overview and not is_dataless():
             selected_ts = overview.get_selected_tilt_series()
             selected_mdoc_paths = [str(ts.mdoc_path) for ts in selected_ts]
             # Scalar counts only — per-position/per-TS details and per-tilt mdoc
@@ -740,12 +739,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 project_name=di.project_name,
                 project_base_path=di.project_base_path,
                 selected_jobs=[j.value for j in ui_mgr.selected_jobs],
-                movies_glob="" if di.is_aggregation else di.movies_glob,
-                mdocs_glob="" if di.is_aggregation else di.mdocs_glob,
+                movies_glob=di.movies_glob,
+                mdocs_glob=di.mdocs_glob,
                 selected_mdoc_paths=selected_mdoc_paths,
                 import_summary=import_summary,
                 detected_params=detected_params,
-                is_aggregation=di.is_aggregation,
                 shared=di.is_shared,
             )
             if result.get("success"):
@@ -1175,51 +1173,13 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                     f"{FONT} font-size: 10px;"
                                 )
 
-                # There is no "particle-only" toggle any more: leaving the raw-data
-                # globs empty IS the request for a data-less project (see
-                # is_dataless()). The dataless_hint below tells the user that is what
-                # they are about to create, so it can't happen by accident.
-                def _sync_dataless_visibility():
-                    di = ui_mgr.data_import
-                    section = local_refs.get("raw_data_section")
-                    if section:
-                        section.set_visibility(not di.is_aggregation)
-                    update_create_button_state()
-
-                # Aggregation mode toggle (LEGACY): when on, this project skips raw
-                # frames/mdocs and starts at SubtomoExtraction (used to merge
-                # particles across multiple upstream projects).
-                def on_aggregation_toggle(e):
-                    enabled = bool(e.value)
-                    ui_mgr.update_data_import(is_aggregation=enabled)
-                    hint = local_refs.get("aggregation_hint")
-                    if hint:
-                        hint.set_visibility(enabled)
-                    _sync_dataless_visibility()
-
-                with ui.row().classes("w-full items-center justify-between mb-2"):
-                    with ui.row().classes("items-center gap-1"):
-                        ui.label("Aggregation project").style(field_label_style)
-                        with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
-                            ui.tooltip(
-                                "Skip raw-data import. Project starts at SubtomoExtraction "
-                                "and merges optimisation_set.star files from existing projects."
-                            ).style(f"{FONT} font-size: 10px;")
-                    local_refs["aggregation_switch"] = (
-                        ui.switch(value=ui_mgr.data_import.is_aggregation, on_change=on_aggregation_toggle)
-                        .props("dense")
-                        .style("transform: scale(0.75);")
-                    )
-
-                aggregation_hint = ui.label(
-                    "Aggregation mode: this project will start at SubtomoExtraction. "
-                    "Add upstream optimisation_set.star sources from the merge panel after creation."
-                ).style(
-                    f"{FONT} font-size: 10px; color: {CLR_ACCENT_TEXT}; "
-                    f"background: {CLR_ACCENT_LIGHT}; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px;"
-                )
-                aggregation_hint.set_visibility(ui_mgr.data_import.is_aggregation)
-                local_refs["aggregation_hint"] = aggregation_hint
+                # Project creation has NO type switches left. The particle-only toggle went
+                # with roadmap 08-S1 and the aggregation toggle with de-novo S6: leaving the
+                # raw-data globs empty IS the request for a data-less project (see
+                # is_dataless()), and merging particles across projects is a capability every
+                # project has, reachable from the PARTICLES header of the roster. The
+                # dataless_hint below says what is about to be created, so neither can happen
+                # by accident.
 
                 # Shared/lab ownership toggle: when on, the project is created
                 # with owner = SHARED_OWNER (grouped under "Lab / Shared" in the
@@ -1243,7 +1203,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
                 raw_data_section = ui.column().classes("w-full gap-1")
                 local_refs["raw_data_section"] = raw_data_section
-                raw_data_section.set_visibility(not ui_mgr.data_import.is_aggregation)
+
                 with raw_data_section, ui.column().classes("w-full gap-2").style(section_style):
                     # Raw Frames & Mdocs (combined input)
                     with ui.column().classes("w-full gap-0"):

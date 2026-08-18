@@ -164,6 +164,14 @@ curation:
   chimerax_bin: "chimerax"
   login_host: ""
 
+# Lab-level species catalog (roadmap 12). A shared directory holding species DEFINITIONS —
+# name, diameter, symmetry, notes, templates and masks with their provenance — so the same
+# particle can be started from in any project instead of being re-registered by hand. Picks,
+# keep/drop filters, merges and extractions are NEVER shared: they are project-bound.
+# Import and publish both COPY (a snapshot, like species values on a job); there is no live
+# sync in either direction. Leave empty to switch the feature off entirely.
+species_catalog_root: ""
+
 # Tool execution configuration
 # exec_mode: 'container' or 'binary'
 # container_path: path to .sif file (required if exec_mode is container)
