@@ -451,6 +451,30 @@ class ToolCommand:
         return self.render()
 
 
+def add_gain_options(cmd: ToolCommand, gain_path, gain_operations: str | None) -> ToolCommand:
+    """Append the gain options of WarpTools ``create_settings`` to ``cmd``.
+
+    The names are WarpTools', not ours: this build accepts ``--gain_path``,
+    ``--gain_flip_x``, ``--gain_flip_y``, ``--gain_transpose`` — and it *exits 0*
+    after printing "Option 'x' is unknown." for anything else, so a wrong name
+    yields no settings file and no failure. Callers guard for that separately.
+
+    ``gain_operations`` is the colon-joined vocabulary CryoBoost used
+    (``"flip_x:transpose"``); words outside it are ignored.
+    """
+    if not gain_path or str(gain_path) == "None":
+        return cmd
+    cmd.opt_path("--gain_path", gain_path, quote=True)
+    ops = gain_operations or ""
+    if "flip_x" in ops:
+        cmd.flag("--gain_flip_x")
+    if "flip_y" in ops:
+        cmd.flag("--gain_flip_y")
+    if "transpose" in ops:
+        cmd.flag("--gain_transpose")
+    return cmd
+
+
 def run_tool(
     command: str | ToolCommand,
     *,
