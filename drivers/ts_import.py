@@ -16,7 +16,7 @@ from pathlib import Path
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
-from drivers.driver_base import ToolCommand, get_driver_context, run_tool
+from drivers.driver_base import ToolCommand, add_gain_options, get_driver_context, run_tool
 from services.jobs.ts_import import TsImportParams
 
 
@@ -31,9 +31,6 @@ def build_ts_import_commands(params: TsImportParams, paths: dict, job_dir: Path)
     # frameseries dir relative to job_dir — WarpTools stores _wrpMovieName
     # in the tomostar relative to the tomostar file's location.
     frameseries_rel = os.path.relpath(str(paths["input_processing"]), str(job_dir))
-
-    gain_path = params.gain_path if params.gain_path and params.gain_path != "None" else ""
-    gain_ops_str = params.gain_operations if hasattr(params, "gain_operations") and params.gain_operations else ""
 
     # === Step 1: ts_import ===
     ts_import = (
@@ -62,15 +59,20 @@ def build_ts_import_commands(params: TsImportParams, paths: dict, job_dir: Path)
         .opt("--exposure", params.dose_per_tilt)
         .opt("--tomo_dimensions", params.tomo_dimensions)
     )
-    if gain_path:
-        create_settings.opt_path("--gain_reference", gain_path, quote=True)
-        if gain_ops_str:
-            create_settings.opt("--gain_operations", gain_ops_str)
+    add_gain_options(create_settings, params.gain_path, getattr(params, "gain_operations", None))
 
+    # See build_warp_commands in fs_motion_and_ctf: create_settings exits 0 on a
+    # rejected option, so the settings file has to be checked, not the exit code.
+    settings_gate = (
+        "test -f warp_tiltseries.settings || "
+        "{ echo 'ERROR: WarpTools create_settings produced no warp_tiltseries.settings "
+        "(it exits 0 on unknown options — check its output above for \"Option ... is unknown\")' >&2; "
+        "exit 1; }"
+    )
     return " && ".join(
         [
             f"test -d tomostar && ls tomostar/*.tomostar >/dev/null 2>&1 || ({ts_import.render()})",
-            f"test -f warp_tiltseries.settings || ({create_settings.render()})",
+            f"{{ test -f warp_tiltseries.settings || ({create_settings.render()}); {settings_gate}; }}",
         ]
     )
 

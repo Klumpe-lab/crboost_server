@@ -66,4 +66,4 @@ def render_fs_motion_ctf_params(job_type, job_model, is_frozen, save_handler, *,
         numeric_field("Max series", attr="do_at_most",
                       hint="-1 = process all", **common)
         text_field("Gain ops", attr="gain_operations",
-                   hint="Gain reference operations (e.g. flip, rotate)", **common)
+                   hint="Colon-separated: flip_x, flip_y, transpose (e.g. flip_x:transpose)", **common)

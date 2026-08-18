@@ -27,7 +27,7 @@ server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
 from drivers.array_job_base import ArrayDriver, ArrayResults, read_manifest
-from drivers.driver_base import DriverContext, ToolCommand, require_producer_input
+from drivers.driver_base import DriverContext, ToolCommand, add_gain_options, require_producer_input
 from services.configs.starfile_service import StarfileService
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.tilt_series import get_registry_for
@@ -98,9 +98,6 @@ def build_warp_commands(params: FsMotionCtfParams, frames_rel: str, extension: s
     `extension` is the frame glob (e.g. "*.eer"), embedded single-quoted so the shell
     hands it to WarpTools rather than expanding it.
     """
-    gain_path = params.gain_path if params.gain_path and params.gain_path != "None" else ""
-    gain_ops_str = params.gain_operations if params.gain_operations else ""
-
     # Negative sign on --eer_ngroups reinterprets the value as "EER fractions" (RELION
     # semantics): fewer, higher-SNR output sub-frames instead of many low-SNR ones.
     # For low-dose cryo-ET this is what gives motion correction enough signal per group
@@ -116,10 +113,7 @@ def build_warp_commands(params: FsMotionCtfParams, frames_rel: str, extension: s
         .opt("--angpix", params.pixel_size)
         .opt("--eer_ngroups", f"-{params.eer_ngroups}")
     )
-    if gain_path:
-        create_settings.opt_path("--gain_reference", gain_path, quote=True)
-        if gain_ops_str:
-            create_settings.opt("--gain_operations", gain_ops_str)
+    add_gain_options(create_settings, params.gain_path, params.gain_operations)
 
     run_main = (
         ToolCommand("WarpTools fs_motion_and_ctf")
@@ -149,7 +143,20 @@ def build_warp_commands(params: FsMotionCtfParams, frames_rel: str, extension: s
     if params.do_phase:
         run_main.flag("--c_fit_phase")
 
-    return f"test -f warp_frameseries.settings || ({create_settings.render()}) && {run_main.render()}"
+    # create_settings exits 0 even when it rejected an option, so its failure is
+    # invisible to `&&`. Without this gate the run limps on to fs_motion_and_ctf
+    # and dies there on "file not found: warp_frameseries.settings" — an error
+    # that points at the staging dir instead of at the option WarpTools refused.
+    settings_gate = (
+        "test -f warp_frameseries.settings || "
+        "{ echo 'ERROR: WarpTools create_settings produced no warp_frameseries.settings "
+        "(it exits 0 on unknown options — check its output above for \"Option ... is unknown\")' >&2; "
+        "exit 1; }"
+    )
+    return (
+        f"test -f warp_frameseries.settings || ({create_settings.render()}); "
+        f"{settings_gate}; {run_main.render()}"
+    )
 
 
 def detect_frame_extension(frames_dir: Path) -> str:

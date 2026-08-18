@@ -65,7 +65,9 @@ class FsMotionCtfParams(AbstractJobParams):
     out_skip_last: int = Field(default=0, description="Skip this many final tilts")
     perdevice: int = Field(default=2, ge=0, le=8, description="Parallel tilt series per GPU")
     do_at_most: int = Field(default=-1, description="Process at most N tilt series (-1 = all)")
-    gain_operations: str | None = Field(default=None, description="Gain reference operations (e.g. flip, rotate)")
+    gain_operations: str | None = Field(
+        default=None, description="Colon-separated gain operations: flip_x, flip_y, transpose (e.g. flip_x:transpose)"
+    )
     array_throttle: int = Field(
         default=20, ge=1, le=64, description="Max concurrent SLURM array tasks for per-tilt-series motion/CTF"
     )
