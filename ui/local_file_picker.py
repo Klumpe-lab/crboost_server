@@ -39,8 +39,10 @@ class local_file_picker(ui.dialog):
         """A navigable file/directory picker.
 
         ``multiple`` (file mode only) renders a checkbox per file and OK returns every
-        ticked path (selection persists across navigation). ``glob`` (e.g. ``"*.mrc"``)
-        filters which *files* are shown — directories are always listed so you can
+        ticked path (selection persists across navigation). ``glob`` filters which *files*
+        are shown — one pattern (``"*.mrc"``) or several, comma-separated
+        (``"*.mrc,*.rec"``), since fnmatch has no alternation and a file type with two
+        conventional suffixes is the common case. Directories are always listed so you can
         navigate. Directory scans run off the event loop (Lustre-friendly)."""
         super().__init__()
 
@@ -142,7 +144,7 @@ class local_file_picker(ui.dialog):
                 is_dir = p.is_dir()
             except OSError:
                 continue
-            if not is_dir and glob and not fnmatch.fnmatch(p.name, glob):
+            if not is_dir and glob and not any(fnmatch.fnmatch(p.name, g) for g in glob.split(",")):
                 continue
             size = None
             if not is_dir:

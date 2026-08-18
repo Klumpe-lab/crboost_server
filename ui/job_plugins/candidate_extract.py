@@ -152,12 +152,9 @@ def render_candidate_extract_params(job_type, job_model, is_frozen, save_handler
             hint="For tophat: '<connectivity>:<bins>' (e.g. '1:5'). Leave 'None' otherwise.",
             **common,
         )
-        numeric_field(
-            "Array throttle",
-            attr="array_throttle",
-            hint="Max concurrent SLURM array tasks (per-tomogram extracts).",
-            **common,
-        )
+        # array_throttle is deliberately NOT here (peeve P-09): the SLURM Resources section
+        # renders it for every array job (ui/pipeline_builder/slurm_tab.py), so a second
+        # field bound to the same attribute just showed the value twice.
 
 
 def _string_select(label, *, job_model, attr, choices, is_frozen, save_handler, hint=None):

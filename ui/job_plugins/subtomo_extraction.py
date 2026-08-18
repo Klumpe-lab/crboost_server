@@ -2,7 +2,7 @@
 
 The cross-project merge ("Particle Merge") used to live here, but for
 aggregation projects it now lives in a standalone workspace card
-(ui/aggregation_merge_card.py). For normal pipelines, merging across
+(ui/aggregation/merge_card.py). For normal pipelines, merging across
 extraction outputs is rare enough that the dedicated per-job UI was removed.
 
 Job-specific fields (`box_size`, `crop_size`, `binning`) stay on the

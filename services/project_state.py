@@ -29,10 +29,7 @@ from services.models_base import (
     species_palette_color,
 )
 from services.computing.slurm_service import SlurmConfig
-from services.job_models import (
-    AbstractJobParams,
-    jobtype_paramclass,
-)
+from services.job_models import AbstractJobParams, jobtype_paramclass
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +43,9 @@ logger = logging.getLogger(__name__)
 # load.  A major mismatch emits a loud warning; a missing version (pre-versioning
 # files) is treated as (0, 0).
 
-# 3.3: +PickList.source_kind/source_ref + ParticleSpecies.catalog_id (09-S2); 3.4: +ParticleSpecies.created_at (10-S3)
-SCHEMA_VERSION: tuple[int, int] = (3, 4)
+# 3.3: +PickList.source_kind/source_ref + ParticleSpecies.catalog_id (09-S2); 3.4: +created_at (10-S3);
+# 3.5: +ParticleSpecies.catalog_version + ImportedTomograms.batches, -is_aggregation (denovo S5/S6, 12)
+SCHEMA_VERSION: tuple[int, int] = (3, 5)
 
 
 def _afterok_global_default() -> bool:
@@ -212,9 +210,12 @@ class ParticleSpecies(BaseModel):
     # pre-date the field — treat as "workbench".
     origin: str = ""
 
-    # Roadmap-12 hook: the lab-catalog entry this species was instantiated from
-    # (None = project-local, the only case today). Written by nothing yet.
+    # The lab-catalog entry this species came from or was published to, and which version
+    # of it (roadmap 12). None/None = project-local, which stays the common case. A BACKLINK
+    # only: import and publish both copy, so nothing here is ever re-read to sync — see
+    # services/particles/catalog.py.
     catalog_id: str | None = None
+    catalog_version: int | None = None
 
     # When the species was registered (stamped by `add_species`); None on species that
     # pre-date the field. Provenance only — nothing branches on it.
@@ -597,22 +598,82 @@ class PickList(BaseModel):
         self.extracted_at = datetime.now()
 
 
+class ImportBatch(BaseModel):
+    """ONE import action: what the user selected, once. The committed
+    ``Tomograms/tomograms.star`` is rebuilt from the whole batch list on every commit, so a
+    batch is the unit of provenance AND the unit of removal — nothing is edited in place.
+
+    ``renamed`` / ``skipped`` are that rebuild's report FOR THIS BATCH: a tomogram name that
+    collided with an earlier batch's was renamed (the earlier one keeps its name, and its
+    picks with it), and a recon file already imported by an earlier batch was skipped rather
+    than duplicated. Both are recorded, never silent — the same rule
+    ``drivers/subtomo_merge.py`` follows for cross-project collisions."""
+
+    source_mode: str = "synthesize"  # "synthesize" | "reference"
+    source_paths: list[str] = Field(default_factory=list)  # selected recon files (synthesize)
+    reference_star: str = ""  # an existing tomograms.star (reference mode)
+    pixel_size_angstrom: float = 0.0  # user override (0 ⇒ derived from MRC header)
+    tomogram_binning: float = 1.0
+    optics_group_name: str = "opticsGroup1"
+    count: int = 0  # rows this batch contributed at its last rebuild
+    imported_at: datetime = Field(default_factory=datetime.now)
+    renamed: list[dict] = Field(default_factory=list)  # [{name, renamed_to, path}]
+    skipped: list[dict] = Field(default_factory=list)  # [{name, path, reason}]
+
+    @property
+    def label(self) -> str:
+        """Short provenance line for the dialog's batch list."""
+        if self.source_mode == "reference":
+            return Path(self.reference_star).name or "reference star"
+        if not self.source_paths:
+            return "no files"
+        parent = Path(self.source_paths[0]).parent
+        return f"{parent.name or parent}/ ({len(self.source_paths)} file(s))"
+
+
 class ImportedTomograms(BaseModel):
     """Tomograms injected into a project via the PARTICLES-header import utility — a
     project-level artifact, NOT a pipeline job. The committed ``tomograms.star`` lives at
-    ``star_path`` (``Tomograms/tomograms.star``, project-relative); the source fields are
-    provenance + let the import dialog reopen with the prior selection. See
-    services/tomogram_import.py + PARTICLE_PROJECT_ROADMAP.md (P1, un-job-ified)."""
+    ``star_path`` (``Tomograms/tomograms.star``, project-relative). See
+    services/tomogram_import.py + PARTICLE_PROJECT_ROADMAP.md (P1, un-job-ified).
+
+    ``batches`` is the source of truth since de-novo S5; the scalar source fields below it
+    are the LAST batch, kept so the dialog reopens on the prior selection and so records
+    written before S5 still load. They are never read for the rebuild — ``effective_batches``
+    is what does that, and it folds a pre-S5 record into a single synthetic batch so one
+    additional import does not silently drop what was already there."""
 
     star_path: str = ""  # project-relative (or absolute) path to the committed tomograms.star
+    batches: list[ImportBatch] = Field(default_factory=list)
     source_mode: str = "synthesize"  # "synthesize" | "reference"
     source_paths: list[str] = Field(default_factory=list)  # selected .mrc files (synthesize)
     reference_star: str = ""  # an existing tomograms.star (reference mode)
     pixel_size_angstrom: float = 0.0  # user override (0 ⇒ derived from MRC header)
     tomogram_binning: float = 1.0
     optics_group_name: str = "opticsGroup1"
-    count: int = 0  # cached tomogram count, for display
+    count: int = 0  # cached tomogram count (the whole merged star), for display
     imported_at: datetime = Field(default_factory=datetime.now)
+
+    def effective_batches(self) -> list[ImportBatch]:
+        """The batch list to rebuild from. A record written before S5 has none, so its
+        scalar fields ARE its one batch — reconstructed here rather than migrated on load,
+        so a project that is only ever read keeps its file untouched."""
+        if self.batches:
+            return list(self.batches)
+        if not (self.source_paths or self.reference_star):
+            return []
+        return [
+            ImportBatch(
+                source_mode=self.source_mode,
+                source_paths=list(self.source_paths),
+                reference_star=self.reference_star,
+                pixel_size_angstrom=self.pixel_size_angstrom,
+                tomogram_binning=self.tomogram_binning,
+                optics_group_name=self.optics_group_name,
+                count=self.count,
+                imported_at=self.imported_at,
+            )
+        ]
 
 
 class ProjectState(BaseModel):
@@ -645,11 +706,12 @@ class ProjectState(BaseModel):
     movies_glob: str = ""
     mdocs_glob: str = ""
 
-    # Aggregation projects skip raw-data import. Particles arrive via merging
-    # optimisation_set.star files from existing projects; the merge step is a
-    # standalone workspace card (not a pipeline job). Sources persist here so
-    # the user can re-merge after adding more datasets.
-    is_aggregation: bool = False
+    # Cross-project merge: particles from several projects, merged into
+    # MergedSources/<slug>/ and consumed downstream through the synthetic
+    # `mergedSources` producer. NOT a project type — the `is_aggregation` flag that used
+    # to mark one was deleted by de-novo S6 (any project can merge; an old project's
+    # persisted `true` is simply ignored on load). Sources persist here so the user can
+    # re-merge after adding more datasets.
     aggregation_sources: list[AggregationSource] = Field(default_factory=list)
     aggregation_merges: list[AggregationMerge] = Field(default_factory=list)
     active_merge_slug: str = ""
@@ -1153,9 +1215,9 @@ class ProjectState(BaseModel):
         # so these MUST be restored explicitly -- otherwise a reloaded project (a UI
         # restart OR a SLURM driver loading from disk) silently loses its merge
         # registry, the synthetic `mergedSources` resolver candidate vanishes, and
-        # consumers fail to resolve input_optimisation at drive time. is_aggregation
-        # gates the merge-card UI + override self-heal, so it must survive too.
-        project_state.is_aggregation = data.get("is_aggregation", False)
+        # consumers fail to resolve input_optimisation at drive time. A legacy
+        # `is_aggregation` key is TOLERATED AND IGNORED (de-novo S6 deleted the flag and
+        # opened merging to every project); it is simply not read back.
         project_state.active_merge_slug = data.get("active_merge_slug", "")
         try:
             # Mirror the _migrate_aggregation_sources validator (direct construction

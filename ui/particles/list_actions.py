@@ -21,11 +21,13 @@ from pathlib import Path
 
 from nicegui import context, ui
 
-from services.aggregation_authoritative import extraction_params_for_species
-from services.models_base import ListExtractionState, PickListType, PickSourceKind
+from services.aggregation.authoritative import extraction_params_for_species
+from services.background_tasks import get_background_task_registry
+from services.models_base import JobStatus, ListExtractionState, PickListType, PickSourceKind
 from services.particles import picks_filter
 from services.particles.ingest import register_manual_pick_list
-from services.particles.list_ref import ListRef, fs_slug
+from services.particles.list_ref import ListRef, extract_pick_list_instance_id, fs_slug
+from services.particles.species_overview import ExtractJob
 from services.project_state import ExtractionParams, PickList, get_project_state_for
 from services.visualization.tomo_geometry import geometry_for_ts
 from ui.background_task import BackgroundTask
@@ -50,6 +52,9 @@ _EXTRACTION_BADGE = {
 def extraction_badge(state: ListExtractionState) -> tuple[str, str]:
     """(text, css class) of the derived per-list extraction badge; ("", "") for none."""
     return _EXTRACTION_BADGE.get(state, ("", ""))
+
+
+_LIVE_JOB_STATUSES = (JobStatus.SCHEDULED, JobStatus.QUEUED, JobStatus.RUNNING)
 
 
 def _no_backend() -> None:
@@ -95,10 +100,15 @@ async def extract_list(backend, ref: ListRef, *, on_done: OnDone) -> None:
         filtered = picks_filter.filtered_list_path(Path(star))
         list_star = str(filtered) if filtered.exists() else str(star)
 
+        state = get_project_state_for(ref.project_path)
+        live = state.jobs.get(extract_pick_list_instance_id(ref.species_id, ref.tomo_name, ref.slug))
+        replacing = live is not None and live.execution_status in _LIVE_JOB_STATUSES
+        if replacing and not await _confirm_reextract(ref, live):
+            return
+
         # Schema source: mirror the species' candidates.star when it has a
         # candidate-extract job; otherwise synthesize from the tomogram's own star
         # (a de-novo species never had a TM/CE job to mirror).
-        state = get_project_state_for(ref.project_path)
         candidate_optset = None
         tomograms_star = None
         if ref.ce_job_dir is not None and (ref.ce_job_dir / "optimisation_set.star").exists():
@@ -123,7 +133,37 @@ async def extract_list(backend, ref: ListRef, *, on_done: OnDone) -> None:
             prompt_extraction_geometry(backend, ref, candidate_optset, tomograms_star, list_star, on_done=on_done)
             return
 
-        _submit_list_extraction(backend, ref, candidate_optset, tomograms_star, list_star, params, on_done)
+        _submit_list_extraction(
+            backend, ref, candidate_optset, tomograms_star, list_star, params, on_done, replacing=replacing
+        )
+
+
+async def _confirm_reextract(ref: ListRef, job) -> bool:
+    """Ask before re-extracting a list whose own extraction is still in flight.
+
+    A question, not a block: submitting again deletes the out dir the queued/running job is
+    writing into, so the user has to mean it — but a watcher lost to a server restart leaves
+    the instance reading Running with nothing left to move it (the accepted residual of
+    roadmap 07-S3), and disabling the action there would strand the list for good."""
+    with dialog_host(), ui.dialog() as confirm, ui.card().classes("w-[28rem] max-w-full gap-2"):
+        ui.label(f"An extraction for '{ref.label}' is already {job.execution_status.value.lower()}").classes(
+            "text-sm font-bold"
+        )
+        ui.label(
+            f"SLURM {job.slurm_job_id or '—'} · {ref.tomo_name}. Submitting again deletes this run's output "
+            "directory and re-cuts from scratch, so the job already in the queue would be writing into a "
+            "directory pulled out from under it."
+        ).classes("text-[12px] text-gray-600")
+        ui.label(
+            "If the server was restarted while an extraction was in flight, the status stays here with nothing "
+            "left to move it — re-extracting is then exactly the right thing to do."
+        ).classes("text-[10px] text-gray-400")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
+            ui.button("Re-extract anyway", on_click=lambda: confirm.submit(True)).props("dense no-caps color=orange-7")
+    go = await confirm
+    confirm.delete()
+    return bool(go)
 
 
 def _submit_list_extraction(
@@ -134,14 +174,21 @@ def _submit_list_extraction(
     list_star: str,
     params: dict,
     on_done: OnDone,
+    *,
+    replacing: bool = False,
 ) -> None:
     """Fire the per-list extraction as a tracked BackgroundTask. Split out of
     ``extract_list`` so the geometry dialog can submit the same way once the user
-    commits box/bin/crop."""
+    commits box/bin/crop.
+
+    ``replacing`` = the caller already confirmed a re-extract over a live one, which the
+    task registry would otherwise silently swallow: it dedupes on ``dedup_key`` by handing
+    back the running task id WITHOUT calling the coroutine, so the user's consent would
+    produce no submit at all."""
 
     async def _run(progress_cb):
         progress_cb(0, 0, "extracting subtomograms…")
-        return await backend.extract_pick_list_and_wait(
+        res = await backend.extract_pick_list_and_wait(
             ref.project_path,
             candidate_optset,
             Path(list_star),
@@ -151,14 +198,162 @@ def _submit_list_extraction(
             tomograms_star=tomograms_star,
             **params,
         )
+        if not res.get("success"):
+            # RAISE, don't return: the task registry marks a task succeeded on any
+            # non-exception return (services/background_tasks.runner), so handing back an
+            # err() dict painted a failed extraction as a green, message-less success in the
+            # tray — one of the invisible failures roadmap 07 exists to end. The instance's
+            # own status/last_error carry it too (07-S3); this is the transient surface.
+            raise RuntimeError(res.get("error") or "extraction failed")
+        return f"{res.get('count', 0)} particles extracted"
+
+    dedup_key = f"extract:{ref.species_id}:{ref.tomo_name}:{ref.slug}"
+    in_flight = BackgroundTask.existing(dedup_key)
+    if in_flight is not None and not replacing:
+        # The registry DEDUPES by returning the existing task id WITHOUT calling the
+        # coroutine (services/background_tasks.BackgroundTaskRegistry.submit), so submitting
+        # here would do nothing at all while the toast below claimed otherwise. Say what is
+        # actually true. Reachable in the narrow window where the awaiter has already written
+        # a terminal status (so `extract_list` asks nothing) but its task is still settling.
+        ui.notify(f"An extraction for '{ref.label}' is still in flight — see the task tray.", type="info")
+        return
+    if in_flight is not None:
+        # The user confirmed a re-extract over a live one. Cancel the old awaiter — it is
+        # watching the out dir this submit is about to wipe — and submit WITHOUT the dedup
+        # key: `registry.cancel` only delivers the CancelledError on the next loop turn, so
+        # the old record still reads `is_running` right here and would swallow the new submit.
+        # Double-submit protection on this path is the SingleFlight guard plus the confirm
+        # dialog itself; the instance's own status is what the next click reads anyway.
+        get_background_task_registry().cancel(in_flight.id)
+        dedup_key = None
 
     BackgroundTask(
-        title=f"Extract · {ref.label}",
-        subtitle=ref.tomo_name,
-        project_path=str(ref.project_path),
-        dedup_key=f"extract:{ref.species_id}:{ref.tomo_name}:{ref.slug}",
+        title=f"Extract · {ref.label}", subtitle=ref.tomo_name, project_path=str(ref.project_path), dedup_key=dedup_key
     ).submit(_run, on_complete=lambda _t: on_done(), show_start_toast=True)
-    ui.notify(f"Extraction submitted for '{ref.label}' — tracking in the task tray.", type="info")
+    ui.notify(
+        f"{'Re-extraction' if replacing else 'Extraction'} submitted for '{ref.label}' — tracking in the task tray.",
+        type="info",
+    )
+
+
+# ── Extraction logs + geometry record (roadmap 07-S4) ─────────────────────────
+
+_MONO = "font-family: ui-monospace, SFMono-Regular, Menlo, monospace;"
+_LOG_MAX_LINES = 400  # lines KEPT from each file (the tail); the marker below says what went
+# The widget holds more than we ever push, on purpose: `ui.log(max_lines=N)` drops from the
+# FRONT, so capping it at the truncation threshold would evict the "[… truncated …]" marker —
+# the one line that says the view is partial. Same split as `ui/pipeline_builder/logs_tab.py`.
+_LOG_WIDGET_LINES = _LOG_MAX_LINES * 2
+
+
+def extraction_geometry_text(job: ExtractJob) -> str:
+    """The geometry this instance last cut with, or a plain statement that no submit has
+    written one yet. Before roadmap 07 this existed ONLY in the launch command line, so
+    nothing could say after the fact what box a list had been cut with."""
+    if not job.box_size:
+        return "geometry not recorded — this instance has never been submitted"
+    return f"box {job.box_size} px · bin {job.binning:g} · crop {job.crop_size or 'none'}"
+
+
+async def open_extraction_logs(backend, project_path: Path, job: ExtractJob, *, title: str) -> None:
+    """The per-list extraction job's logs, as a dialog.
+
+    The pipeline's log viewer (``ui/pipeline_builder/logs_tab.py``) cannot serve this job: it
+    keys off ``relion_job_name`` and per-tab widget refs, and a per-list extraction is not a
+    scheme job so it has neither. ``backend.get_job_logs`` needs only a directory — and
+    ``config/qsub.sh`` already writes ``run.out``/``run.err`` into the list's out dir — so the
+    instance's recorded ``job_dir`` is the whole address. An instance whose submit never
+    recorded one says exactly that instead of showing empty logs.
+
+    ``job`` is a snapshot taken when the row was rendered, so Reload re-reads the instance's
+    live status and failure text as well as the two files — a Reload that refreshed only half
+    the dialog would be its own small lie."""
+    if backend is None:
+        _no_backend()
+        return
+    with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[46rem] max-w-full gap-2"):
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.icon("science", size="16px").classes("text-indigo-500")
+            ui.label(f"Extraction — {title}").classes("text-sm font-bold")
+            ui.space()
+            status_lbl = ui.label(job.status).classes("text-[11px] font-bold text-slate-500")
+        meta = [extraction_geometry_text(job)]
+        if job.slurm_job_id:
+            meta.append(f"SLURM {job.slurm_job_id}")
+        ui.label(" · ".join(meta)).classes("cb-detail-meta")
+        err_lbl = ui.label(job.error).classes("text-[11px] text-red-700 whitespace-pre-wrap")
+        err_lbl.set_visibility(bool(job.error))
+
+        def _refresh_status() -> None:
+            jm = get_project_state_for(project_path).jobs.get(job.instance_id)
+            if jm is None:
+                # Reachable: another tab deleted the list, and `delete_pick_list` pops this
+                # instance with it. Returning silently would leave the header asserting the
+                # snapshot's status next to a log pane reading "job directory not found".
+                status_lbl.set_text("gone")
+                status_lbl.classes(replace="text-[11px] font-bold text-orange-700")
+                err_lbl.set_text("This extraction instance is no longer registered — its pick list was deleted.")
+                err_lbl.set_visibility(True)
+                return
+            status_lbl.set_text(jm.execution_status.value)
+            err_lbl.set_text(jm.last_error)
+            err_lbl.set_visibility(bool(jm.last_error))
+
+        if not job.job_dir:
+            ui.label(
+                "This instance recorded no job directory, so there is nothing to read — it was never submitted "
+                "(or was submitted by a build that predates roadmap 07)."
+            ).classes("text-[11px] text-orange-700")
+        else:
+            ui.label(job.job_dir).classes("text-[10px] text-gray-400").style(_MONO)
+            ui.label("run.out").classes("text-[10px] font-bold text-gray-500 uppercase tracking-wider")
+            out_log = (
+                ui.log(max_lines=_LOG_WIDGET_LINES)
+                .classes("w-full p-2")
+                .style(
+                    f"height: 12rem; overflow-y: auto; {_MONO} font-size: 10px; line-height: 1.4; background: #fafafa;"
+                )
+            )
+            ui.label("run.err").classes("text-[10px] font-bold text-gray-500 uppercase tracking-wider")
+            err_log = (
+                ui.log(max_lines=_LOG_WIDGET_LINES)
+                .classes("w-full p-2")
+                .style(
+                    f"height: 7rem; overflow-y: auto; {_MONO} font-size: 10px; line-height: 1.4; "
+                    "color: #b91c1c; background: #fefafa;"
+                )
+            )
+
+            async def _load() -> None:
+                _refresh_status()
+                logs = await backend.get_job_logs(str(project_path), job.job_dir)
+                for widget, key in ((out_log, "stdout"), (err_log, "stderr")):
+                    text = logs.get(key) or "(empty)"
+                    lines = text.split("\n")
+                    if len(lines) > _LOG_MAX_LINES:
+                        text = f"[… truncated {len(lines) - _LOG_MAX_LINES} lines …]\n" + "\n".join(
+                            lines[-_LOG_MAX_LINES:]
+                        )
+                    widget.clear()
+                    widget.push(text)
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            if job.job_dir:
+                ui.button("Reload", icon="refresh", on_click=_load).props("flat dense no-caps size=sm")
+            ui.button("Close", on_click=lambda: dialog.submit(None)).props("flat dense no-caps size=sm")
+    dialog.open()
+    if job.job_dir:
+        await _load()
+    # Await + delete, never bare close(): this dialog is parented at the layout slot (which
+    # nothing ever clears) and every log line is an element, so closing alone retains the whole
+    # tree for the life of the page and re-sends it on a websocket reconnect. Awaiting also
+    # makes the caller's SingleFlight cover the dialog's lifetime, which is what its docstring
+    # already claims — a second click while it is open is a no-op instead of a second dialog.
+    # The `value` guard is not defensive noise: `Dialog.__await__` OPENS the dialog, so a user
+    # who dismissed it while `_load()` was reading run.out off Lustre would see it pop back.
+    if dialog.value:
+        await dialog
+    dialog.delete()
 
 
 def geometry_inputs() -> tuple[ui.number, ui.number, ui.number]:

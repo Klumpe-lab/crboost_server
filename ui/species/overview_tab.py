@@ -31,7 +31,9 @@ from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
 from services.project_state import ParticleSpecies, get_project_state_for
 from services.species_admin import delete_species
 from ui.components.chip import render_chip
+from services.particles.catalog import is_enabled as catalog_is_enabled
 from ui.components.reactive import FingerprintedView, SingleFlight
+from ui.species.catalog import publish_to_catalog
 from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.species.tab import TabContext
 
@@ -192,7 +194,10 @@ def _render_provenance(sp: ParticleSpecies) -> None:
     template / mask sources on hover."""
     origin = sp.origin or SpeciesOrigin.WORKBENCH.value  # "" pre-dates the field = workbench
     created = sp.created_at.strftime("%Y-%m-%d %H:%M") if sp.created_at else "—"
-    catalog = sp.catalog_id or "— (project-local)"
+    if sp.catalog_id and sp.catalog_version:
+        catalog = f"{sp.catalog_id} v{sp.catalog_version}"
+    else:
+        catalog = sp.catalog_id or "— (project-local)"
     sources = [
         f"template {os.path.basename(t.template_path)}: {t.source or t.imported_from or '?'}" for t in sp.templates
     ] + [
@@ -342,6 +347,15 @@ class OverviewTab:
                     "flat dense no-caps color=negative size=sm"
                 )
                 ui.label("registry entry, pick lists, templates / masks on disk and the bound jobs").classes(_HINT_CLS)
+                # Only when a lab catalog is configured (roadmap 12) — see ui/species/catalog.py.
+                if catalog_is_enabled():
+                    ui.space()
+                    ui.button("Publish to catalog", icon="publish", on_click=self._publish_to_catalog).props(
+                        "flat dense no-caps color=indigo size=sm"
+                    ).tooltip(
+                        "Copy this species DEFINITION (name, Ø, symmetry, notes, templates, masks) up to the "
+                        "lab catalog as a new version. Picks and extractions stay here."
+                    )
         self._status.refresh()
 
     def refresh(self) -> None:
@@ -428,6 +442,12 @@ class OverviewTab:
 
                 ui.button("Delete species", on_click=_confirm).props("unelevated dense color=negative no-caps")
         dialog.open()
+
+    async def _publish_to_catalog(self) -> None:
+        """Overview action (roadmap 12): publish this species as a new catalog version.
+        The confirm, the file check and the SingleFlight all live in `ui.species.catalog`."""
+        ctx = self.ctx
+        await publish_to_catalog(ctx.backend, ctx.project_path, ctx.species_id, on_done=self.refresh)
 
     async def _do_delete(self) -> None:
         # SingleFlight: the confirm button can be double-clicked; the second run would

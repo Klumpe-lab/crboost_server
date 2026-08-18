@@ -204,6 +204,13 @@ class Config(BaseModel):
     curation: CurationConfig = Field(default_factory=CurationConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
     containers: dict[str, str] | None = None
+    # Lab-level species catalog root (roadmap 12). Cross-project species DEFINITIONS live
+    # here — name, diameter, symmetry, notes, templates + masks with their provenance;
+    # picks, filters, merges and extractions stay project-bound. Empty or absent = the
+    # feature is OFF: no catalog affordance is rendered anywhere, which is the state every
+    # existing install is in until someone points this at a shared directory.
+    species_catalog_root: str = ""
+
     # DEV TOGGLE (temporary): global override so every project uses the afterok orchestrator
     # (schemer-free submit + inline import) without per-project project_params.json edits. A
     # per-project `use_afterok_orchestrator: true` still wins on its own. Remove once validated.
@@ -272,6 +279,19 @@ class ConfigService:
     @property
     def curation(self) -> CurationConfig:
         return self._config.curation
+
+    @property
+    def species_catalog_root(self) -> Path | None:
+        """The lab species catalog directory, or None when the feature is off.
+
+        None is the normal state, not an error: an install that never set
+        `species_catalog_root` has no shared directory to publish to, and every catalog
+        affordance checks this before rendering. A configured-but-missing path still
+        returns the Path — the catalog service creates it on first publish, and a typo
+        should surface there (as a real OSError naming the path) rather than here as a
+        silent "feature off"."""
+        raw = (self._config.species_catalog_root or "").strip()
+        return Path(raw).expanduser() if raw else None
 
     @property
     def venv_path(self) -> Path | None:

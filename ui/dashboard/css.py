@@ -403,11 +403,20 @@ _CB_CSS = """
 .cb-badge-ok { color: #059669; }
 .cb-badge-todo { color: #94a3b8; }
 .cb-badge-stale { color: #d97706; }
+/* The per-list extraction JOB glyph (roadmap 07-S4), in the `job` column next to `ext`:
+ * queued/failed take the same two hues the roster's status dot uses for those states
+ * (ui/status_indicator._DOT_COLORS), so one job state reads the same colour everywhere. */
+.cb-badge-queued { color: #a855f7; }
+.cb-badge-err { color: #dc2626; }
+/* That mark opens the job's logs, so the whole cell (and the glyph inside it, which
+ * .cb-ltable-badge otherwise gives a help cursor) has to read as clickable. */
+.cb-ptable-job, .cb-ptable-job .cb-ltable-badge { cursor: pointer; }
 /* Species page · Picks tab (roadmap 11-S2): the rail table's chrome (.cb-ltable*), one
- * grid per row: tick · auth · swatch · name · kept/total · ext · source · actions. Rows
- * are not selectable there (no detail pane), so no pointer cursor / selected state. */
+ * grid per row: tick · auth · swatch · name · kept/total · ext · job · source · actions
+ * (`job` = the live per-list extraction instance, roadmap 07-S4). Rows are not selectable
+ * there (no detail pane), so no pointer cursor / selected state. */
 .cb-ptable-row {
-    grid-template-columns: 16px 18px 14px minmax(0, 1fr) 56px 26px minmax(80px, 160px) auto;
+    grid-template-columns: 16px 18px 14px minmax(0, 1fr) 56px 26px 24px minmax(80px, 160px) auto;
     cursor: default;
 }
 .cb-ptable-group {

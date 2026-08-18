@@ -801,7 +801,7 @@ def pick_list_subtomo_status(state, species_id: str, tomo_name: str) -> str:
     from the list's ``_filtered.star`` (``picks_filter.sync_filtered_count``, a pandas read
     per list); without that sync a list filtered in a PRIOR session reads falsely STALE
     right after a correct extraction of its kept subset — the failure
-    ``aggregation_authoritative`` and ``species_overview`` each call the sync to avoid. The
+    ``aggregation.authoritative`` and ``species_overview`` each call the sync to avoid. The
     strip derives this for EVERY tomogram on a render path, so it can afford neither the
     reads nor a wrong-but-plausible amber cell: freshness is the Picks tab's per-list badge,
     which does sync. What is shared is the authority — ``extraction_state()`` is called

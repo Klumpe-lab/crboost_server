@@ -13,6 +13,7 @@ from services.jobs import (
     Class3DParams,
     DenoisePredictParams,
     DenoiseTrainParams,
+    ExtractPickListParams,
     ExtractionCutoffMethod,
     FsMotionCtfParams,
     ImportMoviesParams,

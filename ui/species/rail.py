@@ -19,6 +19,7 @@ from nicegui import ui
 
 from services.project_state import get_project_state_for
 from ui.components.reactive import FingerprintedView
+from services.particles.catalog import is_enabled as catalog_is_enabled
 from ui.components.species_pill import render_species_pill
 
 
@@ -37,12 +38,14 @@ class SpeciesRail(FingerprintedView):
         active_id: Callable[[], str | None],
         on_select: Callable[[str], None],
         on_add: Callable[[], Any],
+        on_add_from_catalog: Callable[[], Any] | None = None,
     ) -> None:
         super().__init__(container)
         self._project_path = project_path
         self._active_id = active_id
         self._on_select = on_select
         self._on_add = on_add
+        self._on_add_from_catalog = on_add_from_catalog
 
     def signature(self) -> Any:
         state = get_project_state_for(self._project_path)
@@ -66,3 +69,11 @@ class SpeciesRail(FingerprintedView):
         with add:
             ui.icon("add", size="13px")
             ui.label("New species")
+        # Second entry point only when a lab catalog is configured (roadmap 12). Not a
+        # disabled row when it is off: an affordance for a feature this install does not
+        # have is worse than no affordance.
+        if self._on_add_from_catalog is not None and catalog_is_enabled():
+            from_cat = ui.element("div").classes("cb-srail-add").on("click", lambda _e: self._on_add_from_catalog())
+            with from_cat:
+                ui.icon("library_books", size="13px")
+                ui.label("From catalog")
