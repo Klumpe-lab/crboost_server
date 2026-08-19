@@ -56,7 +56,7 @@ from services.templating.template_metadata import read_template_header
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.path_link import render_path_link
 from ui.components.segmented import render_segmented
-from ui.job_plugins._field_styles import field_group
+from ui.job_plugins._field_styles import field_group, section_header, section_rule
 from ui.components.template_viewer import TemplateViewerController, render_template_viewer
 from ui.local_file_picker import local_file_picker
 from ui.template_import_dialog import open_template_import_dialog
@@ -125,10 +125,23 @@ COLOR_PALETTE = [
 # Three font sizes total. Two accent colors total. Section panels use
 # a thin gray underline rather than full card borders.
 
+# Three ranks, and a thing may only use the one that matches what it IS. They used to be
+# one class, which is why "SOURCE" (a block of the page) and "apix" (one input's label)
+# shouted at each other in the same voice:
+#   SECTION  — `_section()` below: 11 px semibold MIXED case + a rule. Templates · Masks ·
+#              Source · Viewer. The page's structure.
+#   TOOL     — `_TOOL_CLS`: 10 px semibold mixed case. One tool inside a panel — Resample,
+#              Apply lowpass, Flip polarity. Named, but subordinate to its section.
+#   FIELD    — `_LABEL_CLS`: 9 px uppercase, muted. The label of ONE input, and the column
+#              heads of the tables. Never used for anything that has children.
 _TITLE_CLS = "text-sm font-semibold text-gray-800"
-_LABEL_CLS = "text-[10px] font-bold text-gray-500 uppercase tracking-wider"
+_TOOL_CLS = "text-[10px] font-semibold text-slate-600"
+_LABEL_CLS = "text-[9px] font-bold text-gray-400 uppercase tracking-wide"
 _HINT_CLS = "text-[10px] text-gray-400"
 _MONO_CLS = "text-[10px] font-mono text-gray-600"
+# Inside a table row everything except the filename runs at 9 px, matching the stats and
+# size badges that were already drawn there.
+_ROW_MONO_CLS = "text-[9px] font-mono text-gray-600"
 _INDIGO = "#6366f1"
 _PURPLE = "#a855f7"
 # Creation-form tabs. Sentence case, matching the Species page's own tab labels
@@ -139,18 +152,29 @@ _MASK_TABS = (("sphere", "Sphere"), ("relion", "From template"), ("import", "Imp
 # One column shape for BOTH lists: they sit side by side, so aligned columns read as one
 # system. Only FILE flexes (and therefore ellipsises); everything else is sized to its
 # content, which is what ends the "a bunch of text, some of which is truncated" problem.
-_TW_COLS = "20px minmax(0, 1fr) 62px 124px 116px 60px 52px"
+_TW_COLS = "16px minmax(0, 1fr) 54px 112px 104px 50px 44px"
 
 
 _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
 _ACTION_BTN = "unelevated dense no-caps size=sm color=primary"
 
 
-def _field(label: str, build, *, width: str = "w-24", hint: str | None = None):
-    """One creation-form control: a 10 px label to the LEFT of the field, and the field
-    itself in the app's `.cb-field` box (11 px, 1 px border) rather than Quasar's default
-    ~14 px with a floating in-field label. That default was the fourth and fifth size in
-    a module whose docstring claims three (picking-UI roadmap 06)."""
+def _section(title: str, hint: str = "") -> None:
+    """A block header for the page's own structure — Templates, Masks, Source, Viewer.
+    Deliberately NOT `_LABEL_CLS`: a section that shares a style with the label of one
+    input reads as the same rank as it, which is the crowding this page had."""
+    with ui.row().classes("w-full items-baseline gap-2 px-1"):
+        section_header(title, first=True)
+        if hint:
+            ui.label(hint).classes(_HINT_CLS)
+    section_rule()
+
+
+def _field(label: str, build, *, width: str = "w-20", hint: str | None = None):
+    """One creation-form control: a 9 px label to the LEFT of the field, and the field
+    itself in the app's `.cb-field` box rather than Quasar's default ~14 px with a
+    floating in-field label. That default was the fourth and fifth size in a module whose
+    docstring claims three (picking-UI roadmap 06)."""
     with ui.row().classes("items-center gap-1 no-wrap"):
         lbl = ui.label(label).classes(_LABEL_CLS)
         el = build()
@@ -977,9 +1001,7 @@ class TemplateWorkbench:
 
     def _render_templates_section(self) -> None:
         with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
-            with ui.row().classes("w-full items-baseline gap-2 px-1"):
-                ui.label("TEMPLATES").classes(_LABEL_CLS)
-                ui.label("click a row to select").classes(_HINT_CLS)
+            _section("Templates", "click a row to select")
             self._templates_table = ui.element("div").classes("cb-tw-table").style(
                 f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_INDIGO}; --cb-accent-tint: {_INDIGO}14;"
             )
@@ -1012,7 +1034,7 @@ class TemplateWorkbench:
             with ui.element("div").classes("cb-tw-cell"):
                 self._polarity_chip(tpl.polarity)
             with ui.element("div").classes("cb-tw-cell"):
-                ui.label(self._format_header_summary(h, tpl.lowpass_resolution_ang)).classes(_MONO_CLS)
+                ui.label(self._format_header_summary(h, tpl.lowpass_resolution_ang)).classes(_ROW_MONO_CLS)
             with ui.element("div").classes("cb-tw-cell"):
                 self._render_stats_row(h)
             with ui.element("div").classes("cb-tw-cell"):
@@ -1151,9 +1173,7 @@ class TemplateWorkbench:
 
     def _render_source_panel(self) -> None:
         with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
-            with ui.row().classes("w-full items-baseline gap-2 px-1"):
-                ui.label("SOURCE").classes(_LABEL_CLS)
-                ui.label("generate, fetch, import; new entries append above").classes(_HINT_CLS)
+            _section("Source", "generate, fetch, import; new entries append above")
 
             panels: dict[str, ui.element] = {}
 
@@ -1309,9 +1329,11 @@ class TemplateWorkbench:
         the page (picking-UI roadmap 06)."""
         with field_group(muted=True), ui.column().classes("w-full gap-1"):
             with ui.row().classes("w-full items-baseline gap-2"):
-                ui.label(title).classes(_LABEL_CLS)
+                # `_TOOL_CLS`, not `_LABEL_CLS`: this names a tool that owns the inputs
+                # under it, so it must not read at the same rank as "target apix".
+                ui.label(title).classes(_TOOL_CLS)
                 ui.label(description).classes(_HINT_CLS)
-            with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
+            with ui.row().classes("w-full gap-2 items-center").style("flex-wrap: wrap;"):
                 if inputs_builder is not None:
                     inputs_builder()
                 ui.button(button_label, on_click=on_click).props(_ACTION_BTN)
@@ -1338,9 +1360,7 @@ class TemplateWorkbench:
 
     def _render_masks_section(self) -> None:
         with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
-            with ui.row().classes("w-full items-baseline gap-2 px-1"):
-                ui.label("MASKS").classes(_LABEL_CLS)
-                ui.label("click a row to select").classes(_HINT_CLS)
+            _section("Masks", "click a row to select")
             self._masks_table = ui.element("div").classes("cb-tw-table").style(
                 f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_PURPLE}; --cb-accent-tint: {_PURPLE}14;"
             )
@@ -1350,10 +1370,11 @@ class TemplateWorkbench:
             # Same two-line header shape as the templates column. The derived-from line
             # is a SOURCE statement; it used to be filed as the section's subtitle, which
             # is why the masks column read as having no stated source at all.
-            with ui.row().classes("w-full items-baseline gap-2 px-1 mt-1"):
-                ui.label("SOURCE").classes(_LABEL_CLS)
+            with ui.row().classes("w-full items-baseline gap-2 px-1 mt-2"):
+                section_header("Source", first=True)
                 self._mask_source_label = ui.label("").classes(_HINT_CLS)
                 self._update_mask_source_label()
+            section_rule()
 
             panels: dict[str, ui.element] = {}
 
@@ -1399,13 +1420,13 @@ class TemplateWorkbench:
         with row:
             self._render_select_cell()
             with ui.element("div").classes("cb-tw-cell"):
-                render_path_link(mask.mask_path, note=mask.imported_from)
+                render_path_link(mask.mask_path, note=self._mask_note(mask))
             with ui.element("div").classes("cb-tw-cell"):
                 # The relion_mask_create knobs are provenance, not a scanning column:
                 # they exist for one method only, so they ride the method chip's hover.
                 self._method_chip_with_knobs(mask)
             with ui.element("div").classes("cb-tw-cell"):
-                ui.label(self._format_header_summary(h, None)).classes(_MONO_CLS)
+                ui.label(self._format_header_summary(h, None)).classes(_ROW_MONO_CLS)
             with ui.element("div").classes("cb-tw-cell"):
                 self._render_stats_row(h)
             with ui.element("div").classes("cb-tw-cell"):
@@ -1414,6 +1435,20 @@ class TemplateWorkbench:
                 on_load_to_viewer=lambda p=mask.mask_path: self._load_to_viewer(p, kind="mask"),
                 on_delete=lambda i=mask.id: self._request_delete_mask(i),
             )
+
+    def _mask_note(self, mask: TemplateMask) -> str | None:
+        """A mask has no `imported_from` — that field belongs to `ParticleTemplate`. A
+        mask's provenance is the template it was derived from (`derived_from_template_id`,
+        the soft link the v3 model kept for exactly this question); the *method* rides the
+        chip next to it. None when neither is recorded — the row then says only the path,
+        rather than implying a source it does not have."""
+        if mask.derived_from_template_id:
+            sp = self._get_species()
+            tpl = sp.get_template_by_id(mask.derived_from_template_id) if sp else None
+            if tpl is None:
+                return "derived from a template that is no longer registered"
+            return f"derived from {os.path.basename(tpl.template_path)}"
+        return mask.notes or None
 
     def _method_chip_with_knobs(self, mask: TemplateMask) -> None:
         knob_parts: list[str] = []
@@ -1491,7 +1526,7 @@ class TemplateWorkbench:
     def _render_viewer_panel(self) -> None:
         with ui.column().classes("w-full gap-1"):
             with ui.row().classes("w-full items-baseline gap-2 px-1"):
-                ui.label("VIEWER").classes(_LABEL_CLS)
+                section_header("Viewer", first=True)
                 ui.element("div").classes("flex-1")
                 ui.label("mode").classes(_HINT_CLS)
                 # Chrome only (the viewer itself is untouched): this was the last 14 px

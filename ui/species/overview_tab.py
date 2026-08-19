@@ -34,11 +34,12 @@ from services.models_base import SpeciesOrigin
 from services.aggregation.authoritative import extraction_params_for_species
 from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.particles.species_overview import SpeciesOverview, species_overview
-from services.project_state import ParticleSpecies, get_project_state_for
+from services.project_state import ParticleSpecies, TemplateMask, get_project_state_for
 from services.species_admin import delete_species
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.color_swatch import render_color_swatch
 from ui.components.path_link import render_path_link
+from ui.job_plugins._field_styles import section_header, section_rule
 from ui.particles.list_actions import commit_extraction_geometry
 from services.particles.catalog import is_enabled as catalog_is_enabled
 from ui.components.reactive import FingerprintedView, SingleFlight
@@ -48,13 +49,34 @@ from ui.species.tab import TabContext
 logger = logging.getLogger(__name__)
 
 _DISK_REFRESH_S = 15.0  # status/sanity recompute cadence while shown (both touch disk)
+# Three ranks, and they must not collide (the maintainer, 2026-08-19: "separate them
+# visually based on what's separate conceptually"):
+#   SECTION  — `section_header()` from the house vocabulary: 11 px semibold MIXED case.
+#              "Species info" / "Template matching files" / "Extraction geometry".
+#   FIELD    — 9 px uppercase, muted: the label beside one input.
+#   HINT     — 10 px, lightest: the sentence explaining a section or a value.
+# A section title is never uppercase and a field label never is not — that difference is
+# the whole hierarchy, so do not reach for the other one to "emphasise" something.
 _TITLE_CLS = "text-sm font-semibold text-gray-800"
-_LABEL_CLS = "text-[10px] font-bold text-gray-500 uppercase tracking-wider"
+_LABEL_CLS = "text-[9px] font-bold text-gray-400 uppercase tracking-wide"
 _HINT_CLS = "text-[10px] text-gray-400"
 _BODY_CLS = "text-xs text-gray-700"
 _MONO_CLS = "text-[10px] font-mono text-gray-600"
-# The name reads as the title of the block; every other input reads at its label's scale.
-_NAME_INPUT_STYLE = "font-size: 13px; font-weight: 600; color: #1f2937;"
+# The name is the one input allowed to read larger — it is the title of the species.
+_NAME_INPUT_STYLE = "font-size: 12px; font-weight: 600; color: #1f2937;"
+
+
+def _section(title: str, hint: str = "", *, first: bool = False, tooltip: str | None = None) -> None:
+    """A top-level block header + its rule. One helper so a new section cannot invent a
+    fourth heading style."""
+    with ui.row().classes("w-full items-baseline gap-2"):
+        section_header(title, first=first)
+        if hint:
+            lbl = ui.label(hint).classes(_HINT_CLS)
+            if tooltip:
+                lbl.tooltip(tooltip)
+    section_rule()
+
 
 # `C1` IS "no symmetry", and most complexes are C1 (ribosome, proteasome) — the option
 # list says so instead of leaving the user to know it. One spelling across this block,
@@ -102,14 +124,15 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
         get_project_state_for(project_path).mutate_species(species_id, fn)
         asyncio.create_task(backend.save_project(project_path, debounce_s=1.0))
 
-    with ui.column().classes("w-full gap-2 px-1"):
+    with ui.column().classes("w-full gap-1 px-1"):
+        _section("Species info", "what this particle is", first=True)
         # Row 1 — identity line.
         with ui.row().classes("w-full items-center gap-2 no-wrap"):
             _render_color_swatch(backend, project_path, species_id, sp.color or "#3b82f6")
 
-            name_input = ui.input(value=sp.name, placeholder="species name").props("dense outlined debounce=400")
+            name_input = ui.input(value=sp.name, placeholder="species name").props("dense debounce=400")
             name_input.props(f'input-style="{_NAME_INPUT_STYLE}"')
-            name_input.classes("w-64").tooltip(f"Display name (id stays `{species_id}`)")
+            name_input.classes("cb-field w-56").tooltip(f"Display name (id stays `{species_id}`)")
 
             def _on_name(e):
                 v = (e.value or "").strip()
@@ -129,8 +152,8 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
                 ui.label("Diameter").classes(_LABEL_CLS)
                 diam_input = (
                     ui.number(value=sp.diameter_ang, placeholder="e.g. 250", step=10, min=0)
-                    .props("dense outlined debounce=400")
-                    .classes("w-32")
+                    .props("dense debounce=400")
+                    .classes("cb-field w-24")
                 )
                 # The unit is a sibling label, not Quasar's in-field suffix: at this width
                 # the suffix used to compete with the value and clip it.
@@ -154,8 +177,9 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
                 ui.label("Symmetry").classes(_LABEL_CLS)
                 sym_select = (
                     ui.select(options=SYMMETRY_OPTIONS, value=sp.symmetry or SymmetryGroup.C1.value)
-                    .props("dense outlined")
-                    .classes("w-40")
+                    .props("dense")
+                    .props('popup-content-class="cb-select-popup"')
+                    .classes("cb-field w-32")
                 )
                 sym_select.tooltip(
                     "Point-group symmetry of the particle. Most complexes are C1; this is the default "
@@ -174,11 +198,11 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
 
         # Row 3 — free-form notes.
         with ui.row().classes("w-full items-start gap-2 no-wrap"):
-            ui.label("Notes").classes(_LABEL_CLS + " mt-2")
+            ui.label("Notes").classes(_LABEL_CLS + " mt-1")
             notes_input = (
                 ui.textarea(value=sp.notes or "", placeholder="free-form, optional")
-                .props("dense outlined autogrow rows=2 debounce=400")
-                .classes("flex-1")
+                .props("dense autogrow rows=2 debounce=400")
+                .classes("cb-field flex-1")
                 .style("min-width: 0;")
             )
 
@@ -200,6 +224,19 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
             _render_provenance(sp)
 
 
+def _mask_source(sp: ParticleSpecies, m: TemplateMask) -> str:
+    """Where a mask came from. `imported_from` is a `ParticleTemplate` field and does NOT
+    exist on `TemplateMask` — a mask's provenance is `derived_from_template_id` (the soft
+    link v3 kept for this) plus the creation `method`. Unknown stays "?" rather than being
+    filled in with a plausible guess."""
+    if m.derived_from_template_id:
+        tpl = sp.get_template_by_id(m.derived_from_template_id)
+        if tpl is None:
+            return "derived (source template no longer registered)"
+        return f"derived from {os.path.basename(tpl.template_path)}"
+    return m.method or "?"
+
+
 def _render_provenance(sp: ParticleSpecies) -> None:
     """origin · created · catalog — the first reader of `ParticleSpecies.origin`;
     template / mask sources on hover."""
@@ -211,10 +248,7 @@ def _render_provenance(sp: ParticleSpecies) -> None:
         catalog = sp.catalog_id or "— (project-local)"
     sources = [
         f"template {os.path.basename(t.template_path)}: {t.source or t.imported_from or '?'}" for t in sp.templates
-    ] + [
-        f"mask {os.path.basename(m.mask_path)}: {m.imported_from or ('derived' if m.derived_from_template_id else '?')}"
-        for m in sp.masks
-    ]
+    ] + [f"mask {os.path.basename(m.mask_path)}: {_mask_source(sp, m)}" for m in sp.masks]
     ui.label(f"origin {_ORIGIN_TEXT.get(origin, origin)} · created {created} · catalog {catalog}").classes(
         _MONO_CLS
     ).tooltip("\n".join(sources) if sources else "no templates or masks registered")
@@ -266,11 +300,16 @@ class _BindingsView(FingerprintedView):
             return
         on_open = self._open_templates_tab()
         tpl, mask = sp.get_selected_template(), sp.get_selected_mask()
-        with ui.column().classes("w-full gap-1"):
-            with ui.row().classes("w-full items-baseline gap-2 px-1"):
-                ui.label("BOUND FILES").classes(_LABEL_CLS)
-                ui.label("what new TM jobs default to").classes(_HINT_CLS)
-            with ui.column().classes("w-full gap-1 px-1"):
+        with ui.column().classes("w-full gap-1 px-1"):
+            _section(
+                "Template matching files",
+                "what a new TM job defaults to",
+                tooltip=(
+                    "Snapshot at job creation — changing the selection here does not reach jobs that "
+                    "already exist. Selection itself is changed on Templates & masks."
+                ),
+            )
+            with ui.column().classes("w-full gap-0"):
                 self._binding_row(
                     "Template",
                     tpl.template_path if tpl else "",
@@ -294,16 +333,19 @@ class _BindingsView(FingerprintedView):
             n_t, n_m = len(sp.templates), len(sp.masks)
             counts = f"{n_t} template{'s' if n_t != 1 else ''} · {n_m} mask{'s' if n_m != 1 else ''} registered"
             if on_open is not None:
-                ui.label(counts).classes(_HINT_CLS + " px-1 cursor-pointer underline decoration-dotted").on(
+                ui.label(counts).classes(_HINT_CLS + " cursor-pointer underline decoration-dotted").on(
                     "click", lambda _e: on_open()
                 ).tooltip("Open Templates & masks")
             else:
-                ui.label(counts).classes(_HINT_CLS + " px-1")
+                ui.label(counts).classes(_HINT_CLS)
 
     @staticmethod
     def _binding_row(label: str, path: str, on_open, *, chip=None) -> None:
-        with ui.row().classes("w-full items-center gap-2 no-wrap"):
-            ui.label(label).classes(_LABEL_CLS).style("width: 68px; flex-shrink: 0;")
+        """One file per row. Mask filenames are long enough to push everything else off a
+        shared row, which is why they get their own and why the name is drawn at 10 px
+        with the directory left in the hover (`render_path_link`)."""
+        with ui.row().classes("w-full items-center gap-2 no-wrap").style("min-height: 20px;"):
+            ui.label(label).classes(_LABEL_CLS).style("width: 56px; flex-shrink: 0;")
             if chip is not None:
                 chip()
             render_path_link(
@@ -345,20 +387,30 @@ class ExtractionGeometryPanel:
         ep = getattr(sp, "extraction_params", None) if sp is not None else None
         descriptions = _geometry_descriptions()
         with ui.column().classes("w-full gap-1 px-1"):
-            with ui.row().classes("w-full items-baseline gap-2"):
-                ui.label("EXTRACTION GEOMETRY").classes(_LABEL_CLS)
-                ui.label("this project").classes(_HINT_CLS).tooltip(
+            _section(
+                "Extraction geometry",
+                "this project",
+                tooltip=(
                     "One geometry per species per project. A species extracted from tomogram sets at "
                     "different binnings needs one per set — see docs/roadmaps/picking_ui/07."
-                )
-            with ui.row().classes("w-full items-center gap-4 no-wrap"):
+                ),
+            )
+            # Which job this actually feeds. Without it the panel reads as three orphan
+            # numbers — it is the box the SUBTOMO EXTRACTION job cuts, and the answer the
+            # per-list extract modal would otherwise stop and ask for.
+            ui.label(
+                "Feeds the Subtomo extraction job: the box cut around every pick. Set here once and a new "
+                "Subtomo extraction job starts with these values; hand-picked lists that have no such job "
+                "are extracted with them directly, instead of stopping to ask."
+            ).classes(_HINT_CLS)
+            with ui.row().classes("w-full items-center gap-3 no-wrap"):
                 for attr, label, minimum, step in _GEOMETRY_FIELDS:
-                    with ui.row().classes("items-center gap-2 no-wrap"):
+                    with ui.row().classes("items-center gap-1 no-wrap"):
                         ui.label(label).classes(_LABEL_CLS)
                         inp = (
                             ui.number(value=getattr(ep, attr, None), min=minimum, step=step)
-                            .props("dense outlined debounce=600")
-                            .classes("w-24")
+                            .props("dense debounce=600")
+                            .classes("cb-field w-20")
                         )
                         inp.tooltip(descriptions.get(attr, ""))
                         inp.on_value_change(lambda _e: self._commit())
