@@ -10,13 +10,20 @@ on the touched files (both clean). There is no Python interpreter on the assista
 so **`python -m py_compile` and `python check_boundaries.py` are yours** and should run before the
 app is started at all.
 
-## 0. Static, before starting the app
+## 0. Static, before starting the app — ✅ DONE 2026-08-18
+
+The maintainer ran all three on the cluster and they are green:
 
 ```
-python -m py_compile $(git diff --name-only HEAD~1 -- '*.py')
-python check_boundaries.py
-ruff check .
+python -c "import main; print('import graph OK')"    # import graph OK
+python check_boundaries.py                            # Boundaries clean (R1 R2 R3 R4)
+ruff check .                                          # All checks passed!
 ```
+
+`python -c "import main"` replaced `py_compile`: ruff parses all 192 files, so syntax was already
+proven, and the module move's real hazard was import-time (no shims, 13 repointed sites). The uvicorn
+call sits behind `if __name__ in {"__main__", "__mp_main__"}`, so importing walks the whole graph
+without binding a port.
 
 New cross-package imports `check_boundaries.py` should be asked about specifically:
 
@@ -69,6 +76,26 @@ Open a project with a species that has pick lists → Species page → **Picks**
     "manage in Species ↗" route. The toolbox Curate / Import-all buttons should be GONE (11-S3).
 16. ArtiaX: save a `.coords` with the Journey CLOSED — the watcher must still ingest it (P-07).
 17. Job tabs: the pick-candidates form shows `array_throttle` exactly ONCE, in SLURM Resources (P-09).
+
+**The 2026-08-18 (e)/(f)/(g) fixes** (11-S3's reported-not-fixed list; details in that stage log):
+
+17a. **(e) invariant.** Every route that adds a PARTICLES-phase job must name a species. The
+    PARTICLES "+" and the Species page's Jobs tab already ask; the gate now lives in
+    `add_instance_to_pipeline`, so confirm a particle job cannot be created without one and that
+    re-selecting an EXISTING particle job (clicking it back into the roster) still works untouched.
+17b. **(f) Curation tab universe.** On a project whose tomograms come from a MERGE (or only from a
+    CE job's own `tomograms.star`) rather than a local reconstruct job: the Curation tab must list
+    the same tomograms as the Journey. It listed nothing there before.
+17c. **(f) honest `has_geometry`.** A tomogram the species' CE star does NOT describe must not offer
+    ⚡ / Curate / import as if it had geometry — the failure used to land later inside
+    `prepare_curation_bundle`. Either the geometry provider supplies a star, or the row is inert.
+17d. **(g) merge tick.** A species with a subtomo job, NO committed `particles_filtered.star` and no
+    candidate-extract job: its `auto` row's merge tick must be drawn disabled (dashed, not-allowed)
+    with the reason in the tooltip. Ticking it used to raise `ValueError` out of the click handler.
+17e. **(a)–(d) perf.** Nothing to click — these are invisible when right. Watch for a REGRESSION
+    instead: the Journey strip and main pane must still update on the 4 s tick, on a keep/drop Save,
+    on a TS selection change and on an exclude toggle. `refresh_all` now collects once and hands the
+    result to both renderers, so a stale strip or a pane that stops self-gating is the failure mode.
 
 ## 3. Tomogram import (de-novo S5)
 

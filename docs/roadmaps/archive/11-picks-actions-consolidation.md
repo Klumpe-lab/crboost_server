@@ -380,7 +380,8 @@ appear ≤ 35 s; a hand-dropped file in a wrong dir shows under "unattributed".
   species gallery's Curate in ArtiaX" line, `pipeline_builder_panel`'s comment, and three docstrings
   (`_render_list_header`, `_handle_open_list_in_artiax`, `.cb-detail-meta`'s CSS comment).
   **Owed / reported, NOT fixed here (the maintainer's call during the verification pass):**
-  (a) `render_strip` calls `collect_species_journey` UNFILTERED on the event loop, and it is also what
+  *(a)–(g) and (i) were all fixed 2026-08-18 — see the last two entries of this log. Only (h),
+  the capability delta, still stands as written.)*
   `refresh_roster` calls on every keep/drop Save. The new derivation costs 0 stats for a never-extracted
   list and ~4 for an extracted one, so a fully-extracted de-novo project with 40 tomograms × 2 lists
   pays ~320 stats per Save. Nothing else in that function is memoized either (see (b), (c)), so a memo
@@ -443,3 +444,72 @@ appear ≤ 35 s; a hand-dropped file in a wrong dir shows under "unattributed".
   observe, they do not rebuild.
   **Not done, by design:** the inline control-center panel (v2), and any per-tomogram "start session
   here" beyond what `curate_in_artiax` already does.
+- 2026-08-18 — **(e) (f) (g) from S3's reported-not-fixed list are FIXED** (`ruff check .` clean;
+  `ruff format --check` clean on all six touched files; the maintainer ran `python -c "import main"`,
+  `check_boundaries.py` and `ruff check .` green on the arc immediately before). Reviewed with the
+  maintainer, who re-scoped (e) on the spot: an unattributable particle job is not a rendering
+  problem to mark, it is a state that must not be creatable.
+  **(e) → an invariant, not a badge.** `add_instance_to_pipeline` (`ui/pipeline_builder/
+  pipeline_builder_panel.py`) now refuses a NEW `PHASE_PARTICLES` instance with no `species_id`.
+  The chooser in `prompt_species_and_add` already asked, but it is one caller of four: the two
+  registered callbacks (`add_job_to_pipeline` drops `species_id` entirely, `add_instance_to_pipeline`
+  leaves it optional — both currently unconsumed, both open) plus any future direct call. Re-selecting
+  an EXISTING instance is untouched. `_ensure_prerequisites` does NOT route through the gate; it
+  cannot produce a particle job today because every `JobSpec.prerequisite` in the table points at
+  `tsImport`, and the comment at the gate says so, so giving a particle job a particle prerequisite
+  is a change that has to notice this. The legacy unclaimed-instance RENDER path is deliberately
+  left alone — `species_render_plan` keeps emitting those entries (parity contract) and the
+  maintainer does not care about legacy jobs; what changed is that no new one can be minted.
+  **(f) → two defects, one call pair** (`services/particles/list_ref.py`). `tomograms_star_for`
+  returned the CE job's `tomograms.star` for ANY tomogram as long as the species had a CE job and the
+  file existed, so `has_geometry` (`curation_tab.py:106`) read True for tomograms that star does not
+  describe and the failure landed later inside `prepare_curation_bundle` — a late crash where the
+  surfacing-uncertainty rule wants a disabled control. It now checks the row is actually there
+  (`_star_tomograms`, memoized by `read_tomo_table`'s mtime cache, so per-tomogram costs one parse per
+  file) and falls through to the geometry provider otherwise. Second: `species_tomo_map`'s universe was
+  `extra_tomos ∪ known_tomograms`, and `known_tomograms` reads only the reconstruct and imported stars
+  (`tomogram_star_sources`) — so the Curation tab, which passes no `extra_tomos`, dropped every
+  tomogram described only by a CE job's own star or arriving through a merge. On a merged project with
+  no local reconstruct job that tab listed NOTHING while the Journey listed everything. Fixed at the
+  source rather than at the caller (`_species_tomograms`: the species' pick-list tomograms ∪ its CE
+  star's rows), so a future third caller cannot get it wrong by forgetting an argument.
+  **(g) → the raise is now unreachable from the UI** rather than caught. `picks_filter.auto_source_for`
+  is split out of `merge_source_for` (same two branches, returns None instead of raising), so
+  `list_actions.can_merge_source` can ask BEFORE the control is drawn; `picks_tab` renders the merge
+  tick disabled (`.cb-ptable-tick.off`, dashed + not-allowed) with the reason in its tooltip. The
+  reachable combination was never exotic: `auto_counts` is populated from the subtomo job's per-tomo
+  curation records, which outlive any committed `particles_filtered.star`, so a species with a subtomo
+  job, no committed filter and no CE job drew a mergeable-looking auto row whose merge could only
+  answer by raising out of the click handler. `list_actions.merge_source_for` re-checks and notifies
+  rather than propagating, because disk can change between render and click.
+- 2026-08-18 — **(a)–(d) and (i) fixed** in the same session, closing S3's reported-not-fixed list
+  except (h) (`ruff check .` clean; `ruff format --check` clean on `dashboard_data.py`,
+  `project_state.py`, `species/tab.py`; `tomo_dashboard_dialog.py` still reports three format hunks at
+  lines 1369 / 1691 / 2040 — all PRE-EXISTING and nowhere near these edits, left alone rather than
+  reformatting a 5.8k-line file for unrelated reasons).
+  **(b) was the biggest single win and a one-liner.** `_candidate_extract_status_per_ts` tested
+  `if not zero_picks:` to decide whether the manifest's fast path had missed — but a v10+ manifest that
+  found no zero-pick tomograms records `"zero_picks": []`, which is what real manifests on disk carry.
+  Every call therefore fell through and re-scanned every `tmResults/*_particles.star`. Now keyed on the
+  KEY's presence (`if "zero_picks" not in summary`), so absence means pre-v10 and an empty list means
+  an answer.
+  **(c)** `_candidate_extract_status_per_ts` takes an optional pre-read `manifest`.
+  `read_preview_manifest` is an uncached `read_text` + `json.loads` (no mtime memo, unlike
+  `read_tomo_table`), and `collect_species_journey` had already read the same document one line
+  earlier — so every CE species parsed it twice per collect. The other caller passes nothing.
+  **(d)** `PickList.extraction_state` dropped the `src.exists()` guard before `src.stat()`: the
+  enclosing `try/except OSError` already covers a missing file (`FileNotFoundError` IS an `OSError`),
+  and the fall-through is the same EXTRACTED either way. 4 stats → 3 in the EXTRACTED case.
+  **(a) is the hoist the stage record asked for, and it got easier once (b)/(c) landed.** `refresh_all`
+  now collects `collect_dashboard_journey` + `collect_species_journey` ONCE and passes both down;
+  `render_strip` and `_main_signature`/`render_main` take them as optional params and collect for
+  themselves only when called bare (selection change, exclude toggle, the pane's `refresh_roster`
+  callback — which is always invoked with no arguments, checked at :4779/:4809). `_main_signature`
+  slices its TS's rows out of the strip's UNFILTERED result rather than paying a second filtered pass,
+  which is sound because `only_ts` is a pure row filter — two `continue`s in `collect_species_journey`,
+  nothing else. Explicit parameters rather than a pass-scoped memo dict: no ordering hazard, and a
+  future caller cannot accidentally pay the unfiltered cost where it used to pay the filtered one.
+  `render_main`'s new params are keyword-only so its `_build_panel_toggle_row` callback use is
+  unaffected.
+  **(i)** `PlaceholderTab` deleted (`ui/species/tab.py`, 50 → 36 lines). It scaffolded tabs that had
+  not landed yet; all five are real now, and it had zero callers.

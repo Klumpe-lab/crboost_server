@@ -7,7 +7,7 @@ dialogs consolidated into one status-first control center; container relocated t
 `/groups/klumpe/software/containers/{defs,sifs}`. Remaining: ingest UI/registry + auto-watch; the multi-list
 pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the contract.
 
-> **SUPERSEDED IN PART — read `docs/roadmaps/11-picks-actions-consolidation.md` first (2026-08-17).** This
+> **SUPERSEDED IN PART — read `docs/roadmaps/archive/11-picks-actions-consolidation.md` first (2026-08-17).** This
 > doc is append-only session history, and its entries describe the Journey rail as it was: a 3-icon toolbox
 > (Curate · Load · Import), per-row merge ticks with an inline merge bar, a per-list extraction bar, a
 > merged-list clash/dedup panel, and a clickable authoritative radio. Roadmap 11 split those apart —

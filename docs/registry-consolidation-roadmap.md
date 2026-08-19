@@ -15,7 +15,7 @@ behavior-verified PENDING RUNTIME. Next: Phase 2+3 (freshness → dashboard-on-r
 > **denoise**, which is tomogram-scoped, is in scope); **template-matching onward is out of scope here**
 > and belongs to the future particle registry. See §3 Tier C.
 
-> **Interop note (2026-08-11, from `docs/roadmaps/denovo_picking/00-overview.md`).** Imported
+> **Interop note (2026-08-11, from `docs/roadmaps/archive/denovo_picking/00-overview.md`).** Imported
 > (user-supplied) tomograms currently live star-only (`Tomograms/tomograms.star` +
 > `ProjectState.ImportedTomograms`) — they have no representable home here because `Tomogram`
 > requires a parent `TiltSeries` with an mdoc. The de-novo-picking roadmap deliberately does NOT
