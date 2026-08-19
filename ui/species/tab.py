@@ -34,17 +34,3 @@ class SpeciesTab(Protocol):
     def build(self, container: ui.element) -> None: ...
 
     def refresh(self) -> None: ...
-
-
-class PlaceholderTab:
-    """One line of text — the tab's home is a later stage (no dead affordances)."""
-
-    def __init__(self, text: str) -> None:
-        self._text = text
-
-    def build(self, container: ui.element) -> None:
-        with container:
-            ui.label(self._text).classes("text-[11px] italic text-gray-400 px-3 py-2")
-
-    def refresh(self) -> None:
-        return None

@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny, ValidationError, field_validator
 
 from services.models_base import (
     InstanceId,
@@ -585,7 +585,7 @@ class PickList(BaseModel):
                 base = Path(self.path)
                 consumed = base.with_name(f"{base.stem}_filtered.star")
                 src = consumed if consumed.exists() else base
-                if src.exists() and src.stat().st_mtime > self.extracted_at.timestamp() + 1.0:
+                if src.stat().st_mtime > self.extracted_at.timestamp() + 1.0:  # missing -> OSError below
                     return ListExtractionState.STALE
             except OSError:
                 pass
@@ -1117,6 +1117,39 @@ class ProjectState(BaseModel):
 
         self._dirty = False
 
+    @staticmethod
+    def _build_job_params(param_class, job_data: dict) -> tuple[Any, list[str]]:
+        """Instantiate one job's param model. If individual STORED fields are invalid,
+        drop those keys (so they fall back to their declared defaults) and report which,
+        instead of losing the whole instance.
+
+        Why the retry exists: params are written back with `model_dump()` and
+        `AbstractJobParams` does not validate on assignment, so a bad value assigned at
+        runtime (e.g. a UI number widget putting `0.05` into an `int` field) is persisted
+        happily and only rejected on the NEXT load. Dropping the instance there is a
+        cliff: it vanishes from `jobs`, and the driver then dies with
+        `FATAL: Instance '<id>' not found in project_params.json` — one bad number takes
+        out the run, the species binding, the I/O overrides and the recorded job dir.
+
+        The replacement value is the field's own declared default, never a guess, and
+        every repair is surfaced through `load_warnings` (CLAUDE.md: never fail silently).
+        A model that is still invalid without the offending keys raises — the caller
+        reports and skips, which is the old behavior.
+        """
+        try:
+            return param_class(**job_data), []
+        except ValidationError as first:
+            bad = {str(e["loc"][0]) for e in first.errors() if e.get("loc")} & set(job_data)
+            if not bad:
+                raise
+            model = param_class(**{k: v for k, v in job_data.items() if k not in bad})
+            repairs = [
+                f"stored value {job_data[name]!r} for '{name}' is invalid; using the default "
+                f"{getattr(model, name, None)!r} for this session"
+                for name in sorted(bad)
+            ]
+            return model, repairs
+
     @classmethod
     def load(cls, path: Path):
         if not path.exists():
@@ -1267,9 +1300,12 @@ class ProjectState(BaseModel):
                 job_type = JobType.from_string(job_type_value)
                 param_class = param_class_map.get(job_type)
                 if param_class:
-                    job_params = param_class(**job_data)
+                    job_params, repairs = cls._build_job_params(param_class, job_data)
                     job_params._project_state = project_state
                     project_state.jobs[instance_id] = job_params
+                    for repair in repairs:
+                        logger.warning("Job '%s': %s", instance_id, repair)
+                        project_state.load_warnings.append(f"Job '{instance_id}': {repair}")
                 else:
                     logger.warning(
                         "No param class for job type '%s' (instance '%s'), skipping", job_type_value, instance_id
