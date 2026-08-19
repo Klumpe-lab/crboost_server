@@ -470,7 +470,7 @@ def _zero_pick_tomos_from_tmresults(job_dir: Path) -> set[str]:
     return out
 
 
-def _candidate_extract_status_per_ts(job_dir: Path, jm) -> dict[str, str]:
+def _candidate_extract_status_per_ts(job_dir: Path, jm, manifest: dict | None = None) -> dict[str, str]:
     """Read the candidate-extract job's preview manifest to bucket TS statuses.
 
     Buckets:
@@ -483,17 +483,25 @@ def _candidate_extract_status_per_ts(job_dir: Path, jm) -> dict[str, str]:
       - "running" / "pending": defaults based on job state, applied for any
         TS that's expected (per the staged tomograms.star) but not yet
         covered by any of the buckets above.
+
+    ``manifest`` lets a caller that has ALREADY read this job's preview manifest hand it
+    over: ``read_preview_manifest`` is an uncached ``read_text`` + ``json.loads`` on every
+    call, and ``collect_species_journey`` needs the same document for its own entries — so
+    without this every CE species parsed it twice per collect.
     """
-    manifest = read_preview_manifest(job_dir) or {}
+    if manifest is None:
+        manifest = read_preview_manifest(job_dir) or {}
     entries = manifest.get("tomograms") or {}
     summary = manifest.get("summary") or {}
     errored = {e.get("tomo") for e in (summary.get("errored") or []) if e.get("tomo")}
 
     # Fast path: orchestrator-recorded zero_picks (v10+). Fallback: scan
-    # tmResults for legacy manifests. The scan is cheap (header-only files)
-    # so we run it unconditionally on miss to recover from old projects.
+    # tmResults for legacy manifests. Keyed on the KEY'S PRESENCE, not on the set being
+    # non-empty: a v10+ manifest that found no zero-pick tomograms records
+    # `"zero_picks": []`, which is a real recorded answer — treating it as a miss re-scanned
+    # every `tmResults/*_particles.star` on every call, which is what real manifests carry.
     zero_picks: set[str] = set(summary.get("zero_picks") or [])
-    if not zero_picks:
+    if "zero_picks" not in summary:
         zero_picks = _zero_pick_tomos_from_tmresults(job_dir)
 
     coarse = _job_running_or_failed(jm)
@@ -886,7 +894,7 @@ def collect_species_journey(project_state, project_path: Path, only_ts: str | No
         manifest = read_preview_manifest(jd) or {}
         entries = manifest.get("tomograms") or {}
         label = _species_label_for(jm, iid, manifest)
-        pick_status = _candidate_extract_status_per_ts(jd, jm)
+        pick_status = _candidate_extract_status_per_ts(jd, jm, manifest)
         sub_match = matching_subtomo_instance(project_state, species_id)
         sub_status: dict[str, str] = {}
         sub_star = None
