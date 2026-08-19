@@ -974,19 +974,25 @@ _CB_CSS = """
  * rebuild of the list the user just clicked. */
 .cb-tw-table { width: 100%; min-width: 0; overflow-x: auto; }
 .cb-tw-head, .cb-tw-row {
-    display: grid; align-items: center; column-gap: 8px;
+    display: grid; align-items: center; column-gap: 6px;
     grid-template-columns: var(--cb-tw-cols);
 }
-.cb-tw-head { padding: 2px 6px 3px 6px; border-bottom: 1px solid #e5e7eb; }
+.cb-tw-head { padding: 1px 5px 2px 5px; border-bottom: 1px solid #e5e7eb; }
 .cb-tw-row {
-    padding: 3px 6px; border-bottom: 1px solid #f1f5f9; cursor: pointer; background: #ffffff;
-    border-left: 2px solid transparent;
+    padding: 1px 5px; border-bottom: 1px solid #f1f5f9; cursor: pointer; background: #ffffff;
+    border-left: 2px solid transparent; min-height: 22px;
 }
 .cb-tw-row:last-child { border-bottom: none; }
 .cb-tw-row:hover { background: #f8fafc; }
 .cb-tw-row.selected { background: var(--cb-accent-tint); border-left-color: var(--cb-accent); }
-.cb-tw-cell { min-width: 0; display: flex; align-items: center; gap: 4px; }
+.cb-tw-cell { min-width: 0; display: flex; align-items: center; gap: 3px; }
 .cb-tw-cell > * { min-width: 0; }
+/* Tight leading everywhere in the table: at 9-10 px the default 1.5 was adding more
+ * height per row than the text itself. */
+.cb-tw-head > *, .cb-tw-row .cb-tw-cell { line-height: 1.25; }
+/* Row action buttons: the eye and the X used to set the row's height on their own. */
+.cb-tw-row .q-btn { min-height: 16px; min-width: 16px; padding: 0 2px; }
+.cb-tw-row .q-btn .q-icon { font-size: 13px; }
 /* Both radios are rendered; the row's `selected` class decides which one shows, so a
  * selection change costs one class attribute and no server render. */
 .cb-tw-sel-on { display: none; color: var(--cb-accent); }

@@ -118,6 +118,20 @@ def create_ui_router(backend: CryoBoostBackend):
             .cb-select.q-field--disabled .q-field__control,
             .cb-field.q-field--disabled .q-field__control { background: #f8fafc; }
 
+            /* .cb-field runs one notch tighter than .cb-select. The two surfaces differ in
+               density, not in kind: a job tab shows one column of parameters, while the
+               Species page packs several controls onto a line beside 9 px labels, and at
+               11 px/24 px they read as the biggest thing on the page. Overrides only —
+               the box, border and focus behaviour above are shared. */
+            .cb-field .q-field__control { min-height: 20px; padding: 0 5px; }
+            .cb-field .q-field__native,
+            .cb-field .q-field__input { font-size: 10px; line-height: 18px; }
+            .cb-field .q-field__marginal,
+            .cb-field .q-field__append { height: 18px; }
+            .cb-field .q-field__append .q-icon { font-size: 14px; }
+            /* A textarea has to keep growing; only its line-height is relaxed back. */
+            .cb-field textarea.q-field__native { line-height: 1.4; padding: 2px 0; }
+
             .cb-select-popup {
                 border: 1px solid #e2e8f0; border-radius: 5px;
                 box-shadow: 0 6px 18px rgba(15,23,42,.10);

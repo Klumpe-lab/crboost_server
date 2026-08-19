@@ -126,11 +126,16 @@ class SpeciesPage:
                         ).style("background: #3b82f6; color: white; border-radius: 6px; padding: 6px 16px;")
 
         state = get_project_state_for(self.project_path)
+        # Paint the rail BEFORE building any tab. A tab that raises during build kills the
+        # rest of this page's render, and with the refresh after the selection that meant
+        # one broken tab presented as "the registry is empty" — the species were there all
+        # along. The rail reads only `state.species_registry`, so it never needs the
+        # selection to have succeeded.
+        self._rail.refresh()
         if state.species_registry:
             self.select_species(state.species_registry[0].id)
         else:
             self._apply_visibility()
-        self._rail.refresh()
 
         # Observe the registry: 3-s poll (in-memory tuples only) + instant on show.
         ui.timer(3.0, self.observe)
