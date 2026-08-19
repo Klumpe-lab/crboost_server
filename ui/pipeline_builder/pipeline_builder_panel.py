@@ -300,6 +300,26 @@ class PipelineBuilderPanel:
         if instance_id is None:
             instance_id = next_instance_id(job_type, self.ui_mgr.selected_jobs, list(state.jobs.keys()))
 
+        # A NEW per-particle job must name its species. Unattributable ones are not a
+        # display wart: `species_render_plan` still emits them (parity contract), so they
+        # draw a full Journey species tab, while the Species page's universe IS the
+        # registry — which means every action 11-S3 moved there is unreachable for exactly
+        # those instances. `prompt_species_and_add` asks for the species, but it is only
+        # ONE caller; the invariant belongs here, where the two registered callbacks
+        # (`add_job_to_pipeline`, `add_instance_to_pipeline`) also arrive. Re-selecting an
+        # EXISTING instance is untouched — it already has one. `_ensure_prerequisites` does
+        # NOT pass through here, so it would bypass this; today it cannot produce a particle
+        # job, because no PARTICLES-phase spec declares a `prerequisite` (all point at
+        # tsImport). Give one a particle prerequisite and it needs the same gate.
+        if job_type in PHASE_JOBS[PHASE_PARTICLES] and species_id is None and instance_id not in state.jobs:
+            ui.notify(
+                f"{get_job_display_name(job_type)} needs a particle species — add it from the "
+                "PARTICLES header “+” or the Species page's Jobs tab, which ask for one.",
+                type="warning",
+                timeout=4000,
+            )
+            return
+
         # Auto-add prerequisite jobs that this job type depends on.
         # e.g. alignment requires tsImport to exist in the pipeline.
         self._ensure_prerequisites(job_type, state)
@@ -359,6 +379,18 @@ class PipelineBuilderPanel:
                         elif job_type == JobType.TEMPLATE_EXTRACT_PYTOM:
                             if getattr(sp, "diameter_ang", None):
                                 job_model.particle_diameter_ang = float(sp.diameter_ang)
+                        # Extraction geometry the user committed once for this species
+                        # (Species page → Overview, or the first per-list extract). Only
+                        # when SET: the job's own box/bin/crop defaults are a legitimate
+                        # job default, a species answer is not one to invent. Same
+                        # snapshot-at-creation semantics as the two branches above —
+                        # nothing propagates into existing jobs.
+                        elif job_type == JobType.SUBTOMO_EXTRACTION:
+                            ep = getattr(sp, "extraction_params", None)
+                            if ep is not None:
+                                job_model.box_size = ep.box_size
+                                job_model.binning = ep.binning
+                                job_model.crop_size = ep.crop_size
 
         # If a merge is active, wire this new consumer's input_optimisation slot to the
         # active merge's synthetic `mergedSources` producer (source_overrides key) so the
@@ -471,16 +503,13 @@ class PipelineBuilderPanel:
         }
         if labels:
             job_model.tilt_labels = labels
-            # Restore the committed pipeline output — the trimmed tomostar dir.
-            # `output_tomostar` is the key the resolver wires into downstream jobs
-            # (finalize_pipeline_output's contract; the legacy `output_star` key is
-            # dead — restoring it leaves the producer resolving to an
-            # External/pending_tiltFilter placeholder that nothing creates).
-            # Only a job whose committed output exists on disk may claim SUCCEEDED;
-            # otherwise the user must re-commit from the panel.
-            out_tomostar = state.project_path / "TiltFilter" / "tomostar"
-            if out_tomostar.is_dir() and any(out_tomostar.iterdir()):
-                job_model.paths["output_tomostar"] = str(out_tomostar)
+            # The registry stamps ARE the committed output (the filter produces no
+            # files of its own; alignment applies the cut when it snapshots the
+            # tomostars). Frames carrying a verdict therefore mean the user has
+            # committed, so the restored job may claim SUCCEEDED. Probability-only
+            # stamps come from a DL pass the user never approved, so require at
+            # least one actual drop before calling it committed.
+            if any(f.is_filtered_out for ts in reg.all_tilt_series() for f in ts.frames):
                 job_model.execution_status = JobStatus.SUCCEEDED
 
     # ── Full rebuild ──────────────────────────────────────────────────────────
