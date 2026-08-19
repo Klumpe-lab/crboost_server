@@ -9,6 +9,7 @@ from ui.current_project import current_project_state
 
 from ui.components.reactive import FingerprintedView
 from ui.components.species_pill import render_species_pill
+from ui.components.svg_icon import load_icon_svg
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -873,7 +874,7 @@ class RosterWidget(FingerprintedView):
 
             if panel.toggle_workbench is not None:
                 ui.element("div").style("height: 1px;")
-                wb_btn = self._sb_svg_btn("vial.svg", "Species", panel.toggle_workbench, ref_key="wb_btn")
+                wb_btn = self._sb_svg_btn("particle.svg", "Species", panel.toggle_workbench, ref_key="wb_btn")
                 panel.callbacks["wb_btn"] = wb_btn
 
             # Tomogram Dashboard — unified per-TS inspection surface that replaces
@@ -1412,11 +1413,7 @@ class RosterWidget(FingerprintedView):
     def _load_svg(self, name: str) -> str:
         if name.startswith("<svg"):
             return name
-        p = Path("static/icons") / name
-        try:
-            return p.read_text()
-        except FileNotFoundError:
-            return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>'
+        return load_icon_svg(name)
 
     def _build_new_species_btn(self):
         """PARTICLES-header utility: create a label-only species de novo.
