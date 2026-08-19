@@ -19,10 +19,12 @@ from typing import Any
 from nicegui import ui
 
 from services.models_base import SpeciesOrigin
+from services.particles.species_jobs import jobs_for_species
 from services.project_state import get_project_state_for
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.segmented import Segmented, render_segmented
 from ui.components.species_pill import render_species_pill
+from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
 from ui.species.catalog import import_from_catalog
 from ui.species.curation_tab import CurationTab
@@ -115,7 +117,9 @@ class SpeciesPage:
                     empty = ui.column().classes("w-full h-full items-center justify-center gap-4")
                     self._refs["empty"] = empty
                     with empty:
-                        ui.icon("biotech", size="48px").classes("text-gray-300")
+                        ui.html(load_icon_svg("particle.svg", "#d1d5db", size=48), sanitize=False).style(
+                            "width: 48px; height: 48px; display: flex;"
+                        )
                         ui.label("No species registered yet").classes("text-sm text-gray-400")
                         ui.button("Add first species", icon="add", on_click=self.add_species).props(
                             "unelevated no-caps"
@@ -150,6 +154,7 @@ class SpeciesPage:
         self._apply_visibility()
         self._refresh_chrome()
         self._refresh_visible_tab()
+        self._push_tab_badges()
 
     def select_tab(self, key: str) -> None:
         self.active_tab = key
@@ -244,6 +249,26 @@ class SpeciesPage:
         else:
             self._refresh_visible_tab()
         self._refresh_chrome()
+        self._push_tab_badges()
+
+    def _push_tab_badges(self) -> None:
+        """Counts on the tab strip for the active species (picking-UI roadmap 04 S1) —
+        they used to be chips in the Overview's "kitchen sink" status block. All three
+        reads are in-memory, so this rides the 3-s observe with no disk cost;
+        `set_badge` is a no-op when the number has not moved."""
+        if self._segmented is None:
+            return
+        state = get_project_state_for(self.project_path)
+        sp = state.get_species(self.active_species_id) if self.active_species_id else None
+        if sp is None:
+            for key in ("templates", "picks", "jobs"):
+                self._segmented.set_badge(key, "")
+            return
+        n_picks = sum(1 for pl in state.pick_lists if pl.species_id == sp.id)
+        self._segmented.set_badge("templates", str(len(sp.templates)) if sp.templates else "")
+        self._segmented.set_badge("picks", str(n_picks) if n_picks else "")
+        n_jobs = len(jobs_for_species(state, sp.id))
+        self._segmented.set_badge("jobs", str(n_jobs) if n_jobs else "")
 
     async def add_species(self) -> None:
         # SingleFlight: the "+" lives in a rail that repaints on registry changes, so a

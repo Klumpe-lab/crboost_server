@@ -22,9 +22,17 @@ class Segmented:
         self._on_switch = on_switch
         self._active = active
         self._segments: dict[str, ui.element] = {}
+        self._badges: dict[str, ui.label] = {}
         with ui.element("div").classes("cb-seg"):
             for key, label in tabs:
-                seg = ui.label(label).classes("cb-seg-btn" + (" active" if key == active else ""))
+                seg = ui.element("div").classes("cb-seg-btn" + (" active" if key == active else ""))
+                with seg:
+                    ui.label(label)
+                    # Built once, text set later: a count change must never rebuild the
+                    # strip (a click mid-rebuild would land on a dead element).
+                    badge = ui.label("").classes("cb-seg-badge")
+                    badge.set_visibility(False)
+                    self._badges[key] = badge
                 seg.on("click", lambda _e, k=key: self._click(k))
                 self._segments[key] = seg
 
@@ -36,6 +44,15 @@ class Segmented:
     @property
     def active(self) -> str:
         return self._active
+
+    def set_badge(self, key: str, text: str) -> None:
+        """Count beside a segment's label. Empty string hides it. Idempotent — call it
+        from a poll without gating; only a changed value touches the DOM."""
+        badge = self._badges.get(key)
+        if badge is None or badge.text == text:
+            return
+        badge.set_text(text)
+        badge.set_visibility(bool(text))
 
     def set_active(self, key: str) -> None:
         if key == self._active:
