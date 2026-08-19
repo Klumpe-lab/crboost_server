@@ -47,6 +47,12 @@ server timers, FingerprintedView/SingleFlight for anything timer- or dialog-driv
 | P-23 | Templates & masks | Masks have no stated SOURCE — the derived-from fact is filed as a subtitle | cosmetic | picking_ui/06 (d) | code-complete 2026-08-18, PENDING RUNTIME |
 | P-24 | Templates & masks | import button pinned to the page edge; Edit Current's three actions are visually inseparable | cosmetic | picking_ui/06 (c)(e) | code-complete 2026-08-18, PENDING RUNTIME |
 | P-25 | Cross-cutting | cross-project particle registry: deferred by the maintainer mid-scoping; tier split + edge rules recorded instead | structural (deferred) | picking_ui/07 | scoped 2026-08-18 |
+| P-26 | Species page | a species with ANY mask crashed the whole page — `TemplateMask.imported_from` does not exist (it is a `ParticleTemplate` field); and the rail refreshed AFTER the first tab built, so the crash presented as "the registry is empty" | bug | fixed in place 2026-08-19 (`overview_tab._mask_source`, `template_workbench._mask_note`, rail painted before any tab) | FIXED, needs a re-check |
+| P-27 | Species › Overview | one undifferentiated wall of oversized fields — no named blocks, Quasar's 14 px inputs against 9 px labels | cosmetic | three `section_header` blocks (Species info · Template matching files · Extraction geometry) + `.cb-field` on every input | fixed 2026-08-19, needs a re-check |
+| P-28 | Species › Overview, Templates & masks | the absolute path is drawn in full and eats the row; the filename never truncates | cosmetic | `render_path_link` draws the FILENAME only (ellipsised); the directory is a hover fact on the name and the copy button | fixed 2026-08-19, needs a re-check |
+| P-29 | Templates & masks | the tables are crowded — text too large, rows too tall | cosmetic | 9 px row body / 10 px filename, tighter `--cb-tw-cols`, 22 px rows, row buttons no longer set row height | fixed 2026-08-19, needs a re-check |
+| P-30 | Templates & masks | section titles ("SOURCE", "TEMPLATES") share a style with tool names and field labels, so nothing reads as containing anything | cosmetic | three ranks enforced: SECTION `section_header` 11 px mixed case + rule · TOOL `_TOOL_CLS` 10 px · FIELD `_LABEL_CLS` 9 px uppercase | fixed 2026-08-19, needs a re-check |
+| P-31 | Species › Overview | the extraction-geometry panel is three orphan numbers — it never says which job it feeds | cosmetic (wording) | panel states it feeds the Subtomo extraction job and what the box is | fixed 2026-08-19, needs a re-check |
 
 Add rows as the walkthrough produces them; keep the peeve text short and put the long form in
 `q_denovo_picking_interface.md`.
@@ -115,3 +121,31 @@ committable chunk with its own runtime checklist, which is what the maintainer a
   maintainer has run the jobs, and the three items in `q_important_ui_fixes.md` (beam-induced-motion
   connected graph, bring back the tomo-recon gallery with Journey links, landing-page data-identification
   jank) — none of those three has a row here yet.
+- 2026-08-19 — **first runtime finding, P-26.** Two call sites read `TemplateMask.imported_from`, which
+  has never existed — masks carry `derived_from_template_id` + `method`, `imported_from` is a
+  `ParticleTemplate` field. One is PRE-EXISTING (`overview_tab._render_provenance`, shipped in 10-S3 and
+  already committed); the other was the same mistake copied into picking_ui 05-S2's mask row. It only
+  fires once a species has at least one mask, which is why the arc's static gates and every earlier
+  session missed it. Both now resolve provenance through the fields that exist and say so when the
+  source template is gone. The amplifier is fixed separately: `SpeciesPage.build` refreshed the rail
+  *after* selecting the first species, so any tab that raised during build took the species list with
+  it — the rail is painted first now. **Lesson for the arc: `ruff` + `python -c "import main"` cannot
+  see an attribute that does not exist on a pydantic model.** Sweeping every new `<model>.<attr>` read
+  against the model definition found no others (ParticleSpecies, SpeciesOverview, ExtractionParams,
+  ListRef, ParticleTemplate all clean).
+- 2026-08-19 — **second walkthrough pass on the Species page (P-27…P-31), all fixed in place.** The
+  one structural idea behind all five: **three type ranks, and a thing may only use the rank it is.**
+  SECTION (`section_header`, 11 px semibold MIXED case + `section_rule`) names a block of the page;
+  TOOL (10 px semibold, `_TOOL_CLS` in the workbench) names one tool that owns inputs; FIELD (9 px
+  uppercase muted, `_LABEL_CLS`) labels exactly one input and heads a table column. They had all
+  collapsed onto one 10 px uppercase style, which is why "SOURCE" and "apix" shouted equally.
+  Two other decisions worth not re-deriving:
+  **(a) `render_path_link` no longer draws the directory at all.** It draws the ellipsised filename;
+  the absolute path lives in the hover on the name and on the copy button. The old row had the
+  basename at `flex-shrink: 0` followed by a flexing path label, which is exactly why a long mask
+  filename ran the width of the table.
+  **(b) `.cb-field` diverged from `.cb-select` by one notch** (20 px box / 10 px text vs 24 / 11) as
+  overrides after the shared block, so the job tabs' selects are untouched. `.cb-field` is used only
+  by the Species page (workbench forms + the Overview's inputs, which until now were bare Quasar at
+  ~14 px — the actual "everything is too big" complaint). If a third surface adopts it, check that
+  the tighter scale suits it before adding the class.
