@@ -22,6 +22,7 @@ from nicegui import ui
 from ui.job_plugins._field_styles import (
     field_grid,
     field_group,
+    numeric_forward,
     section_header,
     LABEL_STYLE,
     ROW_STYLE,
@@ -108,9 +109,12 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
                 ):
                     lbl = ui.label("Max concurrent").style(LABEL_STYLE)
                     lbl.tooltip("SLURM --array throttle: max tasks running simultaneously")
-                    inp = ui.number(value=getattr(job_model, "array_throttle", 20), format="%d").bind_value(
-                        job_model, "array_throttle"
-                    )
+                    # precision=0 + numeric_forward: array_throttle is an `int` and the
+                    # model does not validate on assignment, so a fractional entry here
+                    # would only surface as a load failure that drops the whole instance.
+                    inp = ui.number(
+                        value=getattr(job_model, "array_throttle", 20), format="%d", precision=0
+                    ).bind_value(job_model, "array_throttle", forward=numeric_forward(job_model, "array_throttle"))
                     inp.props(
                         "dense borderless hide-bottom-space "
                         'input-style="font-family: \'IBM Plex Mono\', monospace; font-size: 11px; '

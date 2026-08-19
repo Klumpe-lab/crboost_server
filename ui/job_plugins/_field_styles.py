@@ -10,6 +10,7 @@ of the input -- and rows stack vertically inside their collapsible.
 from contextlib import contextmanager
 from enum import Enum
 from collections.abc import Callable
+from typing import get_args
 
 from nicegui import ui
 
@@ -60,6 +61,13 @@ GROUP_STYLE = "width: 100%; border: 1px solid #eef2f6; border-radius: 4px; paddi
 GROUP_MUTED_STYLE = GROUP_STYLE + " background: #fafbfc;"
 
 LABEL_PATH_STYLE = LABEL_STYLE  # path labels share the same column width now
+
+# The one phrasing for the block of fields a job inherited from its species at
+# creation (template / mask / symmetry / Ø / extraction geometry). They are still job
+# parameters — snapshot-at-creation, nothing auto-propagates — so they are weakly
+# separated inside the SAME Parameters card, never boxed in a nested card of their own.
+# See docs/roadmaps/picking_ui/00-overview.md.
+SPECIES_SECTION_TITLE = "From species — override for this run"
 
 
 # ── Section heads ───────────────────────────────────────────────────────────
@@ -157,6 +165,46 @@ def text_field(
     return inp
 
 
+def _numeric_kind(job_model, attr: str) -> tuple[bool, bool]:
+    """(is_int, allows_none) for a model field, looking through `X | None`.
+
+    `bool` is a subclass of `int` but never reaches here (toggle_field owns it), so the
+    check is identity, not issubclass — keep it that way."""
+    field = type(job_model).model_fields.get(attr)
+    annotation = getattr(field, "annotation", None)
+    args = get_args(annotation)
+    allows_none = type(None) in args
+    concrete = [a for a in args if a is not type(None)] if args else [annotation]
+    return len(concrete) == 1 and concrete[0] is int, allows_none
+
+
+def numeric_forward(job_model, attr: str) -> Callable:
+    """element → model transform for `numeric_field`.
+
+    `ui.number` always hands back a JS float (or None when the box is cleared) and
+    `AbstractJobParams` does not validate on assignment, so without this an `int` field
+    silently accepts e.g. `0.05`, `model_dump()` writes it to project_params.json, and the
+    NEXT load fails validation — which used to drop the whole job instance and leave the
+    driver reporting `FATAL: Instance '<id>' not found`. Coerce at the point of entry
+    instead of discovering it a restart later.
+    """
+    is_int, allows_none = _numeric_kind(job_model, attr)
+
+    def _forward(value):
+        if value is None or value == "":
+            # An empty box is not a value. Clearing an optional field means None; on a
+            # required one it means "still typing" — keep the last good value rather than
+            # writing a None that only fails at load time.
+            return None if allows_none else getattr(job_model, attr)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return getattr(job_model, attr)  # mid-typing garbage; the next valid value lands
+        return round(number) if is_int else number  # round() with no ndigits returns an int
+
+    return _forward
+
+
 def numeric_field(
     label: str,
     job_model,
@@ -173,7 +221,12 @@ def numeric_field(
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint)
         val = getattr(job_model, attr)
-        inp = ui.number(value=val, format=fmt).bind_value(job_model, attr)
+        is_int, _ = _numeric_kind(job_model, attr)
+        # precision=0 makes the widget itself snap to whole numbers on blur, so an integer
+        # field LOOKS like one; numeric_forward is what guarantees the model never holds
+        # a fractional value, blur or not.
+        inp = ui.number(value=val, format=fmt, precision=0 if is_int else None)
+        inp.bind_value(job_model, attr, forward=numeric_forward(job_model, attr))
         _attach_input(inp, is_frozen=is_frozen, narrow=narrow)
         if not is_frozen:
             if on_change:
@@ -205,9 +258,57 @@ def enum_field(
     return sel
 
 
-def toggle_field(
-    label: str, job_model, attr: str, *, is_frozen: bool, save_handler: Callable, hint: str | None = None
+def choice_row(
+    label: str,
+    job_model,
+    attr: str,
+    options: dict[str, str],
+    *,
+    is_frozen: bool,
+    save_handler: Callable,
+    value: str | None = None,
+    hint: str | None = None,
+    placeholder: str = "none registered",
+    empty_value: str = "",
 ):
+    """A select over a RUNTIME options dict (value -> display label), in the same row
+    chrome as every other field. `enum_field` covers the static-Enum case; this covers
+    the case where the choices come from project state (a species' templates and masks,
+    an annotated symmetry list).
+
+    `value` is the entry to show when it differs from `getattr(job_model, attr)` — the
+    caller owns the display resolution (e.g. "job override > species selection > first
+    entry"), and showing a resolved default is NOT the same as writing it.
+
+    An empty `options` renders the row disabled with `placeholder` as its only entry:
+    absent is stated in the same shape as present, never silently preselected
+    (CLAUDE.md "Surfacing uncertainty"). Writes go through an explicit change handler
+    rather than `bind_value` so `empty_value` decides what "nothing chosen" means.
+    """
+    with ui.element("div").style(ROW_STYLE):
+        _label(label, hint)
+        if not options:
+            sel = ui.select(options={"": placeholder}, value="")
+        else:
+            shown = value if value is not None else getattr(job_model, attr)
+            sel = ui.select(options=options, value=shown if shown in options else empty_value)
+        sel.props(_INPUT_PROPS_BASE)
+        sel.props('popup-content-class="cb-select-popup"')
+        sel.classes("cb-select")
+        sel.style("flex: 1 1 0; min-width: 0;")
+        if is_frozen or not options:
+            sel.disable()
+        else:
+
+            def _on_change(e):
+                setattr(job_model, attr, e.value or empty_value)
+                save_handler()
+
+            sel.on_value_change(_on_change)
+    return sel
+
+
+def toggle_field(label: str, job_model, attr: str, *, is_frozen: bool, save_handler: Callable, hint: str | None = None):
     cb = ui.checkbox(label).bind_value(job_model, attr).props("dense size=xs")
     cb.style(f"{SANS} font-size: 10px; color: {CLR_HEADER};")
     if hint:
