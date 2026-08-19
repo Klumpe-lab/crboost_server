@@ -58,6 +58,7 @@ from services.jobs.ts_alignment import TsAlignmentParams
 from services.models_base import AlignmentMethod
 from services.tilt_series import get_registry_for
 from services.tilt_series.adapters import TsAlignmentIngestAdapter
+from services.tilt_series_service import drop_tilts_from_tomostar
 
 
 def build_alignment_command(params: TsAlignmentParams) -> ToolCommand | str:
@@ -156,20 +157,34 @@ class TsAlignmentDriver(ArrayDriver):
         input_star = ctx.paths["input_star"]
         require_producer_input(input_star, "Input STAR")
 
+        # Census #38: the registry is the enumeration authority; the sources on
+        # disk are checked against it, never trusted as the item list. It also
+        # carries the tilt-filter's verdict (per-frame is_filtered_out), so it is
+        # loaded before the snapshot below, which applies that cut.
+        registry = get_registry_for(ctx.project_path)
+
         # Refresh the job-local snapshot on EVERY supervisor run (census #39):
         # tasks stage from stable job-local paths, but a supervisor re-run must
         # see the producer's CURRENT tomostars (re-trimmed tilts, added/removed
         # TS), never a stale first-run copy.
+        #
+        # The tilt-filter cut is applied HERE, at consumption, instead of by the
+        # filter writing a tomostar dir of its own: the filter is interactive and
+        # may be committed before, after, or never relative to tsImport, and a
+        # separate producer dir made downstream wiring depend on that ordering (a
+        # pending filter silently fell back to the untrimmed tomostar). Reading the
+        # verdict from the registry collapses both paths -- filter off and filter
+        # on -- onto one: an empty drop set copies the tomostars verbatim.
         local_tomostar_dir = ctx.job_dir / "tomostar"
         if local_tomostar_dir.exists():
             shutil.rmtree(str(local_tomostar_dir))
-        shutil.copytree(str(tomostar_dir), str(local_tomostar_dir))
+        drop_frames = registry.filtered_out_frame_ids()
+        kept, dropped = drop_tilts_from_tomostar(tomostar_dir, local_tomostar_dir, drop_frames)
+        if drop_frames:
+            self.log(f"Tilt filter applied from registry: {kept} tilts kept, {dropped} dropped")
         local_settings = ctx.job_dir / settings_file.name
         shutil.copy2(str(settings_file), str(local_settings))
 
-        # Census #38: the registry is the enumeration authority; the sources on
-        # disk are checked against it, never trusted as the item list.
-        registry = get_registry_for(ctx.project_path)
         reg_ids = registry.tilt_series_ids()
         if not reg_ids:
             raise RuntimeError(
