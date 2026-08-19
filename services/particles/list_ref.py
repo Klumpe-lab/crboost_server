@@ -107,17 +107,29 @@ def species_anchors(state, project_path: Path, species_id: str) -> SpeciesAnchor
     )
 
 
+def _star_tomograms(star_path: Path) -> set[str]:
+    """Every ``rlnTomoName`` a ``tomograms.star`` carries (empty when it is absent or has
+    no such column). Memoized by mtime inside ``read_tomo_table``, so asking per tomogram
+    costs one parse per file."""
+    df = read_tomo_table(star_path)
+    if df is None or "rlnTomoName" not in df.columns:
+        return set()
+    return set(df["rlnTomoName"].astype(str))
+
+
 def tomograms_star_for(state, project_path: Path, species_id: str, tomo_name: str) -> Path | None:
     """The ``tomograms.star`` an ArtiaX round trip / .coords import maps this tomogram
-    through: the candidate-extract job's own copy when this species has one (a denoised
-    chain repoints the volume there — it must stay authoritative, as in the Journey), else
-    the geometry provider's star; None when nothing describes the tomo. Reads disk — run
+    through: the candidate-extract job's own copy when that star actually lists the tomogram
+    (a denoised chain repoints the volume there — it must stay authoritative, as in the
+    Journey), else the geometry provider's star; None when nothing describes the tomo. A CE
+    star that does not carry this row is NOT a fallback: claiming it would make callers read
+    `has_geometry` as true and fail later inside ``prepare_curation_bundle``. Reads disk — run
     off the event loop."""
     project_path = Path(project_path)
     ce = ce_instance_for_species(state, species_id)
     if ce is not None:
         jd = job_dir_for(state, ce[0], ce[1], project_path)
-        if jd is not None and (jd / "tomograms.star").exists():
+        if jd is not None and tomo_name in _star_tomograms(jd / "tomograms.star"):
             return jd / "tomograms.star"
     geom = geometry_for_ts(state, project_path, tomo_name)
     return Path(geom.tomograms_star) if geom is not None else None
@@ -153,17 +165,32 @@ def list_ref_for(
     )
 
 
+def _species_tomograms(state, species_id: str, anchors: SpeciesAnchors) -> set[str]:
+    """The tomograms this SPECIES knows about, which the project-level stars need not
+    mention: every persisted pick list's, plus every row of its candidate-extract job's own
+    ``tomograms.star``. ``known_tomograms`` reads only the reconstruct and imported stars
+    (``tomogram_star_sources``), so a species whose volumes arrived through a merge — or
+    only through a CE job's own copy — would otherwise draw rows in the Journey and none
+    on the Species page."""
+    out = {pl.tomo_name for pl in state.pick_lists if pl.species_id == species_id}
+    if anchors.ce_job_dir is not None:
+        out |= _star_tomograms(anchors.ce_job_dir / "tomograms.star")
+    return out
+
+
 def species_tomo_map(
     state, project_path: Path, species_id: str, extra_tomos: tuple[str, ...] = ()
 ) -> tuple[SpeciesAnchors, dict[str, Path | None]]:
     """``(anchors, {tomo: tomograms.star | None})`` for every tomogram this species could
-    hold picks on: ``extra_tomos`` (the caller's own rows) ∪ every tomogram the project
-    describes. ONE disk pass that both Species-page tabs build their refs from — the Picks
-    table needs a star per row's tomogram, the Curation tab per tomogram it lists, and a
-    tomogram with no picks yet is a legitimate import target for both. Reads disk — run off
-    the event loop."""
-    tomos = sorted(set(extra_tomos) | set(known_tomograms(state, project_path)))
+    hold picks on: ``extra_tomos`` (the caller's own rows) ∪ what the species itself knows
+    (``_species_tomograms``) ∪ every tomogram the project describes. ONE disk pass that both
+    Species-page tabs build their refs from — the Picks table needs a star per row's
+    tomogram, the Curation tab one per tomogram it lists, and a tomogram with no picks yet
+    is a legitimate import target for both. Reads disk — run off the event loop."""
     anchors = species_anchors(state, project_path, species_id)
+    tomos = sorted(
+        set(extra_tomos) | _species_tomograms(state, species_id, anchors) | set(known_tomograms(state, project_path))
+    )
     return anchors, {t: tomograms_star_for(state, project_path, species_id, t) for t in tomos}
 
 
