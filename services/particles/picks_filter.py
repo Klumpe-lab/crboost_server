@@ -530,6 +530,22 @@ def discard_filtered_list(source_star: Path, filtered_star: Path | None = None) 
     return False
 
 
+def auto_source_for(ce_job_dir: str | Path | None, subtomo_job_dir: str | Path | None) -> dict | None:
+    """The star the ``auto`` slug contributes to a merge — the subtomo job's committed
+    ``particles_filtered.star`` (exactly the kept auto picks), else the candidate-extract
+    job's full ``candidates.star`` — or None when neither exists.
+
+    Split out of ``merge_source_for`` so the UI can ask BEFORE offering the action. The
+    ``auto`` row is rendered from the subtomo job's per-tomo curation records, which outlive
+    any committed filter, so a species with a subtomo job, no committed filter and no CE job
+    draws a mergeable-looking row that ``merge_source_for`` can only answer by raising."""
+    if subtomo_job_dir and has_filtered_set(Path(subtomo_job_dir)):
+        return {"path": str(Path(subtomo_job_dir) / PARTICLES_FILTERED_NAME), "type": "auto", "slug": "auto"}
+    if ce_job_dir:
+        return {"path": str(Path(ce_job_dir) / "candidates.star"), "type": "auto", "slug": "auto"}
+    return None
+
+
 def merge_source_for(
     slug: str, lists: list[dict], *, ce_job_dir: str | Path | None, subtomo_job_dir: str | Path | None
 ) -> dict | None:
@@ -544,14 +560,14 @@ def merge_source_for(
 
     ``lists`` are the dashboard's render dicts (``slug`` / ``path`` / ``list_type``).
     Returns ``{"path", "type", "slug"}`` in the shape ``merge_pick_lists`` consumes, or
-    None for a slug that is not a sourced list. Raises for ``auto`` without a
-    candidate-extract job dir (nothing to source candidates.star from)."""
+    None for a slug that is not a sourced list. Raises for ``auto`` with nothing to source
+    from — callers that RENDER a merge control ask ``auto_source_for`` first and disable it,
+    so reaching the raise means the control was offered on state that has since changed."""
     if slug == "auto":
-        if subtomo_job_dir and has_filtered_set(Path(subtomo_job_dir)):
-            return {"path": str(Path(subtomo_job_dir) / PARTICLES_FILTERED_NAME), "type": "auto", "slug": "auto"}
-        if not ce_job_dir:
+        src = auto_source_for(ce_job_dir, subtomo_job_dir)
+        if src is None:
             raise ValueError("auto list has no candidate-extract job dir to source candidates.star from")
-        return {"path": str(Path(ce_job_dir) / "candidates.star"), "type": "auto", "slug": "auto"}
+        return src
     lst = next((x for x in lists if x.get("slug") == slug), None)
     if not lst or not lst.get("path"):
         return None

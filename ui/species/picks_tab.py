@@ -295,11 +295,21 @@ class _PicksView(FingerprintedView):
         ref = self._tab.ref(tomo, row.slug)
         with ui.element("div").classes("cb-ltable-row cb-ptable-row"):
             # Tick — merge selection only (rows have no detail pane to select into).
+            # Disabled when the row has no star to contribute: an auto row is drawn from the
+            # subtomo job's per-tomo curation records, which outlive any committed filter, so
+            # offering it unconditionally walked into `picks_filter.merge_source_for`'s raise.
             tick = ui.element("div").classes("cb-ptable-tick")
-            if row.slug in self._tab.ticks.get(tomo, set()):
-                tick.classes(add="on")
-            tick.tooltip("Tick to include this list in a merge")
-            tick.on("click", lambda _e, s=row.slug: self._tab.toggle_tick(tomo, s))
+            if ref is not None and list_actions.can_merge_source(ref):
+                if row.slug in self._tab.ticks.get(tomo, set()):
+                    tick.classes(add="on")
+                tick.tooltip("Tick to include this list in a merge")
+                tick.on("click", lambda _e, s=row.slug: self._tab.toggle_tick(tomo, s))
+            else:
+                tick.classes(add="off")
+                tick.tooltip(
+                    "Nothing to merge from this row — no star backs it (an auto list needs a "
+                    "committed particles_filtered.star or a candidate-extract job)"
+                )
 
             with ui.element("div").classes("cb-ltable-cell"):
                 on = row.is_authoritative

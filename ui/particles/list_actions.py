@@ -26,7 +26,7 @@ from services.background_tasks import get_background_task_registry
 from services.models_base import JobStatus, ListExtractionState, PickListType, PickSourceKind
 from services.particles import picks_filter
 from services.particles.ingest import register_manual_pick_list
-from services.particles.list_ref import ListRef, extract_pick_list_instance_id, fs_slug
+from services.particles.list_ref import AUTO_SLUG, ListRef, extract_pick_list_instance_id, fs_slug
 from services.particles.species_overview import ExtractJob
 from services.project_state import ExtractionParams, PickList, get_project_state_for
 from services.visualization.tomo_geometry import geometry_for_ts
@@ -410,6 +410,9 @@ def prompt_extraction_geometry(
             f"'{ref.species_label or ref.species_id}' has no subtomo-extraction job to inherit box/binning/crop "
             "from. Set them once — they are saved on the species and reused for every later extraction."
         ).classes("text-xs text-gray-600")
+        ui.label("Also editable any time on the Species page → Overview → Extraction geometry.").classes(
+            "text-[10px] text-gray-400"
+        )
         box_in, bin_in, crop_in = geometry_inputs()
 
         async def _commit() -> None:
@@ -432,9 +435,29 @@ def prompt_extraction_geometry(
 # ── Merge / dedup ─────────────────────────────────────────────────────────────
 
 
+def can_merge_source(ref: ListRef) -> bool:
+    """Whether ``merge_source_for`` can produce a star for this ref. The Picks table gates
+    its merge tick on this: an ``auto`` row with neither a committed filter nor a
+    candidate-extract job is drawn disabled with the reason instead of raising out of the
+    merge handler (``picks_filter.merge_source_for`` answers that case by raising)."""
+    if ref.slug != AUTO_SLUG:
+        return bool(ref.star_path)
+    return picks_filter.auto_source_for(ref.ce_job_dir, ref.subtomo_job_dir) is not None
+
+
 def merge_source_for(ref: ListRef) -> dict | None:
     """The star ``ref`` contributes to a merge — its KEPT subset (the user's keep/drop must
-    not bleed dropped picks into it); see ``picks_filter.merge_source_for``."""
+    not bleed dropped picks into it); see ``picks_filter.merge_source_for``. None, with the
+    reason named, when the ref has nothing to contribute: the tick that selected it is drawn
+    disabled, so this is the stale-render race (the filter star went away between render and
+    click), and it must not surface as a traceback."""
+    if not can_merge_source(ref):
+        ui.notify(
+            f"{ref.label} on {ref.tomo_name} has no star to merge from — "
+            "an auto list needs a committed particles_filtered.star or a candidate-extract job.",
+            type="warning",
+        )
+        return None
     return picks_filter.merge_source_for(
         ref.slug, [ref.merge_source_dict()], ce_job_dir=ref.ce_job_dir, subtomo_job_dir=ref.subtomo_job_dir
     )
