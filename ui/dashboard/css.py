@@ -433,6 +433,8 @@ _CB_CSS = """
     background: transparent; border: 1.5px solid #cbd5e1;
 }
 .cb-ptable-tick.on { background: #6366f1; border-color: #6366f1; }
+/* Nothing to contribute to a merge — see `list_actions.can_merge_source`; the tooltip says why. */
+.cb-ptable-tick.off { cursor: not-allowed; border-style: dashed; border-color: #e2e8f0; }
 /* Shared small metadata text in the per-list detail chrome (provenance, pick
  * counts, sub-labels) — one slate tone + size instead of ad-hoc inline font
  * styles, so the list header / provenance / status rows read as one block. */
@@ -958,9 +960,39 @@ _CB_CSS = """
     color: #64748b; background: #ffffff; cursor: pointer; user-select: none;
     border-right: 1px solid #e2e8f0; white-space: nowrap;
 }
+.cb-seg-btn { display: inline-flex; align-items: baseline; gap: 5px; }
 .cb-seg-btn:last-child { border-right: none; }
+.cb-seg-badge { font-size: 10px; font-variant-numeric: tabular-nums; color: #94a3b8; }
+.cb-seg-btn.active .cb-seg-badge { color: #64748b; }
 .cb-seg-btn:hover { background: #f8fafc; }
 .cb-seg-btn.active { background: #f1f5f9; color: #1e293b; font-weight: 600; }
+/* Template workbench lists (picking-UI roadmap 05): cards became table rows, so the
+ * per-row facts (apix / box / lp, sigma stats, size, polarity) sit in columns sized to
+ * their content instead of truncating inside a 260 px card. Only the FILE column flexes.
+ * The accent is a custom property set per list on the container (indigo for templates,
+ * purple for masks), so one rule serves both. Selection is a class flip — never a
+ * rebuild of the list the user just clicked. */
+.cb-tw-table { width: 100%; min-width: 0; overflow-x: auto; }
+.cb-tw-head, .cb-tw-row {
+    display: grid; align-items: center; column-gap: 8px;
+    grid-template-columns: var(--cb-tw-cols);
+}
+.cb-tw-head { padding: 2px 6px 3px 6px; border-bottom: 1px solid #e5e7eb; }
+.cb-tw-row {
+    padding: 3px 6px; border-bottom: 1px solid #f1f5f9; cursor: pointer; background: #ffffff;
+    border-left: 2px solid transparent;
+}
+.cb-tw-row:last-child { border-bottom: none; }
+.cb-tw-row:hover { background: #f8fafc; }
+.cb-tw-row.selected { background: var(--cb-accent-tint); border-left-color: var(--cb-accent); }
+.cb-tw-cell { min-width: 0; display: flex; align-items: center; gap: 4px; }
+.cb-tw-cell > * { min-width: 0; }
+/* Both radios are rendered; the row's `selected` class decides which one shows, so a
+ * selection change costs one class attribute and no server render. */
+.cb-tw-sel-on { display: none; color: var(--cb-accent); }
+.cb-tw-sel-off { color: #cbd5e1; }
+.cb-tw-row.selected .cb-tw-sel-on { display: inline-flex; }
+.cb-tw-row.selected .cb-tw-sel-off { display: none; }
 /* Species header row: active pill left, segmented tabs right. */
 .cb-species-header {
     display: flex; align-items: center; gap: 10px; flex-shrink: 0;
