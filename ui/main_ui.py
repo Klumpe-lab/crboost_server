@@ -77,30 +77,46 @@ def create_ui_router(backend: CryoBoostBackend):
                on the v-html-injected roster spans, most likely a cache-stale
                Python-injected stylesheet. SVG carries its own animation. */
 
-            /* ── Config + I/O dropdowns ──────────────────────────────────
+            /* ── Config + I/O fields ─────────────────────────────────────
                Clean 1px slate-bordered box + themed popup, replacing the
                default Quasar Material underline/float look. Applied via the
                .cb-select class in ui/job_plugins/_field_styles.py (config
                parameter selects) and ui/pipeline_builder/io_config_component.py
-               (I/O source menus + their popups). */
-            .cb-select .q-field__control {
+               (I/O source menus + their popups).
+
+               This is a `q-field__control` rule, so it fits ANY QField, not just
+               selects. Non-select fields (ui.input / ui.number) use the `.cb-field`
+               spelling — same box, honest name; see the creation forms in
+               ui/template_workbench.py (picking-UI roadmap 06). */
+            .cb-select .q-field__control,
+            .cb-field .q-field__control {
                 min-height: 24px; padding: 0 6px;
                 border: 1px solid #e2e8f0; border-radius: 4px;
                 background: #fff; transition: border-color .12s ease;
             }
-            .cb-select .q-field__control:hover { border-color: #cbd5e1; }
-            .cb-select.q-field--focused .q-field__control { border-color: #94a3b8; }
+            .cb-select .q-field__control:hover,
+            .cb-field .q-field__control:hover { border-color: #cbd5e1; }
+            .cb-select.q-field--focused .q-field__control,
+            .cb-field.q-field--focused .q-field__control { border-color: #94a3b8; }
             .cb-select .q-field__control:before,
-            .cb-select .q-field__control:after { display: none !important; }
+            .cb-select .q-field__control:after,
+            .cb-field .q-field__control:before,
+            .cb-field .q-field__control:after { display: none !important; }
             .cb-select .q-field__native,
-            .cb-select .q-field__input {
+            .cb-select .q-field__input,
+            .cb-field .q-field__native,
+            .cb-field .q-field__input {
                 font-family: 'IBM Plex Sans', sans-serif; font-size: 11px;
                 color: #1e293b; padding: 0; line-height: 22px;
             }
             .cb-select .q-field__marginal,
-            .cb-select .q-field__append { height: 22px; }
-            .cb-select .q-field__append .q-icon { font-size: 16px; color: #94a3b8; }
-            .cb-select.q-field--disabled .q-field__control { background: #f8fafc; }
+            .cb-select .q-field__append,
+            .cb-field .q-field__marginal,
+            .cb-field .q-field__append { height: 22px; }
+            .cb-select .q-field__append .q-icon,
+            .cb-field .q-field__append .q-icon { font-size: 16px; color: #94a3b8; }
+            .cb-select.q-field--disabled .q-field__control,
+            .cb-field.q-field--disabled .q-field__control { background: #f8fafc; }
 
             .cb-select-popup {
                 border: 1px solid #e2e8f0; border-radius: 5px;

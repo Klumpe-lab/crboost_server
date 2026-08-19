@@ -1,22 +1,26 @@
-"""Template Workbench — v3 layout, density pass.
+"""Template Workbench — v3 layout, two columns (picking-UI roadmaps 05 + 06).
 
-Visual structure (top → bottom; the species header moved to the Species page's
-Overview tab in roadmap 10 S3):
-  1. Templates section — selectable cards with file-icon copy affordance.
-  2. Source — text-only tabs (shape / pdb-emdb / import / edit current).
-  3. Masks section — selectable cards (parallel visual to templates).
-  4. Mask creation — text-only tabs (relion / import).
-  5. Viewer — molstar (3D), with a slice fallback toggle.
-  6. Activity log (collapsed).
+Visual structure (the species header moved to the Species page's Overview tab in
+roadmap 10 S3):
+
+  ┌ TEMPLATES  · rows + SOURCE ┐ ┌ MASKS · rows + SOURCE ┐   (one auto-fit grid;
+  └────────────────────────────┘ └───────────────────────┘    one column when narrow)
+    Viewer — molstar (3D), with a slice fallback toggle          (full width)
+    Activity log (collapsed)                                     (full width)
+
+Each column is <things> + <where new ones come from>. The lists are `.cb-tw-table`
+grids (CSS in ui/dashboard/css.py), not cards: a card 260 px wide truncated three of
+its five lines, while a column sized to its content does not.
 
 Design rules enforced here:
   - Color palette is gray + indigo (templates) + purple (masks) +
     white/black polarity chips. No blue/emerald/amber tints elsewhere.
   - Font scale collapsed to three: text-sm (section titles),
     text-xs (body / form labels), text-[10px] (captions / chips / mono).
-  - Outer cards reserved for items in a list (one card per template / mask)
-    and the viewer container. Section panels are drawn with a header row +
-    spacing — no nested borders.
+    The creation forms use `Segmented` + `.cb-field`, NOT Quasar tabs and bare
+    QFields — those were the two surfaces that leaked a fourth and fifth size in.
+  - Selection is a class flip across kept row handles; a list is rebuilt only when
+    its membership moved (register / delete). Clicking a row must not destroy it.
   - All template-producing actions (shape, pdb, emdb, import, resample,
     apply-lowpass, flip-polarity) write to canonical paths and skip the
     write if a registered entry already exists at that path — no
@@ -34,22 +38,25 @@ import json
 import logging
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 
 import mrcfile
 from fastapi.responses import FileResponse, HTMLResponse
 from nicegui import app, context, ui
 
+from services import species_admin
 from services.project_state import (
     ParticleSpecies,
     ParticleTemplate,
     TemplateMask,
     get_project_state_for,
-    sidecar_ensure,
 )
 from services.species_admin import delete_file_with_sidecar
 from services.templating.template_metadata import read_template_header
+from ui.components.chip import render_method_chip, render_polarity_chip
+from ui.components.path_link import render_path_link
+from ui.components.segmented import render_segmented
+from ui.job_plugins._field_styles import field_group
 from ui.components.template_viewer import TemplateViewerController, render_template_viewer
 from ui.local_file_picker import local_file_picker
 from ui.template_import_dialog import open_template_import_dialog
@@ -121,15 +128,56 @@ COLOR_PALETTE = [
 _TITLE_CLS = "text-sm font-semibold text-gray-800"
 _LABEL_CLS = "text-[10px] font-bold text-gray-500 uppercase tracking-wider"
 _HINT_CLS = "text-[10px] text-gray-400"
-_BODY_CLS = "text-xs text-gray-700"
 _MONO_CLS = "text-[10px] font-mono text-gray-600"
 _INDIGO = "#6366f1"
 _PURPLE = "#a855f7"
-# Tabs use Quasar defaults — small but properly tab-shaped, not flat text.
-# `inline-label` keeps the tab content compact when no icon is set.
-_TAB_PROPS = "dense align=left indicator-color=indigo inline-label"
-_TAB_PROPS_PURPLE = "dense align=left indicator-color=purple inline-label"
-_CARD_W = 260
+# Creation-form tabs. Sentence case, matching the Species page's own tab labels
+# ("Templates & masks", not "Templates & Masks"). "From template" says what the tool
+# does; which tool it is (relion_mask_create) is named in the panel's own hint.
+_SOURCE_TABS = (("shape", "Shape"), ("pdb", "PDB / EMDB"), ("import", "Import"), ("edit", "Edit current"))
+_MASK_TABS = (("sphere", "Sphere"), ("relion", "From template"), ("import", "Import"))
+# One column shape for BOTH lists: they sit side by side, so aligned columns read as one
+# system. Only FILE flexes (and therefore ellipsises); everything else is sized to its
+# content, which is what ends the "a bunch of text, some of which is truncated" problem.
+_TW_COLS = "20px minmax(0, 1fr) 62px 124px 116px 60px 52px"
+
+
+_SANS = "font-family: 'IBM Plex Sans', sans-serif;"
+_ACTION_BTN = "unelevated dense no-caps size=sm color=primary"
+
+
+def _field(label: str, build, *, width: str = "w-24", hint: str | None = None):
+    """One creation-form control: a 10 px label to the LEFT of the field, and the field
+    itself in the app's `.cb-field` box (11 px, 1 px border) rather than Quasar's default
+    ~14 px with a floating in-field label. That default was the fourth and fifth size in
+    a module whose docstring claims three (picking-UI roadmap 06)."""
+    with ui.row().classes("items-center gap-1 no-wrap"):
+        lbl = ui.label(label).classes(_LABEL_CLS)
+        el = build()
+        el.props("dense").classes(f"cb-field {width}")
+        if hint:
+            lbl.tooltip(hint)
+            el.tooltip(hint)
+    return el
+
+
+def _flip_selection(rows: dict, selected_id: str) -> None:
+    """Move the `selected` class to one row. No DOM is rebuilt, so a click landing while
+    another is in flight still hits a live element."""
+    for entry_id, row in rows.items():
+        if entry_id == selected_id:
+            row.classes(add="selected")
+        else:
+            row.classes(remove="selected")
+
+
+def _membership_moved(rows: dict, species, attr: str) -> bool:
+    """Whether the entries of `species.<attr>` differ from what is currently rendered —
+    the only thing that justifies clearing and rebuilding a list."""
+    if species is None:
+        return True
+    ids = [getattr(e, "id", "") for e in getattr(species, attr, []) or []]
+    return ids != list(rows.keys())
 
 
 class TemplateWorkbench:
@@ -225,8 +273,12 @@ class TemplateWorkbench:
         self._pending_loads_container: ui.element | None = None
 
         # UI refs
-        self._templates_card_container: ui.element | None = None
-        self._masks_card_container: ui.element | None = None
+        self._templates_table: ui.element | None = None
+        self._masks_table: ui.element | None = None
+        # entry id -> row element, kept by the render so a selection change is a class
+        # flip rather than a rebuild of the list the user just clicked.
+        self._template_rows: dict[str, ui.element] = {}
+        self._mask_rows: dict[str, ui.element] = {}
         self._edit_container: ui.element | None = None
         self._mask_source_label = None
         self._molstar_panel: ui.element | None = None
@@ -250,6 +302,9 @@ class TemplateWorkbench:
     def _get_species(self) -> ParticleSpecies | None:
         state = get_project_state_for(Path(self.project_path))
         return state.get_species(self.species_id)
+
+    def _state(self):
+        return get_project_state_for(Path(self.project_path))
 
     def _mutate_species(self, fn) -> None:
         # Model-level mutation: marks dirty + bumps registry_rev so the roster /
@@ -329,88 +384,73 @@ class TemplateWorkbench:
         """Append a ParticleTemplate (or replace in-place if a registered
         entry already exists at this path). Auto-selects only when this
         is the first entry. Returns the entry's UUID."""
-        new_id = sidecar_ensure(template_path, "template")
-        tpl = ParticleTemplate(
-            id=new_id,
-            template_path=template_path,
-            polarity=polarity if polarity in ("white", "black") else "black",
-            lowpass_resolution_ang=lowpass,
+        res = species_admin.register_template(
+            self._state(),
+            self.species_id,
+            template_path,
+            polarity=polarity,
             source=source,
+            lowpass=lowpass,
             imported_from=imported_from,
-            created_at=datetime.now(),
             notes=notes,
         )
-
-        def _apply(sp: ParticleSpecies) -> None:
-            existing_idx = next(
-                (i for i, t in enumerate(sp.templates) if t.template_path == template_path), None
-            )
-            if existing_idx is not None:
-                # Preserve the existing id so dropdowns elsewhere stay stable.
-                tpl.id = sp.templates[existing_idx].id
-                sp.templates[existing_idx] = tpl
-            else:
-                sp.templates.append(tpl)
-            if not sp.selected_template_id:
-                sp.selected_template_id = tpl.id
-
-        self._mutate_species(_apply)
         asyncio.create_task(self._after_register())
-        return new_id
+        return res.get("template_id", "")
 
     def _append_mask(self, mask: TemplateMask) -> str:
-        mid = sidecar_ensure(mask.mask_path, "mask")
-        mask = mask.model_copy(update={"id": mid, "created_at": datetime.now()})
-
-        def _apply(sp: ParticleSpecies) -> None:
-            existing_idx = next((i for i, m in enumerate(sp.masks) if m.mask_path == mask.mask_path), None)
-            if existing_idx is not None:
-                mask.id = sp.masks[existing_idx].id
-                sp.masks[existing_idx] = mask
-            else:
-                sp.masks.append(mask)
-            if not sp.selected_mask_id:
-                sp.selected_mask_id = mask.id
-
-        self._mutate_species(_apply)
+        res = species_admin.register_mask(self._state(), self.species_id, mask)
         asyncio.create_task(self._after_register())
-        return mid
+        return res.get("mask_id", "")
 
     async def _after_register(self) -> None:
         await self._save_state()
         self._refresh_after_change()
 
     def _select_template(self, template_id: str) -> None:
-        def _apply(sp: ParticleSpecies) -> None:
-            if any(t.id == template_id for t in sp.templates):
-                sp.selected_template_id = template_id
-
-        self._mutate_species(_apply)
-        asyncio.create_task(self._after_register())
+        if not species_admin.select_template(self._state(), self.species_id, template_id)["success"]:
+            return
+        # The click that selects a row must not destroy that row: flip the class across
+        # the kept handles (Segmented.set_active is the precedent) and refresh only what
+        # genuinely depends on the selection.
+        _flip_selection(self._template_rows, template_id)
+        asyncio.create_task(self._after_select())
 
     def _select_mask(self, mask_id: str) -> None:
-        def _apply(sp: ParticleSpecies) -> None:
-            if any(m.id == mask_id for m in sp.masks):
-                sp.selected_mask_id = mask_id
+        if not species_admin.select_mask(self._state(), self.species_id, mask_id)["success"]:
+            return
+        _flip_selection(self._mask_rows, mask_id)
+        asyncio.create_task(self._after_select())
 
-        self._mutate_species(_apply)
-        asyncio.create_task(self._after_register())
-
-    def _refresh_after_change(self) -> None:
-        if self._templates_card_container is not None:
-            self._templates_card_container.clear()
-            with self._templates_card_container:
-                self._render_template_cards()
-        if self._masks_card_container is not None:
-            self._masks_card_container.clear()
-            with self._masks_card_container:
-                self._render_mask_cards()
-        if self._edit_container is not None:
-            self._edit_container.clear()
-            with self._edit_container:
-                self._render_edit_current_form()
+    async def _after_select(self) -> None:
+        """Saves, then repaints the surfaces that read the selection — the Edit Current
+        form and the masks column's derived-from line. The two lists are untouched."""
+        await self._save_state()
+        self._refresh_edit_current()
         self._update_mask_source_label()
         self._refresh_viewer()
+
+    def _refresh_after_change(self) -> None:
+        """After a register / delete. A list is rebuilt only when its MEMBERSHIP moved —
+        a selection change alone goes through `_select_*`, which flips a class."""
+        sp = self._get_species()
+        if self._templates_table is not None and _membership_moved(self._template_rows, sp, "templates"):
+            self._templates_table.clear()
+            with self._templates_table:
+                self._render_template_rows()
+        if self._masks_table is not None and _membership_moved(self._mask_rows, sp, "masks"):
+            self._masks_table.clear()
+            with self._masks_table:
+                self._render_mask_rows()
+        self._refresh_edit_current()
+        self._update_mask_source_label()
+        self._refresh_viewer()
+
+    def _refresh_edit_current(self) -> None:
+        if self._edit_container is None:
+            return
+        self._edit_container.clear()
+        with self._edit_container:
+            self._render_edit_current_form()
 
     # ==================================================================
     # DELETE (with confirmation + on-disk removal)
@@ -896,15 +936,21 @@ class TemplateWorkbench:
     # ==================================================================
 
     def _render(self) -> None:
-        # Outer gap-5 between major groups; inner gap-2 inside a group
-        # to keep paired sections (templates+source, masks+mask-tabs)
-        # visually unified.
-        with ui.column().classes("w-full gap-5 p-2"):
-            with ui.column().classes("w-full gap-2"):
-                self._render_templates_section()
-                self._render_source_panel()
-            with ui.column().classes("w-full gap-2"):
-                self._render_masks_section()
+        # Two columns of <things> + <where new ones come from>, then the viewer full
+        # width beneath. `auto-fit` + `minmax` is the same idiom `field_grid()` uses:
+        # two columns on a wide window, one when the workspace is narrow or the roster
+        # is open, with no breakpoint to maintain. `align-items: start` keeps a long
+        # template list from stretching the mask column.
+        with ui.column().classes("w-full gap-4 p-2"):
+            with ui.element("div").style(
+                "display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); "
+                "gap: 16px; width: 100%; align-items: start;"
+            ):
+                with ui.column().classes("gap-2 min-w-0").style("width: 100%;"):
+                    self._render_templates_section()
+                    self._render_source_panel()
+                with ui.column().classes("gap-2 min-w-0").style("width: 100%;"):
+                    self._render_masks_section()
             self._render_viewer_panel()
             self._render_log_panel()
 
@@ -926,70 +972,78 @@ class TemplateWorkbench:
         )
 
     # ------------------------------------------------------------------
-    # 2. TEMPLATES — selectable cards
+    # 2. TEMPLATES — selectable rows
     # ------------------------------------------------------------------
 
     def _render_templates_section(self) -> None:
-        with ui.column().classes("w-full gap-1"):
+        with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
             with ui.row().classes("w-full items-baseline gap-2 px-1"):
                 ui.label("TEMPLATES").classes(_LABEL_CLS)
-                ui.label("click a card to select").classes(_HINT_CLS)
-            self._templates_card_container = ui.row().classes("w-full gap-2 flex-wrap")
-            with self._templates_card_container:
-                self._render_template_cards()
+                ui.label("click a row to select").classes(_HINT_CLS)
+            self._templates_table = ui.element("div").classes("cb-tw-table").style(
+                f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_INDIGO}; --cb-accent-tint: {_INDIGO}14;"
+            )
+            with self._templates_table:
+                self._render_template_rows()
 
-    def _render_template_cards(self) -> None:
+    def _render_template_rows(self) -> None:
+        self._template_rows = {}
         sp = self._get_species()
         if sp is None:
             return
+        self._render_table_head(("", "FILE", "POLARITY", "HEADER", "STATS", "SIZE", ""))
         templates = list(sp.templates)
         if not templates:
             self._render_empty_state("No templates yet — use Source below to add one.")
             return
         sid = sp.selected_template_id
         for t in templates:
-            self._render_template_card(t, selected=(t.id == sid))
+            self._render_template_row(t, selected=(t.id == sid))
 
-    def _render_template_card(self, tpl: ParticleTemplate, *, selected: bool) -> None:
+    def _render_template_row(self, tpl: ParticleTemplate, *, selected: bool) -> None:
         h = read_template_header(tpl.template_path)
-        border_color = _INDIGO if selected else "#e5e7eb"
-        with ui.card().tight().classes("overflow-hidden cursor-pointer").style(
-            f"border: 1px solid #e5e7eb; border-left: 3px solid {border_color}; "
-            f"width: {_CARD_W}px; background: white; box-shadow: none;"
-        ).on("click", lambda i=tpl.id: self._select_template(i)):
-            with ui.column().classes("p-2 gap-1 w-full min-w-0"):
-                self._render_card_header_row(
-                    file_path=tpl.template_path,
-                    on_delete=lambda i=tpl.id: self._request_delete_template(i),
-                    on_load_to_viewer=lambda p=tpl.template_path, pol=tpl.polarity: self._load_to_viewer(
-                        p, polarity=pol, kind="template"
-                    ),
-                )
-                with ui.row().classes("items-center gap-1 w-full min-w-0"):
-                    self._polarity_chip(tpl.polarity)
-                    ui.label(self._format_header_summary(h, tpl.lowpass_resolution_ang)).classes(
-                        _MONO_CLS + " truncate flex-1 min-w-0"
-                    )
-                    self._render_size_badge(tpl.template_path)
-                with ui.row().classes("items-center gap-1 w-full min-w-0"):
-                    self._render_stats_row(h)
-                if tpl.source:
-                    ui.label(tpl.source).classes(_HINT_CLS + " truncate w-full min-w-0")
+        row = ui.element("div").classes("cb-tw-row" + (" selected" if selected else ""))
+        row.on("click", lambda i=tpl.id: self._select_template(i))
+        self._template_rows[tpl.id] = row
+        with row:
+            self._render_select_cell()
+            with ui.element("div").classes("cb-tw-cell"):
+                render_path_link(tpl.template_path, note=tpl.source or tpl.imported_from)
+            with ui.element("div").classes("cb-tw-cell"):
+                self._polarity_chip(tpl.polarity)
+            with ui.element("div").classes("cb-tw-cell"):
+                ui.label(self._format_header_summary(h, tpl.lowpass_resolution_ang)).classes(_MONO_CLS)
+            with ui.element("div").classes("cb-tw-cell"):
+                self._render_stats_row(h)
+            with ui.element("div").classes("cb-tw-cell"):
+                self._render_size_badge(tpl.template_path)
+            self._render_row_actions(
+                on_load_to_viewer=lambda p=tpl.template_path, pol=tpl.polarity: self._load_to_viewer(
+                    p, polarity=pol, kind="template"
+                ),
+                on_delete=lambda i=tpl.id: self._request_delete_template(i),
+            )
 
-    def _render_card_header_row(self, *, file_path: str, on_delete, on_load_to_viewer) -> None:
-        """The top row of a card: file icon (tooltip+copy) + filename +
-        eye (load to viewer) + delete X. Buttons use click.stop so the
-        outer card click handler (which selects the entry) doesn't fire
-        — otherwise the X click would re-render the card mid-modal-open."""
-        with ui.row().classes("items-center gap-1 w-full min-w-0"):
-            icon = ui.icon("description", size="13px").classes("text-gray-400 shrink-0 cursor-pointer")
-            icon.tooltip(file_path)
-            icon.on("click.stop", lambda _e, p=file_path: self._copy_to_clipboard(p))
+    # ── Table pieces shared by both lists ────────────────────────────
 
-            # min-w-0 + flex-1 + truncate — required so the label gets
-            # ellipsis'd instead of pushing the buttons off-screen.
-            ui.label(os.path.basename(file_path)).classes(_BODY_CLS + " truncate flex-1 min-w-0")
+    def _render_table_head(self, labels: tuple[str, ...]) -> None:
+        """Rendered even when the list is empty, so the columns' shapes are legible
+        before anything exists."""
+        with ui.element("div").classes("cb-tw-head"):
+            for text in labels:
+                ui.label(text).classes(_LABEL_CLS)
 
+    def _render_select_cell(self) -> None:
+        """Both radios; `.cb-tw-row.selected` decides which one shows (CSS in
+        `ui/dashboard/css.py`) — so selecting costs a class flip, not a re-render."""
+        with ui.element("div").classes("cb-tw-cell"):
+            ui.icon("radio_button_checked", size="13px").classes("cb-tw-sel-on")
+            ui.icon("radio_button_unchecked", size="13px").classes("cb-tw-sel-off")
+
+    def _render_row_actions(self, *, on_load_to_viewer, on_delete) -> None:
+        """Eye (load to viewer) + delete X. `click.stop` so an action never selects the
+        row as a side effect — the X used to re-render the row mid-modal-open."""
+        with ui.element("div").classes("cb-tw-cell").style("justify-content: flex-end;"):
             eye = ui.button(icon="visibility").props("flat round dense size=xs color=grey")
             eye.tooltip("Load into viewer")
             eye.on("click.stop", lambda _e: on_load_to_viewer())
@@ -997,10 +1051,6 @@ class TemplateWorkbench:
             close = ui.button(icon="close").props("flat round dense size=xs color=grey")
             close.tooltip("Delete")
             close.on("click.stop", lambda _e: on_delete())
-
-    def _copy_to_clipboard(self, value: str) -> None:
-        ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(value)})")
-        ui.notify("Path copied", type="info", position="bottom", timeout=1200)
 
     def _format_stats_line(self, h) -> tuple[str, str] | None:
         """Return (label, color) for a min/max/σ chip line. None if the
@@ -1085,30 +1135,10 @@ class TemplateWorkbench:
             badge.tooltip("Large file — molstar may stall on load")
 
     def _polarity_chip(self, polarity: str) -> None:
-        if polarity == "white":
-            bg, fg, label = "#fff7ed", "#9a3412", "white"
-        else:
-            bg, fg, label = "#1f2937", "#f9fafb", polarity or "black"
-        ui.label(label).style(
-            f"background: {bg}; color: {fg}; "
-            f"font-size: 9px; font-weight: 700; text-transform: uppercase; "
-            f"padding: 1px 5px; border-radius: 3px; letter-spacing: 0.5px;"
-        )
+        render_polarity_chip(polarity)
 
     def _method_chip(self, method: str | None) -> None:
-        palette = {
-            "spherical": ("#e9d5ff", "#581c87"),
-            "cylindrical": ("#e9d5ff", "#581c87"),
-            "relion": ("#e9d5ff", "#581c87"),
-            "manual": ("#e5e7eb", "#374151"),
-            "imported": ("#e5e7eb", "#374151"),
-        }
-        bg, fg = palette.get(method or "", ("#e5e7eb", "#374151"))
-        ui.label(method or "—").style(
-            f"background: {bg}; color: {fg}; "
-            f"font-size: 9px; font-weight: 700; text-transform: uppercase; "
-            f"padding: 1px 5px; border-radius: 3px; letter-spacing: 0.5px;"
-        )
+        render_method_chip(method)
 
     def _render_empty_state(self, text: str) -> None:
         with ui.row().classes("items-center gap-2 px-3 py-2 text-gray-400"):
@@ -1120,96 +1150,102 @@ class TemplateWorkbench:
     # ------------------------------------------------------------------
 
     def _render_source_panel(self) -> None:
-        with ui.column().classes("w-full gap-1"):
+        with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
             with ui.row().classes("w-full items-baseline gap-2 px-1"):
                 ui.label("SOURCE").classes(_LABEL_CLS)
                 ui.label("generate, fetch, import; new entries append above").classes(_HINT_CLS)
 
-            with ui.tabs().props(_TAB_PROPS).classes("w-full") as tabs:
-                tab_shape = ui.tab(name="shape", label="Basic Shape")
-                tab_pdb = ui.tab(name="pdb", label="PDB / EMDB")
-                tab_import = ui.tab(name="import", label="Import")
-                tab_edit = ui.tab(name="edit", label="Edit Current")
+            panels: dict[str, ui.element] = {}
 
-            with ui.tab_panels(tabs, value=tab_shape).classes("w-full"):
-                with ui.tab_panel(tab_shape).classes("px-2 py-2"):
-                    self._render_basic_shape_form()
-                with ui.tab_panel(tab_pdb).classes("px-2 py-2"):
-                    self._render_pdb_emdb_form()
-                with ui.tab_panel(tab_import).classes("px-2 py-2"):
-                    self._render_import_form()
-                with ui.tab_panel(tab_edit).classes("px-2 py-2"):
-                    self._edit_container = ui.column().classes("w-full gap-2")
-                    with self._edit_container:
-                        self._render_edit_current_form()
+            def _panel(key: str):
+                el = ui.column().classes("w-full gap-2 px-2 py-2")
+                panels[key] = el
+                return el
+
+            # `Segmented`, not `ui.tabs()`: Quasar's QTab renders 14 px UPPERCASE, which
+            # was larger and louder than the 10 px "SOURCE" header above it. Switching
+            # flips visibility, so a panel's typed values survive the switch.
+            switcher = render_segmented(_SOURCE_TABS, "shape", lambda k: _show(k))
+            with _panel("shape"):
+                self._render_basic_shape_form()
+            with _panel("pdb"):
+                self._render_pdb_emdb_form()
+            with _panel("import"):
+                self._render_import_form()
+            with _panel("edit"):
+                self._edit_container = ui.column().classes("w-full gap-2")
+                with self._edit_container:
+                    self._render_edit_current_form()
+
+            def _show(key: str) -> None:
+                switcher.set_active(key)
+                for k, el in panels.items():
+                    el.set_visibility(k == key)
+
+            _show("shape")
 
     def _render_basic_shape_form(self) -> None:
-        with ui.row().classes("w-full gap-2 items-end"):
-            ui.input(label="ellipsoid x:y:z (Å)", placeholder="550:550:550").bind_value(
-                self, "basic_shape_def"
-            ).props("dense outlined").classes("w-44").on("update:model-value", self._on_shape_changed)
-            ui.number("apix (Å)", value=self.shape_pixel_size, step=0.1, min=0).bind_value(
-                self, "shape_pixel_size"
-            ).props("dense outlined").classes("w-24")
-            ui.number("box (px)", value=self.shape_box_size, step=32, min=32).bind_value(
-                self, "shape_box_size"
-            ).props("dense outlined").classes("w-24")
-            ui.checkbox("auto box", value=self.auto_box).props("dense").bind_value(
-                self, "auto_box"
-            ).on_value_change(self._on_auto_box_toggle)
-            ui.number("lowpass (Å)", value=self.shape_lowpass, step=5, min=0, placeholder="—").bind_value(
-                self, "shape_lowpass"
-            ).props("dense outlined").classes("w-28")
-            ui.button("generate", on_click=self._gen_shape).props(
-                "unelevated dense color=primary no-caps"
+        with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
+            _field(
+                "ellipsoid",
+                lambda: ui.input(placeholder="550:550:550")
+                .bind_value(self, "basic_shape_def")
+                .on("update:model-value", self._on_shape_changed),
+                width="w-32",
+                hint="Ellipsoid x:y:z in Å",
             )
+            _field("apix", lambda: ui.number(value=self.shape_pixel_size, step=0.1, min=0).bind_value(
+                self, "shape_pixel_size"
+            ), hint="Pixel size of the generated volume (Å)")
+            _field("box", lambda: ui.number(value=self.shape_box_size, step=32, min=32).bind_value(
+                self, "shape_box_size"
+            ), hint="Box edge in pixels")
+            auto = ui.checkbox("auto box", value=self.auto_box).props("dense size=xs").bind_value(self, "auto_box")
+            auto.style(f"{_SANS} font-size: 10px; color: #475569;")
+            auto.on_value_change(self._on_auto_box_toggle)
+            _field("lowpass", lambda: ui.number(value=self.shape_lowpass, step=5, min=0, placeholder="—").bind_value(
+                self, "shape_lowpass"
+            ), width="w-24", hint="Optional filter applied to the generated shape (Å)")
+            ui.button("generate", on_click=self._gen_shape).props(_ACTION_BTN)
         ui.label("Writes _white.mrc + _black.mrc; registers both polarities as new entries.").classes(_HINT_CLS)
 
     def _render_pdb_emdb_form(self) -> None:
         with ui.column().classes("w-full gap-2"):
-            with ui.row().classes("w-full gap-2 items-end"):
-                ui.label("PDB").classes(_LABEL_CLS + " w-10 shrink-0")
-                ui.input(placeholder="6Z6J").bind_value(self, "pdb_input_val").props("dense outlined").classes("w-24")
-                ui.number("apix (Å)", value=self.pdb_pixel_size, step=0.1, min=0).bind_value(
+            with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
+                _field("PDB", lambda: ui.input(placeholder="6Z6J").bind_value(self, "pdb_input_val"), width="w-20")
+                _field("apix", lambda: ui.number(value=self.pdb_pixel_size, step=0.1, min=0).bind_value(
                     self, "pdb_pixel_size"
-                ).props("dense outlined").classes("w-24")
-                ui.number("box (px)", value=self.pdb_box_size, step=32, min=32).bind_value(
+                ), hint="Pixel size of the simulated map (Å)")
+                _field("box", lambda: ui.number(value=self.pdb_box_size, step=32, min=32).bind_value(
                     self, "pdb_box_size"
-                ).props("dense outlined").classes("w-24")
-                ui.number("resolution (Å)", value=self.pdb_lowpass, step=2, min=0, placeholder="10").bind_value(
-                    self, "pdb_lowpass"
-                ).props("dense outlined").classes("w-32")
-                ui.button("fetch & simulate", on_click=self._fetch_and_simulate_pdb).props(
-                    "unelevated dense color=primary no-caps"
-                )
+                ), hint="Box edge in pixels")
+                _field("resolution", lambda: ui.number(
+                    value=self.pdb_lowpass, step=2, min=0, placeholder="10"
+                ).bind_value(self, "pdb_lowpass"), hint="Simulated map resolution (Å)")
+                ui.button("fetch & simulate", on_click=self._fetch_and_simulate_pdb).props(_ACTION_BTN)
 
-            with ui.row().classes("w-full gap-2 items-end"):
-                ui.label("EMDB").classes(_LABEL_CLS + " w-10 shrink-0")
-                ui.input(placeholder="30210").bind_value(self, "emdb_input_val").props("dense outlined").classes(
-                    "w-24"
-                )
-                ui.number("apix (Å)", value=self.emdb_pixel_size, step=0.1, min=0).bind_value(
+            with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
+                _field("EMDB", lambda: ui.input(placeholder="30210").bind_value(self, "emdb_input_val"), width="w-20")
+                _field("apix", lambda: ui.number(value=self.emdb_pixel_size, step=0.1, min=0).bind_value(
                     self, "emdb_pixel_size"
-                ).props("dense outlined").classes("w-24")
-                ui.number("box (px)", value=self.emdb_box_size, step=32, min=32).bind_value(
+                ), hint="Resample the fetched map to this pixel size (Å)")
+                _field("box", lambda: ui.number(value=self.emdb_box_size, step=32, min=32).bind_value(
                     self, "emdb_box_size"
-                ).props("dense outlined").classes("w-24")
-                ui.number("lowpass (Å)", value=self.emdb_lowpass, step=5, min=0, placeholder="—").bind_value(
-                    self, "emdb_lowpass"
-                ).props("dense outlined").classes("w-28")
-                ui.button("fetch & resample", on_click=self._fetch_and_resample_emdb).props(
-                    "unelevated dense color=primary no-caps"
-                )
+                ), hint="Box edge in pixels")
+                _field("lowpass", lambda: ui.number(
+                    value=self.emdb_lowpass, step=5, min=0, placeholder="—"
+                ).bind_value(self, "emdb_lowpass"), width="w-24", hint="Optional filter (Å)")
+                ui.button("fetch & resample", on_click=self._fetch_and_resample_emdb).props(_ACTION_BTN)
 
     def _render_import_form(self) -> None:
+        # Button first, explanation beside it. The old `flex-1` spacer pushed the action
+        # to the far edge of the page — nothing else here is edge-anchored.
         with ui.row().classes("w-full gap-2 items-center"):
+            ui.button("open import dialog", on_click=self._open_import_dialog).props(_ACTION_BTN)
             ui.label(
                 "Pick an existing .mrc. The inspection dialog reads the header, asks you to confirm "
                 "metadata, copies the file into the project, and appends it as a new template."
-            ).classes(_HINT_CLS + " flex-1")
-            ui.button("open import dialog", on_click=self._open_import_dialog).props(
-                "unelevated dense color=primary no-caps"
-            )
+            ).classes(_HINT_CLS)
 
     # ── Edit Current — discrete action sections ──────────────────────
 
@@ -1267,102 +1303,127 @@ class TemplateWorkbench:
         on_click,
         button_label: str,
     ) -> None:
-        """A simple action block: title, hint, inputs row, button. No
-        nested cards / borders — just a horizontal rule + spacing."""
-        ui.separator().classes("my-1 opacity-40")
-        with ui.column().classes("w-full gap-1"):
+        """One tool: title, hint, inputs row, button — inside the house muted group box
+        (`_field_styles.GROUP_MUTED_STYLE`, the same treatment SLURM's "Supervisor" gets).
+        A hairline separator left the three tools visually inseparable from the rest of
+        the page (picking-UI roadmap 06)."""
+        with field_group(muted=True), ui.column().classes("w-full gap-1"):
             with ui.row().classes("w-full items-baseline gap-2"):
                 ui.label(title).classes(_LABEL_CLS)
                 ui.label(description).classes(_HINT_CLS)
-            with ui.row().classes("w-full gap-2 items-end"):
+            with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
                 if inputs_builder is not None:
                     inputs_builder()
-                ui.button(button_label, on_click=on_click).props(
-                    "unelevated dense color=primary no-caps"
-                )
+                ui.button(button_label, on_click=on_click).props(_ACTION_BTN)
 
     def _render_resample_inputs(self) -> None:
-        ui.number("target apix (Å)", value=self.resample_target_apix, step=0.1, min=0).bind_value(
+        _field("target apix", lambda: ui.number(value=self.resample_target_apix, step=0.1, min=0).bind_value(
             self, "resample_target_apix"
-        ).props("dense outlined").classes("w-32")
-        ui.number("target box (px)", value=self.resample_target_box, step=32, min=32).bind_value(
+        ), hint="New pixel size in Å")
+        _field("target box", lambda: ui.number(value=self.resample_target_box, step=32, min=32).bind_value(
             self, "resample_target_box"
-        ).props("dense outlined").classes("w-32")
-        ui.number("lowpass (Å)", value=self.resample_lowpass, step=5, min=0, placeholder="—").bind_value(
-            self, "resample_lowpass"
-        ).props("dense outlined").classes("w-28")
+        ), hint="New box edge in pixels")
+        _field("lowpass", lambda: ui.number(
+            value=self.resample_lowpass, step=5, min=0, placeholder="—"
+        ).bind_value(self, "resample_lowpass"), hint="Optional lowpass (Å)")
 
     def _render_lowpass_inputs(self) -> None:
-        ui.number("target lowpass (Å)", value=self.lowpass_target, step=5, min=0).bind_value(
+        _field("target lowpass", lambda: ui.number(value=self.lowpass_target, step=5, min=0).bind_value(
             self, "lowpass_target"
-        ).props("dense outlined").classes("w-32")
+        ), width="w-24", hint="Resolution to re-filter to (Å)")
 
     # ------------------------------------------------------------------
-    # 4. MASKS — selectable cards (same visual rules, purple accent)
+    # 4. MASKS — selectable rows (same visual rules, purple accent)
     # ------------------------------------------------------------------
 
     def _render_masks_section(self) -> None:
-        with ui.column().classes("w-full gap-1"):
+        with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
             with ui.row().classes("w-full items-baseline gap-2 px-1"):
                 ui.label("MASKS").classes(_LABEL_CLS)
+                ui.label("click a row to select").classes(_HINT_CLS)
+            self._masks_table = ui.element("div").classes("cb-tw-table").style(
+                f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_PURPLE}; --cb-accent-tint: {_PURPLE}14;"
+            )
+            with self._masks_table:
+                self._render_mask_rows()
+
+            # Same two-line header shape as the templates column. The derived-from line
+            # is a SOURCE statement; it used to be filed as the section's subtitle, which
+            # is why the masks column read as having no stated source at all.
+            with ui.row().classes("w-full items-baseline gap-2 px-1 mt-1"):
+                ui.label("SOURCE").classes(_LABEL_CLS)
                 self._mask_source_label = ui.label("").classes(_HINT_CLS)
                 self._update_mask_source_label()
-            self._masks_card_container = ui.row().classes("w-full gap-2 flex-wrap")
-            with self._masks_card_container:
-                self._render_mask_cards()
 
-            with ui.tabs().props(_TAB_PROPS_PURPLE).classes("w-full") as mtabs:
-                tab_sphere = ui.tab(name="sphere", label="Sphere")
-                tab_relion = ui.tab(name="relion", label="RELION Mask")
-                tab_import = ui.tab(name="import", label="Import")
-            with ui.tab_panels(mtabs, value=tab_sphere).classes("w-full"):
-                with ui.tab_panel(tab_sphere).classes("px-2 py-2"):
-                    self._render_spherical_mask_form()
-                with ui.tab_panel(tab_relion).classes("px-2 py-2"):
-                    self._render_relion_mask_form()
-                with ui.tab_panel(tab_import).classes("px-2 py-2"):
-                    self._render_mask_import_form()
+            panels: dict[str, ui.element] = {}
 
-    def _render_mask_cards(self) -> None:
+            def _panel(key: str):
+                el = ui.column().classes("w-full gap-2 px-2 py-2")
+                panels[key] = el
+                return el
+
+            switcher = render_segmented(_MASK_TABS, "sphere", lambda k: _show(k))
+            with _panel("sphere"):
+                self._render_spherical_mask_form()
+            with _panel("relion"):
+                self._render_relion_mask_form()
+            with _panel("import"):
+                self._render_mask_import_form()
+
+            def _show(key: str) -> None:
+                switcher.set_active(key)
+                for k, el in panels.items():
+                    el.set_visibility(k == key)
+
+            _show("sphere")
+
+    def _render_mask_rows(self) -> None:
+        self._mask_rows = {}
         sp = self._get_species()
         if sp is None:
             return
+        self._render_table_head(("", "FILE", "METHOD", "HEADER", "STATS", "SIZE", ""))
         masks = list(sp.masks)
         if not masks:
             self._render_empty_state("No masks yet — create one below.")
             return
         sid = sp.selected_mask_id
         for m in masks:
-            self._render_mask_card(m, selected=(m.id == sid))
+            self._render_mask_row(m, selected=(m.id == sid))
 
-    def _render_mask_card(self, mask: TemplateMask, *, selected: bool) -> None:
+    def _render_mask_row(self, mask: TemplateMask, *, selected: bool) -> None:
         h = read_template_header(mask.mask_path)
-        border_color = _PURPLE if selected else "#e5e7eb"
-        with ui.card().tight().classes("overflow-hidden cursor-pointer").style(
-            f"border: 1px solid #e5e7eb; border-left: 3px solid {border_color}; "
-            f"width: {_CARD_W}px; background: white; box-shadow: none;"
-        ).on("click", lambda i=mask.id: self._select_mask(i)):
-            with ui.column().classes("p-2 gap-1 w-full min-w-0"):
-                self._render_card_header_row(
-                    file_path=mask.mask_path,
-                    on_delete=lambda i=mask.id: self._request_delete_mask(i),
-                    on_load_to_viewer=lambda p=mask.mask_path: self._load_to_viewer(p, kind="mask"),
-                )
-                with ui.row().classes("items-center gap-1 w-full min-w-0"):
-                    self._method_chip(mask.method)
-                    ui.label(self._format_header_summary(h, None)).classes(_MONO_CLS + " truncate flex-1 min-w-0")
-                    self._render_size_badge(mask.mask_path)
-                with ui.row().classes("items-center gap-1 w-full min-w-0"):
-                    self._render_stats_row(h)
-                knob_parts: list[str] = []
-                if mask.threshold is not None:
-                    knob_parts.append(f"thr {mask.threshold:g}")
-                if mask.extend_pixels is not None:
-                    knob_parts.append(f"ext {mask.extend_pixels:g}")
-                if mask.soft_edge_pixels is not None:
-                    knob_parts.append(f"soft {mask.soft_edge_pixels:g}")
-                if knob_parts:
-                    ui.label(" · ".join(knob_parts)).classes(_HINT_CLS + " truncate w-full min-w-0")
+        row = ui.element("div").classes("cb-tw-row" + (" selected" if selected else ""))
+        row.on("click", lambda i=mask.id: self._select_mask(i))
+        self._mask_rows[mask.id] = row
+        with row:
+            self._render_select_cell()
+            with ui.element("div").classes("cb-tw-cell"):
+                render_path_link(mask.mask_path, note=mask.imported_from)
+            with ui.element("div").classes("cb-tw-cell"):
+                # The relion_mask_create knobs are provenance, not a scanning column:
+                # they exist for one method only, so they ride the method chip's hover.
+                self._method_chip_with_knobs(mask)
+            with ui.element("div").classes("cb-tw-cell"):
+                ui.label(self._format_header_summary(h, None)).classes(_MONO_CLS)
+            with ui.element("div").classes("cb-tw-cell"):
+                self._render_stats_row(h)
+            with ui.element("div").classes("cb-tw-cell"):
+                self._render_size_badge(mask.mask_path)
+            self._render_row_actions(
+                on_load_to_viewer=lambda p=mask.mask_path: self._load_to_viewer(p, kind="mask"),
+                on_delete=lambda i=mask.id: self._request_delete_mask(i),
+            )
+
+    def _method_chip_with_knobs(self, mask: TemplateMask) -> None:
+        knob_parts: list[str] = []
+        if mask.threshold is not None:
+            knob_parts.append(f"thr {mask.threshold:g}")
+        if mask.extend_pixels is not None:
+            knob_parts.append(f"ext {mask.extend_pixels:g}")
+        if mask.soft_edge_pixels is not None:
+            knob_parts.append(f"soft {mask.soft_edge_pixels:g}")
+        render_method_chip(mask.method, tooltip=" · ".join(knob_parts) if knob_parts else None)
 
     def _update_mask_source_label(self) -> None:
         if self._mask_source_label is None:
@@ -1380,17 +1441,17 @@ class TemplateWorkbench:
         if self.sphere_diameter_ang is None:
             self.sphere_diameter_ang = float(getattr(sp, "diameter_ang", None) or 0.0) or None
 
-        with ui.row().classes("w-full gap-2 items-end"):
-            ui.number(
-                "diameter (Å)", value=self.sphere_diameter_ang, step=10, min=0,
+        with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
+            _field("diameter", lambda: ui.number(
+                value=self.sphere_diameter_ang, step=10, min=0,
                 placeholder="from species" if sp and sp.diameter_ang else "e.g. 250",
-            ).bind_value(self, "sphere_diameter_ang").props("dense outlined").classes("w-32")
-            ui.number("soft edge (px)", value=self.sphere_soft_edge, step=1, min=0).bind_value(
+            ).bind_value(self, "sphere_diameter_ang"), width="w-28", hint="Sphere diameter in Å")
+            _field("soft edge", lambda: ui.number(value=self.sphere_soft_edge, step=1, min=0).bind_value(
                 self, "sphere_soft_edge"
-            ).props("dense outlined").classes("w-28")
+            ), hint="Soft edge width in pixels")
             ui.button("create sphere", on_click=self._create_spherical_mask).bind_enabled_from(
                 self, "masking_active", backward=lambda x: not x
-            ).props("unelevated dense color=primary no-caps")
+            ).props(_ACTION_BTN)
         ui.label(
             "Solid soft-edged sphere centered in the box, sized to the species's particle "
             "diameter. Recommended for VLPs and globular particles where a threshold-derived "
@@ -1398,21 +1459,21 @@ class TemplateWorkbench:
         ).classes(_HINT_CLS)
 
     def _render_relion_mask_form(self) -> None:
-        with ui.row().classes("w-full gap-2 items-end"):
-            ui.select(
-                ["flexible_bounds", "otsu", "isodata", "li", "yen"],
-                value=self.threshold_method,
-                label="threshold method",
-            ).props("dense outlined").classes("w-40").on_value_change(self._on_threshold_method_changed)
-            ui.number("threshold", format="%.4f").bind_value(self, "mask_threshold").props(
-                "dense outlined"
-            ).classes("w-24")
-            ui.number("ext (px)").bind_value(self, "mask_extend").props("dense outlined").classes("w-20")
-            ui.number("soft (px)").bind_value(self, "mask_soft_edge").props("dense outlined").classes("w-20")
-            ui.number("lowpass (Å)").bind_value(self, "mask_lowpass").props("dense outlined").classes("w-24")
+        with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
+            method = _field(
+                "method",
+                lambda: ui.select(["flexible_bounds", "otsu", "isodata", "li", "yen"], value=self.threshold_method),
+                width="w-36",
+                hint="Threshold method",
+            )
+            method.props('popup-content-class="cb-select-popup"').on_value_change(self._on_threshold_method_changed)
+            _field("threshold", lambda: ui.number(format="%.4f").bind_value(self, "mask_threshold"))
+            _field("ext", lambda: ui.number().bind_value(self, "mask_extend"), width="w-20", hint="Extend (px)")
+            _field("soft", lambda: ui.number().bind_value(self, "mask_soft_edge"), width="w-20", hint="Soft edge (px)")
+            _field("lowpass", lambda: ui.number().bind_value(self, "mask_lowpass"), hint="Lowpass (Å)")
             ui.button("create mask", on_click=self._create_relion_mask).bind_enabled_from(
                 self, "masking_active", backward=lambda x: not x
-            ).props("unelevated dense color=primary no-caps")
+            ).props(_ACTION_BTN)
         ui.label(
             "Built from the currently selected template via relion_mask_create. "
             "If a black template is selected, its white sibling is used for thresholding."
@@ -1420,10 +1481,8 @@ class TemplateWorkbench:
 
     def _render_mask_import_form(self) -> None:
         with ui.row().classes("w-full gap-2 items-center"):
-            ui.label("Pick an existing mask MRC; appended as a new mask entry.").classes(_HINT_CLS + " flex-1")
-            ui.button("pick mask file", on_click=self._import_mask).props(
-                "unelevated dense color=primary no-caps"
-            )
+            ui.button("pick mask file", on_click=self._import_mask).props(_ACTION_BTN)
+            ui.label("Pick an existing mask MRC; appended as a new mask entry.").classes(_HINT_CLS)
 
     # ------------------------------------------------------------------
     # 5. VIEWER
@@ -1435,13 +1494,15 @@ class TemplateWorkbench:
                 ui.label("VIEWER").classes(_LABEL_CLS)
                 ui.element("div").classes("flex-1")
                 ui.label("mode").classes(_HINT_CLS)
+                # Chrome only (the viewer itself is untouched): this was the last 14 px
+                # Quasar field on the page, sitting beside a 10 px label.
                 toggle = (
                     ui.select(
                         options={"molstar": "molstar (3D)", "slice": "slice (fallback)"},
                         value=self.viewer_mode,
                     )
-                    .props("dense outlined")
-                    .classes("w-40")
+                    .props('dense popup-content-class="cb-select-popup"')
+                    .classes("cb-field w-40")
                 )
                 toggle.on_value_change(self._on_viewer_mode_changed)
 
