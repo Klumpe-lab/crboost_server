@@ -1,20 +1,25 @@
-"""Overview tab (roadmap 10 S3): identity editor · status block · provenance · sanity row · delete.
+"""Overview tab: identity editor · bound files · status line · extraction geometry ·
+provenance · delete (roadmap 10 S3, decluttered by picking-UI roadmaps 03 + 04).
 
 The identity editor is the species header that used to sit on top of the Template
-Workbench (swatch, name, Ø, symmetry, notes) — built ONCE per species in its own
+Workbench (swatch, name, diameter, symmetry, notes) — built ONCE per species in its own
 container, outside every rev-gated view (the rev moves on every edit it makes). Writes
 go through `state.mutate_species`; persistence is `backend.save_project(path,
 debounce_s=1.0)` + Quasar input debounce, i.e. one save per pause instead of one per
-keystroke (peeve P-02). The status block + sanity row are one `FingerprintedView` fed by
-an off-loop compute (`species_overview` reads star files, `compute_pixel_chain` reads MRC
-headers) that runs when the in-memory key (registry rev + job statuses) moves, on show,
-and at most every 15 s while shown. Delete = confirm dialog → `species_admin.delete_species`.
+keystroke (peeve P-02).
+
+`_BindingsView` is an in-memory `FingerprintedView`, cheap on every tick.
+`ExtractionGeometryPanel` is built once for the same reason as the identity editor (it
+owns inputs; a rev-gated rebuild would destroy one mid-keystroke) and only refreshes its
+effective-value line. `_StatusView` is fed by an off-loop compute (`species_overview`
+reads star files) that runs when the in-memory key (registry rev + job statuses) moves,
+on show, and at most every 15 s while shown. Delete = confirm dialog →
+`species_admin.delete_species`.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import time
@@ -25,16 +30,19 @@ from typing import Any
 from nicegui import ui
 
 from services.jobs._base import SymmetryGroup
-from services.models_base import SPECIES_OVERLAY_COLORS, SpeciesOrigin
+from services.models_base import SpeciesOrigin
+from services.aggregation.authoritative import extraction_params_for_species
+from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.particles.species_overview import SpeciesOverview, species_overview
-from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
 from services.project_state import ParticleSpecies, get_project_state_for
 from services.species_admin import delete_species
-from ui.components.chip import render_chip
+from ui.components.chip import render_method_chip, render_polarity_chip
+from ui.components.color_swatch import render_color_swatch
+from ui.components.path_link import render_path_link
+from ui.particles.list_actions import commit_extraction_geometry
 from services.particles.catalog import is_enabled as catalog_is_enabled
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.species.catalog import publish_to_catalog
-from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.species.tab import TabContext
 
 logger = logging.getLogger(__name__)
@@ -45,7 +53,13 @@ _LABEL_CLS = "text-[10px] font-bold text-gray-500 uppercase tracking-wider"
 _HINT_CLS = "text-[10px] text-gray-400"
 _BODY_CLS = "text-xs text-gray-700"
 _MONO_CLS = "text-[10px] font-mono text-gray-600"
-_INDIGO = "#6366f1"
+# The name reads as the title of the block; every other input reads at its label's scale.
+_NAME_INPUT_STYLE = "font-size: 13px; font-weight: 600; color: #1f2937;"
+
+# `C1` IS "no symmetry", and most complexes are C1 (ribosome, proteasome) — the option
+# list says so instead of leaving the user to know it. One spelling across this block,
+# the creation dialog (`ui.species.prompt`) and the TM job tab's override row.
+SYMMETRY_OPTIONS: dict[str, str] = {g.value: ("None (C1)" if g is SymmetryGroup.C1 else g.value) for g in SymmetryGroup}
 
 _ORIGIN_TEXT = {
     SpeciesOrigin.WORKBENCH.value: "workbench (template-driven)",
@@ -58,40 +72,27 @@ _ORIGIN_TEXT = {
 
 
 def _render_color_swatch(backend, project_path: Path, species_id: str, current: str) -> None:
-    """The species' overlay color, click to change. Species share one tomogram canvas,
-    so color is how a user tells two picks apart — editable, constrained to the palette
-    that stays legible over greyscale (SPECIES_OVERLAY_COLORS)."""
+    """The species' overlay color, click to change — `ui.components.color_swatch` with
+    this tab's persistence closure (the creation dialog passes a different one)."""
 
-    def _dot_style(color: str) -> str:
-        return (
-            f"width: 12px; height: 12px; border-radius: 50%; background: {color}; "
-            f"flex-shrink: 0; cursor: pointer; box-shadow: 0 0 0 2px #fff, 0 0 0 3px #e5e7eb;"
-        )
+    def _on_pick(c: str) -> None:
+        def _apply(s: ParticleSpecies) -> None:
+            s.color = c
 
-    dot = ui.element("div").style(_dot_style(current)).tooltip("Overlay color")
-    with dot, ui.menu().props("auto-close"), ui.row().classes("p-2 gap-1 flex-wrap").style("max-width: 128px;"):
-        for color in SPECIES_OVERLAY_COLORS:
-            selected = color.lower() == (current or "").lower()
+        get_project_state_for(project_path).mutate_species(species_id, _apply)
+        asyncio.create_task(backend.save_project(project_path, debounce_s=1.0))
 
-            def _pick(c=color):
-                def _apply(s: ParticleSpecies) -> None:
-                    s.color = c
-
-                get_project_state_for(project_path).mutate_species(species_id, _apply)
-                asyncio.create_task(backend.save_project(project_path, debounce_s=1.0))
-                # Repaint just the swatch — one attribute driving one visual property
-                # needs no rebuild (and a rebuild would destroy the menu mid-click).
-                dot.style(_dot_style(c))
-
-            ui.element("div").style(
-                f"width: 16px; height: 16px; border-radius: 50%; background: {color}; cursor: pointer; "
-                f"box-shadow: 0 0 0 2px #fff, 0 0 0 {'3px #111827' if selected else '3px #e5e7eb'};"
-            ).on("click", _pick)
+    render_color_swatch(current, _on_pick)
 
 
 def render_identity_editor(backend, project_path: Path, species_id: str) -> None:
-    """Swatch · name · Ø · symmetry · notes, plus the provenance line. Each edit =
-    `mutate_species` (dirty + rev) and a 1-s debounced save."""
+    """Swatch · name · diameter · symmetry · notes, plus the provenance line. Each edit =
+    `mutate_species` (dirty + rev) and a 1-s debounced save.
+
+    No card and no coloured stripe: the species colour is already carried by the swatch
+    and the header pill, and every input reads at the scale of the label beside it
+    (Quasar's own ~14 px against 10 px labels was the whole "huge / heterogenous"
+    complaint)."""
     state = get_project_state_for(project_path)
     sp = state.get_species(species_id)
     if sp is None:
@@ -101,17 +102,14 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
         get_project_state_for(project_path).mutate_species(species_id, fn)
         asyncio.create_task(backend.save_project(project_path, debounce_s=1.0))
 
-    with (
-        ui.card()
-        .tight()
-        .classes("w-full overflow-hidden")
-        .style(f"border: 1px solid #e5e7eb; border-left: 4px solid {_INDIGO}; box-shadow: none;")
-    ):
-        with ui.row().classes("w-full items-center px-3 py-1 gap-3"):
+    with ui.column().classes("w-full gap-2 px-1"):
+        # Row 1 — identity line.
+        with ui.row().classes("w-full items-center gap-2 no-wrap"):
             _render_color_swatch(backend, project_path, species_id, sp.color or "#3b82f6")
 
             name_input = ui.input(value=sp.name, placeholder="species name").props("dense outlined debounce=400")
-            name_input.classes("w-44").tooltip(f"Display name (id stays `{species_id}`)")
+            name_input.props(f'input-style="{_NAME_INPUT_STYLE}"')
+            name_input.classes("w-64").tooltip(f"Display name (id stays `{species_id}`)")
 
             def _on_name(e):
                 v = (e.value or "").strip()
@@ -125,13 +123,19 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
 
             name_input.on_value_change(_on_name)
 
-            with ui.row().classes("items-center gap-1 ml-2"):
-                ui.label("Ø").classes(_BODY_CLS)
+        # Row 2 — the two sized-to-content particle facts.
+        with ui.row().classes("w-full items-center gap-6 no-wrap"):
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                ui.label("Diameter").classes(_LABEL_CLS)
                 diam_input = (
-                    ui.number(value=sp.diameter_ang, placeholder="e.g. 250", step=10, min=0, suffix="Å")
+                    ui.number(value=sp.diameter_ang, placeholder="e.g. 250", step=10, min=0)
                     .props("dense outlined debounce=400")
-                    .classes("w-24")
+                    .classes("w-32")
                 )
+                # The unit is a sibling label, not Quasar's in-field suffix: at this width
+                # the suffix used to compete with the value and clip it.
+                diam_input.tooltip("Ø of the particle in ångström — the default for new pick-candidates jobs.")
+                ui.label("Å").classes(_HINT_CLS)
 
                 def _on_diam(e):
                     try:
@@ -146,16 +150,20 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
 
                 diam_input.on_value_change(_on_diam)
 
-            with ui.row().classes("items-center gap-1"):
-                ui.label("sym").classes(_BODY_CLS)
+            with ui.row().classes("items-center gap-2 no-wrap"):
+                ui.label("Symmetry").classes(_LABEL_CLS)
                 sym_select = (
-                    ui.select(options=[g.value for g in SymmetryGroup], value=sp.symmetry or "C1")
+                    ui.select(options=SYMMETRY_OPTIONS, value=sp.symmetry or SymmetryGroup.C1.value)
                     .props("dense outlined")
-                    .classes("w-20")
+                    .classes("w-40")
+                )
+                sym_select.tooltip(
+                    "Point-group symmetry of the particle. Most complexes are C1; this is the default "
+                    "for new TM jobs, which can still override it."
                 )
 
                 def _on_sym(e):
-                    new_val = e.value or "C1"
+                    new_val = e.value or SymmetryGroup.C1.value
 
                     def _apply(s: ParticleSpecies) -> None:
                         s.symmetry = new_val
@@ -164,24 +172,27 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
 
                 sym_select.on_value_change(_on_sym)
 
-            with ui.row().classes("items-center gap-1 flex-1"):
-                notes_input = (
-                    ui.input(value=sp.notes or "", placeholder="notes (free-form, optional)")
-                    .props("dense outlined debounce=400")
-                    .classes("flex-1")
-                )
+        # Row 3 — free-form notes.
+        with ui.row().classes("w-full items-start gap-2 no-wrap"):
+            ui.label("Notes").classes(_LABEL_CLS + " mt-2")
+            notes_input = (
+                ui.textarea(value=sp.notes or "", placeholder="free-form, optional")
+                .props("dense outlined autogrow rows=2 debounce=400")
+                .classes("flex-1")
+                .style("min-width: 0;")
+            )
 
-                def _on_notes(e):
-                    v = e.value or ""
+            def _on_notes(e):
+                v = e.value or ""
 
-                    def _apply(s: ParticleSpecies) -> None:
-                        s.notes = v
+                def _apply(s: ParticleSpecies) -> None:
+                    s.notes = v
 
-                    _mutate(_apply)
+                _mutate(_apply)
 
-                notes_input.on_value_change(_on_notes)
+            notes_input.on_value_change(_on_notes)
 
-        with ui.row().classes("w-full items-center px-3 pb-1 gap-3"):
+        with ui.row().classes("w-full items-center gap-3"):
             ui.label(
                 "Defaults for new TM (symmetry) and pick-candidates (diameter) jobs. Existing jobs aren't auto-updated."
             ).classes(_HINT_CLS)
@@ -209,24 +220,229 @@ def _render_provenance(sp: ParticleSpecies) -> None:
     ).tooltip("\n".join(sources) if sources else "no templates or masks registered")
 
 
-# ── Status block + sanity row (rev-gated view over an off-loop compute) ────────
+# ── Bindings block (in-memory only — safe to re-render on every tick) ─────────
+
+
+class _BindingsView(FingerprintedView):
+    """The template and the mask this species is currently bound to, with full paths, a
+    copy affordance and a route to where the selection is *changed*.
+
+    Both rows render whether or not anything is bound: "no template" is a legitimate
+    state (de-novo picking) and has to look different from "we couldn't tell you". No
+    disk reads here — apix / box / σ come from the MRC header and stay on the Templates
+    & masks tab, so this view is cheap enough for the page's 3-s observe.
+    """
+
+    def __init__(self, container: ui.element, tab: OverviewTab) -> None:
+        super().__init__(container)
+        self._tab = tab
+
+    def _species(self) -> ParticleSpecies | None:
+        return get_project_state_for(self._tab.ctx.project_path).get_species(self._tab.ctx.species_id)
+
+    def signature(self) -> Any:
+        sp = self._species()
+        if sp is None:
+            return ()
+        t, m = sp.get_selected_template(), sp.get_selected_mask()
+        return (
+            sp.selected_template_id,
+            sp.selected_mask_id,
+            len(sp.templates),
+            len(sp.masks),
+            t.template_path if t else "",
+            m.mask_path if m else "",
+        )
+
+    def _open_templates_tab(self):
+        """`species_select_tab` is the page's cross-tab hook. Absent (no page hosting
+        this tab) renders the rows without a link rather than a dead one."""
+        fn = (self._tab.ctx.callbacks or {}).get("species_select_tab")
+        return (lambda: fn("templates")) if fn else None
+
+    def render(self) -> None:
+        sp = self._species()
+        if sp is None:
+            return
+        on_open = self._open_templates_tab()
+        tpl, mask = sp.get_selected_template(), sp.get_selected_mask()
+        with ui.column().classes("w-full gap-1"):
+            with ui.row().classes("w-full items-baseline gap-2 px-1"):
+                ui.label("BOUND FILES").classes(_LABEL_CLS)
+                ui.label("what new TM jobs default to").classes(_HINT_CLS)
+            with ui.column().classes("w-full gap-1 px-1"):
+                self._binding_row(
+                    "Template",
+                    tpl.template_path if tpl else "",
+                    on_open,
+                    chip=(
+                        (lambda t=tpl: render_polarity_chip(t.polarity, tooltip="Density polarity at registration"))
+                        if tpl
+                        else None
+                    ),
+                )
+                self._binding_row(
+                    "Mask",
+                    mask.mask_path if mask else "",
+                    on_open,
+                    chip=(
+                        (lambda m=mask: render_method_chip(m.method, tooltip="How this mask was made"))
+                        if mask
+                        else None
+                    ),
+                )
+            n_t, n_m = len(sp.templates), len(sp.masks)
+            counts = f"{n_t} template{'s' if n_t != 1 else ''} · {n_m} mask{'s' if n_m != 1 else ''} registered"
+            if on_open is not None:
+                ui.label(counts).classes(_HINT_CLS + " px-1 cursor-pointer underline decoration-dotted").on(
+                    "click", lambda _e: on_open()
+                ).tooltip("Open Templates & masks")
+            else:
+                ui.label(counts).classes(_HINT_CLS + " px-1")
+
+    @staticmethod
+    def _binding_row(label: str, path: str, on_open, *, chip=None) -> None:
+        with ui.row().classes("w-full items-center gap-2 no-wrap"):
+            ui.label(label).classes(_LABEL_CLS).style("width: 68px; flex-shrink: 0;")
+            if chip is not None:
+                chip()
+            render_path_link(
+                path,
+                on_open=on_open,
+                open_tooltip="Open Templates & masks — selection is changed there",
+                empty_text=f"no {label.lower()} selected",
+            )
+
+
+# ── Extraction geometry (built once — it holds inputs) ────────────────────────
+
+# (ExtractionParams attr, label, min, step) — the min/step match `geometry_inputs()` in
+# ui/particles/list_actions.py, so the panel and the first-extract modal ask for the same
+# thing. The tooltips come verbatim from the job model, so the panel and the job tab
+# explain box/bin/crop the same way (services/jobs/subtomo_extraction.py).
+_GEOMETRY_FIELDS = (("box_size", "Box", 16, 2), ("binning", "Binning", 0.1, 0.5), ("crop_size", "Crop", 16, 2))
+
+
+class ExtractionGeometryPanel:
+    """`species.extraction_params` — box / binning / crop for hand-picked lists.
+
+    NOT a `FingerprintedView`: it owns three inputs, and every commit bumps the registry
+    rev, so a signature-gated rebuild would destroy the field the user just typed into
+    (the same reason the identity editor is built once). Only the effective-value line
+    is refreshed, and only when its text actually moved.
+
+    Empty is a real state. Unset renders empty, never `384 / 1.0 / 224` dressed up as a
+    choice the user made (de-novo D-3: a box size is not ours to guess).
+    """
+
+    def __init__(self, tab: OverviewTab) -> None:
+        self._tab = tab
+        self._inputs: dict[str, ui.number] = {}
+        self._effective: ui.label | None = None
+
+    def build(self) -> None:
+        sp = get_project_state_for(self._tab.ctx.project_path).get_species(self._tab.ctx.species_id)
+        ep = getattr(sp, "extraction_params", None) if sp is not None else None
+        descriptions = _geometry_descriptions()
+        with ui.column().classes("w-full gap-1 px-1"):
+            with ui.row().classes("w-full items-baseline gap-2"):
+                ui.label("EXTRACTION GEOMETRY").classes(_LABEL_CLS)
+                ui.label("this project").classes(_HINT_CLS).tooltip(
+                    "One geometry per species per project. A species extracted from tomogram sets at "
+                    "different binnings needs one per set — see docs/roadmaps/picking_ui/07."
+                )
+            with ui.row().classes("w-full items-center gap-4 no-wrap"):
+                for attr, label, minimum, step in _GEOMETRY_FIELDS:
+                    with ui.row().classes("items-center gap-2 no-wrap"):
+                        ui.label(label).classes(_LABEL_CLS)
+                        inp = (
+                            ui.number(value=getattr(ep, attr, None), min=minimum, step=step)
+                            .props("dense outlined debounce=600")
+                            .classes("w-24")
+                        )
+                        inp.tooltip(descriptions.get(attr, ""))
+                        inp.on_value_change(lambda _e: self._commit())
+                        self._inputs[attr] = inp
+                ui.label("box / crop in binned voxels").classes(_HINT_CLS)
+            self._effective = ui.label("").classes(_HINT_CLS)
+        self.refresh()
+
+    # ── Write ────────────────────────────────────────────────────────────────
+
+    def _commit(self) -> None:
+        """All three or nothing — a partial edit saves nothing and says so, exactly the
+        rule `commit_extraction_geometry` already enforces (it is the one writer)."""
+        values = {attr: self._inputs[attr].value for attr, *_ in _GEOMETRY_FIELDS}
+        if not all(values.values()):
+            return  # mid-edit; `commit_extraction_geometry` toasts on an explicit attempt
+        ctx = self._tab.ctx
+        sp = get_project_state_for(ctx.project_path).get_species(ctx.species_id)
+        ep = getattr(sp, "extraction_params", None) if sp is not None else None
+        if ep is not None and (ep.box_size, ep.binning, ep.crop_size) == (
+            int(values["box_size"]),
+            float(values["binning"]),
+            int(values["crop_size"]),
+        ):
+            return  # nothing moved — do not bump the rev on a re-render's echo
+        asyncio.create_task(self._save(values))
+
+    async def _save(self, values: dict) -> None:
+        ctx = self._tab.ctx
+        if await commit_extraction_geometry(
+            ctx.backend, ctx.project_path, ctx.species_id, values["box_size"], values["binning"], values["crop_size"]
+        ):
+            self.refresh()
+
+    # ── Effective-value line ─────────────────────────────────────────────────
+
+    def refresh(self) -> None:
+        if self._effective is None:
+            return
+        text = self._effective_text()
+        if self._effective.text != text:
+            self._effective.set_text(text)
+
+    def _effective_text(self) -> str:
+        """`extraction_params_for_species`' precedence, in words: the subtomo job wins,
+        then this panel, then nothing (never a guess)."""
+        ctx = self._tab.ctx
+        state = get_project_state_for(ctx.project_path)
+        params = extraction_params_for_species(state, ctx.species_id)
+        if params is None:
+            return "not set — asked once at the first extraction, never guessed."
+        sp = state.get_species(ctx.species_id)
+        ep = getattr(sp, "extraction_params", None) if sp is not None else None
+        geometry = f"box {params['box_size']} · bin {params['binning']:g} · crop {params['crop_size']}"
+        if ep is not None and (ep.box_size, ep.binning, ep.crop_size) == (
+            params["box_size"],
+            params["binning"],
+            params["crop_size"],
+        ):
+            return f"In use: these values ({geometry})."
+        return (
+            f"In use: from the subtomoExtraction job ({geometry}). "
+            "Values here apply to hand-picked lists that have no such job."
+        )
+
+
+def _geometry_descriptions() -> dict[str, str]:
+    """The job model's own field descriptions — one wording, not two."""
+    fields = SubtomoExtractionParams.model_fields
+    return {attr: (fields[attr].description or "") for attr, *_ in _GEOMETRY_FIELDS}
+
+
+# ── Status line (rev-gated view over an off-loop compute) ─────────────────────
 
 
 @dataclass(frozen=True, slots=True)
 class _Computed:
     overview: SpeciesOverview | None
-    sanity_rows: list[dict]  # this species' pixel-chain rows, sanity rules applied
-    sanity_key: str  # JSON of sanity_rows — the comparable form for the view signature
     error: str | None
 
 
 def _compute(state, project_path: Path, species_id: str) -> _Computed:
-    """Thread body: star / MRC-header reads happen here, never on the event loop."""
-    overview = species_overview(state, project_path, species_id)
-    rows = compute_pixel_chain(state)
-    apply_sanity_rules(rows)
-    rows = [r for r in rows if r.get("species_id") == species_id]
-    return _Computed(overview, rows, json.dumps(rows, sort_keys=True, default=str), None)
+    """Thread body: star reads happen here, never on the event loop."""
+    return _Computed(species_overview(state, project_path, species_id), None)
 
 
 class _StatusView(FingerprintedView):
@@ -234,95 +450,43 @@ class _StatusView(FingerprintedView):
         super().__init__(container)
         self._tab = tab
 
-    def _species_terms(self) -> tuple:
-        sp = get_project_state_for(self._tab.ctx.project_path).get_species(self._tab.ctx.species_id)
-        if sp is None:
-            return ()
-        ep = sp.extraction_params
-        return (
-            len(sp.templates),
-            sp.selected_template_id,
-            len(sp.masks),
-            sp.selected_mask_id,
-            (ep.box_size, ep.binning, ep.crop_size) if ep else None,
-        )
-
     def signature(self) -> Any:
         c = self._tab.computed
-        computed = None if c is None else (c.overview, c.sanity_key, c.error)
-        return (self._tab.ctx.species_id, computed, self._species_terms())
+        return (self._tab.ctx.species_id, None if c is None else (c.overview, c.error))
 
     def render(self) -> None:
+        """One muted sentence of plain numbers.
+
+        What used to be here and is now elsewhere: the counts moved to the tab strip;
+        the `gate` chip went (the concept stays — the Picks tab's "Extract all pending"
+        still runs its gate-report pre-flight, and per-list state is a column in that
+        table); the pick-candidates / subtomo instance-id pills went (the Jobs tab lists
+        exactly those jobs with type, status and drift chips — it is the owner); the
+        templates / masks chips went (roadmap 03's bindings block supersedes them); and
+        the pixel/binning sanity table went to the Tomogram Dashboard, which is where it
+        belongs — the chain is a property of (this project's tomograms x this binning),
+        not of the particle. Do not bring them back here.
+        """
         c = self._tab.computed
-        sp = get_project_state_for(self._tab.ctx.project_path).get_species(self._tab.ctx.species_id)
-        if sp is None:
-            return
-        with ui.column().classes("w-full gap-1"):
-            with ui.row().classes("w-full items-baseline gap-2 px-1"):
-                ui.label("STATUS").classes(_LABEL_CLS)
-                ui.label("picks · extraction · bound jobs").classes(_HINT_CLS)
+        with ui.column().classes("w-full gap-1 px-1"):
             if c is None:
-                ui.label("computing…").classes(_HINT_CLS + " px-1")
+                ui.label("computing…").classes(_HINT_CLS)
                 return
             if c.error:
-                ui.label(f"Status unavailable — {c.error}").classes("text-[11px] text-red-600 px-1").tooltip(
-                    "species_overview / pixel chain raised; full traceback in the server log"
+                ui.label(f"Status unavailable — {c.error}").classes("text-[11px] text-red-600").tooltip(
+                    "species_overview raised; full traceback in the server log"
                 )
                 return
             ov = c.overview
-            gate_status = {"READY": "ok", "PENDING": "warn", "BLOCKED": "error"}.get(ov.gate, "neutral")
-            with ui.element("div").classes("cb-chip-strip"):
-                render_chip("tomos with picks", str(ov.n_tomos_with_picks), tooltip="tomograms with at least one pick")
-                render_chip("picks", str(ov.n_picks), tooltip="sum over every list on every tomogram")
-                render_chip("kept", str(ov.n_kept), tooltip="after committed keep/drop curation (= picks where none)")
-                render_chip("extracted lists", str(ov.n_extracted_lists), tooltip="lists whose optimisation set exists")
-                render_chip(
-                    "gate",
-                    ov.gate,
-                    status=gate_status,
-                    tooltip="Authoritative-list roll-up over every tomogram: READY = nothing left to extract, "
-                    "PENDING = authoritative lists still to extract, BLOCKED = a choice cannot be extracted "
-                    "(details per list on the Picks tab).",
-                )
-            with ui.element("div").classes("cb-chip-strip"):
-                render_chip(
-                    "pick candidates",
-                    ov.ce_iid or "—",
-                    status="info" if ov.ce_iid else "neutral",
-                    tooltip="candidate-extract instance attributed to this species (Jobs tab)",
-                )
-                render_chip(
-                    "subtomo",
-                    ov.subtomo_iid or "—",
-                    status="info" if ov.subtomo_iid else "neutral",
-                    tooltip="subtomogram-extraction instance attributed to this species (Jobs tab)",
-                )
-                ep = sp.extraction_params
-                render_chip(
-                    "extraction",
-                    f"box {ep.box_size} · bin {ep.binning:g} · crop {ep.crop_size}" if ep else "not set",
-                    status="neutral" if ep else "warn",
-                    tooltip="Per-species extraction geometry for hand-picked lists (box px · binning · crop px)."
-                    + ("" if ep else " Undecided — asked on the first per-list extract, never defaulted."),
-                )
-                sel_t = sp.get_selected_template()
-                sel_m = sp.get_selected_mask()
-                render_chip(
-                    "templates",
-                    f"{len(sp.templates)}" + (f" · {os.path.basename(sel_t.template_path)}" if sel_t else ""),
-                    tooltip="registered templates · selected one (Templates & masks tab)",
-                )
-                render_chip(
-                    "masks",
-                    f"{len(sp.masks)}" + (f" · {os.path.basename(sel_m.mask_path)}" if sel_m else ""),
-                    tooltip="registered masks · selected one (Templates & masks tab)",
-                )
-            if c.sanity_rows:
-                render_pixel_sanity_table(c.sanity_rows)
-            else:
-                ui.label("No pixel-chain rows for this species yet (no TM / pick / subtomo job).").classes(
-                    _HINT_CLS + " px-1"
-                )
+            ui.label(
+                f"{ov.n_picks} pick{'s' if ov.n_picks != 1 else ''} on "
+                f"{ov.n_tomos_with_picks} tomogram{'s' if ov.n_tomos_with_picks != 1 else ''} · "
+                f"{ov.n_kept} kept · "
+                f"{ov.n_extracted_lists} list{'s' if ov.n_extracted_lists != 1 else ''} extracted"
+            ).classes(_HINT_CLS).tooltip(
+                "kept = after committed keep/drop curation. Per-list state, and the extract actions, "
+                "are on the Picks tab."
+            )
 
 
 class OverviewTab:
@@ -332,6 +496,8 @@ class OverviewTab:
         self._last_key: Any = None
         self._last_at: float = 0.0
         self._flight = SingleFlight()
+        self._bindings: _BindingsView | None = None
+        self._geometry: ExtractionGeometryPanel | None = None
         self._status: _StatusView | None = None
 
     # ── Tab protocol ──────────────────────────────────────────────────────────
@@ -340,6 +506,10 @@ class OverviewTab:
         ctx = self.ctx
         with container, ui.column().classes("w-full gap-3 p-2"):
             render_identity_editor(ctx.backend, ctx.project_path, ctx.species_id)
+            bindings_slot = ui.element("div").classes("w-full")
+            self._bindings = _BindingsView(bindings_slot, self)
+            self._geometry = ExtractionGeometryPanel(self)
+            self._geometry.build()
             status_slot = ui.element("div").classes("w-full")
             self._status = _StatusView(status_slot, self)
             with ui.row().classes("w-full items-center gap-2 px-1"):
@@ -356,12 +526,17 @@ class OverviewTab:
                         "Copy this species DEFINITION (name, Ø, symmetry, notes, templates, masks) up to the "
                         "lab catalog as a new version. Picks and extractions stay here."
                     )
+        self._bindings.refresh()
         self._status.refresh()
 
     def refresh(self) -> None:
         """Page tick / on show (only while this tab is visible): recompute when the
         in-memory key moved, else at most every `_DISK_REFRESH_S`; repaint through the
         signature gate either way."""
+        if self._bindings is not None:
+            self._bindings.refresh()  # in-memory + signature-gated: free on a quiet tick
+        if self._geometry is not None:
+            self._geometry.refresh()
         key = self._memory_key()
         stale = time.monotonic() - self._last_at >= _DISK_REFRESH_S
         if self.computed is None or key != self._last_key or stale:
@@ -389,7 +564,7 @@ class OverviewTab:
             except Exception as e:
                 # Reported, not swallowed: traceback to the log, the cause into the block.
                 logger.exception("Species overview compute failed for %s", ctx.species_id)
-                computed = _Computed(None, [], "", f"{type(e).__name__}: {e}")
+                computed = _Computed(None, f"{type(e).__name__}: {e}")
             self.computed = computed
             self._last_key = key
             self._last_at = time.monotonic()
