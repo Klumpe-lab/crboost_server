@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 
 from services.models_base import InstanceId
-from services.project_state import get_project_state_for
+from services.project_state import ParticleTemplate, TemplateMask, get_project_state_for, sidecar_ensure
 from services.result import err, ok
 
 logger = logging.getLogger(__name__)
@@ -88,3 +89,112 @@ async def delete_species(backend, project_path: Path, species_id: str) -> dict:
     # leave the deleted species back on disk after a reload.
     await backend.save_project(project_path, force=True)
     return ok(deleted_jobs=deleted_jobs, deleted_files=deleted_files, errors=errors)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Template / mask registration (picking-UI roadmap 01 S1)
+#
+# Lifted verbatim from `TemplateWorkbench._append_template` / `._append_mask` /
+# `._select_template` / `._select_mask` so registering a template no longer requires
+# a mounted 2111-line workbench — the species creation dialog binds a template and a
+# mask up front through exactly these calls. None of them save: they mutate through
+# `ProjectState.mutate_species` (marks dirty + bumps the registry rev) and return, so
+# the caller keeps owning persistence (the workbench saves + refreshes per register,
+# the creation dialog force-saves once at the end).
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+def register_template(
+    state,
+    species_id: str,
+    template_path: str,
+    *,
+    polarity: str,
+    source: str,
+    lowpass: float | None = None,
+    imported_from: str | None = None,
+    notes: str = "",
+) -> dict:
+    """Append a `ParticleTemplate` to the species, or replace in place when a registered
+    entry already sits at this path (its id is preserved so dropdowns stay stable).
+    Auto-selects only when it is the first entry. `ok(template_id=...)`."""
+    new_id = sidecar_ensure(template_path, "template")
+    tpl = ParticleTemplate(
+        id=new_id,
+        template_path=template_path,
+        polarity=polarity if polarity in ("white", "black") else "black",
+        lowpass_resolution_ang=lowpass,
+        source=source,
+        imported_from=imported_from,
+        created_at=datetime.now(),
+        notes=notes,
+    )
+
+    def _apply(sp) -> None:
+        existing_idx = next((i for i, t in enumerate(sp.templates) if t.template_path == template_path), None)
+        if existing_idx is not None:
+            # Preserve the existing id so dropdowns elsewhere stay stable.
+            tpl.id = sp.templates[existing_idx].id
+            sp.templates[existing_idx] = tpl
+        else:
+            sp.templates.append(tpl)
+        if not sp.selected_template_id:
+            sp.selected_template_id = tpl.id
+
+    if not state.mutate_species(species_id, _apply):
+        return err(f"Unknown species '{species_id}'")
+    return ok(template_id=tpl.id)
+
+
+def register_mask(state, species_id: str, mask: TemplateMask) -> dict:
+    """Append a `TemplateMask`, or replace in place at the same path. Auto-selects only
+    when it is the first entry. `ok(mask_id=...)`."""
+    mid = sidecar_ensure(mask.mask_path, "mask")
+    mask = mask.model_copy(update={"id": mid, "created_at": datetime.now()})
+
+    def _apply(sp) -> None:
+        existing_idx = next((i for i, m in enumerate(sp.masks) if m.mask_path == mask.mask_path), None)
+        if existing_idx is not None:
+            mask.id = sp.masks[existing_idx].id
+            sp.masks[existing_idx] = mask
+        else:
+            sp.masks.append(mask)
+        if not sp.selected_mask_id:
+            sp.selected_mask_id = mask.id
+
+    if not state.mutate_species(species_id, _apply):
+        return err(f"Unknown species '{species_id}'")
+    return ok(mask_id=mask.id)
+
+
+def select_template(state, species_id: str, template_id: str) -> dict:
+    """Make `template_id` the species' current template. Unknown ids are a no-op on the
+    model (as before) and reported here."""
+    found = [False]
+
+    def _apply(sp) -> None:
+        if any(t.id == template_id for t in sp.templates):
+            sp.selected_template_id = template_id
+            found[0] = True
+
+    if not state.mutate_species(species_id, _apply):
+        return err(f"Unknown species '{species_id}'")
+    if not found[0]:
+        return err(f"No template '{template_id}' registered to '{species_id}'")
+    return ok(template_id=template_id)
+
+
+def select_mask(state, species_id: str, mask_id: str) -> dict:
+    """Make `mask_id` the species' current mask."""
+    found = [False]
+
+    def _apply(sp) -> None:
+        if any(m.id == mask_id for m in sp.masks):
+            sp.selected_mask_id = mask_id
+            found[0] = True
+
+    if not state.mutate_species(species_id, _apply):
+        return err(f"Unknown species '{species_id}'")
+    if not found[0]:
+        return err(f"No mask '{mask_id}' registered to '{species_id}'")
+    return ok(mask_id=mask_id)
