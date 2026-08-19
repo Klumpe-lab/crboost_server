@@ -346,7 +346,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         except Exception:
             return ("registry", 0)
 
-    def _main_signature() -> tuple:
+    def _main_signature(journey_data=None, species_data=None) -> tuple:
         # FingerprintedView discipline for the main pane (mirrors render_strip).
         # The 4 s live timer fires refresh_all on every background-task tick, but
         # rebuilding the pane tears down its Plotly charts (and WebGL contexts) —
@@ -357,12 +357,20 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         ts = selected["ts"]
         if ts is None:
             return ("__no_ts__",)
-        journey, _ts_names = collect_dashboard_journey(state, project_path)
+        if journey_data is None:
+            journey_data = collect_dashboard_journey(state, project_path)
+        journey, _ts_names = journey_data
         # Only the SELECTED ts is fingerprinted below, so collect only its rows: a
         # de-novo species' subtomo_status is derived per pick list and costs a few
         # stats each (11-S3), and this runs on every refresh — no reason to pay it for
-        # the other 39 tomograms. The strip's own collect (unfiltered) draws them all.
-        species_journey = collect_species_journey(state, project_path, only_ts=ts)
+        # the other 39 tomograms. When `refresh_all` already collected UNFILTERED for the
+        # strip, slice this TS's rows out of THAT rather than paying a second pass:
+        # `only_ts` is a pure row filter (`services/dashboard_data.py`), so the results are
+        # identical. The strip's own collect (unfiltered) draws them all.
+        if species_data is not None:
+            species_journey = {ts: species_data.get(ts, [])}
+        else:
+            species_journey = collect_species_journey(state, project_path, only_ts=ts)
         # The journey sig only covers the 4 prep pill stages + per-species picks;
         # sections like tilt_filter / dataset read job state it never sees. Fold in
         # every job's execution_status (section-agnostic, cheap in-memory scan —
@@ -401,11 +409,11 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             auth_sig,
         )
 
-    def render_main(force: bool = False) -> None:
+    def render_main(force: bool = False, *, journey_data=None, species_data=None) -> None:
         # Signature-gated: skip the teardown+rebuild when nothing the selected
         # pane shows changed. `force=True` (artifact completions, selection
         # change, user toggles) always rebuilds. See _main_signature.
-        sig = _main_signature()
+        sig = _main_signature(journey_data, species_data)
         if not force and _main_sig["sig"] is not None and sig == _main_sig["sig"]:
             return
         _main_sig["sig"] = sig
@@ -418,13 +426,19 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                     selected["ts"], state, project_path, request_refresh, render_strip, manage_species
                 )
 
-    def render_strip() -> None:
+    def render_strip(journey_data=None, species_data=None) -> None:
         # Signature-gated (FingerprintedView discipline): the 4 s live timer
         # calls refresh_all on every background-task tick, but we only rebuild
         # when the journey data OR the selection actually changed — otherwise a
         # tick mid-click would tear down the column under the click.
-        journey, ts_names = collect_dashboard_journey(state, project_path)
-        species_journey = collect_species_journey(state, project_path)
+        # `refresh_all` hoists both collects so one pass pays for them once; a bare call
+        # (selection change, exclude toggle, the pane's own callback) collects here.
+        if journey_data is None:
+            journey_data = collect_dashboard_journey(state, project_path)
+        if species_data is None:
+            species_data = collect_species_journey(state, project_path)
+        journey, ts_names = journey_data
+        species_journey = species_data
         try:
             from services.tilt_series import get_registry_for
 
@@ -509,8 +523,15 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
         render_strip()
 
     def refresh_all(force_main: bool = False) -> None:
-        render_strip()
-        render_main(force=force_main)
+        # ONE collect per pass. `render_strip` needs both unfiltered and `_main_signature`
+        # needs the same journey plus one TS's species rows, and NEITHER collector memoizes
+        # internally — so this ran the whole thing twice on every 4 s tick and on every
+        # keep/drop Save (`refresh_roster`), which on a fully-extracted de-novo project is
+        # the per-list extraction stats of every tomogram, doubled.
+        journey_data = collect_dashboard_journey(state, project_path)
+        species_data = collect_species_journey(state, project_path)
+        render_strip(journey_data, species_data)
+        render_main(force=force_main, journey_data=journey_data, species_data=species_data)
 
     # P1: coalesce the initial refresh storm. On load several background auto-kicks
     # (preview / IMOD / recon-slabs / coords-ingest / list-cutouts) each fire
