@@ -168,7 +168,7 @@ def _notify_finalize(res: dict) -> None:
     if res.get("success"):
         ui.notify(
             f"Filter committed: {res['kept']} tilts kept, {res['dropped']} dropped — "
-            "alignment will use the trimmed tomostar.",
+            "alignment trims the tomostar to match when it runs.",
             type="positive",
             timeout=5000,
         )
@@ -438,9 +438,14 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             labeled_p = out_dir / "tiltseries_labeled.star"
                             await asyncio.to_thread(write_tilt_series, ts_data, labeled_p, "tilt_series_labeled")
 
-                            # Produce the real pipeline output (trimmed tomostar) + wire it.
-                            _notify_finalize(await finalize_pipeline_output(state, job_model, ts_data, project_path))
-                            job_model.execution_status = JobStatus.SUCCEEDED
+                            # Commit the verdict to the registry -- that IS the cut
+                            # alignment applies. Only a recorded verdict may claim
+                            # SUCCEEDED; otherwise the job would look done while
+                            # downstream silently ran on the unfiltered tilt set.
+                            res = await finalize_pipeline_output(state, job_model, ts_data, project_path)
+                            _notify_finalize(res)
+                            if res.get("success"):
+                                job_model.execution_status = JobStatus.SUCCEEDED
                             if state:
                                 state.mark_dirty()
                                 await backend.save_project(project_path)
@@ -716,10 +721,13 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
             # Persist labels and mark job complete
             if job_model is not None:
                 job_model.tilt_labels = dict(labels)
-                # Produce the real pipeline output (trimmed tomostar) + wire it so
-                # alignment consumes the manual cut, not just the display stars.
-                _notify_finalize(await finalize_pipeline_output(state, job_model, ts_data, project_path))
-                job_model.execution_status = JobStatus.SUCCEEDED
+                # Commit the verdict to the registry so alignment consumes the manual
+                # cut, not just the display stars. Only a recorded verdict may claim
+                # SUCCEEDED (see the DL path).
+                res = await finalize_pipeline_output(state, job_model, ts_data, project_path)
+                _notify_finalize(res)
+                if res.get("success"):
+                    job_model.execution_status = JobStatus.SUCCEEDED
             if state:
                 state.mark_dirty()
                 await get_backend().save_project(project_path)
