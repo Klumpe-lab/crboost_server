@@ -40,6 +40,7 @@ from services.project_state import (
     get_project_state_for,
 )
 from services.array_tasks import ts_position_sort_key, ts_pretty_name
+from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.local_file_picker import local_file_picker
 from ui.projects_overview import avatar_color
@@ -243,14 +244,10 @@ class _MergeDialog:
         with self.footer:
             ui.label(_footer_summary(sources)).classes("text-xs text-slate-600")
             ui.space()
-            merge_btn = (
-                ui.button(
-                    f"Merge {len(sources)} source(s)" if sources else "Merge",
-                    icon="merge_type",
-                    on_click=lambda: asyncio.create_task(self.run_merge()),
-                )
-                .props("unelevated no-caps")
-                .classes("text-xs bg-slate-700 text-white")
+            merge_btn = house_button(
+                f"Merge {len(sources)} source(s)" if sources else "Merge",
+                lambda: asyncio.create_task(self.run_merge()),
+                kind="accent",
             )
             if not sources:
                 merge_btn.disable()
@@ -396,8 +393,8 @@ async def _confirm_blockers(lines: list[str]) -> bool:
         if len(lines) > 20:
             ui.label(f"… and {len(lines) - 20} more").classes("text-[10px] text-gray-400")
         with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
-            ui.button("Merge anyway", on_click=lambda: confirm.submit(True)).props("dense no-caps color=orange-7")
+            house_button("Cancel", lambda: confirm.submit(None))
+            house_button("Merge anyway", lambda: confirm.submit(True), kind="accent")
     go = await confirm
     confirm.delete()
     return bool(go)
