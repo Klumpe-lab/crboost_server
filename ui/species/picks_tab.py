@@ -54,6 +54,7 @@ from services.particles.species_overview import (
 )
 from services.project_state import get_project_state_for
 from ui.background_task import BackgroundTask
+from ui.components.buttons import house_button
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.particles import list_actions
@@ -215,18 +216,16 @@ class _PicksView(FingerprintedView):
                     "lists still to extract, BLOCKED = a choice cannot be extracted by extraction alone.",
                 )
             ui.space()
-            ui.button("Extract all pending", icon="science", on_click=self._tab.extract_all_pending).props(
-                "flat dense no-caps size=sm color=indigo"
-            ).tooltip(
+            house_button("Extract all pending", self._tab.extract_all_pending).tooltip(
                 "Subtomo-extract every authoritative list that is not extracted / stale — shows what it would "
                 "submit before anything is sent"
             )
-            ui.button("Import picks from path…", icon="download", on_click=self._tab.import_from_path).props(
-                "flat dense no-caps size=sm color=indigo"
-            ).tooltip("Register a .coords saved from ArtiaX (or an external one) as this species' manual list")
-            ui.button("Open in Journey", icon="open_in_new", on_click=lambda: self._tab.open_in_journey(None)).props(
-                "flat dense no-caps size=sm"
-            ).tooltip("Show this species on the tomogram journey (look & curate)")
+            house_button("Import picks from path…", self._tab.import_from_path).tooltip(
+                "Register a .coords saved from ArtiaX (or an external one) as this species' manual list"
+            )
+            house_button("Open in Journey", lambda: self._tab.open_in_journey(None)).tooltip(
+                "Show this species on the tomogram journey (look & curate)"
+            )
 
     def _render_empty(self) -> None:
         with ui.column().classes("w-full items-center gap-1 py-6"):
@@ -411,12 +410,8 @@ class _PicksView(FingerprintedView):
                     .tooltip("Re-using a name replaces that merge; a new name makes a distinct list")
                 )
                 name_in.on_value_change(lambda e, t=tomo: self._tab.set_merge_name(t, e.value or ""))
-                ui.button(
-                    "Merge", icon="merge", on_click=lambda _e, t=tomo: self._tab.merge(t, name_in.value or "")
-                ).props("dense no-caps size=sm color=indigo")
-                ui.button("Clear", on_click=lambda _e, t=tomo: self._tab.clear_ticks(t)).props(
-                    "flat dense no-caps size=sm"
-                )
+                house_button("Merge", lambda _e, t=tomo: self._tab.merge(t, name_in.value or ""), kind="accent")
+                house_button("Clear", lambda _e, t=tomo: self._tab.clear_ticks(t))
 
 
 def _noop() -> None:
@@ -657,10 +652,8 @@ class PicksTab:
                     ).classes("text-[10px] text-orange-700")
                 ui.label("This cannot be undone.").classes(_HINT_CLS + " text-red-600")
                 with ui.row().classes("w-full justify-end gap-2"):
-                    ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
-                    ui.button("Delete list", on_click=lambda: confirm.submit(True)).props(
-                        "unelevated dense no-caps color=negative"
-                    )
+                    house_button("Cancel", lambda: confirm.submit(None))
+                    house_button("Delete list", lambda: confirm.submit(True), kind="danger")
             go = await confirm
             confirm.delete()
             if not go:
@@ -732,10 +725,8 @@ class PicksTab:
                     ).classes("text-xs text-gray-600")
                     box_in, bin_in, crop_in = list_actions.geometry_inputs()
                 with ui.row().classes("w-full justify-end gap-2"):
-                    ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
-                    ui.button("Extract", icon="science", on_click=lambda: confirm.submit(True)).props(
-                        "dense no-caps color=indigo"
-                    )
+                    house_button("Cancel", lambda: confirm.submit(None))
+                    house_button("Extract", lambda: confirm.submit(True), kind="accent")
             go = await confirm
             geometry = (box_in.value, bin_in.value, crop_in.value) if need_geometry and go else None
             confirm.delete()

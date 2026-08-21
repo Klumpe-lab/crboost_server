@@ -20,6 +20,7 @@ from nicegui import run, ui
 
 from services.particles import catalog
 from services.project_state import get_project_state_for
+from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.particles.list_actions import dialog_host
 
@@ -83,7 +84,7 @@ async def import_from_catalog(backend, project_path: Path, *, on_done=None) -> N
                             f"catalog id: {e.catalog_id}"
                         )
             with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=lambda: dlg.submit(None)).props("flat dense no-caps")
+                house_button("Cancel", lambda: dlg.submit(None))
         go = await dlg
         dlg.delete()
         if not go or not chosen.get("id"):
@@ -141,10 +142,8 @@ async def publish_to_catalog(backend, project_path: Path, species_id: str, *, on
                 for p in missing[:6]:
                     ui.label(f"• {p}").style(_MONO).classes("text-red-700")
             with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
-                btn = ui.button("Publish", icon="publish", on_click=lambda: confirm.submit(True)).props(
-                    "dense no-caps unelevated color=indigo"
-                )
+                house_button("Cancel", lambda: confirm.submit(None))
+                btn = house_button("Publish", lambda: confirm.submit(True), kind="accent")
                 if missing:
                     btn.disable()
         go = await confirm

@@ -37,6 +37,7 @@ from services.curation.watcher import FULL_SWEEP_EVERY, SETTLE_SEC, TICK_SEC
 from services.particles.list_ref import ListRef, auto_ref, species_tomo_map
 from services.project_state import get_project_state_for
 from services.visualization import artiax_bridge
+from ui.components.buttons import house_button
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.curation_session_dialog import open_curation_control_center
@@ -157,9 +158,9 @@ class _CurationView(FingerprintedView):
                     status=status,
                     tooltip=(f"{tip}\n{session_status.last_error()}" if session_status.last_error() else tip),
                 )
-            ui.button("Open control center", icon="tune", on_click=self._tab.open_control_center).props(
-                "flat dense no-caps size=sm color=indigo"
-            ).tooltip("Start / connect to a ChimeraX + ArtiaX session and see its load commands")
+            house_button("Open control center", self._tab.open_control_center).tooltip(
+                "Start / connect to a ChimeraX + ArtiaX session and see its load commands"
+            )
 
     # ── Save contract ─────────────────────────────────────────────────────────
 
