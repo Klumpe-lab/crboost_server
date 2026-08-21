@@ -27,6 +27,7 @@ from nicegui import ui
 
 from services.configs.config_service import check_path_exists, get_config_service
 from services.models_base import JobType
+from ui.components.buttons import house_button
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,6 @@ CLR_BORDER = "#e2e8f0"
 CLR_ACCENT = "#2563eb"
 CLR_OK = "#10b981"
 CLR_BAD = "#ef4444"
-CLR_WARN = "#f59e0b"
 
 _JOB_LABELS = {jt.value: jt.name.replace("_", " ").title() for jt in JobType}
 
@@ -176,19 +176,15 @@ def _build_footer(dialog, cs, nv, on_saved) -> None:
         "display: flex; align-items: center; gap: 8px; padding: 10px 16px; "
         f"border-top: 1px solid {CLR_BORDER}; background: #f8fafc;"
     ):
-        (
-            ui.button("Revert to server defaults", icon="restart_alt", on_click=_do_revert)
-            .props("flat dense no-caps")
-            .style(f"{FONT} font-size: 11px; color: {CLR_LABEL};")
-            .tooltip("Delete your personal override — fall back to the shared server conf.yaml")
+        house_button(
+            "Revert to server defaults",
+            _do_revert,
+            kind="danger",
+            tooltip="Delete your personal override — fall back to the shared server conf.yaml",
         )
         ui.element("div").style("flex: 1;")
-        ui.button("Cancel", on_click=dialog.close).props("flat dense no-caps").style(
-            f"{FONT} font-size: 12px; color: {CLR_LABEL};"
-        )
-        ui.button("Save to my config", on_click=_do_save).props("unelevated dense no-caps").style(
-            f"{FONT} font-size: 12px; background: {CLR_ACCENT}; color: white; border-radius: 6px; padding: 4px 14px;"
-        )
+        house_button("Cancel", dialog.close)
+        house_button("Save to my config", _do_save, kind="accent")
 
 
 async def _confirm_revert(cs) -> bool:
@@ -207,12 +203,8 @@ async def _confirm_revert(cs) -> bool:
             "background: #f8fafc; border-radius: 4px; word-break: break-all;"
         )
         with ui.row().classes("w-full justify-end mt-3 gap-2"):
-            ui.button("Cancel", on_click=lambda: d.submit(False)).props("flat no-caps").style(
-                f"{FONT} font-size: 12px;"
-            )
-            ui.button("Revert", on_click=lambda: d.submit(True)).props("no-caps unelevated").style(
-                f"{FONT} font-size: 12px; background: {CLR_WARN}; color: white; border-radius: 6px; padding: 3px 14px;"
-            )
+            house_button("Cancel", lambda: d.submit(False))
+            house_button("Revert", lambda: d.submit(True), kind="danger")
     return bool(await d)
 
 
@@ -259,9 +251,9 @@ def _path_field(label: str, initial: str, setter: Callable[[str], None], kind: s
 
             inp = (
                 ui.input(value=initial, on_change=_on_change)
-                .props("dense outlined")
-                .classes("flex-1")
-                .style(f"{MONO} font-size: 10px; min-width: 0; width: 100%;")
+                .props("dense")
+                .classes("cb-field flex-1")
+                .style("min-width: 0; width: 100%;")
             )
             inp.tooltip("Resolves on disk" if _exists(initial) else "Not found on disk")
         if note:
@@ -342,9 +334,9 @@ def _tool_row(name: str, tc: dict[str, Any]) -> None:
 
             path_inp = (
                 ui.input(value=tc.get(active_key()), on_change=_on_path)
-                .props("dense outlined")
-                .classes("flex-1")
-                .style(f"{MONO} font-size: 10px; min-width: 0; width: 100%;")
+                .props("dense")
+                .classes("cb-field flex-1")
+                .style("min-width: 0; width: 100%;")
             )
             path_inp.tooltip("Resolves on disk" if check_path_exists(tc.get(active_key())) else "Not found on disk")
 
@@ -400,9 +392,9 @@ def _grid_text(store: dict[str, Any], key: str, label: str) -> None:
 
         (
             ui.input(value=str(store.get(key, "")), on_change=_on_change)
-            .props("dense outlined")
-            .classes("flex-1")
-            .style(f"{MONO} font-size: 10px; min-width: 0; width: 100%;")
+            .props("dense")
+            .classes("cb-field flex-1")
+            .style("min-width: 0; width: 100%;")
         )
 
 
@@ -431,8 +423,9 @@ def _mini_field(store: dict[str, Any], key: str) -> None:
 
         (
             ui.input(value=str(store.get(key, "")), on_change=_on_change)
-            .props("dense outlined")
-            .style(f"{MONO} font-size: 9px; width: 76px;")
+            .props("dense")
+            .classes("cb-field")
+            .style("width: 76px;")
         )
 
 
