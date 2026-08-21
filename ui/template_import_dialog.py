@@ -23,6 +23,7 @@ from nicegui import ui
 
 from services.project_state import ParticleTemplate, ParticleSpecies, sidecar_ensure
 from services.templating.mrc_inspection import MrcInspection, inspect_mrc_for_import
+from ui.components.buttons import house_button
 from ui.local_file_picker import local_file_picker
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,7 @@ async def open_template_import_dialog(
                     "blur",
                     lambda e: _try_inspect(refs["path_input"].value or ""),
                 )
-                ui.button("Browse…", icon="folder_open", on_click=_browse).props("dense no-caps")
+                house_button("Browse…", _browse)
 
             # Analysis section
             refs["analysis"] = ui.column().classes("w-full px-4 py-3 gap-3")
@@ -92,9 +93,8 @@ async def open_template_import_dialog(
 
             # Footer buttons
             with ui.row().classes("w-full justify-end items-center px-4 py-3 bg-gray-50 border-t gap-2"):
-                ui.button("Cancel", on_click=lambda: dialog.submit(None)).props("flat no-caps")
-                btn = ui.button("Import", icon="check", on_click=_confirm_import)
-                btn.props("unelevated no-caps color=primary")
+                house_button("Cancel", lambda: dialog.submit(None))
+                btn = house_button("Import", _confirm_import, kind="accent")
                 refs["import_btn"] = btn
                 if state["inspection"] is None:
                     refs["import_btn"].disable()

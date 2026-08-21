@@ -36,10 +36,11 @@ from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.particles.species_overview import SpeciesOverview, species_overview
 from services.project_state import ParticleSpecies, TemplateMask, get_project_state_for
 from services.species_admin import delete_species
+from ui.components.buttons import house_button
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.color_swatch import render_color_swatch
 from ui.components.path_link import render_path_link
-from ui.job_plugins._field_styles import section_header, section_rule
+from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
 from ui.particles.list_actions import commit_extraction_geometry
 from services.particles.catalog import is_enabled as catalog_is_enabled
 from ui.components.reactive import FingerprintedView, SingleFlight
@@ -51,7 +52,7 @@ logger = logging.getLogger(__name__)
 _DISK_REFRESH_S = 15.0  # status/sanity recompute cadence while shown (both touch disk)
 # Three ranks, and they must not collide (the maintainer, 2026-08-19: "separate them
 # visually based on what's separate conceptually"):
-#   SECTION  — `section_header()` from the house vocabulary: 11 px semibold MIXED case.
+#   SECTION  — `PAGE_SECTION_STYLE` from the house vocabulary: 12 px semibold MIXED case.
 #              "Species info" / "Template matching files" / "Extraction geometry".
 #   FIELD    — 9 px uppercase, muted: the label beside one input.
 #   HINT     — 10 px, lightest: the sentence explaining a section or a value.
@@ -66,16 +67,13 @@ _MONO_CLS = "text-[10px] font-mono text-gray-600"
 _NAME_INPUT_STYLE = "font-size: 12px; font-weight: 600; color: #1f2937;"
 
 
-def _section(title: str, hint: str = "", *, first: bool = False, tooltip: str | None = None) -> None:
-    """A top-level block header + its rule. One helper so a new section cannot invent a
-    fourth heading style."""
-    with ui.row().classes("w-full items-baseline gap-2"):
-        section_header(title, first=first)
-        if hint:
-            lbl = ui.label(hint).classes(_HINT_CLS)
-            if tooltip:
-                lbl.tooltip(tooltip)
-    section_rule()
+def _section(title: str, *, tooltip: str | None = None) -> None:
+    """A top-level block header. One helper so a new section cannot invent a fourth
+    heading style. No underline rule and no hint tail — sections are separated by the
+    page's vertical gap, and anything worth saying rides the title's tooltip."""
+    lbl = ui.label(title).style(PAGE_SECTION_STYLE)
+    if tooltip:
+        lbl.tooltip(tooltip)
 
 
 # `C1` IS "no symmetry", and most complexes are C1 (ribosome, proteasome) — the option
@@ -125,7 +123,7 @@ def render_identity_editor(backend, project_path: Path, species_id: str) -> None
         asyncio.create_task(backend.save_project(project_path, debounce_s=1.0))
 
     with ui.column().classes("w-full gap-1 px-1"):
-        _section("Species info", "what this particle is", first=True)
+        _section("Species info")
         # Row 1 — identity line.
         with ui.row().classes("w-full items-center gap-2 no-wrap"):
             _render_color_swatch(backend, project_path, species_id, sp.color or "#3b82f6")
@@ -303,10 +301,10 @@ class _BindingsView(FingerprintedView):
         with ui.column().classes("w-full gap-1 px-1"):
             _section(
                 "Template matching files",
-                "what a new TM job defaults to",
                 tooltip=(
-                    "Snapshot at job creation — changing the selection here does not reach jobs that "
-                    "already exist. Selection itself is changed on Templates & masks."
+                    "What a new TM job defaults to. Snapshot at job creation — changing the selection "
+                    "here does not reach jobs that already exist. Selection itself is changed on "
+                    "Templates & masks."
                 ),
             )
             with ui.column().classes("w-full gap-0"):
@@ -389,7 +387,6 @@ class ExtractionGeometryPanel:
         with ui.column().classes("w-full gap-1 px-1"):
             _section(
                 "Extraction geometry",
-                "this project",
                 tooltip=(
                     "One geometry per species per project. A species extracted from tomogram sets at "
                     "different binnings needs one per set — see docs/roadmaps/picking_ui/07."
@@ -556,7 +553,9 @@ class OverviewTab:
 
     def build(self, container: ui.element) -> None:
         ctx = self.ctx
-        with container, ui.column().classes("w-full gap-3 p-2"):
+        # gap-5: sections separate by AIR, not by underline rules — the rules made the
+        # tab read as a stack of gray lines while the sections themselves stayed cramped.
+        with container, ui.column().classes("w-full gap-5 p-3"):
             render_identity_editor(ctx.backend, ctx.project_path, ctx.species_id)
             bindings_slot = ui.element("div").classes("w-full")
             self._bindings = _BindingsView(bindings_slot, self)
@@ -565,18 +564,18 @@ class OverviewTab:
             status_slot = ui.element("div").classes("w-full")
             self._status = _StatusView(status_slot, self)
             with ui.row().classes("w-full items-center gap-2 px-1"):
-                ui.button("Delete species", icon="delete_forever", on_click=self._request_delete).props(
-                    "flat dense no-caps color=negative size=sm"
-                )
+                house_button("Delete species", self._request_delete, kind="danger")
                 ui.label("registry entry, pick lists, templates / masks on disk and the bound jobs").classes(_HINT_CLS)
                 # Only when a lab catalog is configured (roadmap 12) — see ui/species/catalog.py.
                 if catalog_is_enabled():
                     ui.space()
-                    ui.button("Publish to catalog", icon="publish", on_click=self._publish_to_catalog).props(
-                        "flat dense no-caps color=indigo size=sm"
-                    ).tooltip(
-                        "Copy this species DEFINITION (name, Ø, symmetry, notes, templates, masks) up to the "
-                        "lab catalog as a new version. Picks and extractions stay here."
+                    house_button(
+                        "Publish to catalog",
+                        self._publish_to_catalog,
+                        tooltip=(
+                            "Copy this species DEFINITION (name, Ø, symmetry, notes, templates, masks) up to "
+                            "the lab catalog as a new version. Picks and extractions stay here."
+                        ),
                     )
         self._bindings.refresh()
         self._status.refresh()
@@ -661,13 +660,13 @@ class OverviewTab:
             ).classes(_HINT_CLS + " mt-1")
             ui.label("This cannot be undone.").classes(_HINT_CLS + " text-red-600")
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat dense no-caps")
+                house_button("Cancel", dialog.close)
 
                 async def _confirm():
                     dialog.close()
                     await self._do_delete()
 
-                ui.button("Delete species", on_click=_confirm).props("unelevated dense color=negative no-caps")
+                house_button("Delete species", _confirm, kind="danger")
         dialog.open()
 
     async def _publish_to_catalog(self) -> None:

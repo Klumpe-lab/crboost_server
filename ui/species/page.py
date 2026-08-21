@@ -21,6 +21,7 @@ from nicegui import ui
 from services.models_base import SpeciesOrigin
 from services.particles.species_jobs import jobs_for_species
 from services.project_state import get_project_state_for
+from ui.components.buttons import house_button
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.components.segmented import Segmented, render_segmented
 from ui.components.species_pill import render_species_pill
@@ -121,9 +122,7 @@ class SpeciesPage:
                             "width: 48px; height: 48px; display: flex;"
                         )
                         ui.label("No species registered yet").classes("text-sm text-gray-400")
-                        ui.button("Add first species", icon="add", on_click=self.add_species).props(
-                            "unelevated no-caps"
-                        ).style("background: #3b82f6; color: white; border-radius: 6px; padding: 6px 16px;")
+                        house_button("Add first species", self.add_species, kind="accent")
 
         state = get_project_state_for(self.project_path)
         # Paint the rail BEFORE building any tab. A tab that raises during build kills the
