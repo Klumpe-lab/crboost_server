@@ -29,6 +29,8 @@ from pathlib import Path
 
 from nicegui import context, ui
 
+from ui.components.buttons import house_button
+
 logger = logging.getLogger(__name__)
 
 # One copyable-code language across all three sections: a white inset on the light
@@ -199,10 +201,8 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             with body:
                 # ── action row (Start/Stop swap in place; spinner while starting) ──
                 with ui.row().classes("w-full items-center gap-2"):
-                    start_btn = ui.button("Start session", icon="play_arrow", color="indigo", on_click=lambda: _start())
-                    start_btn.props("no-caps dense")
-                    stop_btn = ui.button("Stop session", icon="stop", color="red", on_click=lambda: _stop())
-                    stop_btn.props("flat dense no-caps")
+                    start_btn = house_button("Start session", lambda: _start(), kind="accent")
+                    stop_btn = house_button("Stop session", lambda: _stop(), kind="danger")
                     busy_box = ui.row().classes("items-center gap-2")
                     with busy_box:
                         ui.spinner(size="sm")
@@ -256,19 +256,10 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                             ui.label(f"{auto_count} auto picks").classes("text-[10px] text-slate-400")
                         ui.space()
                         if commands and can_load:
-                            load_btn = ui.button(
-                                "Load into running session",
-                                icon="swap_horiz",
-                                color="indigo",
-                                on_click=lambda: _load_into_session(),
-                            ).props("dense no-caps size=sm")
+                            load_btn = house_button("Load into running session", lambda: _load_into_session())
                             load_btn.tooltip("Swap the running ArtiaX to this tomogram + picks — no copy-paste")
                         if commands:
-                            ui.button(
-                                "Copy commands",
-                                icon="content_copy",
-                                on_click=lambda: ui.run_javascript(_copy_js(cmd_block)),
-                            ).props("flat dense no-caps size=sm color=indigo")
+                            house_button("Copy commands", lambda: ui.run_javascript(_copy_js(cmd_block)))
                     if commands:
                         ui.label(
                             "crboost preloads this tomogram and its picks for you — use Load into running "
@@ -282,7 +273,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                         ui.label(cmd_block).classes(_BLOCK)
                     else:
                         ui.label(
-                            "Open a tomogram with “curate” on the species page's Curation tab (or ⚡ in the "
+                            "Open a tomogram with “curate” on the Particles registry's Curation tab (or ⚡ in the "
                             "journey) to preload it + its picks here."
                         ).classes("text-[11px] text-gray-500")
 
@@ -291,9 +282,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                     hdr = _section_head("save", "Pick & save")
                     with hdr:
                         ui.space()
-                        save_btn = ui.button(
-                            "Save picks now", icon="save", color="green", on_click=lambda: _save_picks_now()
-                        ).props("dense no-caps size=sm")
+                        save_btn = house_button("Save picks now", lambda: _save_picks_now())
                         save_btn.tooltip(
                             "Save the pick lists you made in ArtiaX into the loaded tomogram's folder — no Save dialog"
                         )
@@ -327,7 +316,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                     ts_md = ui.markdown("").classes("text-[11px]")
 
             with ui.row().classes("w-full justify-end mt-1"):
-                ui.button("Close", on_click=_close).props("flat dense")
+                house_button("Close", _close)
 
     _OPEN_DIALOGS[cid] = dialog
     dialog.open()
@@ -472,8 +461,8 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                     "text-[10px] text-gray-400"
                 )
                 with ui.row().classes("w-full justify-end gap-2"):
-                    ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
-                    ui.button("Load", color="indigo", on_click=lambda: confirm.submit(True)).props("dense no-caps")
+                    house_button("Cancel", lambda: confirm.submit(None))
+                    house_button("Load", lambda: confirm.submit(True), kind="accent")
         go = await confirm
         do_save = bool(save_cb.value) if go else False
         try:
