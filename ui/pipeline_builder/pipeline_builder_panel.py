@@ -136,7 +136,7 @@ class PipelineBuilderPanel:
             if not state.species_registry:
                 ui.notify(
                     "No particle species yet — use “+” on the PARTICLES header to create one "
-                    "(no template needed), or create one on the Species page.",
+                    "(no template needed), or create one in the Particles registry.",
                     type="warning",
                     timeout=4000,
                 )
@@ -314,7 +314,7 @@ class PipelineBuilderPanel:
         if job_type in PHASE_JOBS[PHASE_PARTICLES] and species_id is None and instance_id not in state.jobs:
             ui.notify(
                 f"{get_job_display_name(job_type)} needs a particle species — add it from the "
-                "PARTICLES header “+” or the Species page's Jobs tab, which ask for one.",
+                "PARTICLES header “+” or the Particles registry's Jobs tab, which ask for one.",
                 type="warning",
                 timeout=4000,
             )
