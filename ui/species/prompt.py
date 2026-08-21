@@ -25,6 +25,7 @@ from services import species_admin
 from services.jobs._base import SymmetryGroup
 from services.models_base import SpeciesOrigin, species_palette_color
 from services.project_state import ParticleSpecies, TemplateMask, get_project_state_for, slugify
+from ui.components.buttons import house_button
 from ui.components.color_swatch import render_color_swatch
 from ui.species.overview_tab import SYMMETRY_OPTIONS
 from ui.local_file_picker import local_file_picker
@@ -60,7 +61,7 @@ def _path_row(label: str, hint: str, on_pick, state: dict, key: str) -> None:
     with ui.row().classes("w-full items-center gap-2 no-wrap"):
         ui.label(label).classes(_LABEL_CLS).style("width: 64px; flex-shrink: 0;")
         field = (
-            ui.input(placeholder="none — add later on the Species page")
+            ui.input(placeholder="none — add later in the Particles registry")
             .props("dense outlined readonly")
             .classes("flex-1")
             .style("min-width: 0;")
@@ -198,8 +199,8 @@ async def prompt_species_draft() -> SpeciesDraft | None:
         name_input.on("keydown.enter", _confirm)
 
         with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=lambda: dialog.submit(None)).props("flat dense no-caps")
-            ui.button("Create", on_click=_confirm).props("dense no-caps unelevated color=primary")
+            house_button("Cancel", lambda: dialog.submit(None))
+            house_button("Create", _confirm, kind="accent")
 
     return await dialog
 
