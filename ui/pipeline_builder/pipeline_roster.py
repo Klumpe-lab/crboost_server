@@ -874,7 +874,9 @@ class RosterWidget(FingerprintedView):
 
             if panel.toggle_workbench is not None:
                 ui.element("div").style("height: 1px;")
-                wb_btn = self._sb_svg_btn("particle.svg", "Species", panel.toggle_workbench, ref_key="wb_btn")
+                wb_btn = self._sb_svg_btn(
+                    "particle.svg", "Particles registry", panel.toggle_workbench, ref_key="wb_btn"
+                )
                 panel.callbacks["wb_btn"] = wb_btn
 
             # Tomogram Dashboard — unified per-TS inspection surface that replaces

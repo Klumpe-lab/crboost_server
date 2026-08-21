@@ -65,6 +65,6 @@ def render_species_line(species, *, on_open: Callable[[], None] | None = None) -
         )
         render_species_pill(species)
         if on_open is not None:
-            ui.label("open in Species ↗").style(
+            ui.label("open in Particles registry ↗").style(
                 f"{SANS} font-size: 10px; color: #6366f1; cursor: pointer; text-decoration: underline dotted;"
             ).on("click", lambda _e: on_open()).tooltip("Templates, masks, picks and settings of this species")

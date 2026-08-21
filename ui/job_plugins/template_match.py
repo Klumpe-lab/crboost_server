@@ -11,12 +11,20 @@ by services.templating.angle_lists and passed to PyTOM as
 --angular-search <file>). Default is inherited from species.symmetry at
 job-creation time but the user can override here. The default-renderer
 skips template_path / mask_path / symmetry because we render all three
-in the dedicated card below.
+in the "From species" section below.
+
+Those three rows are job parameters with a species-shaped default, so they sit in the
+SAME Parameters card as everything else — one `section_header` + `field_grid` in the
+house vocabulary, never a nested card with its own font scale (picking-UI roadmap 02;
+guideline of record in docs/roadmaps/picking_ui/00-overview.md). Each row's tooltip
+names the species value it defaulted from, because the driver reads the JOB's value:
+the species card can say I1 while the run is C1, and only this tooltip and the Species
+page's Jobs-tab drift chip will say so.
 
 The Config tab opens with the one species line (pill + "open in Species");
 species facts (templates, masks, Ø, symmetry) live on the species itself, not
-here (roadmap 08 S1). If species.templates is empty the dropdown shows an
-empty-state hint pointing the user to the workbench.
+here (roadmap 08 S1). If species.templates is empty the row states the absence and
+points at the Species page rather than preselecting anything.
 """
 
 from pathlib import Path
@@ -30,7 +38,10 @@ from services.models_base import resolve_species
 from services.templating.template_metadata import read_template_header
 from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins import register_params_renderer
+from ui.job_plugins._field_styles import SPECIES_SECTION_TITLE, choice_row, field_grid, section_header
 from ui.job_plugins.default_renderer import render_config_preamble, render_default_params
+
+_OVERRIDE_NOTE = "Changing it here affects only this job instance — the species is not modified."
 
 
 @register_params_renderer(JobType.TEMPLATE_MATCH_PYTOM)
@@ -55,18 +66,18 @@ def render_template_match_params(job_type, job_model, is_frozen, save_handler, *
         return
 
     # ── Template + mask + search symmetry ─────────────────────────────────
-    with ui.card().classes("w-full border border-gray-200 shadow-sm overflow-hidden bg-white mt-2"):
-        with ui.row().classes("w-full items-center px-3 py-2 bg-gray-50 border-b border-gray-100 gap-2"):
-            ui.icon("category", size="14px").classes("text-gray-500")
-            ui.label("Template, mask & search symmetry").classes("text-sm font-bold text-gray-800")
-            ui.label(
-                "(all three default to the species; you can override here for a one-off run)"
-            ).classes("text-[11px] text-gray-400 italic ml-2")
+    section_header(SPECIES_SECTION_TITLE)
+    with field_grid():
+        _render_template_dropdown(species, job_model, is_frozen, save_handler)
+        _render_mask_dropdown(species, job_model, is_frozen, save_handler)
+        _render_symmetry_dropdown(species, job_model, is_frozen, save_handler)
 
-        with ui.column().classes("w-full p-3 gap-3"):
-            _render_template_dropdown(species, job_model, is_frozen, save_handler)
-            _render_mask_dropdown(species, job_model, is_frozen, save_handler)
-            _render_symmetry_dropdown(job_model, is_frozen, save_handler)
+
+def _default_note(kind: str, default_name: str | None) -> str:
+    """ "why is this not what the species says", answerable without leaving the tab."""
+    if default_name:
+        return f"Species default: `{default_name}`. {_OVERRIDE_NOTE}"
+    return f"The species has no selected {kind}. {_OVERRIDE_NOTE}"
 
 
 def _render_template_dropdown(species, job_model, is_frozen: bool, save_handler) -> None:
@@ -74,13 +85,20 @@ def _render_template_dropdown(species, job_model, is_frozen: bool, save_handler)
     current = getattr(job_model, "template_path", "") or ""
     selected = species.get_selected_template() if hasattr(species, "get_selected_template") else None
     default_path = (selected.template_path if selected else "") or ""
+    hint = _default_note("template", Path(default_path).name if default_path else None)
 
     if not templates:
-        with ui.row().classes("w-full items-center gap-3"):
-            ui.label("Template").classes("text-[10px] font-bold text-gray-400 uppercase w-28 shrink-0 text-right")
-            ui.label("No templates registered — open the workbench to add one.").classes(
-                "text-xs text-orange-500 italic"
-            )
+        choice_row(
+            "Template",
+            job_model,
+            "template_path",
+            {},
+            is_frozen=is_frozen,
+            save_handler=save_handler,
+            hint=hint,
+            placeholder="no templates registered",
+        )
+        _absent_pointer("Register one in the Particles registry → Templates & masks.")
         return
 
     options: dict[str, str] = {}
@@ -103,21 +121,19 @@ def _render_template_dropdown(species, job_model, is_frozen: bool, save_handler)
     if value not in options and options:
         value = next(iter(options.keys()))
 
-    with ui.row().classes("w-full items-center gap-3"):
-        ui.label("Template").classes("text-[10px] font-bold text-gray-400 uppercase w-28 shrink-0 text-right")
-        sel = ui.select(options=options, value=value).props("outlined dense").classes("flex-1 text-xs font-mono")
-        if is_frozen:
-            sel.disable()
-        else:
-
-            def _on_change(e):
-                job_model.template_path = e.value or ""
-                save_handler()
-
-            sel.on_value_change(_on_change)
+    choice_row(
+        "Template",
+        job_model,
+        "template_path",
+        options,
+        is_frozen=is_frozen,
+        save_handler=save_handler,
+        value=value,
+        hint=hint,
+    )
 
 
-def _render_symmetry_dropdown(job_model, is_frozen: bool, save_handler) -> None:
+def _render_symmetry_dropdown(species, job_model, is_frozen: bool, save_handler) -> None:
     # Annotate each option with how PyTOM is going to honor it so the user
     # knows what they're picking. Cn (n=1..6) goes through the dedicated
     # --z-axis-rotational-symmetry flag; D/T/O/I are translated by the
@@ -134,38 +150,31 @@ def _render_symmetry_dropdown(job_model, is_frozen: bool, save_handler) -> None:
     value = getattr(job_model, "symmetry", "C1") or "C1"
     if value not in options:
         value = "C1"
-    with ui.row().classes("w-full items-center gap-3"):
-        ui.label("Symmetry").classes("text-[10px] font-bold text-gray-400 uppercase w-28 shrink-0 text-right")
-        sel = (
-            ui.select(options=options, value=value)
-            .props("outlined dense")
-            .classes("flex-1 text-xs font-mono")
-            .tooltip(
-                "Cn uses PyTOM's --z-axis-rotational-symmetry flag (n-fold around z). "
-                "D/T/O/I generate a custom asymmetric-unit angle list at submission and "
-                "pass --angular-search <file>. The template must be symmetric under the "
-                "chosen group — RELION reconstructions made with --sym <group> are."
-            )
-        )
-        if is_frozen:
-            sel.disable()
-        else:
-
-            def _on_change(e):
-                job_model.symmetry = e.value or "C1"
-                save_handler()
-
-            sel.on_value_change(_on_change)
+    species_sym = getattr(species, "symmetry", "") or "C1"
+    choice_row(
+        "Symmetry",
+        job_model,
+        "symmetry",
+        options,
+        is_frozen=is_frozen,
+        save_handler=save_handler,
+        value=value,
+        empty_value="C1",
+        hint=(
+            f"Species default: {'None (C1)' if species_sym == 'C1' else species_sym}. {_OVERRIDE_NOTE}\n"
+            "Cn uses PyTOM's --z-axis-rotational-symmetry flag (n-fold around z). "
+            "D/T/O/I generate a custom asymmetric-unit angle list at submission and "
+            "pass --angular-search <file>. The template must be symmetric under the "
+            "chosen group — RELION reconstructions made with --sym <group> are."
+        ),
+    )
 
 
 def _group_order(point_group: str) -> int:
     """Order of the point group (|G|) for the suffix label. Mirrors the table
     in services.templating.angle_lists.POINT_GROUP_ORDER but kept inline here
     to avoid importing scipy-dependent modules at UI render time."""
-    return {
-        "D2": 4, "D3": 6, "D4": 8, "D5": 10, "D6": 12,
-        "T": 12, "O": 24, "I1": 60, "I2": 60,
-    }.get(point_group, 1)
+    return {"D2": 4, "D3": 6, "D4": 8, "D5": 10, "D6": 12, "T": 12, "O": 24, "I1": 60, "I2": 60}.get(point_group, 1)
 
 
 def _render_mask_dropdown(species, job_model, is_frozen: bool, save_handler) -> None:
@@ -173,13 +182,20 @@ def _render_mask_dropdown(species, job_model, is_frozen: bool, save_handler) -> 
     current = getattr(job_model, "mask_path", "") or ""
     selected = species.get_selected_mask() if hasattr(species, "get_selected_mask") else None
     default_path = (selected.mask_path if selected else "") or ""
+    hint = _default_note("mask", Path(default_path).name if default_path else None)
 
     if not masks:
-        with ui.row().classes("w-full items-center gap-3"):
-            ui.label("Mask").classes("text-[10px] font-bold text-gray-400 uppercase w-28 shrink-0 text-right")
-            ui.label("No masks registered — create or import one via the workbench.").classes(
-                "text-xs text-orange-500 italic"
-            )
+        choice_row(
+            "Mask",
+            job_model,
+            "mask_path",
+            {},
+            is_frozen=is_frozen,
+            save_handler=save_handler,
+            hint=hint,
+            placeholder="no masks registered",
+        )
+        _absent_pointer("Create or import one in the Particles registry → Templates & masks.")
         return
 
     # Include a "(none)" option so the user can explicitly skip a mask.
@@ -193,15 +209,14 @@ def _render_mask_dropdown(species, job_model, is_frozen: bool, save_handler) -> 
     if value not in options:
         value = ""
 
-    with ui.row().classes("w-full items-center gap-3"):
-        ui.label("Mask").classes("text-[10px] font-bold text-gray-400 uppercase w-28 shrink-0 text-right")
-        sel = ui.select(options=options, value=value).props("outlined dense").classes("flex-1 text-xs font-mono")
-        if is_frozen:
-            sel.disable()
-        else:
+    choice_row(
+        "Mask", job_model, "mask_path", options, is_frozen=is_frozen, save_handler=save_handler, value=value, hint=hint
+    )
 
-            def _on_change(e):
-                job_model.mask_path = e.value or ""
-                save_handler()
 
-            sel.on_value_change(_on_change)
+def _absent_pointer(text: str) -> None:
+    """The amber "nothing registered" pointer that rides under an empty row. Absent must
+    read as absent, not as defaulted."""
+    with ui.row().classes("items-center gap-1 no-wrap").style("margin: -2px 0 4px 118px;"):
+        ui.icon("warning", size="11px").classes("text-amber-600")
+        ui.label(text).style("font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; color: #b45309;")

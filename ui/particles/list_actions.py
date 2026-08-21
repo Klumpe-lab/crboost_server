@@ -410,7 +410,7 @@ def prompt_extraction_geometry(
             f"'{ref.species_label or ref.species_id}' has no subtomo-extraction job to inherit box/binning/crop "
             "from. Set them once — they are saved on the species and reused for every later extraction."
         ).classes("text-xs text-gray-600")
-        ui.label("Also editable any time on the Species page → Overview → Extraction geometry.").classes(
+        ui.label("Also editable any time in the Particles registry → Overview → Extraction geometry.").classes(
             "text-[10px] text-gray-400"
         )
         box_in, bin_in, crop_in = geometry_inputs()
