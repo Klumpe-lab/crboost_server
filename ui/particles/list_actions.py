@@ -31,6 +31,8 @@ from services.particles.species_overview import ExtractJob
 from services.project_state import ExtractionParams, PickList, get_project_state_for
 from services.visualization.tomo_geometry import geometry_for_ts
 from ui.background_task import BackgroundTask
+from ui.components.buttons import house_button
+from ui.components.fields import house_number, house_select, house_text
 from ui.components.reactive import SingleFlight
 from ui.curation_session_dialog import open_curation_control_center
 
@@ -159,8 +161,8 @@ async def _confirm_reextract(ref: ListRef, job) -> bool:
             "left to move it — re-extracting is then exactly the right thing to do."
         ).classes("text-[10px] text-gray-400")
         with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
-            ui.button("Re-extract anyway", on_click=lambda: confirm.submit(True)).props("dense no-caps color=orange-7")
+            house_button("Cancel", lambda: confirm.submit(None))
+            house_button("Re-extract anyway", lambda: confirm.submit(True), kind="accent")
     go = await confirm
     confirm.delete()
     return bool(go)
@@ -339,8 +341,8 @@ async def open_extraction_logs(backend, project_path: Path, job: ExtractJob, *, 
 
         with ui.row().classes("w-full justify-end gap-2"):
             if job.job_dir:
-                ui.button("Reload", icon="refresh", on_click=_load).props("flat dense no-caps size=sm")
-            ui.button("Close", on_click=lambda: dialog.submit(None)).props("flat dense no-caps size=sm")
+                house_button("Reload", _load)
+            house_button("Close", lambda: dialog.submit(None))
     dialog.open()
     if job.job_dir:
         await _load()
@@ -360,9 +362,9 @@ def geometry_inputs() -> tuple[ui.number, ui.number, ui.number]:
     """The three extraction-geometry fields (box / binning / crop), EMPTY on purpose —
     prefilling them with the old 384/1.0/224 would just relabel a silent default as a
     confirmed one. Shared by the per-list prompt and the Picks tab's extract-all pre-flight."""
-    box_in = ui.number("box size (px, unbinned)", min=16, step=2).props("dense outlined").classes("w-full")
-    bin_in = ui.number("binning", min=0.1, step=0.5).props("dense outlined").classes("w-full")
-    crop_in = ui.number("crop size (px)", min=16, step=2).props("dense outlined").classes("w-full")
+    box_in = house_number("Box size", min=16, step=2, width="w-28", hint="px, unbinned")
+    bin_in = house_number("Binning", min=0.1, step=0.5, width="w-28")
+    crop_in = house_number("Crop size", min=16, step=2, width="w-28", hint="px")
     return box_in, bin_in, crop_in
 
 
@@ -427,8 +429,8 @@ def prompt_extraction_geometry(
             _submit_list_extraction(backend, ref, candidate_optset, tomograms_star, list_star, params, on_done)
 
         with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Save & extract", icon="science", color="indigo", on_click=_commit).props("no-caps")
+            house_button("Cancel", dialog.close)
+            house_button("Save & extract", _commit, kind="accent")
     dialog.open()
 
 
@@ -541,12 +543,15 @@ def open_dedup_dialog(backend, ref: ListRef, *, default_radius_ang: float, on_do
         with ui.row().classes("items-center gap-2"):
             ui.icon("join_inner", size="16px").classes("text-orange-700")
             ui.label(f"Overlap — {ref.label} · {ref.tomo_name}").classes("text-sm font-bold")
-        radius_in = (
-            ui.number("overlap radius", value=default_radius_ang, step=1, min=0)
-            .props("dense outlined suffix=Å debounce=600")
-            .classes("w-full text-xs")
-            .tooltip("Two picks closer than this (Å) are treated as the same particle")
+        radius_in = house_number(
+            "Overlap radius",
+            value=default_radius_ang,
+            step=1,
+            min=0,
+            width="w-28",
+            hint="Two picks closer than this (Å) are treated as the same particle",
         )
+        radius_in.props("suffix=Å debounce=600")
         note = ui.label("checking overlaps…").classes("text-[11px] text-gray-600")
 
         async def _recompute(_e=None):
@@ -572,10 +577,9 @@ def open_dedup_dialog(backend, ref: ListRef, *, default_radius_ang: float, on_do
             await dedup_list(backend, ref, float(radius_in.value or 0), on_done=on_done)
 
         with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat dense no-caps")
+            house_button("Cancel", dialog.close)
             dedup_btn = (
-                ui.button("Deduplicate", icon="cleaning_services", on_click=_do_dedup)
-                .props("dense no-caps color=orange-7")
+                house_button("Deduplicate", _do_dedup, kind="accent")
                 .tooltip(
                     "Remove every pick within the radius of a higher-priority pick (manual kept over auto). "
                     "Rewrites this merged list — re-extract after."
@@ -664,7 +668,7 @@ async def load_tomo_into_session(backend, ref: ListRef) -> None:
             # a session is up, i.e. just after one died. So name WHERE the action is, not a
             # button that exists on only one of them.
             _notify(
-                "No running ChimeraX session — start one with 'curate' on the species page's Curation tab "
+                "No running ChimeraX session — start one with 'curate' on the Particles registry's Curation tab "
                 "(it opens the control center for that tomogram).",
                 type="warning",
                 timeout=6000,
@@ -686,8 +690,8 @@ async def load_tomo_into_session(backend, ref: ListRef) -> None:
                     "text-[10px] text-gray-400"
                 )
                 with ui.row().classes("w-full justify-end gap-2"):
-                    ui.button("Cancel", on_click=lambda: confirm.submit(None)).props("flat dense no-caps")
-                    ui.button("Load", color="indigo", on_click=lambda: confirm.submit(True)).props("dense no-caps")
+                    house_button("Cancel", lambda: confirm.submit(None))
+                    house_button("Load", lambda: confirm.submit(True), kind="accent")
         go = await confirm
         do_save = bool(save_cb.value) if go else False
         try:
@@ -765,18 +769,20 @@ def import_picks_from_path(
         ).classes("text-xs text-gray-600")
         if tomo_options:
             names = list(tomo_options)
-            tomo_sel = (
-                ui.select(names, value=ref.tomo_name if ref.tomo_name in tomo_options else names[0], label="tomogram")
-                .props("dense outlined options-dense")
-                .classes("w-full text-xs")
+            tomo_sel = house_select(
+                "Tomogram",
+                names,
+                value=ref.tomo_name if ref.tomo_name in tomo_options else names[0],
+                width="w-64",
             )
+            tomo_sel.props("options-dense")
             target["ref"] = tomo_options[tomo_sel.value]
 
             def _pick(e):
                 target["ref"] = tomo_options[e.value]
 
             tomo_sel.on_value_change(_pick)
-        path_in = ui.input("path to .coords").props("dense outlined").classes("w-full font-mono text-xs")
+        path_in = house_text("Path to .coords", width="w-full")
 
         async def _do_import():
             p = (path_in.value or "").strip()
@@ -805,6 +811,6 @@ def import_picks_from_path(
             await register_imported_picks(backend, r, result, on_done=on_done)
 
         with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
-            ui.button("Import", icon="download", color="indigo", on_click=_do_import).props("no-caps")
+            house_button("Cancel", dialog.close)
+            house_button("Import", _do_import, kind="accent")
     dialog.open()
