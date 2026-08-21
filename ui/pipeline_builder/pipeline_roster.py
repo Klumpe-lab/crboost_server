@@ -7,6 +7,7 @@ from services.models_base import JobStatus
 from services.project_state import JobType
 from ui.current_project import current_project_state
 
+from ui.components.buttons import house_button
 from ui.components.reactive import FingerprintedView
 from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
@@ -697,7 +698,7 @@ class RosterWidget(FingerprintedView):
                 )
 
             with ui.row().classes("w-full justify-end mt-4 gap-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
+                house_button("Cancel", dialog.close)
 
                 async def confirm():
                     dialog.close()
@@ -721,9 +722,7 @@ class RosterWidget(FingerprintedView):
                     except Exception as e:
                         ui.notify(f"Error: {e}", type="negative")
 
-                delete_btn = ui.button("Delete", color="red", on_click=confirm)
-                if preview and preview.get("downstream_count", 0) > 0:
-                    delete_btn.props('icon="delete_forever"')
+                house_button("Delete", confirm, kind="danger")
 
         dialog.open()
 
@@ -767,7 +766,7 @@ class RosterWidget(FingerprintedView):
                     ).classes("text-xs text-orange-700 mt-2")
 
             with ui.row().classes("w-full justify-end mt-4 gap-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
+                house_button("Cancel", dialog.close)
 
                 def confirm():
                     dialog.close()
@@ -777,7 +776,7 @@ class RosterWidget(FingerprintedView):
                     panel.remove_instance_from_pipeline(instance_id)
                     ui.notify("Tilt filter removed. Labels preserved.", type="info")
 
-                ui.button("Remove", color="red", on_click=confirm)
+                house_button("Remove", confirm, kind="danger")
 
         dialog.open()
 
@@ -1138,9 +1137,7 @@ class RosterWidget(FingerprintedView):
                 with ui.element("div").style(
                     "display: flex; justify-content: flex-end; padding: 4px 10px; border-top: 1px solid #f1f5f9;"
                 ):
-                    ui.button("Clear all", on_click=_clear_history).props("flat dense no-caps").style(
-                        f"{FONT} font-size: 10px; color: #94a3b8;"
-                    )
+                    house_button("Clear all", _clear_history)
 
         def _toggle_history():
             dd = history_refs.get("dropdown")

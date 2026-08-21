@@ -11,6 +11,7 @@ from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobStatus
 from services.project_state import JobType
 
+from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
 from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, missing_deps, next_instance_id
@@ -159,10 +160,8 @@ class PipelineBuilderPanel:
                 sel.on_value_change(_on_change)
 
                 with ui.row().classes("w-full justify-end gap-2 mt-4"):
-                    ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
-                    ui.button("Add", on_click=lambda: dialog.submit(True)).props("dense no-caps").style(
-                        "background: #3b82f6; color: white; padding: 4px 16px; border-radius: 3px;"
-                    )
+                    house_button("Cancel", lambda: dialog.submit(False))
+                    house_button("Add", lambda: dialog.submit(True), kind="accent")
 
             confirmed = await dialog
             if not confirmed:
@@ -622,10 +621,8 @@ class PipelineBuilderPanel:
                 ui.label("No active SLURM jobs found for this project.").classes("text-sm text-gray-500 mt-2")
             ui.label("Running and queued jobs will be marked Failed.").classes("text-xs text-amber-600 mt-3")
             with ui.row().classes("mt-4 gap-2 justify-end w-full"):
-                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
-                ui.button("Stop Pipeline", on_click=lambda: dialog.submit(True)).props("dense no-caps").style(
-                    "background: #ef4444; color: white; padding: 4px 16px; border-radius: 3px;"
-                )
+                house_button("Cancel", lambda: dialog.submit(False))
+                house_button("Stop pipeline", lambda: dialog.submit(True), kind="accent")
 
         confirmed = await dialog
         if not confirmed:
