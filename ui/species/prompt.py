@@ -27,6 +27,7 @@ from services.models_base import SpeciesOrigin, species_palette_color
 from services.project_state import ParticleSpecies, TemplateMask, get_project_state_for, slugify
 from ui.components.buttons import house_button
 from ui.components.color_swatch import render_color_swatch
+from ui.components.fields import HOUSE_LABEL_CLS, house_field, house_number, house_select
 from ui.species.overview_tab import SYMMETRY_OPTIONS
 from ui.local_file_picker import local_file_picker
 from ui.template_import_dialog import open_template_import_dialog
@@ -59,11 +60,11 @@ def _path_row(label: str, hint: str, on_pick, state: dict, key: str) -> None:
     """Read-only path field + "choose…" + clear "×". The field is read-only because the
     picker is the only honest way to name a file that must exist."""
     with ui.row().classes("w-full items-center gap-2 no-wrap"):
-        ui.label(label).classes(_LABEL_CLS).style("width: 64px; flex-shrink: 0;")
+        ui.label(label).classes(HOUSE_LABEL_CLS).style("width: 64px; flex-shrink: 0;")
         field = (
             ui.input(placeholder="none — add later in the Particles registry")
-            .props("dense outlined readonly")
-            .classes("flex-1")
+            .props("dense readonly")
+            .classes("cb-field flex-1")
             .style("min-width: 0;")
         )
         field.tooltip(hint)
@@ -77,7 +78,7 @@ def _path_row(label: str, hint: str, on_pick, state: dict, key: str) -> None:
             if picked:
                 _set(picked)
 
-        ui.button("choose…", on_click=_choose).props("flat dense no-caps size=sm color=primary")
+        house_button("Choose…", _choose)
         ui.button(icon="close", on_click=lambda: _set("")).props("flat dense round size=sm").tooltip("clear")
 
 
@@ -113,8 +114,8 @@ async def prompt_species_draft() -> SpeciesDraft | None:
             )
             name_input = (
                 ui.input(placeholder="e.g. Ribosome, 26S Proteasome")
-                .props("dense outlined autofocus")
-                .classes("flex-1")
+                .props("dense autofocus")
+                .classes("cb-field flex-1")
                 .style("min-width: 0;")
             )
             name_input.tooltip("Display name. The species id is slugified from it.")
@@ -128,27 +129,26 @@ async def prompt_species_draft() -> SpeciesDraft | None:
         name_input.on_value_change(_on_name)
 
         with ui.row().classes("w-full items-center gap-4 no-wrap"):
-            with ui.row().classes("items-center gap-2 no-wrap"):
-                ui.label("Diameter").classes(_LABEL_CLS)
-                diam_input = ui.number(placeholder="e.g. 250", step=10, min=0).props("dense outlined").classes("w-24")
-                diam_input.tooltip("Ø of the particle in ångström — the default for new pick-candidates jobs.")
-                ui.label("Å").classes(_HINT_CLS)
-            with ui.row().classes("items-center gap-2 no-wrap"):
-                ui.label("Symmetry").classes(_LABEL_CLS)
-                sym_select = (
-                    ui.select(options=SYMMETRY_OPTIONS, value=SymmetryGroup.C1.value)
-                    .props("dense outlined")
-                    .classes("w-32")
-                )
-                sym_select.tooltip(
-                    "Point-group symmetry of the particle. Most complexes are C1; this is the default "
-                    "for new TM jobs, which can still override it."
-                )
+            diam_input = house_number(
+                "Diameter",
+                placeholder="e.g. 250",
+                step=10,
+                min=0,
+                width="w-24",
+                hint="Ø of the particle in ångström — the default for new pick-candidates jobs.",
+            )
+            diam_input.props("suffix=Å")
+            sym_select = house_select(
+                "Symmetry",
+                SYMMETRY_OPTIONS,
+                value=SymmetryGroup.C1.value,
+                width="w-32",
+                hint="Point-group symmetry of the particle. Most complexes are C1; this is the default "
+                "for new TM jobs, which can still override it.",
+            )
 
-        notes_input = (
-            ui.textarea(placeholder="notes (free-form, optional)")
-            .props("dense outlined autogrow rows=2")
-            .classes("w-full")
+        notes_input = house_field(
+            "Notes", lambda: ui.textarea(placeholder="free-form, optional").props("autogrow rows=2"), width="w-full"
         )
 
         ui.element("div").style("height: 1px; background: #eef2f6; margin: 2px 0;")
@@ -170,7 +170,7 @@ async def prompt_species_draft() -> SpeciesDraft | None:
             "mask_path",
         )
         ui.label(
-            "Leave empty and add them later on the Species page. The template's header is inspected "
+            "Leave empty and add them later in the Particles registry. The template's header is inspected "
             "and confirmed after you create."
         ).classes(_HINT_CLS)
 
