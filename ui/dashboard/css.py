@@ -1026,6 +1026,84 @@ _CB_CSS = """
     font-size: 10px; color: #6366f1; border-bottom: 1px solid #f1f5f9;
 }
 .cb-srail-add:hover { background: #eef2ff; }
+
+/* ── App-wide control chrome ───────────────────────────────────────────────── */
+/* Lives HERE, not in main_ui's add_head_html: that block is baked into the page
+ * shell, which is served stale on this deployment (2026-08-21 incident — new
+ * shell CSS never reached the browser). ensure_assets_loaded() injects per
+ * client AFTER connect, over the socket, so these rules always arrive fresh.
+ * Structural styling stays INLINE on the elements (house_button, _stacked_panels);
+ * this file only carries what inline styles cannot express. */
+
+/* Native <input type=number> spin arrows OFF: every numeric field is a typed
+ * value, not a click-to-increment counter, and the browser arrows were the
+ * loudest, least stylable chrome on any form. Pseudo-elements — CSS-only. */
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; }
+
+/* House button hover states (ui/components/buttons.py — the base look is inline
+ * on the element, so hover needs !important to override it). */
+.q-btn.cb-btn:hover { background: #f1f5f9 !important; border-color: #94a3b8 !important; }
+.q-btn.cb-btn--accent:hover { background: #1e293b !important; border-color: #1e293b !important; }
+.q-btn.cb-btn--danger:hover { background: #fef2f2 !important; border-color: #f87171 !important; }
+
+/* MIRROR of the .cb-select / .cb-field block in ui/main_ui.py's shell <style>.
+ * A stale shell renders these fields as default ~40px Quasar Material inputs with a
+ * floating underline — keep this copy in the always-fresh channel until the shell
+ * block is retired. Same selectors, same values: a client that has both just
+ * applies the identical rules twice. */
+/* `height`, not just min-height: Quasar pins dense controls at a FIXED height of
+ * 40px (.q-field--dense .q-field__control) — min-height alone never shrank them. */
+.cb-select .q-field__control,
+.cb-field .q-field__control {
+    height: 20px; min-height: 20px; padding: 0 5px;
+    border: 1px solid #e2e8f0; border-radius: 4px;
+    background: #fff; transition: border-color .12s ease;
+}
+.cb-select .q-field__control:hover,
+.cb-field .q-field__control:hover { border-color: #cbd5e1; }
+.cb-select.q-field--focused .q-field__control,
+.cb-field.q-field--focused .q-field__control { border-color: #94a3b8; }
+.cb-select .q-field__control:before,
+.cb-select .q-field__control:after,
+.cb-field .q-field__control:before,
+.cb-field .q-field__control:after { display: none !important; }
+.cb-select .q-field__native,
+.cb-select .q-field__input,
+.cb-field .q-field__native,
+.cb-field .q-field__input {
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 11px;
+    color: #1e293b; padding: 0; line-height: 18px; min-height: 0;
+}
+.cb-select .q-field__marginal,
+.cb-select .q-field__append,
+.cb-field .q-field__marginal,
+.cb-field .q-field__append { height: 18px; }
+.cb-select .q-field__append .q-icon,
+.cb-field .q-field__append .q-icon { font-size: 14px; color: #94a3b8; }
+.cb-select.q-field--disabled .q-field__control,
+.cb-field.q-field--disabled .q-field__control { background: #f8fafc; }
+.cb-field .q-field__control { height: 16px; min-height: 16px; padding: 0 4px; }
+.cb-field .q-field__native,
+.cb-field .q-field__input { font-size: 10px; line-height: 14px; }
+.cb-field .q-field__marginal,
+.cb-field .q-field__append { height: 14px; }
+.cb-field .q-field__append .q-icon { font-size: 12px; }
+.cb-field.q-textarea .q-field__control,
+.cb-select.q-textarea .q-field__control { height: auto; }
+.cb-field textarea.q-field__native { line-height: 1.4; padding: 2px 0; }
+.cb-select-popup {
+    border: 1px solid #e2e8f0; border-radius: 5px;
+    box-shadow: 0 6px 18px rgba(15,23,42,.10);
+}
+.cb-select-popup .q-item {
+    min-height: 26px; padding: 3px 10px;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; color: #334155;
+}
+.cb-select-popup .q-item:hover { background: #f1f5f9; }
+.cb-select-popup .q-item.q-manual-focusable--focused,
+.cb-select-popup .q-item--active { background: #eef2f6; color: #1e293b; }
 """
 
 

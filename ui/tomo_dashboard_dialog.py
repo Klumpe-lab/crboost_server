@@ -4266,8 +4266,10 @@ def _render_species_auto_section(
                 refresh_roster,
             )
             return
-    # No subtomo cutouts yet — scatter fallback (its own mini X/Y + X/Z plots).
-    _render_picks_scatter_section(row, entry, manifest)
+    # No subtomo cutouts in the manifest — scatter fallback (its own mini X/Y +
+    # X/Z plots). Whether an extraction job exists decides which of two very
+    # different situations this is, so the fallback says which.
+    _render_picks_scatter_section(row, entry, manifest, sp.get("subtomo_job_dir") is not None)
 
 
 def _render_zero_picks_empty_state(manifest: dict, species_name: str | None) -> None:
@@ -5360,9 +5362,13 @@ def _render_gallery_body(
         ui.run_javascript(bridge_js)
 
 
-def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict) -> None:
+def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict, has_subtomo_job: bool = False) -> None:
     """Scatter-only fallback: X/Y + X/Z + score histogram. Renders only when
-    the gallery isn't available."""
+    the gallery isn't available.
+
+    `has_subtomo_job` separates "extraction hasn't run" from "it ran but this
+    tomogram's manifest entry carries no cutout atlas" — the second is a stale
+    manifest, not a missing job, and the header must not claim otherwise."""
     picks_json_path = entry.get("picks_json")
     picks_data = (
         _read_picks_json(Path(picks_json_path)) if picks_json_path else {"picks": [], "tomo_dims_xyz_px": [0, 0, 0]}
@@ -5387,9 +5393,18 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict) -> Non
             ui.label("Pick distribution").classes("cb-section-title")
             ui.label(f"  ({row['n_picks']} picks)").classes("text-[10px] text-gray-400")
             ui.space()
-            ui.label("· no subtomo extraction yet — gallery view unavailable").classes(
-                "text-[10px] text-amber-700 italic"
-            )
+            if has_subtomo_job:
+                ui.label("· cutouts not in the preview manifest — gallery view unavailable").classes(
+                    "text-[10px] text-amber-700 italic"
+                ).tooltip(
+                    "Subtomo extraction HAS run for this species, but this tomogram's preview entry carries no "
+                    "cutout atlas — the manifest predates the extraction job or a preview pass was interrupted "
+                    "before it recorded them. Re-run 'Render missing' from the Journey preview menu to rebuild it."
+                )
+            else:
+                ui.label("· no subtomo extraction yet — gallery view unavailable").classes(
+                    "text-[10px] text-amber-700 italic"
+                )
 
         with ui.row().classes("w-full gap-3 items-stretch flex-wrap"):
             with ui.column().classes("gap-1").style(f"flex: 1 1 320px; min-width: 280px; max-width: {xy_max_w}px;"):

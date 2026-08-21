@@ -275,6 +275,51 @@ def generate_candidate_previews(
     prior = read_preview_manifest(output_dir) or {}
     prior_entries = (prior.get("tomograms") or {}) if prior.get("version") == MANIFEST_VERSION else {}
 
+    # Zero-pick tomos: present in upstream tomograms.star but absent from
+    # candidates.star. PyTOM ran on them, found no candidates above cutoff,
+    # so the supervisor's per-TS particles file was header-only — concat
+    # silently drops them. The Journey dashboard reads this set to surface
+    # a "zero" pill state instead of the misleading "pending".
+    zero_picks = sorted(set(tomo_lookup.keys()) - set(tomo_names))
+
+    manifest_path = preview_dir / MANIFEST_NAME
+
+    def _write_manifest(*, partial: bool) -> None:
+        """Persist the manifest as it stands.
+
+        Called after EVERY tomogram, not only at the end: one tomogram costs
+        ~a minute (the cutout atlas is re-rendered for every display-filter
+        preset), so an end-only write meant any interruption — a server
+        restart, a kill — discarded every atlas the pass had already written.
+        The entries stayed `cutout_atlas=None`, and the dashboard fell back to
+        the scatter view ("no subtomo extraction yet") even though the tiles
+        were sitting on disk. Partial writes carry forward the prior entry for
+        any tomogram this pass hasn't reached yet, so an interrupted pass never
+        loses ground. Written tmp+replace so a kill mid-write can't truncate it.
+        """
+        entries = dict(tomo_entries)
+        if partial:
+            for name in tomo_names:
+                if name not in entries and name in prior_entries:
+                    entries[name] = prior_entries[name]
+        manifest = {
+            "version": MANIFEST_VERSION,
+            "score_field": score_col,
+            "particle_diameter_ang": float(particle_diameter_ang),
+            "template": template_block,
+            "tomograms": entries,
+            "summary": {
+                "ok": ok,
+                "skipped_cached": skipped_cached,
+                "missing_volume": missing_volume,
+                "errored": errored,
+                "zero_picks": zero_picks,
+            },
+        }
+        tmp_path = manifest_path.with_name(manifest_path.name + ".tmp")
+        tmp_path.write_text(json.dumps(manifest, indent=2))
+        tmp_path.replace(manifest_path)
+
     total = len(tomo_names)
     for i, tomo_name in enumerate(tomo_names):
         if progress_cb is not None:
@@ -402,6 +447,7 @@ def generate_candidate_previews(
         except Exception as e:
             logger.warning("Preview render failed for %s: %s", tomo_name, e)
             errored.append({"tomo": tomo_name, "error": str(e)})
+        _write_manifest(partial=True)
 
     if progress_cb is not None:
         try:
@@ -409,31 +455,9 @@ def generate_candidate_previews(
         except Exception:
             pass
 
-    # Zero-pick tomos: present in upstream tomograms.star but absent from
-    # candidates.star. PyTOM ran on them, found no candidates above cutoff,
-    # so the supervisor's per-TS particles file was header-only — concat
-    # silently drops them. The Journey dashboard reads this set to surface
-    # a "zero" pill state instead of the misleading "pending".
-    expected_tomos = set(tomo_lookup.keys())
-    extracted_tomos = set(tomo_names)
-    zero_picks = sorted(expected_tomos - extracted_tomos)
-
-    manifest_path = preview_dir / MANIFEST_NAME
-    manifest = {
-        "version": MANIFEST_VERSION,
-        "score_field": score_col,
-        "particle_diameter_ang": float(particle_diameter_ang),
-        "template": template_block,
-        "tomograms": tomo_entries,
-        "summary": {
-            "ok": ok,
-            "skipped_cached": skipped_cached,
-            "missing_volume": missing_volume,
-            "errored": errored,
-            "zero_picks": zero_picks,
-        },
-    }
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    # Final write: exact — no carry-forward, so entries for tomograms that
+    # dropped out of candidates.star don't linger.
+    _write_manifest(partial=False)
 
     logger.info(
         "Previews v4: %d rendered, %d cached, %d missing volume, %d errored",

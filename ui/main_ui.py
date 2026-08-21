@@ -88,9 +88,12 @@ def create_ui_router(backend: CryoBoostBackend):
                selects. Non-select fields (ui.input / ui.number) use the `.cb-field`
                spelling — same box, honest name; see the creation forms in
                ui/template_workbench.py (picking-UI roadmap 06). */
+            /* `height`, not just min-height: Quasar pins dense controls at a FIXED
+               `height: 40px` (.q-field--dense .q-field__control), so min-height alone
+               never shrank these boxes — that was the "inputs tall as hell" bug. */
             .cb-select .q-field__control,
             .cb-field .q-field__control {
-                min-height: 24px; padding: 0 6px;
+                height: 20px; min-height: 20px; padding: 0 5px;
                 border: 1px solid #e2e8f0; border-radius: 4px;
                 background: #fff; transition: border-color .12s ease;
             }
@@ -107,14 +110,14 @@ def create_ui_router(backend: CryoBoostBackend):
             .cb-field .q-field__native,
             .cb-field .q-field__input {
                 font-family: 'IBM Plex Sans', sans-serif; font-size: 11px;
-                color: #1e293b; padding: 0; line-height: 22px;
+                color: #1e293b; padding: 0; line-height: 18px; min-height: 0;
             }
             .cb-select .q-field__marginal,
             .cb-select .q-field__append,
             .cb-field .q-field__marginal,
-            .cb-field .q-field__append { height: 22px; }
+            .cb-field .q-field__append { height: 18px; }
             .cb-select .q-field__append .q-icon,
-            .cb-field .q-field__append .q-icon { font-size: 16px; color: #94a3b8; }
+            .cb-field .q-field__append .q-icon { font-size: 14px; color: #94a3b8; }
             .cb-select.q-field--disabled .q-field__control,
             .cb-field.q-field--disabled .q-field__control { background: #f8fafc; }
 
@@ -123,15 +126,24 @@ def create_ui_router(backend: CryoBoostBackend):
                Species page packs several controls onto a line beside 9 px labels, and at
                11 px/24 px they read as the biggest thing on the page. Overrides only —
                the box, border and focus behaviour above are shared. */
-            .cb-field .q-field__control { min-height: 20px; padding: 0 5px; }
+            .cb-field .q-field__control { height: 16px; min-height: 16px; padding: 0 4px; }
             .cb-field .q-field__native,
-            .cb-field .q-field__input { font-size: 10px; line-height: 18px; }
+            .cb-field .q-field__input { font-size: 10px; line-height: 14px; }
             .cb-field .q-field__marginal,
-            .cb-field .q-field__append { height: 18px; }
-            .cb-field .q-field__append .q-icon { font-size: 14px; }
-            /* A textarea has to keep growing; only its line-height is relaxed back. */
+            .cb-field .q-field__append { height: 14px; }
+            .cb-field .q-field__append .q-icon { font-size: 12px; }
+            /* A textarea has to keep growing: undo the fixed control height for it. */
+            .cb-field.q-textarea .q-field__control,
+            .cb-select.q-textarea .q-field__control { height: auto; }
             .cb-field textarea.q-field__native { line-height: 1.4; padding: 2px 0; }
 
+            /* NOTE (2026-08-21): do NOT add new app-wide rules to this block.
+               This <style> is baked into the page shell, and the shell is
+               served stale on this deployment — new rules here never reached
+               the browser (the .cb-btn / spinner-kill incident). App-wide
+               control chrome goes in ui/dashboard/css.py (_CB_CSS), which
+               ensure_assets_loaded() injects per client AFTER connect, over
+               the socket; structural styling goes inline on the elements. */
             .cb-select-popup {
                 border: 1px solid #e2e8f0; border-radius: 5px;
                 box-shadow: 0 6px 18px rgba(15,23,42,.10);
