@@ -24,13 +24,14 @@ from collections.abc import Callable
 from nicegui import ui
 
 from services.project_state import get_project_state_for
+from ui.components.buttons import house_button
 from ui.components.chip import render_chip
+from ui.components.fields import house_number
 from ui.dashboard.css import ensure_assets_loaded
 from ui.glob_directory_input import GlobDirectoryInput
 from ui.local_file_picker import local_file_picker
 
 _MONO = "font-family: ui-monospace, monospace;"
-_ACT = "color: #4f46e5;"  # indigo, for flat text actions
 _PICKER_GLOB = "*.mrc,*.rec"
 # Display cap only — every scanned file stays selected and gets imported. A Lustre recon
 # directory can hold thousands of tomograms, and one DOM row each is what made this dialog
@@ -372,10 +373,8 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                         # TOMOGRAM_SUFFIXES, so one field finds .mrc AND etomo .rec — a glob
                         # can express only one suffix, and a .rec directory used to read empty.
                         glob_in = GlobDirectoryInput(extension="*", placeholder="/path/to/reconstructions")
-                        ui.button("Scan", on_click=_scan).props("flat dense no-caps size=sm").style(_ACT)
-                        ui.button("Browse…", icon="folder_open", on_click=_browse_mrcs).props(
-                            "flat dense no-caps size=sm"
-                        ).style(_ACT)
+                        house_button("Scan", _scan)
+                        house_button("Browse…", _browse_mrcs)
                 with ui.element("div").classes("cb-section-card w-full"):
                     with ui.element("div").classes("cb-section-card-header"):
                         ui.label("Tomograms").classes("cb-section-title")
@@ -384,14 +383,15 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                         ui.element("div").classes("cb-ltable w-full").style("max-height: 240px; overflow-y: auto;")
                     )
                 with ui.row().classes("items-center w-full gap-3"):
-                    apix_in = (
-                        ui.number("Pixel size (Å)", value=None, format="%.4g").props("dense").style("width: 150px;")
+                    apix_in = house_number(
+                        "Pixel size (Å)",
+                        value=None,
+                        format="%.4g",
+                        width="w-24",
+                        hint="Unbinned tilt-series pixel size — an OVERRIDE. Leave blank to use each file's own "
+                        "header voxel size (the default); required only for files flagged 'apix missing'.",
                     )
-                    apix_in.tooltip(
-                        "Unbinned tilt-series pixel size — an OVERRIDE. Leave blank to use each file's own "
-                        "header voxel size (the default); required only for files flagged 'apix missing'."
-                    )
-                    bin_in = ui.number("Binning", value=1.0, format="%g").props("dense").style("width: 110px;")
+                    bin_in = house_number("Binning", value=1.0, format="%g", width="w-20")
             with ui.tab_panel(t_ref).classes("p-0"):
                 with ui.element("div").classes("cb-section-card w-full"):
                     with ui.element("div").classes("cb-section-card-header"):
@@ -400,15 +400,10 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                         ref_in = (
                             ui.input(placeholder="/path/to/existing/tomograms.star")
                             .props("dense")
-                            .classes("flex-1")
-                            .style(f"{_MONO} font-size: 12px;")
+                            .classes("cb-field flex-1")
                         )
-                        ui.button("Load", on_click=lambda: _load_reference()).props("flat dense no-caps size=sm").style(
-                            _ACT
-                        )
-                        ui.button("Browse…", icon="folder_open", on_click=_browse_reference).props(
-                            "flat dense no-caps size=sm"
-                        ).style(_ACT)
+                        house_button("Load", lambda: _load_reference())
+                        house_button("Browse…", _browse_reference)
                     ui.label("Its tomogram paths are absolutized; nothing is copied or recomputed.").classes(
                         "cb-detail-meta"
                     )
@@ -421,8 +416,8 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                     )
 
         with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat dense no-caps")
-            import_btn = ui.button("Import", on_click=_do_import).props("dense no-caps unelevated color=indigo")
+            house_button("Cancel", dialog.close)
+            import_btn = house_button("Import", _do_import, kind="accent")
 
     _render_table(mrcs_table, files, True)
     _render_table(ref_table, ref_files, False)
