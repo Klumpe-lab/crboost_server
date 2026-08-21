@@ -7,6 +7,7 @@ from nicegui import ui
 
 from backend import get_backend
 from services.project_state import JobStatus, JobType
+from ui.components.buttons import house_button
 from ui.current_project import current_project_state
 from services.scheduling_and_orchestration.pipeline_deletion_service import get_deletion_service
 from ui.job_plugins import get_extra_tabs, get_full_panel_renderer
@@ -199,13 +200,8 @@ def render_job_tab(
         ui.space()
 
         if is_running:
-            ui.button(
-                "Cancel",
-                icon="stop_circle",
-                on_click=lambda: _handle_stop_job(job_type, instance_id, job_model, backend, ui_mgr, callbacks),
-            ).props("dense flat no-caps").style(
-                "color: #ea580c; border: 1px solid #fed7aa; border-radius: 3px; "
-                "padding: 1px 8px; font-size: 10px; font-weight: 500;"
+            house_button(
+                "Cancel", lambda: _handle_stop_job(job_type, instance_id, job_model, backend, ui_mgr, callbacks)
             )
 
         ui.button(icon="refresh", on_click=lambda: _force_status_refresh(callbacks)).props(
@@ -355,10 +351,8 @@ async def _handle_stop_job(
             "text-sm text-gray-600 mt-2"
         )
         with ui.row().classes("mt-4 gap-2 justify-end w-full"):
-            ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
-            ui.button("Stop Job", on_click=lambda: dialog.submit(True)).props("dense no-caps").style(
-                "background: #f97316; color: white; padding: 4px 16px; border-radius: 3px;"
-            )
+            house_button("Cancel", lambda: dialog.submit(False))
+            house_button("Stop job", lambda: dialog.submit(True), kind="accent")
 
     confirmed = await dialog
     if not confirmed:
@@ -434,7 +428,7 @@ def _handle_delete(
             ui.label("No downstream jobs will be affected.").classes("text-sm text-green-600 bg-green-50 p-2 rounded")
 
         with ui.row().classes("w-full justify-end mt-4 gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat")
+            house_button("Cancel", dialog.close)
 
             async def confirm():
                 dialog.close()
@@ -464,9 +458,7 @@ def _handle_delete(
 
                     traceback.print_exc()
 
-            delete_btn = ui.button("Delete", color="red", on_click=confirm)
-            if preview and preview.get("downstream_count", 0) > 0:
-                delete_btn.props('icon="delete_forever"')
+            house_button("Delete", confirm, kind="danger")
 
     dialog.open()
 
