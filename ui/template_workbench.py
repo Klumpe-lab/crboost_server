@@ -45,18 +45,14 @@ from fastapi.responses import FileResponse, HTMLResponse
 from nicegui import app, context, ui
 
 from services import species_admin
-from services.project_state import (
-    ParticleSpecies,
-    ParticleTemplate,
-    TemplateMask,
-    get_project_state_for,
-)
+from services.project_state import ParticleSpecies, ParticleTemplate, TemplateMask, get_project_state_for
 from services.species_admin import delete_file_with_sidecar
 from services.templating.template_metadata import read_template_header
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.path_link import render_path_link
 from ui.components.segmented import render_segmented
 from ui.components.buttons import house_button
+from ui.components.fields import house_field as _field
 from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
 from ui.components.template_viewer import TemplateViewerController, render_template_viewer
 from ui.local_file_picker import local_file_picker
@@ -113,12 +109,42 @@ def serve_file(path: str):
 
 
 COLOR_PALETTE = [
-    0x5C6BC0, 0x7986CB, 0x9FA8DA, 0x42A5F5, 0x64B5F6, 0x90CAF9,
-    0x26C6DA, 0x4DD0E1, 0x80DEEA, 0x26A69A, 0x4DB6AC, 0x80CBC4,
-    0x66BB6A, 0x81C784, 0xA5D6A7, 0x9CCC65, 0xAED581, 0xC5E1A5,
-    0xFFA726, 0xFFB74D, 0xFFCC80, 0xFFEE58, 0xFFF176, 0xFFF59D,
-    0xEF5350, 0xE57373, 0xEF9A9A, 0xEC407A, 0xF06292, 0xF48FB1,
-    0xAB47BC, 0xBA68C8, 0xCE93D8, 0x7E57C2, 0x9575CD, 0xB39DDB,
+    0x5C6BC0,
+    0x7986CB,
+    0x9FA8DA,
+    0x42A5F5,
+    0x64B5F6,
+    0x90CAF9,
+    0x26C6DA,
+    0x4DD0E1,
+    0x80DEEA,
+    0x26A69A,
+    0x4DB6AC,
+    0x80CBC4,
+    0x66BB6A,
+    0x81C784,
+    0xA5D6A7,
+    0x9CCC65,
+    0xAED581,
+    0xC5E1A5,
+    0xFFA726,
+    0xFFB74D,
+    0xFFCC80,
+    0xFFEE58,
+    0xFFF176,
+    0xFFF59D,
+    0xEF5350,
+    0xE57373,
+    0xEF9A9A,
+    0xEC407A,
+    0xF06292,
+    0xF48FB1,
+    0xAB47BC,
+    0xBA68C8,
+    0xCE93D8,
+    0x7E57C2,
+    0x9575CD,
+    0xB39DDB,
 ]
 
 
@@ -162,9 +188,6 @@ _LIST_HEIGHT_PX = 186
 
 
 _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
-# Edit-current tool group: muted background only, NO border — the page drowned in
-# gray hairlines (section rules + group borders + field borders + table borders).
-_TOOL_GROUP_STYLE = "width: 100%; background: #f8fafc; border-radius: 4px; padding: 6px 8px 8px; margin-top: 4px;"
 
 
 def _section(title: str) -> None:
@@ -209,21 +232,6 @@ def _stacked_panels(holder: ui.element, panels: dict[str, ui.element]):
                 el.style("visibility: hidden; pointer-events: none;")
 
     return _panel, _show
-
-
-def _field(label: str, build, *, width: str = "w-20", hint: str | None = None):
-    """One creation-form control: a 9 px label to the LEFT of the field, and the field
-    itself in the app's `.cb-field` box rather than Quasar's default ~14 px with a
-    floating in-field label. That default was the fourth and fifth size in a module whose
-    docstring claims three (picking-UI roadmap 06)."""
-    with ui.row().classes("items-center gap-1 no-wrap"):
-        lbl = ui.label(label).classes(_LABEL_CLS)
-        el = build()
-        el.props("dense").classes(f"cb-field {width}")
-        if hint:
-            lbl.tooltip(hint)
-            el.tooltip(hint)
-    return el
 
 
 def _flip_selection(rows: dict, selected_id: str) -> None:
@@ -527,9 +535,7 @@ class TemplateWorkbench:
         if tpl is None:
             return
         self._open_delete_confirmation(
-            kind="template",
-            file_path=tpl.template_path,
-            on_confirm=lambda: self._do_delete_template(template_id),
+            kind="template", file_path=tpl.template_path, on_confirm=lambda: self._do_delete_template(template_id)
         )
 
     def _request_delete_mask(self, mask_id: str) -> None:
@@ -538,9 +544,7 @@ class TemplateWorkbench:
         if mask is None:
             return
         self._open_delete_confirmation(
-            kind="mask",
-            file_path=mask.mask_path,
-            on_confirm=lambda: self._do_delete_mask(mask_id),
+            kind="mask", file_path=mask.mask_path, on_confirm=lambda: self._do_delete_mask(mask_id)
         )
 
     def _open_delete_confirmation(self, *, kind: str, file_path: str, on_confirm) -> None:
@@ -548,9 +552,9 @@ class TemplateWorkbench:
         with ui.dialog() as dialog, ui.card().classes("p-4 gap-2"):
             ui.label(f"Delete this {kind}?").classes(_TITLE_CLS)
             ui.label(fname).classes(_MONO_CLS)
-            ui.label(
-                "Removes the file from disk (and its sidecar) and unregisters it from the species."
-            ).classes(_HINT_CLS)
+            ui.label("Removes the file from disk (and its sidecar) and unregisters it from the species.").classes(
+                _HINT_CLS
+            )
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
                 house_button("Cancel", dialog.close)
 
@@ -791,9 +795,7 @@ class TemplateWorkbench:
                 logger.warning("iframe remount failed: %s", e)
         self._log("Viewer reset")
 
-    def _load_to_viewer(
-        self, file_path: str, *, polarity: str | None = None, kind: str = "template"
-    ) -> None:
+    def _load_to_viewer(self, file_path: str, *, polarity: str | None = None, kind: str = "template") -> None:
         """Explicit user-requested load. Triggered by the eye icon on
         template / mask cards.
 
@@ -808,12 +810,14 @@ class TemplateWorkbench:
             return
         if self.viewer_mode == "molstar":
             self._pending_load_seq += 1
-            self._pending_loads.append({
-                "seq": self._pending_load_seq,
-                "filename": os.path.basename(file_path),
-                "started_at": time.monotonic(),
-                "status": "loading",
-            })
+            self._pending_loads.append(
+                {
+                    "seq": self._pending_load_seq,
+                    "filename": os.path.basename(file_path),
+                    "started_at": time.monotonic(),
+                    "status": "loading",
+                }
+            )
             self._render_pending_loads()
             extra: dict = {"kind": kind}
             if polarity in ("white", "black"):
@@ -869,12 +873,12 @@ class TemplateWorkbench:
         color_hex = f"#{color:06x}" if isinstance(color, int) else "#CCCCCC"
 
         with self._session_list_container:
-            container = ui.card().tight().classes("p-1 bg-white border border-gray-200 shadow-none")
+            # Flat hover-highlighted row, not a nested card: the per-item borders were
+            # most of the tray's gray-line noise (roadmap 08 S4).
+            container = ui.column().classes("w-full gap-0 px-1 rounded hover:bg-slate-100")
             with container:
-                with ui.row().classes("items-center gap-1"):
-                    color_btn = (
-                        ui.button(icon="circle").props("flat round dense size=xs").style(f"color: {color_hex}")
-                    )
+                with ui.row().classes("items-center gap-1 no-wrap w-full").style("height: 22px;"):
+                    color_btn = ui.button(icon="circle").props("flat round dense size=xs").style(f"color: {color_hex}")
                     with ui.menu().props("auto-close") as color_menu:
                         with ui.grid(columns=6).classes("gap-0.5 p-1"):
                             for pc in COLOR_PALETTE:
@@ -887,9 +891,9 @@ class TemplateWorkbench:
                         icon="visibility" if visible else "visibility_off",
                         on_click=lambda i=iid: self._toggle_visibility_from_ui(i),
                     ).props("flat round dense size=xs")
-                    ui.button(
-                        icon="close", on_click=lambda i=iid: self._post_to_viewer("deleteItem", itemId=i)
-                    ).props("flat round dense size=xs color=red")
+                    ui.button(icon="close", on_click=lambda i=iid: self._post_to_viewer("deleteItem", itemId=i)).props(
+                        "flat round dense size=xs color=red"
+                    )
 
                 iso_slider, iso_label = None, None
                 if item_type == "map":
@@ -961,19 +965,16 @@ class TemplateWorkbench:
         with self._pending_loads_container:
             for entry in self._pending_loads:
                 status = entry.get("status", "loading")
-                with ui.card().tight().classes("p-1 bg-gray-50 border border-gray-200 shadow-none w-full"):
-                    with ui.row().classes("items-center gap-1 w-full min-w-0"):
-                        if status == "loading":
-                            ui.spinner("dots", size="xs").classes("text-indigo-500 shrink-0")
-                        else:
-                            ui.icon("error_outline", size="12px").classes("text-red-600 shrink-0")
-                        ui.label(entry["filename"]).classes(_MONO_CLS + " truncate flex-1 min-w-0")
-                        if status == "error":
-                            dismiss = ui.button(icon="close").props("flat round dense size=xs color=grey")
-                            dismiss.on(
-                                "click",
-                                lambda _e, seq=entry["seq"]: self._dismiss_pending_load(seq),
-                            )
+                # Inline row, matching the flat session items — no card chrome.
+                with ui.row().classes("items-center gap-1 w-full min-w-0 px-1"):
+                    if status == "loading":
+                        ui.spinner("dots", size="xs").classes("text-indigo-500 shrink-0")
+                    else:
+                        ui.icon("error_outline", size="12px").classes("text-red-600 shrink-0")
+                    ui.label(entry["filename"]).classes(_MONO_CLS + " truncate flex-1 min-w-0")
+                    if status == "error":
+                        dismiss = ui.button(icon="close").props("flat round dense size=xs color=grey")
+                        dismiss.on("click", lambda _e, seq=entry["seq"]: self._dismiss_pending_load(seq))
 
     def _dismiss_pending_load(self, seq: int) -> None:
         self._pending_loads = [e for e in self._pending_loads if e.get("seq") != seq]
@@ -1048,9 +1049,13 @@ class TemplateWorkbench:
             # started at different heights. A fixed list keeps the Source rows of both
             # columns on one line, and a growing list scrolls instead of shoving the
             # forms and viewer below it around.
-            self._templates_table = ui.element("div").classes("cb-tw-table").style(
-                f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_INDIGO}; --cb-accent-tint: {_INDIGO}14; "
-                f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto;"
+            self._templates_table = (
+                ui.element("div")
+                .classes("cb-tw-table")
+                .style(
+                    f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_INDIGO}; --cb-accent-tint: {_INDIGO}14; "
+                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto;"
+                )
             )
             with self._templates_table:
                 self._render_template_rows()
@@ -1147,9 +1152,7 @@ class TemplateWorkbench:
         if res is None:
             return
         label, color = res
-        chip = ui.label(label).style(
-            f"color: {color}; font-size: 9px; font-variant-numeric: tabular-nums;"
-        )
+        chip = ui.label(label).style(f"color: {color}; font-size: 9px; font-variant-numeric: tabular-nums;")
         if color != "#6b7280":
             if color == "#dc2626":
                 chip.tooltip("Constant volume — likely an empty mask or unsuccessful TM run")
@@ -1254,24 +1257,35 @@ class TemplateWorkbench:
         with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
             _field(
                 "ellipsoid",
-                lambda: ui.input(placeholder="550:550:550")
-                .bind_value(self, "basic_shape_def")
-                .on("update:model-value", self._on_shape_changed),
+                lambda: (
+                    ui.input(placeholder="550:550:550")
+                    .bind_value(self, "basic_shape_def")
+                    .on("update:model-value", self._on_shape_changed)
+                ),
                 width="w-32",
                 hint="Ellipsoid x:y:z in Å",
             )
-            _field("apix", lambda: ui.number(value=self.shape_pixel_size, step=0.1, min=0).bind_value(
-                self, "shape_pixel_size"
-            ), hint="Pixel size of the generated volume (Å)")
-            _field("box", lambda: ui.number(value=self.shape_box_size, step=32, min=32).bind_value(
-                self, "shape_box_size"
-            ), hint="Box edge in pixels")
+            _field(
+                "apix",
+                lambda: ui.number(value=self.shape_pixel_size, step=0.1, min=0).bind_value(self, "shape_pixel_size"),
+                hint="Pixel size of the generated volume (Å)",
+            )
+            _field(
+                "box",
+                lambda: ui.number(value=self.shape_box_size, step=32, min=32).bind_value(self, "shape_box_size"),
+                hint="Box edge in pixels",
+            )
             auto = ui.checkbox("auto box", value=self.auto_box).props("dense size=xs").bind_value(self, "auto_box")
             auto.style(f"{_SANS} font-size: 10px; color: #475569;")
             auto.on_value_change(self._on_auto_box_toggle)
-            _field("lowpass", lambda: ui.number(value=self.shape_lowpass, step=5, min=0, placeholder="—").bind_value(
-                self, "shape_lowpass"
-            ), width="w-24", hint="Optional filter applied to the generated shape (Å)")
+            _field(
+                "lowpass",
+                lambda: ui.number(value=self.shape_lowpass, step=5, min=0, placeholder="—").bind_value(
+                    self, "shape_lowpass"
+                ),
+                width="w-24",
+                hint="Optional filter applied to the generated shape (Å)",
+            )
             _action_button("Generate", self._gen_shape)
         ui.label("Writes _white.mrc + _black.mrc; registers both polarities as new entries.").classes(_HINT_CLS)
 
@@ -1279,28 +1293,45 @@ class TemplateWorkbench:
         with ui.column().classes("w-full gap-2"):
             with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
                 _field("PDB", lambda: ui.input(placeholder="6Z6J").bind_value(self, "pdb_input_val"), width="w-20")
-                _field("apix", lambda: ui.number(value=self.pdb_pixel_size, step=0.1, min=0).bind_value(
-                    self, "pdb_pixel_size"
-                ), hint="Pixel size of the simulated map (Å)")
-                _field("box", lambda: ui.number(value=self.pdb_box_size, step=32, min=32).bind_value(
-                    self, "pdb_box_size"
-                ), hint="Box edge in pixels")
-                _field("resolution", lambda: ui.number(
-                    value=self.pdb_lowpass, step=2, min=0, placeholder="10"
-                ).bind_value(self, "pdb_lowpass"), hint="Simulated map resolution (Å)")
+                _field(
+                    "apix",
+                    lambda: ui.number(value=self.pdb_pixel_size, step=0.1, min=0).bind_value(self, "pdb_pixel_size"),
+                    hint="Pixel size of the simulated map (Å)",
+                )
+                _field(
+                    "box",
+                    lambda: ui.number(value=self.pdb_box_size, step=32, min=32).bind_value(self, "pdb_box_size"),
+                    hint="Box edge in pixels",
+                )
+                _field(
+                    "resolution",
+                    lambda: ui.number(value=self.pdb_lowpass, step=2, min=0, placeholder="10").bind_value(
+                        self, "pdb_lowpass"
+                    ),
+                    hint="Simulated map resolution (Å)",
+                )
                 _action_button("Fetch & simulate", self._fetch_and_simulate_pdb)
 
             with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
                 _field("EMDB", lambda: ui.input(placeholder="30210").bind_value(self, "emdb_input_val"), width="w-20")
-                _field("apix", lambda: ui.number(value=self.emdb_pixel_size, step=0.1, min=0).bind_value(
-                    self, "emdb_pixel_size"
-                ), hint="Resample the fetched map to this pixel size (Å)")
-                _field("box", lambda: ui.number(value=self.emdb_box_size, step=32, min=32).bind_value(
-                    self, "emdb_box_size"
-                ), hint="Box edge in pixels")
-                _field("lowpass", lambda: ui.number(
-                    value=self.emdb_lowpass, step=5, min=0, placeholder="—"
-                ).bind_value(self, "emdb_lowpass"), width="w-24", hint="Optional filter (Å)")
+                _field(
+                    "apix",
+                    lambda: ui.number(value=self.emdb_pixel_size, step=0.1, min=0).bind_value(self, "emdb_pixel_size"),
+                    hint="Resample the fetched map to this pixel size (Å)",
+                )
+                _field(
+                    "box",
+                    lambda: ui.number(value=self.emdb_box_size, step=32, min=32).bind_value(self, "emdb_box_size"),
+                    hint="Box edge in pixels",
+                )
+                _field(
+                    "lowpass",
+                    lambda: ui.number(value=self.emdb_lowpass, step=5, min=0, placeholder="—").bind_value(
+                        self, "emdb_lowpass"
+                    ),
+                    width="w-24",
+                    hint="Optional filter (Å)",
+                )
                 _action_button("Fetch & resample", self._fetch_and_resample_emdb)
 
     def _render_import_form(self) -> None:
@@ -1316,21 +1347,32 @@ class TemplateWorkbench:
     # ── Edit Current — discrete action sections ──────────────────────
 
     def _render_edit_current_form(self) -> None:
+        """Chip row + all three tool sections render ALWAYS — with no selection they are
+        disabled behind one hint instead of collapsing to a single line. The panel is the
+        tallest in the source stack, so its height swing used to shove the viewer and
+        everything below it ~200 px on every selection change (roadmap 08 S5a). Absent is
+        stated, never folded away."""
         sp = self._get_species()
         sel = sp.get_selected_template() if sp else None
-        if sel is None:
-            with ui.row().classes("w-full items-center gap-2"):
-                ui.icon("info_outline", size="12px").classes("text-gray-400")
-                ui.label("Select a template above first.").classes(_HINT_CLS)
-            return
 
-        # Selected-template chip (read-only)
+        # Selected-template chip (read-only); same row shape when nothing is selected.
         with ui.row().classes("w-full items-center gap-2"):
-            ui.icon("category", size="12px").classes("text-indigo-500")
-            ui.label("operating on").classes(_HINT_CLS)
-            ui.label(os.path.basename(sel.template_path)).classes(_MONO_CLS)
-            self._polarity_chip(sel.polarity)
+            ui.icon("category", size="12px").classes("text-indigo-500" if sel else "text-gray-300")
+            if sel is not None:
+                ui.label("operating on").classes(_HINT_CLS)
+                ui.label(os.path.basename(sel.template_path)).classes(_MONO_CLS)
+                self._polarity_chip(sel.polarity)
+            else:
+                ui.label("select a template above first — these tools act on the selected row").classes(_HINT_CLS)
 
+        tools = ui.column().classes("w-full gap-1")
+        if sel is None:
+            tools.classes("opacity-50")
+            tools.style("pointer-events: none;")
+        with tools:
+            self._render_edit_current_tools()
+
+    def _render_edit_current_tools(self) -> None:
         # ── Action: Resample ──
         self._render_action_section(
             title="Resample",
@@ -1352,27 +1394,19 @@ class TemplateWorkbench:
         # ── Action: Flip polarity ──
         self._render_action_section(
             title="Flip polarity",
-            description=(
-                "Write a negated copy (white → black or vice versa). Skipped if the flipped sibling exists."
-            ),
+            description=("Write a negated copy (white → black or vice versa). Skipped if the flipped sibling exists."),
             inputs_builder=None,
             on_click=self._flip_polarity,
             button_label="Flip",
         )
 
     def _render_action_section(
-        self,
-        *,
-        title: str,
-        description: str,
-        inputs_builder,
-        on_click,
-        button_label: str,
+        self, *, title: str, description: str, inputs_builder, on_click, button_label: str
     ) -> None:
-        """One tool: title, hint, inputs row, button — on a muted background with no
-        border (`_TOOL_GROUP_STYLE`): the tint separates the three tools from each other
-        without adding yet another box outline to the page."""
-        with ui.element("div").style(_TOOL_GROUP_STYLE), ui.column().classes("w-full gap-1"):
+        """One tool: title, hint, inputs row, button. Separation between the three tools
+        is WHITESPACE + the TOOL-rank header — the tinted group boxes were one more gray
+        rectangle on a page already drowning in them (roadmap 08 S4)."""
+        with ui.column().classes("w-full gap-1 mt-2"):
             with ui.row().classes("w-full items-baseline gap-2"):
                 # `_TOOL_CLS`, not `_LABEL_CLS`: this names a tool that owns the inputs
                 # under it, so it must not read at the same rank as "target apix".
@@ -1384,20 +1418,33 @@ class TemplateWorkbench:
                 _action_button(button_label, on_click)
 
     def _render_resample_inputs(self) -> None:
-        _field("target apix", lambda: ui.number(value=self.resample_target_apix, step=0.1, min=0).bind_value(
-            self, "resample_target_apix"
-        ), hint="New pixel size in Å")
-        _field("target box", lambda: ui.number(value=self.resample_target_box, step=32, min=32).bind_value(
-            self, "resample_target_box"
-        ), hint="New box edge in pixels")
-        _field("lowpass", lambda: ui.number(
-            value=self.resample_lowpass, step=5, min=0, placeholder="—"
-        ).bind_value(self, "resample_lowpass"), hint="Optional lowpass (Å)")
+        _field(
+            "target apix",
+            lambda: ui.number(value=self.resample_target_apix, step=0.1, min=0).bind_value(
+                self, "resample_target_apix"
+            ),
+            hint="New pixel size in Å",
+        )
+        _field(
+            "target box",
+            lambda: ui.number(value=self.resample_target_box, step=32, min=32).bind_value(self, "resample_target_box"),
+            hint="New box edge in pixels",
+        )
+        _field(
+            "lowpass",
+            lambda: ui.number(value=self.resample_lowpass, step=5, min=0, placeholder="—").bind_value(
+                self, "resample_lowpass"
+            ),
+            hint="Optional lowpass (Å)",
+        )
 
     def _render_lowpass_inputs(self) -> None:
-        _field("target lowpass", lambda: ui.number(value=self.lowpass_target, step=5, min=0).bind_value(
-            self, "lowpass_target"
-        ), width="w-24", hint="Resolution to re-filter to (Å)")
+        _field(
+            "target lowpass",
+            lambda: ui.number(value=self.lowpass_target, step=5, min=0).bind_value(self, "lowpass_target"),
+            width="w-24",
+            hint="Resolution to re-filter to (Å)",
+        )
 
     # ------------------------------------------------------------------
     # 4. MASKS — selectable rows (same visual rules, purple accent)
@@ -1407,9 +1454,13 @@ class TemplateWorkbench:
         with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
             _section("Masks")
             # Same fixed height as the templates list — see _render_templates_section.
-            self._masks_table = ui.element("div").classes("cb-tw-table").style(
-                f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_PURPLE}; --cb-accent-tint: {_PURPLE}14; "
-                f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto;"
+            self._masks_table = (
+                ui.element("div")
+                .classes("cb-tw-table")
+                .style(
+                    f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_PURPLE}; --cb-accent-tint: {_PURPLE}14; "
+                    f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto;"
+                )
             )
             with self._masks_table:
                 self._render_mask_rows()
@@ -1519,13 +1570,22 @@ class TemplateWorkbench:
             self.sphere_diameter_ang = float(getattr(sp, "diameter_ang", None) or 0.0) or None
 
         with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
-            _field("diameter", lambda: ui.number(
-                value=self.sphere_diameter_ang, step=10, min=0,
-                placeholder="from species" if sp and sp.diameter_ang else "e.g. 250",
-            ).bind_value(self, "sphere_diameter_ang"), width="w-28", hint="Sphere diameter in Å")
-            _field("soft edge", lambda: ui.number(value=self.sphere_soft_edge, step=1, min=0).bind_value(
-                self, "sphere_soft_edge"
-            ), hint="Soft edge width in pixels")
+            _field(
+                "diameter",
+                lambda: ui.number(
+                    value=self.sphere_diameter_ang,
+                    step=10,
+                    min=0,
+                    placeholder="from species" if sp and sp.diameter_ang else "e.g. 250",
+                ).bind_value(self, "sphere_diameter_ang"),
+                width="w-28",
+                hint="Sphere diameter in Å",
+            )
+            _field(
+                "soft edge",
+                lambda: ui.number(value=self.sphere_soft_edge, step=1, min=0).bind_value(self, "sphere_soft_edge"),
+                hint="Soft edge width in pixels",
+            )
             _action_button("Create sphere", self._create_spherical_mask).bind_enabled_from(
                 self, "masking_active", backward=lambda x: not x
             )
@@ -1574,48 +1634,54 @@ class TemplateWorkbench:
                 # Chrome only (the viewer itself is untouched): this was the last 14 px
                 # Quasar field on the page, sitting beside a 10 px label.
                 toggle = (
-                    ui.select(
-                        options={"molstar": "molstar (3D)", "slice": "slice (fallback)"},
-                        value=self.viewer_mode,
-                    )
+                    ui.select(options={"molstar": "molstar (3D)", "slice": "slice (fallback)"}, value=self.viewer_mode)
                     .props('dense popup-content-class="cb-select-popup"')
                     .classes("cb-field w-40")
                 )
                 toggle.on_value_change(self._on_viewer_mode_changed)
 
-            with ui.card().tight().classes("w-full overflow-hidden").style(
-                "border: 1px solid #e5e7eb; box-shadow: none;"
+            with (
+                ui.card()
+                .tight()
+                .classes("w-full overflow-hidden")
+                .style("border: 1px solid #e5e7eb; box-shadow: none;")
             ):
-                self._molstar_panel = ui.row().classes("w-full gap-0").style("height: 380px;")
-                with self._molstar_panel:
-                    with ui.column().classes("w-44 p-2 border-r bg-white h-full"):
-                        with ui.row().classes("items-center gap-1 mb-1"):
-                            ui.icon("layers", size="11px").classes("text-gray-400")
-                            ui.label("in viewer").classes(_LABEL_CLS)
-                            ui.element("div").classes("flex-1")
-                            sweep_btn = ui.button(
-                                icon="delete_sweep", on_click=self._sweep_viewer
-                            ).props("flat round dense size=xs color=grey")
-                            sweep_btn.tooltip("Clear loaded items")
-                            reset_btn = ui.button(
-                                icon="restart_alt", on_click=self._hard_reset_viewer
-                            ).props("flat round dense size=xs color=grey")
-                            reset_btn.tooltip("Reset viewer (remount — use if loads jam)")
-                        self._pending_loads_container = ui.column().classes("w-full gap-1")
-                        self._session_list_container = ui.column().classes("w-full gap-1 overflow-y-auto flex-1")
-                    with ui.column().classes("flex-1 bg-black relative overflow-hidden h-full"):
-                        ui.element("iframe").props(
-                            f'src="/molstar-workbench" id="{self._iframe_id}"'
-                        ).classes("absolute inset-0 w-full h-full border-none")
+                # Grid-stacked (same doctrine as _stacked_panels): both panels share one
+                # cell, the hidden one is visibility-hidden, so the card always holds the
+                # 380 px molstar height and molstar ↔ slice never moves the Activity log.
+                with ui.element("div").style("display: grid; width: 100%;"):
+                    # gap-3, no tray border-r: whitespace separates the tray from the
+                    # viewer now (roadmap 08 S4).
+                    self._molstar_panel = ui.row().classes("w-full gap-3").style("height: 380px; grid-area: 1 / 1;")
+                    with self._molstar_panel:
+                        with ui.column().classes("w-44 p-2 bg-white h-full"):
+                            with ui.row().classes("items-center gap-1 mb-1"):
+                                ui.icon("layers", size="11px").classes("text-gray-400")
+                                ui.label("in viewer").classes(_LABEL_CLS)
+                                ui.element("div").classes("flex-1")
+                                sweep_btn = ui.button(icon="delete_sweep", on_click=self._sweep_viewer).props(
+                                    "flat round dense size=xs color=grey"
+                                )
+                                sweep_btn.tooltip("Clear loaded items")
+                                reset_btn = ui.button(icon="restart_alt", on_click=self._hard_reset_viewer).props(
+                                    "flat round dense size=xs color=grey"
+                                )
+                                reset_btn.tooltip("Reset viewer (remount — use if loads jam)")
+                            self._pending_loads_container = ui.column().classes("w-full gap-1")
+                            self._session_list_container = ui.column().classes("w-full gap-1 overflow-y-auto flex-1")
+                        with ui.column().classes("flex-1 bg-black relative overflow-hidden h-full"):
+                            ui.element("iframe").props(f'src="/molstar-workbench" id="{self._iframe_id}"').classes(
+                                "absolute inset-0 w-full h-full border-none"
+                            )
 
-                self._slice_panel = ui.column().classes("w-full p-2")
-                with self._slice_panel:
-                    sp = self._get_species()
-                    sel_t = sp.get_selected_template() if sp else None
-                    sel_m = sp.get_selected_mask() if sp else None
-                    tpath = sel_t.template_path if sel_t else ""
-                    mpath = sel_m.mask_path if sel_m else None
-                    self._slice_controller = render_template_viewer(tpath, mpath, height_px=260)
+                    self._slice_panel = ui.column().classes("w-full p-2").style("grid-area: 1 / 1;")
+                    with self._slice_panel:
+                        sp = self._get_species()
+                        sel_t = sp.get_selected_template() if sp else None
+                        sel_m = sp.get_selected_mask() if sp else None
+                        tpath = sel_t.template_path if sel_t else ""
+                        mpath = sel_m.mask_path if sel_m else None
+                        self._slice_controller = render_template_viewer(tpath, mpath, height_px=260)
 
                 self._apply_viewer_mode_visibility()
 
@@ -1628,18 +1694,41 @@ class TemplateWorkbench:
             self._refresh_viewer()
 
     def _apply_viewer_mode_visibility(self) -> None:
-        if self._molstar_panel:
-            self._molstar_panel.set_visibility(self.viewer_mode == "molstar")
-        if self._slice_panel:
-            self._slice_panel.set_visibility(self.viewer_mode == "slice")
+        # visibility, NOT set_visibility (display:none): a display-none panel stops
+        # sizing its grid cell, and the card would still collapse on a mode flip.
+        for panel, active in (
+            (self._molstar_panel, self.viewer_mode == "molstar"),
+            (self._slice_panel, self.viewer_mode == "slice"),
+        ):
+            if panel:
+                panel.style(
+                    "visibility: visible; pointer-events: auto;"
+                    if active
+                    else "visibility: hidden; pointer-events: none;"
+                )
 
     # ------------------------------------------------------------------
     # LOG
     # ------------------------------------------------------------------
 
     def _render_log_panel(self) -> None:
-        with ui.expansion("Activity log", icon="terminal").classes("w-full bg-gray-50 rounded").props("dense"):
-            self._log_container = ui.column().classes("w-full gap-0.5 px-2 py-1 max-h-40 overflow-y-auto")
+        # House section header + plain disclosure caret instead of Quasar's boxed
+        # ui.expansion — one less bordered widget on the page (roadmap 08 S4).
+        state = {"open": False}
+        with ui.row().classes("w-full items-center gap-1 px-1 cursor-pointer select-none") as header:
+            caret = (
+                ui.icon("chevron_right", size="14px").classes("text-gray-400").style("transition: transform .12s ease;")
+            )
+            ui.label("Activity log").style(PAGE_SECTION_STYLE)
+        self._log_container = ui.column().classes("w-full gap-0.5 px-2 py-1 max-h-40 overflow-y-auto")
+        self._log_container.set_visibility(False)
+
+        def _toggle() -> None:
+            state["open"] = not state["open"]
+            self._log_container.set_visibility(state["open"])
+            caret.style(f"transform: rotate({90 if state['open'] else 0}deg);")
+
+        header.on("click", _toggle)
 
     def _log(self, msg: str) -> None:
         if self._log_container is not None:
@@ -1692,7 +1781,7 @@ class TemplateWorkbench:
         async def _run(progress_cb):
             progress_cb(0, 0, f"Building ellipsoid {shape_def}…")
             res = await self.backend.template_service.generate_basic_shape_async(
-                shape_def, pixel_size, out_folder, box, lp,
+                shape_def, pixel_size, out_folder, box, lp
             )
             result_holder["res"] = res
             if not res.get("success"):
@@ -1739,11 +1828,7 @@ class TemplateWorkbench:
             pdb_path = fetch.get("path", "")
             progress_cb(0, 0, f"Simulating density from {os.path.basename(pdb_path)}…")
             sim = await self.backend.pdb_service.simulate_map_from_pdb(
-                pdb_path=pdb_path,
-                output_folder=out_folder,
-                target_apix=apix,
-                target_box=box,
-                resolution=lp,
+                pdb_path=pdb_path, output_folder=out_folder, target_apix=apix, target_box=box, resolution=lp
             )
             result_holder["sim"] = sim
             if not sim.get("success"):
@@ -1794,9 +1879,7 @@ class TemplateWorkbench:
                 return f"EMDB fetch failed: {fetch.get('error')}"
             map_path = fetch.get("path", "")
             progress_cb(0, 0, f"Resampling {os.path.basename(map_path)}…")
-            res = await self.backend.template_service.process_volume_async(
-                map_path, out_folder, apix, box, lp,
-            )
+            res = await self.backend.template_service.process_volume_async(map_path, out_folder, apix, box, lp)
             result_holder["res"] = res
             if not res.get("success"):
                 return f"resample failed: {res.get('error')}"
@@ -1859,9 +1942,7 @@ class TemplateWorkbench:
             return
 
         def _apply(s: ParticleSpecies) -> None:
-            existing_idx = next(
-                (i for i, t in enumerate(s.templates) if t.template_path == tpl.template_path), None
-            )
+            existing_idx = next((i for i, t in enumerate(s.templates) if t.template_path == tpl.template_path), None)
             if existing_idx is not None:
                 tpl.id = s.templates[existing_idx].id
                 s.templates[existing_idx] = tpl
@@ -1898,7 +1979,7 @@ class TemplateWorkbench:
         async def _run(progress_cb):
             progress_cb(0, 0, f"Resampling {src_name}…")
             res = await self.backend.template_service.process_volume_async(
-                src_path, out_folder, target_apix, target_box, lp,
+                src_path, out_folder, target_apix, target_box, lp
             )
             result_holder["res"] = res
             if not res.get("success"):
@@ -1948,7 +2029,7 @@ class TemplateWorkbench:
         async def _run(progress_cb):
             progress_cb(0, 0, f"Lowpass {target_lp}Å on {src_name}…")
             res = await self.backend.template_service.process_volume_async(
-                src_path, out_folder, target_apix, target_box, target_lp,
+                src_path, out_folder, target_apix, target_box, target_lp
             )
             result_holder["res"] = res
             if not res.get("success"):
@@ -1962,9 +2043,7 @@ class TemplateWorkbench:
                 self._log(f"Lowpass failed: {err}")
                 ui.notify("Lowpass failed (see log)", type="negative")
                 return
-            self._register_polarity_pair(
-                res, source=f"lowpass({target_lp:g}Å) from {src_name}", lowpass=target_lp,
-            )
+            self._register_polarity_pair(res, source=f"lowpass({target_lp:g}Å) from {src_name}", lowpass=target_lp)
 
         BackgroundTask(
             title=f"Lowpass · {src_name}",
@@ -2018,10 +2097,7 @@ class TemplateWorkbench:
             if not result_holder.get("success"):
                 ui.notify("Polarity flip failed (see log)", type="negative")
                 return
-            new_id = self._append_template(
-                target_path, target_polarity,
-                f"flipped from {src_name}", lowpass=lp_ang,
-            )
+            new_id = self._append_template(target_path, target_polarity, f"flipped from {src_name}", lowpass=lp_ang)
             self._select_template(new_id)
             self._log(f"Flipped → {os.path.basename(target_path)}")
 
@@ -2111,9 +2187,7 @@ class TemplateWorkbench:
         base = Path(sel.template_path).stem.replace("_white", "").replace("_black", "")
         # Canonical mask path encodes the threshold knobs so identical-knob
         # runs are idempotent on disk (same path, gets overwritten).
-        output_path = os.path.join(
-            out_folder, f"{base}_mask_t{threshold:.3f}_e{int(extend)}_s{int(soft)}.mrc",
-        )
+        output_path = os.path.join(out_folder, f"{base}_mask_t{threshold:.3f}_e{int(extend)}_s{int(soft)}.mrc")
         self._log(f"Mask from {os.path.basename(input_vol)} threshold={threshold}")
         self.masking_active = True
 
@@ -2122,7 +2196,7 @@ class TemplateWorkbench:
         async def _run(progress_cb):
             progress_cb(0, 0, "Thresholding + soft-edge extend…")
             res = await self.backend.template_service.create_mask_relion(
-                input_vol, output_path, threshold, extend, soft, lp,
+                input_vol, output_path, threshold, extend, soft, lp
             )
             result_holder["res"] = res
             if not res.get("success"):
@@ -2200,11 +2274,7 @@ class TemplateWorkbench:
         async def _run(progress_cb):
             progress_cb(0, 0, "Building soft-edged sphere…")
             res = await self.backend.template_service.create_spherical_mask_async(
-                output_path=output_path,
-                apix_ang=apix_ang,
-                box_px=box_px,
-                diameter_ang=diameter,
-                soft_edge_pixels=soft,
+                output_path=output_path, apix_ang=apix_ang, box_px=box_px, diameter_ang=diameter, soft_edge_pixels=soft
             )
             result_holder["res"] = res
             if not res.get("success"):
@@ -2222,10 +2292,7 @@ class TemplateWorkbench:
             self._log(f"Sphere: {os.path.basename(output_path)}")
             self._append_mask(
                 TemplateMask(
-                    mask_path=output_path,
-                    method="spherical",
-                    soft_edge_pixels=soft,
-                    derived_from_template_id=sel_id,
+                    mask_path=output_path, method="spherical", soft_edge_pixels=soft, derived_from_template_id=sel_id
                 )
             )
 
