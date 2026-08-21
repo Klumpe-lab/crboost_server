@@ -46,6 +46,7 @@ from services.visualization.preview_orchestrator import (
 )
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview, render_xz_slab_preview
 from services.visualization.tomo_geometry import APIX_MRC_HEADER, TomoGeometry, geometry_for_ts
+from ui.components.buttons import house_button
 from ui.components.chip import render_chip
 from ui.components.reactive import SingleFlight
 from ui.dashboard.css import ensure_assets_loaded
@@ -296,7 +297,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     _open_species = (callbacks or {}).get("open_species")
 
     def _manage_species(species_id: str) -> None:
-        """The Particles section's 'manage in Species ↗'. Composed here, where the
+        """The Particles section's 'manage in Particles registry ↗'. Composed here, where the
         workspace's callbacks are in scope: select the species AND land on Picks — the
         page otherwise reuses its last tab (Overview on a fresh workspace), and none of
         the actions 11-S3 moved are on Overview, so the link would strand the user one
@@ -2783,9 +2784,7 @@ def _render_list_cutout_sheet(
             counter = ui.label(_counter_txt()).classes("cb-filter-counter")
             ui.space()
             _render_cutout_filter_controls(_list_filter_presets, _apix, _apix_source, _on_list_select)
-            ui.button("Reset", icon="restart_alt", on_click=_on_reset).props("flat dense no-caps").tooltip(
-                "Clear this list's keep/drop — revert to all picks kept"
-            )
+            house_button("Reset", _on_reset, tooltip="Clear this list's keep/drop — revert to all picks kept")
         ui.label("click a tile to keep/drop — saved automatically · hover to find it on the slab").style(
             "font-size: 9px; color: #94a3b8; margin-bottom: 4px;"
         )
@@ -3542,9 +3541,7 @@ def _render_no_species_empty_state(project_path: Path, refresh) -> None:
             "A species is the label picks hang off. Create one to pick particles by hand in ArtiaX — "
             "no template or template-matching job needed."
         ).classes("text-[11px] italic text-center text-gray-500").style("max-width: 460px;")
-        ui.button("New species", icon="add", on_click=lambda: _prompt_new_species(project_path, refresh)).props(
-            "dense no-caps unelevated color=indigo size=sm"
-        )
+        house_button("New species", lambda: _prompt_new_species(project_path, refresh), kind="accent")
 
 
 def _render_particles_section(
@@ -3595,7 +3592,7 @@ def _render_particles_section(
                 _render_invert_switch(card)
 
         def _show_manage_link_for(sp: dict) -> None:
-            """'manage in Species ↗' for the active species (11-S3). The Journey no longer
+            """'manage in Particles registry ↗' for the active species (11-S3). The Journey no longer
             merges / dedups / extracts / imports or sets the authoritative list — this is
             the one-click route to where those now live (the Picks tab, selected by
             `manage_species`), so their removal reads as a move. Absent when the workspace
@@ -3605,7 +3602,7 @@ def _render_particles_section(
             if manage_species is None or not sid:
                 return
             with manage_host:
-                ui.label("manage in Species ↗").classes(
+                ui.label("manage in Particles registry ↗").classes(
                     "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
                 ).on("click", lambda _e, s=sid: manage_species(s)).tooltip(
                     "Merge · dedup · extract · delete · choose the authoritative list — opens this "
@@ -4127,7 +4124,7 @@ def _render_list_rail(
                             "cb-auth cb-auth-static " + ("cb-auth-on" if on else "cb-auth-off")
                         ).tooltip(
                             "Authoritative list — downstream extraction/aggregation consumes this one. "
-                            "Set it on the species page's Picks tab."
+                            "Set it on the Particles registry's Picks tab."
                         )
                     with ui.element("div").classes("cb-ltable-cell"):
                         if slug != "auto":
@@ -4815,24 +4812,24 @@ def _render_gallery_body(
 
         # Action buttons in the always-visible header slot.
         with actions_slot:
-            discard_btn = (
-                ui.button("Reset this tomo", icon="delete_outline", on_click=_on_discard)
-                .props("flat dense size=sm color=red-7")
-                .classes("text-xs")
-                .tooltip(
+            discard_btn = house_button(
+                "Reset this tomo",
+                _on_discard,
+                kind="danger",
+                tooltip=(
                     "Revert THIS tomogram's picks to the original (all kept). Other tomograms in this "
                     "species keep their curation. Removing the last curated tomogram deletes the filter."
-                )
+                ),
             )
-            save_btn = (
-                ui.button("Save picks", icon="save", on_click=_on_save)
-                .props("dense size=sm color=indigo-6 unelevated")
-                .classes("text-xs")
-                .tooltip(
+            save_btn = house_button(
+                "Save picks",
+                _on_save,
+                kind="accent",
+                tooltip=(
                     "Write optimisation_set_filtered.star + particles_filtered.star next to the subtomo "
                     "job's outputs. Downstream consumers (reconstruct_particle, class3d) auto-prefer the "
                     "filtered file via the IO-slot resolver when it exists."
-                )
+                ),
             )
 
         # Saved filtered-set path + copy button — shown only once a filter exists
