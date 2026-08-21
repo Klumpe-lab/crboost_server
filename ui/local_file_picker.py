@@ -4,6 +4,7 @@ from pathlib import Path
 
 from nicegui import ui
 
+from ui.components.buttons import house_button
 from ui.styles import MONO as _MONO, SANS as _SANS
 
 
@@ -88,13 +89,8 @@ class local_file_picker(ui.dialog):
                     hint = "Click to select, double-click to confirm."
                 ui.label(hint).style(f"{_SANS} font-size: 11px; color: #9ca3af;")
                 with ui.row().classes("gap-2"):
-                    ui.button("Cancel", on_click=self.close).props("flat no-caps").style(
-                        f"{_SANS} font-size: 12px; color: #6b7280;"
-                    )
-                    ui.button("OK", on_click=self._handle_ok).props("no-caps unelevated").style(
-                        f"{_SANS} font-size: 12px; background: #2563eb; color: white; "
-                        "border-radius: 6px; padding: 3px 16px;"
-                    )
+                    house_button("Cancel", self.close)
+                    house_button("OK", self._handle_ok, kind="accent")
 
         with self.list_container:
             ui.label("Loading…").classes("text-gray-400 text-sm p-4")
@@ -173,12 +169,8 @@ class local_file_picker(ui.dialog):
 
     def _render_select_all_bar(self, files: list[Path]) -> None:
         with ui.row().classes("w-full items-center px-4 py-1 gap-2 bg-gray-50 border-b border-gray-100"):
-            ui.button("Select all", on_click=lambda: self._set_paths(files, True)).props(
-                "flat dense no-caps size=sm"
-            ).style(f"{_SANS} font-size: 11px; color: #4f46e5;")
-            ui.button("Clear", on_click=lambda: self._set_paths(None, False)).props("flat dense no-caps size=sm").style(
-                f"{_SANS} font-size: 11px; color: #6b7280;"
-            )
+            house_button("Select all", lambda: self._set_paths(files, True))
+            house_button("Clear", lambda: self._set_paths(None, False))
             self.count_label = ui.label(self._count_text()).style(
                 f"{_MONO} font-size: 10px; color: #9ca3af; margin-left: auto;"
             )
