@@ -56,7 +56,8 @@ from services.templating.template_metadata import read_template_header
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.path_link import render_path_link
 from ui.components.segmented import render_segmented
-from ui.job_plugins._field_styles import field_group, section_header, section_rule
+from ui.components.buttons import house_button
+from ui.job_plugins._field_styles import PAGE_SECTION_STYLE
 from ui.components.template_viewer import TemplateViewerController, render_template_viewer
 from ui.local_file_picker import local_file_picker
 from ui.template_import_dialog import open_template_import_dialog
@@ -148,26 +149,66 @@ _PURPLE = "#a855f7"
 # ("Templates & masks", not "Templates & Masks"). "From template" says what the tool
 # does; which tool it is (relion_mask_create) is named in the panel's own hint.
 _SOURCE_TABS = (("shape", "Shape"), ("pdb", "PDB / EMDB"), ("import", "Import"), ("edit", "Edit current"))
-_MASK_TABS = (("sphere", "Sphere"), ("relion", "From template"), ("import", "Import"))
+# "From template" first AND the default: most particles are not spherical, so the
+# threshold-derived mask is the normal case and the sphere is the special one.
+_MASK_TABS = (("relion", "From template"), ("sphere", "Sphere"), ("import", "Import"))
 # One column shape for BOTH lists: they sit side by side, so aligned columns read as one
 # system. Only FILE flexes (and therefore ellipsises); everything else is sized to its
 # content, which is what ends the "a bunch of text, some of which is truncated" problem.
 _TW_COLS = "16px minmax(0, 1fr) 54px 112px 104px 50px 44px"
+# Both lists render at this fixed height (≈ head + 7 rows, scrolling beyond) so the two
+# columns' Source blocks start on the same line and list growth never reflows the page.
+_LIST_HEIGHT_PX = 186
 
 
 _SANS = "font-family: 'IBM Plex Sans', sans-serif;"
-_ACTION_BTN = "unelevated dense no-caps size=sm color=primary"
+# Edit-current tool group: muted background only, NO border — the page drowned in
+# gray hairlines (section rules + group borders + field borders + table borders).
+_TOOL_GROUP_STYLE = "width: 100%; background: #f8fafc; border-radius: 4px; padding: 6px 8px 8px; margin-top: 4px;"
 
 
-def _section(title: str, hint: str = "") -> None:
+def _section(title: str) -> None:
     """A block header for the page's own structure — Templates, Masks, Source, Viewer.
-    Deliberately NOT `_LABEL_CLS`: a section that shares a style with the label of one
-    input reads as the same rank as it, which is the crowding this page had."""
+    `PAGE_SECTION_STYLE` (12 px semibold), no underline rule and no explanatory tail:
+    the header + whitespace carry the structure, the tables draw their own head border,
+    and every extra hairline made the page read as a grid of gray lines. What used to
+    be the hint ("click a row to select") is obvious from the table itself."""
     with ui.row().classes("w-full items-baseline gap-2 px-1"):
-        section_header(title, first=True)
-        if hint:
-            ui.label(hint).classes(_HINT_CLS)
-    section_rule()
+        ui.label(title).style(PAGE_SECTION_STYLE)
+
+
+def _action_button(label: str, on_click) -> ui.button:
+    """A form's commit action: house chrome, pinned to the right edge of its row
+    (`ml-auto`) so every section's action sits in the same place at the same size."""
+    return house_button(label, on_click).classes("ml-auto")
+
+
+def _stacked_panels(holder: ui.element, panels: dict[str, ui.element]):
+    """`_panel`/`_show` pair over a grid-stacked holder: all panels live in the same
+    grid cell, inactive ones are visibility-hidden (not display-none), so the stack
+    keeps the height of its tallest panel and switching tabs never shoves the content
+    below it around.
+
+    Everything is INLINE styles, not classes: the page-shell stylesheet is served
+    stale on this deployment, and a class-based version rendered all four panels at
+    once with a dead switch until the shell refreshed. Inline styles ride the
+    socket-delivered DOM and cannot go stale (same doctrine as _field_styles.py)."""
+    holder.style("display: grid; width: 100%;")
+
+    def _panel(key: str) -> ui.element:
+        with holder:
+            el = ui.column().classes("w-full gap-2 px-2 py-2").style("grid-area: 1 / 1; min-width: 0;")
+        panels[key] = el
+        return el
+
+    def _show(key: str) -> None:
+        for k, el in panels.items():
+            if k == key:
+                el.style("visibility: visible; pointer-events: auto;")
+            else:
+                el.style("visibility: hidden; pointer-events: none;")
+
+    return _panel, _show
 
 
 def _field(label: str, build, *, width: str = "w-20", hint: str | None = None):
@@ -511,13 +552,13 @@ class TemplateWorkbench:
                 "Removes the file from disk (and its sidecar) and unregisters it from the species."
             ).classes(_HINT_CLS)
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat dense no-caps")
+                house_button("Cancel", dialog.close)
 
                 def _confirm():
                     dialog.close()
                     on_confirm()
 
-                ui.button("Delete", on_click=_confirm).props("unelevated dense color=negative no-caps")
+                house_button("Delete", _confirm, kind="danger")
         dialog.open()
 
     def _do_delete_template(self, template_id: str) -> None:
@@ -1001,9 +1042,15 @@ class TemplateWorkbench:
 
     def _render_templates_section(self) -> None:
         with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
-            _section("Templates", "click a row to select")
+            _section("Templates")
+            # Fixed-height, internally scrolling list (same in the masks column): the two
+            # columns sit side by side, so with sized-to-content lists their Source blocks
+            # started at different heights. A fixed list keeps the Source rows of both
+            # columns on one line, and a growing list scrolls instead of shoving the
+            # forms and viewer below it around.
             self._templates_table = ui.element("div").classes("cb-tw-table").style(
-                f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_INDIGO}; --cb-accent-tint: {_INDIGO}14;"
+                f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_INDIGO}; --cb-accent-tint: {_INDIGO}14; "
+                f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto;"
             )
             with self._templates_table:
                 self._render_template_rows()
@@ -1172,20 +1219,20 @@ class TemplateWorkbench:
     # ------------------------------------------------------------------
 
     def _render_source_panel(self) -> None:
-        with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
-            _section("Source", "generate, fetch, import; new entries append above")
-
-            panels: dict[str, ui.element] = {}
-
-            def _panel(key: str):
-                el = ui.column().classes("w-full gap-2 px-2 py-2")
-                panels[key] = el
-                return el
+        # mt-3: clear air between the list block above and this one — the subsection
+        # boundary is whitespace, not another rule.
+        with ui.column().classes("gap-1 min-w-0 mt-3").style("width: 100%;"):
+            _section("Source")
 
             # `Segmented`, not `ui.tabs()`: Quasar's QTab renders 14 px UPPERCASE, which
             # was larger and louder than the 10 px "SOURCE" header above it. Switching
-            # flips visibility, so a panel's typed values survive the switch.
-            switcher = render_segmented(_SOURCE_TABS, "shape", lambda k: _show(k))
+            # flips visibility, so a panel's typed values survive the switch — and the
+            # grid-stacked holder keeps the height of the tallest panel, so the viewer
+            # below no longer jumps on every tab flip.
+            switcher = render_segmented(_SOURCE_TABS, "shape", lambda k: _switch(k))
+            holder = ui.element("div")
+            panels: dict[str, ui.element] = {}
+            _panel, _show = _stacked_panels(holder, panels)
             with _panel("shape"):
                 self._render_basic_shape_form()
             with _panel("pdb"):
@@ -1197,10 +1244,9 @@ class TemplateWorkbench:
                 with self._edit_container:
                     self._render_edit_current_form()
 
-            def _show(key: str) -> None:
+            def _switch(key: str) -> None:
                 switcher.set_active(key)
-                for k, el in panels.items():
-                    el.set_visibility(k == key)
+                _show(key)
 
             _show("shape")
 
@@ -1226,7 +1272,7 @@ class TemplateWorkbench:
             _field("lowpass", lambda: ui.number(value=self.shape_lowpass, step=5, min=0, placeholder="—").bind_value(
                 self, "shape_lowpass"
             ), width="w-24", hint="Optional filter applied to the generated shape (Å)")
-            ui.button("generate", on_click=self._gen_shape).props(_ACTION_BTN)
+            _action_button("Generate", self._gen_shape)
         ui.label("Writes _white.mrc + _black.mrc; registers both polarities as new entries.").classes(_HINT_CLS)
 
     def _render_pdb_emdb_form(self) -> None:
@@ -1242,7 +1288,7 @@ class TemplateWorkbench:
                 _field("resolution", lambda: ui.number(
                     value=self.pdb_lowpass, step=2, min=0, placeholder="10"
                 ).bind_value(self, "pdb_lowpass"), hint="Simulated map resolution (Å)")
-                ui.button("fetch & simulate", on_click=self._fetch_and_simulate_pdb).props(_ACTION_BTN)
+                _action_button("Fetch & simulate", self._fetch_and_simulate_pdb)
 
             with ui.row().classes("w-full gap-3 items-center").style("flex-wrap: wrap;"):
                 _field("EMDB", lambda: ui.input(placeholder="30210").bind_value(self, "emdb_input_val"), width="w-20")
@@ -1255,17 +1301,17 @@ class TemplateWorkbench:
                 _field("lowpass", lambda: ui.number(
                     value=self.emdb_lowpass, step=5, min=0, placeholder="—"
                 ).bind_value(self, "emdb_lowpass"), width="w-24", hint="Optional filter (Å)")
-                ui.button("fetch & resample", on_click=self._fetch_and_resample_emdb).props(_ACTION_BTN)
+                _action_button("Fetch & resample", self._fetch_and_resample_emdb)
 
     def _render_import_form(self) -> None:
-        # Button first, explanation beside it. The old `flex-1` spacer pushed the action
-        # to the far edge of the page — nothing else here is edge-anchored.
-        with ui.row().classes("w-full gap-2 items-center"):
-            ui.button("open import dialog", on_click=self._open_import_dialog).props(_ACTION_BTN)
+        # Hint left, action right — the same shape as every other form row on the page
+        # (fields flow left, the commit button holds the right edge).
+        with ui.row().classes("w-full gap-2 items-center no-wrap"):
             ui.label(
                 "Pick an existing .mrc. The inspection dialog reads the header, asks you to confirm "
                 "metadata, copies the file into the project, and appends it as a new template."
-            ).classes(_HINT_CLS)
+            ).classes(_HINT_CLS + " flex-1 min-w-0")
+            _action_button("Import…", self._open_import_dialog)
 
     # ── Edit Current — discrete action sections ──────────────────────
 
@@ -1291,7 +1337,7 @@ class TemplateWorkbench:
             description="Rewrite at a new pixel size / box. Useful when the template apix doesn't match your tomos.",
             inputs_builder=lambda: self._render_resample_inputs(),
             on_click=self._resample_current,
-            button_label="resample",
+            button_label="Resample",
         )
 
         # ── Action: Apply lowpass ──
@@ -1300,7 +1346,7 @@ class TemplateWorkbench:
             description="Re-filter at a new resolution (Å). Keeps the same apix / box.",
             inputs_builder=lambda: self._render_lowpass_inputs(),
             on_click=self._apply_lowpass_to_current,
-            button_label="apply",
+            button_label="Apply",
         )
 
         # ── Action: Flip polarity ──
@@ -1311,7 +1357,7 @@ class TemplateWorkbench:
             ),
             inputs_builder=None,
             on_click=self._flip_polarity,
-            button_label="flip",
+            button_label="Flip",
         )
 
     def _render_action_section(
@@ -1323,11 +1369,10 @@ class TemplateWorkbench:
         on_click,
         button_label: str,
     ) -> None:
-        """One tool: title, hint, inputs row, button — inside the house muted group box
-        (`_field_styles.GROUP_MUTED_STYLE`, the same treatment SLURM's "Supervisor" gets).
-        A hairline separator left the three tools visually inseparable from the rest of
-        the page (picking-UI roadmap 06)."""
-        with field_group(muted=True), ui.column().classes("w-full gap-1"):
+        """One tool: title, hint, inputs row, button — on a muted background with no
+        border (`_TOOL_GROUP_STYLE`): the tint separates the three tools from each other
+        without adding yet another box outline to the page."""
+        with ui.element("div").style(_TOOL_GROUP_STYLE), ui.column().classes("w-full gap-1"):
             with ui.row().classes("w-full items-baseline gap-2"):
                 # `_TOOL_CLS`, not `_LABEL_CLS`: this names a tool that owns the inputs
                 # under it, so it must not read at the same rank as "target apix".
@@ -1336,7 +1381,7 @@ class TemplateWorkbench:
             with ui.row().classes("w-full gap-2 items-center").style("flex-wrap: wrap;"):
                 if inputs_builder is not None:
                     inputs_builder()
-                ui.button(button_label, on_click=on_click).props(_ACTION_BTN)
+                _action_button(button_label, on_click)
 
     def _render_resample_inputs(self) -> None:
         _field("target apix", lambda: ui.number(value=self.resample_target_apix, step=0.1, min=0).bind_value(
@@ -1360,9 +1405,11 @@ class TemplateWorkbench:
 
     def _render_masks_section(self) -> None:
         with ui.column().classes("gap-1 min-w-0").style("width: 100%;"):
-            _section("Masks", "click a row to select")
+            _section("Masks")
+            # Same fixed height as the templates list — see _render_templates_section.
             self._masks_table = ui.element("div").classes("cb-tw-table").style(
-                f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_PURPLE}; --cb-accent-tint: {_PURPLE}14;"
+                f"--cb-tw-cols: {_TW_COLS}; --cb-accent: {_PURPLE}; --cb-accent-tint: {_PURPLE}14; "
+                f"height: {_LIST_HEIGHT_PX}px; overflow-y: auto;"
             )
             with self._masks_table:
                 self._render_mask_rows()
@@ -1370,33 +1417,28 @@ class TemplateWorkbench:
             # Same two-line header shape as the templates column. The derived-from line
             # is a SOURCE statement; it used to be filed as the section's subtitle, which
             # is why the masks column read as having no stated source at all.
-            with ui.row().classes("w-full items-baseline gap-2 px-1 mt-2"):
-                section_header("Source", first=True)
+            with ui.row().classes("w-full items-baseline gap-2 px-1 mt-3"):
+                ui.label("Source").style(PAGE_SECTION_STYLE)
+                # Dynamic state, not a hint: says WHICH template new masks derive from.
                 self._mask_source_label = ui.label("").classes(_HINT_CLS)
                 self._update_mask_source_label()
-            section_rule()
 
+            switcher = render_segmented(_MASK_TABS, "relion", lambda k: _switch(k))
+            holder = ui.element("div")
             panels: dict[str, ui.element] = {}
-
-            def _panel(key: str):
-                el = ui.column().classes("w-full gap-2 px-2 py-2")
-                panels[key] = el
-                return el
-
-            switcher = render_segmented(_MASK_TABS, "sphere", lambda k: _show(k))
-            with _panel("sphere"):
-                self._render_spherical_mask_form()
+            _panel, _show = _stacked_panels(holder, panels)
             with _panel("relion"):
                 self._render_relion_mask_form()
+            with _panel("sphere"):
+                self._render_spherical_mask_form()
             with _panel("import"):
                 self._render_mask_import_form()
 
-            def _show(key: str) -> None:
+            def _switch(key: str) -> None:
                 switcher.set_active(key)
-                for k, el in panels.items():
-                    el.set_visibility(k == key)
+                _show(key)
 
-            _show("sphere")
+            _show("relion")
 
     def _render_mask_rows(self) -> None:
         self._mask_rows = {}
@@ -1484,9 +1526,9 @@ class TemplateWorkbench:
             _field("soft edge", lambda: ui.number(value=self.sphere_soft_edge, step=1, min=0).bind_value(
                 self, "sphere_soft_edge"
             ), hint="Soft edge width in pixels")
-            ui.button("create sphere", on_click=self._create_spherical_mask).bind_enabled_from(
+            _action_button("Create sphere", self._create_spherical_mask).bind_enabled_from(
                 self, "masking_active", backward=lambda x: not x
-            ).props(_ACTION_BTN)
+            )
         ui.label(
             "Solid soft-edged sphere centered in the box, sized to the species's particle "
             "diameter. Recommended for VLPs and globular particles where a threshold-derived "
@@ -1506,18 +1548,18 @@ class TemplateWorkbench:
             _field("ext", lambda: ui.number().bind_value(self, "mask_extend"), width="w-20", hint="Extend (px)")
             _field("soft", lambda: ui.number().bind_value(self, "mask_soft_edge"), width="w-20", hint="Soft edge (px)")
             _field("lowpass", lambda: ui.number().bind_value(self, "mask_lowpass"), hint="Lowpass (Å)")
-            ui.button("create mask", on_click=self._create_relion_mask).bind_enabled_from(
+            _action_button("Create mask", self._create_relion_mask).bind_enabled_from(
                 self, "masking_active", backward=lambda x: not x
-            ).props(_ACTION_BTN)
+            )
         ui.label(
             "Built from the currently selected template via relion_mask_create. "
             "If a black template is selected, its white sibling is used for thresholding."
         ).classes(_HINT_CLS)
 
     def _render_mask_import_form(self) -> None:
-        with ui.row().classes("w-full gap-2 items-center"):
-            ui.button("pick mask file", on_click=self._import_mask).props(_ACTION_BTN)
-            ui.label("Pick an existing mask MRC; appended as a new mask entry.").classes(_HINT_CLS)
+        with ui.row().classes("w-full gap-2 items-center no-wrap"):
+            ui.label("Pick an existing mask MRC; appended as a new mask entry.").classes(_HINT_CLS + " flex-1 min-w-0")
+            _action_button("Pick mask file…", self._import_mask)
 
     # ------------------------------------------------------------------
     # 5. VIEWER
@@ -1526,7 +1568,7 @@ class TemplateWorkbench:
     def _render_viewer_panel(self) -> None:
         with ui.column().classes("w-full gap-1"):
             with ui.row().classes("w-full items-baseline gap-2 px-1"):
-                section_header("Viewer", first=True)
+                ui.label("Viewer").style(PAGE_SECTION_STYLE)
                 ui.element("div").classes("flex-1")
                 ui.label("mode").classes(_HINT_CLS)
                 # Chrome only (the viewer itself is untouched): this was the last 14 px
