@@ -57,6 +57,12 @@ SECTION_HEADER_STYLE = (
 )
 SECTION_HEADER_FIRST_STYLE = SECTION_HEADER_STYLE.replace("margin: 8px 0 4px 0", "margin: 0 0 4px 0")
 
+# Page-structure section title — the Overview's "Species info" / the workbench's
+# "Templates", "Masks", "Source", "Viewer". One notch above SECTION_HEADER_STYLE
+# (12 px vs 11 px), still mixed case; separation from the previous section is
+# WHITESPACE in the page layout, never an underline rule.
+PAGE_SECTION_STYLE = f"{SANS} font-size: 12px; font-weight: 600; color: #334155; line-height: 1; display: block;"
+
 GROUP_STYLE = "width: 100%; border: 1px solid #eef2f6; border-radius: 4px; padding: 6px 8px 8px; margin-top: 6px;"
 GROUP_MUTED_STYLE = GROUP_STYLE + " background: #fafbfc;"
 
