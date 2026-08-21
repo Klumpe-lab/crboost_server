@@ -15,6 +15,7 @@ from nicegui import ui, app
 from backend import CryoBoostBackend
 from services.configs.user_prefs_service import get_prefs_service
 
+from ui.components.buttons import house_button
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
 from ui.glob_directory_input import GlobDirectoryInput
@@ -269,11 +270,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         if len(missing) == 0 and not ui_mgr.is_project_created:
             btn.enable()
             btn.classes(remove="opacity-50 cursor-not-allowed")
-            btn.style(
-                f"{FONT} font-size: 11px; font-weight: 500; padding: 4px 16px; "
-                f"border-radius: 6px; background: {CLR_ACCENT}; color: white; "
-                "letter-spacing: 0.01em;"
-            )
             if status_label:
                 # Say it out loud when there is no raw data, so a data-less project is
                 # always a choice rather than an unnoticed consequence of empty globs.
@@ -286,11 +282,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         else:
             btn.disable()
             btn.classes("opacity-50 cursor-not-allowed")
-            btn.style(
-                f"{FONT} font-size: 11px; font-weight: 500; padding: 4px 16px; "
-                "border-radius: 6px; background: #93c5fd; color: white; "
-                "letter-spacing: 0.01em;"
-            )
             if status_label:
                 if ui_mgr.is_project_created:
                     status_label.set_text("Project created")
@@ -400,9 +391,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                         )
             if roots:
                 with ui.row().classes("w-full justify-end px-3 py-1 border-t border-slate-100"):
-                    ui.button("Clear all", on_click=clear_all_history).props("flat dense no-caps").style(
-                        f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
-                    )
+                    house_button("Clear all", clear_all_history)
 
     def use_history_path(path: str):
         _close_history_dropdown()
@@ -466,9 +455,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                         )
             if paths:
                 with ui.row().classes("w-full justify-end px-3 py-1 border-t border-slate-100"):
-                    ui.button("Clear", on_click=clear_data_history).props("flat dense no-caps").style(
-                        f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
-                    )
+                    house_button("Clear", clear_data_history)
 
     def use_data_path(path: str):
         if ui_mgr.panel_refs.movies_input:
@@ -1070,9 +1057,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                             save_selections(mg, ov)
                             ui.notify("Selection saved", type="positive")
 
-                    ui.button("Save selection", on_click=_do_save_selection).props("flat dense no-caps").style(
-                        f"{FONT} font-size: 10px; color: {CLR_LABEL}; padding: 2px 8px;"
-                    )
+                    house_button("Save selection", _do_save_selection)
 
                 build_dataset_overview_panel(overview, on_change=update_create_button_state)
         except Exception as e:
@@ -1094,7 +1079,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         with ui.dialog() as dialog, ui.card().classes("w-[540px]"):
             build_dry_run_summary(overview)
             with ui.row().classes("w-full justify-end mt-3"):
-                ui.button("Close", on_click=dialog.close).props("flat no-caps").style(f"{FONT} font-size: 12px;")
+                house_button("Close", dialog.close)
         dialog.open()
 
     # NOTE: autodetect + dataset parsing is triggered from within
@@ -1311,21 +1296,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     ui_mgr.panel_refs.status_indicator = status_indicator
 
                     with ui.row().classes("items-center gap-2"):
-                        (
-                            ui.button("Preview Import", on_click=show_dry_run_dialog)
-                            .props("no-caps flat")
-                            .style(f"{FONT} font-size: 11px; font-weight: 500; padding: 4px 12px; color: {CLR_LABEL};")
-                        )
-                        create_btn = (
-                            ui.button("Create Project", on_click=handle_create_project)
-                            .props("no-caps unelevated")
-                            .style(
-                                f"{FONT} font-size: 11px; font-weight: 500; "
-                                "padding: 4px 16px; border-radius: 6px; "
-                                "background: #93c5fd; color: white; "
-                                "letter-spacing: 0.01em;"
-                            )
-                        )
+                        house_button("Preview import", show_dry_run_dialog)
+                        create_btn = house_button("Create project", handle_create_project, kind="accent")
                         ui_mgr.panel_refs.create_button = create_btn
 
         # =================================================================

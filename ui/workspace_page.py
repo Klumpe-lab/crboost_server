@@ -4,6 +4,7 @@ from nicegui import ui
 
 from backend import CryoBoostBackend
 from ui.background_task_tray import mount_background_task_tray
+from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
 from ui.species.page import build_species_page
@@ -59,7 +60,7 @@ def build_workspace_page(backend: CryoBoostBackend):
         with ui.column().classes("w-full h-screen items-center justify-center gap-4"):
             ui.icon("error_outline", size="64px").classes("text-red-400")
             ui.label("No project loaded").classes("text-xl text-gray-600")
-            ui.button("Return to Start", icon="home", on_click=lambda: ui.navigate.to("/"))
+            house_button("Return to start", lambda: ui.navigate.to("/"))
         return
 
     if not ui_mgr.project_path or not ui_mgr.project_path.exists():
@@ -67,7 +68,7 @@ def build_workspace_page(backend: CryoBoostBackend):
             ui.icon("folder_off", size="64px").classes("text-orange-400")
             ui.label("Project path is invalid").classes("text-xl text-gray-600")
             ui.label(str(ui_mgr.project_path)).classes("text-sm text-gray-400 font-mono")
-            ui.button("Return to Start", icon="home", on_click=lambda: ui.navigate.to("/"))
+            house_button("Return to start", lambda: ui.navigate.to("/"))
         return
 
     callbacks = {}
