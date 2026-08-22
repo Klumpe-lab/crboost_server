@@ -135,25 +135,25 @@ tomogram-conflict check. Independently committable, fixes today's behaviour.
 `assert_transferable(row_a, row_b)` implementing D3's second gate. Pure functions, no UI, no
 new parsing — the registry already holds both fields.
 
-**S2 — the coordinate-grade merge engine.** New `services/particles/coord_merge.py`: union N
+**S2 — the coordinate-grade merge engine.** CODE-COMPLETE 2026-08-22. New `services/particles/coord_merge.py`: union N
 coordinate sources spanning tomograms and projects into a `MergedSources/<slug>/` directory
 at coordinate grade. Reuses `pick_merge.type_priority` for row order, `list_extraction`'s
 optics-synthesis policy (raise, never invent) and `subtomo_merge.write_optimisation_set` for
 the envelope. Implements D5's ragged-column handling and writes `provenance.star`.
 
-**S3 — collision report + dedup.** Clash counts at the species Ø radius over the whole union,
+**S3 — collision report** CODE-COMPLETE 2026-08-22 (service half; the Deduplicate button is S4). Clash counts at the species Ø radius over the whole union,
 per tomogram and total; the **Deduplicate** action calls `pick_merge.deduplicate_star`.
 Report is computed on every selection change, shown only when non-zero.
 
-**S4 — the dialog.** Rename the roster icon and dialog. Add the grade switch. Extend the
+**S4 — the dialog.** CODE-COMPLETE 2026-08-22. Rename the roster icon and dialog. Add the grade switch. Extend the
 existing `Project → Species → Tomogram` tree (`merge_card._MergeSelector`) down to the LIST
 level for coordinate grade. Enforce one species. Pixel grade keeps today's behaviour
 unchanged behind the same chrome.
 
-**S5 — the terminal toggle.** `☑ and <verb> when done`, verb per D1's table. Spawns with
+**S5 — the terminal action.** CODE-COMPLETE 2026-08-22. `☑ and <verb> when done`, verb per D1's table. Spawns with
 paths prepopulated; does not run anything the user did not tick.
 
-**S6 — L1 back on the picks surface.** A one-tomogram coordinate merge registers its
+**S6 — L1 back on the picks surface.** CODE-COMPLETE 2026-08-22. A one-tomogram coordinate merge registers its
 `PickList` (`list_actions.merge_lists` already does exactly this and currently has **zero
 call sites** — 09-S3 removed the merge bar and nothing replaced it, so the app has no way to
 create a merged pick list at all today). This stage is the replacement 09-S3 promised.
@@ -222,3 +222,80 @@ To be filled as stages land. Minimum, once S0–S6 are code-complete:
   - `services/particles/__init__.py` docstring names the new module. `ruff check .` green
     repo-wide; `ruff format` clean. `check_boundaries.py` and `import main` still owed — no runnable
     python in the agent sandbox.
+- 2026-08-22 — **S2 code-complete + S3's service half, uncommitted.** One new file,
+  `services/particles/coord_merge.py`, plus a one-line docstring update in the package `__init__`.
+  Still pure service layer — nothing in `ui/` imports it yet, so it commits with S0/S1 ahead of the
+  08–11 wall.
+  - `CoordSource` (one resolved contributing list) → `plan_merge` → `merge_coordinate_sources`.
+    Planning is separated from writing on purpose: the dialog (S4) needs to show what a merge WOULD
+    do — renames, unverified facts, clash counts — before anything lands on disk.
+  - **Tomogram identity is conservative by default.** `plan_merge(registry_lookup=None)` never
+    equates two tomograms across projects; same-named ones are kept APART under a
+    `<name>__<project>` disambiguation and the fact is reported as `unverified`. Pooling only
+    happens when the caller supplies a `registry_lookup` that yields a `TiltSeries` whose
+    `acquisition_key` matches — and then S1's transferability gate runs, and a stated disagreement
+    is blocking. Never silently pooling unrelated picks is worth more than the convenience.
+  - Two defects found while writing it, both now guarded rather than noted:
+    (a) a source project's `tomograms.star` may hold paths RELATIVE to its own root, and copying
+    them verbatim into a merged star elsewhere yields a reconstruction path that resolves to
+    nothing — which extraction skips per-TS without complaining. `_absolutize_paths` resolves every
+    `*File` / `*Dir` / `rlnTomoReconstructedTomogram` value against the project that wrote it.
+    (b) contributing projects can write different `tomograms.star` schemas; stacking them fills the
+    gaps with NaN, and a NaN tilt-star reference is the same silent skip. A column stated for some
+    tomograms and not others now RAISES, naming the columns.
+  - Column policy per D5 is in `_classify_columns`: angles filled with 0 (RELION's real "no prior",
+    matching what `list_extraction` already writes), every other column in the main star only at
+    100% row coverage, everything ragged into `provenance.star` with per-row coverage in
+    `merge_summary.json`. `SCORE_COLS` exists so the caller can NAME the score column in the UI
+    ("filter applies to N of M"), not because score has a separate rule.
+  - `rlnTomoParticleName` is reassigned merged-wide (per-tomogram `<tomo>/<n>`), because the
+    sources' own names are unique only within their own set and the merged set needs one join key.
+    The originals ride in the sidecar as `cbSourceParticleName` rather than being lost.
+  - S3's `clash_report` gives per-tomogram + total counts at a radius, reusing
+    `pick_merge.clash_stats_coords`, so what it reports is exactly what
+    `pick_merge.deduplicate_star` would drop. Nothing is applied — D4.
+  - Headless CLI (`python -m services.particles.coord_merge --source … --out …`), same precedent
+    and same reason as `list_extraction`'s: build the artifacts without SLURM so the star format is
+    eyeballable, and so this is exercisable in the module env. `ruff check .` green repo-wide.
+- 2026-08-22 — **S4 + S5 + S6 code-complete. Roadmap 12 is code-complete, PENDING RUNTIME.**
+  New `ui/aggregation/aggregate_dialog.py` (648 lines) + `discover_pick_list_projects` in
+  `services/aggregation/discovery.py`; `pipeline_roster._build_aggregation_merge_btn` now opens it
+  and says "Aggregate candidates". **These are the first files in this roadmap that touch `ui/`, so
+  from here it folds into the 08–11 commit wall.**
+  - Deviation from §3 as written, and the significant one: S4 is a NEW module, not a grade switch
+    inside `merge_card`. That dialog is built entirely around `AggregationSource` — one entry per
+    optimisation set — and a coordinate source is a LIST, several per tomogram, most with no optset
+    anywhere. Threading a second identity model through the same tree would have made both harder
+    to read than either is. The two are linked instead: the coordinate dialog carries an
+    "extracted particles instead ↗" link that closes it and opens `merge_card`'s, and `merge_card`
+    is otherwise untouched. Its own §2 sketch (one dialog, a GRADE radio) is therefore not what
+    shipped; the user-facing effect is the same door and the same two grades.
+  - Cross-project reach needed a second discovery path. `discover_subtomo_optimisation_sets` finds
+    projects that have EXTRACTED something, which is the wrong filter one stage earlier — a de-novo
+    project whose only particles are hand-placed has no optset at all and was invisible to it.
+    `discover_pick_list_projects` keys on `project_params.json` instead, and foreign lists are read
+    straight off `get_project_state_for(other_path).pick_lists`.
+  - S5's verb is chosen by shape, not by the user: a single-tomogram aggregate in THIS project
+    offers **Extract this list** and submits `backend.extract_pick_list` for real; anything wider
+    offers **Set up extraction**, which points an existing `subtomoExtraction` instance's
+    `input_optimisation` at the aggregate and STOPS. It deliberately does not submit — box / crop /
+    binning are the species' decision and the job tab states them; launching with whatever numbers
+    happened to be on the instance is exactly the invented default this codebase refuses. Same
+    reason the Extract path refuses when the species has no committed `ExtractionParams`: it says
+    so and names the panel that owns the decision, rather than picking a box.
+  - S3's user half lives in the result dialog: clash counts at the species Ø with an explicit
+    statement that NOTHING was deduplicated and why the union keeps clashers. When the species
+    states no Ø the report is not computed and says so — no invented particle size.
+  - Blocking vs unverified are two different dialogs on purpose. Blocking is a wall (a stated
+    reconstruction disagreement between the same acquisition; no user intent makes pooling those
+    coordinates correct). Unverified is a question listing what nothing on disk states — handedness,
+    and any tomogram name that had to be disambiguated.
+  - `ruff check .` green repo-wide; the four new/changed files are `ruff format` clean.
+    `check_boundaries.py` and `import main` still owed.
+  - **Incident, for the record:** a `perl -0pi` rewrite with a wide-character replacement
+    double-encoded every non-ASCII byte in `pipeline_roster.py`. Caught by `ruff` (E902, then
+    RUF001 on a mojibake'd `·`), repaired by reversing one UTF-8 encoding pass
+    (`iconv -f UTF-8 -t ISO-8859-1`) and re-inserting the em dash as raw bytes. The file now
+    validates as UTF-8 and its 55 non-ASCII lines read correctly (`—`, `Å`, `▸`, `·`, `°`). No
+    other file was affected — the corruption needs a wide char in the replacement, which only that
+    one run had. Worth a spot-check of the roster's chips at runtime anyway.
