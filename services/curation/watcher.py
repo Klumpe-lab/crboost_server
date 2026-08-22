@@ -1,25 +1,36 @@
-"""Server-side curation watcher (roadmap 09-S4).
+"""Server-side curation watcher (roadmap 09-S4, hardened by 10-S2).
 
 Detects ArtiaX ``.coords`` saves under ``<project>/Curation/<species>/<tomo>/`` and
-registers each as that tomogram's ``manual`` pick list — with no Journey tab open.
-Replaces the Journey's render-path prescan (``_auto_kick_coords_ingest`` + the
-``.coords`` mtime terms in its refresh gates), which only ran while the Particles
-section of the *selected* tilt series was being rendered.
+registers each as a pick list — with no Journey tab open. Replaces the Journey's
+render-path prescan (``_auto_kick_coords_ingest`` + the ``.coords`` mtime terms in its
+refresh gates), which only ran while the Particles section of the *selected* tilt series
+was being rendered.
 
 Shape = the ``PipelineMonitor`` skeleton (start / stop / _loop / _tick_once). Per open
-project, every tick scans the HOT dirs (what a live session has loaded,
-``CurationSessionService.loaded_curation_dirs``) and every ``FULL_SWEEP_EVERY``-th tick
-the whole ``Curation/*/*/`` tree. Scanning, attribution and the geometry lookup run off
-the event loop; ingest (``backend.import_curation_picks`` → ``register_manual_pick_list``
-→ save by explicit path — no client context here) runs sequentially on it, one save at a
-time, so two saves never race on the same ``manual`` slug.
+project, every tick scans the HOT dirs and every ``FULL_SWEEP_EVERY``-th tick the whole
+``Curation/*/*/`` tree. Scanning, attribution and the geometry lookup run off the event
+loop; ingest (``backend.import_curation_picks`` → ``register_manual_pick_list`` → save by
+explicit path — no client context here) runs sequentially on it, one save at a time.
 
-Attribution never reverses a directory name: the slugs of the registered species ids and
-of the known tomogram names are matched against ``<species>/<tomo>`` (the same
-``_safe_slug`` ``curation_dir`` used to create them); a dir matching nothing — or two
-things (slug collision) — is reported through ``unattributed()`` and never guessed.
-Dedup: ``_seen`` (project, dir, int(mtime)) plus the ``manual`` list's
+EVERY save, not the newest (10-S2). It used to ingest only the newest ``.coords`` per dir
+and collapse every one of them onto a single ``manual`` slug, so of N lists a user saved in
+a session, N−1 silently disappeared. Now each file is its own pick list, keyed by its stem
+(``services.particles.ingest.manual_slug_for``) — which also makes re-saving under the same
+name an update of that list rather than a new one.
+
+ATTRIBUTION comes from the dir's ``manifest.json`` — written when crboost declared the
+session's scope — and falls back to matching the registered species ids / known tomogram
+names against the ``<species>/<tomo>`` directory slugs only when there is no manifest (a
+pre-10 project). A dir that resolves to nothing, or to two things (slug collision), or
+whose manifest names a species the registry no longer has, is reported through
+``unattributed()`` and never guessed at; the Picks & curation tab turns each of those into
+an explicit "assign to species + tomogram" action, which is the staging mechanism of
+record. Dedup: ``_seen`` (project, coords file, int(mtime)) plus the list's
 ``created_at >= mtime`` guard, which makes a restart re-register nothing.
+
+The HOT set is derived from the manifests too (their ``launched_at``), not from an
+in-memory record of what a session was told to load: that record was empty after a crboost
+restart while ArtiaX kept picking, which is fragility #2 of the roadmap's §1.
 """
 
 from __future__ import annotations
@@ -33,7 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from services.particles.ingest import register_manual_pick_list
+from services.particles.ingest import manual_slug_for, register_manual_pick_list
 from services.particles.list_ref import tomograms_star_for
 from services.visualization import artiax_bridge
 from services.visualization.tomo_geometry import read_tomo_table, tomogram_star_sources
@@ -47,7 +58,6 @@ TICK_SEC = 5.0
 FULL_SWEEP_EVERY = 6  # hot dirs every tick; the whole Curation/*/*/ tree every ~30 s
 SETTLE_SEC = 2.0  # ArtiaX writes are not atomic — leave a just-written file for the next tick
 EVENTS_PER_PROJECT = 200
-MANUAL_SLUG = "manual"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,10 +84,12 @@ class CurationWatcher:
         self._task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
         self._tick_n = 0
-        self._seen: set[tuple[str, str, int]] = set()  # (project, dir, int(mtime)) handled: ingested or failed
+        self._seen: set[tuple[str, str, int]] = set()  # (project, coords, int(mtime)) handled: ingested or failed
         self._events: dict[str, deque] = defaultdict(lambda: deque(maxlen=EVENTS_PER_PROJECT))
-        self._unattributed: dict[str, dict[str, str]] = defaultdict(dict)  # project → {dir: reason}
+        self._unattributed: dict[str, dict[str, dict]] = defaultdict(dict)  # project → {dir: {reason, files}}
         self._reported: set[tuple[str, str, str]] = set()  # (project, dir, reason) already logged once
+        self._hot: dict[str, list[Path]] = {}  # project → most recently launched curation dir(s)
+        self._with_saves: dict[str, set[str]] = {}  # project → dirs that held a user .coords at the last full sweep
 
     # ── lifecycle (PipelineMonitor shape) ─────────────────────────────────────────
 
@@ -108,11 +120,12 @@ class CurationWatcher:
 
     def unattributed(self, project_path: Path) -> list[dict]:
         """Curation dirs holding a user save that maps to no (registered species, known
-        tomogram) — surfaced, never guessed. ``{"dir": str, "reason": str}`` per dir, sorted
-        by dir; the reason is what the Picks & curation tab shows so the user can fix the name
-        rather than wonder why a save did nothing (11-S4)."""
+        tomogram) — surfaced, never guessed. ``{"dir", "reason", "files"}`` per dir, sorted
+        by dir. The reason is what the Picks & curation tab shows so the user can fix the
+        name rather than wonder why a save did nothing, and ``files`` is what its "assign"
+        action would move (10-S2)."""
         found = self._unattributed.get(_key(project_path), {})
-        return [{"dir": d, "reason": found[d]} for d in sorted(found)]
+        return [{"dir": d, "reason": found[d]["reason"], "files": list(found[d]["files"])} for d in sorted(found)]
 
     # ── tick ──────────────────────────────────────────────────────────────────────
 
@@ -145,23 +158,30 @@ class CurationWatcher:
     async def _tick_project(self, project_path: Path, state, full: bool) -> None:
         if not (project_path / "Curation").is_dir():
             return
-        hot = self._backend.curation_service.loaded_curation_dirs(project_path)
+        key = _key(project_path)
+        hot = self._hot.get(key, [])
         if not hot and not full:
             return
-        key = _key(project_path)
         saves = await asyncio.to_thread(self._collect, key, project_path, state, hot, full)
         if full and self._unattributed.get(key):
-            gone = [d for d in self._unattributed[key] if not Path(d).is_dir()]
-            for d in gone:
+            # Drop rows for dirs that no longer exist OR no longer hold a user save — an
+            # `assign` moves the files out, and a row that lingers after that reads as an
+            # unresolved problem the user already fixed.
+            still = self._with_saves.get(key, set())
+            for d in [d for d in self._unattributed[key] if d not in still]:
                 self._unattributed[key].pop(d, None)
         for s in saves:
+            dedup = (key, str(s.coords), int(s.mtime))
             if s.species_id is None or s.tomo_name is None:
-                self._unattributed[key][str(s.dir)] = s.reason
+                entry = self._unattributed[key].setdefault(str(s.dir), {"reason": s.reason, "files": []})
+                entry["reason"] = s.reason
+                if str(s.coords) not in entry["files"]:
+                    entry["files"].append(str(s.coords))
                 self._note(key, "unattributed", s, message=s.reason)
                 continue
             self._unattributed[key].pop(str(s.dir), None)
-            dedup = (key, str(s.dir), int(s.mtime))
-            pl = state.get_pick_list(MANUAL_SLUG, s.species_id, s.tomo_name)
+            slug = manual_slug_for(s.coords)
+            pl = state.get_pick_list(slug, s.species_id, s.tomo_name)
             if pl is not None and pl.created_at is not None and pl.created_at.timestamp() >= s.mtime:
                 self._seen.add(dedup)  # already registered (this or a newer save) — the restart-safe guard
                 continue
@@ -182,9 +202,12 @@ class CurationWatcher:
     # ── off-loop scan + attribution ───────────────────────────────────────────────
 
     def _collect(self, key: str, project_path: Path, state, hot: list[Path], full: bool) -> list[_Save]:
-        """Thread: newest settled user save per dir, attributed to (species, tomo) by
-        slug match, with the tomograms.star the import needs. Saves already handled
-        (``_seen``) are dropped here so a stale save costs one glob per tick, no more."""
+        """Thread: EVERY settled user save in each scanned dir, attributed to (species,
+        tomo) by manifest (else by slug match), with the tomograms.star the import needs.
+        Saves already handled (``_seen``) are dropped here so a stale save costs one glob
+        per tick, no more. A full sweep also refreshes the hot set from the manifests and
+        records which dirs still hold a user save, which is how a resolved unattributed row
+        stops being shown."""
         dirs: set[Path] = set(hot)
         if full:
             root = project_path / "Curation"
@@ -196,21 +219,38 @@ class CurationWatcher:
                 logger.exception("CurationWatcher: cannot list %s", root)
         now = time.time()
         found: list[tuple[Path, Path, float]] = []
+        manifests: dict[Path, dict] = {}
+        launched: list[tuple[str, Path]] = []
+        with_saves: set[str] = set()
         for d in sorted(dirs):
-            saves = artiax_bridge.user_coords_saves(d)
-            if not saves:
-                continue
-            try:
-                mtime = saves[0].stat().st_mtime
-            except OSError:
-                continue  # vanished between glob and stat — the next tick sees whatever is there
-            if now - mtime < SETTLE_SEC or (key, str(d), int(mtime)) in self._seen:
-                continue
-            found.append((d, saves[0], mtime))
+            m = artiax_bridge.read_manifest(d)
+            if m is not None:
+                manifests[d] = m
+                if m.get("launched_at"):
+                    launched.append((str(m["launched_at"]), d))
+            for c in artiax_bridge.user_coords_saves(d):
+                with_saves.add(str(d))
+                try:
+                    mtime = c.stat().st_mtime
+                except OSError:
+                    continue  # vanished between glob and stat — the next tick sees whatever is there
+                if now - mtime < SETTLE_SEC or (key, str(c), int(mtime)) in self._seen:
+                    continue
+                found.append((d, c, mtime))
+        if full:
+            self._with_saves[key] = with_saves
+            # Hot = the dir of the most recently LAUNCHED session — where the user is
+            # picking, or last was. ISO-8601 timestamps sort lexicographically. It stays hot
+            # after that session ends, which costs one glob per tick and is the honest
+            # trade for surviving a crboost restart. Empty until some dir has been launched
+            # on; a hot dir is rescanned every tick instead of every sixth, which is the
+            # whole latency difference the save contract quotes.
+            self._hot[key] = [max(launched)[1]] if launched else []
         if not found:
             return []
 
-        species_by_slug = _by_slug([(sp.id, sp) for sp in list(state.species_registry)])
+        species_by_id = {sp.id: sp for sp in list(state.species_registry)}
+        species_by_slug = _by_slug([(sp.id, sp) for sp in species_by_id.values()])
         tomo_names: set[str] = set()
         for _source, star in tomogram_star_sources(state, project_path):
             df = read_tomo_table(star)
@@ -220,13 +260,7 @@ class CurationWatcher:
 
         out: list[_Save] = []
         for d, coords, mtime in found:
-            sp = species_by_slug.get(d.parent.name)
-            tomo = tomo_by_slug.get(d.name)
-            reasons = []
-            if sp is None:
-                reasons.append(f"no registered species slugs to '{d.parent.name}'")
-            if tomo is None:
-                reasons.append(f"no known tomogram slugs to '{d.name}'")
+            sp, tomo, reasons = self._attribute(d, manifests.get(d), species_by_id, species_by_slug, tomo_by_slug)
             if reasons:
                 out.append(_Save(d, coords, mtime, None, "", None, None, "; ".join(reasons)))
                 continue
@@ -236,6 +270,29 @@ class CurationWatcher:
                 reason = f"no tomograms.star carries {tomo} (nothing reconstructed or imported yet)"
             out.append(_Save(d, coords, mtime, sp.id, sp.name, tomo, star, reason))
         return out
+
+    @staticmethod
+    def _attribute(d: Path, manifest: dict | None, species_by_id: dict, species_by_slug: dict, tomo_by_slug: dict):
+        """``(species, tomo_name, reasons)`` for one curation dir. The manifest crboost
+        wrote when it declared the session's scope is authoritative — no name reversal, so
+        a slug collision cannot misfile anything. Without one (a pre-10 dir, or one the
+        user made by hand) the directory names are matched against the registered species
+        ids / known tomogram names, exactly as before. A manifest naming a species the
+        registry no longer holds is an error to report, NOT a reason to fall back to
+        guessing at the directory name."""
+        if manifest and manifest.get("species_id") and manifest.get("tomo_name"):
+            sp = species_by_id.get(str(manifest["species_id"]))
+            if sp is None:
+                return None, None, [f"manifest names species '{manifest['species_id']}', which is not registered"]
+            return sp, str(manifest["tomo_name"]), []
+        sp = species_by_slug.get(d.parent.name)
+        tomo = tomo_by_slug.get(d.name)
+        reasons = []
+        if sp is None:
+            reasons.append(f"no registered species slugs to '{d.parent.name}'")
+        if tomo is None:
+            reasons.append(f"no known tomogram slugs to '{d.name}'")
+        return sp, tomo, reasons
 
     # ── bookkeeping ───────────────────────────────────────────────────────────────
 
