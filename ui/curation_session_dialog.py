@@ -2,22 +2,28 @@
 
 Option A (no in-crboost proxying): crboost submits the VNC desktop as a SLURM job
 and hands the user the exact connection details — one SSH tunnel + a viewer + a
-password. ONE panel, opened from the journeys gallery's per-tomo "Curate in
-ArtiaX" button (and the sidebar). It is a **one-stop shop with a STABLE layout**:
-a status chip (live / starting / off / failed) drives the chrome, Start/Stop swap
-in place, and the Connect + Load-this-tomogram guidance is built ONCE — the live
-values (tunnel / address / password) fill into fixed slots when the session comes
-up rather than the whole panel re-rendering into a different shape. The session is
+password. ONE panel, opened from the Picks & curation tab's per-tomogram "curate"
+(and from its session chip). It is a **one-stop shop with a STABLE layout**: a
+status chip (live / starting / off / failed) drives the chrome, Start/Stop swap in
+place, and the Connect + Scope + Save sections are built ONCE — the live values
+(tunnel / address / password) fill into fixed slots when the session comes up
+rather than the whole panel re-rendering into a different shape. The session is
 per-project and reused (find_active_curation_session) — at most one lives at a
 time, so reconnecting keeps the user's one tunnel + viewer.
 
-The panel is parented at the page LAYOUT slot, NOT the caller's slot: "Curate in
-ArtiaX" is an async click handler on a button inside the dashboard's ``main_area``,
-and NiceGUI (``events.handle_event``) runs an async handler within the sender's
-``parent_slot`` — so a dialog created naively lands under ``main_area`` and is
-destroyed the next time the 4 s live-refresh does ``main_area.clear()`` (the
-"window closes behind me" bug). ``client.layout.default_slot`` lives for the whole
-page and is never cleared.
+MODEL B (roadmap 10-S1). This panel does not drive the session. "Load into running
+session" and "Save picks now" are gone, along with the backend REST calls behind
+them: the session's scope is fixed when it is launched, the user saves in ArtiaX
+themselves, and crboost's job is to say exactly WHERE (section 3) and to ingest
+whatever lands there. What that bought is that a saved `.coords` can no longer be
+attributed to the wrong species — the failure the old swap made invisible.
+
+The panel is parented at the page LAYOUT slot, NOT the caller's slot: "curate" is
+an async click handler on a button inside a poll-refreshed container, and NiceGUI
+(``events.handle_event``) runs an async handler within the sender's
+``parent_slot`` — so a dialog created naively lands there and is destroyed the next
+time that container refreshes (the "window closes behind me" bug).
+``client.layout.default_slot`` lives for the whole page and is never cleared.
 """
 
 from __future__ import annotations
@@ -45,7 +51,7 @@ _BLOCK = (
     "font-mono text-[11px] bg-white border border-slate-200 text-slate-700 "
     "px-2 py-1.5 rounded w-full break-all leading-snug whitespace-pre-wrap"
 )
-# Each of the three sections (Connect / Load / Pick & save) is one of these light
+# Each of the three sections (Connect / Scope / Pick & save) is one of these light
 # panels, so they read as parallel cards instead of separator-divided prose.
 _SECTION = "w-full gap-1.5 rounded-lg border border-slate-200 bg-slate-50 p-3"
 
@@ -63,40 +69,32 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
     """Open the curation control center.
 
     ``bundle`` (from ``backend.prepare_curation_bundle``) ties the panel to one
-    (species, tomogram): Start preloads it, and the Load section shows the paste-in
-    commands + the ``.coords`` save target. With no bundle (sidebar) it's a
-    project-level start/connect panel. The panel checks liveness itself, so both
-    entry points behave identically — there is no separate chooser.
+    (species, tomogram): Start launches a session scoped to it, and section 2 states
+    that scope. With no bundle (the Picks tab's session chip) it's a status/connect
+    panel that reports the scope the RUNNING session was launched on. The panel checks
+    liveness itself, so both entry points behave identically.
     """
     b = bundle or {}
     cxc_path = b.get("cxc_path")
     commands = b.get("commands") or []
     manual_coords = b.get("manual_coords") or ""
-    # The per-(species,tomo) curation folder (= manual_coords' parent): the forefront
-    # save target, and where a by-hand ArtiaX save must land. _refresh_loaded repoints it
-    # at the LOADED tomogram's folder once a swap records one.
-    _initial_save_dir = str(Path(manual_coords).parent) if manual_coords else ""
+    # The per-(species,tomo) curation folder: the ONE place a save may land for this
+    # scope, and what section 3 tells the user to point ArtiaX's save dialog at.
+    save_dir = b.get("curation_dir") or (str(Path(manual_coords).parent) if manual_coords else "")
     tomo_name = b.get("tomo_name") or ""
-    auto_count = b.get("auto_count")
-    cmd_block = "\n".join(commands)
-
-    # Inputs for the one-click "Load into running session" swap (REST channel). The
-    # dashboard handler stamps these onto the bundle; absent (sidebar entry) → no button.
-    candidates_star = b.get("candidates_star")
-    tomograms_star = b.get("tomograms_star")
+    species_label = b.get("species_label") or b.get("species_id") or ""
     species_id = b.get("species_id") or ""
-    species_label = b.get("species_label") or ""
-    source_star = b.get("source_star")
-    coords_label = b.get("coords_label") or "auto"
+    auto_count = b.get("auto_count")
+    display_bin = int(b.get("display_bin") or 1)
+    display_note = b.get("display_note") or ""
+    cmd_block = "\n".join(commands)
     _cur_cfg = getattr(getattr(backend, "config_service", None), "curation", None)
-    # The tomogram is what a swap actually needs; `candidates_star` is only the
-    # reference pick list, and a species picked de novo has none.
-    can_load = bool(getattr(_cur_cfg, "rest_enabled", True)) and bool(tomograms_star)
+    passwordless = bool(getattr(_cur_cfg, "passwordless_vnc", False))
 
     # Live session values; copy buttons read from here (closures) so they stay
     # correct as the session transitions off → starting → live without a rebuild.
-    sv = {"tunnel": "", "address": "", "password": "", "node": "", "job_id": None, "rest_port": None}
-    state = {"session_dir": None, "timer": None, "busy": False, "kind": "off", "load_busy": False, "save_busy": False}
+    sv = {"tunnel": "", "address": "", "password": "", "node": "", "job_id": None, "rest_port": None, "scope": None}
+    state = {"session_dir": None, "timer": None, "busy": False, "kind": "off", "closing": False, "restarting": False}
 
     # Stable page-level host slot (see module docstring). Fall back to the caller's
     # slot if a layout isn't reachable — degraded (may close on refresh) but works.
@@ -113,6 +111,12 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             state["timer"] = None
 
     def _close() -> None:
+        """Tear the panel down. Reached from the Close button AND from Esc / the
+        dialog hiding itself, so it is re-entrant-safe: `closing` stops the
+        `dialog.close()` below from re-firing the value-change handler."""
+        if state["closing"]:
+            return
+        state["closing"] = True
         _stop_timer()
         try:
             dialog.close()
@@ -157,6 +161,8 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             "or press Stop then Start (Stop also clears any leftover sessions).\n"
             "- **Password rejected:** copy it again above (case-sensitive).\n"
             f"- **Stop the background tunnel:** on your Mac, `lsof -ti tcp:{port} | xargs kill`.\n"
+            "- **Wrong tomogram open:** this session was launched on the one named above and crboost does not "
+            "switch it. Close this, press `curate` on the tomogram you want, and start again.\n"
             "- **Picks look shifted in ArtiaX:** tell us — the `.cxc` may need an explicit pixel-size line."
         )
 
@@ -171,7 +177,11 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
     ctx = host_slot if host_slot is not None else nullcontext()
     with ctx:
         with (
-            ui.dialog().props("persistent") as dialog,
+            # `no-backdrop-dismiss` (not `persistent`): Esc closes the panel — the
+            # maintainer's peeve — while a stray click on the backdrop, mid copy-paste of a
+            # tunnel command, does not. Quasar's own Esc handling does the closing; the
+            # value-change hook below runs OUR teardown (poll timer, registry entry).
+            ui.dialog().props("no-backdrop-dismiss") as dialog,
             ui.card()
             .classes("w-[56rem] max-w-full")
             .style("max-height: 90vh; display: flex; flex-direction: column; gap: 6px;"),
@@ -188,10 +198,9 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                 )
             ui.separator()
 
-            # "Currently loaded" — what the shared live session has open via the REST
-            # swap (CurationSessionService._curation_loaded). Filled on reconnect + after each Load;
-            # hidden until something is loaded. The session is per-user, so this can
-            # reflect a tomogram a swap loaded from a different project's dashboard.
+            # What the RUNNING session was launched on (its `scope.json`), which may be a
+            # different tomogram — or a different project — from the one this panel was
+            # opened for. Filled on reconnect; hidden when nothing is running.
             loaded_lbl = ui.label("").classes(
                 "text-[11px] text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded self-start whitespace-nowrap"
             )
@@ -202,6 +211,11 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                 # ── action row (Start/Stop swap in place; spinner while starting) ──
                 with ui.row().classes("w-full items-center gap-2"):
                     start_btn = house_button("Start session", lambda: _start(), kind="accent")
+                    # The ONLY way to change what a session has open, now that nothing
+                    # drives it: stop and relaunch scoped to this tomogram. Shown only when
+                    # a live session is on a DIFFERENT scope — otherwise there is nothing to
+                    # change, and a permanently-present restart button reads as one.
+                    restart_btn = house_button("Restart on this tomogram", lambda: _restart(), kind="accent")
                     stop_btn = house_button("Stop session", lambda: _stop(), kind="danger")
                     busy_box = ui.row().classes("items-center gap-2")
                     with busy_box:
@@ -235,9 +249,12 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                     with ui.row().classes("items-start gap-2 w-full no-wrap"):
                         _num("3")
                         with ui.column().classes("gap-0.5 flex-grow min-w-0"):
-                            ui.label("Open the viewer at this address, then enter the password:").classes(
-                                "text-[11px] text-gray-600"
-                            )
+                            ui.label(
+                                "Open the viewer at this address, then enter the password:"
+                                if not passwordless
+                                else "Open the viewer at this address — this site runs curation desktops "
+                                "without a password:"
+                            ).classes("text-[11px] text-gray-600")
                             with ui.row().classes("items-center gap-1 w-full"):
                                 _kw("Address")
                                 addr_lbl = ui.label("—").classes(_BOX)
@@ -246,70 +263,74 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                                 _kw("Password")
                                 pass_lbl = ui.label("—").classes(_BOX)
                                 _copy(lambda: sv["password"], "Copy password")
+                            if passwordless:
+                                ui.label(
+                                    "curation.passwordless_vnc is ON — the desktop runs with SecurityTypes None, "
+                                    "so anyone who can reach that node's VNC port can drive your session. Turn it "
+                                    "off in the config if this cluster is shared."
+                                ).classes("text-[10px] text-orange-700")
 
-                # ── SECTION 2 · LOAD THIS TOMOGRAM (auto-preloaded; commands = fallback) ──
-                load_btn = None
+                # ── SECTION 2 · SCOPE (declared at launch; never changed after) ──
                 with ui.column().classes(_SECTION):
-                    hdr = _section_head("layers", "Load this tomogram")
+                    hdr = _section_head("my_location", "This session's scope")
                     with hdr:
                         if auto_count is not None:
-                            ui.label(f"{auto_count} auto picks").classes("text-[10px] text-slate-400")
+                            ui.label(f"{auto_count} reference picks").classes("text-[10px] text-slate-400")
                         ui.space()
-                        if commands and can_load:
-                            load_btn = house_button("Load into running session", lambda: _load_into_session())
-                            load_btn.tooltip("Swap the running ArtiaX to this tomogram + picks — no copy-paste")
                         if commands:
-                            house_button("Copy commands", lambda: ui.run_javascript(_copy_js(cmd_block)))
-                    if commands:
+                            house_button("Copy commands", lambda: ui.run_javascript(_copy_js(cmd_block))).tooltip(
+                                "The exact ChimeraX lines this session runs at startup — paste them by hand only if "
+                                "the preload didn't happen"
+                            )
+                    if tomo_name:
+                        with ui.row().classes("items-center gap-1 w-full"):
+                            _kw("Picking")
+                            ui.label(f"{species_label or species_id or '—'} · {tomo_name}").classes(_BOX)
                         ui.label(
-                            "crboost preloads this tomogram and its picks for you — use Load into running "
-                            "session to swap the live viewer to it. The commands below are a manual fallback "
-                            "you only need if that doesn't work."
-                            if can_load
-                            else "crboost preloads this tomogram and its picks when the session starts. To "
-                            "switch the running viewer by hand, paste these into the ChimeraX command line "
-                            "(bottom of its window):"
+                            "Starting from here opens THIS tomogram, and crboost records that this is what the "
+                            "session is for. It does not switch tomograms afterwards — for a different one, close "
+                            "this and press `curate` on that tomogram."
                         ).classes("text-[11px] text-gray-500")
-                        ui.label(cmd_block).classes(_BLOCK)
+                        if display_bin > 1:
+                            ui.label(
+                                f"ArtiaX opens a {display_bin}× downscaled copy so it loads in seconds; the picks "
+                                "you place are mapped back onto the full-resolution volume exactly."
+                            ).classes("text-[10px] text-slate-400")
+                        if display_note:
+                            ui.label(
+                                f"No downscaled copy for this tomogram ({display_note}) — the full-resolution "
+                                "volume opens instead, which takes ~20 s."
+                            ).classes("text-[10px] text-orange-700")
                     else:
                         ui.label(
-                            "Open a tomogram with “curate” on the Particles registry's Picks & curation tab "
-                            "to preload it + its picks here."
+                            "Opened from the session chip, so this panel is not bound to a tomogram. Press "
+                            "`curate` on one in the Picks & curation tab to start a session scoped to it."
                         ).classes("text-[11px] text-gray-500")
 
-                # ── SECTION 3 · PICK & SAVE (crboost files your lists for you) ──
+                # ── SECTION 3 · PICK & SAVE (the contract, stated exactly) ──
                 with ui.column().classes(_SECTION):
-                    hdr = _section_head("save", "Pick & save")
-                    with hdr:
-                        ui.space()
-                        save_btn = house_button("Save picks now", lambda: _save_picks_now())
-                        save_btn.tooltip(
-                            "Save the pick lists you made in ArtiaX into the loaded tomogram's folder — no Save dialog"
-                        )
+                    _section_head("save", "Pick & save")
                     ui.label(
-                        "Make a NEW particle list in ArtiaX and pick into it (don't add to the auto list). "
-                        "crboost saves your picks for you — click Save picks now, and it also offers to save "
-                        "automatically when you switch tomograms. The steps below are only if you'd rather "
-                        "save by hand."
+                        "In ArtiaX, create a NEW particle list and pick into it (don't add to the reference list "
+                        "opened above), then save it — crboost imports it within seconds."
                     ).classes("text-[11px] text-gray-500")
-                    with ui.expansion("Prefer to save by hand in ArtiaX?", icon="folder_open").classes(
-                        "w-full text-xs"
-                    ):
-                        with ui.row().classes("items-center gap-1 w-full"):
-                            _kw("Folder")
-                            save_dir_lbl = ui.label(_initial_save_dir or "— load a tomogram —").classes(_BOX)
-                            _copy(
-                                lambda: save_dir_lbl.text if (save_dir_lbl.text or "").startswith("/") else "",
-                                "Copy folder path",
-                            )
-                        ui.markdown(
-                            "- **Format:** *ArtiaX coordinates* (`.coords`) — **not** RELION star "
-                            "(its writer is buggy).\n"
-                            "- **Name:** anything (e.g. `picks.coords`), **except** `auto.coords` / `*_ref.coords` "
-                            "(crboost's own exports).\n"
-                            "- The Save dialog already opens in this folder. crboost auto-imports the **newest** "
-                            "`.coords` here within a few seconds."
-                        ).classes("text-[11px] text-gray-500")
+                    with ui.row().classes("items-center gap-1 w-full"):
+                        _kw("Folder")
+                        save_dir_lbl = ui.label(save_dir or "— open this from a tomogram's `curate` —").classes(_BOX)
+                        _copy(
+                            lambda: save_dir_lbl.text if (save_dir_lbl.text or "").startswith("/") else "",
+                            "Copy folder path",
+                        )
+                    ui.markdown(
+                        "- **Format:** *ArtiaX coordinates* (`.coords`) — **not** RELION star "
+                        "(its writer is buggy).\n"
+                        "- **Name:** anything **except** `auto.coords` / `*_ref.coords` (crboost's own exports). "
+                        "Each file becomes its own pick list, named after it — so save two lists under two names "
+                        "and you get two lists. Saving again under the SAME name updates that list.\n"
+                        "- **The save dialog already opens in this folder.** A `.coords` saved anywhere else is "
+                        "still picked up, but lands in the Picks tab's *unattributed* list for you to assign to a "
+                        "species — crboost never guesses which one it was."
+                    ).classes("text-[11px] text-gray-500")
 
                 # ── Troubleshooting (collapsed) ──
                 with ui.expansion("Troubleshooting", icon="help_outline").classes("w-full text-xs"):
@@ -317,6 +338,11 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
 
             with ui.row().classes("w-full justify-end mt-1"):
                 house_button("Close", _close)
+
+    # Esc (and any other Quasar-side dismiss) hides the dialog without going through
+    # `_close`, which would leave the 3 s poll timer running and the panel stuck in
+    # `_OPEN_DIALOGS`. Route it back through the one teardown.
+    dialog.on_value_change(lambda e: None if e.value else _close())
 
     _OPEN_DIALOGS[cid] = dialog
     dialog.open()
@@ -330,24 +356,29 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
         "off": ("○ No session", _chip_base + "bg-gray-100 text-gray-500"),
     }
 
-    def _refresh_loaded() -> None:
-        """Reflect the shared session's currently-loaded (species, tomo) from the
-        backend into the indicator. No-op-safe if the backend predates the getter."""
-        cur = None
-        try:
-            getter = getattr(backend, "get_curation_loaded", None)
-            if getter is not None:
-                cur = getter({"slurm_job_id": sv["job_id"], "session_dir": state["session_dir"]})
-        except Exception:
-            cur = None
-        tn = (cur or {}).get("tomo_name") or ""
-        if tn:
-            sp_txt = cur.get("species_label") or cur.get("species_id") or ""
-            loaded_lbl.set_text(f"Loaded in session: {sp_txt + ' · ' if sp_txt else ''}{tn}")
-            cd = cur.get("curation_dir")
-            if cd:
-                save_dir_lbl.set_text(cd)  # by-hand save folder follows the loaded tomo
+    def _refresh_scope() -> bool:
+        """Reflect what the LIVE session was launched on (its `scope.json`, read back by
+        find_active_curation_session). Unlike the pre-10 indicator this survives a crboost
+        restart, because the scope is on disk rather than in a process-local dict. Returns
+        True when that scope DIFFERS from the one this panel was opened for — the case that
+        needs a relaunch, since nothing can re-point a running session."""
+        cur = sv.get("scope") or {}
+        tn = cur.get("tomo_name") or ""
         loaded_lbl.set_visibility(bool(tn))
+        if not tn:
+            return False
+        sp_txt = cur.get("species_label") or cur.get("species_id") or ""
+        same = (not tomo_name) or (tn == tomo_name and cur.get("species_id", species_id) == species_id)
+        prefix = "Session is picking" if same else "⚠ Session is picking a DIFFERENT scope:"
+        loaded_lbl.set_text(f"{prefix} {sp_txt + ' · ' if sp_txt else ''}{tn}")
+        loaded_lbl.classes(
+            replace="text-[11px] px-2 py-0.5 rounded self-start whitespace-nowrap "
+            + ("text-indigo-700 bg-indigo-50" if same else "text-orange-800 bg-orange-50 font-semibold")
+        )
+        cd = cur.get("curation_dir")
+        if cd:
+            save_dir_lbl.set_text(cd)  # the save folder is the RUNNING session's, not this panel's
+        return not same
 
     def _apply(kind: str, busy_msg: str = "") -> None:
         state["kind"] = kind
@@ -358,22 +389,20 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
         start_btn.set_text("Try again" if kind == "error" else "Start session")
         stop_btn.set_visibility(kind == "live")
         busy_box.set_visibility(kind == "starting")
-        if load_btn is not None:
-            load_btn.set_visibility(kind == "live")
-        save_btn.set_visibility(kind == "live")
         if busy_msg:
             busy_lbl.set_text(busy_msg)
         job_lbl.set_text((f"SLURM {sv['job_id']}" + (f" · {sv['node']}" if sv["node"] else "")) if sv["job_id"] else "")
         if kind == "live":
             tunnel_lbl.set_text(sv["tunnel"] or "—")
             addr_lbl.set_text(sv["address"] or "—")
-            pass_lbl.set_text(sv["password"] or "—")
-            _refresh_loaded()
+            pass_lbl.set_text(sv["password"] or ("(none — SecurityTypes None)" if passwordless else "—"))
+            restart_btn.set_visibility(bool(tomo_name) and _refresh_scope())
         else:
             tunnel_lbl.set_text("— start the session —")
             addr_lbl.set_text("—")
             pass_lbl.set_text("—")
             loaded_lbl.set_visibility(False)
+            restart_btn.set_visibility(False)
         ts_md.set_content(_troubleshooting_md())
 
     # ── actions (re-entry guarded) ──────────────────────────────────────────────
@@ -408,12 +437,19 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
         try:
             _stop_timer()
             _apply("starting", "Submitting curation session…")
-            result = await backend.launch_curation_session(project_path, cxc_path=cxc_path)
+            # The scope goes WITH the launch: it is what `scope.json` records and what the
+            # dir's manifest is stamped with, and it is the only declaration of identity
+            # this session will ever get (Model B).
+            scope = None
+            if tomo_name and project_path is not None and backend is not None:
+                scope = backend.curation_scope(project_path, species_id, species_label, tomo_name, save_dir)
+            result = await backend.launch_curation_session(project_path, cxc_path=cxc_path, scope=scope)
             if not result.get("success"):
                 _apply("error")
                 ui.notify(result.get("error") or "launch failed", type="negative", timeout=6000)
                 return
             sv["job_id"] = result.get("slurm_job_id")
+            sv["scope"] = scope
             state["session_dir"] = result.get("session_dir")
             _apply("starting", f"Submitted SLURM job {sv['job_id']} — waiting for a node…")
             await _poll()
@@ -421,6 +457,37 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
                 state["timer"] = ui.timer(3.0, _poll)
         finally:
             state["busy"] = False
+
+    async def _restart() -> None:
+        """Relaunch the session scoped to THIS tomogram — the sanctioned way to change what
+        ArtiaX has open, and the only one (10-S1). Confirmed, because stopping the job
+        drops whatever is unsaved in the running viewer: crboost cannot save it for the
+        user any more, and pretending otherwise is what the old swap did."""
+        if state["busy"] or state["restarting"]:
+            return
+        state["restarting"] = True
+        cctx = host_slot if host_slot is not None else nullcontext()
+        with cctx, ui.dialog().props("persistent") as confirm, ui.card().classes("w-[28rem] max-w-full gap-2"):
+            ui.label("Restart on this tomogram?").classes("text-sm font-bold")
+            ui.label(
+                f"The running session stops and a new one starts on {tomo_name}. Anything you have picked in "
+                "ArtiaX and NOT saved is lost — save your lists there first."
+            ).classes("text-[12px] text-gray-600")
+            with ui.row().classes("w-full justify-end gap-2"):
+                house_button("Cancel", lambda: confirm.submit(None))
+                house_button("Stop & start here", lambda: confirm.submit(True), kind="accent")
+        try:
+            go = await confirm
+            try:
+                confirm.delete()
+            except Exception:
+                pass
+            if not go:
+                return
+            await _stop()
+            await _start()
+        finally:
+            state["restarting"] = False
 
     async def _stop() -> None:
         if state["busy"]:
@@ -431,129 +498,12 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             # we reconnected to — otherwise a stale session keeps getting re-found.
             await backend.stop_curation_session(sv["job_id"], project_path=project_path)
             _stop_timer()
-            sv.update(job_id=None, node="", address="", password="", tunnel="")
+            sv.update(job_id=None, node="", address="", password="", tunnel="", scope=None)
             state["session_dir"] = None
             _apply("off")
             ui.notify("Curation session stopped", type="info")
         finally:
             state["busy"] = False
-
-    async def _load_into_session() -> None:
-        """One-click swap: clear the running ArtiaX and load THIS tomogram + picks
-        over the REST channel — the alternative to copy-pasting the commands."""
-        if state["load_busy"]:
-            return
-        if state["kind"] != "live" or not sv.get("rest_port"):
-            ui.notify("Start the session first (and wait for it to go live).", type="warning")
-            return
-
-        # Confirm — `close session` is an irreversible wipe of unsaved manual picks.
-        cctx = host_slot if host_slot is not None else nullcontext()
-        with cctx:
-            with ui.dialog().props("persistent") as confirm, ui.card().classes("w-[26rem] max-w-full gap-2"):
-                ui.label("Load into running session?").classes("text-sm font-bold")
-                ui.label(
-                    f"This swaps ArtiaX to {tomo_name or 'this tomogram'} + its picks, clearing what's open now. "
-                    "Any manual picks you haven't saved for the current tomogram would be lost."
-                ).classes("text-[12px] text-gray-600")
-                save_cb = ui.checkbox("Save my current picks first", value=True).props("dense").classes("text-[12px]")
-                ui.label("crboost saves your open lists to the current tomogram's folder before switching.").classes(
-                    "text-[10px] text-gray-400"
-                )
-                with ui.row().classes("w-full justify-end gap-2"):
-                    house_button("Cancel", lambda: confirm.submit(None))
-                    house_button("Load", lambda: confirm.submit(True), kind="accent")
-        go = await confirm
-        do_save = bool(save_cb.value) if go else False
-        try:
-            confirm.delete()
-        except Exception:
-            pass
-        if not go:
-            return
-
-        state["load_busy"] = True
-        if load_btn is not None:
-            load_btn.props("loading")
-        try:
-            session_info = {
-                "node": sv["node"],
-                "rest_port": sv["rest_port"],
-                "slurm_job_id": sv["job_id"],
-                "session_dir": state["session_dir"],
-            }
-            res = await backend.load_into_session(
-                session_info,
-                project_path,
-                Path(candidates_star) if candidates_star else None,
-                Path(tomograms_star),
-                tomo_name,
-                species_label,
-                species_id=species_id,
-                source_star=Path(source_star) if source_star else None,
-                coords_label=coords_label,
-                save_first=do_save,
-            )
-            if res.get("success"):
-                n = res.get("auto_count")
-                extra = f" ({n} picks)" if n is not None else ""
-                saved = res.get("saved") if isinstance(res.get("saved"), dict) else None
-                msg = f"Loaded {tomo_name}{extra} into the running session."
-                if saved and saved.get("saved"):
-                    msg += f" Saved {len(saved['saved'])} list(s) first."
-                ui.notify(msg, type="positive")
-                _refresh_loaded()
-            else:
-                ui.notify(f"Load failed: {res.get('error') or 'unknown error'}", type="negative", timeout=7000)
-        finally:
-            if load_btn is not None:
-                load_btn.props(remove="loading")
-            state["load_busy"] = False
-
-    async def _save_picks_now() -> None:
-        """Forefront save: crboost writes the manual lists open in the session to the
-        loaded tomogram's folder over the REST channel (no ArtiaX Save dialog), where
-        the dashboard prescan imports them. Non-destructive → no confirm."""
-        if state["kind"] != "live" or not sv.get("rest_port"):
-            ui.notify("Start the session and load a tomogram first.", type="warning")
-            return
-        if state["save_busy"]:
-            return
-        state["save_busy"] = True
-        save_btn.props("loading")
-        try:
-            session_info = {
-                "node": sv["node"],
-                "rest_port": sv["rest_port"],
-                "slurm_job_id": sv["job_id"],
-                "session_dir": state["session_dir"],
-            }
-            res = await backend.save_curation_picks(
-                session_info,
-                project_path=project_path,
-                tomo_name=tomo_name,
-                species_id=species_id,
-                species_label=species_label,
-            )
-            if res.get("success"):
-                n = res.get("count") or 0
-                if n:
-                    ui.notify(
-                        f"Saved {n} pick list(s) for {res.get('tomo') or 'this tomogram'} — crboost is importing them.",
-                        type="positive",
-                        timeout=5000,
-                    )
-                else:
-                    ui.notify(
-                        "No manual pick lists are open in ArtiaX — make a new list and pick into it first.",
-                        type="warning",
-                        timeout=6000,
-                    )
-            else:
-                ui.notify(f"Save failed: {res.get('error') or 'unknown error'}", type="negative", timeout=7000)
-        finally:
-            save_btn.props(remove="loading")
-            state["save_busy"] = False
 
     # ── entry: reconnect a live session (no sbatch) or show the off state ────────
     _apply("starting", "Checking for a running session…")
@@ -567,6 +517,7 @@ async def open_curation_control_center(backend, project_path: Path | None, *, bu
             active = None
     if active:
         sv["job_id"] = active.get("slurm_job_id")
+        sv["scope"] = active.get("scope")
         state["session_dir"] = active.get("session_dir")
         await _poll()
         if state["kind"] not in ("live", "error"):
