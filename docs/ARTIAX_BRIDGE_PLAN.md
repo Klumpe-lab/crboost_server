@@ -13,7 +13,14 @@ pick workbench; the Log-panel (gray) + VNC-fidelity peeves. This doc is the cont
 > merged-list clash/dedup panel, and a clickable authoritative radio. Roadmap 11 split those apart —
 > **Journey = look & curate** (canvas, galleries, keep/drop, one ⚡ into ArtiaX, a read-only ◉) and
 > **Species page = manage & act** (`ui/species/picks_tab.py` + `ui/species/curation_tab.py`, driving the
-> shared `ui/particles/list_actions.py`). Handlers named below and deleted in 11-S1/S3: `_source_for`,
+> shared `ui/particles/list_actions.py`).
+>
+> **Superseded 2026-08-22 by picking-UI roadmap 09:** those two tabs are now ONE,
+> `ui/species/picks_tab.py` ("Picks & curation"); `curation_tab.py` is deleted, and the Journey's ⚡
+> became a `curate ↗` link — it neither starts nor swaps a session. The single launch/scope
+> affordance in the whole app is that tab's per-tomogram `curate`.
+>
+> Handlers named below and deleted in 11-S1/S3: `_source_for`,
 > `_fs_slug`, `_do_inline_merge`, `_MERGE_SELECT`, `_render_list_extraction_bar`, `_render_clash_panel`,
 > `_handle_curate_in_artiax`, `_handle_load_into_session`, `_handle_import_curation_picks`,
 > `_open_manual_coords_path_dialog`, `_set_authoritative`. The history is kept as written; only the
