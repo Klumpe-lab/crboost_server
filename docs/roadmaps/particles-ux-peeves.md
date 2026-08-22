@@ -60,7 +60,7 @@ server timers, FingerprintedView/SingleFlight for anything timer- or dialog-driv
 | P-36 | Templates & masks | masks default should be "From template", not "Sphere" | already landed (`_MASK_TABS`, `template_workbench.py:151-154`) | picking_ui/08-S0 recheck | verify at runtime |
 | P-37 | All buttons, app-wide | one button vocabulary — 108 raw label-buttons in 22 files → `house_button`; placement rule | cosmetic (sweep) | picking_ui/08-S3 | scoped 2026-08-21 (workbench text buttons already converted) |
 | P-38 | Species › Picks + Curation | two overlapping tabs; 9 ArtiaX entry points; 2 import buttons; half-duplicated in Journey → ONE "Picks & curation" surface | structural | picking_ui/09 | scoped 2026-08-21 |
-| P-39 | Picks surface | aggregation/merge controls leave the surface; roster icon → "Aggregate candidates" spawning a prepopulated job | structural (deferred) | picking_ui/12 (stub) | noted 2026-08-21, unscheduled |
+| P-39 | Picks surface | aggregation/merge controls leave the surface; roster icon → "Aggregate candidates" spawning a prepopulated job | structural (deferred) | picking_ui/12 | scoped 2026-08-22 (D1–D5, stages S0–S6) |
 | P-40 | ChimeraX bridge | remote-driving controls ("save picks now", "load into session") = wrong route; scoped-launch + staging-inbox contract; napari pilot gated | structural (decision) | picking_ui/10 | scoped 2026-08-21, Model B adopted |
 | P-41 | Journey gallery | 3dmod duplicated (peek block + bottom section + 2 hints) → one toolbelt icon with a popover | cosmetic | picking_ui/11-S3 | scoped 2026-08-21 |
 | P-42 | Journey gallery | click = keep/drop by default → click = SELECT (Esc/click-away deselects); curation mode is an explicit toggle | structural (interaction) | picking_ui/11-S4 | scoped 2026-08-21 |
@@ -176,3 +176,10 @@ committable chunk with its own runtime checklist, which is what the maintainer a
   beam-induced-motion graph, tomo-recon gallery revival, landing-page data-identification jank,
   pre-populating per-TS task rows before jobs run, and the logs-tab width + copy-to-clipboard — no
   rows yet.
+- 2026-08-22 — P-39 scoped with the maintainer → `picking_ui/12` rewritten from stub to a six-stage
+  plan, plus `docs/particle-data-flow.md` as its reference figure. Two defects surfaced during
+  scoping and are now stages rather than rows here: pixel-grade merges accept mismatched
+  `rlnImageSize` / `rlnTomoSubtomogramBinning` with only a log warning (→ 12-S0), and
+  `list_actions.merge_lists` has had zero call sites since 09-S3, so the app currently cannot create
+  a merged pick list at all (→ 12-S6). A successor roadmap is named in 12 §4: fine-grained
+  collate-filters (per-source score bands, per-tomogram caps, orientation filters).
