@@ -885,9 +885,6 @@ class RosterWidget(FingerprintedView):
             ui.element("div").style("height: 1px;")
             self._build_dashboard_btn()
 
-            ui.element("div").style("height: 1px;")
-            self._build_curation_btn()
-
             # SLURM defaults / resource profiles live inside the project overview popup now.
 
             ui.element("div").style("height: 10px;")
@@ -1582,26 +1579,10 @@ class RosterWidget(FingerprintedView):
         self._refs["dashboard_btn"] = container
         return container
 
-    def _build_curation_btn(self):
-        """Sidebar button → launch a ChimeraX+ArtiaX VNC curation session as a
-        SLURM job, then show the user the tunnel/viewer/password to connect.
-        See ui/curation_session_dialog.py and containers/chimerax_artiax/."""
-        panel = self.panel
-        container = (
-            ui.element("div")
-            .style(
-                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                "background: transparent; "
-                "display: flex; align-items: center; justify-content: center; "
-                "cursor: pointer; flex-shrink: 0; position: relative;"
-            )
-            .on("click", lambda: panel.launch_curation_session())
-            .tooltip("Launch ChimeraX + ArtiaX (manual picking)")
-        )
-        with container:
-            ui.icon("view_in_ar", size="18px").style(f"color: {SB_MUTE}; pointer-events: none;")
-        self._refs["curation_btn"] = container
-        return container
+    # A ChimeraX + ArtiaX launcher used to sit here. It went with picking-UI roadmap 09-S2:
+    # a session is always started ON a tomogram, from the Particles registry's
+    # "Picks & curation" tab ('curate' on a tomogram group), so the app has exactly one
+    # launch affordance. The control center itself hangs off that tab's session chip.
 
     def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None):
         bg = SB_ABG if active else "transparent"
