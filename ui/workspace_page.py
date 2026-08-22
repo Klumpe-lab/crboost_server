@@ -76,15 +76,16 @@ def build_workspace_page(backend: CryoBoostBackend):
     _refs = {}
 
     def _switch_to(mode_name: str):
-        """Swap the visible view in main_area: pipeline / workbench / journey.
-        Each is a sibling container toggled via CSS display. Journey also hides
-        the 300px job roster for full width and pauses its live-refresh timer
+        """Swap the visible view in main_area: pipeline / workbench / journey / viewer.
+        Each is a sibling container toggled via CSS display. Journey and the pick viewer
+        also hide the 340px job roster for full width and pause their refresh timers
         when not visible (handled by the roster's set_active_mode and the
-        journey panel's on_journey_active)."""
+        journey panel's on_journey_active / the viewer page's set_active)."""
         containers = {
             "pipeline": _refs.get("pipeline_container"),
             "workbench": _refs.get("workbench_container"),
             "journey": _refs.get("journey_container"),
+            "viewer": _refs.get("viewer_container"),
         }
         # If already on this mode, toggle back to pipeline.
         if _mode["current"] == mode_name and mode_name != "pipeline":
@@ -119,6 +120,11 @@ def build_workspace_page(backend: CryoBoostBackend):
         on_wb = callbacks.get("on_workbench_active")
         if on_wb:
             on_wb(_mode["current"] == "workbench")
+
+        # Same for the pick viewer's coalesced-rebuild timer.
+        page = _refs.get("viewer_page")
+        if page is not None:
+            page.set_active(_mode["current"] == "viewer")
 
     def _toggle_workbench():
         _switch_to("workbench")
@@ -171,10 +177,35 @@ def build_workspace_page(backend: CryoBoostBackend):
 
             build_journey_panel(jc, callbacks)
 
+    _viewer_flight = SingleFlight()
+
+    async def _open_pick_viewer(species_id: str | None, tomo_name: str | None) -> None:
+        """The Picks & curation row's `viewer ↗` (and the Journey's `full viewer ↗`):
+        show the full-page pick viewer on this (species, tomogram), building it on first
+        use like the Journey. Unlike `_show_journey` this never toggles back — the link
+        names a target, so landing on it is the only sensible outcome."""
+        async with _viewer_flight("open") as acquired:
+            if not acquired:
+                return
+            vc = _refs.get("viewer_container")
+            if vc is None:
+                return
+            page = _refs.get("viewer_page")
+            if page is None:
+                from ui.particles.pick_viewer import PickViewerPage
+
+                with vc:
+                    page = PickViewerPage(vc, ui_mgr.project_path, callbacks)
+                _refs["viewer_page"] = page
+            if _mode["current"] != "viewer":
+                _switch_to("viewer")
+            await page.show(species_id, tomo_name)
+
     callbacks["toggle_workbench"] = _toggle_workbench
     callbacks["open_species"] = _open_species
     callbacks["ensure_pipeline_mode"] = ensure_pipeline_mode
     callbacks["toggle_journey"] = _show_journey
+    callbacks["open_pick_viewer"] = _open_pick_viewer
 
     with ui.element("div").style(
         "position: fixed; inset: 0; display: flex; flex-direction: row; "
@@ -236,6 +267,15 @@ def build_workspace_page(backend: CryoBoostBackend):
                 "width: 100%; height: 100%; display: none; flex-direction: column;"
             )
             _refs["journey_container"] = journey_container
+
+            # Pick viewer (picking-UI 11-S5): the full-page mount of the slabs + lists +
+            # gallery component, opened from a tomogram row of the Particles registry's
+            # Picks & curation tab. Lazily built on first use, like the journey; it has
+            # no nav icon of its own — its own header carries the routes back.
+            viewer_container = ui.element("div").style(
+                "width: 100%; height: 100%; display: none; flex-direction: column;"
+            )
+            _refs["viewer_container"] = viewer_container
 
     # Floating background-tasks tray at workspace scope so spun-off
     # renders/builds remain visible across dialog open/close and view

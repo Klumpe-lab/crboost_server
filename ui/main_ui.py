@@ -6,8 +6,10 @@ from nicegui import ui, Client, app
 
 from backend import CryoBoostBackend
 from services.configs.user_prefs_service import get_prefs_service
+from ui.dashboard.css import ensure_assets_loaded
 from services.project_state import get_project_state_for
 from ui.ui_state import get_ui_state_manager
+from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
 from ui.workspace_page import build_workspace_page
 
@@ -77,65 +79,10 @@ def create_ui_router(backend: CryoBoostBackend):
                on the v-html-injected roster spans, most likely a cache-stale
                Python-injected stylesheet. SVG carries its own animation. */
 
-            /* ── Config + I/O fields ─────────────────────────────────────
-               Clean 1px slate-bordered box + themed popup, replacing the
-               default Quasar Material underline/float look. Applied via the
-               .cb-select class in ui/job_plugins/_field_styles.py (config
-               parameter selects) and ui/pipeline_builder/io_config_component.py
-               (I/O source menus + their popups).
-
-               This is a `q-field__control` rule, so it fits ANY QField, not just
-               selects. Non-select fields (ui.input / ui.number) use the `.cb-field`
-               spelling — same box, honest name; see the creation forms in
-               ui/template_workbench.py (picking-UI roadmap 06). */
-            /* `height`, not just min-height: Quasar pins dense controls at a FIXED
-               `height: 40px` (.q-field--dense .q-field__control), so min-height alone
-               never shrank these boxes — that was the "inputs tall as hell" bug. */
-            .cb-select .q-field__control,
-            .cb-field .q-field__control {
-                height: 20px; min-height: 20px; padding: 0 5px;
-                border: 1px solid #e2e8f0; border-radius: 4px;
-                background: #fff; transition: border-color .12s ease;
-            }
-            .cb-select .q-field__control:hover,
-            .cb-field .q-field__control:hover { border-color: #cbd5e1; }
-            .cb-select.q-field--focused .q-field__control,
-            .cb-field.q-field--focused .q-field__control { border-color: #94a3b8; }
-            .cb-select .q-field__control:before,
-            .cb-select .q-field__control:after,
-            .cb-field .q-field__control:before,
-            .cb-field .q-field__control:after { display: none !important; }
-            .cb-select .q-field__native,
-            .cb-select .q-field__input,
-            .cb-field .q-field__native,
-            .cb-field .q-field__input {
-                font-family: 'IBM Plex Sans', sans-serif; font-size: 11px;
-                color: #1e293b; padding: 0; line-height: 18px; min-height: 0;
-            }
-            .cb-select .q-field__marginal,
-            .cb-select .q-field__append,
-            .cb-field .q-field__marginal,
-            .cb-field .q-field__append { height: 18px; }
-            .cb-select .q-field__append .q-icon,
-            .cb-field .q-field__append .q-icon { font-size: 14px; color: #94a3b8; }
-            .cb-select.q-field--disabled .q-field__control,
-            .cb-field.q-field--disabled .q-field__control { background: #f8fafc; }
-
-            /* .cb-field runs one notch tighter than .cb-select. The two surfaces differ in
-               density, not in kind: a job tab shows one column of parameters, while the
-               Species page packs several controls onto a line beside 9 px labels, and at
-               11 px/24 px they read as the biggest thing on the page. Overrides only —
-               the box, border and focus behaviour above are shared. */
-            .cb-field .q-field__control { height: 16px; min-height: 16px; padding: 0 4px; }
-            .cb-field .q-field__native,
-            .cb-field .q-field__input { font-size: 10px; line-height: 14px; }
-            .cb-field .q-field__marginal,
-            .cb-field .q-field__append { height: 14px; }
-            .cb-field .q-field__append .q-icon { font-size: 12px; }
-            /* A textarea has to keep growing: undo the fixed control height for it. */
-            .cb-field.q-textarea .q-field__control,
-            .cb-select.q-textarea .q-field__control { height: auto; }
-            .cb-field textarea.q-field__native { line-height: 1.4; padding: 2px 0; }
+            /* The .cb-select / .cb-field control chrome lives in ui/dashboard/css.py
+               (_CB_CSS) ONLY — every page calls ensure_assets_loaded(). A duplicate
+               copy used to sit here; it existed only to drift (deleted 2026-08-21,
+               picking-UI roadmap 08 S1). */
 
             /* NOTE (2026-08-21): do NOT add new app-wide rules to this block.
                This <style> is baked into the page shell, and the shell is
@@ -183,6 +130,7 @@ def create_ui_router(backend: CryoBoostBackend):
     @ui.page("/")
     async def landing_page(client: Client):
         await client.connected()
+        ensure_assets_loaded()
 
         ui_mgr = get_ui_state_manager()
         ui_mgr.reset()
@@ -247,6 +195,8 @@ def create_ui_router(backend: CryoBoostBackend):
     # --- AUX PAGES ---
     @ui.page("/cluster-info")
     async def cluster_info_page(client: Client):
+        await client.connected()
+        ensure_assets_loaded()
         with ui.column().classes("p-8"):
             ui.label("Cluster Info Stub")
-            ui.button("Back", on_click=lambda: ui.navigate.back())
+            house_button("Back", lambda: ui.navigate.back())

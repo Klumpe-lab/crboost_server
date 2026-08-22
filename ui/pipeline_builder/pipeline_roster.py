@@ -816,7 +816,8 @@ class RosterWidget(FingerprintedView):
         visibility on the way out. Driven by the workspace's _switch_to."""
         self._active_mode = mode
         if self.panel.roster_panel is not None:
-            if mode == "journey":
+            # The journey and the full-page pick viewer both want the whole width.
+            if mode in ("journey", "viewer"):
                 self.panel.roster_panel.style("display: none;")
             else:
                 self.panel.roster_panel.style(f"display: {'flex' if self._roster_visible else 'none'};")

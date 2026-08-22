@@ -413,10 +413,17 @@ class _PicksView(FingerprintedView):
         ui.button(icon="content_copy", on_click=lambda _e, d=info.curation_dir: self._tab.copy(d)).props(
             "flat dense round size=sm"
         ).tooltip(info.curation_dir)
-        # 09-S5: becomes `viewer ↗` into the full-page pick viewer when picking_ui/11 lands.
+        # 09-S5, landed with picking_ui/11-S5: `viewer ↗` opens the full-page pick viewer
+        # on this (species, tomogram) — slabs, the lists strip and the cutout gallery at
+        # workspace size, with curation mode. `journey ↗` stays beside it because the two
+        # answer different questions: the viewer is about THESE picks, the Journey about
+        # everything that happened to this tilt-series before them.
+        ui.label("viewer ↗").classes(_LINK_CLS).on(
+            "click", lambda _e, t=info.tomo_name: self._tab.open_viewer(t)
+        ).tooltip("Open this tomogram's picks in the full-page pick viewer")
         ui.label("journey ↗").classes(_LINK_CLS).on(
             "click", lambda _e, t=info.tomo_name: self._tab.open_in_journey(t)
-        ).tooltip("Look at this tomogram's picks on the Journey")
+        ).tooltip("This tomogram's whole pipeline — motion, CTF, alignment, reconstruction")
 
     def _render_row(self, c: _Computed, tomo: str, row: ListRow, auth_icons: dict) -> None:
         ref = self._tab.ref(tomo, row.slug)
@@ -684,6 +691,19 @@ class PicksTab:
         select = self.ctx.callbacks.get("species_select_tab")
         if select is not None:
             select(key)
+
+    async def open_viewer(self, tomo: str | None) -> None:
+        """Open the full-page pick viewer on this species + tomogram (picking_ui 11-S5).
+        The workspace builds the page on first use and swaps it into the main area; this
+        tab's own SingleFlight guards the link, which sits in a poll-refreshed container."""
+        async with self._flight("viewer") as acquired:
+            if not acquired:
+                return
+            open_viewer = self.ctx.callbacks.get("open_pick_viewer")
+            if open_viewer is None:
+                ui.notify("Pick viewer not available in this view", type="warning")
+                return
+            await open_viewer(self.ctx.species_id, tomo)
 
     async def open_in_journey(self, tomo: str | None) -> None:
         """Show the journey (building it on first use) and, when a tomogram is named,
