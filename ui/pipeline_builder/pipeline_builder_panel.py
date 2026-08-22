@@ -93,20 +93,6 @@ class PipelineBuilderPanel:
 
     # ── Curation session ──────────────────────────────────────────────────────
 
-    async def launch_curation_session(self):
-        # SingleFlight: guard the submit window so a double-click doesn't queue
-        # two SLURM sessions. The dialog's own poll timer outlives this guard.
-        async with self.flight("curation_session") as acquired:
-            if not acquired:
-                return
-            from ui.curation_session_dialog import open_curation_control_center
-
-            # One control center: it checks liveness itself and shows status →
-            # connect (tunnel+password) when live, or a Start button when off.
-            # No bundle here (no specific tomo) — preload comes from the species page's
-            # Curation tab (per-tomogram "curate"), or the journey's ⚡.
-            await open_curation_control_center(self.backend, self.ui_mgr.project_path)
-
     # ── Species gate ──────────────────────────────────────────────────────────
 
     async def prompt_species_and_add(self, job_type: JobType):
