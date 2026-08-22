@@ -6,5 +6,7 @@ math (``coords``), pick-list merge (``pick_merge``), curated-subset filtering
 linkage (``subtomo_link``); plus ``ingest`` (register on-disk lists on ``ProjectState``),
 ``species_overview`` (headless per-species read model), ``species_jobs`` (species ↔
 particle-phase job attribution) and ``list_ref`` (the ``ListRef`` identity the shared
-pick-list actions take, roadmap 11). Rendering helpers stay in ``services/visualization/``.
+pick-list actions take, roadmap 11) and ``tomo_identity`` (cross-project tomogram
+identity + the coordinate-transferability gate, roadmap 12). Rendering helpers stay in
+``services/visualization/``.
 """
