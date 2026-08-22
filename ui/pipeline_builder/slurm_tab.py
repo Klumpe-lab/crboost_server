@@ -19,6 +19,7 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+from ui.components.buttons import house_button
 from ui.job_plugins._field_styles import (
     field_grid,
     field_group,
@@ -28,7 +29,6 @@ from ui.job_plugins._field_styles import (
     ROW_STYLE,
     VALUE_WRAP_NARROW,
     MONO,
-    SANS,
     CLR_SUBLABEL,
 )
 
@@ -97,9 +97,7 @@ def _render_slurm_content(job_model, is_frozen: bool, save_handler: Callable):
                         save_handler()
                         _render_slurm_content.refresh()
 
-                    ui.button("Reset to profile", on_click=reset_to_profile).props(
-                        "unelevated no-caps dense flat"
-                    ).style(f"{SANS} font-size: 9px; padding: 0 4px; color: #059669; min-width: 0;")
+                    house_button("Reset to profile", reset_to_profile)
 
             if is_array:
                 if has_profile:

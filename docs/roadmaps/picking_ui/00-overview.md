@@ -25,9 +25,19 @@ Stages 03 and 04 are written so the seams that expansion needs are the ones they
 | 05 | [workbench-two-column-and-tables](../archive/picking_ui/05-workbench-two-column-and-tables.md) | Templates ▏ Masks side by side; cards → table rows with a real selection affordance; viewer stays below | medium | **code-complete 2026-08-18**, pending runtime |
 | 06 | [workbench-source-chrome](../archive/picking_ui/06-workbench-source-chrome.md) | one font scale in the source tabs; masks get a stated SOURCE; import button off the page edge; Edit Current visually separated | low | **code-complete 2026-08-18**, pending runtime |
 | 07 | [scoping-particle-registry-edges](07-scoping-particle-registry-edges.md) | scoping only — where extraction geometry, pixel sanity and a cross-project catalog actually belong | — | scoping doc, no code |
+| 08 | [house-controls-and-workbench-chrome](08-house-controls-and-workbench-chrome.md) | one input + one button vocabulary app-wide; CSS-channel cleanup; workbench border diet; viewer-jump fix; "Particles registry" rename | low-medium | scoped 2026-08-21 |
+| 09 | [picks-curation-one-surface](09-picks-curation-one-surface.md) | Picks + Curation → one "Picks & curation" tab; 9 ArtiaX entry points → 1; one import; origin (template+mask) column | medium | scoped 2026-08-21 |
+| 10 | [external-picker-contract](10-external-picker-contract.md) | decision: no post-launch REST driving; scoped-launch + staging-inbox contract; display-binned recon; gated napari pilot | medium | scoped 2026-08-21 |
+| 11 | [pick-viewer](11-pick-viewer.md) | gallery → shared component: full page in the registry, slim in the Journey; selection-first clicks; curation mode explicit; toolbelt | medium-high | scoped 2026-08-21 |
+| 12 | [aggregate-candidates](12-aggregate-candidates.md) | stub — roster merge icon → "Aggregate candidates" spawning a prepopulated job; open design edge recorded | — | stub, unscheduled |
 
 Suggested order: 01 → 02 → 03 → 04 → 05 → 06. Only 01-S1 blocks anything (01-S2 needs it); the rest
 are independent and can land in any order.
+
+Wave 2 (from the 2026-08-21 intake, `q_important_ui_fixes.md:9-55`): suggested order 08 → 09 → 10 →
+11, 12 unscheduled. 08 is independent; 09-S5 and 11 share the row deep-link; 10-S1 finishes 09-S2's
+entry-point purge. 08-S0 is a restart-and-recheck gate — several 2026-08-21 peeves describe the
+pre-restart build.
 
 ## Guideline of record — species-derived fields in a job's parameter tab
 
@@ -79,3 +89,8 @@ From `feedback_ui_chrome_conventions` + CLAUDE.md's "UI reactivity patterns":
 - 2026-08-18 (later, same session) — **01–06 were all implemented**; each has its stage record in its
   own file. 07 remains scoping only. All six are PENDING RUNTIME — nothing here has been exercised in
   the app, and the arc-wide script is `../ARC-RUNTIME-CHECKLIST.md` plus the per-roadmap checklists.
+- 2026-08-21 — **wave-2 intake** (`q_important_ui_fixes.md:9-55`: workbench chrome round 2, Picks +
+  Curation merge, ChimeraX-control assessment, gallery rework). Scoped as 08–12; triage rows
+  P-32…P-48 in `../particles-ux-peeves.md`. Notable: three of the chrome peeves (mask default, blue
+  buttons, oversized inputs) were found already fixed in the tree — 08-S0 gates on a restart before
+  re-fixing anything.

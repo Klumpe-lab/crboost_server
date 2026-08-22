@@ -53,6 +53,23 @@ server timers, FingerprintedView/SingleFlight for anything timer- or dialog-driv
 | P-29 | Templates & masks | the tables are crowded — text too large, rows too tall | cosmetic | 9 px row body / 10 px filename, tighter `--cb-tw-cols`, 22 px rows, row buttons no longer set row height | fixed 2026-08-19, needs a re-check |
 | P-30 | Templates & masks | section titles ("SOURCE", "TEMPLATES") share a style with tool names and field labels, so nothing reads as containing anything | cosmetic | three ranks enforced: SECTION `section_header` 11 px mixed case + rule · TOOL `_TOOL_CLS` 10 px · FIELD `_LABEL_CLS` 9 px uppercase | fixed 2026-08-19, needs a re-check |
 | P-31 | Species › Overview | the extraction-geometry panel is three orphan numbers — it never says which job it feeds | cosmetic (wording) | panel states it feeds the Subtomo extraction job and what the box is | fixed 2026-08-19, needs a re-check |
+| P-32 | Nav / page copy | "Species" → "Particles registry" (page-naming copy only; entity copy stays "species") | cosmetic | picking_ui/08-S6 | scoped 2026-08-21 (6 sites remain; sidebar tooltip etc. already renamed) |
+| P-33 | All inputs, app-wide | boxes huge + spinner arrows; conflicting legacy `.cb-field` in `static/main.css`; shell CSS channel stale; 8 raw `ui.number` sites | structural (CSS delivery) + cosmetic | picking_ui/08-S1/S2 | scoped 2026-08-21 — partly stale-build, 08-S0 rechecks first |
+| P-34 | Templates & masks | gray-border overload (17 chrome sources censused) | cosmetic | picking_ui/08-S4 | scoped 2026-08-21 |
+| P-35 | Templates & masks | source-mode switch jumps the molstar viewer — Edit-current height swing + unstacked viewer-mode switcher (NOT missing `_stacked_panels`) | bug (layout) | picking_ui/08-S5 | scoped 2026-08-21 |
+| P-36 | Templates & masks | masks default should be "From template", not "Sphere" | already landed (`_MASK_TABS`, `template_workbench.py:151-154`) | picking_ui/08-S0 recheck | verify at runtime |
+| P-37 | All buttons, app-wide | one button vocabulary — 108 raw label-buttons in 22 files → `house_button`; placement rule | cosmetic (sweep) | picking_ui/08-S3 | scoped 2026-08-21 (workbench text buttons already converted) |
+| P-38 | Species › Picks + Curation | two overlapping tabs; 9 ArtiaX entry points; 2 import buttons; half-duplicated in Journey → ONE "Picks & curation" surface | structural | picking_ui/09 | scoped 2026-08-21 |
+| P-39 | Picks surface | aggregation/merge controls leave the surface; roster icon → "Aggregate candidates" spawning a prepopulated job | structural (deferred) | picking_ui/12 (stub) | noted 2026-08-21, unscheduled |
+| P-40 | ChimeraX bridge | remote-driving controls ("save picks now", "load into session") = wrong route; scoped-launch + staging-inbox contract; napari pilot gated | structural (decision) | picking_ui/10 | scoped 2026-08-21, Model B adopted |
+| P-41 | Journey gallery | 3dmod duplicated (peek block + bottom section + 2 hints) → one toolbelt icon with a popover | cosmetic | picking_ui/11-S3 | scoped 2026-08-21 |
+| P-42 | Journey gallery | click = keep/drop by default → click = SELECT (Esc/click-away deselects); curation mode is an explicit toggle | structural (interaction) | picking_ui/11-S4 | scoped 2026-08-21 |
+| P-43 | Journey gallery | hover info row (IDX · PX · …) superfluous — delete | cosmetic (deletion) | picking_ui/11-S3 | scoped 2026-08-21 |
+| P-44 | Journey gallery | reference strip → thin collapsible, CLOSED by default; add best-4 anchors beside worst-4 | cosmetic | picking_ui/11-S2 | scoped 2026-08-21 |
+| P-45 | Journey gallery | lists strip must sit ABOVE slabs + gallery so their tops align | structural (layout) | picking_ui/11-S2 | scoped 2026-08-21 |
+| P-46 | Registry + Journey | full-page pick viewer (slabs + gallery, or markers-only when not extracted) opened from the merged tab; Journey keeps a slim display+filter mount; links both ways | structural | picking_ui/11-S1/S5/S6 (+09-S5) | scoped 2026-08-21 |
+| P-47 | Curation control center | doesn't close on Esc (page-layout-parented dialog) | bug | picking_ui/10-S1 | scoped 2026-08-21 |
+| P-48 | Curation session | passwordless VNC option requested | structural (security tradeoff) | picking_ui/10-S1 (config flag, default off) | scoped 2026-08-21 |
 
 Add rows as the walkthrough produces them; keep the peeve text short and put the long form in
 `q_denovo_picking_interface.md`.
@@ -149,3 +166,13 @@ committable chunk with its own runtime checklist, which is what the maintainer a
   by the Species page (workbench forms + the Overview's inputs, which until now were bare Quasar at
   ~14 px — the actual "everything is too big" complaint). If a third surface adopts it, check that
   the tighter scale suits it before adding the class.
+- 2026-08-21 — **the promised second intake happened** (Picks/Curation tabs, ChimeraX control,
+  gallery rework, chrome round 2 — `q_important_ui_fixes.md:9-55`). P-32…P-48 added; homed in the
+  new wave-2 roadmaps `picking_ui/08–12`. Key finding while triaging: P-36 and the button/input
+  halves of P-33/P-37 describe the pre-restart build — the fixes are already in the tree, so
+  `picking_ui/08-S0` is a restart-and-recheck gate before any re-fixing. Entry-point inventory of
+  record (9 ArtiaX launch points, 2 imports, 4 extract triggers) lives in `picking_ui/09` §0.
+  Still deliberately uncollected (maintainer's "don't touch this yet", `q_important_ui_fixes.md:60-66`):
+  beam-induced-motion graph, tomo-recon gallery revival, landing-page data-identification jank,
+  pre-populating per-TS task rows before jobs run, and the logs-tab width + copy-to-clipboard — no
+  rows yet.

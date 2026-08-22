@@ -149,13 +149,6 @@ _CB_CSS = """
 }
 .cb-hover-card .cb-hover-val { color: #1f2937; }
 .cb-hover-card.cb-hover-empty { color: #9ca3af; font-style: italic; }
-/* Horizontal variant: hovered-pick stats as an inline strip at the top of the
- * gallery (key:value pairs in a wrapping flex row). */
-.cb-hover-horizontal {
-    display: flex; flex-wrap: wrap; gap: 3px 16px; align-items: baseline;
-    padding: 5px 9px; margin-bottom: 4px;
-}
-.cb-hover-horizontal .cb-hover-pair { display: flex; align-items: baseline; gap: 4px; }
 .cb-gallery-grid {
     display: grid; grid-template-columns: repeat(auto-fill, 96px);
     gap: 4px; padding: 6px 2px 6px 2px; justify-content: start;
@@ -167,9 +160,14 @@ _CB_CSS = """
     border: 2px solid transparent; transition: transform 0.06s ease;
 }
 .cb-gallery-tile:hover { transform: scale(1.04); border-color: #c7d2fe; }
+/* SELECTED tile (11-S4). Amber, matching .cb-pick-ghost.cb-ghost-selected on the slab,
+ * so the tile and its dot read as one thing. It stays until another tile is clicked or
+ * Esc/click-away clears it — unlike the transient .cb-tile-highlight hover brush. The
+ * class existed here since the gallery was written and nothing ever applied it; the
+ * click model that finally does is the point of 11-S4. */
 .cb-gallery-tile.selected {
-    border-color: #4338ca;
-    box-shadow: 0 0 0 1px #4338ca, 0 4px 10px rgba(67,56,202,0.25);
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 1px #f59e0b, 0 4px 10px rgba(245,158,11,0.3);
 }
 .cb-gallery-tile .cb-tile-score {
     position: absolute; bottom: 0; right: 0;
@@ -304,28 +302,18 @@ _CB_CSS = """
  * Wraps to stacked on narrow viewports. */
 .cb-particles-split { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
 /* Slab column is pinned to the slab's natural height-capped width: its WIDTH is set
- * INLINE per-tomo (_render_particles_section) to min(1080px, _SLAB_MAX_VH·x/y), and
- * it does NOT flex-grow — so the gallery/tabs column (flex-grow 1) claims ALL the
- * remaining width. The inline max-width is _SLAB_MAX_PCT% of the row (NOT 100%): the
- * vh·aspect width alone lands at ~half the row on a typical monitor, so this %
- * ceiling is what actually keeps the slab from eating half and starving the gallery
- * (lower _SLAB_MAX_PCT → wider gallery). On a very narrow viewport the tabs column
- * wraps below the slab. */
+ * INLINE per-tomo (render_particles_section) to min(1400px, slab_vh·x/y), and it does
+ * NOT flex-grow — so the gallery column (flex-grow 1) claims ALL the remaining width.
+ * The inline max-width is the mode's % of the row (NOT 100%): the vh·aspect width
+ * alone lands at ~half the row on a typical monitor, so this % ceiling is what
+ * actually keeps the slab from eating half and starving the gallery (see _SLAB_CAPS —
+ * 60vh/34% slim, 74vh/46% full). On a very narrow viewport the gallery wraps below. */
 .cb-particles-canvas-col { flex: 0 0 auto; }
-.cb-particles-tabs-col { flex: 1 1 360px; min-width: 360px; }
-/* List workbench inside a species tab: a horizontal pick-list chip rail ABOVE
- * the selected list's detail/gallery — stacked, not side-by-side, so the short
- * rail doesn't leave dead vertical space beside the tall gallery.
- * width:100% is REQUIRED: the q-tab-panel content area sizes its children to
- * their content (flex align, not stretch), so without an explicit width this
- * column shrink-wraps to the gallery/rail content (~half) instead of filling the
- * tabs column — that was the real "gallery is half-width" bug, NOT the slab. */
-.cb-workbench-split {
-    display: flex; flex-direction: column; gap: 8px; align-items: stretch;
-    width: 100%; min-width: 0;
-}
-.cb-list-rail-host { width: 100%; }
-.cb-list-detail-host { width: 100%; min-width: 0; }
+.cb-particles-detail-col { flex: 1 1 360px; min-width: 360px; }
+/* The LISTS STRIP (11-S2) runs full width ACROSS THE TOP, above the slabs/gallery row.
+ * It used to sit at the top of the right column, which pushed the gallery a
+ * strip's-height below the slabs — the misalignment the maintainer flagged. */
+.cb-lists-strip { min-width: 0; margin-bottom: 8px; }
 /* The pick-list workbench header sits ABOVE the selected list's gallery: a
  * compact aligned TABLE of lists (one row each) on the left + a vertical action
  * toolbox on the right. The table replaces the old free-floating pills, which
@@ -478,16 +466,62 @@ _CB_CSS = """
     padding: 2px 0 4px 0;
 }
 .cb-gallery-scroll { overflow-y: auto; max-height: 68vh; padding-right: 4px; position: relative; }
-.cb-cutouts-actions { flex-shrink: 0; }
-/* Cutouts on top, controls compacted underneath. */
-.cb-cutouts-head { padding: 0 0 2px 0; }
-.cb-gallery-controls-box {
-    display: flex; flex-direction: column; gap: 4px;
-    margin-top: 6px; padding-top: 6px; border-top: 1px solid #eef2f6;
-    font-size: 11px;
+/* Gallery header: title · count on the left, the toolbelt on the right. Everything
+ * that used to sit UNDER the grid — sort select, filter selects, a per-tomogram 3dmod
+ * block, a per-pick 3dmod block, the hovered-pick info row, the filtered-set path —
+ * is a toolbelt icon with a popover now (11-S3). */
+.cb-gallery-head { padding: 0 0 2px 0; }
+.cb-gallery-count { font-size: 10px; color: #94a3b8; font-family: ui-monospace, monospace; }
+.cb-toolbelt { flex-shrink: 0; }
+.cb-tb-btn { color: #94a3b8; }
+.cb-tb-btn:hover { color: #4338ca; }
+/* An armed stateful toolbelt toggle (curation mode) is LOUD: while it is on, clicking
+ * a cutout changes what downstream consumes, so the icon must not read like the rest
+ * of the row. */
+.cb-tb-btn.cb-tb-on {
+    color: #ffffff; background: #4338ca;
+    box-shadow: 0 0 0 2px rgba(67,56,202,0.22);
 }
-.cb-gallery-controls-box .cb-filter-toolbar { padding: 0; }
-.cb-gallery-controls-box .cb-hover-card { margin: 0; }
+.cb-tb-btn.cb-tb-on:hover { color: #ffffff; background: #3730a3; }
+/* The curation bar appears under the header only while curation mode is armed. */
+.cb-curation-bar {
+    padding: 3px 0 5px 0; margin-bottom: 2px;
+    border-bottom: 1px dashed #e5e7eb;
+}
+/* Wider popover for the 3dmod commands — they are long absolute paths. */
+.cb-3dmod-card { min-width: 460px; max-width: 70vw; }
+/* Narrow popover for the sort / display-filter controls — .cb-info-card's 300px floor
+ * is sized for path rows, and a lone select rattling around in it reads as broken. */
+.cb-tb-card { min-width: auto; padding: 6px 8px; }
+/* The reference strip's collapse line (closed by default). */
+.cb-ref-toggle {
+    font-size: 9px; color: #6b7280; text-transform: uppercase;
+    font-weight: 700; letter-spacing: 0.4px;
+    cursor: pointer; padding: 3px 2px; user-select: none; width: max-content;
+}
+.cb-ref-toggle:hover { color: #4338ca; }
+/* The full-page viewer (11-S5): fills the workspace main area and scrolls as one. */
+.cb-viewer-page {
+    display: flex; flex-direction: column; gap: 6px;
+    width: 100%; height: 100%; min-height: 0;
+    overflow-y: auto; padding: 8px 10px;
+}
+.cb-viewer-page-head { padding: 2px 2px 4px 2px; }
+/* Slab lightbox: a full-viewport overlay holding a CLONE of the clicked slab (image +
+ * its pick dots), wheel-zoomed and drag-panned via an inline transform. */
+.cb-slab-lightbox {
+    position: fixed; inset: 0; z-index: 3000;
+    background: rgba(2,6,23,0.92);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; cursor: grab;
+}
+.cb-slab-lightbox:active { cursor: grabbing; }
+.cb-slab-lightbox-inner {
+    width: min(96vw, 1800px) !important;
+    max-height: 94vh;
+    transform-origin: center center;
+    will-change: transform;
+}
 /* Box-select (lasso) marquee + active state. */
 /* While a box-select drag is in progress: crosshair + suppress text selection.
    Tiles keep pointer-events (clicks must work); the post-drag synthetic click is
@@ -772,6 +806,15 @@ _CB_CSS = """
                 0 0 11px 4px var(--sp-color, #00e5ff) !important;
     z-index: 8;
 }
+/* SELECTED pick (11-S4): a persistent amber ring that survives the pointer leaving,
+ * so the dot you clicked stays findable on the slab while you read its tile. Distinct
+ * from the transient .cb-ghost-active hover glow, and it wins over it (later rule). */
+.cb-pick-ghost.cb-ghost-selected {
+    width: 9px !important; height: 9px !important;
+    box-shadow: 0 0 0 1px rgba(0,0,0,1), 0 0 0 3px #f59e0b,
+                0 0 12px 3px rgba(245,158,11,0.75) !important;
+    z-index: 9;
+}
 /* Dropped/excluded pick: grey the dot so the slab agrees with the gallery
  * (filtered cutouts → greyed dots). Overrides the species color + glow. */
 .cb-pick-ghost.cb-pick-ghost-dropped {
@@ -848,12 +891,9 @@ _CB_CSS = """
     outline-offset: 1px;
     box-shadow: 0 0 0 1px #22d3ee, 0 0 8px rgba(34,211,238,0.6);
 }
-.cb-filter-toolbar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 4px 0; flex-wrap: wrap;
-}
-/* Saved filtered-set path line (under the toolbar); reuses .cb-info-* styling. */
-.cb-filter-path { gap: 6px; padding: 0 0 4px 0; }
+/* The kept-counter chip, in the gallery's curation bar. (The filter toolbar and the
+ * filtered-set path line it used to sit between are gone since 11-S3: the toolbar
+ * folded into the curation bar, the path into the 3dmod popover's outputs block.) */
 .cb-filter-counter {
     font-family: ui-monospace, monospace; font-size: 10px;
     color: #475569;
