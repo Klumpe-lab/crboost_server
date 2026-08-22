@@ -92,10 +92,10 @@ def pick_list_producer_id(pick_list) -> str:
     """Stable synthetic producer id for one curation pick list.
 
     Keyed on (species, tomo, slug), NOT slug alone: ``PickList.slug`` is only unique
-    WITHIN a (species, tomo), and the dashboard names every hand-picked list "manual"
-    (`ui/tomo_dashboard_dialog.py`), so a slug-only id would alias every species' and
-    every tomogram's manual list onto one producer — and make `remove_species` purge
-    another species' overrides.
+    WITHIN a (species, tomo), and a hand-picked list is slugged after its ``.coords``
+    file (``manual__<stem>``, `services/particles/ingest.py`), a name that recurs on
+    every tomogram the user saves it on — so a slug-only id would alias those onto one
+    producer, and make `remove_species` purge another species' overrides.
     """
     return f"{PICK_LIST_PRODUCER_PREFIX}{pick_list.species_id}__{pick_list.tomo_name}__{pick_list.slug}"
 

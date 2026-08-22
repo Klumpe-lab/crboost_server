@@ -6,12 +6,13 @@ can list it; ``delete_pick_list`` removes the files, unregisters the ``PickList`
 (dirty + rev) and persists by explicit path. Failures are collected into the result, never
 fatal — the registry entry goes even when a file is stuck.
 
-A ``manual`` list is re-derived by the ``CurationWatcher`` from the user's ``.coords`` saves
+A ``manual`` list is re-derived by the ``CurationWatcher`` from the user's ``.coords`` save
 in the tomogram's curation dir (after a restart the ``_seen`` set is empty), so deleting it
-means deleting those saves too — they are listed, and the archived ``imports/`` copies are
-kept for provenance. The authoritative choice is NOT rewritten: a dangling choice surfaces
-through the gate ("dangling choice") and the Picks tab's radio, instead of silently
-falling back to ``auto``.
+means deleting that save too — it is listed, and the archived ``imports/`` copies are kept
+for provenance. Since roadmap 10-S2 the match is by file STEM, so deleting one hand-picked
+list leaves the other lists saved in the same session alone. The authoritative choice is NOT
+rewritten: a dangling choice surfaces through the gate ("dangling choice") and the Picks
+tab's radio, instead of silently falling back to ``auto``.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from pathlib import Path
 
 from services.models_base import PickListType
 from services.particles import picks_filter
+from services.particles.ingest import manual_slug_for
 from services.particles.list_ref import extract_pick_list_instance_id
 from services.project_state import PickList, get_project_state_for, get_state_service
 from services.result import err, ok
@@ -32,9 +34,15 @@ logger = logging.getLogger(__name__)
 
 def pick_list_files(pl: PickList) -> dict[str, list[Path]]:
     """What deleting ``pl`` removes, by kind: ``stars`` (its star + ``<stem>_filtered.star``
-    when present), ``dirs`` (the per-list extraction output ``<dir>/<slug>/``) and, for a
-    ``manual`` list, ``coords`` (the user's saves the watcher would re-register). Only
-    paths that exist are listed."""
+    when present), ``dirs`` (the per-list extraction output) and, for a ``manual`` list,
+    ``coords`` (the ONE user save the watcher would re-register this list from). Only paths
+    that exist are listed.
+
+    Both narrowed by roadmap 10-S2, which made a manual list per saved ``.coords``:
+    ``coords`` matches this list's own source file by stem — deleting one list must not
+    take its neighbours' saves with it — and the extraction dir is taken from the RECORDED
+    ``extracted_path`` when there is one, since a list migrated off the old shared
+    ``manual`` slug has an output dir that no longer matches its slug."""
     out: dict[str, list[Path]] = {"stars": [], "dirs": [], "coords": []}
     if not pl.path:
         return out
@@ -42,11 +50,11 @@ def pick_list_files(pl: PickList) -> dict[str, list[Path]]:
     for p in (star, picks_filter.filtered_list_path(star)):
         if p.exists():
             out["stars"].append(p)
-    out_dir = star.parent / pl.slug
+    out_dir = Path(pl.extracted_path).parent if pl.extracted_path else star.parent / pl.slug
     if out_dir.is_dir():
         out["dirs"].append(out_dir)
     if pl.list_type == PickListType.MANUAL:
-        out["coords"] = artiax_bridge.user_coords_saves(star.parent)
+        out["coords"] = [c for c in artiax_bridge.user_coords_saves(star.parent) if manual_slug_for(c) == pl.slug]
     return out
 
 
