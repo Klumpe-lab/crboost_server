@@ -152,9 +152,7 @@ def _read_particles_star(
     return optics_df.copy(), particles_df.copy(), general_kv
 
 
-def _read_input_particles_lenient(
-    particles_star: Path,
-) -> tuple[pd.DataFrame, pd.DataFrame | None, dict[str, Any]]:
+def _read_input_particles_lenient(particles_star: Path) -> tuple[pd.DataFrame, pd.DataFrame | None, dict[str, Any]]:
     """Read an upstream particles file used as input to subtomo extraction.
 
     Accepts both TM-style candidate stars (single `data_particles` block,
@@ -271,8 +269,18 @@ def _write_tomograms_star(out_path: Path, df: pd.DataFrame) -> None:
 # Hard requirements -- these MUST match across sources
 CRITICAL_OPTICS_COLS = ["rlnVoltage", "rlnSphericalAberration", "rlnAmplitudeContrast", "rlnTomoTiltSeriesPixelSize"]
 
-# Checked only if present in all sources
-OPTIONAL_OPTICS_COLS = ["rlnImageDimensionality", "rlnTomoSubtomogramBinning", "rlnImagePixelSize", "rlnImageSize"]
+# Not required (older or hand-built stars may omit them), but a DIVERGENCE is fatal.
+# These describe the physical size of the extracted stacks. Two sources extracted at
+# different box sizes or binnings merge into one particles.star that claims a SINGLE
+# geometry for stacks that are physically different sizes -- RELION then reads them
+# wrong with no error anywhere. Until 2026-08-22 a divergence here only printed a
+# `[MERGE WARN] ... using primary value` line to a server log nobody reads
+# (roadmap picking_ui/12-S0). Absence is still tolerated: a column no source declares
+# is not a mismatch, and inventing one would be worse than saying nothing.
+GEOMETRY_OPTICS_COLS = ["rlnImageSize", "rlnImagePixelSize", "rlnTomoSubtomogramBinning"]
+
+# Checked only if present in all sources; a divergence is advisory.
+OPTIONAL_OPTICS_COLS = ["rlnImageDimensionality"]
 
 
 # ---------------------------------------------------------------------------
@@ -489,6 +497,22 @@ def merge_optimisation_sets_into_jobdir(
                 "Optics/acquisition mismatch across sources. "
                 "Critical columns differ: check voltage, Cs, amplitude contrast, pixel size."
             )
+
+        # Subtomogram geometry: absence is tolerated, disagreement is not. Compared on
+        # the string form (same idiom as the critical check above) over NON-NULL values
+        # only, so "one source declares a box, the other is silent" is not a mismatch --
+        # only two different stated boxes are.
+        for col in GEOMETRY_OPTICS_COLS:
+            if col not in optics_merged.columns:
+                continue
+            stated = optics_merged[col].dropna().astype(str).unique().tolist()
+            if len(stated) > 1:
+                raise ValueError(
+                    f"Subtomogram geometry mismatch across sources: {col!r} is {sorted(stated)}. "
+                    "These sources were extracted with different box sizes or binnings, so one "
+                    "merged particles.star cannot describe them both. Re-extract one side to "
+                    "match, or keep them as separate sets."
+                )
 
         # Check optional columns only if present in ALL sources
         for col in OPTIONAL_OPTICS_COLS:
