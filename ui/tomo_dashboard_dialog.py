@@ -34,9 +34,8 @@ from nicegui import app, ui
 
 from services.configs.user_prefs_service import get_prefs_service
 from services.models_base import InstanceId, JobStatus, JobType, ListExtractionState, PickListType, PickSourceKind
-from services.particles.list_ref import ListRef, fs_slug
+from services.particles.list_ref import fs_slug
 from ui.current_project import current_project_state
-from ui.particles import list_actions, session_status
 from ui.particles.list_actions import extraction_badge
 from services.visualization.imod_vis import generate_candidate_vis
 from services.visualization.preview_orchestrator import (
@@ -297,11 +296,12 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
     _open_species = (callbacks or {}).get("open_species")
 
     def _manage_species(species_id: str) -> None:
-        """The Particles section's 'manage in Particles registry ↗'. Composed here, where the
-        workspace's callbacks are in scope: select the species AND land on Picks — the
-        page otherwise reuses its last tab (Overview on a fresh workspace), and none of
-        the actions 11-S3 moved are on Overview, so the link would strand the user one
-        step short of what its tooltip promises."""
+        """The Particles section's route into the registry — used by the section header's
+        'manage in Particles registry ↗' and the list toolbox's 'curate ↗' (09-S2).
+        Composed here, where the workspace's callbacks are in scope: select the species AND
+        land on Picks & curation — the page otherwise reuses its last tab (Overview on a
+        fresh workspace), and none of the actions that moved off the Journey are on
+        Overview, so the link would strand the user one step short of what it promises."""
         _open_species(species_id)
         select_tab = (callbacks or {}).get("species_select_tab")
         if select_tab is not None:
@@ -403,7 +403,6 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             job_states,
             _registry_sig(),
             tuple(sorted(_hidden_dashboard_panels())),
-            session_status.status(),
             # A fresh species with no rows yet must still surface as a species tab.
             state.species_identity(),
             pick_lists_sig,
@@ -589,22 +588,18 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                 for t in proj_tasks
                 if not t.is_running and t.finished_at and (t.finished_at - t.started_at).total_seconds() < 86400
             )
-            # Curation-session liveness drives the toolbox ⚡ button's color and its
-            # branch (gray = none, opens the control center / green = live, swaps it) and
-            # is folded into the signature so a session started/stopped anywhere repaints
-            # the rail. The squeue call and its ~16 s
-            # throttle live in `ui/particles/session_status` now (11-S4) — the Species
-            # page's Curation tab observes the same cache, so this tick can just ask.
-            from backend import get_backend
-
-            await session_status.poll(get_backend())
+            # No curation-session liveness here since 09-S2: the Journey no longer starts
+            # or swaps an ArtiaX session, so it neither shows session state nor pays for a
+            # `squeue`. The one surface that does is the Particles registry's Picks &
+            # curation tab, which polls the shared `ui/particles/session_status` cache.
+            #
             # registry_rev: coarse in-memory counter of species / pick-list / template
             # mutations (roadmap 08 §1). It only WAKES this gate; the strip / main
             # sigs below are precise (species_identity, per-TS pick-list tuple), so a
             # bump that changes nothing drawn is a no-op rebuild-wise. An ArtiaX save
             # reaches the pane THROUGH it: the server-side CurationWatcher registers the
             # `manual` list (add_pick_list → rev++), so no .coords mtime is folded here.
-            sig = (running, finished, session_status.status(), state.registry_rev)
+            sig = (running, finished, state.registry_rev)
             if sig != _last_signature["sig"]:
                 prev = _last_signature["sig"]
                 _last_signature["sig"] = sig
@@ -2813,33 +2808,6 @@ def _render_list_cutout_sheet(
     _install_hover_bridge()
 
 
-def _tomo_ref(sp: dict, project_path: Path) -> ListRef:
-    """The shared-action identity (``services/particles/list_ref.ListRef``) of this
-    tomogram's REFERENCE slot for species ``sp`` — the ``auto`` list, or an empty one for
-    a de-novo species. Since 11-S3 the Journey's only per-list actions are look-and-curate
-    ones (keep/drop, eyes), so the single ref it still needs is the per-tomogram one the ⚡
-    button takes; every per-LIST action lives on the Species page, which builds the same
-    ref from a ``PickList`` (``list_ref.auto_ref`` / ``list_ref_for``)."""
-    job_dir = sp.get("job_dir")
-    sub_dir = sp.get("subtomo_job_dir")
-    species_id = sp.get("species_id") or ""
-    tomograms_star = sp.get("tomograms_star")
-    return ListRef(
-        project_path=Path(project_path),
-        species_id=species_id,
-        species_label=sp.get("label") or species_id or "",
-        tomo_name=sp["row"]["tomo_name"],
-        slug="auto",
-        label=sp.get("label") or "auto",
-        list_type=PickListType.AUTO,
-        star_path=str(Path(job_dir) / "candidates.star") if job_dir else None,
-        ce_job_dir=Path(job_dir) if job_dir else None,
-        subtomo_job_dir=Path(sub_dir) if sub_dir else None,
-        subtomo_iid=sp.get("subtomo_iid"),
-        tomograms_star=Path(tomograms_star) if tomograms_star else None,
-    )
-
-
 async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, refresh) -> None:
     """Detail pane for ONE workbench list (manual/imported/merged): a read-only
     recon-sourced cutout sheet (these lists were never subtomo-extracted, so tiles
@@ -2847,7 +2815,7 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
     loop so the rail's detail pane can show a single selected list.
 
     Look-and-curate only since 11-S3: the extraction bar and the merged-list
-    overlap/dedup panel moved to the Species page's Picks tab, which acts on every
+    overlap/dedup panel moved to the Particles registry's Picks & curation tab, which acts on every
     tomogram at once. What is left here is the sheet and its keep/drop.
 
     The read-only disk probes (recon/star stat, atlas staleness, atlas-index read)
@@ -2947,7 +2915,7 @@ async def _render_single_list_cutouts(sp: dict, lst: dict, project_path: Path, r
 
 
 # Merging and the merged-list overlap/dedup panel left the Journey in 11-S3: both are
-# per-list ACTIONS, and the Species page's Picks tab owns those across every tomogram
+# per-list ACTIONS, and the Picks & curation tab owns those across every tomogram
 # (`ui/species/picks_tab.py` → `list_actions.merge_lists` / `open_dedup_dialog`). The
 # popup that preceded the inline merge bar died 2026-06-11; see W3 in
 # docs/ARTIAX_BRIDGE_PLAN.md.
@@ -3522,8 +3490,8 @@ async def _prompt_new_species(project_path: Path, refresh) -> None:
         if species is None:
             return
         ui.notify(
-            f"Created species '{species.name}' — pick into it with ⚡ on this tomogram, or from the species "
-            "page's Curation tab",
+            f"Created species '{species.name}' — pick into it with 'curate' on this tomogram, in the Particles "
+            "registry's Picks & curation tab",
             type="positive",
             timeout=5000,
         )
@@ -3594,7 +3562,7 @@ def _render_particles_section(
         def _show_manage_link_for(sp: dict) -> None:
             """'manage in Particles registry ↗' for the active species (11-S3). The Journey no longer
             merges / dedups / extracts / imports or sets the authoritative list — this is
-            the one-click route to where those now live (the Picks tab, selected by
+            the one-click route to where those now live (the Picks & curation tab, selected by
             `manage_species`), so their removal reads as a move. Absent when the workspace
             gave us no route (a standalone journey mount) or the species has no id."""
             manage_host.clear()
@@ -3605,9 +3573,8 @@ def _render_particles_section(
                 ui.label("manage in Particles registry ↗").classes(
                     "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
                 ).on("click", lambda _e, s=sid: manage_species(s)).tooltip(
-                    "Merge · dedup · extract · delete · choose the authoritative list — opens this "
-                    "species' Picks tab. Starting an ArtiaX session and importing a .coords by path "
-                    "are one segment over, on Curation."
+                    "Curate in ArtiaX · import a .coords · extract · dedup · delete · choose the authoritative "
+                    "list — opens this species' Picks & curation tab, where all of them live in one place."
                 )
 
         def _show_admin_for(sp: dict) -> None:
@@ -3667,7 +3634,7 @@ def _render_particles_section(
                     for sp, tab in tab_objs:
                         with ui.tab_panel(tab):
                             _render_species_tab_body(
-                                sp, canvas_layers.get(sp["iid"]), project_path, refresh, refresh_roster
+                                sp, canvas_layers.get(sp["iid"]), project_path, refresh, refresh_roster, manage_species
                             )
     return True
 
@@ -3812,7 +3779,7 @@ async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -
     but exports the list's own picks (labelled by slug so its reference `.coords`
     is named apart from the user's save). Saving in ArtiaX yields a NEW `.coords` —
     picked up by the curation watcher, or imported by path from the species page's
-    Curation tab; this list's star is untouched."""
+    Picks & curation tab; this list's star is untouched."""
     from backend import get_backend
     from ui.curation_session_dialog import open_curation_control_center
 
@@ -3900,7 +3867,7 @@ def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None
 
 
 def _render_species_tab_body(
-    sp: dict, layer_ids: dict | None, project_path: Path, refresh, refresh_roster=None
+    sp: dict, layer_ids: dict | None, project_path: Path, refresh, refresh_roster=None, manage_species=None
 ) -> None:
     """One species' tab: a horizontal pick-list rail ABOVE the gallery/detail (so
     the short rail doesn't leave dead space beside the tall gallery), with the
@@ -3969,7 +3936,14 @@ def _render_species_tab_body(
 
     with rail_host:
         _render_list_rail(
-            sp, lists, project_path, tm_info=tm_info, selected_slug=sel["slug"], on_select=_select, chip_els=chip_els
+            sp,
+            lists,
+            project_path,
+            tm_info=tm_info,
+            selected_slug=sel["slug"],
+            on_select=_select,
+            chip_els=chip_els,
+            manage_species=manage_species,
         )
     # The detail pane renders one tick later via a once-timer: _render_detail is
     # async now (its workbench-list branch probes disk off-loop), so it can't be
@@ -4044,40 +4018,34 @@ def _list_count_text(total: int, filtered_count: int | None) -> str:
 
 
 def _render_list_rail(
-    sp: dict, lists: list[dict], project_path: Path, *, tm_info: dict, selected_slug, on_select, chip_els: dict
+    sp: dict,
+    lists: list[dict],
+    project_path: Path,
+    *,
+    tm_info: dict,
+    selected_slug,
+    on_select,
+    chip_els: dict,
+    manage_species=None,
 ) -> None:
     """The pick-list subpanel header: a compact aligned TABLE (header + one row per
     list: swatch · name · count(kept/total) · authoritative-radio · extracted-mark ·
-    copy-path · visibility eye) on the left + the single ⚡ ArtiaX action on the right.
+    copy-path · visibility eye) on the left + the `curate ↗` route into the registry on the
+    right.
     Every row shares one grid template so the columns line up under the header. The auto
     (pytom) row's name carries a hover tooltip with its pick stats + template-match
     essentials. Clicking a row selects it → drives the detail; the copy button and the
     eye use click.stop so they don't also select. `chip_els` is filled {slug:
     row-element} so selection can re-highlight without rebuilding the table.
 
-    Look & curate only (11-S3). The auth radio here is a READ-ONLY indicator of which
-    list downstream consumes — it is SET on the Species page's Picks tab, so the two
-    surfaces cannot disagree about it — and merge / dedup / extract / import / delete
-    live there too, where they act across every tomogram at once."""
-    from backend import get_backend
-
+    Look only (11-S3, tightened by 09-S2). The auth radio here is a READ-ONLY indicator of
+    which list downstream consumes — it is SET on the Particles registry's Picks & curation
+    tab, so the two surfaces cannot disagree about it — and curate / dedup / extract /
+    import / delete live there too, where they act across every tomogram at once."""
     state_obj = current_project_state()
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
     auth_slug = state_obj.get_authoritative_slug(species_id, tomo_name)
-
-    async def _open_in_artiax() -> None:
-        """The Journey's single per-tomogram ArtiaX action (11-S3). A session already up →
-        SWAP it to this tomogram (the reuse path that avoids one viewer per tomogram). No
-        session — or liveness `unknown` because `squeue` could not be asked — → the
-        curation control center, which is status-first and offers to start one preloaded
-        with this tomogram. Which of the two the user needs is not theirs to work out, and
-        an `unknown` must not silently pick 'start another one'."""
-        ref = _tomo_ref(sp, project_path)
-        if session_status.is_live():
-            await list_actions.load_tomo_into_session(get_backend(), ref)
-        else:
-            await list_actions.curate_in_artiax(get_backend(), ref)
 
     with ui.element("div").classes("cb-list-top"):
         # The list TABLE: one aligned row per pick list — [swatch · name ·
@@ -4115,7 +4083,7 @@ def _render_list_rail(
                     lst["_count_el"] = cnt  # so the cutout sheet can live-update it on keep/drop
                     with ui.element("div").classes("cb-ltable-cell"):
                         # Display-only since 11-S3: two places to SET the authoritative
-                        # list would drift, so it is set on the Species page's Picks tab
+                        # list would drift, so it is set on the Picks & curation tab
                         # and only shown here. The legacy 'filtered' slug lights the auto
                         # row — the same rule `species_overview` applies, so the two
                         # surfaces cannot disagree about which row is authoritative.
@@ -4124,7 +4092,7 @@ def _render_list_rail(
                             "cb-auth cb-auth-static " + ("cb-auth-on" if on else "cb-auth-off")
                         ).tooltip(
                             "Authoritative list — downstream extraction/aggregation consumes this one. "
-                            "Set it on the Particles registry's Picks tab."
+                            "Set it on the Particles registry's Picks & curation tab."
                         )
                     with ui.element("div").classes("cb-ltable-cell"):
                         if slug != "auto":
@@ -4158,43 +4126,20 @@ def _render_list_rail(
                     with ui.element("div").classes("cb-ltable-cell"):
                         if lst.get("_layer_els"):
                             _render_list_eye(lst, sp)
-        # The ONE per-(species,tomo) action the Journey keeps: ⚡ into ArtiaX. Everything
-        # else that used to sit in this toolbox (Curate, Import) is on the Species page's
-        # Curation tab, where the whole round trip — session, save contract, watcher log —
-        # is in one place.
+        # The toolbox NAVIGATES, it no longer launches (picking-UI 09-S2). The ⚡ that
+        # started/swapped an ArtiaX session from here is gone: the app has exactly one
+        # launch affordance, 'curate' on a tomogram group of the Particles registry's
+        # "Picks & curation" tab, which is also where the save contract, the import path
+        # and the watcher log live. This link is the route to it, beside the lists it acts
+        # on; absent when the workspace gave us no route (a standalone journey mount).
         with ui.element("div").classes("cb-list-toolbox"):
-            _sess = session_status.status()
-            _live = _sess == session_status.LIVE
-            _err = session_status.last_error()
-            if _live:
-                _why = "ArtiaX session running — load this tomogram + its picks into it"
-            elif _sess == session_status.OFF:
-                _why = (
-                    "No ArtiaX session running — opens the curation control center, which can start one "
-                    "already holding this tomogram"
+            if manage_species is not None and species_id:
+                ui.label("curate ↗").classes("cb-toolbox-link").on(
+                    "click", lambda _e, s=species_id: manage_species(s)
+                ).tooltip(
+                    "Open this species in the Particles registry's Picks & curation tab — start or swap an "
+                    "ArtiaX session on a tomogram, import a .coords, extract, delete, choose the authoritative list"
                 )
-            elif _err:
-                # `unknown` WITH an error: squeue actually failed. Say so — reading it as
-                # "no session" is what invites a second ChimeraX.
-                _why = (
-                    f"Could not ask SLURM whether a session is running ({_err}) — opens the curation "
-                    "control center, which checks for itself"
-                )
-            else:
-                # `unknown` with no error: the shared poll simply has not run yet (this is
-                # the state on the Journey's very first paint). Not a cluster failure.
-                _why = (
-                    "Checking for a running ArtiaX session — opens the curation control center, which checks for itself"
-                )
-            (
-                ui.button(icon="bolt", on_click=_open_in_artiax)
-                .props("flat dense round size=sm")
-                # Muted gray when no session is up (or the answer is unknown), green when
-                # one is live — the shared cache in `session_status`, folded into
-                # `_main_signature` so a session started anywhere repaints this.
-                .classes("cb-curate-live" if _live else "cb-curate-off")
-                .tooltip(_why)
-            )
 
 
 async def _render_list_detail(
