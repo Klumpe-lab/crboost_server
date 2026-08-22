@@ -35,10 +35,12 @@ def extract_pick_list_instance_id(species_id: str, tomo_name: str, slug: str) ->
 
     Keyed on the full ``(species, tomo, slug)`` triple for the same reason
     ``path_resolution_service.pick_list_producer_id`` is: ``PickList.slug`` is unique only
-    WITHIN a (species, tomogram), and every hand-picked list is minted with the literal
-    ``slug="manual"`` (``services/particles/ingest.py``), so a slug-only id would collapse
-    every manual list in the project onto ONE instance — the second submit silently
-    overwriting the first's geometry, status and error.
+    WITHIN a (species, tomogram). Hand-picked lists are slugged after the ``.coords`` file
+    they came from (``manual__<stem>``, ``services/particles/ingest.py``), and the same
+    ``manual__picks`` is minted on every tomogram the user saves that name on, so a
+    slug-only id would collapse them onto ONE instance — the second submit silently
+    overwriting the first's geometry, status and error. (Before roadmap 10-S2 the literal
+    ``"manual"`` collapsed EVERY hand-picked list in the project.)
 
     Not string-equal to the producer id and not derivable from it: the tomogram name is
     slugged here because this id is interpolated unquoted into the driver launch command

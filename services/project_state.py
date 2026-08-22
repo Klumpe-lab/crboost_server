@@ -937,8 +937,8 @@ class ProjectState(BaseModel):
         # key is "<jobtype>:<instance_path>" and a per-list producer's instance path is
         # `pick_list__<species>__<tomo>__<slug>` (path_resolution_service.
         # pick_list_producer_id). Match on the SPECIES-scoped prefix, never on slug:
-        # every hand-picked list is slugged "manual", so a slug match would purge other
-        # species' overrides too.
+        # hand-picked lists are slugged after their .coords file and the same name recurs
+        # across species, so a slug match would purge other species' overrides too.
         from services.path_resolution_service import pick_list_producer_prefix_for_species
 
         prefix = pick_list_producer_prefix_for_species(species_id)
@@ -1316,6 +1316,21 @@ class ProjectState(BaseModel):
             except Exception as e:
                 logger.exception("Skipping job instance '%s' - failed to deserialize", instance_id)
                 project_state.load_warnings.append(f"Job '{instance_id}' could not be loaded and was skipped ({e})")
+
+        # One list per saved .coords (picking-UI roadmap 10-S2): rename pre-10 lists that
+        # all shared the slug "manual", re-keying their authoritative choice and their
+        # per-list extraction job instance. Placed HERE — after the jobs load (it moves job
+        # entries) and before pipeline_order is derived from `jobs.keys()` for legacy
+        # projects that predate that field, which would otherwise keep the pre-rename id.
+        # Local import: services.particles pulls the job-spec/dashboard chain, which must
+        # not become a module-level dependency of ProjectState.
+        from services.particles.ingest import migrate_legacy_manual_slugs
+
+        renamed = migrate_legacy_manual_slugs(project_state)
+        for species_id, tomo, old, new in renamed:
+            logger.info("Migrated pick list %s/%s: %s -> %s", species_id, tomo, old, new)
+        if renamed:
+            project_state.mark_dirty()
 
         # pipeline_order (P1.0): use the persisted value; for legacy projects that
         # predate the field, backfill from the loaded job set in file order -- every

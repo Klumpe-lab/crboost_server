@@ -11,8 +11,9 @@ class ExtractPickListParams(AbstractJobParams):
 
     Identity: one instance per pick list, keyed on the `(species_id, tomo_name, slug)`
     triple through `services.particles.list_ref.extract_pick_list_instance_id`. A slug
-    alone does NOT identify a list -- every hand-picked list is minted `slug="manual"` --
-    so the triple is the key here exactly as it is for `pick_list_producer_id`.
+    alone does NOT identify a list -- a hand-picked list is slugged after its `.coords`
+    file (`manual__<stem>`), and the same name recurs on every tomogram the user saves it
+    on -- so the triple is the key here exactly as it is for `pick_list_producer_id`.
 
     NOT a scheme/roster job. Two things keep it out of the pipeline machinery, and both
     are load-bearing rather than cosmetic:
