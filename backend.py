@@ -1012,9 +1012,9 @@ class CryoBoostBackend:
     # services/curation/session_service.py (CurationSessionService) ─────────────
 
     async def launch_curation_session(
-        self, project_path: Path | None = None, cxc_path: Path | None = None
+        self, project_path: Path | None = None, cxc_path: Path | None = None, scope: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        return await self.curation_service.launch_curation_session(project_path, cxc_path=cxc_path)
+        return await self.curation_service.launch_curation_session(project_path, cxc_path=cxc_path, scope=scope)
 
     async def get_curation_session_info(self, session_dir: str, slurm_job_id: str | None = None) -> dict[str, Any]:
         return await self.curation_service.get_curation_session_info(session_dir, slurm_job_id)
@@ -1033,55 +1033,23 @@ class CryoBoostBackend:
     ) -> dict[str, Any]:
         return await self.curation_service.send_chimerax_command(session_info, command, timeout=timeout)
 
-    async def save_session_particle_lists(self, session_info: dict[str, Any], dest_dir: Path) -> dict[str, Any]:
-        return await self.curation_service.save_session_particle_lists(session_info, dest_dir)
+    # NOTE (roadmap 10-S1): `save_session_particle_lists` / `save_curation_picks` /
+    # `load_into_session` / `get_curation_loaded` used to sit here. Model B sends a curation
+    # session NOTHING after launch, so they are gone — see services/curation/session_service.py.
 
-    async def save_curation_picks(
-        self,
-        session_info: dict[str, Any],
-        *,
-        project_path: Path | None = None,
-        tomo_name: str = "",
-        species_id: str = "",
-        species_label: str = "",
+    def curation_scope(
+        self, project_path: Path, species_id: str, species_label: str, tomo_name: str, curation_dir: str = ""
     ) -> dict[str, Any]:
-        return await self.curation_service.save_curation_picks(
-            session_info,
-            project_path=project_path,
-            tomo_name=tomo_name,
-            species_id=species_id,
-            species_label=species_label,
+        return self.curation_service.curation_scope(
+            project_path, species_id, species_label, tomo_name, curation_dir=curation_dir
         )
 
-    async def load_into_session(
-        self,
-        session_info: dict[str, Any],
-        project_path: Path,
-        candidates_star: Path | None,
-        tomograms_star: Path,
-        tomo_name: str,
-        species_label: str = "",
-        *,
-        species_id: str = "",
-        source_star: Path | None = None,
-        coords_label: str = "auto",
-        save_first: bool = False,
+    async def assign_unattributed_coords(
+        self, project_path: Path, source: Path, species_id: str, species_label: str, tomo_name: str
     ) -> dict[str, Any]:
-        return await self.curation_service.load_into_session(
-            session_info,
-            project_path,
-            candidates_star,
-            tomograms_star,
-            tomo_name,
-            species_label,
-            species_id=species_id,
-            source_star=source_star,
-            coords_label=coords_label,
-            save_first=save_first,
+        return await self.curation_service.assign_unattributed_coords(
+            project_path, source, species_id, species_label, tomo_name
         )
-
-    def get_curation_loaded(self, session_info: dict[str, Any]) -> dict[str, Any] | None:
-        return self.curation_service.get_curation_loaded(session_info)
 
     async def prepare_curation_bundle(
         self,
