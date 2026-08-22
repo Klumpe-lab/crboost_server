@@ -86,6 +86,37 @@ def extract_job_for(state, species_id: str, tomo_name: str, slug: str) -> Extrac
     )
 
 
+def tm_origin_for_ce(state, ce_iid: str | None) -> tuple[str, str, str]:
+    """``(template_path, mask_path, note)`` — the template + mask that produced ONE
+    candidate-extract instance's picks (roadmap 09-S4).
+
+    A SNAPSHOT chain, not a guess: the candidate-extract instance recorded the ``tmResults``
+    directory it actually consumed in ``paths["input_tm_job"]``, and that directory's parent
+    IS the template-match job dir. So the answer stays right for a species that has since
+    acquired a second template-match instance, and it is an in-memory ``state.jobs`` read —
+    no disk, safe on a render / signature path.
+
+    All three empty = no template was involved at all, which is the de-novo answer, not a
+    gap: with no candidate-extract instance the auto row's counts came out of the subtomo
+    job's own curation records. Otherwise a missing link leaves both paths empty and puts a
+    SHORT reason in ``note``, which the row prints in place of a name (the cell is narrow;
+    its tooltip carries the sentence). Nothing here falls back to "the species' template".
+    """
+    if not ce_iid:
+        return "", "", ""
+    ce_jm = state.jobs.get(ce_iid)
+    if ce_jm is None:
+        return "", "", "job gone"
+    tm_results = str((getattr(ce_jm, "paths", None) or {}).get("input_tm_job", "") or "")
+    if not tm_results:
+        return "", "", "no TM input recorded"
+    tm_dir = str(Path(tm_results).parent)
+    for jm in state.jobs.values():
+        if str((getattr(jm, "paths", None) or {}).get("job_dir", "")) == tm_dir:
+            return str(getattr(jm, "template_path", "") or ""), str(getattr(jm, "mask_path", "") or ""), ""
+    return "", "", "TM job gone"
+
+
 @dataclass(frozen=True, slots=True)
 class ListRow:
     """One pick list on one tomogram."""
@@ -104,6 +135,14 @@ class ListRow:
     source_kind: str  # PickSourceKind value ("" on lists that pre-date the field)
     source_ref: str
     extract_job: ExtractJob | None  # the live per-list extraction job (roadmap 07); None = never submitted
+    # ORIGIN (picking-UI roadmap 09-S4) — which template and mask actually produced these
+    # coordinates. Full paths, so the row can name the file and hover the whole path; "" on a
+    # list no template produced (manual / imported / merged). ``origin_note`` carries the reason
+    # the chain could NOT be resolved for a list that should have one, and is shown INSTEAD of a
+    # name — never as a fallback guess (CLAUDE.md "Surfacing uncertainty").
+    template_path: str
+    mask_path: str
+    origin_note: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +184,9 @@ def species_overview(state, project_path: Path, species_id: str) -> SpeciesOverv
         canonical = picks_filter.resolve_canonical_optset(subtomo_dir)
         auto_optset = canonical if canonical.exists() else None
 
+    # One resolution per species: every auto row of this species came out of the same
+    # candidate-extract instance, so the template+mask behind them is the same too.
+    tmpl_path, tmpl_mask, tmpl_note = tm_origin_for_ce(state, ce[0] if ce else None)
     handles = enumerate_authoritative(state, project_path, species_id, curation_by_tomo=curation_by_tomo)
     report = compute_gate_report(handles)
     gate = "BLOCKED" if report.blocked else ("PENDING" if report.pending else "READY")
@@ -175,6 +217,9 @@ def species_overview(state, project_path: Path, species_id: str) -> SpeciesOverv
                     source_kind=PickSourceKind.TM.value,
                     source_ref=ce[0] if ce else "",
                     extract_job=None,  # the auto list follows its subtomo job; it is never cut per list
+                    template_path=tmpl_path,
+                    mask_path=tmpl_mask,
+                    origin_note=tmpl_note,
                 )
             )
         for pl in state.get_pick_lists(species_id, tomo):
@@ -195,6 +240,11 @@ def species_overview(state, project_path: Path, species_id: str) -> SpeciesOverv
                     source_kind=pl.source_kind,
                     source_ref=pl.source_ref,
                     extract_job=extract_job_for(state, species_id, tomo, pl.slug),
+                    # Hand-placed / imported / merged coordinates: no template produced them,
+                    # and saying so is a fact, not a gap to flag.
+                    template_path="",
+                    mask_path="",
+                    origin_note="",
                 )
             )
 
@@ -251,6 +301,11 @@ def _main() -> None:
                 f"  {r.tomo_name:42s} {r.slug:18s} {r.list_type:9s} {auth} {r.extraction_state:14s} "
                 f"job={job:10s} kept/total={kt:9s} {r.source_kind:7s} {r.source_ref}"
             )
+        origin = next((r for r in ov.rows if r.template_path or r.origin_note), None)
+        if origin is not None:
+            tm, mk = Path(origin.template_path).name or "-", Path(origin.mask_path).name or "-"
+            note = f"  [{origin.origin_note}]" if origin.origin_note else ""
+            print(f"  -- origin: template={tm} mask={mk}{note}")
         print(
             f"  -- {ov.n_tomos_with_picks} tomo(s) with picks · {ov.n_picks} picks · {ov.n_kept} kept · "
             f"{ov.n_extracted_lists} extracted list(s) → gate {ov.gate}"
