@@ -438,10 +438,11 @@ def prompt_extraction_geometry(
 
 
 def can_merge_source(ref: ListRef) -> bool:
-    """Whether ``merge_source_for`` can produce a star for this ref. The Picks table gates
-    its merge tick on this: an ``auto`` row with neither a committed filter nor a
-    candidate-extract job is drawn disabled with the reason instead of raising out of the
-    merge handler (``picks_filter.merge_source_for`` answers that case by raising)."""
+    """Whether ``merge_source_for`` can produce a star for this ref: an ``auto`` row with
+    neither a committed filter nor a candidate-extract job has nothing to contribute, and
+    ``picks_filter.merge_source_for`` answers that case by raising. The gate is here so a
+    merge caller can say so instead. (Its old caller, the Picks table's merge tick, went
+    with picking-UI 09-S3 — creating merges is the Aggregate-candidates flow's job.)"""
     if ref.slug != AUTO_SLUG:
         return bool(ref.star_path)
     return picks_filter.auto_source_for(ref.ce_job_dir, ref.subtomo_job_dir) is not None
@@ -633,8 +634,10 @@ async def load_tomo_into_session(backend, ref: ListRef) -> None:
     """Per-tomo ⚡ 'Load into running session': swap the user's ALREADY-running
     ChimeraX/ArtiaX to THIS (species, tomo) over the REST channel — the reuse path
     that avoids relaunching a viewer per tomogram (the session is per-user, found
-    across all projects). No live session → point the user at the Curation tab (the
-    Journey's ⚡ pre-empts this by routing to ``curate_in_artiax`` itself, 11-S3)."""
+    across all projects). Since 09-S2 there is ONE caller — the Picks & curation tab's
+    per-tomogram ``curate``, which routes here only when the shared liveness cache says a
+    session is up and to ``curate_in_artiax`` otherwise — so a no-live-session answer here
+    means the cache went stale between render and click."""
     async with _flight(f"loadinto:{ref.species_id}:{ref.tomo_name}") as acquired:
         if not acquired:
             return
@@ -662,14 +665,12 @@ async def load_tomo_into_session(backend, ref: ListRef) -> None:
         if not active:
             active = await backend.find_active_curation_session(ref.project_path)
         if not active or not active.get("rest_port"):
-            # Three callers, three surfaces: the Curation tab (a 'curate' button sits next
-            # to ⚡), the Picks tab's per-tomogram ⚡, and the Journey — where 11-S3 removed
-            # the Curate button, and ⚡ reaches here only when the ~16 s liveness cache says
-            # a session is up, i.e. just after one died. So name WHERE the action is, not a
-            # button that exists on only one of them.
+            # Reachable only when the ~16 s liveness cache said a session was up and it
+            # died in between: the caller's own branch sends a no-session click to
+            # `curate_in_artiax` instead. Say what to do rather than blaming the click.
             _notify(
-                "No running ChimeraX session — start one with 'curate' on the Particles registry's Curation tab "
-                "(it opens the control center for that tomogram).",
+                "The ChimeraX session is no longer running — click 'curate' again to open the control center "
+                "and start one on this tomogram.",
                 type="warning",
                 timeout=6000,
             )

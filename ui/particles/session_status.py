@@ -2,9 +2,10 @@
 
 `backend.find_active_curation_session_any` shells out to `squeue`, so this must not be
 polled per surface: one process-wide cached flag is refreshed at most every `POLL_S`, and
-every caller reads the cache. Both the Journey's 4-s live timer and the Curation tab's own
-timer call `poll()` on whatever cadence suits them — the throttle here decides when a
-`squeue` actually happens, so adding a second observer costs nothing.
+every caller reads the cache. Callers `poll()` on whatever cadence suits them — the throttle
+here decides when a `squeue` actually happens, so adding a second observer costs nothing.
+Since picking-UI 09-S2 there is one observer, the Particles registry's Picks & curation tab:
+the Journey no longer starts or swaps a session, so it neither shows liveness nor pays for it.
 
 Three states, not two. A `squeue` that RAISES must not read as "no session running" — that
 would tell the user to start a second ChimeraX while one is up. It reports `unknown` and

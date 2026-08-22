@@ -99,7 +99,7 @@ class CurationWatcher:
         self._task = None
         logger.info("CurationWatcher stopped")
 
-    # ── read API (Curation tab, roadmap 11-S4; peeves triage) ─────────────────────
+    # ── read API (the Picks & curation tab's watcher footer, roadmap 11-S4 / 09-S1) ────
 
     def events(self, project_path: Path) -> list[dict]:
         """Newest-last ingest / error / unattributed events for one project (in-memory,
@@ -109,7 +109,7 @@ class CurationWatcher:
     def unattributed(self, project_path: Path) -> list[dict]:
         """Curation dirs holding a user save that maps to no (registered species, known
         tomogram) — surfaced, never guessed. ``{"dir": str, "reason": str}`` per dir, sorted
-        by dir; the reason is what the Curation tab shows so the user can fix the name
+        by dir; the reason is what the Picks & curation tab shows so the user can fix the name
         rather than wonder why a save did nothing (11-S4)."""
         found = self._unattributed.get(_key(project_path), {})
         return [{"dir": d, "reason": found[d]} for d in sorted(found)]
