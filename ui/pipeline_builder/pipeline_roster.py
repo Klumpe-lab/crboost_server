@@ -1506,7 +1506,7 @@ class RosterWidget(FingerprintedView):
         return container
 
     def _build_aggregation_merge_btn(self):
-        """PARTICLES-header utility: open the merge-sources dialog. Shows a small green dot
+        """PARTICLES-header utility: open the Aggregate-candidates dialog. Shows a small green dot
         when a merged optimisation_set already exists, so you can see at a glance whether
         the merge has been done.
 
@@ -1516,7 +1516,8 @@ class RosterWidget(FingerprintedView):
         and it is now available in every project rather than only in ones whose creator
         happened to tick a box."""
         from services.project_state import get_project_state_for
-        from ui.aggregation.merge_card import has_merged_outputs, open_aggregation_merge_dialog
+        from ui.aggregation.aggregate_dialog import open_aggregate_dialog
+        from ui.aggregation.merge_card import has_merged_outputs
 
         project_path = self.panel.ui_mgr.project_path
         merged = False
@@ -1531,8 +1532,11 @@ class RosterWidget(FingerprintedView):
                 "display: flex; align-items: center; justify-content: center; "
                 "cursor: pointer; flex-shrink: 0; position: relative;"
             )
-            .on("click", lambda: open_aggregation_merge_dialog(project_path))
-            .tooltip("Merge particle sources from several projects" + (" (merged)" if merged else ""))
+            .on("click", lambda: open_aggregate_dialog(project_path))
+            .tooltip(
+                "Aggregate candidates — unite one species' picks across lists, tomograms and projects"
+                + (" (aggregated)" if merged else "")
+            )
         )
         with container:
             ui.icon("merge_type", size="14px").style(
