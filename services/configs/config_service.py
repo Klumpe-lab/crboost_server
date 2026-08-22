@@ -183,9 +183,23 @@ class CurationConfig(BaseModel):
     geometry: str = "1920x1080"
     chimerax_bin: str = "chimerax"
     login_host: str | None = None
-    # Drive a running ChimeraX from crboost over its REST server (the worker starts
-    # `remotecontrol rest` on the node's loopback; crboost POSTs via `ssh <node> curl`).
-    # Enables the one-click "Load into running session" swap; off → copy-paste only.
+    # VNC auth. Default ON: the worker mints a one-time random password (VncAuth).
+    # True switches the desktop to `-SecurityTypes None` — no password at all, so ANYONE
+    # who can reach that node's rfb port drives the session. Opt-in per site; the control
+    # center states the risk beside the (empty) password field. Roadmap 10-S1.
+    passwordless_vnc: bool = False
+    # Open a block-binned display copy of the reconstruction instead of the full-res
+    # volume (roadmap 10-S3). ArtiaX spends ~20 s COMPUTING on a 1 GB / 268 M-voxel recon;
+    # 2 is ~8x fewer voxels, 4 is ~64x. Generated once, cached beside the recon. The
+    # (N-1)/2·px corner shift this introduces is recorded in the dir's manifest and undone
+    # exactly on ingest — see services/visualization/artiax_bridge.display_corner_offset.
+    # 1 = off (open the full-res volume, as before 10-S3).
+    display_bin: int = 2
+    # The REST command channel (the worker starts `remotecontrol rest` on the node's
+    # loopback; crboost reaches it via `ssh <node> curl`). QUARANTINED since roadmap 10-S1:
+    # nothing may drive a session after launch (Model B), and this now gates only a
+    # launch-time health check. It is NOT a switch for loading/saving from crboost — that
+    # path is deleted, deliberately.
     rest_enabled: bool = True
 
 
