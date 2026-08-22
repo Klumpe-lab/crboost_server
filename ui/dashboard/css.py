@@ -339,9 +339,9 @@ _CB_CSS = """
 }
 .cb-ltable-row {
     display: grid;
-    /* swatch · name · picks · auth · ext · path · eye. The Journey's merge-tick column
-     * went with 11-S3 (merging is a Species-page action now); the Picks tab re-adds a
-     * tick + an actions column through .cb-ptable-row's own template below. */
+    /* swatch · name · picks · auth · ext · path · eye. The Journey's merge-tick column went
+     * with 11-S3; the Picks & curation table re-orders these and adds source / origin /
+     * job / actions through .cb-ptable-row's own template below. */
     grid-template-columns: 14px minmax(0, 1fr) 48px 30px 26px 22px 20px;
     align-items: center; gap: 8px;
     padding: 3px 7px; border-radius: 5px; cursor: pointer;
@@ -379,27 +379,19 @@ _CB_CSS = """
 .cb-auth-off:hover { color: #94a3b8; }
 .cb-auth-static { cursor: help; }
 .cb-auth-static.cb-auth-off:hover { color: #cbd5e1; }
-/* Vertical action toolbox beside the table — since 11-S3 it holds the Journey's ONE
- * per-(species,tomo) action, ⚡ into ArtiaX; kept OUT of the row so the list table stays
- * clean and the action reads as a toolbox rather than a column. */
+/* Vertical toolbox beside the table — since 09-S2 the Journey neither starts nor swaps an
+ * ArtiaX session, so this holds the `curate ↗` ROUTE to the Particles registry's Picks &
+ * curation tab. Kept OUT of the row so the list table stays clean. */
 .cb-list-toolbox {
     flex: 0 0 auto;
-    display: flex; flex-direction: column; align-items: center; gap: 2px;
-    padding: 3px; background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    padding: 3px 6px; background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px;
 }
-/* ⚡ button state: muted gray when no ChimeraX session is running (or liveness is
- * unknown), a soft green pill when one is live — so the toolbox signals session state at
- * a glance, and the button's meaning (swap vs. open the control center) is visible. */
-.cb-curate-off { color: #94a3b8 !important; }
-.cb-curate-off:hover { color: #6366f1 !important; }
-.cb-curate-live { color: #15803d !important; background: #dcfce7 !important; }
-.cb-curate-live:hover { background: #bbf7d0 !important; }
-/* Merge bar (Picks tab, shown when 2+ rows of one tomogram are ticked): a contained
- * indigo strip below the table, matching the table/toolbox chrome. */
-.cb-merge-bar {
-    width: 100%; padding: 5px 8px;
-    background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 8px;
+.cb-toolbox-link {
+    font-size: 10px; color: #6366f1; cursor: pointer;
+    text-decoration: underline; text-decoration-style: dotted; white-space: nowrap;
 }
+.cb-toolbox-link:hover { color: #4338ca; }
 .cb-badge-ok { color: #059669; }
 .cb-badge-todo { color: #94a3b8; }
 .cb-badge-stale { color: #d97706; }
@@ -411,12 +403,15 @@ _CB_CSS = """
 /* That mark opens the job's logs, so the whole cell (and the glyph inside it, which
  * .cb-ltable-badge otherwise gives a help cursor) has to read as clickable. */
 .cb-ptable-job, .cb-ptable-job .cb-ltable-badge { cursor: pointer; }
-/* Species page · Picks tab (roadmap 11-S2): the rail table's chrome (.cb-ltable*), one
- * grid per row: tick · auth · swatch · name · kept/total · ext · job · source · actions
- * (`job` = the live per-list extraction instance, roadmap 07-S4). Rows are not selectable
- * there (no detail pane), so no pointer cursor / selected state. */
+/* Species page · Picks & curation (roadmap 11-S2, merged surface 09-S1): the rail table's
+ * chrome (.cb-ltable*), one grid per row: swatch · name · source · origin · kept/total ·
+ * auth · ext · job · actions (`job` = the live per-list extraction instance, roadmap 07-S4;
+ * `origin` = the template+mask the picks came out of, 09-S4). The merge tick went with
+ * 09-S3 — creating a merge is the Aggregate-candidates flow's job, not this surface's.
+ * Rows are not selectable here (no detail pane), so no pointer cursor / selected state. */
 .cb-ptable-row {
-    grid-template-columns: 16px 18px 14px minmax(0, 1fr) 56px 26px 24px minmax(80px, 160px) auto;
+    grid-template-columns:
+        14px minmax(0, 1fr) minmax(48px, 72px) minmax(70px, 150px) 56px 18px 26px 24px auto;
     cursor: default;
 }
 .cb-ptable-group {
@@ -428,13 +423,6 @@ _CB_CSS = """
     font-size: 10px; color: #64748b; cursor: help;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.cb-ptable-tick {
-    width: 13px; height: 13px; border-radius: 3px; cursor: pointer; flex-shrink: 0;
-    background: transparent; border: 1.5px solid #cbd5e1;
-}
-.cb-ptable-tick.on { background: #6366f1; border-color: #6366f1; }
-/* Nothing to contribute to a merge — see `list_actions.can_merge_source`; the tooltip says why. */
-.cb-ptable-tick.off { cursor: not-allowed; border-style: dashed; border-color: #e2e8f0; }
 /* Shared small metadata text in the per-list detail chrome (provenance, pick
  * counts, sub-labels) — one slate tone + size instead of ad-hoc inline font
  * styles, so the list header / provenance / status rows read as one block. */
@@ -1039,8 +1027,8 @@ _CB_CSS = """
  * value, not a click-to-increment counter, and the browser arrows were the
  * loudest, least stylable chrome on any form. Pseudo-elements — CSS-only. */
 input[type=number]::-webkit-outer-spin-button,
-input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-input[type=number] { -moz-appearance: textfield; }
+input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 
 /* House button hover states (ui/components/buttons.py — the base look is inline
  * on the element, so hover needs !important to override it). */
@@ -1048,11 +1036,10 @@ input[type=number] { -moz-appearance: textfield; }
 .q-btn.cb-btn--accent:hover { background: #1e293b !important; border-color: #1e293b !important; }
 .q-btn.cb-btn--danger:hover { background: #fef2f2 !important; border-color: #f87171 !important; }
 
-/* MIRROR of the .cb-select / .cb-field block in ui/main_ui.py's shell <style>.
- * A stale shell renders these fields as default ~40px Quasar Material inputs with a
- * floating underline — keep this copy in the always-fresh channel until the shell
- * block is retired. Same selectors, same values: a client that has both just
- * applies the identical rules twice. */
+/* THE .cb-select / .cb-field control chrome — single source since the shell copy
+ * in ui/main_ui.py was retired (2026-08-21, picking-UI roadmap 08 S1). Every page
+ * calls ensure_assets_loaded(). Builders: ui/components/fields.py (house_*) at the
+ * .cb-field scale; ui/job_plugins/_field_styles.py at the .cb-select scale. */
 /* `height`, not just min-height: Quasar pins dense controls at a FIXED height of
  * 40px (.q-field--dense .q-field__control) — min-height alone never shrank them. */
 .cb-select .q-field__control,
