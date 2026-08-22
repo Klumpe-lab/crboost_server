@@ -534,7 +534,7 @@ class _StatusView(FingerprintedView):
                 f"{ov.n_extracted_lists} list{'s' if ov.n_extracted_lists != 1 else ''} extracted"
             ).classes(_HINT_CLS).tooltip(
                 "kept = after committed keep/drop curation. Per-list state, and the extract actions, "
-                "are on the Picks tab."
+                "are on the Picks & curation tab."
             )
 
 
