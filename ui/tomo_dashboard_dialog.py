@@ -2473,8 +2473,9 @@ def _render_list_header(lst: dict, sp: dict, project_path: Path) -> None:
     """Swatch + label (+ merge provenance) for one workbench list, rendered inside a
     caller-provided row so the contact sheet and the building/empty states share one
     header. The 'Open in ArtiaX' action lived here too but was REDUNDANT with the rail
-    toolbox's ⚡ (both open this tomo in ArtiaX) — removed per the user;
-    `_handle_open_list_in_artiax` stays as the W1 round-trip-edit foundation."""
+    toolbox's ⚡ (both open this tomo in ArtiaX) — removed per the user; its handler was
+    kept as the W1 round-trip-edit foundation until roadmap 10-S2 closed W1 a different
+    way (re-saving a `.coords` under the same name updates that list), so it is gone."""
     ui.element("div").classes(f"cb-species-swatch cb-swatch-{lst['shape']}").style(f"background: {lst['color']};")
     ui.label(lst["label"]).classes("cb-section-title")
     parents = lst.get("parent_slugs") or []
@@ -3761,64 +3762,6 @@ def _tm_essentials_for_species(sp: dict) -> dict:
             info["sym"] = (getattr(species, "symmetry", None) if species else None) or getattr(tm_jm, "symmetry", None)
             break
     return info
-
-
-def _artiax_inputs(sp: dict) -> tuple[Path | None, Path]:
-    """``(candidates_star, tomograms_star)`` for one species' ArtiaX round trip.
-
-    ``candidates_star`` is None for a species with no candidate-extract job — there
-    is no reference pick list to preload, and the bundle opens the tomogram with an
-    empty ArtiaX session, which is exactly the de-novo picking start."""
-    job_dir = sp.get("job_dir")
-    return (Path(job_dir) / "candidates.star" if job_dir else None), Path(sp["tomograms_star"])
-
-
-async def _handle_open_list_in_artiax(sp: dict, lst: dict, project_path: Path) -> None:
-    """Per-list 'Open in ArtiaX': preload a CHOSEN workbench list (its centered-Å
-    star) into a curation session for another pass. Mirrors `list_actions.curate_in_artiax`
-    but exports the list's own picks (labelled by slug so its reference `.coords`
-    is named apart from the user's save). Saving in ArtiaX yields a NEW `.coords` —
-    picked up by the curation watcher, or imported by path from the species page's
-    Picks & curation tab; this list's star is untouched."""
-    from backend import get_backend
-    from ui.curation_session_dialog import open_curation_control_center
-
-    tomo_name = sp["row"]["tomo_name"]
-    species_id = sp.get("species_id") or ""
-    async with _curation_flight(f"openlist:{species_id}:{tomo_name}:{lst['slug']}") as acquired:
-        if not acquired:
-            return
-        backend = get_backend()
-        if backend is None:
-            ui.notify("Backend unavailable.", type="negative")
-            return
-        star = lst.get("path")
-        if not star:
-            ui.notify(f"'{lst.get('label')}' has no backing file to open.", type="warning")
-            return
-        candidates_star, tomograms_star = _artiax_inputs(sp)
-        ui.notify(f"Preparing {lst.get('label')} for ArtiaX…", type="info")
-        bundle = await backend.prepare_curation_bundle(
-            project_path,
-            candidates_star,
-            tomograms_star,
-            tomo_name,
-            sp.get("label") or species_id or "",
-            species_id=species_id,
-            source_star=Path(star),
-            coords_label=lst["slug"],
-        )
-        if not bundle.get("success"):
-            ui.notify(f"Could not prepare {lst.get('label')}: {bundle.get('error')}", type="negative")
-            return
-        bundle["tomo_name"] = tomo_name
-        bundle["candidates_star"] = str(candidates_star) if candidates_star else ""
-        bundle["tomograms_star"] = str(tomograms_star)
-        bundle["species_id"] = species_id
-        bundle["species_label"] = sp.get("label") or species_id or ""
-        bundle["source_star"] = str(star)
-        bundle["coords_label"] = lst["slug"]
-        await open_curation_control_center(backend, project_path, bundle=bundle)
 
 
 def _render_species_admin_buttons(sp: dict, project_path: Path, refresh) -> None:

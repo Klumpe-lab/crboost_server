@@ -148,9 +148,11 @@ def _save_contract(species_slug: str) -> str:
     also read once, so it hangs off the chip that says whether a session is up."""
     return (
         f"Save from ArtiaX into Curation/{species_slug}/<tomogram>/ · format .coords (positions only, corner-Å) · "
-        f"any filename EXCEPT auto.coords and *_ref.coords, which are crboost's own exports · newest save wins · "
-        f"picked up automatically within ~{_HOT_DETECT_S:.0f} s while the tomogram is loaded in the session, "
-        f"~{_DETECT_S:.0f} s otherwise — nothing to press here. Copy a tomogram's exact folder with its ⧉ button."
+        f"any filename EXCEPT auto.coords and *_ref.coords, which are crboost's own exports · EVERY file becomes "
+        f"its own list, named after it, and re-saving under the same name updates that list · "
+        f"picked up automatically within ~{_HOT_DETECT_S:.0f} s in the tomogram the session was launched on, "
+        f"~{_DETECT_S:.0f} s elsewhere — nothing to press here. A save that lands outside these folders shows in "
+        f"UNATTRIBUTED SAVES below, where you assign it. Copy a tomogram's exact folder with its ⧉ button."
     )
 
 
@@ -346,8 +348,8 @@ class _PicksView(FingerprintedView):
                     "saves",
                     str(info.n_saves),
                     status="info",
-                    tooltip="user .coords files in this tomogram's curation dir — the newest is what the watcher "
-                    "registers as the manual list",
+                    tooltip="user .coords files in this tomogram's curation dir — the watcher registers EACH as "
+                    "its own pick list, named after the file",
                 )
             if rows and not any(r.is_authoritative for r in rows):
                 # PER TOMOGRAM, not per species: `get_authoritative_slug` falls back to 'auto',
@@ -395,13 +397,15 @@ class _PicksView(FingerprintedView):
         """The ONE place each per-tomogram verb exists (09-S2): launch/scope an ArtiaX
         session, import a `.coords` by path, copy the save dir, jump to the viewer. The
         sidebar launcher, the Picks-tab ⚡ and the species-level import header button are
-        gone; the Journey's ⚡ navigates here."""
+        gone; the Journey's ⚡ navigates here. Since 10-S1 `curate` no longer has a
+        swap branch — a session's scope is declared once, at launch."""
         ui.button(icon="view_in_ar", on_click=lambda _e, r=info.ref: self._tab.curate(r)).props(
             "flat dense round size=sm color=indigo"
         ).tooltip(
-            "Curate in ArtiaX. A session already running is SWAPPED to this tomogram + its picks; with none "
-            "running (or liveness unknown) this prepares the bundle and opens the control center, which offers "
-            "to start one already holding it. Never a second ChimeraX."
+            "Curate in ArtiaX. Declares this species + tomogram as a session's scope (reference picks, the "
+            "startup script, and the manifest that makes every save here attributable), then opens the control "
+            "center to start one on it. A session already running keeps the tomogram it was launched on — crboost "
+            "does not switch it; the control center says which one that is."
         )
         ui.button(icon="download", on_click=lambda _e, r=info.ref: self._tab.import_picks(r)).props(
             "flat dense round size=sm"
@@ -544,7 +548,19 @@ class _PicksView(FingerprintedView):
                 ui.label("project-wide — a save here reached no species, and was never guessed at").classes(_HINT_CLS)
             for u in unattributed:
                 with ui.column().classes("w-full gap-0 px-1"):
-                    ui.label(u["dir"]).classes("text-[10px] text-slate-700 truncate").style(MONO).tooltip(u["dir"])
+                    with ui.row().classes("w-full items-center gap-2").style("flex-wrap: nowrap;"):
+                        ui.label(u["dir"]).classes("text-[10px] text-slate-700 truncate").style(MONO).tooltip(u["dir"])
+                        n = len(u.get("files") or [])
+                        if n:
+                            ui.label(f"{n} file{'s' if n != 1 else ''}").classes(_HINT_CLS).tooltip(
+                                "\n".join(Path(f).name for f in u["files"])
+                            )
+                        ui.space()
+                        # The staging step (10-S2): the ONLY way these picks acquire a
+                        # species, and it is the user's call — never an inference.
+                        ui.label("assign ↗").classes(_LINK_CLS).on(
+                            "click", lambda _e, entry=u: self._tab.assign_unattributed(entry)
+                        ).tooltip("Move these .coords into a species + tomogram's curation folder and import them")
                     ui.label(u["reason"]).classes("text-[10px] text-orange-700")
 
 
@@ -696,21 +712,25 @@ class PicksTab:
             await open_curation_control_center(self.backend, self.ctx.project_path)
 
     async def curate(self, ref: ListRef) -> None:
-        """THE launch/scope affordance (09-S2), and the merge of what used to be two buttons
-        side by side (`curate` + ⚡) plus the Journey's own ⚡.
+        """THE launch/scope affordance (09-S2), and since 10-S1 the ONLY one: it declares
+        this (species, tomogram) as a session's scope — writing the reference export, the
+        `.cxc` and the `manifest.json` — and opens the control center to start one.
 
-        A session already up → SWAP it to this tomogram (the reuse path that avoids one
-        ChimeraX per tomogram). No session — or liveness `unknown` because `squeue` could not
-        be asked — → prepare the bundle and open the control center, which is status-first and
-        offers to start one preloaded with this tomogram. Which of the two the user needs is
-        not theirs to work out, and an `unknown` must not silently pick 'start another one'."""
-        if session_status.is_live():
-            await list_actions.load_tomo_into_session(self.backend, ref)
-        else:
-            await list_actions.curate_in_artiax(self.backend, ref)
+        It used to branch on liveness and SWAP a running session over the REST channel.
+        That branch is gone with the swap itself (Model B): a running session keeps the
+        tomogram it was launched on, and the control center says which one that is when it
+        differs from this panel's. The `unknown`-liveness hazard goes with it — there is no
+        longer a decision to get wrong."""
+        await list_actions.curate_in_artiax(self.backend, ref)
 
     def import_picks(self, ref: ListRef) -> None:
         list_actions.import_picks_from_path(self.backend, ref, on_done=self.refresh)
+
+    async def assign_unattributed(self, entry: dict) -> None:
+        """Give an orphaned save an explicit (species, tomogram) — the staging step of
+        10-S2. Its files are MOVED into the right curation dir and the watcher ingests
+        them; nothing here infers anything."""
+        await list_actions.assign_unattributed(self.backend, self.ctx.project_path, entry, on_done=self.refresh)
 
     def copy(self, path: str) -> None:
         ui.clipboard.write(path)

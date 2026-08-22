@@ -1,7 +1,7 @@
 """Pick-list ACTIONS shared by the Journey and the Species page (roadmap 11-S1).
 
 Carved out of ``ui/tomo_dashboard_dialog.py`` so the Species page (manage & act) and the
-Journey (look & curate) drive the same code for extract / merge / dedup / ⚡ load /
+Journey (look & curate) drive the same code for extract / merge / dedup / curate /
 import: each helper takes the ``backend`` and a ``ListRef`` (``services/particles/list_ref``)
 instead of the Journey's ``sp`` / ``lst`` render dicts, resolves ``ProjectState`` by the
 ref's EXPLICIT path (never the tab accessor — the extraction wait runs in a BackgroundTask
@@ -26,7 +26,7 @@ from services.background_tasks import get_background_task_registry
 from services.models_base import JobStatus, ListExtractionState, PickListType, PickSourceKind
 from services.particles import picks_filter
 from services.particles.ingest import register_manual_pick_list
-from services.particles.list_ref import AUTO_SLUG, ListRef, extract_pick_list_instance_id, fs_slug
+from services.particles.list_ref import AUTO_SLUG, ListRef, extract_pick_list_instance_id, fs_slug, known_tomograms
 from services.particles.species_overview import ExtractJob
 from services.project_state import ExtractionParams, PickList, get_project_state_for
 from services.visualization.tomo_geometry import geometry_for_ts
@@ -595,11 +595,19 @@ def open_dedup_dialog(backend, ref: ListRef, *, default_radius_ang: float, on_do
 
 
 async def curate_in_artiax(backend, ref: ListRef) -> None:
-    """Per-tomo 'Curate in ArtiaX': export this (species, tomo)'s picks to a
-    `.coords` + `.cxc`, then open the curation control center bound to this
-    tomogram. The control center is status-first — it shows the live session's
-    connection info + the load commands, or a Start button that preloads this
-    tomogram. SingleFlight-guarded so repeated clicks prep only one bundle."""
+    """Per-tomo 'Curate in ArtiaX' — THE launch/scope affordance (roadmap 09-S2, 10-S1).
+
+    Declares the scope: exports this (species, tomo)'s picks to a `.coords`, writes the
+    `.cxc` that preloads them and the `manifest.json` that says which species and which
+    tomogram this directory is for, then opens the control center bound to it. Starting
+    the session from there stamps that scope onto the session too — and nothing changes it
+    afterwards, because under Model B crboost sends the viewer no further commands. A
+    different tomogram means coming back here and launching again (10-S3 makes the open
+    cheap enough for that to be the normal move).
+
+    The bundle prep is the slow part on a tomogram whose display copy does not exist yet —
+    hence the toast BEFORE the await, which names it. SingleFlight-guarded so repeated
+    clicks prep only one bundle."""
     async with _flight(f"{ref.species_id}:{ref.tomo_name}") as acquired:
         if not acquired:
             return
@@ -610,7 +618,12 @@ async def curate_in_artiax(backend, ref: ListRef) -> None:
             ui.notify(f"No tomograms.star resolved for {ref.tomo_name} — nothing to open in ArtiaX.", type="warning")
             return
         candidates_star, tomograms_star = ref.candidates_star, ref.tomograms_star
-        ui.notify(f"Preparing ArtiaX bundle for {ref.tomo_name}…", type="info")
+        ui.notify(
+            f"Preparing ArtiaX bundle for {ref.tomo_name} — the first time on a tomogram this also builds "
+            "its downscaled display copy, which can take a while.",
+            type="info",
+            timeout=4000,
+        )
         bundle = await backend.prepare_curation_bundle(
             ref.project_path,
             candidates_star,
@@ -627,118 +640,30 @@ async def curate_in_artiax(backend, ref: ListRef) -> None:
         bundle["tomograms_star"] = str(tomograms_star)
         bundle["species_id"] = ref.species_id
         bundle["species_label"] = ref.species_label or ref.species_id
+        if bundle.get("display_note"):
+            # The display copy could not be built, so this session opens the full-res
+            # volume and takes ~20 s. Say it once, here — never silently slow.
+            ui.notify(f"No downscaled copy for {ref.tomo_name}: {bundle['display_note']}", type="warning", timeout=7000)
         await open_curation_control_center(backend, ref.project_path, bundle=bundle)
-
-
-async def load_tomo_into_session(backend, ref: ListRef) -> None:
-    """Per-tomo ⚡ 'Load into running session': swap the user's ALREADY-running
-    ChimeraX/ArtiaX to THIS (species, tomo) over the REST channel — the reuse path
-    that avoids relaunching a viewer per tomogram (the session is per-user, found
-    across all projects). Since 09-S2 there is ONE caller — the Picks & curation tab's
-    per-tomogram ``curate``, which routes here only when the shared liveness cache says a
-    session is up and to ``curate_in_artiax`` otherwise — so a no-live-session answer here
-    means the cache went stale between render and click."""
-    async with _flight(f"loadinto:{ref.species_id}:{ref.tomo_name}") as acquired:
-        if not acquired:
-            return
-        # This handler awaits a ~20 s load; during it the dashboard's periodic
-        # main_area.clear() deletes the slot this coroutine was entered under, so a later
-        # bare ui.notify dies with "parent element ... has been deleted". Capture the page
-        # LAYOUT slot (never cleared) up front and route every notify through it; swallow
-        # the residual race so a stale toast never surfaces a traceback.
-        host = dialog_host()
-
-        def _notify(msg: str, **kw) -> None:
-            try:
-                with host:
-                    ui.notify(msg, **kw)
-            except Exception:
-                logger.info("load-into-session: dropped notify (slot gone): %s", msg)
-
-        if backend is None:
-            _notify("Backend unavailable.", type="negative")
-            return
-        if ref.tomograms_star is None:
-            _notify(f"No tomograms.star resolved for {ref.tomo_name} — nothing to load.", type="warning")
-            return
-        active = await backend.find_active_curation_session_any()
-        if not active:
-            active = await backend.find_active_curation_session(ref.project_path)
-        if not active or not active.get("rest_port"):
-            # Reachable only when the ~16 s liveness cache said a session was up and it
-            # died in between: the caller's own branch sends a no-session click to
-            # `curate_in_artiax` instead. Say what to do rather than blaming the click.
-            _notify(
-                "The ChimeraX session is no longer running — click 'curate' again to open the control center "
-                "and start one on this tomogram.",
-                type="warning",
-                timeout=6000,
-            )
-            return
-
-        # Confirm — `close session` wipes unsaved manual picks. Layout-parented so
-        # the 4 s dashboard refresh can't clear the dialog mid-interaction.
-        with host:
-            with ui.dialog().props("persistent") as confirm, ui.card().classes("w-[26rem] max-w-full gap-2"):
-                ui.label("Load into running session?").classes("text-sm font-bold")
-                ui.label(
-                    f"Swap the running ArtiaX (on {active.get('node') or '?'}) to {ref.tomo_name} + its picks, "
-                    "clearing what's open now. Any manual picks you haven't saved for the current tomogram would "
-                    "be lost."
-                ).classes("text-[12px] text-gray-600")
-                save_cb = ui.checkbox("Save my current picks first", value=True).props("dense").classes("text-[12px]")
-                ui.label("crboost saves your open lists to the current tomogram's folder before switching.").classes(
-                    "text-[10px] text-gray-400"
-                )
-                with ui.row().classes("w-full justify-end gap-2"):
-                    house_button("Cancel", lambda: confirm.submit(None))
-                    house_button("Load", lambda: confirm.submit(True), kind="accent")
-        go = await confirm
-        do_save = bool(save_cb.value) if go else False
-        try:
-            confirm.delete()
-        except Exception:
-            pass
-        if not go:
-            return
-
-        candidates_star, tomograms_star = ref.candidates_star, ref.tomograms_star
-        _notify(f"Loading {ref.tomo_name} into the running session…", type="info")
-        res = await backend.load_into_session(
-            active,
-            ref.project_path,
-            candidates_star,
-            tomograms_star,
-            ref.tomo_name,
-            ref.species_label or ref.species_id,
-            species_id=ref.species_id,
-            save_first=do_save,
-        )
-        if res.get("success"):
-            n = res.get("auto_count")
-            _notify(
-                f"Loaded {ref.tomo_name}{f' ({n} picks)' if n is not None else ''} into the running session.",
-                type="positive",
-            )
-        else:
-            _notify(f"Load failed: {res.get('error') or 'unknown error'}", type="negative", timeout=7000)
 
 
 # ── Import ────────────────────────────────────────────────────────────────────
 
 
 async def register_imported_picks(backend, ref: ListRef, result: dict, *, on_done: OnDone) -> None:
-    """Explicit-import click path: upsert the ``manual`` PickList for this (species, tomo)
-    from a ``backend.import_curation_picks`` result (``services.particles.ingest``, shared
-    with the server-side watcher), persist AWAITED with force=True so the registry actually
-    lands on disk (a fire-and-forget ``create_task(save_project())`` was getting GC'd before
-    it ran, leaving ``pick_lists: []`` in project_params.json), toast, and ``on_done`` so
-    the new diamond layer appears."""
+    """Explicit-import click path: upsert the ``manual__<stem>`` PickList for this
+    (species, tomo) from a ``backend.import_curation_picks`` result
+    (``services.particles.ingest``, shared with the server-side watcher), persist AWAITED
+    with force=True so the registry actually lands on disk (a fire-and-forget
+    ``create_task(save_project())`` was getting GC'd before it ran, leaving
+    ``pick_lists: []`` in project_params.json), toast, and ``on_done`` so the new diamond
+    layer appears. Importing a file whose name matches an existing list REPLACES that
+    list — same name, same list (10-S2) — so the toast names it."""
     pl = register_manual_pick_list(get_project_state_for(ref.project_path), result, ref.species_id, ref.tomo_name)
     await backend.save_project(ref.project_path, force=True)
     src = Path(result.get("coords_source", "")).name
     ui.notify(
-        f"Imported {pl.count} manual picks for {ref.tomo_name}" + (f" (from {src})" if src else ""),
+        f"Imported {pl.count} picks into '{pl.label}' on {ref.tomo_name}" + (f" (from {src})" if src else ""),
         type="positive",
         timeout=3000,
     )
@@ -768,6 +693,16 @@ def import_picks_from_path(
             or "No saved .coords was found in this project's curation dirs. Paste the full path to the "
             ".coords you saved from ArtiaX (any filename)."
         ).classes("text-xs text-gray-600")
+        # The frame a by-path file is read in. A save made INSIDE a curation dir carries
+        # that session's display-binning offset (10-S3) via its manifest; a file from
+        # anywhere else has no manifest, so it is read as full-resolution corner-Å. That is
+        # the right default for an external file and wrong by (N-1)/2·px for a session save
+        # the user moved out — so say which, rather than let a silent few-Å shift through.
+        ui.label(
+            "Read as full-resolution coordinates. If this file came out of a crboost curation session, "
+            "put it back in that tomogram's folder (or assign it from UNATTRIBUTED SAVES) instead — that "
+            "route keeps the exact frame the session displayed."
+        ).classes("text-[11px] text-gray-500")
         if tomo_options:
             names = list(tomo_options)
             tomo_sel = house_select(
@@ -815,3 +750,82 @@ def import_picks_from_path(
             house_button("Cancel", dialog.close)
             house_button("Import", _do_import, kind="accent")
     dialog.open()
+
+
+# ── Staging: assign an unattributed save (roadmap 10-S2) ──────────────────────
+
+_CHOOSE = "— choose —"  # no pre-selection: a wrong default here files picks under the wrong species
+
+
+async def assign_unattributed(backend, project_path: Path, entry: dict, *, on_done: OnDone) -> None:
+    """Assign `.coords` files the watcher could not attribute to an explicit
+    (species, tomogram) — the maintainer's staging mechanism, and the reason nothing in
+    the ingest path ever guesses.
+
+    ``entry`` is one row of ``CurationWatcher.unattributed()`` (``dir`` · ``reason`` ·
+    ``files``). Confirming MOVES those files into ``Curation/<species>/<tomo>/`` and
+    writes the manifest that declares the identity; the watcher ingests them within a
+    tick. Neither dropdown is pre-selected — filing someone's hand-picked coordinates
+    under a plausible-looking species is exactly the silent misattribution Model B exists
+    to make impossible.
+    """
+    async with _flight(f"assign:{entry.get('dir')}") as acquired:
+        if not acquired:
+            return
+        if backend is None:
+            _no_backend()
+            return
+        state = get_project_state_for(project_path)
+        species = {str(getattr(sp, "name", "") or sp.id): sp.id for sp in state.species_registry}
+        if not species:
+            ui.notify("No species registered yet — create one first, then assign these picks to it.", type="warning")
+            return
+        tomos = await asyncio.to_thread(known_tomograms, state, project_path)
+        if not tomos:
+            ui.notify(
+                "No tomogram is described by any tomograms.star yet — nothing to assign these picks into.",
+                type="warning",
+            )
+            return
+        files = [Path(f) for f in (entry.get("files") or [])]
+
+        with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[36rem] max-w-full gap-2"):
+            ui.label("Assign these picks").classes("text-base font-bold")
+            ui.label(entry.get("dir", "")).classes("text-[11px] font-mono text-gray-500 break-all")
+            ui.label(entry.get("reason", "")).classes("text-[11px] text-orange-700")
+            with ui.column().classes("w-full gap-0 pt-1"):
+                for f in files:
+                    ui.label(f.name).classes("text-[11px] font-mono text-slate-700").tooltip(str(f))
+            sp_sel = house_select("Species", [_CHOOSE, *species], value=_CHOOSE, width="w-64")
+            tomo_sel = house_select("Tomogram", [_CHOOSE, *tomos], value=_CHOOSE, width="w-64")
+            tomo_sel.props("options-dense")
+            ui.label(
+                f"{len(files)} file(s) will be MOVED into that tomogram's curation folder and imported as "
+                "one pick list each, named after the file."
+            ).classes("text-[11px] text-gray-500")
+
+            async def _do_assign() -> None:
+                sp_name, tomo = sp_sel.value, tomo_sel.value
+                if sp_name == _CHOOSE or tomo == _CHOOSE:
+                    ui.notify("Choose both a species and a tomogram.", type="warning")
+                    return
+                res = await backend.assign_unattributed_coords(
+                    project_path, Path(entry["dir"]), species[sp_name], sp_name, tomo
+                )
+                if not res.get("success"):
+                    ui.notify(f"Assign failed: {res.get('error')}", type="negative", timeout=6000)
+                    return
+                dialog.close()
+                skipped = res.get("skipped") or []
+                ui.notify(
+                    f"Assigned {res.get('count')} file(s) to {sp_name} · {tomo} — importing."
+                    + (f" {len(skipped)} could not be moved." if skipped else ""),
+                    type="positive" if not skipped else "warning",
+                    timeout=5000,
+                )
+                on_done()
+
+            with ui.row().classes("w-full justify-end gap-2"):
+                house_button("Cancel", dialog.close)
+                house_button("Assign", _do_assign, kind="accent")
+        dialog.open()
