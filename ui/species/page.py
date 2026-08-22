@@ -3,7 +3,8 @@
 Detail = header row (active species' pill + segmented tabs) + one container per
 (species, tab), built lazily on first selection and cached; a switch only flips
 visibility. Tabs: Overview (S3: identity editor, status, sanity, delete) · Templates &
-masks (the mounted workbench, S2) · Picks (11-S2) · Curation (11-S4) · Jobs (S4). The page
+masks (the mounted workbench, S2) · Picks & curation (11-S2 + 11-S4, merged into one surface
+by picking-UI roadmap 09) · Jobs (S4). The page
 owns the 3-s registry observe (species created / deleted elsewhere — roster "+", another
 browser tab, the Overview's delete) and the `on_workbench_active` / `workbench_select_species`
 hooks the workspace registers (`workspace_page._switch_to` / `_open_species`); the
@@ -28,7 +29,6 @@ from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
 from ui.dashboard.css import ensure_assets_loaded
 from ui.species.catalog import import_from_catalog
-from ui.species.curation_tab import CurationTab
 from ui.species.jobs_tab import JobsTab
 from ui.species.overview_tab import OverviewTab
 from ui.species.picks_tab import PicksTab
@@ -43,8 +43,7 @@ logger = logging.getLogger(__name__)
 TABS: tuple[tuple[str, str], ...] = (
     ("overview", "Overview"),
     ("templates", "Templates & masks"),
-    ("picks", "Picks"),
-    ("curation", "Curation"),
+    ("picks", "Picks & curation"),
     ("jobs", "Jobs"),
 )
 DEFAULT_TAB = "overview"
@@ -141,8 +140,8 @@ class SpeciesPage:
         self.callbacks["on_workbench_active"] = self._set_active
         # "open in Species" from a job's Config tab (workspace_page._open_species).
         self.callbacks["workbench_select_species"] = self.select_species
-        # Cross-tab links inside this page (the Picks tab's empty state points at
-        # Curation / Jobs) — a tab never reaches into the page object itself.
+        # Cross-tab links inside this page (the Picks & curation tab's empty state points
+        # at Jobs) — a tab never reaches into the page object itself.
         self.callbacks["species_select_tab"] = self.select_tab
 
     def _set_active(self, on: bool) -> None:
@@ -195,8 +194,6 @@ class SpeciesPage:
                 return OverviewTab(ctx)
             case "picks":
                 return PicksTab(ctx)
-            case "curation":
-                return CurationTab(ctx)
             case "jobs":
                 return JobsTab(ctx)
         raise KeyError(f"unknown Species tab {key!r}")
