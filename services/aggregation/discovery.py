@@ -253,3 +253,41 @@ def load_tomo_curation(job_dir: str) -> list[TomoCuration]:
             )
         )
     return out
+
+
+def discover_pick_list_projects(base_paths: Iterable[str]) -> list[Path]:
+    """Every project directory under `base_paths`, as absolute paths, de-duplicated.
+
+    Distinct from `discover_subtomo_optimisation_sets` on purpose: that one surfaces
+    projects that have EXTRACTED something, which is the wrong filter one stage earlier. A
+    de-novo project whose only particles are hand-placed coordinates has no optimisation
+    set at all and would be invisible to it, yet it is exactly the kind of project the
+    coordinate-grade aggregation exists to pull from (roadmap picking_ui/12-S4).
+
+    Membership is `project_params.json` — the ProjectState serialization — because that is
+    the one file every crboost project has and no other directory does.
+    """
+    seen: set[str] = set()
+    out: list[Path] = []
+    for base_path in base_paths:
+        if not base_path:
+            continue
+        base = Path(base_path).expanduser()
+        if not base.is_dir():
+            continue
+        try:
+            children = [p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        except OSError as e:
+            # Expected-and-ignorable: an unmounted or unreadable root is "no projects here".
+            logger.debug("cannot list %s: %s", base, e)
+            continue
+        for proj_dir in [base, *children]:
+            if not (proj_dir / "project_params.json").exists():
+                continue
+            key = str(proj_dir.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(proj_dir.resolve())
+    out.sort(key=lambda p: p.name.lower())
+    return out
