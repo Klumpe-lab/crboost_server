@@ -1131,6 +1131,100 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cb-select-popup .q-item:hover { background: #f1f5f9; }
 .cb-select-popup .q-item.q-manual-focusable--focused,
 .cb-select-popup .q-item--active { background: #eef2f6; color: #1e293b; }
+/* ── Tomogram gallery (ui/tomo_gallery.py) ─────────────────────────────────── */
+/* The birds-eye wall: a grid of reconstruction tiles, each an image box with the
+ * species' picks projected onto it as one inline-SVG layer per species. The frame
+ * IS the image box (aspect-ratio from the tomogram's own X/Y extent, object-fit
+ * fill), which is what lets a dot layer position in plain percentages and stay
+ * registered with the slice at every tile size. */
+.cb-gal-page { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; }
+.cb-gal-toolbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 6px 10px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; flex-shrink: 0;
+}
+.cb-gal-title {
+    font-size: 10px; text-transform: uppercase; font-weight: 600;
+    color: #64748b; letter-spacing: 0.3px;
+}
+.cb-gal-count {
+    font-family: ui-monospace, monospace; font-size: 10px; color: #1e40af;
+    background: #eef2ff; border-radius: 3px; padding: 0 5px;
+}
+.cb-gal-toolbar-label {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #94a3b8; margin-left: 6px;
+}
+.cb-gal-sp {
+    display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none;
+    border: 1px solid #e2e8f0; border-radius: 999px; background: #ffffff; padding: 1px 8px 1px 5px;
+}
+.cb-gal-sp:hover { background: #f1f5f9; }
+.cb-gal-sp.off { opacity: 0.45; }
+.cb-gal-sp.off .cb-gal-sp-dot { background: #cbd5e1 !important; }
+.cb-gal-sp-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.cb-gal-sp-name { font-size: 10px; color: #475569; white-space: nowrap; }
+.cb-gal-body { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.cb-gal-grid { display: grid; gap: 10px; padding: 10px; align-items: start; }
+.cb-gal-tile {
+    display: flex; flex-direction: column; min-width: 0;
+    border: 1px solid #e5e7eb; border-radius: 5px; overflow: hidden; background: #ffffff;
+}
+.cb-gal-tile:hover { border-color: #c7d2fe; box-shadow: 0 2px 8px rgba(15,23,42,0.08); }
+.cb-gal-frame {
+    position: relative; width: 100%; min-height: 60px;
+    background: #0f172a; cursor: zoom-in; overflow: hidden;
+}
+.cb-gal-frame > img { width: 100%; height: 100%; object-fit: fill; display: block; }
+/* Unknown tomogram extent: no aspect-ratio to give the frame a height, so the image
+ * sizes itself and the tile is as tall as it is. No dots are drawn in this state
+ * (nothing to normalize against), so letterboxing can't desynchronize anything. */
+.cb-gal-frame-auto { aspect-ratio: auto; max-height: 78vh; }
+.cb-gal-frame-auto > img { height: auto; object-fit: contain; }
+.cb-gal-dotlayer { position: absolute; inset: 0; pointer-events: none; }
+.cb-gal-dotlayer svg { width: 100%; height: 100%; display: block; }
+.cb-gal-note {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px;
+    font-size: 10px; color: #94a3b8; text-align: center; padding: 6px;
+}
+.cb-gal-badge {
+    position: absolute; top: 0; right: 0; padding: 1px 5px;
+    background: rgba(15,23,42,0.72); color: #f8fafc;
+    font-family: ui-monospace, monospace; font-size: 9px; border-bottom-left-radius: 3px;
+}
+/* Picks counted but not placeable (unresolved tomogram extent) — amber, so the
+ * count can't be read as "these dots are the picks". */
+.cb-gal-badge-warn { background: rgba(180, 83, 9, 0.88); }
+.cb-gal-cap {
+    display: flex; align-items: center; gap: 4px; padding: 3px 6px;
+    border-top: 1px solid #f1f5f9; cursor: pointer; min-width: 0;
+}
+.cb-gal-cap:hover { background: #eef2ff; }
+.cb-gal-cap:hover .cb-gal-go { color: #4f46e5; }
+.cb-gal-name {
+    font-size: 10px; color: #334155; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1;
+}
+.cb-gal-go { font-size: 10px; color: #cbd5e1; flex: 0 0 auto; }
+/* Zoom: one tile at viewport scale. Sized here (not maximized) so the tomogram keeps
+ * its aspect and the wall behind stays visible as context. */
+.cb-gal-zoom {
+    background: #ffffff; border-radius: 6px; padding: 8px;
+    display: flex; flex-direction: column; gap: 6px;
+    width: 92vw; max-width: 1500px;
+}
+.cb-gal-zoom-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cb-gal-zoom-title { font-size: 12px; font-weight: 600; color: #0f172a; }
+.cb-gal-zoom-ts { font-family: ui-monospace, monospace; font-size: 10px; color: #64748b; }
+.cb-gal-zoom-src { font-family: ui-monospace, monospace; font-size: 10px; color: #94a3b8; }
+/* Height is bounded by capping the WIDTH against the aspect (inline, where the dims
+ * are known) — a max-height would clamp the box out of ratio and object-fit:fill
+ * would then squash the slice. */
+.cb-gal-zoom-frame { cursor: default; border-radius: 4px; margin: 0 auto; }
+.cb-gal-zoom-path {
+    font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 """
 
 
