@@ -412,6 +412,24 @@ class PipelineBuilderPanel:
                 del overrides[k]
 
     def remove_instance_from_pipeline(self, instance_id: str):
+        """Drop an instance from the pipeline and PERSIST that.
+
+        The save is `force=True` and the state is marked dirty, both on purpose. A
+        deletion mutates `jobs` / `job_path_mapping` / `pipeline_order` / other jobs'
+        `source_overrides` directly, and none of those writes go through the USER_PARAMS
+        setter that maintains `is_dirty` — `ensure_job_initialized` only calls
+        `update_modified()`, which merely stamps `modified_at` (see `merge_card.persist`,
+        which documents the same trap). A plain `save_project()` is gated on
+        `force or state.is_dirty` (`StateService.save_project`), so before this the delete
+        lived in memory only: the job vanished from the roster and came straight back on
+        the next server restart, because `project_params.json` had never been rewritten.
+        An ADD survived that only by accident — editing any parameter afterwards marks the
+        state dirty and writes the whole thing out, the new job included.
+
+        The state is resolved by EXPLICIT path when we have one, not `current_project_state()`:
+        the save targets `ui_mgr.project_path`, and deleting out of one state while saving
+        another is exactly how a deletion goes missing.
+        """
         if self.ui_mgr.is_running:
             return
         if not self.ui_mgr.remove_instance(instance_id):
@@ -419,14 +437,27 @@ class PipelineBuilderPanel:
         self._cleanup_stale_overrides_for_instance(instance_id)
         self._job_content_containers.pop(instance_id, None)
 
-        state = current_project_state()
+        project_path = self.ui_mgr.project_path
+        if project_path is not None:
+            from services.project_state import get_project_state_for
+
+            state = get_project_state_for(project_path)
+        else:
+            state = current_project_state()
+
         job_model = state.jobs.get(instance_id)
         if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
             del state.jobs[instance_id]
             state.job_path_mapping.pop(instance_id, None)
+            # Persisted run membership must not keep naming a job that no longer exists.
+            # Load filters it out (`project_state.py` builds pipeline_order from the ids
+            # still in `jobs`), so this is belt-and-braces — but it keeps the file honest
+            # between the delete and the next load.
+            state.pipeline_order = [iid for iid in state.pipeline_order if iid != instance_id]
+        state.mark_dirty()
 
         if self.ui_mgr.is_project_created:
-            asyncio.create_task(self.backend.save_project(self.ui_mgr.project_path))
+            asyncio.create_task(self.backend.save_project(project_path, force=True))
         self.rebuild_pipeline_ui()
 
     def _ensure_prerequisites(self, job_type: JobType, state):
