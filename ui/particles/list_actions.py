@@ -16,10 +16,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from contextlib import nullcontext
 from pathlib import Path
 
-from nicegui import context, ui
+from nicegui import ui
 
 from services.aggregation.authoritative import extraction_params_for_species
 from services.background_tasks import get_background_task_registry
@@ -33,6 +32,7 @@ from services.visualization.tomo_geometry import geometry_for_ts
 from ui.background_task import BackgroundTask
 from ui.components.buttons import house_button
 from ui.components.fields import house_number, house_select, house_text
+from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight
 from ui.curation_session_dialog import open_curation_control_center
 
@@ -61,20 +61,6 @@ _LIVE_JOB_STATUSES = (JobStatus.SCHEDULED, JobStatus.QUEUED, JobStatus.RUNNING)
 
 def _no_backend() -> None:
     ui.notify("Backend unavailable.", type="negative")
-
-
-def dialog_host():
-    """The slot a dialog must be parented at: the page LAYOUT slot, never the element that
-    opened it. NiceGUI runs an event handler "within the context of the parent slot of the
-    sender" (``events.handle_event``), and both callers put these buttons inside containers
-    a refresh clears — the Journey's rail rebuild, the Species page's rev-gated Picks table
-    — so a dialog parented there dies mid-interaction ("parent element ... has been
-    deleted"). ``nullcontext`` when there is no client layout (a background task, a
-    non-page context): the caller's current slot is then the only option."""
-    try:
-        return context.client.layout.default_slot
-    except (RuntimeError, AttributeError):
-        return nullcontext()
 
 
 # ── Extraction ────────────────────────────────────────────────────────────────
@@ -579,12 +565,9 @@ def open_dedup_dialog(backend, ref: ListRef, *, default_radius_ang: float, on_do
 
         with ui.row().classes("w-full justify-end gap-2"):
             house_button("Cancel", dialog.close)
-            dedup_btn = (
-                house_button("Deduplicate", _do_dedup, kind="accent")
-                .tooltip(
-                    "Remove every pick within the radius of a higher-priority pick (manual kept over auto). "
-                    "Rewrites this merged list — re-extract after."
-                )
+            dedup_btn = house_button("Deduplicate", _do_dedup, kind="accent").tooltip(
+                "Remove every pick within the radius of a higher-priority pick (manual kept over auto). "
+                "Rewrites this merged list — re-extract after."
             )
         radius_in.on_value_change(_recompute)
         asyncio.create_task(_recompute())
@@ -706,10 +689,7 @@ def import_picks_from_path(
         if tomo_options:
             names = list(tomo_options)
             tomo_sel = house_select(
-                "Tomogram",
-                names,
-                value=ref.tomo_name if ref.tomo_name in tomo_options else names[0],
-                width="w-64",
+                "Tomogram", names, value=ref.tomo_name if ref.tomo_name in tomo_options else names[0], width="w-64"
             )
             tomo_sel.props("options-dense")
             target["ref"] = tomo_options[tomo_sel.value]

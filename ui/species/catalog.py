@@ -22,7 +22,7 @@ from services.particles import catalog
 from services.project_state import get_project_state_for
 from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
-from ui.particles.list_actions import dialog_host
+from ui.components.dialogs import dialog_host
 
 logger = logging.getLogger(__name__)
 
