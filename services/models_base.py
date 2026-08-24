@@ -173,7 +173,7 @@ def resolve_species(state, job_model, instance_id: str | None = None):
 
     Returns (species or None, species_id or None). THE canonical chain —
     formerly triplicated across dashboard_data / template_metadata /
-    aggregation.authoritative."""
+    aggregation.extraction."""
     if instance_id:
         sid = split_species_id(instance_id)
         if sid:

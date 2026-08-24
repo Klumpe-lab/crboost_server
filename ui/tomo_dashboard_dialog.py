@@ -261,13 +261,6 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
                 if pl.tomo_name == ts
             )
         )
-        # The rail's authoritative ◉ became display-only in 11-S3, so nothing repaints it
-        # in place any more — it HAS to move this fingerprint, or setting it on the
-        # Species page leaves the Journey lighting the old row, which is the exact drift
-        # the manage/look split exists to prevent. (It was excluded while the Journey
-        # owned the click, to keep a radio click from tearing the pane down.) In-memory
-        # dict lookups per species — no disk.
-        auth_sig = tuple(sorted((s.id, state.get_authoritative_slug(s.id, ts)) for s in state.species_registry))
         return (
             ts,
             journey_signature(journey, species_journey, [ts]),
@@ -277,7 +270,6 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             # A fresh species with no rows yet must still surface as a species tab.
             state.species_identity(),
             pick_lists_sig,
-            auth_sig,
         )
 
     def render_main(force: bool = False, *, journey_data=None, species_data=None) -> None:
