@@ -1506,8 +1506,9 @@ class RosterWidget(FingerprintedView):
         return container
 
     def _build_aggregation_merge_btn(self):
-        """PARTICLES-header utility: open the Aggregate-candidates dialog. Shows a small green dot
-        when a merged optimisation_set already exists, so you can see at a glance whether
+        """PARTICLES-header utility: open the Aggregate dialog on the coordinate grade (its
+        header switch reaches the extracted grade). Shows a small green dot when a merged
+        optimisation_set already exists, so you can see at a glance whether
         the merge has been done.
 
         Was a sidebar button gated on `state.is_aggregation` (de-novo S6 deleted that flag):
@@ -1534,8 +1535,8 @@ class RosterWidget(FingerprintedView):
             )
             .on("click", lambda: open_aggregate_dialog(project_path))
             .tooltip(
-                "Aggregate candidates — unite one species' picks across lists, tomograms and projects"
-                + (" (aggregated)" if merged else "")
+                "Aggregate — unite one species' picks across lists, tomograms and projects; "
+                "coordinates or extracted particles" + (" (aggregated)" if merged else "")
             )
         )
         with container:
