@@ -327,10 +327,11 @@ _CB_CSS = """
 }
 .cb-ltable-row {
     display: grid;
-    /* swatch · name · picks · auth · ext · path · eye. The Journey's merge-tick column went
-     * with 11-S3; the Picks & curation table re-orders these and adds source / origin /
-     * job / actions through .cb-ptable-row's own template below. */
-    grid-template-columns: 14px minmax(0, 1fr) 48px 30px 26px 22px 20px;
+    /* swatch · name · picks · ext · path · eye. The Journey's merge-tick column went with
+     * 11-S3 and the authoritative radio with the concept itself; the Picks & curation table
+     * re-orders these and adds source / origin / job / actions through .cb-ptable-row's own
+     * template below. */
+    grid-template-columns: 14px minmax(0, 1fr) 48px 26px 22px 20px;
     align-items: center; gap: 8px;
     padding: 3px 7px; border-radius: 5px; cursor: pointer;
     border: 1px solid transparent; transition: background 0.12s, border-color 0.12s;
@@ -358,15 +359,6 @@ _CB_CSS = """
     font-size: 11px; font-family: ui-monospace, monospace; color: #334155; justify-self: end;
 }
 .cb-ltable-badge { font-size: 12px; font-weight: 700; cursor: help; line-height: 1; }
-/* Authoritative-list radio (one per species,tomo): indigo when set, slate when not.
- * Clickable on the Species page's Picks tab, which OWNS the choice; `.cb-auth-static`
- * is the Journey's read-only copy (11-S3), so it must not offer a pointer or a hover. */
-.cb-auth { cursor: pointer; transition: color 0.12s; }
-.cb-auth-on { color: #6366f1; }
-.cb-auth-off { color: #cbd5e1; }
-.cb-auth-off:hover { color: #94a3b8; }
-.cb-auth-static { cursor: help; }
-.cb-auth-static.cb-auth-off:hover { color: #cbd5e1; }
 /* Vertical toolbox beside the table — since 09-S2 the Journey neither starts nor swaps an
  * ArtiaX session, so this holds the `curate ↗` ROUTE to the Particles registry's Picks &
  * curation tab. Kept OUT of the row so the list table stays clean. */
@@ -393,15 +385,28 @@ _CB_CSS = """
 .cb-ptable-job, .cb-ptable-job .cb-ltable-badge { cursor: pointer; }
 /* Species page · Picks & curation (roadmap 11-S2, merged surface 09-S1): the rail table's
  * chrome (.cb-ltable*), one grid per row: swatch · name · source · origin · kept/total ·
- * auth · ext · job · actions (`job` = the live per-list extraction instance, roadmap 07-S4;
+ * ext · job · actions (`job` = the live per-list extraction instance, roadmap 07-S4;
  * `origin` = the template+mask the picks came out of, 09-S4). The merge tick went with
  * 09-S3 — creating a merge is the Aggregate-candidates flow's job, not this surface's.
- * Rows are not selectable here (no detail pane), so no pointer cursor / selected state. */
+ * Rows are not selectable here (no detail pane), so no pointer cursor / selected state.
+ *
+ * Every track is fixed or `fr`, and the last one is fixed rather than `auto`: one table is
+ * rendered PER TOMOGRAM GROUP, and a content-sized track (`minmax(a,b)` / `auto`) lets each
+ * group settle on its own column widths — which is exactly the staggering between groups.
+ * `fr` depends only on the container width, which every group shares, so the columns line
+ * up across groups and the row always spans the full line. */
+/* The table CLAIMS THE LINE. `.cb-ltable`'s `flex: 1 1 auto` only sizes it inside the pick
+ * viewer's ROW (.cb-list-top); here it is a direct child of a ui.column, and NiceGUI's
+ * .nicegui-column sets `align-items: flex-start` — so without an explicit width the box
+ * shrinks to fit, the `fr` tracks resolve against max-content, and every tomogram group ends
+ * at its own x. That is the staggering; the grid template below cannot fix it alone. */
+.cb-ptable { width: 100%; }
 .cb-ptable-row {
-    grid-template-columns:
-        14px minmax(0, 1fr) minmax(48px, 72px) minmax(70px, 150px) 56px 18px 26px 24px auto;
+    grid-template-columns: 14px minmax(0, 2fr) 72px minmax(0, 1.4fr) 56px 26px 24px 96px;
     cursor: default;
 }
+/* Actions hug the right edge, so a row visibly ends AT the end of the line. */
+.cb-ptable-actions { justify-self: end; }
 .cb-ptable-group {
     display: flex; align-items: center; gap: 8px; width: 100%;
     padding: 4px 6px 2px; margin-top: 4px;
@@ -1225,6 +1230,15 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* ── Curation-session indicator (bottom of the primary sidebar) ─────────────── */
+/* Dim by default; when a ChimeraX + ArtiaX session of this user is up it goes green and
+ * breathes. The pulse is a CSS animation, never a server tick (CLAUDE.md), and it is
+ * deliberately shallow — a rail icon that flashes is noise, one that breathes is status. */
+@keyframes cb-artiax-breathe {
+    0%, 100% { opacity: 0.62; }
+    50%      { opacity: 1; }
+}
+.cb-artiax-live { animation: cb-artiax-breathe 2.6s ease-in-out infinite; }
 """
 
 
