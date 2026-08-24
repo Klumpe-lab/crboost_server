@@ -85,6 +85,7 @@ def build_workspace_page(backend: CryoBoostBackend):
             "pipeline": _refs.get("pipeline_container"),
             "workbench": _refs.get("workbench_container"),
             "journey": _refs.get("journey_container"),
+            "gallery": _refs.get("gallery_container"),
             "viewer": _refs.get("viewer_container"),
         }
         # If already on this mode, toggle back to pipeline.
@@ -125,6 +126,11 @@ def build_workspace_page(backend: CryoBoostBackend):
         page = _refs.get("viewer_page")
         if page is not None:
             page.set_active(_mode["current"] == "viewer")
+
+        # And the gallery's pending-preview poll.
+        gallery = _refs.get("gallery_page")
+        if gallery is not None:
+            gallery.set_active(_mode["current"] == "gallery")
 
     def _toggle_workbench():
         _switch_to("workbench")
@@ -177,6 +183,31 @@ def build_workspace_page(backend: CryoBoostBackend):
 
             build_journey_panel(jc, callbacks)
 
+    _gallery_flight = SingleFlight()
+
+    async def _show_gallery():
+        """The Tomograms icon: the birds-eye wall of reconstructions. Built lazily on
+        first use like the journey (its first pass stats every tomogram's previews),
+        and toggles back to the pipeline on a second click of the same icon."""
+        async with _gallery_flight("toggle") as acquired:
+            if not acquired:
+                return
+            _switch_to("gallery")
+            if _mode["current"] != "gallery":
+                return
+            gc = _refs.get("gallery_container")
+            if gc is None:
+                return
+            page = _refs.get("gallery_page")
+            if page is None:
+                from ui.tomo_gallery import TomoGalleryPage
+
+                with gc:
+                    page = TomoGalleryPage(gc, ui_mgr.project_path, callbacks)
+                _refs["gallery_page"] = page
+                page.set_active(True)
+            await page.show()
+
     _viewer_flight = SingleFlight()
 
     async def _open_pick_viewer(species_id: str | None, tomo_name: str | None) -> None:
@@ -205,6 +236,7 @@ def build_workspace_page(backend: CryoBoostBackend):
     callbacks["open_species"] = _open_species
     callbacks["ensure_pipeline_mode"] = ensure_pipeline_mode
     callbacks["toggle_journey"] = _show_journey
+    callbacks["toggle_gallery"] = _show_gallery
     callbacks["open_pick_viewer"] = _open_pick_viewer
 
     with ui.element("div").style(
@@ -252,6 +284,7 @@ def build_workspace_page(backend: CryoBoostBackend):
                     toggle_workbench=_toggle_workbench,
                     ensure_pipeline_mode=ensure_pipeline_mode,
                     toggle_journey=_show_journey,
+                    toggle_gallery=_show_gallery,
                 )
 
             workbench_container = ui.element("div").style(
@@ -268,6 +301,13 @@ def build_workspace_page(backend: CryoBoostBackend):
             )
             _refs["journey_container"] = journey_container
 
+            # Tomogram gallery: the birds-eye wall of reconstructions. Lazily built
+            # like the journey — its first pass stats every tomogram's previews.
+            gallery_container = ui.element("div").style(
+                "width: 100%; height: 100%; display: none; flex-direction: column;"
+            )
+            _refs["gallery_container"] = gallery_container
+
             # Pick viewer (picking-UI 11-S5): the full-page mount of the slabs + lists +
             # gallery component, opened from a tomogram row of the Particles registry's
             # Picks & curation tab. Lazily built on first use, like the journey; it has
@@ -281,9 +321,7 @@ def build_workspace_page(backend: CryoBoostBackend):
     # renders/builds remain visible across dialog open/close and view
     # toggles. Survives the entire workspace session; teardown happens
     # when the page rebuilds.
-    mount_background_task_tray(
-        project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None
-    )
+    mount_background_task_tray(project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None)
 
     # Wire the roster resizer once the DOM for this page exists on the client.
     ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS), once=True)
