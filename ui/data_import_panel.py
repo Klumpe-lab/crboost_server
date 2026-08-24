@@ -45,6 +45,11 @@ CLR_SUCCESS = "#0d9488"  # teal-600: academic, not shouty green
 CLR_ERROR = "#be4343"  # muted red, not aggressive
 CLR_RUNNING = "#3b82f6"  # blue-500: active pipeline badge
 
+# Shown on both raw-data fields while they are BOTH empty — the data-less project
+# (tomograms / picks imported into the workspace later). Empty globs are the only
+# way to ask for one, so they must not read as a validation failure.
+_DATALESS_HINT = "empty — project without raw data"
+
 # Shared palette with pipeline_roster avatars — keeps per-project/per-user
 # color identity consistent across the app.
 _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
@@ -157,9 +162,17 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         quick_ok, quick_msg = _validate_glob_quick(pattern)
         if not quick_ok:
             ui_mgr.update_data_import(movies_valid=False)
-            _set_hint(ui_mgr.panel_refs.movies_hint_label, quick_msg, CLR_ERROR)
+            # Empty on BOTH globs is the data-less request, not a mistake — say so in
+            # the neutral voice and clear the field error, or the one legitimate way to
+            # create a project without raw data reads as a broken form.
+            neutral = is_dataless()
+            _set_hint(
+                ui_mgr.panel_refs.movies_hint_label,
+                _DATALESS_HINT if neutral else quick_msg,
+                CLR_SUBLABEL if neutral else CLR_ERROR,
+            )
             if ui_mgr.panel_refs.movies_input:
-                update_input_validation(ui_mgr.panel_refs.movies_input, False, quick_msg)
+                update_input_validation(ui_mgr.panel_refs.movies_input, neutral, quick_msg)
             update_create_button_state()
             return
 
@@ -192,9 +205,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         quick_ok, quick_msg = _validate_glob_quick(pattern)
         if not quick_ok:
             ui_mgr.update_data_import(mdocs_valid=False)
-            _set_hint(ui_mgr.panel_refs.mdocs_hint_label, quick_msg, CLR_ERROR)
+            neutral = is_dataless()  # see update_movies_validation
+            _set_hint(
+                ui_mgr.panel_refs.mdocs_hint_label,
+                _DATALESS_HINT if neutral else quick_msg,
+                CLR_SUBLABEL if neutral else CLR_ERROR,
+            )
             if ui_mgr.panel_refs.mdocs_input:
-                update_input_validation(ui_mgr.panel_refs.mdocs_input, False, quick_msg)
+                update_input_validation(ui_mgr.panel_refs.mdocs_input, neutral, quick_msg)
             update_create_button_state()
             return
 
@@ -596,10 +614,17 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         update_movies_validation()
         prefs_service.update_fields(movies_glob=glob_str)
         debounced_save()
-        # When mdocs are co-located, auto-derive mdocs_glob from the same directory
-        if not local_refs["mdocs_separate"] and glob_str:
-            parent = str(Path(glob_str).parent) if "*" in glob_str else glob_str
-            derived_mdocs = str(Path(parent) / local_refs["default_mdocs_ext"])
+        # When mdocs are co-located, mdocs_glob is DERIVED from this directory — so it
+        # has to follow the field all the way down to empty. Deriving only on a
+        # non-empty value stranded the last derived pattern in state, and the mdocs
+        # input is hidden in co-located mode, so clearing the frames path could never
+        # reach is_dataless() and "Create" stayed disabled on "Missing: Data Path".
+        if not local_refs["mdocs_separate"]:
+            if glob_str:
+                parent = str(Path(glob_str).parent) if "*" in glob_str else glob_str
+                derived_mdocs = str(Path(parent) / local_refs["default_mdocs_ext"])
+            else:
+                derived_mdocs = ""
             ui_mgr.update_data_import(mdocs_glob=derived_mdocs)
             prefs_service.update_fields(mdocs_glob=derived_mdocs)
             if ui_mgr.panel_refs.mdocs_input:
@@ -611,6 +636,25 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         update_mdocs_validation()
         prefs_service.update_fields(mdocs_glob=glob_str)
         debounced_save()
+
+    def clear_raw_data():
+        """Empty both raw-data globs in one click — the data-less project.
+
+        Discoverability, not new mechanics: creation has always been glob-gated, but
+        the fields are pre-filled from prefs/config on every load, so asking for a
+        project with no raw data meant knowing to blank a field whose partner is
+        hidden. See is_dataless()."""
+        if ui_mgr.panel_refs.movies_input:
+            ui_mgr.panel_refs.movies_input.set_from_glob("")  # cascades to mdocs when co-located
+        if local_refs["mdocs_separate"] and ui_mgr.panel_refs.mdocs_input:
+            ui_mgr.panel_refs.mdocs_input.set_from_glob("")
+        ui_mgr.update_data_import(movies_glob="", mdocs_glob="")
+        update_movies_validation()
+        update_mdocs_validation()
+        container = local_refs.get("dataset_overview_container")
+        if container:
+            container.clear()
+        local_refs["current_dataset_overview"] = None
 
     # =========================================================================
     # ACTION HANDLERS
@@ -1282,6 +1326,19 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                             ui.button(icon="folder", on_click=pick_gain_path).props("flat dense round size=xs").classes(
                                 "text-slate-400 hover:text-slate-600"
                             )
+
+                    # The data-less project, stated where the raw-data fields are (the
+                    # only place the question comes up). Action sits WITH its hint.
+                    with ui.row().classes("w-full items-center gap-2").style("margin-top: 4px;"):
+                        house_button(
+                            "No raw data",
+                            clear_raw_data,
+                            tooltip="Clear both patterns and create the project empty — "
+                            "import reconstructed tomograms or pick coordinates from the workspace afterwards.",
+                        )
+                        ui.label("start empty, import tomograms or picks later").style(
+                            f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
+                        )
 
                 # Dataset overview (populated when mdocs are validated). Lives
                 # inside raw_data_section so the aggregation toggle hides it too.
