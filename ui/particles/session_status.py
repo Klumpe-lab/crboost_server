@@ -4,12 +4,18 @@
 polled per surface: one process-wide cached flag is refreshed at most every `POLL_S`, and
 every caller reads the cache. Callers `poll()` on whatever cadence suits them — the throttle
 here decides when a `squeue` actually happens, so adding a second observer costs nothing.
-Since picking-UI 09-S2 there is one observer, the Particles registry's Picks & curation tab:
-the Journey no longer starts or swaps a session, so it neither shows liveness nor pays for it.
+Two observers: the Particles registry's Picks & curation tab, and the always-present
+control-session icon at the bottom of the primary sidebar. Both read this one cache, so the
+second costs no extra `squeue`.
 
 Three states, not two. A `squeue` that RAISES must not read as "no session running" — that
 would tell the user to start a second ChimeraX while one is up. It reports `unknown` and
 the surfaces say so (never-fail-silently).
+
+The poll also caches the live session's declared SCOPE (its `scope.json`: species + tomogram
+it was launched on), because the sidebar icon's whole job in the active state is to answer
+"what is being picked right now" on hover. Empty for `off`/`unknown`, and empty as well for a
+session launched before scopes were recorded — stated as unknown, never guessed at.
 """
 
 from __future__ import annotations
@@ -25,13 +31,28 @@ LIVE = "live"
 OFF = "off"
 UNKNOWN = "unknown"  # never polled yet, or the last poll raised
 
-_state: dict = {"status": UNKNOWN, "at": 0.0, "error": ""}
+_state: dict = {"status": UNKNOWN, "at": 0.0, "error": "", "scope": {}}
 _polling = False  # module-level re-entry guard (SingleFlight needs an owning object)
 
 
 def status() -> str:
     """`live` | `off` | `unknown` — the cached answer, no I/O. Safe in a signature()."""
     return _state["status"]
+
+
+def scope() -> dict:
+    """The live session's declared scope (`species_id`, `species_label`, `tomo_name`,
+    `project_path`, `curation_dir`), or `{}` when nothing is running / the session recorded
+    none. No I/O — safe in a signature()."""
+    return _state["scope"]
+
+
+def scope_text() -> str:
+    """'<species> · <tomogram>' for the live session, "" when there is no scope to name."""
+    sc = _state["scope"]
+    species = str(sc.get("species_label") or sc.get("species_id") or "")
+    tomo = str(sc.get("tomo_name") or "")
+    return " · ".join(p for p in (species, tomo) if p)
 
 
 def is_live() -> bool:
@@ -61,14 +82,16 @@ async def poll(backend, *, force: bool = False) -> str:
         return _state["status"]
     _polling = True
     try:
-        live = bool(await backend.find_active_curation_session_any())
-        _state["status"] = LIVE if live else OFF
+        info = await backend.find_active_curation_session_any()
+        _state["status"] = LIVE if info else OFF
+        _state["scope"] = dict((info or {}).get("scope") or {})
         _state["error"] = ""
     except Exception as e:
         # Reported, not swallowed, and NOT downgraded to "off": the surfaces show
         # `unknown` with this text rather than inviting a duplicate ChimeraX launch.
         logger.exception("Curation-session poll failed")
         _state["status"] = UNKNOWN
+        _state["scope"] = {}
         _state["error"] = f"{type(e).__name__}: {e}"
     finally:
         _state["at"] = time.monotonic()

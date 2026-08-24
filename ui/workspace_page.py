@@ -14,7 +14,7 @@ from ui.ui_state import get_ui_state_manager
 # Client-side resize for the job-roster panel: drag the divider, clamp to a
 # sane range, and persist the width in localStorage so it survives reloads. A
 # MutationObserver mirrors the roster's display onto the handle so the divider
-# hides with the roster in journey mode. Idempotent (guarded by data-wired).
+# hides with the roster outside the pipeline view. Idempotent (guarded by data-wired).
 _ROSTER_RESIZER_JS = """
 (function(){
   const roster = document.getElementById('cb-roster-panel');
@@ -77,10 +77,10 @@ def build_workspace_page(backend: CryoBoostBackend):
 
     def _switch_to(mode_name: str):
         """Swap the visible view in main_area: pipeline / workbench / journey / viewer.
-        Each is a sibling container toggled via CSS display. Journey and the pick viewer
-        also hide the 340px job roster for full width and pause their refresh timers
-        when not visible (handled by the roster's set_active_mode and the
-        journey panel's on_journey_active / the viewer page's set_active)."""
+        Each is a sibling container toggled via CSS display. EVERY view but the pipeline
+        hides the 340px job roster (the roster is the pipeline view's own navigation —
+        see the roster's set_active_mode) and pauses its refresh timers when not visible
+        (the journey panel's on_journey_active / the viewer page's set_active)."""
         containers = {
             "pipeline": _refs.get("pipeline_container"),
             "workbench": _refs.get("workbench_container"),

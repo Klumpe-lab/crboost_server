@@ -12,6 +12,8 @@ from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView
 from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
+from ui.curation_session_dialog import open_curation_control_center
+from ui.particles import session_status
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -33,6 +35,11 @@ if TYPE_CHECKING:
     from ui.pipeline_builder.pipeline_builder_panel import PipelineBuilderPanel
 
 logger = logging.getLogger(__name__)
+
+# Rail curation-session indicator: how often it ASKS `session_status`. That module keeps its
+# own ~16 s throttle on the actual `squeue`, so a tick inside the window is a dict read —
+# this cadence only decides how fast the icon reacts once the answer changes.
+_CURATION_TICK_S = 6.0
 
 
 def _ts_cell(text: str, color: str, extra: str = ""):
@@ -154,6 +161,9 @@ class RosterWidget(FingerprintedView):
         # Drives the nav-icon highlight; set by workspace _switch_to via
         # set_active_mode. Starts "pipeline" (the default view at load).
         self._active_mode: str = "pipeline"
+        # Last (status, scope, error) painted onto the rail's curation-session indicator, so
+        # its timer only touches the DOM when the session state actually moved.
+        self._curation_paint: tuple[str, str, str] | None = None
         self._refs: dict = {}
         # Per-instance expansion state for per-TS sub-rows, persisted across
         # roster refreshes (status_poller refreshes the roster every few seconds
@@ -800,6 +810,12 @@ class RosterWidget(FingerprintedView):
         self.refresh()
 
     def _update_pipeline_btn_style(self):
+        """Repaint the layers icon for the current roster visibility.
+
+        Updates the icon element IN PLACE. It used to `container.clear()` + rebuild, which
+        also destroyed the Quasar tooltip parented to the container — so the Pipeline button
+        silently lost its hover text after the first mode switch.
+        """
         container = self._refs.get("pipeline_btn")
         if container is None:
             return
@@ -811,26 +827,29 @@ class RosterWidget(FingerprintedView):
             f"display: flex; align-items: center; justify-content: center; "
             f"cursor: pointer; flex-shrink: 0;"
         )
-        svg = self._load_svg("layers.svg").replace("currentColor", color)
-        container.clear()
-        with container:
-            ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
+        icon = self._refs.get("pipeline_btn_icon")
+        if icon is not None:
+            icon.content = self._load_svg("layers.svg").replace("currentColor", color)
 
     def set_active_mode(self, mode: str):
-        """Highlight the nav icon for the active view (exactly one lit) and hide
-        the 300px job roster while the journey is up — restoring the user's prior
-        visibility on the way out. Driven by the workspace's _switch_to."""
+        """Highlight the nav icon for the active view (exactly one lit) and hide the job
+        roster everywhere except the pipeline view. Driven by the workspace's _switch_to.
+
+        The roster is the pipeline view's OWN navigation, so it goes away with that view
+        rather than half-following it: Particles / Journey / Tomograms / the pick viewer
+        each get the full width, and collapse-expand is what it always was — a choice about
+        how much room the open job page gets, only meaningful while one is open. Anything
+        else is a second, invisible state variable ("am I on Particles WITH the roster?")
+        that nothing on screen explains.
+        """
         self._active_mode = mode
         if self.panel.roster_panel is not None:
-            # The journey, the gallery wall and the full-page pick viewer all want the
-            # whole width.
-            if mode in ("journey", "gallery", "viewer"):
+            if mode != "pipeline":
                 self.panel.roster_panel.style("display: none;")
             else:
                 self.panel.roster_panel.style(f"display: {'flex' if self._roster_visible else 'none'};")
         # Pipeline icon keeps its roster-aware styling when it's the active view;
-        # otherwise it dims. Workbench/journey are a plain background highlight
-        # (no clear()+rebuild, so the journey "previews rendered" dot survives).
+        # otherwise it dims. The other views are a plain background highlight.
         if mode == "pipeline":
             self._update_pipeline_btn_style()
         else:
@@ -883,12 +902,22 @@ class RosterWidget(FingerprintedView):
             self._sb_sep()
             ui.element("div").style("height: 4px;")
 
-            self._sb_svg_btn("layers.svg", "Pipeline", self._on_pipeline_icon, ref_key="pipeline_btn", active=True)
+            self._sb_svg_btn(
+                "layers.svg",
+                "Jobs — the pipeline roster. Click it while you are already here to collapse the "
+                "roster and give an open job page the full width.",
+                self._on_pipeline_icon,
+                ref_key="pipeline_btn",
+                active=True,
+            )
 
             if panel.toggle_workbench is not None:
                 ui.element("div").style("height: 1px;")
                 wb_btn = self._sb_svg_btn(
-                    "particle.svg", "Particles registry", panel.toggle_workbench, ref_key="wb_btn"
+                    "particle.svg",
+                    "Particles registry — species, templates, picks & curation",
+                    panel.toggle_workbench,
+                    ref_key="wb_btn",
                 )
                 panel.callbacks["wb_btn"] = wb_btn
 
@@ -898,7 +927,12 @@ class RosterWidget(FingerprintedView):
             # the wall answers "how do they all look".
             if panel.toggle_gallery is not None:
                 ui.element("div").style("height: 1px;")
-                self._sb_svg_btn("tomo_preview.svg", "Tomograms", self._open_gallery, ref_key="gallery_btn")
+                self._sb_svg_btn(
+                    "tomo_preview.svg",
+                    "Tomograms — the wall of reconstructions, all of them at once",
+                    self._open_gallery,
+                    ref_key="gallery_btn",
+                )
 
             # Journey — unified per-TS inspection surface that replaces the old
             # "Tilt Series Journey" matrix and standalone "Candidate Previews"
@@ -920,6 +954,11 @@ class RosterWidget(FingerprintedView):
             self._sb_svg_btn("cross.svg", "Close project", lambda: ui.navigate.to("/"))
 
             ui.element("div").style("flex: 1;")
+
+            # Pinned to the FOOT of the rail: the curation-session indicator is not a place
+            # to navigate to, it is the answer to "is ArtiaX up, and on what". Keeping it out
+            # of the view stack above says so without a separator.
+            self._build_curation_session_btn()
             ui.element("div").style("height: 6px;")
 
         self.rebuild_run_slot()
@@ -1578,37 +1617,113 @@ class RosterWidget(FingerprintedView):
         when the project has no array-job data yet, so this is a stable
         anchor in the sidebar instead of a button that pops in and out as
         jobs run.
+
+        It used to carry a green dot whenever ANY preview had ever been rendered. That is
+        true for the whole life of a project after the first reconstruction, so it read as a
+        permanent "something is new" badge pointing at nothing in particular — removed.
         """
-        from services.dashboard_data import has_any_previews_rendered
+        return self._sb_svg_btn(
+            _TOMO_DASHBOARD_SVG,
+            "Journey — one tilt-series end to end: motion, CTF, alignment, reconstruction, picks",
+            self._open_journey,
+            ref_key="dashboard_btn",
+        )
 
-        rendered = has_any_previews_rendered(current_project_state())
-        svg = self._load_svg(_TOMO_DASHBOARD_SVG).replace("currentColor", SB_MUTE)
+    # A ChimeraX + ArtiaX launcher used to sit here. It went with picking-UI roadmap 09-S2:
+    # a session is always started ON a tomogram, from the Particles registry's
+    # "Picks & curation" tab ('curate' on a tomogram group), so the app has exactly one
+    # launch affordance. What sits at the bottom of the rail now is an INDICATOR of that
+    # session (_build_curation_session_btn) whose click opens the control center — it never
+    # launches, so there is still exactly one launch affordance.
 
+    def _build_curation_session_btn(self):
+        """Bottom-of-rail ChimeraX + ArtiaX control-session indicator.
+
+        Ever-present like the other rail entries, and dim while nothing is running. When a
+        session of this user IS up it turns green and breathes (CSS keyframes — see
+        `.cb-artiax-live`), and its hover says WHICH species and tomogram that session was
+        launched on, read from the session's own recorded scope. Clicking always opens the
+        control center: connect details while one is up, and the start panel otherwise.
+
+        `unknown` (a `squeue` that raised) is its own amber state — never painted as "no
+        session", which is the reading that gets a user to start a second ChimeraX.
+        """
         container = (
             ui.element("div")
             .style(
                 "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
                 "background: transparent; "
                 "display: flex; align-items: center; justify-content: center; "
-                "cursor: pointer; flex-shrink: 0; position: relative;"
+                "cursor: pointer; flex-shrink: 0;"
             )
-            .on("click", self._open_journey)
-            .tooltip("Journey" + (" · previews rendered" if rendered else ""))
+            .on("click", self._open_control_center)
         )
         with container:
-            ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
-            if rendered:
-                ui.element("div").style(
-                    "position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; "
-                    "border-radius: 50%; background: #16a34a; pointer-events: none;"
-                )
-        self._refs["dashboard_btn"] = container
+            icon = ui.icon("view_in_ar", size="18px").style(f"color: {SB_MUTE}; pointer-events: none;")
+            tip = ui.tooltip("")
+        self._refs["curation_btn"] = container
+        self._refs["curation_icon"] = icon
+        self._refs["curation_tip"] = tip
+        self._paint_curation_session()
+        # The status itself is the shared, throttled session_status cache (one `squeue` per
+        # POLL_S across every observer), so this tick is nearly free and only repaints when
+        # the rendered state actually moved.
+        ui.timer(_CURATION_TICK_S, self._tick_curation_session)
         return container
 
-    # A ChimeraX + ArtiaX launcher used to sit here. It went with picking-UI roadmap 09-S2:
-    # a session is always started ON a tomogram, from the Particles registry's
-    # "Picks & curation" tab ('curate' on a tomogram group), so the app has exactly one
-    # launch affordance. The control center itself hangs off that tab's session chip.
+    async def _tick_curation_session(self):
+        await session_status.poll(self.panel.backend)
+        self._paint_curation_session()
+
+    def _paint_curation_session(self):
+        """Reflect the cached session state onto the rail icon. Gated on the (status, scope)
+        it last painted: this runs on a timer, and re-sending identical style/class strings
+        every tick is churn the client has to process for nothing.
+
+        Four states, not three. `unknown` splits by WHY: a `squeue` that raised is amber and
+        says so, while "not asked yet" (the first seconds after a page load) is just dim —
+        painting that one amber would cry wolf on every single load.
+        """
+        st = session_status.status()
+        scope = session_status.scope_text()
+        error = session_status.last_error()
+        if (st, scope, error) == self._curation_paint:
+            return
+        self._curation_paint = (st, scope, error)
+
+        icon = self._refs.get("curation_icon")
+        tip = self._refs.get("curation_tip")
+        if icon is None or tip is None:
+            return
+        if st == session_status.LIVE:
+            color, live = "#16a34a", True
+            text = (
+                f"Picking {scope or 'a scope this session did not record'} — ChimeraX + ArtiaX is up. "
+                "Click for the control center."
+            )
+        elif st == session_status.UNKNOWN and error:
+            color, live = "#d97706", False
+            text = f"Could not ask SLURM whether a curation session is running — {error}. Click for the control center."
+        elif st == session_status.UNKNOWN:
+            color, live = SB_MUTE, False
+            text = "Checking for a running curation session… Click for the control center."
+        else:
+            color, live = SB_MUTE, False
+            text = (
+                "No curation session. Start one with 'curate' on a tomogram in Picks & curation, "
+                "or click here for the control center."
+            )
+        icon.style(f"color: {color}; pointer-events: none;")
+        icon.classes(add="cb-artiax-live" if live else "", remove="" if live else "cb-artiax-live")
+        tip.set_text(text)
+
+    async def _open_control_center(self):
+        """The rail indicator's click. Opens the SAME control center the Picks & curation
+        session chip does — SingleFlight-guarded, since it owns a dialog."""
+        async with self.panel.flight("rail_control_center") as acquired:
+            if not acquired:
+                return
+            await open_curation_control_center(self.panel.backend, self.panel.ui_mgr.project_path)
 
     def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None):
         bg = SB_ABG if active else "transparent"
@@ -1628,9 +1743,12 @@ class RosterWidget(FingerprintedView):
             .tooltip(tooltip)
         )
         with container:
-            ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
+            icon = ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
         if ref_key:
             self._refs[ref_key] = container
+            # The icon separately, so a re-colour can set its markup in place instead of
+            # clearing the container — which would take the tooltip with it.
+            self._refs[f"{ref_key}_icon"] = icon
         return container
 
     def _info_popup_btn(self, icon_name: str, title: str, rows: list, icon_color: str | None = None):
