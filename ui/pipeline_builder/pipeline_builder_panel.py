@@ -383,7 +383,7 @@ class PipelineBuilderPanel:
         # active merge's synthetic `mergedSources` producer (source_overrides key) so the
         # user doesn't have to configure the override by hand. No-ops when there is no
         # active merged optset, which is every project that has never merged.
-        from services.aggregation.authoritative import apply_aggregation_overrides
+        from services.aggregation.extraction import apply_aggregation_overrides
 
         apply_aggregation_overrides(state)
 

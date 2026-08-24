@@ -31,7 +31,7 @@ from pathlib import Path
 from nicegui import ui, run
 
 from backend import get_backend
-from services.aggregation.authoritative import apply_aggregation_overrides
+from services.aggregation.extraction import apply_aggregation_overrides
 from services.project_state import (
     MERGED_DIR_NAME,
     AggregationMerge,
@@ -310,34 +310,43 @@ class _MergeDialog:
             self.refresh_footer()
 
     async def preflight_blockers(self) -> list[str]:
-        """The §8.3 gate over every selected source that lives in THIS project, as lines to
-        show before merging (docs/LIST_EXTRACTION_AND_AGGREGATION.md §8.9 steps 4-7).
+        """Selected sources of THIS project whose optimisation_set is BEHIND its pick list,
+        as lines to show before merging (docs/LIST_EXTRACTION_AND_AGGREGATION.md §8.9).
 
-        Merging consumes each source's optimisation_set as it stands on disk, so a species
-        whose authoritative list is un-extracted or stale contributes yesterday's particles —
-        or nothing — with no error anywhere. The gate is the one thing that knows that, and
-        it is cheap next to the merge. Sources from OTHER projects are not gated: this
-        project's state cannot answer for them, and inventing a verdict would be worse than
-        saying nothing."""
+        A merge consumes each source's optimisation_set exactly as it stands on disk. When
+        the list behind one has been re-picked or re-curated since it was cut, that source
+        contributes yesterday's particles — silently, with no error anywhere. This is the
+        one place that can notice, and it is cheap next to the merge itself.
+
+        Matched by PATH, not by species: a list that was never extracted has no optset and
+        therefore cannot be one of the sources, so warning about it would be crying wolf.
+        Sources from OTHER projects are not checked at all — this project's state cannot
+        answer for them, and inventing a verdict would be worse than saying nothing."""
         bk = get_backend()
         if bk is None:
             return []
         here = str(self.project_path.resolve())
-        species = sorted(
-            {
-                s.species_id
-                for s in (self.state.aggregation_sources or [])
-                if s.species_id and str(Path(s.project_path or "").resolve()) == here
-            }
-        )
+        mine = [
+            s
+            for s in (self.state.aggregation_sources or [])
+            if s.species_id and str(Path(s.project_path or "").resolve()) == here
+        ]
+        if not mine:
+            return []
+        stale: dict[str, dict] = {}
+        for sid in sorted({s.species_id for s in mine}):
+            for row in await bk.get_pending_extractions(self.project_path, sid):
+                if row["extracted_path"]:
+                    stale[str(Path(row["extracted_path"]))] = row
         lines: list[str] = []
-        for sid in species:
-            report = await bk.get_authoritative_gate_report(self.project_path, sid)
-            for h in report.get("pending") or []:
-                lines.append(f"{sid} · {h['tomo_name']} · {h['slug']}: {h['extraction_state']} — extract it first")
-            for h in report.get("blocked") or []:
-                reason = "; ".join(h.get("notes") or []) or "not extractable"
-                lines.append(f"{sid} · {h['tomo_name']} · {h['slug']}: BLOCKED — {reason}")
+        for s in mine:
+            row = stale.get(str(Path(s.optset_path or "")))
+            if row is None:
+                continue
+            lines.append(
+                f"{row['species_id']} · {row['tomo_name']} · {row['label']}: {row['extraction_state']} — "
+                "its picks changed since this optimisation_set was cut; re-extract it first"
+            )
         return lines
 
     async def run_merge(self) -> None:
@@ -397,10 +406,10 @@ async def _confirm_blockers(lines: list[str]) -> bool:
     a stale list is sometimes exactly what you meant to merge (comparing against an older
     extraction), and the roll-up gate is advisory by design."""
     with dialog_host(), ui.dialog() as confirm, ui.card().classes("w-[34rem] max-w-full gap-2"):
-        ui.label(f"{len(lines)} authoritative list(s) are not ready").classes("text-sm font-bold")
+        ui.label(f"{len(lines)} selected source(s) are out of date").classes("text-sm font-bold")
         ui.label(
-            "The merge reads each source's optimisation_set as it is on disk right now. These lists "
-            "would contribute their PREVIOUS extraction, or nothing at all — silently."
+            "The merge reads each source's optimisation_set as it is on disk right now. These would "
+            "contribute their PREVIOUS extraction, not the picks they have today — silently."
         ).classes("text-[11px] text-gray-600")
         for line in lines[:20]:
             ui.label(f"• {line}").classes("text-[10px] font-mono text-orange-700")

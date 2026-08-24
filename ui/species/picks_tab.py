@@ -9,13 +9,13 @@ Top to bottom:
 
 - **Status line** — session chip (click → the control center; its tooltip carries the
   WHERE-TO-SAVE contract, derived from the watcher's own cadence) · lists · picks · kept ·
-  gate, and `Extract all pending`.
+  extracted, and `Extract all pending`.
 - **One group per tomogram**, over the species' whole tomogram universe rather than only the
   ones that already hold picks: a tomogram with nothing on it is exactly where de-novo
   picking starts, and it is a legitimate `.coords` import target. Group actions are the ONE
   place each verb exists — `curate` (the single ArtiaX launch/scope affordance in the app,
   09-S2), import a `.coords`, copy the save dir, `journey ↗`.
-- **The list table** per group: swatch · list · source · origin · picks · auth · ext · job ·
+- **The list table** per group: swatch · list · source · origin · picks · ext · job ·
   actions. `origin` (09-S4) names the template + mask that produced the picks, resolved from
   the candidate-extract instance's recorded template-match input — never guessed.
 - **Watcher footer** — what the server did with this species' saves, plus every dir holding
@@ -43,6 +43,12 @@ here hard-blocks that action. This table is the only place either column is visi
 Aggregation is deliberately NOT here (09-S3): merged lists still render, and their dedup
 inspect still opens, but CREATING a merge moves to the Aggregate-candidates flow. The service
 and dialog layers (`list_actions.merge_lists` / `open_dedup_dialog`) are untouched.
+
+There is no `auth` column and no roll-up `gate` chip any more. Both served the
+authoritative-list model — one list per (species, tomogram) nominated as THE one downstream
+consumes — which is gone: what reaches a refinement is now whatever the user selects as a
+source in the Aggregate-candidates flow, chosen there, in front of the merge it feeds. So a
+list here is simply extracted or not, and `Extract all pending` cuts every list that isn't.
 """
 
 from __future__ import annotations
@@ -56,7 +62,7 @@ from typing import Any
 
 from nicegui import ui
 
-from services.aggregation.authoritative import extraction_params_for_species
+from services.aggregation.extraction import extraction_params_for_species
 from services.curation.watcher import FULL_SWEEP_EVERY, SETTLE_SEC, TICK_SEC
 from services.dashboard_data import glyph_for
 from services.models_base import JobStatus, ListExtractionState, PickListType
@@ -88,7 +94,6 @@ _LABEL_CLS = "text-[10px] font-bold text-gray-500 uppercase tracking-wider"
 _HINT_CLS = "text-[10px] text-gray-400"
 _LINK_CLS = "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
 
-_GATE_STATUS = {"READY": "ok", "PENDING": "warn", "BLOCKED": "error"}
 
 # What the save contract promises, derived from the watcher's own cadence: a full sweep of
 # Curation/*/*/ every FULL_SWEEP_EVERY ticks, plus the settle window that keeps a half-written
@@ -307,16 +312,19 @@ class _PicksView(FingerprintedView):
                 render_chip("lists", str(len(ov.rows)), tooltip="pick lists over every tomogram of this species")
                 render_chip("picks", str(ov.n_picks), tooltip="sum of every list's count")
                 render_chip("kept", str(ov.n_kept), tooltip="after committed keep/drop curation")
+                # Denominator = rows the `ext` column can actually speak for. The auto list of
+                # a species with no subtomo job reads "n/a" there, and counting it would put a
+                # ratio on screen that can never reach its own total.
+                extractable = sum(1 for r in ov.rows if r.extraction_state != NOT_APPLICABLE)
                 render_chip(
-                    "gate",
-                    ov.gate,
-                    status=_GATE_STATUS.get(ov.gate, "neutral"),
-                    tooltip="Authoritative-list roll-up: READY = nothing left to extract, PENDING = authoritative "
-                    "lists still to extract, BLOCKED = a choice cannot be extracted by extraction alone.",
+                    "extracted",
+                    f"{ov.n_extracted_lists}/{extractable}",
+                    status="ok" if extractable and ov.n_extracted_lists == extractable else "neutral",
+                    tooltip="lists whose subtomograms are cut and current with their picks — the `ext` column, summed",
                 )
             ui.space()
             house_button("Extract all pending", self._tab.extract_all_pending).tooltip(
-                "Subtomo-extract every authoritative list that is not extracted / stale — shows what it would "
+                "Subtomo-extract every list of this species that is not extracted / stale — shows what it would "
                 "submit before anything is sent"
             )
 
@@ -351,30 +359,12 @@ class _PicksView(FingerprintedView):
                     tooltip="user .coords files in this tomogram's curation dir — the watcher registers EACH as "
                     "its own pick list, named after the file",
                 )
-            if rows and not any(r.is_authoritative for r in rows):
-                # PER TOMOGRAM, not per species: `get_authoritative_slug` falls back to 'auto',
-                # and whether that resolves is a property of THIS group — a species with a
-                # candidate-extract job still has no auto row on a tomogram where the CE
-                # returned no picks, which is the same dead end as a de-novo species. A choice
-                # left dangling by a deleted list lands here too, which is right: in every one
-                # of those cases every row reads unchecked, the gate reads BLOCKED, and without
-                # this nothing says a decision is outstanding. Deliberately NOT pre-checked on
-                # the user's behalf, even with a single candidate list: the gate reads the
-                # STORED choice, so a checked-looking radio that persisted nothing would show
-                # "chosen" next to a BLOCKED roll-up.
-                ui.label("no authoritative list").classes("text-[10px] text-orange-700 font-medium").tooltip(
-                    "Nothing downstream consumes this tomogram until one list is marked authoritative — click a "
-                    "row's radio in the 'auth' column. The default is the auto candidate set, which does not "
-                    "exist here (no candidate-extract job, or it found nothing on this tomogram); a choice whose "
-                    "list was deleted reads the same way."
-                )
             ui.space()
             self._render_group_actions(info)
 
         if not rows:
             return
-        auth_icons: dict[str, Any] = {}
-        with ui.element("div").classes("cb-ltable"):
+        with ui.element("div").classes("cb-ltable cb-ptable"):
             with ui.element("div").classes("cb-ltable-row cb-ptable-row cb-ltable-head"):
                 ui.element("div")  # swatch
                 ui.label("list").classes("cb-ltable-h-name")
@@ -383,7 +373,6 @@ class _PicksView(FingerprintedView):
                     "The template and mask these picks came out of. Hover a cell for the full paths."
                 )
                 ui.label("picks").classes("cb-ltable-h-num")
-                ui.label("auth").classes("cb-ltable-h-cell").tooltip("Authoritative downstream list (one per tomogram)")
                 ui.label("ext").classes("cb-ltable-h-cell").tooltip("Subtomo-extracted state")
                 ui.label("job").classes("cb-ltable-h-cell").tooltip(
                     "The per-list extraction JOB behind that state — queued / running / succeeded / failed. "
@@ -391,7 +380,7 @@ class _PicksView(FingerprintedView):
                 )
                 ui.element("div")  # actions
             for row in rows:
-                self._render_row(c, info.tomo_name, row, auth_icons)
+                self._render_row(c, info.tomo_name, row)
 
     def _render_group_actions(self, info: _TomoInfo) -> None:
         """The ONE place each per-tomogram verb exists (09-S2): launch/scope an ArtiaX
@@ -425,7 +414,7 @@ class _PicksView(FingerprintedView):
             "click", lambda _e, t=info.tomo_name: self._tab.open_in_journey(t)
         ).tooltip("This tomogram's whole pipeline — motion, CTF, alignment, reconstruction")
 
-    def _render_row(self, c: _Computed, tomo: str, row: ListRow, auth_icons: dict) -> None:
+    def _render_row(self, c: _Computed, tomo: str, row: ListRow) -> None:
         ref = self._tab.ref(tomo, row.slug)
         with ui.element("div").classes("cb-ltable-row cb-ptable-row"):
             ui.element("div").classes(f"cb-ltable-swatch cb-swatch-{glyph_for(PickListType(row.list_type))}").style(
@@ -445,17 +434,9 @@ class _PicksView(FingerprintedView):
                 "kept / total picks after keep-drop curation"
             )
             with ui.element("div").classes("cb-ltable-cell"):
-                on = row.is_authoritative
-                icon = ui.icon("radio_button_checked" if on else "radio_button_unchecked", size="15px").classes(
-                    "cb-auth " + ("cb-auth-on" if on else "cb-auth-off")
-                )
-                icon.tooltip("Authoritative list — downstream extraction/aggregation consumes this one. Click to set.")
-                icon.on("click", lambda _e, s=row.slug: self._tab.set_authoritative(tomo, s, auth_icons))
-                auth_icons[row.slug] = icon
-            with ui.element("div").classes("cb-ltable-cell"):
                 self._render_ext_badge(row)
             self._render_job_chip(row)
-            with ui.row().classes("items-center gap-0 flex-nowrap"):
+            with ui.row().classes("cb-ptable-actions items-center gap-0 flex-nowrap"):
                 self._render_actions(tomo, row, ref)
 
     def _render_origin(self, row: ListRow) -> None:
@@ -514,6 +495,12 @@ class _PicksView(FingerprintedView):
         cell.on("click", lambda _e, r=row: self._tab.open_logs(r))
 
     def _render_actions(self, tomo: str, row: ListRow, ref: ListRef | None) -> None:
+        """extract · dedup · delete, always in those three slots.
+
+        `dedup` only applies to a merged list, but the slot is HELD (an empty box of the same
+        width) on every other row rather than skipped: three verbs that slide one place left
+        whenever a row happens not to be merged is the same staggering the grid template above
+        exists to kill, one level down."""
         if ref is None or row.slug == AUTO_SLUG:
             return  # the auto list follows its subtomo job; it is not extracted per list
         extracted = row.extraction_state == ListExtractionState.EXTRACTED.value
@@ -526,6 +513,8 @@ class _PicksView(FingerprintedView):
             ui.button(icon="join_inner", on_click=lambda _e, r=ref: self._tab.open_dedup(r)).props(
                 "flat dense round size=sm color=orange-7"
             ).tooltip("Overlapping picks — inspect and deduplicate")
+        else:
+            ui.element("div").style("width: 28px; height: 28px; flex: 0 0 auto;")
         ui.button(icon="delete_outline", on_click=lambda _e, r=ref: self._tab.delete_list(r)).props(
             "flat dense round size=sm color=negative"
         ).tooltip("Delete this list (its star, curated subset, extraction output and saves)")
@@ -758,18 +747,6 @@ class PicksTab:
 
     # ── List actions ──────────────────────────────────────────────────────────
 
-    async def set_authoritative(self, tomo: str, slug: str, icons: dict) -> None:
-        state = get_project_state_for(self.ctx.project_path)
-        if state.get_authoritative_slug(self.ctx.species_id, tomo) == slug:
-            return
-        state.set_authoritative_slug(self.ctx.species_id, tomo, slug)
-        await self.backend.save_project(self.ctx.project_path, force=True)
-        for s, icon in icons.items():
-            on = s == slug
-            icon.name = "radio_button_checked" if on else "radio_button_unchecked"
-            icon.classes(add="cb-auth-on" if on else "cb-auth-off", remove="cb-auth-off" if on else "cb-auth-on")
-        ui.notify(f"Authoritative → {slug} on {tomo} — downstream extraction/aggregation will use it", type="positive")
-
     def open_dedup(self, ref: ListRef) -> None:
         state = get_project_state_for(self.ctx.project_path)
         list_actions.open_dedup_dialog(
@@ -795,9 +772,7 @@ class PicksTab:
             )
 
     async def delete_list(self, ref: ListRef) -> None:
-        """Confirm (listing exactly what goes) → `list_admin.delete_pick_list`. The
-        authoritative choice is left dangling on purpose — the gate surfaces it rather
-        than silently falling back to `auto`."""
+        """Confirm (listing exactly what goes) → `list_admin.delete_pick_list`."""
         async with self._flight(f"delete:{ref.tomo_name}:{ref.slug}") as acquired:
             if not acquired:
                 return
@@ -821,11 +796,6 @@ class PicksTab:
                         "The .coords saves go too — otherwise the curation watcher re-registers this list on the "
                         "next save scan. Archived copies under imports/ are kept."
                     ).classes(_HINT_CLS)
-                if pl.slug == state.get_authoritative_slug(ref.species_id, ref.tomo_name):
-                    ui.label(
-                        "This is the authoritative list for the tomogram — the choice is left dangling (the gate "
-                        "will flag it) rather than silently falling back."
-                    ).classes("text-[10px] text-orange-700")
                 if live_job:
                     ui.label(
                         f"An extraction for this list is {job.status.lower()} (SLURM {job.slurm_job_id or '—'}) — "
@@ -865,20 +835,21 @@ class PicksTab:
     # ── Extract all pending ───────────────────────────────────────────────────
 
     async def extract_all_pending(self) -> None:
-        """Pre-flight FIRST (the §8.3 gate report is the preview), then submit. Never a
-        blind fan-out: `extract_authoritative_pending` starts one SLURM job per pending
-        list, so the user sees the count, the tomograms and the blocked reasons before
-        confirming — and commits the extraction geometry here if the species has none."""
+        """Pre-flight FIRST (the pending report is the preview), then submit. Never a blind
+        fan-out: `extract_pending_lists` starts one SLURM job per pending list, so the user
+        sees the count, the tomograms and the blocked reasons before confirming — and commits
+        the extraction geometry here if the species has none."""
         async with self._flight("extract_all") as acquired:
             if not acquired:
                 return
             ctx = self.ctx
-            report = await self.backend.get_authoritative_gate_report(ctx.project_path, ctx.species_id)
-            pending, blocked = report.get("pending") or [], report.get("blocked") or []
+            rows = await self.backend.get_pending_extractions(ctx.project_path, ctx.species_id)
+            pending = [r for r in rows if not r["blocked_reason"]]
+            blocked = [r for r in rows if r["blocked_reason"]]
             if not pending:
-                msg = "Nothing pending — every authoritative list is extracted and current."
+                msg = "Nothing pending — every list is extracted and current with its picks."
                 if blocked:
-                    msg = f"Nothing extractable: {len(blocked)} authoritative list(s) blocked (see the table)."
+                    msg = f"Nothing extractable: {len(blocked)} list(s) blocked (see the table)."
                 ui.notify(msg, type="warning" if blocked else "info", timeout=5000)
                 return
 
@@ -894,8 +865,7 @@ class PicksTab:
                         "text-[10px] font-mono text-gray-600"
                     )
                 for h in blocked:
-                    reason = "; ".join(h.get("notes") or []) or h.get("kind") or "not extractable here"
-                    ui.label(f"⚠ blocked — {h['tomo_name']} · {h['slug']}: {reason}").classes(
+                    ui.label(f"⚠ blocked — {h['tomo_name']} · {h['slug']}: {h['blocked_reason']}").classes(
                         "text-[10px] text-orange-700"
                     )
                 box_in = bin_in = crop_in = None
@@ -925,7 +895,7 @@ class PicksTab:
 
         async def _run(progress_cb):
             progress_cb(0, n_pending, "extracting pending lists…")
-            res = await backend.extract_authoritative_pending(ctx.project_path, ctx.species_id)
+            res = await backend.extract_pending_lists(ctx.project_path, ctx.species_id)
             return (
                 f"{len(res.get('succeeded') or [])} extracted · {len(res.get('failed') or [])} failed · "
                 f"{len(res.get('blocked') or [])} blocked · {len(res.get('still_running') or [])} still running"

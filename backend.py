@@ -301,7 +301,7 @@ class CryoBoostBackend:
         ``box_size``/``binning``/``crop_size`` are REQUIRED — they used to default to
         384/1.0/224, which silently cut wrong-but-plausible subtomograms for any species
         without a subtomo job. The caller resolves them from the species (see
-        ``aggregation.authoritative.extraction_params_for_species``) or asks the user."""
+        ``aggregation.extraction.extraction_params_for_species``) or asks the user."""
         project_path = Path(project_path)
         if (candidate_optset is None) == (tomograms_star is None):
             return err("extract_pick_list needs exactly one of candidate_optset / tomograms_star")
@@ -446,7 +446,7 @@ class CryoBoostBackend:
     ) -> dict[str, Any]:
         """Submit ONE per-list extraction (``extract_pick_list``), await its out dir,
         and on success record ``PickList.mark_extracted`` + persist — the single-list
-        counterpart of ``extract_authoritative_pending``. RUN INSIDE A BackgroundTask
+        counterpart of ``extract_pending_lists``. RUN INSIDE A BackgroundTask
         (polls up to ``timeout_s``; persists by explicit path — no client context
         needed). Returns {"success", "count"} or {"success": False, "error"}."""
         project_path = Path(project_path)
@@ -476,28 +476,17 @@ class CryoBoostBackend:
             await self.state_service.save_project(project_path=project_path, force=True)
         return ok(count=int(data.get("count", 0)))
 
-    async def get_authoritative_extraction_status(self, project_path: Path, species_id: str) -> list[dict[str, Any]]:
-        """Read-only: per-(species, tomo) authoritative-list extraction status — the
-        aggregation gate's input (see docs/LIST_EXTRACTION_AND_AGGREGATION.md
-        §8.1). Returns one dict per tomo: {species_id, tomo_name, slug, kind, extraction_state,
-        optset_path, kept, total, notes}. Disk reads run off the event loop."""
+    async def get_pending_extractions(self, project_path: Path, species_id: str) -> list[dict[str, Any]]:
+        """Read-only: this species' pick lists whose subtomograms are missing or stale, as
+        {tomo_name, slug, label, extraction_state, blocked_reason} — the preview
+        ``extract_pending_lists`` acts on, so the user sees what would be submitted (and what
+        cannot be) before anything is sent. Disk reads run off the event loop."""
         from dataclasses import asdict
-        from services.aggregation.authoritative import enumerate_authoritative
+        from services.aggregation.extraction import pending_extractions
 
         state = self.state_service.state_for(Path(project_path))
-        handles = await asyncio.to_thread(enumerate_authoritative, state, Path(project_path), species_id)
-        return [{**asdict(h), "extraction_state": h.extraction_state.value} for h in handles]
-
-    async def get_authoritative_gate_report(self, project_path: Path, species_id: str) -> dict[str, Any]:
-        """Read-only §8.3 gate: classify each (species, tomo) authoritative list as
-        ready / pending (workbench NOT_EXTRACTED|STALE — extractable here) / blocked, so the
-        UI/user sees exactly what must be extracted before a species roll-up. No side effects.
-        See docs/LIST_EXTRACTION_AND_AGGREGATION.md §8.3."""
-        from services.aggregation.authoritative import compute_gate_report, enumerate_authoritative
-
-        state = self.state_service.state_for(Path(project_path))
-        handles = await asyncio.to_thread(enumerate_authoritative, state, Path(project_path), species_id)
-        return compute_gate_report(handles).to_dict()
+        rows = await asyncio.to_thread(pending_extractions, state, Path(project_path), species_id)
+        return [asdict(r) for r in rows]
 
     # ── Tomogram import (PARTICLES-header utility; a project-level artifact, not a job) ──
 
@@ -634,7 +623,7 @@ class CryoBoostBackend:
         write proves it belongs to the run being watched).
         Returns {out_dir: ("done"|"failed", data)} for the resolved ones (an out dir absent
         from the result = still running). Disk scans run off the event loop. The ONE
-        extraction watcher — both the batch path (extract_authoritative_pending) and the
+        extraction watcher — both the batch path (extract_pending_lists) and the
         per-list path (extract_pick_list_and_wait) use it.
 
         It is also the ONLY refresher those instances get (roadmap 07-S3): a one-off
@@ -774,7 +763,7 @@ class CryoBoostBackend:
         strands one mid-flight — nothing else picks it up (``IS_INTERACTIVE`` keeps it out of
         every sweep, and ``PipelineMonitor`` ticks only projects with ``pipeline_active``,
         which a one-off extraction deliberately never sets). Neither consequence is cosmetic:
-        the chip asserts Queued/Running forever, and ``extract_authoritative_pending`` reports
+        the chip asserts Queued/Running forever, and ``extract_pending_lists`` reports
         the list as "still running" and refuses to resubmit it *for good* — the batch button
         becomes a permanent no-op for that list, with the per-row confirm as the only way out.
 
@@ -870,13 +859,14 @@ class CryoBoostBackend:
             )
         return ok(settled=settled, live=live, unknown=unknown)
 
-    async def extract_authoritative_pending(
-        self, project_path: Path, species_id: str, *, only_tomos: list[str] | None = None, timeout_s: int = 3600
+    async def extract_pending_lists(
+        self, project_path: Path, species_id: str, *, timeout_s: int = 3600
     ) -> dict[str, Any]:
-        """§8.3 auto-extract: submit per-list subtomo extraction for every WORKBENCH
-        authoritative list that is NOT_EXTRACTED/STALE (optionally limited to ``only_tomos``),
-        wait for completion, record ``mark_extracted``, and persist. Never touches
-        'auto'/'filtered' or already-ready lists; idempotent (re-running acts only on
+        """Submit per-list subtomo extraction for every pick list of this species that is
+        NOT_EXTRACTED/STALE, wait for completion, record ``mark_extracted``, and persist.
+
+        Never touches the 'auto' candidate set (not a PickList — re-running the subtomo job is
+        what refreshes it) or already-current lists; idempotent (re-running acts only on
         still-pending lists, and a list whose extraction SLURM confirms is still in flight is
         reported under ``still_running`` instead of being resubmitted — its output would be
         wiped from under the running job). Opens with ``reconcile_pick_list_extractions`` so
@@ -886,28 +876,23 @@ class CryoBoostBackend:
 
         Returns {submitted, succeeded:[{tomo,slug,count}], failed:[{tomo,slug,error}],
         blocked:[{tomo,slug,reason}], still_running:[{tomo,slug}] (already in flight, or
-        submitted here and unfinished at ``timeout_s``), can_proceed}."""
-        from services.aggregation.authoritative import (
-            compute_gate_report,
-            enumerate_authoritative,
+        submitted here and unfinished at ``timeout_s``), remaining}."""
+        from services.aggregation.extraction import (
             extract_inputs_blocked_reason,
             extract_inputs_for_list,
+            pending_extractions,
         )
 
         project_path = Path(project_path)
         # Settle before deciding (roadmap 07 review, finding A/B): an instance whose awaiter
         # died reads Queued/Running with nothing left to move it, and the skip below would
-        # then refuse to resubmit that list forever. Running first also matters for the gate —
+        # then refuse to resubmit that list forever. Running first also matters for the count —
         # a finished-but-unrecorded extraction gets `mark_extracted` here and drops out of
         # `pending` entirely instead of being cut a second time.
         recon = await self.reconcile_pick_list_extractions(project_path, species_id)
         live_instances = set(recon.get("live") or [])
         state = self.state_service.state_for(project_path)
-        handles = await asyncio.to_thread(enumerate_authoritative, state, project_path, species_id)
-        pending = compute_gate_report(handles).pending
-        if only_tomos is not None:
-            keep = set(only_tomos)
-            pending = [h for h in pending if h.tomo_name in keep]
+        pending = await asyncio.to_thread(pending_extractions, state, project_path, species_id)
 
         submitted: list[dict] = []
         failed: list[dict] = []
@@ -917,9 +902,9 @@ class CryoBoostBackend:
         for h in pending:
             # NEVER resubmit a list whose extraction is genuinely in flight (roadmap 07-S3):
             # a submit wipes out/ and the exit markers first, so a second job would cut into
-            # the dir the first is writing. This is the common case rather than an edge — the
-            # gate calls a list "pending" the moment a re-extract clears its output, so a
-            # single in-flight re-extract puts the list right back in this loop's input.
+            # the dir the first is writing. This is the common case rather than an edge — a
+            # list counts as "pending" the moment a re-extract clears its output, so a single
+            # in-flight re-extract puts the list right back in this loop's input.
             # "Genuinely" = SLURM still has the id (`live_instances`), not merely a stored
             # status: the reconciler above has already settled everything else, and an instance
             # with no recorded id is deliberately NOT skipped — there is provably no job to
@@ -927,9 +912,7 @@ class CryoBoostBackend:
             # if a per-row extract is sbatch-ing this very list at this very moment, which the
             # per-list SingleFlight and the task-registry dedup key already make unlikely).
             if extract_pick_list_instance_id(species_id, h.tomo_name, h.slug) in live_instances:
-                logger.info(
-                    "extract_authoritative_pending: %s/%s is live in SLURM — not resubmitting", h.tomo_name, h.slug
-                )
+                logger.info("extract_pending_lists: %s/%s is live in SLURM — not resubmitting", h.tomo_name, h.slug)
                 still_running.append({"tomo": h.tomo_name, "slug": h.slug})
                 continue
             pl = state.get_pick_list(h.slug, species_id, h.tomo_name)
@@ -998,14 +981,14 @@ class CryoBoostBackend:
             state.bump_registry_rev()
             await self.state_service.save_project(project_path=project_path, force=True)
 
-        handles2 = await asyncio.to_thread(enumerate_authoritative, state, project_path, species_id)
+        remaining = await asyncio.to_thread(pending_extractions, state, project_path, species_id)
         return {
             "submitted": len(submitted),
             "succeeded": succeeded,
             "failed": failed,
             "blocked": blocked,
             "still_running": still_running,
-            "can_proceed": compute_gate_report(handles2).can_proceed,
+            "remaining": len(remaining),
         }
 
     # ── ChimeraX + ArtiaX curation — thin delegation; logic + docs live in

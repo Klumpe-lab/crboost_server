@@ -1811,7 +1811,7 @@ def render_particles_section(
     `mode="full"` is the page reached from the Particles registry: bigger slabs, curation
     mode, the per-list extraction verb, fullscreen and the slab lightbox.
 
-    Merge / dedup / import / delete and the authoritative choice live on the Species page
+    Merge / dedup / import / delete live on the Species page
     (11-S3), so the header carries the route there (``manage_species``); a removed action
     the user cannot navigate to reads as a lost feature rather than a moved one.
     `open_viewer(species_id, tomo_name)` is the slim mount's route INTO the full page;
@@ -1856,7 +1856,7 @@ def render_particles_section(
 
         def _show_manage_link_for(sp: dict) -> None:
             """'manage in Particles registry ↗' for the active species (11-S3). The Journey no longer
-            merges / dedups / extracts / imports or sets the authoritative list — this is
+            merges / dedups / extracts / imports — this is
             the one-click route to where those now live (the Picks & curation tab, selected by
             `manage_species`), so their removal reads as a move. Absent when the workspace
             gave us no route (a standalone journey mount) or the species has no id."""
@@ -1868,8 +1868,8 @@ def render_particles_section(
                 ui.label("manage in Particles registry ↗").classes(
                     "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
                 ).on("click", lambda _e, s=sid: manage_species(s)).tooltip(
-                    "Curate in ArtiaX · import a .coords · extract · dedup · delete · choose the authoritative "
-                    "list — opens this species' Picks & curation tab, where all of them live in one place."
+                    "Curate in ArtiaX · import a .coords · extract · dedup · delete — opens this species' "
+                    "Picks & curation tab, where all of them live in one place."
                 )
 
         def _show_viewer_link_for(sp: dict) -> None:
@@ -2331,36 +2331,33 @@ def _render_list_rail(
     manage_species=None,
 ) -> None:
     """The lists strip: a compact aligned TABLE (header + one row per
-    list: swatch · name · count(kept/total) · authoritative-radio · extracted-mark ·
-    copy-path · visibility eye) on the left + the `curate ↗` route into the registry on the
-    right.
+    list: swatch · name · count(kept/total) · extracted-mark · copy-path · visibility eye) on
+    the left + the `curate ↗` route into the registry on the right.
     Every row shares one grid template so the columns line up under the header. The auto
     (pytom) row's name carries a hover tooltip with its pick stats + template-match
     essentials. Clicking a row selects it → drives the detail; the copy button and the
     eye use click.stop so they don't also select. `chip_els` is filled {slug:
     row-element} so selection can re-highlight without rebuilding the table.
 
-    Look only (11-S3, tightened by 09-S2). The auth radio here is a READ-ONLY indicator of
-    which list downstream consumes — it is SET on the Particles registry's Picks & curation
-    tab, so the two surfaces cannot disagree about it — and curate / dedup / extract /
-    import / delete live there too, where they act across every tomogram at once."""
+    Look only (11-S3, tightened by 09-S2): curate / dedup / extract / import / delete live on
+    the Particles registry's Picks & curation tab, where they act across every tomogram at
+    once. A read-only `auth` radio used to sit between `picks` and `ext`, naming the one list
+    downstream consumed; the authoritative model is gone, so the column went with it."""
     state_obj = current_project_state()
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
-    auth_slug = state_obj.get_authoritative_slug(species_id, tomo_name)
 
     with ui.element("div").classes("cb-list-top"):
         # The list TABLE: one aligned row per pick list — [swatch · name ·
-        # count(kept/total) · authoritative-radio · extracted-mark · path · eye]. A row
-        # click selects it → drives the detail gallery; the copy button and the eye use
-        # click.stop so they don't also select. Every row shares the .cb-ltable-row grid
-        # template, so the columns line up under the header.
+        # count(kept/total) · extracted-mark · path · eye]. A row click selects it → drives
+        # the detail gallery; the copy button and the eye use click.stop so they don't also
+        # select. Every row shares the .cb-ltable-row grid template, so the columns line up
+        # under the header.
         with ui.element("div").classes("cb-ltable"):
             with ui.element("div").classes("cb-ltable-row cb-ltable-head"):
                 ui.element("div")  # swatch col
                 ui.label("list").classes("cb-ltable-h-name")
                 ui.label("picks").classes("cb-ltable-h-num")
-                ui.label("auth").classes("cb-ltable-h-cell").tooltip("Authoritative downstream list (one per tomogram)")
                 ui.label("ext").classes("cb-ltable-h-cell").tooltip("Subtomo-extracted state")
                 ui.label("path").classes("cb-ltable-h-cell").tooltip("Copy the full path to this list's backing file")
                 ui.element("div")  # eye col
@@ -2383,19 +2380,6 @@ def _render_list_rail(
                     cnt = ui.label(_list_count_text(total, lst.get("filtered_count"))).classes("cb-ltable-count")
                     cnt.tooltip("kept / total picks after keep-drop curation")
                     lst["_count_el"] = cnt  # so the cutout sheet can live-update it on keep/drop
-                    with ui.element("div").classes("cb-ltable-cell"):
-                        # Display-only since 11-S3: two places to SET the authoritative
-                        # list would drift, so it is set on the Picks & curation tab
-                        # and only shown here. The legacy 'filtered' slug lights the auto
-                        # row — the same rule `species_overview` applies, so the two
-                        # surfaces cannot disagree about which row is authoritative.
-                        on = slug == auth_slug or (slug == "auto" and auth_slug == PickListType.FILTERED.value)
-                        ui.icon("radio_button_checked" if on else "radio_button_unchecked", size="15px").classes(
-                            "cb-auth cb-auth-static " + ("cb-auth-on" if on else "cb-auth-off")
-                        ).tooltip(
-                            "Authoritative list — downstream extraction/aggregation consumes this one. "
-                            "Set it on the Particles registry's Picks & curation tab."
-                        )
                     with ui.element("div").classes("cb-ltable-cell"):
                         if slug != "auto":
                             pl = state_obj.get_pick_list(slug, species_id, tomo_name)
@@ -2440,7 +2424,7 @@ def _render_list_rail(
                     "click", lambda _e, s=species_id: manage_species(s)
                 ).tooltip(
                     "Open this species in the Particles registry's Picks & curation tab — start or swap an "
-                    "ArtiaX session on a tomogram, import a .coords, extract, delete, choose the authoritative list"
+                    "ArtiaX session on a tomogram, import a .coords, extract, dedup, delete"
                 )
 
 

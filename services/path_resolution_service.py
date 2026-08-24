@@ -779,9 +779,11 @@ class PathResolutionService:
         Multiple EXTRACTED lists can exist for one (species, tomo). All are injected so
         the user can override to any of them, but auto-selection must be deterministic:
         `relion_job_number` — a free integer for synthetic producers, and already the
-        scorer's preference rank — is assigned so the authoritative slug outranks the
-        rest, then newer extractions outrank older. The winner says so in its label, which
-        the UI dropdown renders verbatim, so the choice is never silent.
+        scorer's preference rank — is assigned so the most recent extraction outranks the
+        older ones. The winner says so in its label, which the UI dropdown renders verbatim,
+        so the choice is never silent. (An authoritative-slug tiebreak used to come first;
+        that per-tomogram nomination is gone — a specific list is chosen by overriding the
+        slot here, or by naming it as a source in the Aggregate-candidates flow.)
         """
         from services.models_base import ListExtractionState
 
@@ -797,24 +799,16 @@ class PathResolutionService:
         for pl in extracted:
             by_tomo.setdefault((pl.species_id, pl.tomo_name), []).append(pl)
 
-        for (species_id, tomo_name), group in by_tomo.items():
-            authoritative = self.state.get_authoritative_slug(species_id, tomo_name)
+        for (_species_id, tomo_name), group in by_tomo.items():
             # Ascending, so the LAST entry is the winner and rank == list position.
             # Ranks start at 0 so a lone pick list ties the other synthetic producers
             # (mergedSources / importedTomograms) exactly as before; only a genuine
             # multi-list tie spends rank to break itself.
-            ranked = sorted(
-                group,
-                key=lambda pl: (
-                    pl.slug == authoritative,
-                    pl.extracted_at.timestamp() if pl.extracted_at is not None else 0.0,
-                ),
-            )
+            ranked = sorted(group, key=lambda pl: pl.extracted_at.timestamp() if pl.extracted_at is not None else 0.0)
             for rank, pl in enumerate(ranked):
                 label = f"Pick list — {pl.label or pl.slug} · {tomo_name}"
                 if len(ranked) > 1 and rank == len(ranked) - 1:
-                    why = "authoritative" if pl.slug == authoritative else "most recently extracted"
-                    label = f"{label} [auto-selected: {why}]"
+                    label = f"{label} [auto-selected: most recently extracted]"
                 producer_id = pick_list_producer_id(pl)
                 index[JobFileType.OPTIMISATION_SET_STAR].append(
                     OutputCandidate(

@@ -31,7 +31,7 @@ from nicegui import ui
 
 from services.jobs._base import SymmetryGroup
 from services.models_base import SpeciesOrigin
-from services.aggregation.authoritative import extraction_params_for_species
+from services.aggregation.extraction import extraction_params_for_species
 from services.jobs.subtomo_extraction import SubtomoExtractionParams
 from services.particles.species_overview import SpeciesOverview, species_overview
 from services.project_state import ParticleSpecies, TemplateMask, get_project_state_for
@@ -641,9 +641,6 @@ class OverviewTab:
                 n_lists = len(refs["pick_lists"])
                 if n_lists:
                     ui.label(f"• {n_lists} pick list{'s' if n_lists != 1 else ''} (curation)").classes(_BODY_CLS)
-                n_auth = len(refs["authoritative_pick_lists"])
-                if n_auth:
-                    ui.label(f"• {n_auth} authoritative-list choice{'s' if n_auth != 1 else ''}").classes(_BODY_CLS)
                 n_ovr = len(refs["source_overrides"])
                 if n_ovr:
                     ui.label(f"• {n_ovr} downstream input override{'s' if n_ovr != 1 else ''}").classes(_BODY_CLS)

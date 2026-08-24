@@ -1,16 +1,15 @@
 """Headless per-species pick / extraction overview (roadmap 09-S3).
 
 One read model for "where does this species stand": every pick list on every tomogram
-as a ``ListRow`` (count · kept · authoritative · extraction state · provenance) plus the
-species roll-up (``SpeciesOverview``). The Species page (roadmap 10 status block, 11 Picks
-tab) and the CLI below render it; nothing here draws.
+as a ``ListRow`` (count · kept · extraction state · provenance) plus the species roll-up
+(``SpeciesOverview``). The Species page (roadmap 10 status block, 11 Picks tab) and the CLI
+below render it; nothing here draws.
 
 Composition only — the facts come from the readers that already own the disk work:
 ``aggregation.discovery.load_tomo_curation`` / ``counts_by_tomo`` (per-tomo auto
-accounting), ``aggregation.authoritative.enumerate_authoritative`` + ``compute_gate_report``
-(the authoritative choice per tomo and the roll-up gate), ``dashboard_data`` (bound
-candidate-extract / subtomo instances), ``PickList.extraction_state()`` after a headless
-``picks_filter.sync_filtered_count``. Takes an EXPLICIT ``ProjectState`` (never the
+accounting), ``aggregation.extraction.subtomo_job_dir_for_species``, ``dashboard_data``
+(bound candidate-extract / subtomo instances), ``PickList.extraction_state()`` after a
+headless ``picks_filter.sync_filtered_count``. Takes an EXPLICIT ``ProjectState`` (never the
 tab-context accessor); callers run it off the event loop.
 
 Since roadmap 07 each workbench row also carries its ``ExtractJob``: the per-list
@@ -24,7 +23,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from services.aggregation.authoritative import compute_gate_report, enumerate_authoritative, subtomo_job_dir_for_species
+from services.aggregation.extraction import subtomo_job_dir_for_species
 from services.aggregation.discovery import counts_by_tomo, load_tomo_curation
 from services.dashboard_data import ce_instance_for_species, job_dir_for, matching_subtomo_instance
 from services.models_base import JobStatus, ListExtractionState, PickListType, PickSourceKind
@@ -128,7 +127,6 @@ class ListRow:
     label: str
     count: int
     kept: int | None  # None = no keep/drop committed (all `count` kept)
-    is_authoritative: bool
     extraction_state: str  # ListExtractionState value, or NOT_APPLICABLE
     star_path: str | None  # the list's coordinates star (auto: the CE job's candidates.star)
     extracted_path: str | None  # the optimisation_set produced from this list, when one exists
@@ -152,7 +150,6 @@ class SpeciesOverview:
     n_picks: int  # sum of `count` over rows
     n_kept: int  # sum of kept (falls back to count where no filter is committed)
     n_extracted_lists: int  # rows in EXTRACTED state
-    gate: str  # READY | PENDING | BLOCKED — compute_gate_report roll-up (READY is vacuous with no rows)
     ce_iid: str | None
     subtomo_iid: str | None
     rows: tuple[ListRow, ...]
@@ -187,14 +184,9 @@ def species_overview(state, project_path: Path, species_id: str) -> SpeciesOverv
     # One resolution per species: every auto row of this species came out of the same
     # candidate-extract instance, so the template+mask behind them is the same too.
     tmpl_path, tmpl_mask, tmpl_note = tm_origin_for_ce(state, ce[0] if ce else None)
-    handles = enumerate_authoritative(state, project_path, species_id, curation_by_tomo=curation_by_tomo)
-    report = compute_gate_report(handles)
-    gate = "BLOCKED" if report.blocked else ("PENDING" if report.pending else "READY")
-
     tomo_names = set(auto_counts) | {pl.tomo_name for pl in state.pick_lists if pl.species_id == species_id}
     rows: list[ListRow] = []
     for tomo in sorted(tomo_names):
-        auth_slug = state.get_authoritative_slug(species_id, tomo)
         total, kept = auto_counts.get(tomo, (0, None))
         if total > 0:
             if subtomo_dir is None:
@@ -210,7 +202,6 @@ def species_overview(state, project_path: Path, species_id: str) -> SpeciesOverv
                     label="candidates",
                     count=total,
                     kept=kept,
-                    is_authoritative=auth_slug in (AUTO_SLUG, PickListType.FILTERED.value),
                     extraction_state=auto_state,
                     star_path=str(ce_dir / "candidates.star") if ce_dir else None,
                     extracted_path=str(auto_optset) if auto_optset else None,
@@ -233,7 +224,6 @@ def species_overview(state, project_path: Path, species_id: str) -> SpeciesOverv
                     label=pl.label or pl.slug,
                     count=int(pl.count or 0),
                     kept=pl.filtered_count,
-                    is_authoritative=auth_slug == pl.slug,
                     extraction_state=pl.extraction_state().value,
                     star_path=pl.path or None,
                     extracted_path=pl.extracted_path or None,
@@ -254,7 +244,6 @@ def species_overview(state, project_path: Path, species_id: str) -> SpeciesOverv
         n_picks=sum(r.count for r in rows),
         n_kept=sum(r.kept if r.kept is not None else r.count for r in rows),
         n_extracted_lists=sum(1 for r in rows if r.extraction_state == ListExtractionState.EXTRACTED.value),
-        gate=gate,
         ce_iid=ce[0] if ce else None,
         subtomo_iid=sub[0] if sub else None,
         rows=tuple(rows),
@@ -295,10 +284,9 @@ def _main() -> None:
         print(f"\n=== species {ov.species_id}  ce={ov.ce_iid or '-'}  subtomo={ov.subtomo_iid or '-'} ===")
         for r in ov.rows:
             kt = f"{r.kept if r.kept is not None else '-'}/{r.count}"
-            auth = "auth" if r.is_authoritative else "    "
             job = r.extract_job.status if r.extract_job is not None else "-"
             print(
-                f"  {r.tomo_name:42s} {r.slug:18s} {r.list_type:9s} {auth} {r.extraction_state:14s} "
+                f"  {r.tomo_name:42s} {r.slug:18s} {r.list_type:9s} {r.extraction_state:14s} "
                 f"job={job:10s} kept/total={kt:9s} {r.source_kind:7s} {r.source_ref}"
             )
         origin = next((r for r in ov.rows if r.template_path or r.origin_note), None)
@@ -308,7 +296,7 @@ def _main() -> None:
             print(f"  -- origin: template={tm} mask={mk}{note}")
         print(
             f"  -- {ov.n_tomos_with_picks} tomo(s) with picks · {ov.n_picks} picks · {ov.n_kept} kept · "
-            f"{ov.n_extracted_lists} extracted list(s) → gate {ov.gate}"
+            f"{ov.n_extracted_lists} extracted list(s)"
         )
 
 

@@ -73,11 +73,11 @@ def migrate_legacy_manual_slugs(state: ProjectState) -> list[tuple[str, str, str
     (empty on an already-migrated project), so the loader can log what moved.
 
     Called from ``load_project_state`` — before anything reads the registry, so no
-    consumer ever sees the two schemes at once. FOUR things key on the slug and all four
-    are rewritten here: the list itself, the authoritative-list choice, the per-list
-    extraction job instance, and any downstream job whose input is overridden onto this
-    list's synthetic producer (``pick_list__<species>__<tomo>__<slug>``) — miss that last
-    one and the override silently reads as "the pick list behind this no longer exists".
+    consumer ever sees the two schemes at once. THREE things key on the slug and all three
+    are rewritten here: the list itself, the per-list extraction job instance, and any
+    downstream job whose input is overridden onto this list's synthetic producer
+    (``pick_list__<species>__<tomo>__<slug>``) — miss that last one and the override
+    silently reads as "the pick list behind this no longer exists".
     FILES are deliberately NOT renamed: ``PickList.path`` and ``extracted_path`` are
     absolute and stay valid, and renaming a star out from under a recorded extraction
     output would break the very link that proves it current.
@@ -104,9 +104,6 @@ def migrate_legacy_manual_slugs(state: ProjectState) -> list[tuple[str, str, str
         job = state.jobs.pop(old_iid, None)
         if job is not None:
             state.jobs[extract_pick_list_instance_id(pl.species_id, pl.tomo_name, new)] = job
-        key = ProjectState._auth_key(pl.species_id, pl.tomo_name)
-        if state.authoritative_pick_lists.get(key) == LEGACY_MANUAL_SLUG:
-            state.authoritative_pick_lists[key] = new
         old_producer = _producer(pl.species_id, pl.tomo_name, LEGACY_MANUAL_SLUG)
         new_producer = _producer(pl.species_id, pl.tomo_name, new)
         for jm in (state.jobs or {}).values():
