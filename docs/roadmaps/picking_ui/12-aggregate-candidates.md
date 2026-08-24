@@ -188,6 +188,22 @@ To be filled as stages land. Minimum, once S0–S6 are code-complete:
    instance (L2/L3), and nothing spawned when unticked.
 6. Merge two pixel-grade sources extracted at different box sizes → expect a RAISE (S0), where
    today it silently merges.
+7. Open the Aggregate dialog from the roster's PARTICLES header. Expect the merge-dialog tree
+   grammar — expandable project rows with the project avatar, indented tomogram rows, a
+   right-flush pick column that lines up across all three levels — NOT the bare white
+   checkbox list the first version rendered.
+8. Click the header's `Extracted · subtomograms` segment. Expect the Merge-sources dialog to
+   OPEN (before the parenting fix it closed the aggregate dialog and nothing appeared), and
+   its own switch to come back the other way.
+9. Run an aggregate to completion. Expect the result dialog to appear after the main dialog
+   closes — it is built after `dlg.close()` and was subject to the same parenting bug, so
+   this is what proves the terminal action is reachable at all.
+10. Toggle `Curated only`. Expect auto candidate sets to disappear and anything already
+    selected to stay visible. Type in the filter → every project expands; clear it → only
+    this project stays open.
+11. Watch the footer's accent button rename itself as the selection changes: `Aggregate` →
+    `Aggregate & extract` (one tomogram) → `Aggregate & set up extraction` (several). Its
+    tooltip must name the job.
 
 ## 6. Log
 
@@ -299,3 +315,132 @@ To be filled as stages land. Minimum, once S0–S6 are code-complete:
     validates as UTF-8 and its 55 non-ASCII lines read correctly (`—`, `Å`, `▸`, `·`, `°`). No
     other file was affected — the corruption needs a wide char in the replacement, which only that
     one run had. Worth a spot-check of the roster's chips at runtime anyway.
+
+### S7 — the two grades become two modes of one surface (2026-08-23)
+
+Not in the original stage list. Added after the maintainer opened what S4 shipped and reported
+three things: the dialog "is whole white and all malformed and the colors are all off", the
+old tree-like interface with its colours and "leave curated only" appeared to be gone, and the
+`extracted particles instead ↗` link "just closes that window and doesn't do anything
+meaningful". All three were real.
+
+**The bug (found, not guessed).** NiceGUI runs an event handler *"within the context of the
+parent slot of the sender"* (`nicegui/events.py:406`). `_switch_to_extracted` was a click
+handler on a label inside the aggregate dialog's `controls` row, so the merge dialog it built
+was parented **inside the card that had just closed** — it existed and could never paint. The
+same defect sat on `_show_result`, which is constructed after `dlg.close()`: the entire S5/S6
+terminal action was very likely unreachable at runtime, which is why aggregating appeared to
+end in nothing. `_show_blockers` / `_confirm_unverified` fire while the dialog is still open,
+so those rendered — that asymmetry is exactly what the maintainer described.
+
+This failure was already documented in our own code, with a fix: `dialog_host()`, written for
+the Journey/Species rebuild case and for `curation_session_dialog`. `aggregate_dialog` used it
+nowhere.
+
+**What changed.**
+
+- `ui/components/dialogs.py` (new) — `dialog_host()` hoisted out of `ui/particles/list_actions.py`,
+  where a generic modal-parenting rule had no business living. `list_actions` and
+  `ui/species/catalog.py` now import it from there; `ui/species/picks_tab.py` keeps its
+  `list_actions.dialog_host()` attribute access, which still resolves.
+- Every `ui.dialog()` in `aggregate_dialog.py` (3) and `merge_card.py` (1) is now parented at
+  the page layout slot.
+- **The grade is a real control, not a text link.** `render_segmented` (the house
+  `.cb-seg` strip) in BOTH dialogs' headers: `Picks · coordinates` | `Extracted · subtomograms`.
+  Clicking the inactive segment closes one and opens the other. Both titles are now `Aggregate`.
+  This answers the maintainer's "there should be two modes or something" — and it is what §2's
+  original sketch meant by a GRADE radio, arrived at from the other direction. It does NOT undo
+  the S4 decision: the two selection models (optset-shaped vs list-shaped) still live in two
+  modules; only the shell vocabulary is shared.
+- **The coordinate tree got merge_card's grammar**, because the two are one surface and the
+  bare `ui.row`/`ui.checkbox`/`ui.label` list read as a different program. Ported: the palette
+  (`STEEL` steelblue as the single accent, slate everything else), the expandable
+  project→tomogram→list hierarchy with the project avatar, `ts_pretty_name` in a fixed 92 px
+  column with the raw name beside it, the right-flush `_picks_cell` / `_num_cell` that align
+  across all three levels, a text filter, and per-node select-all.
+- **`Curated only`** is the coordinate-grade reading of merge_card's `Show curated only`. There,
+  curation is a filtered star beside an original; here it is what KIND of list this is —
+  MANUAL / FILTERED / IMPORTED / MERGED are curated, AUTO is not. Steelblue + a per-type glyph
+  marks a curated row. Anything already selected stays visible when the switch narrows the tree,
+  so a narrowing can never silently drop a chosen source.
+- **The footer names the job it starts.** The accent button re-labels itself from the shape of
+  the selection — `Aggregate` → `Aggregate & extract` (one tomogram) → `Aggregate & set up
+  extraction` (several) — with a tooltip stating what will happen. Text-only update, never a
+  rebuild, so a click landing mid-update still hits a live element. D1 is unchanged: the verb
+  still follows the grade, it is just now legible before the click instead of one modal later.
+  The extracted grade's counterpart is a tooltip on `Merge N source(s)` explaining that the
+  merge IS the handoff — `apply_aggregation_overrides` repoints Reconstruct / Class3D /
+  Refine3D and no job is submitted.
+
+**Honesty note.** `_Row.count` is 0 for an auto candidates.star (the row count is not recorded
+on the list), so its pick cell shows `—` with a tooltip saying the count was not read, rather
+than a fabricated zero.
+
+`ruff check .` green repo-wide; every touched file is `ruff format` clean and validates as
+UTF-8. `check_boundaries.py` and `import main` still owed. Runtime items 7–11 in §5.
+
+**Deliberately NOT done here.** Both dialogs' toolbars still use raw `ui.select` / `ui.input` /
+`ui.switch` with `.props("dense outlined")`, not the house `house_select` / `house_text` field
+vocabulary CLAUDE.md prescribes for dialogs. That is real debt (P-33, P-37, `picking_ui/08-S1/S2`)
+but it is a SWEEP: converting one of the two dialogs would recreate the very
+two-applications problem this stage exists to remove, and converting the surface the maintainer
+already likes was not what was asked. It goes with the 08 sweep, both dialogs together.
+
+Also unchanged: a project-level select-all was drafted for the project header and removed before
+shipping. The header is the expand target, so the checkbox would need a click-propagation guard
+whose interaction with QCheckbox's own click handling cannot be verified from the sandbox — and a
+checkbox that silently fails to tick is worse than no checkbox. Per-tomogram select-all covers
+the bulk case.
+
+### S8 — the crash, and finishing the standardization (2026-08-23)
+
+Maintainer ran S7 and reported a hard failure plus four residual asymmetries.
+
+**The crash — and it was never S7's.** `Aggregate & set up extraction` died with
+`RuntimeError: The current slot cannot be determined because the slot stack for this task is
+empty`, at the first `ui.notify` in `_AggregateDialog.run`. Cause: **NiceGUI keys its slot
+stack on `id(asyncio.current_task())`** (`nicegui/slot.py`, `Slot.stacks`), not on a
+ContextVar. So `asyncio.create_task(d.run(dlg))` starts a task whose slot stack is EMPTY, and
+every bare `ui.*` call inside it raises. That button was written this way in S4; S7's parenting
+fix is simply what finally made the flow reachable enough to hit it.
+
+The fix is to stop creating the task by hand: `lambda: d.run(dlg)` returns the coroutine, and
+`events.handle_event` awaits it inside `with parent_slot:` (`events.py:428-437`). That restores
+a client for the notifies AND for the `dialog_host()` lookups inside the blocker / unverified /
+result dialogs `run()` awaits — `dialog_host()` reads `context.client`, so it would have raised
+in a bare task too.
+
+**`merge_card` had the identical latent bug** and got the same treatment: `run_merge`
+(`ui.notify("Merging…")` would have died the same way), `pick_manual_path`, `_toggle_project`,
+`_toggle_species`. The tree handlers survived only because every UI touch in them happens under
+an explicit `with self.tree:` / `with self.body:` — which is exactly why this went unnoticed.
+The three remaining `asyncio.create_task` calls in the two files are safe and deliberate:
+`bk.save_project` (no UI) ×2, and the two loaders whose UI work is under an explicit `with`.
+
+**Rule for this codebase:** never `asyncio.create_task` an event handler that touches `ui.*`.
+Return the coroutine and let NiceGUI await it in the sender's slot.
+
+**The four asymmetries.**
+
+- *Name field at the top in picks, at the bottom in subtomograms.* Standardized on merge_card's
+  order, which is the right one: SCOPE selectors (species · curated-only · filter) at the top,
+  tree, then NAME the output, then the action. The coordinate dialog's name input moved into a
+  new bottom `name_bar` and states where the output lands.
+- *Picks had a species dropdown, subtomograms did not.* `_MergeSelector.species_filter` +
+  a picker in merge_card's toolbar, options filled after discovery. Keyed on the display LABEL,
+  not the local species id — each project mints its own id, so id-keying would list the same
+  particle as N unrelated species. Narrows only; never hides an already-selected source. Note
+  the asymmetry that remains and is correct: one species per aggregate is *enforced* at the
+  coordinate grade (D2, the geometry must be unambiguous) but merely *offered* at the pixel
+  grade, where a multi-species merge is unusual rather than wrong.
+- *"other project" instead of names and handles.* `_Row` carries `mnemonic` now, and the project
+  header draws `project_name` (from `ProjectState.project_name`, not the directory name) plus the
+  three-word handle in the same italic mono merge_card uses. The amber text chip is gone; foreign
+  projects get a small amber link icon whose tooltip names the identity gate.
+- *"all white and staggered".* The coordinate tree has no species level — the species is the
+  dropdown — so it never showed the species colour that gives merge_card's tree its anchor, and
+  three white depths read as one staircase. Fixed with a spine: the tomogram block sits behind a
+  2 px left border in the species colour at 20 % alpha, the list block behind a 1 px slate rule,
+  and every tomogram row carries a species-coloured dot.
+
+`ruff check .` green repo-wide; all touched files `ruff format` clean and valid UTF-8.

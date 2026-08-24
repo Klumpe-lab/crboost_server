@@ -70,6 +70,13 @@ server timers, FingerprintedView/SingleFlight for anything timer- or dialog-driv
 | P-46 | Registry + Journey | full-page pick viewer (slabs + gallery, or markers-only when not extracted) opened from the merged tab; Journey keeps a slim display+filter mount; links both ways | structural | picking_ui/11-S1/S5/S6 (+09-S5) | scoped 2026-08-21 |
 | P-47 | Curation control center | doesn't close on Esc (page-layout-parented dialog) | bug | picking_ui/10-S1 | scoped 2026-08-21 |
 | P-48 | Curation session | passwordless VNC option requested | structural (security tradeoff) | picking_ui/10-S1 (config flag, default off) | scoped 2026-08-21 |
+| P-49 | Job roster / queue | a just-added job paints the same amber "Scheduled" dot as one queued on the cluster — the roster cannot show staged-but-not-yet-queued | structural (semantic) | [13-roster-staged-vs-queued](13-roster-staged-vs-queued.md) | scoped 2026-08-23 |
+| P-50 | Job roster | `+` and the remove icon silently no-op while a pipeline runs (`pipeline_builder_panel.py:270, 415`) — no toast, no disabled state | bug (feedback) | 13 §6 (adjacent finding; not in scope until greenlit) | noted 2026-08-23 |
+| P-51 | Aggregate dialog | "extracted particles instead ↗" closed the dialog and did nothing — the new dialog was built inside the closing card (NiceGUI parents a handler's elements at the sender's slot). Same defect on the post-merge result dialog, so the terminal action was unreachable | bug | 12-S7 (`ui/components/dialogs.py` `dialog_host`) | fixed 2026-08-23, PENDING RUNTIME |
+| P-52 | Aggregate dialog | bare white checkbox list where the merge dialog has a coloured project→species→tomogram tree; no "curated only", no filter, no pick column — read as a different application | cosmetic (regression) | 12-S7 (merge_card grammar ported; grade switch in both headers) | fixed 2026-08-23, PENDING RUNTIME |
+| P-53 | Aggregate / Merge dialogs | `asyncio.create_task(handler())` gives the new task an EMPTY NiceGUI slot stack (`Slot.stacks` is keyed on task id), so the first bare `ui.notify` raises "current slot cannot be determined" — killed Aggregate outright and was latent on `run_merge` / `pick_manual_path` | bug | 12-S8 (return the coroutine; NiceGUI awaits it in the sender's slot) | fixed 2026-08-23, PENDING RUNTIME |
+| P-54 | Aggregate / Merge dialogs | four asymmetries between the two modes: name field top vs bottom, species dropdown only on picks, "other project" instead of name + three-word handle, and a colourless three-deep tree | cosmetic (standardization) | 12-S8 | fixed 2026-08-23, PENDING RUNTIME |
+| P-55 | Journey (per-TS dashboard) | the 4 s live-refresh raised `IndexError: tuple index out of range` on EVERY signature change — 09-S2 removed the curation-session member from `sig` but left the positional diagnostics reading `sig[3]` of a 3-tuple, and the exception took `request_refresh` down with it, so the pane silently stopped live-refreshing | bug | fixed 2026-08-23 (`tomo_dashboard_dialog._maybe_refresh`: labels paired with members, refresh moved above the diagnostics) | fixed, PENDING RUNTIME |
 
 Add rows as the walkthrough produces them; keep the peeve text short and put the long form in
 `q_denovo_picking_interface.md`.
@@ -103,7 +110,8 @@ committable chunk with its own runtime checklist, which is what the maintainer a
 - P-12 species-derived fields follow the guideline in `picking_ui/00-overview.md` → **picking_ui/02**
 
 ### Roster / queue
-- (still pending — the 2026-08-18 walkthrough covered Particles / Species / job tabs, not the roster)
+- P-49 staged vs queued (the roster claims work is in flight before Run) → [13-roster-staged-vs-queued](13-roster-staged-vs-queued.md)
+- P-50 silent no-op on `+` / remove while running — recorded in 13 §6, not yet greenlit
 
 ## Log
 
