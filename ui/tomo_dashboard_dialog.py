@@ -480,20 +480,32 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             if sig != _last_signature["sig"]:
                 prev = _last_signature["sig"]
                 _last_signature["sig"] = sig
+                request_refresh(force_main=False)  # timer tick — let render_main self-gate
+                # Diagnostics AFTER the refresh, on purpose: a logging bug must never be
+                # able to stop the pane from updating, which is exactly what happened here.
+                #
                 # Name what moved, so a lingering rebuild is diagnosable from the log
                 # rather than guessed at (the dashboard has no auto-reload).
-                if prev is not None:
-                    moved = []
-                    if running != prev[0]:
-                        moved.append("tasks")
-                    if finished != prev[1]:
-                        moved.append("tasks-done")
-                    if sig[2] != prev[2]:
-                        moved.append("curation-session")
-                    if sig[3] != prev[3]:
-                        moved.append("registry")
+                #
+                # Each label is paired with the member it describes rather than indexed
+                # positionally: 09-S2 dropped the curation-session member from `sig` and
+                # the positional diagnostics were left behind, so this read `sig[3]` of a
+                # 3-tuple and raised IndexError on EVERY change — taking the refresh call
+                # down with it. The pane simply stopped live-refreshing.
+                #
+                # `strict=False` on the label zip is deliberate: if the members and their
+                # labels ever drift again, the worst outcome must be an unnamed change in
+                # the log, never an exception on a polling path. The inner zip is strict
+                # because the guard above already proved the two are the same length.
+                if prev is not None and len(prev) == len(sig):
+                    moved = [
+                        name
+                        for name, (now, before) in zip(
+                            ("tasks", "tasks-done", "registry"), zip(sig, prev, strict=True), strict=False
+                        )
+                        if now != before
+                    ]
                     logger.info("journey live-refresh rebuild (changed: %s)", ", ".join(moved) or "unknown")
-                request_refresh(force_main=False)  # timer tick — let render_main self-gate
         except RuntimeError:
             # Client gone — timer will clean up shortly.
             pass
