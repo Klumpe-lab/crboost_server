@@ -14,6 +14,7 @@ still open.
 |---|---|---|---|---|
 | 05 | [per-ts-top-up](05-per-ts-top-up.md) | Re-run one failed/skipped tilt-series without recomputing the job or its downstream chain | medium (capability gap; index-shift hazard gates the cascade stage) | stage 0 partial 2026-08-13 (aggregation contract + `is_excluded` round-trip verified); no code |
 | 06 | [dl-tilt-filter](06-dl-tilt-filter.md) | DL tilt filter as always-interactive first-class method; hard approval barrier | medium (orchestration barrier + resume) | scoped 2026-08-11, revised same day; not started |
+| 13 | [roster-staged-vs-queued](13-roster-staged-vs-queued.md) | The roster paints a just-added job with the same amber "Scheduled" dot as one queued on the cluster; derive the split from `pipeline_active` + `pipeline_order` rather than adding a `JobStatus` member | low (render-only; no model or migration) | scoped 2026-08-23; not started |
 | — | [picking_ui/](picking_ui/00-overview.md) | index + the **guideline of record** for species-derived fields in job tabs; 07 = the deferred cross-project particle registry (scoping only, P-25) | — | 01–06 built and archived; **wave 2 built 2026-08-21/22**: 08 (control vocabulary + workbench chrome), 09 (Picks & curation one surface), 10-S1…S3 (external-picker contract, Model B adopted; S4 napari gated) and 11-S1…S6 (pick viewer, full page + slim) are all CODE-COMPLETE and owe ONE runtime pass together. 12 (aggregate candidates) stays a stub — it is blocked on a maintainer decision about which job the flow spawns |
 | — | [particles-ux-peeves](particles-ux-peeves.md) | living triage sheet for the maintainer's Journey/Species/roster walkthrough (bug / structural / cosmetic → home stage) | — | seeded 2026-08-16 (P-01…P-08); walkthrough intake 2026-08-18 (P-10…P-25, homed in picking_ui/) |
 | — | [ARC-RUNTIME-CHECKLIST.md](ARC-RUNTIME-CHECKLIST.md) | the one consolidated runtime script for roadmaps 07, 08–12 and de-novo S5/S6 | — | §0 static gates GREEN 2026-08-18; sections 1–5 (~40 steps) OWED |
@@ -27,7 +28,7 @@ whole species-registry arc plus `picking_ui/01–06` is sitting on code-review c
 2026-08-18 and should be re-run after each batch (they cannot be run from the assistant sandbox — no
 interpreter on the mounted path).
 
-**Not yet collected into any roadmap:** the roster / queue peeves, the Jobs tab peeves, and the
+**Not yet collected into any roadmap:** the Jobs tab peeves and the
 "don't touch this yet" items in `q_important_ui_fixes.md:60-66` (beam-induced-motion connected graph,
 tomo-recon gallery with Journey links, landing-page data-identification jank, pre-populated per-TS
 task rows, logs-tab width + copy button). They land in `particles-ux-peeves.md` first. The Picks /
