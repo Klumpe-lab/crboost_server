@@ -226,6 +226,31 @@ def _geometry_from_row(row: pd.Series, tomo_name: str, star_path: Path, source: 
     )
 
 
+def all_geometries(project_state, project_path: Path) -> list[TomoGeometry]:
+    """Every tomogram this project knows about, in star order, first source wins.
+
+    The gallery's row source: it needs the whole wall, and asking
+    :func:`geometry_for_ts` per name would re-scan each star for every tile. Same
+    precedence as :func:`tomogram_star_sources` (reconstruct job, then imported), so a
+    tomogram described by both is reported once, from the same row the per-TS lookup
+    would have used.
+    """
+    project_path = Path(project_path)
+    out: list[TomoGeometry] = []
+    seen: set[str] = set()
+    for source, star_path in tomogram_star_sources(project_state, project_path):
+        df = read_tomo_table(star_path)
+        if df is None:
+            continue
+        for _, row in df.iterrows():
+            name = str(row["rlnTomoName"])
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append(_geometry_from_row(row, name, star_path, source, project_path))
+    return out
+
+
 def geometry_for_ts(project_state, project_path: Path, ts_name: str) -> TomoGeometry | None:
     """The coordinate frame for one tilt series, or None when no known
     ``tomograms.star`` carries a row for it — i.e. nothing has reconstructed or
