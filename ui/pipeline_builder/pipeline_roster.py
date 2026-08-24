@@ -8,6 +8,7 @@ from services.project_state import JobType
 from ui.current_project import current_project_state
 
 from ui.components.buttons import house_button
+from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView
 from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
@@ -668,7 +669,10 @@ class RosterWidget(FingerprintedView):
                 project_path, job_model.relion_job_name, job_resolver=panel.backend.pipeline_orchestrator.job_resolver
             )
 
-        with ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
+        # Page-slot parented: the roster is a FingerprintedView whose poll rebuilds these
+        # rows, and a confirm dialog parented in a row that gets torn down takes the delete
+        # with it. See ui/components/dialogs.py.
+        with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
             ui.label(f"Delete {get_instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
             ui.label("This will move the job files to Trash/ and remove it from the pipeline.").classes(
                 "text-sm text-gray-600 mb-2"
@@ -741,7 +745,7 @@ class RosterWidget(FingerprintedView):
                             downstream.append(iid)
                             break
 
-        with ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
+        with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
             ui.label(f"Remove {get_instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
             ui.label("Your labels and thumbnails will be preserved and restored if you re-add this job.").classes(
                 "text-sm text-gray-600 mb-2"
