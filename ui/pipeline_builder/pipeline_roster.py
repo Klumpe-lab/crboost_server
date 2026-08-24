@@ -40,13 +40,15 @@ def _ts_cell(text: str, color: str, extra: str = ""):
     ui.label(text).style(f"font-size: 9px; font-family: 'IBM Plex Mono', monospace; color: {color}; {extra}")
 
 
+# Journey nav glyph: three ascending bars — the surface carries per-TS progress and
+# statistics across the whole pipeline, which the previous ringed-lines circle said
+# nothing about. No axis: at 18 px the bars alone are the legible read.
 _TOMO_DASHBOARD_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
-    'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
-    '<circle cx="12" cy="12" r="8"/>'
-    '<line x1="4.5" y1="9" x2="19.5" y2="9"/>'
-    '<line x1="4" y1="12" x2="20" y2="12"/>'
-    '<line x1="4.5" y1="15" x2="19.5" y2="15"/>'
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<line x1="5.5" y1="19" x2="5.5" y2="14"/>'
+    '<line x1="12" y1="19" x2="12" y2="9.5"/>'
+    '<line x1="18.5" y1="19" x2="18.5" y2="5"/>'
     "</svg>"
 )
 _SB_INFO = "#c0cad4"
@@ -820,8 +822,9 @@ class RosterWidget(FingerprintedView):
         visibility on the way out. Driven by the workspace's _switch_to."""
         self._active_mode = mode
         if self.panel.roster_panel is not None:
-            # The journey and the full-page pick viewer both want the whole width.
-            if mode in ("journey", "viewer"):
+            # The journey, the gallery wall and the full-page pick viewer all want the
+            # whole width.
+            if mode in ("journey", "gallery", "viewer"):
                 self.panel.roster_panel.style("display: none;")
             else:
                 self.panel.roster_panel.style(f"display: {'flex' if self._roster_visible else 'none'};")
@@ -834,7 +837,7 @@ class RosterWidget(FingerprintedView):
             pc = self._refs.get("pipeline_btn")
             if pc is not None:
                 pc.style("background: transparent;")
-        for ref_key, m in (("wb_btn", "workbench"), ("dashboard_btn", "journey")):
+        for ref_key, m in (("wb_btn", "workbench"), ("dashboard_btn", "journey"), ("gallery_btn", "gallery")):
             c = self._refs.get(ref_key)
             if c is not None:
                 c.style(f"background: {SB_ABG if mode == m else 'transparent'};")
@@ -855,6 +858,12 @@ class RosterWidget(FingerprintedView):
         tj = self.panel.toggle_journey
         if tj is not None:
             await tj()
+
+    async def _open_gallery(self):
+        """Switch to (or toggle off) the tomogram gallery. Lazily built like the journey."""
+        tg = self.panel.toggle_gallery
+        if tg is not None:
+            await tg()
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
@@ -883,10 +892,17 @@ class RosterWidget(FingerprintedView):
                 )
                 panel.callbacks["wb_btn"] = wb_btn
 
-            # Tomogram Dashboard — unified per-TS inspection surface that replaces
-            # the old "Tomogram Previews" grid, "Tilt Series Journey" matrix, and
-            # standalone "Candidate Previews" dialog. See services/visualization/
-            # ROADMAP.md for the consolidation plan.
+            # Tomograms — the birds-eye wall of reconstructions (ui/tomo_gallery.py).
+            # The "Tomogram Previews" grid the dashboard consolidation folded away,
+            # back as its own view: the Journey answers "how did THIS tilt-series go",
+            # the wall answers "how do they all look".
+            if panel.toggle_gallery is not None:
+                ui.element("div").style("height: 1px;")
+                self._sb_svg_btn("tomo_preview.svg", "Tomograms", self._open_gallery, ref_key="gallery_btn")
+
+            # Journey — unified per-TS inspection surface that replaces the old
+            # "Tilt Series Journey" matrix and standalone "Candidate Previews"
+            # dialog. See services/visualization/ROADMAP.md for the consolidation plan.
             ui.element("div").style("height: 1px;")
             self._build_dashboard_btn()
 
