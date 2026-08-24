@@ -41,7 +41,10 @@ from services.project_state import (
 )
 from services.array_tasks import ts_position_sort_key, ts_pretty_name
 from ui.components.buttons import house_button
+from ui.components.dialogs import dialog_host
 from ui.components.reactive import SingleFlight
+from ui.components.segmented import render_segmented
+from ui.dashboard.css import ensure_assets_loaded
 from ui.local_file_picker import local_file_picker
 from ui.projects_overview import avatar_color
 
@@ -246,11 +249,22 @@ class _MergeDialog:
             ui.space()
             merge_btn = house_button(
                 f"Merge {len(sources)} source(s)" if sources else "Merge",
-                lambda: asyncio.create_task(self.run_merge()),
+                lambda: self.run_merge(),  # NOT create_task: a bare task has an empty NiceGUI slot stack
                 kind="accent",
             )
             if not sources:
                 merge_btn.disable()
+            else:
+                # The extracted grade's terminal action, stated before the click. Unlike the
+                # coordinate grade — where the union has to be extracted before anything can
+                # read it — merged particles already have pixels, so the merge itself IS the
+                # handoff: `apply_aggregation_overrides` registers the synthetic
+                # `mergedSources` producer and every downstream job that consumes particles
+                # (Reconstruct / Class3D / Refine3D) is repointed at it.
+                merge_btn.tooltip(
+                    "Merges into MergedSources/<name>/ and wires it as this project's active source — "
+                    "Reconstruct, Class3D and Refine3D then read the merged particles. No job is submitted."
+                )
 
     def render_registry(self) -> None:
         if self.registry_holder is not None:
@@ -382,7 +396,7 @@ async def _confirm_blockers(lines: list[str]) -> bool:
     """Show what the gate found and let the user merge anyway. A question, not a block —
     a stale list is sometimes exactly what you meant to merge (comparing against an older
     extraction), and the roll-up gate is advisory by design."""
-    with ui.dialog() as confirm, ui.card().classes("w-[34rem] max-w-full gap-2"):
+    with dialog_host(), ui.dialog() as confirm, ui.card().classes("w-[34rem] max-w-full gap-2"):
         ui.label(f"{len(lines)} authoritative list(s) are not ready").classes("text-sm font-bold")
         ui.label(
             "The merge reads each source's optimisation_set as it is on disk right now. These lists "
@@ -423,6 +437,13 @@ class _MergeSelector:
         self.expanded_projects: set = set()
         self.expanded_species: set = set()
         self.curation: dict[str, list] = {}  # optset_path -> List[TomoCuration]
+        # Species narrowing, the control the coordinate dialog already had and this one
+        # did not. "" = every species. Unlike the coordinate grade — where one species per
+        # aggregate is ENFORCED (roadmap 12, D2) because the geometry has to be unambiguous
+        # — a pixel-grade merge of several species is merely unusual, so this narrows the
+        # tree without forbidding anything.
+        self.species_filter: str = ""
+        self.species_select = None  # bound by the dialog; options filled after discovery
         self.filter = ""
         self.show_curated_only = False
 
@@ -442,6 +463,8 @@ class _MergeSelector:
         cands = await run.io_bound(discover_subtomo_optimisation_sets, base_paths)
         self.candidates = cands
         self._group()
+        if self.species_select is not None:
+            self.species_select.set_options(self.species_options(), value="")
         # Auto-expand projects that already contribute a selected source.
         selected_paths = {s.optset_path for s in self.dlg.state.aggregation_sources}
         for c in cands:
@@ -533,10 +556,34 @@ class _MergeSelector:
             "dense outlined clearable debounce=200"
         ).classes("w-full mb-1")
 
+    def species_options(self) -> dict[str, str]:
+        """`{key: label}` for the species picker, "" first meaning every species. Keyed on
+        the DISPLAY label rather than the local species id on purpose: each project mints
+        its own id, so the same particle would otherwise appear as N unrelated entries —
+        the same problem the catalog chip solves one level down."""
+        labels = sorted({(c.species_label or "").strip() for c in self.candidates if (c.species_label or "").strip()})
+        return {"": "All species", **{lbl: lbl for lbl in labels}}
+
+    def set_species_filter(self, label: str) -> None:
+        self.species_filter = label or ""
+        # A narrowing that matches nothing in a shut project is invisible.
+        if self.species_filter:
+            self.expanded_projects = set(self.by_project)
+        self.rebuild()
+
     def _filtered_candidates(self) -> list:
         cands = list(self.candidates)
         if self.show_curated_only:
             cands = [c for c in cands if c.has_filter]
+        if self.species_filter:
+            # Never hide something already selected: narrowing the view must not silently
+            # drop a source from the merge (same rule as the coordinate dialog).
+            cands = [
+                c
+                for c in cands
+                if (c.species_label or "").strip() == self.species_filter
+                or self.dlg.find_source(c.optset_path) is not None
+            ]
         f = (self.filter or "").strip().lower()
         if not f:
             return cands
@@ -572,7 +619,7 @@ class _MergeSelector:
             .classes("w-full items-center gap-2 px-2 py-1.5 cursor-pointer hover:bg-slate-50")
             .style("border-bottom: 1px solid #eef2f6;")
         )
-        header.on("click", lambda _e, p=project_path: asyncio.create_task(self._toggle_project(p)))
+        header.on("click", lambda _e, p=project_path: self._toggle_project(p))
         with header:
             ui.icon("expand_more" if expanded else "chevron_right", size="16px").classes("text-slate-400")
             with ui.element("div").style(
@@ -622,7 +669,7 @@ class _MergeSelector:
             arrow = ui.icon("expand_more" if expanded else "chevron_right", size="14px").classes(
                 "text-slate-400 cursor-pointer"
             )
-            arrow.on("click", lambda _e, c=cand: asyncio.create_task(self._toggle_species(c)))
+            arrow.on("click", lambda _e, c=cand: self._toggle_species(c))
 
             if cand.species_label:
                 ui.label(cand.species_label).style(
@@ -817,24 +864,41 @@ def open_aggregation_merge_dialog(project_path) -> None:
     gone. Merging picks from several projects is a capability, not a project type: the
     resolver's merged-sources candidate injection was already unconditional, and gating
     the only door to it behind a checkbox chosen at creation time meant a regular project
-    could never reach it."""
+    could never reach it.
+
+    This is the EXTRACTED half of one two-mode surface; the coordinate half is
+    ``ui/aggregation/aggregate_dialog.py`` and the header switch moves between them. The
+    dialog is parented at the page layout slot (``dialog_host``) precisely so that switch
+    works: built in the caller's slot, this card would land inside the closing dialog that
+    opened it and never paint."""
+    from ui.aggregation.aggregate_dialog import GRADE_EXTRACTED, GRADE_TABS, open_aggregate_dialog
+
     d = _MergeDialog(project_path)
+    ensure_assets_loaded()  # the dialog can open on pages that never mounted the dashboard
+
+    def _switch_grade(key: str) -> None:
+        if key == GRADE_EXTRACTED:
+            return
+        dlg.close()
+        open_aggregate_dialog(project_path)
 
     with (
+        dialog_host(),
         ui.dialog() as dlg,
         ui.card()
         .classes("w-[1060px] max-w-[96vw] max-h-[92vh] overflow-hidden border border-slate-200 bg-white p-0")
         .style("color: #1e293b;"),
     ):
-        with ui.row().classes("w-full items-center gap-2 px-4 py-2 border-b border-slate-200 bg-slate-50"):
+        with ui.row().classes("w-full items-center gap-3 px-4 py-2 border-b border-slate-200 bg-slate-50"):
             ui.icon("merge_type", size="20px").style(f"color: {SLATE};")
-            ui.label("Merge sources").classes("text-sm font-bold text-slate-700")
+            ui.label("Aggregate").classes("text-sm font-bold text-slate-700")
+            render_segmented(GRADE_TABS, GRADE_EXTRACTED, _switch_grade)
             if has_merged_outputs(d.state):
                 ui.badge("merged", color="green").classes("text-[10px]")
             ui.space()
-            ui.button(icon="add", on_click=lambda: asyncio.create_task(d.pick_manual_path())).props(
-                "flat dense round size=sm"
-            ).classes("text-slate-500").tooltip("Add an optimisation_set.star path outside your project roots")
+            ui.button(icon="add", on_click=lambda: d.pick_manual_path()).props("flat dense round size=sm").classes(
+                "text-slate-500"
+            ).tooltip("Add an optimisation_set.star path outside your project roots")
             ui.button(icon="close", on_click=dlg.close).props("flat dense round size=sm").classes("text-slate-500")
 
         # Toolbar lives below; the selector reference is bound there.
@@ -859,6 +923,20 @@ def open_aggregation_merge_dialog(project_path) -> None:
             selector.rebuild()
 
         with toolbar:
+            # Species picker first, mirroring the coordinate dialog's toolbar. Options are
+            # filled once discovery returns (see selector.load) — the tree does not exist
+            # yet at build time.
+            species_select = (
+                ui.select(
+                    {"": "All species"},
+                    label="Species",
+                    on_change=lambda e: selector.set_species_filter(str(e.value or "")),
+                )
+                .props("dense outlined")
+                .classes("text-xs")
+                .style("min-width: 200px;")
+            )
+            selector.species_select = species_select
             ui.switch("Show curated only", value=False, on_change=_toggle_curated_only).props(
                 "dense color=blue-grey"
             ).classes("text-xs").tooltip(
