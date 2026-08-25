@@ -327,11 +327,11 @@ _CB_CSS = """
 }
 .cb-ltable-row {
     display: grid;
-    /* swatch · name · picks · ext · path · eye. The Journey's merge-tick column went with
-     * 11-S3 and the authoritative radio with the concept itself; the Picks & curation table
-     * re-orders these and adds source / origin / job / actions through .cb-ptable-row's own
-     * template below. */
-    grid-template-columns: 14px minmax(0, 1fr) 48px 26px 22px 20px;
+    /* swatch · name · picks · ext · path · delete · eye. The Journey's merge-tick column went
+     * with 11-S3 and the authoritative radio with the concept itself; the Picks & curation
+     * table re-orders these and adds source / origin / job / actions through .cb-ptable-row's
+     * own template below. */
+    grid-template-columns: 14px minmax(0, 1fr) 48px 26px 22px 22px 20px;
     align-items: center; gap: 8px;
     padding: 3px 7px; border-radius: 5px; cursor: pointer;
     border: 1px solid transparent; transition: background 0.12s, border-color 0.12s;
@@ -401,12 +401,28 @@ _CB_CSS = """
  * shrinks to fit, the `fr` tracks resolve against max-content, and every tomogram group ends
  * at its own x. That is the staggering; the grid template below cannot fix it alone. */
 .cb-ptable { width: 100%; }
+/* The `ext` track is 60px because its header spells `Extracted` out — a 3-letter
+ * abbreviation over a column whose whole content is one glyph told nobody what the glyph
+ * meant. */
 .cb-ptable-row {
-    grid-template-columns: 14px minmax(0, 2fr) 72px minmax(0, 1.4fr) 56px 26px 24px 96px;
+    grid-template-columns: 14px minmax(0, 2fr) 72px minmax(0, 1.4fr) 56px 60px 24px 96px;
     cursor: default;
 }
 /* Actions hug the right edge, so a row visibly ends AT the end of the line. */
 .cb-ptable-actions { justify-self: end; }
+/* The import affordance, one per tomogram group and present whether or not the group holds
+ * lists (a tomogram with no picks is exactly where a de-novo .coords import starts). It sits
+ * inside the table box, in the rows' own padding/radius, but deliberately OUT of the
+ * 8-column grid: it is one action, not a row of data. Dashed and dim so it reads as the
+ * empty slot it is until hovered. */
+.cb-ptable-import {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 7px; border-radius: 5px; cursor: pointer;
+    border: 1px dashed #e1e7f0; background: transparent;
+    font-size: 10px; color: #b6c0cf;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.cb-ptable-import:hover { background: #ffffff; border-color: #c7d2fe; color: #6366f1; }
 .cb-ptable-group {
     display: flex; align-items: center; gap: 8px; width: 100%;
     padding: 4px 6px 2px; margin-top: 4px;
@@ -1032,6 +1048,18 @@ _CB_CSS = """
 .cb-tw-sel-off { color: #cbd5e1; }
 .cb-tw-row.selected .cb-tw-sel-on { display: inline-flex; }
 .cb-tw-row.selected .cb-tw-sel-off { display: none; }
+/* By-path import at the foot of BOTH lists — the same dim dashed affordance the Picks &
+ * curation table ends with (.cb-ptable-import), in this table's tighter scale. It is a
+ * single action, so it sits outside the grid the rows share; `--cb-accent` is the table's
+ * own (indigo for templates, purple for masks), so each column's row hovers to its colour. */
+.cb-tw-import {
+    display: flex; align-items: center; gap: 5px;
+    margin: 3px 5px; padding: 2px 5px; min-height: 18px;
+    border: 1px dashed #e5e7eb; border-radius: 4px; cursor: pointer;
+    font-size: 9px; color: #b6c0cf;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.cb-tw-import:hover { background: #f8fafc; border-color: var(--cb-accent); color: var(--cb-accent); }
 /* Species header row: active pill left, segmented tabs right. */
 .cb-species-header {
     display: flex; align-items: center; gap: 10px; flex-shrink: 0;

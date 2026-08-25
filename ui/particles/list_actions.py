@@ -20,13 +20,14 @@ from pathlib import Path
 
 from nicegui import ui
 
-from services.aggregation.authoritative import extraction_params_for_species
+from services.aggregation.extraction import extraction_params_for_species
 from services.background_tasks import get_background_task_registry
 from services.models_base import JobStatus, ListExtractionState, PickListType, PickSourceKind
 from services.particles import picks_filter
 from services.particles.ingest import register_manual_pick_list
+from services.particles.list_admin import delete_pick_list, pick_list_files
 from services.particles.list_ref import AUTO_SLUG, ListRef, extract_pick_list_instance_id, fs_slug, known_tomograms
-from services.particles.species_overview import ExtractJob
+from services.particles.species_overview import ExtractJob, extract_job_for
 from services.project_state import ExtractionParams, PickList, get_project_state_for
 from services.visualization.tomo_geometry import geometry_for_ts
 from ui.background_task import BackgroundTask
@@ -41,6 +42,8 @@ logger = logging.getLogger(__name__)
 OnDone = Callable[[], None]
 
 _flight = SingleFlight()
+
+_HINT_CLS = "text-[10px] text-gray-400"
 
 # Extraction-state badge shown on each workbench list row (Slice A surfaces it; the
 # per-list Extract action that flips it is Slice C). Auto lists show none.
@@ -502,6 +505,80 @@ async def merge_lists(backend, refs: list[ListRef], name: str) -> str | None:
     return slug
 
 
+# ── Delete ────────────────────────────────────────────────────────────────────
+
+
+async def delete_list(
+    backend, project_path: Path, species_id: str, tomo_name: str, slug: str, label: str, *, on_done: OnDone
+) -> None:
+    """Confirm (listing exactly what goes) → ``list_admin.delete_pick_list``.
+
+    Takes the identity rather than a ``ListRef`` so the Journey / viewer rail — which
+    renders from ``sp`` / ``lst`` dicts and has no anchors resolved — can offer the same
+    delete as the Species page's Picks table without a disk pass to build one.
+
+    An in-flight extraction is cancelled FIRST: its output directory is what this removes,
+    and its instance goes with the list, so a job left running would re-create the directory
+    with nothing left in the project able to stop it.
+    """
+    async with _flight(f"delete:{project_path}:{species_id}:{tomo_name}:{slug}") as acquired:
+        if not acquired:
+            return
+        state = get_project_state_for(project_path)
+        pl = state.get_pick_list(slug, species_id, tomo_name)
+        if pl is None:
+            ui.notify(f"'{label}' is not a registered list — nothing to delete.", type="warning")
+            return
+        files = await asyncio.to_thread(pick_list_files, pl)
+        job = extract_job_for(state, species_id, tomo_name, slug)
+        live_job = job is not None and job.is_live
+        with dialog_host(), ui.dialog() as confirm, ui.card().classes("w-[30rem] max-w-full gap-2"):
+            ui.label(f"Delete '{label}' on {tomo_name}?").classes("text-sm font-bold")
+            for kind, kind_label in (("stars", "star file"), ("dirs", "extraction output"), ("coords", "ArtiaX save")):
+                for path in files[kind]:
+                    ui.label(f"• {kind_label}: {path}").classes("text-[10px] font-mono text-gray-600")
+            if not any(files.values()):
+                ui.label("• nothing on disk — only the registry entry").classes("text-[11px] text-gray-500")
+            if files["coords"]:
+                ui.label(
+                    "The .coords saves go too — otherwise the curation watcher re-registers this list on the "
+                    "next save scan. Archived copies under imports/ are kept."
+                ).classes(_HINT_CLS)
+            if live_job:
+                ui.label(
+                    f"An extraction for this list is {job.status.lower()} (SLURM {job.slurm_job_id or '—'}) — "
+                    "it is cancelled first. Left running it would re-create the output directory this delete "
+                    "removes, and its instance goes with the list, so nothing would be left to stop it with."
+                ).classes("text-[10px] text-orange-700")
+            ui.label("This cannot be undone.").classes(_HINT_CLS + " text-red-600")
+            with ui.row().classes("w-full justify-end gap-2"):
+                house_button("Cancel", lambda: confirm.submit(None))
+                house_button("Delete list", lambda: confirm.submit(True), kind="danger")
+        go = await confirm
+        confirm.delete()
+        if not go:
+            return
+        if live_job and backend is None:
+            ui.notify(
+                "Backend unavailable — the in-flight extraction was NOT cancelled and may re-create the "
+                "directory this delete removes.",
+                type="warning",
+                timeout=6000,
+            )
+        elif live_job:
+            cancelled = await backend.cancel_pick_list_extraction(project_path, species_id, tomo_name, slug)
+            if not cancelled.get("success"):
+                ui.notify(cancelled["error"], type="warning", timeout=6000)
+        result = await delete_pick_list(project_path, species_id, tomo_name, slug)
+        if not result.get("success"):
+            ui.notify(result["error"], type="negative")
+            return
+        for problem in result.get("errors") or []:
+            ui.notify(problem, type="warning", timeout=5000)
+        ui.notify(f"Deleted '{label}' ({result.get('deleted_files', 0)} file(s))", type="positive")
+        on_done()
+
+
 async def dedup_list(backend, ref: ListRef, radius_ang: float, *, on_done: OnDone) -> None:
     """Greedy radius-dedup of a merged list in place (manual kept over auto). The backend
     rewrites the star, updates the ``PickList`` count, persists and bumps the rev; the
@@ -654,7 +731,13 @@ async def register_imported_picks(backend, ref: ListRef, result: dict, *, on_don
 
 
 def import_picks_from_path(
-    backend, ref: ListRef, *, on_done: OnDone, tomo_options: dict[str, ListRef] | None = None, intro: str | None = None
+    backend,
+    ref: ListRef,
+    *,
+    on_done: OnDone,
+    tomo_options: dict[str, ListRef] | None = None,
+    intro: str | None = None,
+    initial_path: str | None = None,
 ) -> None:
     """Import a ``.coords`` by explicit path (ArtiaX's save dialog may default anywhere,
     and an external file has no curation dir at all): paste the full path → the same
@@ -663,7 +746,11 @@ def import_picks_from_path(
 
     ``tomo_options`` (``{tomo_name: ref}``, the Species page's species-level entry) adds a
     tomogram picker — the .coords maps into ONE tomogram's frame, and the tomogram may have
-    no picks yet, so the caller supplies the universe; ``ref`` is the initial choice."""
+    no picks yet, so the caller supplies the universe; ``ref`` is the initial choice.
+
+    ``initial_path`` pre-fills the field for a caller that already browsed to the file (the
+    Picks & curation import row). The dialog still opens rather than importing straight off
+    the pick: the frame a by-path file is read in is stated here and nowhere else."""
     if tomo_options is None and ref.tomograms_star is None:
         ui.notify(f"No tomograms.star resolved for {ref.tomo_name} — cannot map .coords into it.", type="warning")
         return
@@ -698,7 +785,7 @@ def import_picks_from_path(
                 target["ref"] = tomo_options[e.value]
 
             tomo_sel.on_value_change(_pick)
-        path_in = house_text("Path to .coords", width="w-full")
+        path_in = house_text("Path to .coords", width="w-full", value=initial_path or "")
 
         async def _do_import():
             p = (path_in.value or "").strip()

@@ -7,17 +7,20 @@ template+mask it came from — is an auxiliary fact of a row here.
 
 Top to bottom:
 
-- **Status line** — session chip (click → the control center; its tooltip carries the
-  WHERE-TO-SAVE contract, derived from the watcher's own cadence) · lists · picks · kept ·
-  extracted, and `Extract all pending`.
+- **Status line** — the `curation session` link (click → the control center; its tooltip
+  carries the WHERE-TO-SAVE contract, derived from the watcher's own cadence) and
+  `Extract all pending`. The lists / picks / kept / extracted chips that used to sit beside
+  it are gone: each was a sum of the table right below, so the strip restated the page.
 - **One group per tomogram**, over the species' whole tomogram universe rather than only the
   ones that already hold picks: a tomogram with nothing on it is exactly where de-novo
-  picking starts, and it is a legitimate `.coords` import target. Group actions are the ONE
-  place each verb exists — `curate` (the single ArtiaX launch/scope affordance in the app,
-  09-S2), import a `.coords`, copy the save dir, `journey ↗`.
-- **The list table** per group: swatch · list · source · origin · picks · ext · job ·
-  actions. `origin` (09-S4) names the template + mask that produced the picks, resolved from
-  the candidate-extract instance's recorded template-match input — never guessed.
+  picking starts, and it is a legitimate `.coords` import target. The name carries the
+  copy-save-dir button (it copies that tomogram's folder), and the group actions are the ONE
+  place each remaining verb exists — `curate` (the single ArtiaX launch/scope affordance in
+  the app, 09-S2), `viewer ↗`, `journey ↗`.
+- **The list table** per group: swatch · list · source · origin · picks · Extracted · job ·
+  actions, closed by the always-present import row. `origin` (09-S4) names the template +
+  mask that produced the picks, resolved from the candidate-extract instance's recorded
+  template-match input — never guessed.
 - **Watcher footer** — what the server did with this species' saves, plus every dir holding
   a save it could NOT attribute, with the reason. That second list is the never-silent half.
 
@@ -31,7 +34,7 @@ Every action is `ui/particles/list_actions`, so the Journey and this tab drive o
 implementation. `on_done` is a no-op for most of them: the actions bump the registry rev, and
 the rev is what repaints this view.
 
-Two columns tell the extraction story, and the split is deliberate: `ext` is DERIVED
+Two columns tell the extraction story, and the split is deliberate: `Extracted` is DERIVED
 (`PickList.extraction_state()` — is there a RECORDED extraction output that still exists and
 is current with the picks?), while `job` reports the per-list extraction JOB behind it
 (roadmap 07-S4) — queued / running / succeeded / failed, with the failure text and the
@@ -66,16 +69,8 @@ from services.aggregation.extraction import extraction_params_for_species
 from services.curation.watcher import FULL_SWEEP_EVERY, SETTLE_SEC, TICK_SEC
 from services.dashboard_data import glyph_for
 from services.models_base import JobStatus, ListExtractionState, PickListType
-from services.particles.list_admin import delete_pick_list, pick_list_files
 from services.particles.list_ref import AUTO_SLUG, ListRef, auto_ref, list_ref_for, species_tomo_map
-from services.particles.species_overview import (
-    NOT_APPLICABLE,
-    ExtractJob,
-    ListRow,
-    SpeciesOverview,
-    extract_job_for,
-    species_overview,
-)
+from services.particles.species_overview import NOT_APPLICABLE, ExtractJob, ListRow, SpeciesOverview, species_overview
 from services.project_state import get_project_state_for
 from services.visualization import artiax_bridge
 from ui.background_task import BackgroundTask
@@ -83,6 +78,7 @@ from ui.components.buttons import house_button
 from ui.components.chip import render_chip
 from ui.components.reactive import FingerprintedView, SingleFlight
 from ui.curation_session_dialog import open_curation_control_center
+from ui.local_file_picker import local_file_picker
 from ui.particles import list_actions, session_status
 from ui.species.tab import TabContext
 from ui.styles import MONO
@@ -102,10 +98,11 @@ _LINK_CLS = "text-[10px] text-indigo-500 cursor-pointer underline decoration-dot
 _DETECT_S = FULL_SWEEP_EVERY * TICK_SEC + SETTLE_SEC
 _HOT_DETECT_S = TICK_SEC + SETTLE_SEC
 
-_SESSION_CHIP = {
-    session_status.LIVE: ("running", "ok", "A ChimeraX + ArtiaX session of yours is up"),
-    session_status.OFF: ("none", "neutral", "No session running — 'curate' on a tomogram starts one"),
-    session_status.UNKNOWN: ("unknown", "warn", "Could not ask SLURM whether a session is running"),
+# The session's word + what it means, for the one link that opens the control center.
+_SESSION_TEXT = {
+    session_status.LIVE: ("running", "A ChimeraX + ArtiaX session of yours is up"),
+    session_status.OFF: ("none", "No session running — 'curate' on a tomogram starts one"),
+    session_status.UNKNOWN: ("unknown", "Could not ask SLURM whether a session is running"),
 }
 _EVENT_CLS = {
     "ingested": "cb-badge-ok",
@@ -295,33 +292,19 @@ class _PicksView(FingerprintedView):
         self._render_log()
 
     def _render_header(self, c: _Computed) -> None:
-        ov = c.overview
+        """One link and one button. The lists / picks / kept / extracted roll-up chips are
+        gone: every number in them was a sum of the table directly below, so the strip
+        restated the page in pills above it. The SESSION is not a roll-up — it is the only
+        door to the control center, and the WHERE-TO-SAVE contract hangs off it — so it
+        survives as a link in the same vocabulary as `viewer ↗` / `journey ↗`."""
         st = session_status.status()
-        text, status, tip = _SESSION_CHIP[st]
+        text, tip = _SESSION_TEXT[st]
         if session_status.last_error():
             tip = f"{tip}\n{session_status.last_error()}"
         with ui.row().classes("w-full items-center gap-2 px-1 flex-wrap"):
-            with ui.element("div").classes("cb-chip-strip"):
-                chip = render_chip(
-                    "session",
-                    text,
-                    status=status,
-                    tooltip=f"{tip} — click for the control center. {_save_contract(c.species_slug)}",
-                )
-                chip.style("cursor: pointer;").on("click", self._tab.open_control_center)
-                render_chip("lists", str(len(ov.rows)), tooltip="pick lists over every tomogram of this species")
-                render_chip("picks", str(ov.n_picks), tooltip="sum of every list's count")
-                render_chip("kept", str(ov.n_kept), tooltip="after committed keep/drop curation")
-                # Denominator = rows the `ext` column can actually speak for. The auto list of
-                # a species with no subtomo job reads "n/a" there, and counting it would put a
-                # ratio on screen that can never reach its own total.
-                extractable = sum(1 for r in ov.rows if r.extraction_state != NOT_APPLICABLE)
-                render_chip(
-                    "extracted",
-                    f"{ov.n_extracted_lists}/{extractable}",
-                    status="ok" if extractable and ov.n_extracted_lists == extractable else "neutral",
-                    tooltip="lists whose subtomograms are cut and current with their picks — the `ext` column, summed",
-                )
+            ui.label(f"curation session · {text} ↗").classes(_LINK_CLS).on(
+                "click", self._tab.open_control_center
+            ).tooltip(f"{tip} — click for the control center. {_save_contract(c.species_slug)}")
             ui.space()
             house_button("Extract all pending", self._tab.extract_all_pending).tooltip(
                 "Subtomo-extract every list of this species that is not extracted / stale — shows what it would "
@@ -339,6 +322,12 @@ class _PicksView(FingerprintedView):
     def _render_group(self, c: _Computed, info: _TomoInfo, rows: list[ListRow]) -> None:
         with ui.element("div").classes("cb-ptable-group"):
             ui.label(info.tomo_name).classes("cb-ptable-group-name")
+            # Copying the save dir is an act ON THE NAME beside it — the folder is the
+            # tomogram's — so it sits with the name rather than at the far right with the
+            # navigation verbs, a whole row's width away from what it copies.
+            ui.button(icon="content_copy", on_click=lambda _e, d=info.curation_dir: self._tab.copy(d)).props(
+                "flat dense round size=sm"
+            ).tooltip(info.curation_dir)
             if rows:
                 ui.label(f"{len(rows)} list{'s' if len(rows) != 1 else ''}").classes(_HINT_CLS)
             else:
@@ -362,32 +351,54 @@ class _PicksView(FingerprintedView):
             ui.space()
             self._render_group_actions(info)
 
-        if not rows:
-            return
+        # The table box is drawn for EVERY tomogram, empty of lists or not, because the
+        # import row lives in it and that row is the point of an empty tomogram.
         with ui.element("div").classes("cb-ltable cb-ptable"):
-            with ui.element("div").classes("cb-ltable-row cb-ptable-row cb-ltable-head"):
-                ui.element("div")  # swatch
-                ui.label("list").classes("cb-ltable-h-name")
-                ui.label("source").classes("cb-ltable-h-name")
-                ui.label("origin").classes("cb-ltable-h-name").tooltip(
-                    "The template and mask these picks came out of. Hover a cell for the full paths."
-                )
-                ui.label("picks").classes("cb-ltable-h-num")
-                ui.label("ext").classes("cb-ltable-h-cell").tooltip("Subtomo-extracted state")
-                ui.label("job").classes("cb-ltable-h-cell").tooltip(
-                    "The per-list extraction JOB behind that state — queued / running / succeeded / failed. "
-                    "Hover a mark for the geometry it cut with and any failure text; click it for the logs."
-                )
-                ui.element("div")  # actions
-            for row in rows:
-                self._render_row(c, info.tomo_name, row)
+            if rows:
+                with ui.element("div").classes("cb-ltable-row cb-ptable-row cb-ltable-head"):
+                    ui.element("div")  # swatch
+                    ui.label("list").classes("cb-ltable-h-name")
+                    ui.label("source").classes("cb-ltable-h-name")
+                    ui.label("origin").classes("cb-ltable-h-name").tooltip(
+                        "The template and mask these picks came out of. Hover a cell for the full paths."
+                    )
+                    ui.label("picks").classes("cb-ltable-h-num")
+                    ui.label("Extracted").classes("cb-ltable-h-cell").tooltip(
+                        "Subtomo-extracted state: ✓ when this list's subtomograms are cut and current with its "
+                        "picks, ⚠ when they are stale, blank when it has not been extracted."
+                    )
+                    ui.label("job").classes("cb-ltable-h-cell").tooltip(
+                        "The per-list extraction JOB behind that state — queued / running / succeeded / failed. "
+                        "Hover a mark for the geometry it cut with and any failure text; click it for the logs."
+                    )
+                    ui.element("div")  # actions
+                for row in rows:
+                    self._render_row(c, info.tomo_name, row)
+            self._render_import_row(info)
+
+    def _render_import_row(self, info: _TomoInfo) -> None:
+        """The import affordance, one per tomogram and ALWAYS there — under a group's lists
+        and, for a tomogram with none, as the only thing in its table box. A `.coords` that
+        landed outside the curation dir has no other way into this species, and a tomogram
+        with no picks yet is exactly where a de-novo import starts; an icon that only
+        appeared beside groups that already had rows hid the case it exists for."""
+        row = ui.element("div").classes("cb-ptable-import")
+        with row:
+            ui.label("+")
+            ui.label("import a .coords list by path…")
+        row.tooltip(
+            "Opens a file browser — paste an absolute path into its path bar to go straight to a file. The "
+            f"file is read as full-resolution coordinates and registered as a manual list on {info.tomo_name}."
+        )
+        row.on("click", lambda _e, i=info: self._tab.import_picks(i.ref, start_dir=i.curation_dir))
 
     def _render_group_actions(self, info: _TomoInfo) -> None:
         """The ONE place each per-tomogram verb exists (09-S2): launch/scope an ArtiaX
-        session, import a `.coords` by path, copy the save dir, jump to the viewer. The
-        sidebar launcher, the Picks-tab ⚡ and the species-level import header button are
-        gone; the Journey's ⚡ navigates here. Since 10-S1 `curate` no longer has a
-        swap branch — a session's scope is declared once, at launch."""
+        session, jump to the viewer or the Journey. The sidebar launcher, the Picks-tab ⚡
+        and the species-level import header button are gone; the Journey's ⚡ navigates
+        here. Since 10-S1 `curate` no longer has a swap branch — a session's scope is
+        declared once, at launch. Import moved to the table's own import row and copy to
+        the tomogram's name; what is left here is what LEAVES this table."""
         ui.button(icon="view_in_ar", on_click=lambda _e, r=info.ref: self._tab.curate(r)).props(
             "flat dense round size=sm color=indigo"
         ).tooltip(
@@ -396,12 +407,6 @@ class _PicksView(FingerprintedView):
             "center to start one on it. A session already running keeps the tomogram it was launched on — crboost "
             "does not switch it; the control center says which one that is."
         )
-        ui.button(icon="download", on_click=lambda _e, r=info.ref: self._tab.import_picks(r)).props(
-            "flat dense round size=sm"
-        ).tooltip("Import a .coords by explicit path (a save that landed outside the curation dir)")
-        ui.button(icon="content_copy", on_click=lambda _e, d=info.curation_dir: self._tab.copy(d)).props(
-            "flat dense round size=sm"
-        ).tooltip(info.curation_dir)
         # 09-S5, landed with picking_ui/11-S5: `viewer ↗` opens the full-page pick viewer
         # on this (species, tomogram) — slabs, the lists strip and the cutout gallery at
         # workspace size, with curation mode. `journey ↗` stays beside it because the two
@@ -433,8 +438,7 @@ class _PicksView(FingerprintedView):
             ui.label(_count_text(row.count, row.kept)).classes("cb-ltable-count").tooltip(
                 "kept / total picks after keep-drop curation"
             )
-            with ui.element("div").classes("cb-ltable-cell"):
-                self._render_ext_badge(row)
+            self._render_ext_cell(row)
             self._render_job_chip(row)
             with ui.row().classes("cb-ptable-actions items-center gap-0 flex-nowrap"):
                 self._render_actions(tomo, row, ref)
@@ -462,22 +466,35 @@ class _PicksView(FingerprintedView):
             f"template {row.template_path} · mask {row.mask_path or '—'}"
         )
 
-    def _render_ext_badge(self, row: ListRow) -> None:
+    def _render_ext_cell(self, row: ListRow) -> None:
+        """The `Extracted` column — ALWAYS exactly one grid child, a MARK only when there is
+        something to mark: ✓ when this list's subtomograms are cut and current, ⚠ when they
+        are stale and need re-cutting. Not-extracted and not-applicable are BLANK. They used
+        to draw `○` and `·`, but not-extracted is the majority state of a picking project, so
+        a glyph on nearly every row said nothing while making the two that matter hard to
+        find. The state stays on the cell's hover either way — blank here means "nothing has
+        happened", never "we don't know"."""
+        cell = ui.element("div").classes("cb-ltable-cell")
         if row.extraction_state == NOT_APPLICABLE:
-            ui.label("·").classes("cb-ltable-badge text-gray-300").tooltip(
-                "auto list of a species with no subtomo-extraction job — nothing to extract here"
-            )
+            cell.tooltip("auto list of a species with no subtomo-extraction job — nothing to extract here")
             return
         text, cls = list_actions.extraction_badge(ListExtractionState(row.extraction_state))
-        if text:
-            ui.label(text.split(" ", 1)[0]).classes(f"cb-ltable-badge {cls}").tooltip(text)
+        if not text:
+            return
+        glyph, _, words = text.partition(" ")
+        if row.extraction_state == ListExtractionState.NOT_EXTRACTED.value:
+            cell.tooltip(words)  # no mark, so the hover carries the words without its glyph
+            return
+        with cell:
+            ui.label(glyph).classes(f"cb-ltable-badge {cls}")
+        cell.tooltip(text)
 
     def _render_job_chip(self, row: ListRow) -> None:
         """The `job` column: what the per-list extraction INSTANCE is doing (roadmap 07-S4).
 
         ALWAYS emits exactly one grid child — the cell stays empty for a list with no
         instance (the `auto` list never gets one, and a list that was never submitted has
-        nothing to add to `ext`), because a skipped child would slide every later column of
+        nothing to add to `Extracted`), because a skipped child would slide every later column of
         that row one place left. Clicking opens the job's logs: this job deliberately has no
         roster row, so the mark is the only door to them."""
         cell = ui.element("div").classes("cb-ltable-cell")
@@ -732,8 +749,34 @@ class PicksTab:
         longer a decision to get wrong."""
         await list_actions.curate_in_artiax(self.backend, ref)
 
-    def import_picks(self, ref: ListRef) -> None:
-        list_actions.import_picks_from_path(self.backend, ref, on_done=self.refresh)
+    async def import_picks(self, ref: ListRef, *, start_dir: str | None = None) -> None:
+        """The import row's click: BROWSE first — the shared file picker, opened on this
+        tomogram's curation dir, whose path bar also takes an absolute path straight to a
+        file — then the import confirm, pre-filled, because the frame a by-path file is
+        read in is stated there and nowhere else. SingleFlight-guarded like every dialog
+        opener here: the row sits in a poll-refreshed container that can be replaced
+        mid-click, so several clicks can legitimately land before one opens."""
+        async with self._flight(f"import:{ref.tomo_name}") as acquired:
+            if not acquired:
+                return
+            if ref.tomograms_star is None:
+                ui.notify(
+                    f"No tomograms.star resolved for {ref.tomo_name} — cannot map .coords into it.", type="warning"
+                )
+                return
+            start = str(self.ctx.project_path)
+            if start_dir and await asyncio.to_thread(Path(start_dir).is_dir):
+                start = start_dir
+            picked = await local_file_picker(start, upper_limit=None, mode="file", glob="*.coords")
+            if not picked:
+                return
+            list_actions.import_picks_from_path(
+                self.backend,
+                ref,
+                on_done=self.refresh,
+                intro=f"Import this .coords as a manual pick list on {ref.tomo_name}.",
+                initial_path=picked[0],
+            )
 
     async def assign_unattributed(self, entry: dict) -> None:
         """Give an orphaned save an explicit (species, tomogram) — the staging step of
@@ -772,65 +815,11 @@ class PicksTab:
             )
 
     async def delete_list(self, ref: ListRef) -> None:
-        """Confirm (listing exactly what goes) → `list_admin.delete_pick_list`."""
-        async with self._flight(f"delete:{ref.tomo_name}:{ref.slug}") as acquired:
-            if not acquired:
-                return
-            state = get_project_state_for(ref.project_path)
-            pl = state.get_pick_list(ref.slug, ref.species_id, ref.tomo_name)
-            if pl is None:
-                ui.notify(f"'{ref.label}' is not a registered list — nothing to delete.", type="warning")
-                return
-            files = await asyncio.to_thread(pick_list_files, pl)
-            job = extract_job_for(state, ref.species_id, ref.tomo_name, ref.slug)
-            live_job = job is not None and job.is_live
-            with list_actions.dialog_host(), ui.dialog() as confirm, ui.card().classes("w-[30rem] max-w-full gap-2"):
-                ui.label(f"Delete '{ref.label}' on {ref.tomo_name}?").classes("text-sm font-bold")
-                for kind, label in (("stars", "star file"), ("dirs", "extraction output"), ("coords", "ArtiaX save")):
-                    for path in files[kind]:
-                        ui.label(f"• {label}: {path}").classes("text-[10px] font-mono text-gray-600")
-                if not any(files.values()):
-                    ui.label("• nothing on disk — only the registry entry").classes("text-[11px] text-gray-500")
-                if files["coords"]:
-                    ui.label(
-                        "The .coords saves go too — otherwise the curation watcher re-registers this list on the "
-                        "next save scan. Archived copies under imports/ are kept."
-                    ).classes(_HINT_CLS)
-                if live_job:
-                    ui.label(
-                        f"An extraction for this list is {job.status.lower()} (SLURM {job.slurm_job_id or '—'}) — "
-                        "it is cancelled first. Left running it would re-create the output directory this delete "
-                        "removes, and its instance goes with the list, so nothing would be left to stop it with."
-                    ).classes("text-[10px] text-orange-700")
-                ui.label("This cannot be undone.").classes(_HINT_CLS + " text-red-600")
-                with ui.row().classes("w-full justify-end gap-2"):
-                    house_button("Cancel", lambda: confirm.submit(None))
-                    house_button("Delete list", lambda: confirm.submit(True), kind="danger")
-            go = await confirm
-            confirm.delete()
-            if not go:
-                return
-            if live_job and self.backend is None:
-                ui.notify(
-                    "Backend unavailable — the in-flight extraction was NOT cancelled and may re-create the "
-                    "directory this delete removes.",
-                    type="warning",
-                    timeout=6000,
-                )
-            elif live_job:
-                cancelled = await self.backend.cancel_pick_list_extraction(
-                    ref.project_path, ref.species_id, ref.tomo_name, ref.slug
-                )
-                if not cancelled.get("success"):
-                    ui.notify(cancelled["error"], type="warning", timeout=6000)
-            result = await delete_pick_list(ref.project_path, ref.species_id, ref.tomo_name, ref.slug)
-            if not result.get("success"):
-                ui.notify(result["error"], type="negative")
-                return
-            for problem in result.get("errors") or []:
-                ui.notify(problem, type="warning", timeout=5000)
-            ui.notify(f"Deleted '{ref.label}' ({result.get('deleted_files', 0)} file(s))", type="positive")
-            self.refresh()
+        """`list_actions.delete_list` — the same confirm + delete the Journey / viewer rail
+        offers, which is why it lives there and not here."""
+        await list_actions.delete_list(
+            self.backend, ref.project_path, ref.species_id, ref.tomo_name, ref.slug, ref.label, on_done=self.refresh
+        )
 
     # ── Extract all pending ───────────────────────────────────────────────────
 

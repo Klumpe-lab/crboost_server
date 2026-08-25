@@ -50,6 +50,7 @@ from services.species_admin import delete_file_with_sidecar
 from services.templating.template_metadata import read_template_header
 from ui.components.chip import render_method_chip, render_polarity_chip
 from ui.components.path_link import render_path_link
+from ui.components.reactive import SingleFlight
 from ui.components.segmented import render_segmented
 from ui.components.buttons import house_button
 from ui.components.fields import house_field as _field
@@ -344,6 +345,12 @@ class TemplateWorkbench:
         self._pending_loads: list[dict] = []
         self._pending_load_seq: int = 0
         self._pending_loads_container: ui.element | None = None
+
+        # Dialog openers reachable from INSIDE the lists (the by-path import rows): an
+        # import moves list membership, which re-renders that list, so the row the click
+        # came from is destroyed under it — without this a user's second click opens a
+        # second dialog.
+        self._flight = SingleFlight()
 
         # UI refs
         self._templates_table: ui.element | None = None
@@ -1068,11 +1075,18 @@ class TemplateWorkbench:
         self._render_table_head(("", "FILE", "POLARITY", "HEADER", "STATS", "SIZE", ""))
         templates = list(sp.templates)
         if not templates:
-            self._render_empty_state("No templates yet — use Source below to add one.")
-            return
-        sid = sp.selected_template_id
-        for t in templates:
-            self._render_template_row(t, selected=(t.id == sid))
+            self._render_empty_state("No templates yet — import one below, or build one from Source.")
+        else:
+            sid = sp.selected_template_id
+            for t in templates:
+                self._render_template_row(t, selected=(t.id == sid))
+        self._render_import_row(
+            "import a template .mrc by path…",
+            self._open_import_dialog,
+            "Opens the import dialog: browse to an existing MRC or paste its absolute path, and it reads the "
+            "header, asks you to confirm the metadata, copies the file into the project and appends it as a "
+            "new template. Same action as Source → Import.",
+        )
 
     def _render_template_row(self, tpl: ParticleTemplate, *, selected: bool) -> None:
         h = read_template_header(tpl.template_path)
@@ -1106,6 +1120,18 @@ class TemplateWorkbench:
         with ui.element("div").classes("cb-tw-head"):
             for text in labels:
                 ui.label(text).classes(_LABEL_CLS)
+
+    def _render_import_row(self, text: str, on_click, tooltip: str) -> None:
+        """By-path import at the foot of BOTH lists, present whether or not the list holds
+        anything — an empty list is exactly where an import starts, and the Source panel's
+        own button is a segmented-tab flip away and below the list's fold. It is the same
+        action, not a second one; it just sits where the thing it adds to is."""
+        row = ui.element("div").classes("cb-tw-import")
+        with row:
+            ui.label("+")
+            ui.label(text)
+        row.tooltip(tooltip)
+        row.on("click", lambda _e: on_click())
 
     def _render_select_cell(self) -> None:
         """Both radios; `.cb-tw-row.selected` decides which one shows (CSS in
@@ -1499,11 +1525,18 @@ class TemplateWorkbench:
         self._render_table_head(("", "FILE", "METHOD", "HEADER", "STATS", "SIZE", ""))
         masks = list(sp.masks)
         if not masks:
-            self._render_empty_state("No masks yet — create one below.")
-            return
-        sid = sp.selected_mask_id
-        for m in masks:
-            self._render_mask_row(m, selected=(m.id == sid))
+            self._render_empty_state("No masks yet — import one below, or create one from Source.")
+        else:
+            sid = sp.selected_mask_id
+            for m in masks:
+                self._render_mask_row(m, selected=(m.id == sid))
+        self._render_import_row(
+            "import a mask .mrc by path…",
+            self._import_mask,
+            "Opens a file browser — paste an absolute path into its path bar to go straight to a file. The MRC "
+            "is appended as an imported mask exactly as it is; nothing is recomputed from it. Same action as "
+            "Source → Import.",
+        )
 
     def _render_mask_row(self, mask: TemplateMask, *, selected: bool) -> None:
         h = read_template_header(mask.mask_path)
@@ -1933,27 +1966,32 @@ class TemplateWorkbench:
             self._select_template(new_white_id)
 
     async def _open_import_dialog(self) -> None:
-        sp = self._get_species()
-        if sp is None:
-            ui.notify("Species not found", type="warning")
-            return
-        tpl = await open_template_import_dialog(self.project_path, sp)
-        if tpl is None:
-            return
+        async with self._flight("import_template") as acquired:
+            if not acquired:
+                return
+            sp = self._get_species()
+            if sp is None:
+                ui.notify("Species not found", type="warning")
+                return
+            tpl = await open_template_import_dialog(self.project_path, sp)
+            if tpl is None:
+                return
 
-        def _apply(s: ParticleSpecies) -> None:
-            existing_idx = next((i for i, t in enumerate(s.templates) if t.template_path == tpl.template_path), None)
-            if existing_idx is not None:
-                tpl.id = s.templates[existing_idx].id
-                s.templates[existing_idx] = tpl
-            else:
-                s.templates.append(tpl)
-            if not s.selected_template_id:
-                s.selected_template_id = tpl.id
+            def _apply(s: ParticleSpecies) -> None:
+                existing_idx = next(
+                    (i for i, t in enumerate(s.templates) if t.template_path == tpl.template_path), None
+                )
+                if existing_idx is not None:
+                    tpl.id = s.templates[existing_idx].id
+                    s.templates[existing_idx] = tpl
+                else:
+                    s.templates.append(tpl)
+                if not s.selected_template_id:
+                    s.selected_template_id = tpl.id
 
-        self._mutate_species(_apply)
-        asyncio.create_task(self._after_register())
-        self._log(f"Imported: {os.path.basename(tpl.template_path)}")
+            self._mutate_species(_apply)
+            asyncio.create_task(self._after_register())
+            self._log(f"Imported: {os.path.basename(tpl.template_path)}")
 
     # ── Edit-Current actions (idempotent) ─────────────────────────────
 
@@ -2304,13 +2342,16 @@ class TemplateWorkbench:
         ).submit(_run, on_complete=_on_complete)
 
     async def _import_mask(self) -> None:
-        picker = local_file_picker("/", upper_limit=None, mode="file")
-        result = await picker
-        if not result or not result[0]:
-            return
-        picked = result[0]
-        if Path(picked).suffix.lower() not in (".mrc", ".map", ".rec", ".ccp4"):
-            ui.notify("Mask must be an MRC family file", type="warning")
-            return
-        self._append_mask(TemplateMask(mask_path=picked, method="imported"))
-        self._log(f"Mask imported: {picked}")
+        async with self._flight("import_mask") as acquired:
+            if not acquired:
+                return
+            picker = local_file_picker("/", upper_limit=None, mode="file", glob="*.mrc,*.map,*.rec,*.ccp4")
+            result = await picker
+            if not result or not result[0]:
+                return
+            picked = result[0]
+            if Path(picked).suffix.lower() not in (".mrc", ".map", ".rec", ".ccp4"):
+                ui.notify("Mask must be an MRC family file", type="warning")
+                return
+            self._append_mask(TemplateMask(mask_path=picked, method="imported"))
+            self._log(f"Mask imported: {picked}")
