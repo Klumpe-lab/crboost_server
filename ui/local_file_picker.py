@@ -99,19 +99,28 @@ class local_file_picker(ui.dialog):
     # ── Navigation ────────────────────────────────────────────────────────────
 
     async def _navigate_to_typed(self) -> None:
+        """Enter in the path bar. A typed path to an existing FILE is a SELECTION in single
+        file mode — pasting a known absolute path is the fastest way to pick one, and
+        "not a valid directory" would be a lie about a path that exists. Anything else
+        navigates, under the same root limit."""
         typed = (self.path_input.value or "").strip()
         if not typed:
             return
         p = Path(typed).expanduser().resolve()
-        if not p.exists() or not p.is_dir():
+        pick_file = self.mode == "file" and not self.multiple and p.is_file()
+        if not pick_file and not p.is_dir():
             ui.notify(f"Not a valid directory: {typed}", type="warning", timeout=2500)
             self.path_input.value = str(self.path)
             return
         if self.upper_limit is not None:
-            if p != self.upper_limit and self.upper_limit not in p.parents:
+            under = p.parent if pick_file else p
+            if under != self.upper_limit and self.upper_limit not in under.parents:
                 ui.notify("Cannot navigate above the root limit", type="warning", timeout=2500)
                 self.path_input.value = str(self.path)
                 return
+        if pick_file:
+            self.submit([str(p)])
+            return
         self.path = p
         self.selected_path = None
         await self._refresh_list()

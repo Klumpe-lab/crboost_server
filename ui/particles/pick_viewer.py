@@ -55,6 +55,7 @@ from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
 from ui.dashboard.figures import _build_score_hist_fig, _build_xy_scatter_fig, _build_xz_scatter_fig
+from ui.particles import list_actions
 from ui.particles.list_actions import extraction_badge
 
 logger = logging.getLogger(__name__)
@@ -1883,9 +1884,7 @@ def render_particles_section(
             with viewer_host:
                 ui.label("full viewer ↗").classes(
                     "text-[10px] text-indigo-500 cursor-pointer underline decoration-dotted"
-                ).style("margin-left: 8px;").on(
-                    "click", lambda _e, s=sid, t=ts_name: open_viewer(s, t)
-                ).tooltip(
+                ).style("margin-left: 8px;").on("click", lambda _e, s=sid, t=ts_name: open_viewer(s, t)).tooltip(
                     "Open this species + tomogram in the full-page pick viewer — bigger slabs, curation mode, "
                     "the per-list extraction verb and fullscreen."
                 )
@@ -2250,6 +2249,7 @@ def _render_species_tab_body(
             on_select=_select,
             chip_els=chip_els,
             manage_species=manage_species,
+            refresh=refresh,
         )
     # The detail pane renders one tick later via a once-timer: _render_detail is
     # async now (its workbench-list branch probes disk off-loop), so it can't be
@@ -2329,30 +2329,36 @@ def _render_list_rail(
     on_select,
     chip_els: dict,
     manage_species=None,
+    refresh=None,
 ) -> None:
     """The lists strip: a compact aligned TABLE (header + one row per
-    list: swatch · name · count(kept/total) · extracted-mark · copy-path · visibility eye) on
-    the left + the `curate ↗` route into the registry on the right.
+    list: swatch · name · count(kept/total) · extracted-mark · copy-path · delete · visibility
+    eye) on the left + the `curate ↗` route into the registry on the right.
     Every row shares one grid template so the columns line up under the header. The auto
     (pytom) row's name carries a hover tooltip with its pick stats + template-match
-    essentials. Clicking a row selects it → drives the detail; the copy button and the
-    eye use click.stop so they don't also select. `chip_els` is filled {slug:
+    essentials. Clicking a row selects it → drives the detail; the copy, delete and
+    eye controls use click.stop so they don't also select. `chip_els` is filled {slug:
     row-element} so selection can re-highlight without rebuilding the table.
 
-    Look only (11-S3, tightened by 09-S2): curate / dedup / extract / import / delete live on
+    Otherwise look only (11-S3, tightened by 09-S2): curate / dedup / extract / import stay on
     the Particles registry's Picks & curation tab, where they act across every tomogram at
-    once. A read-only `auth` radio used to sit between `picks` and `ext`, naming the one list
+    once. DELETE is the exception and deliberately so — you decide a list is junk while
+    LOOKING at its dots, and routing that through another page loses which list you meant.
+    It runs `list_actions.delete_list`, the same confirm the Picks tab's row uses. A
+    read-only `auth` radio used to sit between `picks` and `ext`, naming the one list
     downstream consumed; the authoritative model is gone, so the column went with it."""
+    from backend import get_backend  # local: ui -> backend is a one-way edge at import time
+
     state_obj = current_project_state()
     species_id = sp.get("species_id") or ""
     tomo_name = sp["row"]["tomo_name"]
 
     with ui.element("div").classes("cb-list-top"):
         # The list TABLE: one aligned row per pick list — [swatch · name ·
-        # count(kept/total) · extracted-mark · path · eye]. A row click selects it → drives
-        # the detail gallery; the copy button and the eye use click.stop so they don't also
-        # select. Every row shares the .cb-ltable-row grid template, so the columns line up
-        # under the header.
+        # count(kept/total) · extracted-mark · path · delete · eye]. A row click selects it →
+        # drives the detail gallery; the copy, delete and eye controls use click.stop so they
+        # don't also select. Every row shares the .cb-ltable-row grid template, so the columns
+        # line up under the header.
         with ui.element("div").classes("cb-ltable"):
             with ui.element("div").classes("cb-ltable-row cb-ltable-head"):
                 ui.element("div")  # swatch col
@@ -2360,6 +2366,7 @@ def _render_list_rail(
                 ui.label("picks").classes("cb-ltable-h-num")
                 ui.label("ext").classes("cb-ltable-h-cell").tooltip("Subtomo-extracted state")
                 ui.label("path").classes("cb-ltable-h-cell").tooltip("Copy the full path to this list's backing file")
+                ui.element("div")  # delete col
                 ui.element("div")  # eye col
             for lst in lists:
                 slug = lst["slug"]
@@ -2407,6 +2414,30 @@ def _render_list_rail(
                                 lambda e, v=copy_path: (
                                     ui.clipboard.write(v),
                                     ui.notify("Copied path", type="positive", timeout=800),
+                                ),
+                            )
+                    with ui.element("div").classes("cb-ltable-cell"):
+                        # Delete THIS list, from where you can see its dots. Not offered for
+                        # `auto`: that set is its candidate-extract job's output, not a
+                        # registered list, and there is nothing here to unregister.
+                        if slug != "auto":
+                            del_label = lst.get("label") or slug
+                            dbtn = (
+                                ui.button(icon="delete_outline")
+                                .props("flat dense round size=sm color=negative")
+                                .classes("cb-info-copy")
+                                .tooltip("Delete this list (its star, curated subset, extraction output and saves)")
+                            )
+                            dbtn.on(
+                                "click.stop",
+                                lambda e, s=slug, la=del_label: list_actions.delete_list(
+                                    get_backend(),
+                                    project_path,
+                                    species_id,
+                                    tomo_name,
+                                    s,
+                                    la,
+                                    on_done=refresh or (lambda: None),
                                 ),
                             )
                     with ui.element("div").classes("cb-ltable-cell"):
@@ -4193,8 +4224,7 @@ class PickViewerPage:
                     ui.icon("scatter_plot", size="28px").classes("text-gray-400")
                     ui.label("No tomogram selected.").classes("text-xs")
                     ui.label(
-                        "Open the viewer from a tomogram group on the Particles registry's "
-                        "Picks & curation tab."
+                        "Open the viewer from a tomogram group on the Particles registry's Picks & curation tab."
                     ).classes("text-[11px] italic text-gray-500")
                 return
             rendered = render_particles_section(
@@ -4211,9 +4241,9 @@ class PickViewerPage:
                 with ui.element("div").classes("cb-empty"):
                     ui.icon("hourglass_empty", size="28px").classes("text-gray-400")
                     ui.label(f"Nothing to show for {self.tomo_name} yet.").classes("text-xs")
-                    ui.label(
-                        "The viewer needs a reconstructed tomogram and at least one registered species."
-                    ).classes("text-[11px] italic text-gray-500")
+                    ui.label("The viewer needs a reconstructed tomogram and at least one registered species.").classes(
+                        "text-[11px] italic text-gray-500"
+                    )
 
     def _manage_species(self, species_id: str) -> None:
         """The route back into the registry, composed the way the Journey composes it:

@@ -25,7 +25,7 @@ from services.models_base import PickListType
 from services.particles import picks_filter
 from services.particles.ingest import manual_slug_for
 from services.particles.list_ref import extract_pick_list_instance_id
-from services.project_state import PickList, get_project_state_for, get_state_service
+from services.project_state import MERGED_DIR_NAME, PickList, get_project_state_for, get_state_service
 from services.result import err, ok
 from services.visualization import artiax_bridge
 
@@ -42,7 +42,12 @@ def pick_list_files(pl: PickList) -> dict[str, list[Path]]:
     ``coords`` matches this list's own source file by stem — deleting one list must not
     take its neighbours' saves with it — and the extraction dir is taken from the RECORDED
     ``extracted_path`` when there is one, since a list migrated off the old shared
-    ``manual`` slug has an output dir that no longer matches its slug."""
+    ``manual`` slug has an output dir that no longer matches its slug.
+
+    An AGGREGATE list is its whole ``MergedSources/<name>/`` directory, not its
+    ``particles.star``: the merge wrote four more files beside it (tomograms, optimisation
+    set, provenance, summary), and an ``optimisation_set.star`` left behind still reads as a
+    live merged source to everything that probes that path."""
     out: dict[str, list[Path]] = {"stars": [], "dirs": [], "coords": []}
     if not pl.path:
         return out
@@ -53,6 +58,8 @@ def pick_list_files(pl: PickList) -> dict[str, list[Path]]:
     out_dir = Path(pl.extracted_path).parent if pl.extracted_path else star.parent / pl.slug
     if out_dir.is_dir():
         out["dirs"].append(out_dir)
+    if pl.list_type == PickListType.MERGED and star.parent.parent.name == MERGED_DIR_NAME and star.parent.is_dir():
+        out["dirs"].append(star.parent)
     if pl.list_type == PickListType.MANUAL:
         out["coords"] = [c for c in artiax_bridge.user_coords_saves(star.parent) if manual_slug_for(c) == pl.slug]
     return out

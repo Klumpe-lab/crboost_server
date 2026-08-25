@@ -194,7 +194,9 @@ def _project_token(project_path: Path) -> str:
 def plan_merge(sources: list[CoordSource], *, registry_lookup=None) -> MergePlan:
     """Resolve tomogram identity across the sources WITHOUT writing anything.
 
-    Two tomograms are treated as one iff they resolve to the same acquisition —
+    Two sources naming the same tomogram of the same project ARE one tomogram and are
+    pooled without further ado. ACROSS projects, two tomograms are treated as one iff they
+    resolve to the same acquisition —
     ``registry_lookup(project_path, tomo_name) -> TiltSeries | None`` supplies the
     ``TiltSeries`` whose mdoc key answers that. Pass None (the default) and no two
     tomograms are ever equated across projects: they are kept apart under disambiguated
@@ -208,9 +210,23 @@ def plan_merge(sources: list[CoordSource], *, registry_lookup=None) -> MergePlan
     # merged name -> (row, project_path, acquisition key or None, handedness)
     accepted: dict[str, tuple[pd.Series, Path, tuple[str, str] | None, int | None]] = {}
     by_key: dict[tuple[str, str], str] = {}
+    # (resolved project, tomogram name) -> merged name. Same project AND same tomogram is
+    # the same tomogram, trivially -- no acquisition key, no transferability gate, no
+    # rename. That case is not an edge: two hand-picked lists (or manual + auto) on ONE
+    # volume is the commonest merge there is. Without this the second such source collides
+    # in `used_names` below and is disambiguated as though it came from another project,
+    # scattering one volume's picks over two `rlnTomoName`s -- and since `list_extraction`
+    # slices a list star by `rlnTomoName`, everything under the invented name is then
+    # dropped from the extraction without a word.
+    by_origin: dict[tuple[str, str], str] = {}
     used_names: set[str] = set()
 
     for src in sources:
+        origin = (str(Path(src.project_path).resolve()), str(src.tomo_name))
+        if origin in by_origin:
+            plan.assignment[src.display()] = by_origin[origin]
+            continue
+
         row = _tomo_row(src.tomograms_star, src.tomo_name)
         hand = _hand_for(row, src.project_path)
         key = None
@@ -229,6 +245,7 @@ def plan_merge(sources: list[CoordSource], *, registry_lookup=None) -> MergePlan
             if str(kept_proj) != str(src.project_path):
                 plan.renamed.setdefault(f"{_project_token(src.project_path)}:{src.tomo_name}", merged_name)
             plan.assignment[src.display()] = merged_name
+            by_origin[origin] = merged_name
             continue
 
         merged_name = str(src.tomo_name)
@@ -254,6 +271,7 @@ def plan_merge(sources: list[CoordSource], *, registry_lookup=None) -> MergePlan
             by_key[key] = merged_name
         plan.tomo_rows[merged_name] = row
         plan.assignment[src.display()] = merged_name
+        by_origin[origin] = merged_name
 
     # De-duplicate the advisory lines; the same missing handedness repeats per pair.
     plan.unverified = list(dict.fromkeys(plan.unverified))
