@@ -1,6 +1,17 @@
 """ChimeraX + ArtiaX curation sessions (VNC over a SLURM job): submit, poll,
-reconnect, drive a live viewer over its REST channel, and round-trip manual
-picks (`.coords` ↔ centered-Å star) between ArtiaX and the pipeline."""
+reconnect, and round-trip manual picks (`.coords` ↔ centered-Å star) between ArtiaX
+and the pipeline.
+
+Model B (roadmap 10, maintainer decision 2026-08-21): a session's SCOPE — which species,
+which tomogram — is declared exactly once, at launch, and written into the scoped
+directory's `manifest.json`. crboost sends the viewer NO commands after that. The old
+outbound driving (`load_into_session` / `save_curation_picks` /
+`save_session_particle_lists`) is gone: it inferred the session's meaning from an
+in-memory dict that a restart emptied, silently filed a second species' picks under the
+first, and ingested only the newest of N saved lists. What replaces it is the staging
+contract — every `.coords` in a scoped dir becomes its own pick list, and anything saved
+outside one lands in the unattributed inbox for explicit assignment
+(`assign_unattributed_coords`), never a guess."""
 
 from __future__ import annotations
 import asyncio
@@ -32,16 +43,13 @@ class CurationSessionService:
         self.username = username
         self.config_service = get_config_service()
         self.slurm_service = slurm_service
-        # `_curation_loaded` maps a live session's job id → the (species, tomo) it
-        # currently has open (for save-on-swap). `_curation_registry_lock` serializes
-        # the user-level registry's append/prune; `_curation_swap_locks` serializes
-        # overlapping swaps into the SAME session.
-        self._curation_loaded: dict[str, Any] = {}
+        # Serializes the user-level session registry's append/prune. There is no
+        # per-session lock any more: nothing drives a running session, so nothing races
+        # on it (Model B — see the module docstring).
         self._curation_registry_lock = asyncio.Lock()
-        self._curation_swap_locks: dict[str, asyncio.Lock] = {}
 
     async def launch_curation_session(
-        self, project_path: Path | None = None, cxc_path: Path | None = None
+        self, project_path: Path | None = None, cxc_path: Path | None = None, scope: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Submit a ChimeraX+ArtiaX VNC desktop as a SLURM job (partition 'c' by
         default — software GL is enough for slice-based picking).
@@ -50,6 +58,13 @@ class CurationSessionService:
         services/visualization/artiax_bridge.prepare_curation_bundle) passed to the
         worker as CB_CXC so the session opens with the tomogram + picks preloaded
         instead of blank.
+
+        `scope` is that bundle's declared identity — `{species_id, species_label,
+        tomo_name, curation_dir, project_path}`. It is the ONLY moment the session's
+        meaning is fixed (Model B): it is written to `<session_dir>/scope.json` so a
+        reconnecting UI — or this process after a restart — can say what the running
+        viewer was launched on, and stamped into the scoped dir's `manifest.json` as
+        `launched_at`, which is what tells the curation watcher that dir is hot.
 
         Returns the SLURM job id and the shared-FS session dir that the compute
         node writes `session.json` into; poll it with get_curation_session_info().
@@ -101,6 +116,10 @@ class CurationSessionService:
         # under apptainer --nv, so the _GL.sif renders on the GPU instead of software-GL llvmpipe.
         gres_line = f"#SBATCH --gres={cur.gres}\n" if cur.gres else ""
         vgl_export = "export CX_VGL=1\n" if cur.vgl else ""
+        # Opt-in only (roadmap 10-S1, the maintainer's "can we make it passwordless?"):
+        # the desktop then runs `-SecurityTypes None`, so anyone who can reach the rfb
+        # port on that node drives it. Off by default; the control center states the risk.
+        nopass_export = "export CX_VNC_NOPASS=1\n" if cur.passwordless_vnc else ""
         sbatch_script.write_text(
             "#!/usr/bin/env bash\n"
             f"#SBATCH -p {cur.partition}\n"
@@ -118,6 +137,7 @@ class CurationSessionService:
             f"export CX_LOGIN_HOST={shlex.quote(login_host)}\n"
             f"export CB_SESSION_DIR={shlex.quote(str(session_dir))}\n"
             f"{vgl_export}"
+            f"{nopass_export}"
             + (f"export CB_CXC={shlex.quote(str(cxc_path))}\n" if cxc_path else "")
             + f"exec {shlex.quote(str(worker))}\n"
         )
@@ -155,6 +175,8 @@ class CurationSessionService:
         except Exception as e:
             logger.warning("Could not persist job.json for curation session %s: %s", session_id, e)
 
+        self._record_scope(session_dir, slurm_job_id, scope)
+
         # Index in the USER-level registry so the session can be found + reused across
         # projects (a curation session is a per-user viewer, not per-project).
         await self._register_curation_session(
@@ -163,6 +185,48 @@ class CurationSessionService:
 
         logger.info("Curation session submitted: SLURM job %s (session %s)", slurm_job_id, session_id)
         return ok(slurm_job_id=slurm_job_id, session_dir=str(session_dir), session_id=session_id)
+
+    # ── declared scope (Model B) ───────────────────────────────────────────────
+
+    @staticmethod
+    def _record_scope(session_dir: Path, slurm_job_id: str | None, scope: dict[str, Any] | None) -> None:
+        """Persist the launch-declared scope beside the session, and stamp it into the
+        scoped dir's manifest. Best-effort: a session whose scope could not be written
+        still runs — its saves are attributed by the manifest the bundle already wrote,
+        and worst case they reach the unattributed inbox. Never blocks a launch."""
+        if not scope:
+            return
+        from services.visualization import artiax_bridge
+
+        payload = {**scope, "slurm_job_id": slurm_job_id, "launched_at": datetime.now().isoformat(timespec="seconds")}
+        try:
+            (Path(session_dir) / "scope.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        except OSError as e:
+            logger.warning("Could not persist scope.json for curation session %s: %s", session_dir, e)
+        cur_dir = scope.get("curation_dir")
+        if not cur_dir:
+            return
+        try:
+            artiax_bridge.write_manifest(
+                Path(cur_dir),
+                launched_at=payload["launched_at"],
+                slurm_job_id=slurm_job_id,
+                session_dir=str(session_dir),
+            )
+        except OSError as e:
+            logger.warning("Could not stamp launch onto the manifest in %s: %s", cur_dir, e)
+
+    @staticmethod
+    def _read_scope(session_dir: Path) -> dict[str, Any]:
+        """``{"scope": {...}}`` for a session dir, or ``{}``. Merged into what the two
+        find_active_* methods return, so every consumer of a live session also learns what
+        it was launched on — including after a crboost restart, which is precisely what
+        the old in-memory `_curation_loaded` could not survive."""
+        try:
+            data = json.loads((Path(session_dir) / "scope.json").read_text())
+        except (OSError, ValueError):
+            return {}
+        return {"scope": data} if isinstance(data, dict) else {}
 
     async def get_curation_session_info(self, session_dir: str, slurm_job_id: str | None = None) -> dict[str, Any]:
         """Poll a launched curation session. Once the job is RUNNING and has
@@ -307,6 +371,7 @@ class CurationSessionService:
                     out.update(json.loads(info_file.read_text()))
                 except Exception:
                     pass
+            out.update(self._read_scope(sdir))
             return out
         return None
 
@@ -427,12 +492,21 @@ class CurationSessionService:
                 out.update(json.loads(info_file.read_text()))
             except Exception:
                 pass
+        out.update(self._read_scope(sdir))
         return out
 
     async def send_chimerax_command(
         self, session_info: dict[str, Any], command: str, *, timeout: float = 60.0
     ) -> dict[str, Any]:
         """Run a ChimeraX/ArtiaX command string in a LIVE curation session.
+
+        QUARANTINED (roadmap 10-S1). This channel works, but under Model B nothing may
+        drive a session after launch — the maintainer's decision of record, because a
+        session driven from outside cannot be trusted to mean what crboost thinks it
+        means (10-external-picker-contract.md §1). It is kept for LAUNCH-TIME HEALTH
+        CHECKS ONLY, gated on `curation.rest_enabled`; adding a caller that loads, saves
+        or otherwise steers a running viewer re-opens exactly the bug class Model B
+        closed. Change the tomogram by relaunching (10-S3 makes that cheap).
 
         Reaches the node's loopback REST server by ssh-hopping (the headnode can ssh
         to a node where the user has a running job — the same access VNC relies on).
@@ -528,181 +602,6 @@ class CurationSessionService:
             logger.debug("ChimeraX REST benign diagnostics: %s", raw[:1500])
         return ok(log_error=log_err_txt or benign_err, raw=raw, data=data)
 
-    async def save_session_particle_lists(self, session_info: dict[str, Any], dest_dir: Path) -> dict[str, Any]:
-        """Best-effort save of every ArtiaX ParticleList currently open in the live
-        session to `dest_dir` as `.coords` (positions-only), so a swap's `close
-        session` can't silently drop unsaved manual picks. Skips crboost's own
-        reference exports (`auto.coords` / `*_ref.coords`). Defensive: any parse
-        hiccup reports what it managed, never raises."""
-        from services.visualization.artiax_bridge import _cxc_quote, _safe_slug
-
-        info = await self.send_chimerax_command(session_info, "info models")
-        if not info.get("success"):
-            return err(info.get("error") or "could not query session models")
-        try:
-            jv = (info.get("data") or {}).get("json values") or []
-            models = json.loads(jv[0]) if jv and isinstance(jv[0], str) else (jv[0] if jv else [])
-        except Exception as e:
-            return err(f"could not parse model list: {e}")
-        dest = Path(dest_dir)
-        dest.mkdir(parents=True, exist_ok=True)
-        model_list = models if isinstance(models, list) else []
-        if not model_list:
-            # `info models` parsed to nothing — this ChimeraX build may not surface the
-            # model tree in "json values" over REST. Log the raw envelope so a save that
-            # finds no lists ("nothing open" though picks exist) is diagnosable without a
-            # blind round-trip; this is the one REST path not yet runtime-verified.
-            logger.info(
-                "save_session_particle_lists: no models from 'info models' — raw: %s", (info.get("raw") or "")[:1500]
-            )
-        saved: list[str] = []
-        skipped: list[str] = []
-        for m in model_list:
-            if not isinstance(m, dict) or m.get("class") != "ParticleList":
-                continue
-            spec = m.get("spec")
-            name = str(m.get("value") or "").strip()
-            if not spec or name == "auto.coords" or name.endswith("_ref.coords"):
-                continue
-            out = dest / f"{_safe_slug(name.rsplit('.', 1)[0]) or 'list'}.coords"
-            res = await self.send_chimerax_command(session_info, f"save {_cxc_quote(out)} partlist {spec}")
-            if res.get("success"):
-                saved.append(str(out))
-            else:
-                # Best-effort sweep: one failed list must not abort the rest, but callers see it.
-                logger.warning("save_session_particle_lists: failed to save list %r: %s", name, res.get("error"))
-                skipped.append(name)
-        return ok(saved=saved, skipped=skipped)
-
-    async def save_curation_picks(
-        self,
-        session_info: dict[str, Any],
-        *,
-        project_path: Path | None = None,
-        tomo_name: str = "",
-        species_id: str = "",
-        species_label: str = "",
-    ) -> dict[str, Any]:
-        """Forefront save: write every manual ParticleList open in the live session to
-        the LOADED tomogram's curation dir as ``.coords``, where the dashboard prescan
-        (`_auto_kick_coords_ingest`) auto-imports it as a ``manual`` pick list. crboost
-        chooses the path, so the user never touches ArtiaX's Save dialog.
-
-        The destination is the tomogram the session actually has open (tracked in
-        ``_curation_loaded``); ``(project_path, tomo_name, species_*)`` is only a
-        fallback for a session whose load this process didn't record (e.g. a
-        ``.cxc``-preloaded start). Returns ``count`` (lists saved) so the UI can tell
-        "saved N" from "nothing open to save"."""
-        from services.visualization import artiax_bridge
-
-        job_id = str((session_info or {}).get("slurm_job_id") or (session_info or {}).get("session_dir") or "")
-        loaded = self._curation_loaded.get(job_id) or {}
-        tomo = loaded.get("tomo_name") or tomo_name
-        dest: Path | None = None
-        if loaded.get("curation_dir"):
-            dest = Path(loaded["curation_dir"])
-        elif project_path and tomo_name:
-            dest = artiax_bridge.curation_dir(
-                Path(project_path), tomo_name, species_id=species_id, species_label=species_label
-            )
-        if dest is None:
-            return err("No tomogram is loaded in the session yet — load one first.")
-        res = await self.save_session_particle_lists(session_info, dest)
-        saved = res.get("saved") or []
-        if res.get("success"):
-            return ok(saved=saved, count=len(saved), tomo=tomo, dest=str(dest))
-        return err(
-            res.get("error") or "could not save the session's particle lists",
-            saved=saved,
-            count=len(saved),
-            tomo=tomo,
-            dest=str(dest),
-        )
-
-    async def load_into_session(
-        self,
-        session_info: dict[str, Any],
-        project_path: Path,
-        candidates_star: Path | None,
-        tomograms_star: Path,
-        tomo_name: str,
-        species_label: str = "",
-        *,
-        species_id: str = "",
-        source_star: Path | None = None,
-        coords_label: str = "auto",
-        save_first: bool = False,
-    ) -> dict[str, Any]:
-        """Swap a LIVE curation session to a new (species, tomo): clear what's open,
-        then load the tomogram + its reference picks — the one-click alternative to
-        copy-pasting into ChimeraX. With `save_first`, save whatever lists are
-        currently open into the PREVIOUSLY-loaded tomo's dir before the clear."""
-        from services.visualization import artiax_bridge
-
-        if not (session_info or {}).get("rest_port"):
-            return err("no live REST session — start a session first")
-
-        job_id = str(session_info.get("slurm_job_id") or session_info.get("session_dir") or "")
-        # Serialize swaps into the SAME session: two overlapping loads of different
-        # tomos would race on _curation_loaded and on the single ChimeraX REST endpoint,
-        # desyncing the recorded tomo from what ArtiaX actually has open.
-        lock = self._curation_swap_locks.setdefault(job_id, asyncio.Lock())
-        async with lock:
-            saved = None
-            if save_first:
-                prev = self._curation_loaded.get(job_id) or {}
-                if prev.get("curation_dir"):
-                    saved = await self.save_session_particle_lists(session_info, Path(prev["curation_dir"]))
-
-            bundle = await self.prepare_curation_bundle(
-                project_path,
-                candidates_star,
-                tomograms_star,
-                tomo_name,
-                species_label,
-                species_id=species_id,
-                source_star=source_star,
-                coords_label=coords_label,
-            )
-            if not bundle.get("success"):
-                return err(bundle.get("error") or "could not prepare picks")
-
-            # Point ChimeraX's cwd at this tomo's curation dir so ArtiaX's "Save particle
-            # list" dialog defaults there (the worker only sets cwd at launch — it goes
-            # stale after a swap, scattering saves into the wrong tomogram's folder).
-            out_dir = artiax_bridge.curation_dir(
-                Path(project_path), tomo_name, species_id=species_id, species_label=species_label
-            )
-            swap = " ; ".join(
-                artiax_bridge.swap_chimerax_commands(bundle["recon"], bundle.get("auto_coords"), cwd=out_dir)
-            )
-            res = await self.send_chimerax_command(session_info, swap)
-            if res.get("success"):
-                self._curation_loaded[job_id] = {
-                    "project_path": str(project_path),
-                    "species_id": species_id,
-                    "species_label": species_label,
-                    "tomo_name": tomo_name,
-                    "curation_dir": str(out_dir),
-                }
-                return ok(loaded=tomo_name, auto_count=bundle.get("auto_count"), saved=saved)
-            return err(
-                res.get("error") or "ChimeraX load command failed",
-                loaded=tomo_name,
-                auto_count=bundle.get("auto_count"),
-                saved=saved,
-            )
-
-    def get_curation_loaded(self, session_info: dict[str, Any]) -> dict[str, Any] | None:
-        """What (species, tomo) the live session currently has open via the REST swap,
-        or None. Keyed exactly as load_into_session records it, so a reconnecting dialog
-        can show a "Currently loaded" indicator. The session is shared per-user, so this
-        reflects whatever the last swap put in ArtiaX — even a tomogram loaded from a
-        different project's dashboard. In-memory only: empty until this backend process
-        has done at least one load_into_session (a preloaded-via-.cxc start is not tracked)."""
-        job_id = str((session_info or {}).get("slurm_job_id") or (session_info or {}).get("session_dir") or "")
-        return self._curation_loaded.get(job_id) if job_id else None
-
     async def prepare_curation_bundle(
         self,
         project_path: Path,
@@ -715,11 +614,12 @@ class CurationSessionService:
         source_star: Path | None = None,
         coords_label: str = "auto",
     ) -> dict[str, Any]:
-        """Export one tomogram's picks → `.coords` and write an `open_<tomo>.cxc`
-        that preloads them in ArtiaX. Returns the resolved paths + the copyable
-        ChimeraX command lines (`commands`); pass `cxc_path` to
-        launch_curation_session() for a preloaded session, or surface `commands`
-        for an already-running one. Disk I/O + numpy run off the event loop.
+        """Export one tomogram's picks → `.coords`, write an `open_<tomo>.cxc` that
+        preloads them in ArtiaX, and DECLARE the scope in the dir's `manifest.json`.
+        Returns the resolved paths + the copyable ChimeraX command lines (`commands`);
+        pass `cxc_path` + `scope` to launch_curation_session(). Disk I/O + numpy run off
+        the event loop — including the one-time display-recon downsample (10-S3), which
+        is why the caller should say it is preparing before awaiting this.
 
         Defaults to the PyTOM auto list (`candidates_star`). Pass `source_star` +
         `coords_label` to open a SPECIFIC workbench list instead (its centered-Å
@@ -742,13 +642,37 @@ class CurationSessionService:
                 tomo_name,
                 out_dir,
                 species=species_label,
+                species_id=species_id,
+                project_path=Path(project_path),
                 coords_label=coords_label,
                 project_root=Path(project_path),
+                display_bin=int(getattr(self.config_service.curation, "display_bin", 1) or 1),
             )
         except Exception as e:
             logger.warning("prepare_curation_bundle failed for %s: %s", tomo_name, e)
             return err(str(e))
         return ok(**info)
+
+    def curation_scope(
+        self, project_path: Path, species_id: str, species_label: str, tomo_name: str, curation_dir: str = ""
+    ) -> dict[str, Any]:
+        """The scope payload a launch declares — what `launch_curation_session(scope=...)`
+        persists and what a reconnecting control center reads back. One builder so the
+        keys can't drift between the writer and the readers."""
+        from services.visualization import artiax_bridge
+
+        cur = curation_dir or str(
+            artiax_bridge.curation_dir(
+                Path(project_path), tomo_name, species_id=species_id, species_label=species_label
+            )
+        )
+        return {
+            "project_path": str(project_path),
+            "species_id": species_id,
+            "species_label": species_label,
+            "tomo_name": tomo_name,
+            "curation_dir": cur,
+        }
 
     def _discover_manual_coords(
         self, project_path: Path, tomo_name: str, *, species_id: str = "", species_label: str = ""
@@ -764,18 +688,11 @@ class CurationSessionService:
         (e.g. `particles.coords`)."""
         from services.visualization import artiax_bridge
 
-        d = artiax_bridge.curation_dir(
-            Path(project_path), tomo_name, species_id=species_id, species_label=species_label
+        return artiax_bridge.user_coords_saves(
+            artiax_bridge.curation_dir(
+                Path(project_path), tomo_name, species_id=species_id, species_label=species_label
+            )
         )
-        if not d.is_dir():
-            return []
-        found: list[Path] = []
-        for c in d.glob("*.coords"):
-            if c.name == "auto.coords" or c.name.endswith("_ref.coords"):
-                continue  # crboost's reference exports, not the user's save
-            found.append(c)
-        found.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-        return found
 
     async def import_curation_picks(
         self,
@@ -791,13 +708,24 @@ class CurationSessionService:
         into the pipeline.
 
         Converts the `.coords` (physical Å from the volume corner) → a RELION-5
-        centered-Å particles star at `Curation/<species>/<tomo>/manual.star` (the
-        same `TomogramGeometry` as export, so the round trip is parity-exact), and archives
-        the raw `.coords` under that tomogram's `imports/<stamp>.coords` for
-        provenance. Returns the count + resolved paths; the caller registers a
-        `manual` PickList on ProjectState (this method owns only file I/O, off the
-        event loop). When `coords_path` is None, auto-discovers the newest non-export
-        `.coords` for this (species, tomo).
+        centered-Å particles star at `Curation/<species>/<tomo>/manual__<stem>.star`
+        (the same `TomogramGeometry` as export, so the round trip is parity-exact) and
+        archives the raw `.coords` under that tomogram's `imports/<stamp>.coords` for
+        provenance. Returns the count + resolved paths; the caller registers the
+        matching `manual__<stem>` PickList on ProjectState (this method owns only file
+        I/O, off the event loop).
+
+        ONE STAR PER SOURCE FILE (roadmap 10-S2). It used to be one `manual.star` per
+        (species, tomo), so of N lists saved in a session N−1 were silently overwritten;
+        the file stem is now the identity, which also makes re-saving under the same name
+        an UPDATE of that list (W1) rather than a new one.
+
+        The dir's `manifest.json` supplies `corner_offset_angst` — the display-binning
+        term (10-S3) — so a pick placed on the binned display volume maps back into the
+        full-res frame exactly. Absent manifest ⇒ 0.0, which is what every pre-S3 dir is.
+
+        When `coords_path` is None, auto-discovers the newest non-export `.coords` for
+        this (species, tomo) — the explicit-click fallback; the watcher always names one.
         """
         from services.visualization import artiax_bridge
 
@@ -822,7 +750,15 @@ class CurationSessionService:
                 )
             chosen = cands[0]
 
-        out_star = cur_dir / "manual.star"
+        from services.particles.ingest import manual_slug_for
+
+        slug = manual_slug_for(chosen)
+        out_star = cur_dir / f"{slug}.star"
+        # The offset belongs to the dir the file was SAVED in (that dir's session declared
+        # what volume ArtiaX opened) — not to the destination, which for an external import
+        # by path is a different dir entirely and never had a display copy.
+        manifest = artiax_bridge.read_manifest(chosen.parent) or {}
+        offset = float(manifest.get("corner_offset_angst") or 0.0)
         try:
             count = await asyncio.to_thread(
                 artiax_bridge.import_coords_to_centered_star,
@@ -831,6 +767,7 @@ class CurationSessionService:
                 tomo_name,
                 out_star,
                 project_path,
+                corner_offset_angst=offset,
             )
         except Exception as e:
             logger.warning("import_curation_picks failed for %s: %s", tomo_name, e)
@@ -842,7 +779,7 @@ class CurationSessionService:
             raw_dir = cur_dir / "imports"
             raw_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            dest = raw_dir / f"{stamp}.coords"
+            dest = raw_dir / f"{stamp}__{chosen.stem}.coords"
             await asyncio.to_thread(lambda: dest.write_bytes(Path(chosen).read_bytes()))
             raw_copy = dest
         except Exception as e:
@@ -850,12 +787,83 @@ class CurationSessionService:
 
         return ok(
             count=int(count),
+            slug=slug,
             out_star=str(out_star),
             coords_source=str(chosen),
             raw_import=str(raw_copy),
+            corner_offset_angst=offset,
             discovered=discovered,
             created_by=self.username,
         )
+
+    async def assign_unattributed_coords(
+        self, project_path: Path, source: Path, species_id: str, species_label: str, tomo_name: str
+    ) -> dict[str, Any]:
+        """THE staging step (roadmap 10-S2, the maintainer's "the user assigns the list
+        ArtiaX just produced to a particular species so there is absolutely no ambiguity").
+
+        `source` is a `.coords` file the watcher could not attribute — or the directory
+        holding several. Every user save under it is MOVED into
+        `Curation/<species>/<tomo>/`, a manifest declaring that identity is written, and
+        the watcher ingests them on its next tick. Nothing is guessed and nothing is
+        copied-and-left: after this the file lives in exactly one place, whose meaning is
+        written down. Returns `moved` (destination paths) + `skipped` (what could not be
+        moved, and why).
+
+        A destination name already taken is NOT overwritten — the incoming file gets a
+        `__2`, `__3` … suffix, because same-name means same PickList and silently
+        replacing someone's earlier list is the failure mode this whole stage exists to
+        remove.
+        """
+        from services.visualization import artiax_bridge
+
+        src = Path(source)
+        files = artiax_bridge.user_coords_saves(src) if src.is_dir() else ([src] if src.is_file() else [])
+        if not files:
+            return err(f"No user .coords to assign under {src}")
+        dest_dir = artiax_bridge.curation_dir(
+            Path(project_path), tomo_name, species_id=species_id, species_label=species_label
+        )
+        moved: list[str] = []
+        skipped: list[str] = []
+
+        def _move_all() -> None:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            for f in files:
+                target = dest_dir / f.name
+                n = 2
+                while target.exists():
+                    target = dest_dir / f"{f.stem}__{n}{f.suffix}"
+                    n += 1
+                try:
+                    f.replace(target)  # same FS: atomic rename; across FS it raises and we say so
+                except OSError as e:
+                    skipped.append(f"{f.name}: {e}")
+                    continue
+                moved.append(str(target))
+
+        await asyncio.to_thread(_move_all)
+        if moved:
+            try:
+                await asyncio.to_thread(
+                    artiax_bridge.write_manifest,
+                    dest_dir,
+                    species_id=species_id,
+                    species_label=species_label,
+                    tomo_name=tomo_name,
+                    project_path=str(project_path),
+                    assigned_at=datetime.now().isoformat(timespec="seconds"),
+                    assigned_by=self.username,
+                )
+            except OSError as e:
+                # The move landed; only the declaration didn't. Attribution then falls back
+                # to the (correct) directory slugs, so report it rather than fail the assign.
+                logger.warning("Assigned %d file(s) to %s but its manifest failed: %s", len(moved), dest_dir, e)
+                skipped.append(f"manifest not written: {e}")
+        if not moved:
+            return err("; ".join(skipped) or f"Nothing could be moved out of {src}", skipped=skipped)
+        logger.info("Assigned %d .coords to %s/%s -> %s", len(moved), species_id, tomo_name, dest_dir)
+        return ok(moved=moved, skipped=skipped, dest_dir=str(dest_dir), count=len(moved))
 
     async def merge_pick_lists(
         self,
@@ -873,7 +881,8 @@ class CurationSessionService:
         `Curation/<species>/<tomo>/<slug>.star`; the caller registers a `merged`
         PickList. Disk I/O + numpy off the event loop.
         """
-        from services.visualization import artiax_bridge, pick_merge
+        from services.particles import pick_merge
+        from services.visualization import artiax_bridge
 
         out_star = (
             artiax_bridge.curation_dir(
@@ -892,7 +901,7 @@ class CurationSessionService:
     async def list_clash_stats(self, star_path: Path, tomo_name: str, radius_ang: float) -> dict[str, Any]:
         """Overlap overview for a list at a chosen radius (Å): how many picks clash
         and how many a dedup would remove/keep. Read-only — never mutates the list."""
-        from services.visualization import pick_merge
+        from services.particles import pick_merge
 
         try:
             stats = await asyncio.to_thread(pick_merge.clash_stats_star, Path(star_path), tomo_name, float(radius_ang))
@@ -905,7 +914,7 @@ class CurationSessionService:
         """Greedy radius-dedup a list's star in place — drop every pick within
         `radius_ang` Å of a higher-priority (earlier) pick. Rewrites the star; the
         caller updates the PickList count + (it becomes stale → re-extract)."""
-        from services.visualization import pick_merge
+        from services.particles import pick_merge
 
         try:
             info = await asyncio.to_thread(pick_merge.deduplicate_star, Path(star_path), tomo_name, float(radius_ang))

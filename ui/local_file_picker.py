@@ -4,6 +4,7 @@ from pathlib import Path
 
 from nicegui import ui
 
+from ui.components.buttons import house_button
 from ui.styles import MONO as _MONO, SANS as _SANS
 
 
@@ -39,8 +40,10 @@ class local_file_picker(ui.dialog):
         """A navigable file/directory picker.
 
         ``multiple`` (file mode only) renders a checkbox per file and OK returns every
-        ticked path (selection persists across navigation). ``glob`` (e.g. ``"*.mrc"``)
-        filters which *files* are shown — directories are always listed so you can
+        ticked path (selection persists across navigation). ``glob`` filters which *files*
+        are shown — one pattern (``"*.mrc"``) or several, comma-separated
+        (``"*.mrc,*.rec"``), since fnmatch has no alternation and a file type with two
+        conventional suffixes is the common case. Directories are always listed so you can
         navigate. Directory scans run off the event loop (Lustre-friendly)."""
         super().__init__()
 
@@ -86,13 +89,8 @@ class local_file_picker(ui.dialog):
                     hint = "Click to select, double-click to confirm."
                 ui.label(hint).style(f"{_SANS} font-size: 11px; color: #9ca3af;")
                 with ui.row().classes("gap-2"):
-                    ui.button("Cancel", on_click=self.close).props("flat no-caps").style(
-                        f"{_SANS} font-size: 12px; color: #6b7280;"
-                    )
-                    ui.button("OK", on_click=self._handle_ok).props("no-caps unelevated").style(
-                        f"{_SANS} font-size: 12px; background: #2563eb; color: white; "
-                        "border-radius: 6px; padding: 3px 16px;"
-                    )
+                    house_button("Cancel", self.close)
+                    house_button("OK", self._handle_ok, kind="accent")
 
         with self.list_container:
             ui.label("Loading…").classes("text-gray-400 text-sm p-4")
@@ -101,19 +99,28 @@ class local_file_picker(ui.dialog):
     # ── Navigation ────────────────────────────────────────────────────────────
 
     async def _navigate_to_typed(self) -> None:
+        """Enter in the path bar. A typed path to an existing FILE is a SELECTION in single
+        file mode — pasting a known absolute path is the fastest way to pick one, and
+        "not a valid directory" would be a lie about a path that exists. Anything else
+        navigates, under the same root limit."""
         typed = (self.path_input.value or "").strip()
         if not typed:
             return
         p = Path(typed).expanduser().resolve()
-        if not p.exists() or not p.is_dir():
+        pick_file = self.mode == "file" and not self.multiple and p.is_file()
+        if not pick_file and not p.is_dir():
             ui.notify(f"Not a valid directory: {typed}", type="warning", timeout=2500)
             self.path_input.value = str(self.path)
             return
         if self.upper_limit is not None:
-            if p != self.upper_limit and self.upper_limit not in p.parents:
+            under = p.parent if pick_file else p
+            if under != self.upper_limit and self.upper_limit not in under.parents:
                 ui.notify("Cannot navigate above the root limit", type="warning", timeout=2500)
                 self.path_input.value = str(self.path)
                 return
+        if pick_file:
+            self.submit([str(p)])
+            return
         self.path = p
         self.selected_path = None
         await self._refresh_list()
@@ -142,7 +149,7 @@ class local_file_picker(ui.dialog):
                 is_dir = p.is_dir()
             except OSError:
                 continue
-            if not is_dir and glob and not fnmatch.fnmatch(p.name, glob):
+            if not is_dir and glob and not any(fnmatch.fnmatch(p.name, g) for g in glob.split(",")):
                 continue
             size = None
             if not is_dir:
@@ -171,12 +178,8 @@ class local_file_picker(ui.dialog):
 
     def _render_select_all_bar(self, files: list[Path]) -> None:
         with ui.row().classes("w-full items-center px-4 py-1 gap-2 bg-gray-50 border-b border-gray-100"):
-            ui.button("Select all", on_click=lambda: self._set_paths(files, True)).props(
-                "flat dense no-caps size=sm"
-            ).style(f"{_SANS} font-size: 11px; color: #4f46e5;")
-            ui.button("Clear", on_click=lambda: self._set_paths(None, False)).props("flat dense no-caps size=sm").style(
-                f"{_SANS} font-size: 11px; color: #6b7280;"
-            )
+            house_button("Select all", lambda: self._set_paths(files, True))
+            house_button("Clear", lambda: self._set_paths(None, False))
             self.count_label = ui.label(self._count_text()).style(
                 f"{_MONO} font-size: 10px; color: #9ca3af; margin-left: auto;"
             )

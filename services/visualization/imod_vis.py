@@ -24,11 +24,7 @@ import pandas as pd
 from pathlib import Path
 from collections.abc import Callable
 
-from services.visualization.coords import (
-    binned_tomo_size_from_tomo_row,
-    centered_angst_to_voxel,
-    pixel_size_from_tomo_row,
-)
+from services.particles.coords import binned_tomo_size_from_tomo_row, centered_angst_to_voxel, pixel_size_from_tomo_row
 
 logger = logging.getLogger(__name__)
 

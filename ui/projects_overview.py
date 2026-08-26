@@ -22,6 +22,7 @@ from nicegui import ui, app
 
 from services.configs.user_prefs_service import get_prefs_service
 from services.project_state import SHARED_OWNER
+from ui.components.buttons import house_button
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -704,12 +705,8 @@ class ProjectsOverview:
                 "word-break: break-all;"
             )
             with ui.row().classes("w-full justify-end mt-3 gap-2"):
-                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat no-caps").style(
-                    f"{FONT} font-size: 12px;"
-                )
-                ui.button("Delete permanently", on_click=lambda: dialog.submit(True)).props("no-caps unelevated").style(
-                    f"{FONT} font-size: 12px; background: #be4343; color: white; border-radius: 6px; padding: 3px 14px;"
-                )
+                house_button("Cancel", lambda: dialog.submit(False))
+                house_button("Delete permanently", lambda: dialog.submit(True), kind="danger")
         result = await dialog
         return bool(result)
 
@@ -763,18 +760,11 @@ class ProjectsOverview:
                             "flat dense no-caps size=sm"
                         ).style(f"{MONO} font-size: 9px; color: {CLR_LABEL}; padding: 0 6px;")
             with ui.row().classes("w-full justify-between items-center mt-3 gap-2"):
-                ui.button("Move to Lab / Shared", on_click=lambda: dialog.submit(SHARED_OWNER)).props(
-                    "flat no-caps"
-                ).style(f"{FONT} font-size: 12px; color: {CLR_RUNNING};")
+                house_button("Move to Lab / Shared", lambda: dialog.submit(SHARED_OWNER))
                 with ui.row().classes("items-center gap-2"):
-                    ui.button("Cancel", on_click=lambda: dialog.submit(None)).props("flat no-caps").style(
-                        f"{FONT} font-size: 12px;"
-                    )
-                    ui.button(
-                        "Transfer", on_click=lambda: dialog.submit((username_input.value or "").strip() or None)
-                    ).props("no-caps unelevated").style(
-                        f"{FONT} font-size: 12px; background: {CLR_RUNNING}; color: white; "
-                        "border-radius: 6px; padding: 3px 14px;"
+                    house_button("Cancel", lambda: dialog.submit(None))
+                    house_button(
+                        "Transfer", lambda: dialog.submit((username_input.value or "").strip() or None), kind="accent"
                     )
         result = await dialog
         return result

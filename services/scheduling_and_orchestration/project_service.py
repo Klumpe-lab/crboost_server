@@ -358,7 +358,6 @@ class ProjectService:
         selected_mdoc_paths: list[str] | None = None,
         import_summary: dict[str, Any] | None = None,
         detected_params: dict[str, Any] | None = None,
-        is_aggregation: bool = False,
         shared: bool = False,
     ):
         try:
@@ -381,23 +380,23 @@ class ProjectService:
             state.project_path = project_dir
             state.movies_glob = movies_glob
             state.mdocs_glob = mdocs_glob
-            state.is_aggregation = is_aggregation
             state.created_by = getpass.getuser()
             # `created_by` is immutable provenance; `owner` drives sharing/grouping.
             state.owner = SHARED_OWNER if shared else None
             set_project_state_for(project_dir, state)
 
-            # Aggregation projects have no pipeline jobs at creation time.
-            # The merge step lives in a standalone workspace card (not in the
-            # pipeline DAG), and downstream jobs (Reconstruct/Class3D/Refine3D)
-            # are added by the user via the regular job-roster UI; they pick up
-            # the active merge's MergedSources/<slug>/optimisation_set.star through
+            # A project can be created with NO pipeline jobs (data-less): particles then
+            # arrive by cross-project merge or tomogram import, and downstream jobs
+            # (Reconstruct/Class3D/Refine3D) are added through the regular job roster. They
+            # pick up the active merge's MergedSources/<slug>/optimisation_set.star through
             # the synthetic `mergedSources` producer the path resolver registers
-            # (apply_aggregation_overrides wires it via a source_overrides key).
+            # (apply_aggregation_overrides wires it via a source_overrides key). De-novo S6
+            # removed the `is_aggregation` type this used to be gated on — nothing about
+            # creation depends on it any more.
 
             # Apply microscope/acquisition params from the already-parsed dataset
-            # overview (avoids re-parsing all mdocs from scratch). Aggregation
-            # projects have no source mdocs, so skip the fallback re-parse.
+            # overview (avoids re-parsing all mdocs from scratch). A data-less project has
+            # no source mdocs, so skip the fallback re-parse.
             if detected_params:
                 if "pixel_size_angstrom" in detected_params:
                     state.microscope.pixel_size_angstrom = detected_params["pixel_size_angstrom"]

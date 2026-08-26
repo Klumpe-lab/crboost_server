@@ -15,7 +15,7 @@ Two SEPARATE operations (the user drives both; nothing dedups automatically):
   already-kept (earlier = higher-priority) pick.
 
 numpy/pandas/starfile are hard deps (top-level, like the rest of
-services/visualization) — this is compile-checked in Claude's bare venv and
+services/particles) — this is compile-checked in Claude's bare venv and
 runtime-tested in the module-loaded app.
 """
 
@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 import starfile
 
-from services.visualization.coords import CENTERED_COLS, centered_angst_dataframe
+from services.particles.coords import CENTERED_COLS, centered_angst_dataframe
 
 logger = logging.getLogger(__name__)
 

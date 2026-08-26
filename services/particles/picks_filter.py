@@ -38,7 +38,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from services.visualization.subtomo_link import _coord_key, _read_subtomo_particles
+from services.particles.subtomo_link import _coord_key, _read_subtomo_particles
 
 logger = logging.getLogger(__name__)
 
@@ -416,7 +416,7 @@ def _list_particle_block(data: dict):
     """(key, df) of the pick table in a centered-Å list star: prefer 'particles',
     else the first block carrying the centered-Å coord columns (or rlnTomoName).
     Returns (None, None) if no table-like block is present."""
-    from services.visualization.coords import CENTERED_COLS
+    from services.particles.coords import CENTERED_COLS
 
     if "particles" in data and isinstance(data["particles"], pd.DataFrame):
         return "particles", data["particles"]
@@ -462,7 +462,7 @@ def derive_keep_state_for_list(source_star: Path, filtered_star: Path | None = N
     exists (= all rows implicitly kept); a (possibly empty) set otherwise."""
     import starfile
 
-    from services.visualization.coords import CENTERED_COLS
+    from services.particles.coords import CENTERED_COLS
 
     source_star = Path(source_star)
     filtered_star = Path(filtered_star) if filtered_star is not None else filtered_list_path(source_star)
@@ -528,3 +528,50 @@ def discard_filtered_list(source_star: Path, filtered_star: Path | None = None) 
         except OSError as e:
             logger.warning("Failed to remove %s: %s", filtered_star, e)
     return False
+
+
+def auto_source_for(ce_job_dir: str | Path | None, subtomo_job_dir: str | Path | None) -> dict | None:
+    """The star the ``auto`` slug contributes to a merge — the subtomo job's committed
+    ``particles_filtered.star`` (exactly the kept auto picks), else the candidate-extract
+    job's full ``candidates.star`` — or None when neither exists.
+
+    Split out of ``merge_source_for`` so the UI can ask BEFORE offering the action. The
+    ``auto`` row is rendered from the subtomo job's per-tomo curation records, which outlive
+    any committed filter, so a species with a subtomo job, no committed filter and no CE job
+    draws a mergeable-looking row that ``merge_source_for`` can only answer by raising."""
+    if subtomo_job_dir and has_filtered_set(Path(subtomo_job_dir)):
+        return {"path": str(Path(subtomo_job_dir) / PARTICLES_FILTERED_NAME), "type": "auto", "slug": "auto"}
+    if ce_job_dir:
+        return {"path": str(Path(ce_job_dir) / "candidates.star"), "type": "auto", "slug": "auto"}
+    return None
+
+
+def merge_source_for(
+    slug: str, lists: list[dict], *, ce_job_dir: str | Path | None, subtomo_job_dir: str | Path | None
+) -> dict | None:
+    """Which star a pick list contributes to a MERGE — its KEPT subset, so the user's
+    keep/drop never bleeds dropped picks into a merge:
+
+    - ``auto`` → the subtomo job's ``particles_filtered.star`` (centered-Å coords +
+      rlnTomoName, i.e. exactly the kept auto picks for this tomo) when a filter is
+      committed, else the candidate-extract job's full ``candidates.star``;
+    - workbench lists → ``<slug>_filtered.star`` when the cutout sheet committed drops,
+      else the full list star.
+
+    ``lists`` are the dashboard's render dicts (``slug`` / ``path`` / ``list_type``).
+    Returns ``{"path", "type", "slug"}`` in the shape ``merge_pick_lists`` consumes, or
+    None for a slug that is not a sourced list. Raises for ``auto`` with nothing to source
+    from — callers that RENDER a merge control ask ``auto_source_for`` first and disable it,
+    so reaching the raise means the control was offered on state that has since changed."""
+    if slug == "auto":
+        src = auto_source_for(ce_job_dir, subtomo_job_dir)
+        if src is None:
+            raise ValueError("auto list has no candidate-extract job dir to source candidates.star from")
+        return src
+    lst = next((x for x in lists if x.get("slug") == slug), None)
+    if not lst or not lst.get("path"):
+        return None
+    lt = lst.get("list_type")
+    filtered = filtered_list_path(Path(lst["path"]))
+    path = str(filtered) if filtered.exists() else lst["path"]
+    return {"path": path, "type": (lt.value if hasattr(lt, "value") else str(lt)), "slug": slug}

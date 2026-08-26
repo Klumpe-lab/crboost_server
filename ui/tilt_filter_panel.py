@@ -20,6 +20,8 @@ from backend import get_backend
 from services.models_base import JobStatus
 from services.tilt_series.build import parse_position
 from services.project_state import get_state_service
+from ui.components.buttons import house_button
+from ui.components.fields import house_number, house_select
 from ui.current_project import current_project_state
 from services.jobs.tilt_filter import finalize_pipeline_output
 from services.tilt_series_service import (
@@ -68,25 +70,6 @@ def _chip(label, value, color=CLR_LABEL):
     with ui.column().classes("items-center gap-0"):
         ui.label(str(value)).style(f"{MONO} font-size: 13px; font-weight: 700; color: {color};")
         ui.label(label).style(f"{FONT} font-size: 7px; color: {CLR_SUBLABEL}; text-transform: uppercase;")
-
-
-def _btn_primary(text, icon, on_click):
-    return (
-        ui.button(text, icon=icon, on_click=on_click)
-        .props("no-caps unelevated dense")
-        .style(
-            f"{FONT} font-size: 10px; font-weight: 500; padding: 2px 10px; "
-            f"border-radius: 5px; background: {CLR_ACCENT}; color: white;"
-        )
-    )
-
-
-def _btn_flat(text, icon, on_click):
-    return (
-        ui.button(text, icon=icon, on_click=on_click)
-        .props("no-caps flat dense")
-        .style(f"{FONT} font-size: 10px; font-weight: 500; padding: 2px 8px; color: {CLR_LABEL};")
-    )
 
 
 def _meta_row(label, value):
@@ -168,7 +151,7 @@ def _notify_finalize(res: dict) -> None:
     if res.get("success"):
         ui.notify(
             f"Filter committed: {res['kept']} tilts kept, {res['dropped']} dropped — "
-            "alignment will use the trimmed tomostar.",
+            "alignment trims the tomostar to match when it runs.",
             type="positive",
             timeout=5000,
         )
@@ -314,31 +297,17 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                 "action": getattr(job_model, "prob_action", "assignToGood") if job_model else "assignToGood",
             }
 
-            with ui.row().classes("gap-3 flex-wrap items-end"):
-                with ui.column().classes("gap-0"):
-                    ui.label("Model").style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
-                    model_sel = (
-                        ui.select(["default", "binary", "oneclass"], value=vals["model"])
-                        .props("dense outlined hide-bottom-space")
-                        .classes("w-32")
-                        .style(f"{MONO} font-size: 10px;")
-                    )
-                with ui.column().classes("gap-0"):
-                    ui.label("Threshold").style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
-                    thresh_inp = (
-                        ui.number(value=vals["threshold"], min=0.0, max=1.0, step=0.05, format="%.2f")
-                        .props("dense outlined hide-bottom-space")
-                        .classes("w-20")
-                        .style(f"{MONO} font-size: 10px;")
-                    )
-                with ui.column().classes("gap-0"):
-                    ui.label("Low-conf. action").style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL};")
-                    action_sel = (
-                        ui.select({"assignToGood": "Keep", "assignToBad": "Remove"}, value=vals["action"])
-                        .props("dense outlined hide-bottom-space")
-                        .classes("w-28")
-                        .style(f"{FONT} font-size: 10px;")
-                    )
+            with ui.row().classes("gap-3 flex-wrap items-center"):
+                model_sel = house_select("Model", ["default", "binary", "oneclass"], value=vals["model"], width="w-32")
+                thresh_inp = house_number(
+                    "Threshold", value=vals["threshold"], min=0.0, max=1.0, step=0.05, format="%.2f", width="w-20"
+                )
+                action_sel = house_select(
+                    "Low-conf. action",
+                    {"assignToGood": "Keep", "assignToBad": "Remove"},
+                    value=vals["action"],
+                    width="w-28",
+                )
 
             status_row = ui.row().classes("w-full items-center gap-2")
 
@@ -438,9 +407,14 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             labeled_p = out_dir / "tiltseries_labeled.star"
                             await asyncio.to_thread(write_tilt_series, ts_data, labeled_p, "tilt_series_labeled")
 
-                            # Produce the real pipeline output (trimmed tomostar) + wire it.
-                            _notify_finalize(await finalize_pipeline_output(state, job_model, ts_data, project_path))
-                            job_model.execution_status = JobStatus.SUCCEEDED
+                            # Commit the verdict to the registry -- that IS the cut
+                            # alignment applies. Only a recorded verdict may claim
+                            # SUCCEEDED; otherwise the job would look done while
+                            # downstream silently ran on the unfiltered tilt set.
+                            res = await finalize_pipeline_output(state, job_model, ts_data, project_path)
+                            _notify_finalize(res)
+                            if res.get("success"):
+                                job_model.execution_status = JobStatus.SUCCEEDED
                             if state:
                                 state.mark_dirty()
                                 await backend.save_project(project_path)
@@ -468,7 +442,7 @@ def _render_dl_config(job_model=None, backend=None, project_path=None, gallery_c
                             with status_row:
                                 ui.label(f"Reload error: {e}").style(f"color: {CLR_ERROR};")
 
-                _btn_primary("Run DL Filter", "smart_toy", _run_dl)
+                house_button("Run DL filter", _run_dl, kind="accent")
             else:
                 ui.label("Add this job to the pipeline to enable DL auto-filtering.").style(
                     f"{FONT} font-size: 8px; color: {CLR_SUBLABEL}; font-style: italic;"
@@ -530,10 +504,10 @@ def _render_generate(ts_ctf_star, project_path, png_dir, gallery_c, stats_c, job
         existing = BackgroundTask.existing(dedup_key)
         if existing is not None:
             status_lbl.text = "Generation in flight — see tray (bottom-right)."
-            _btn_primary("Generation Running…", "hourglass_top", lambda: None)
+            house_button("Generation running…", lambda: None, kind="accent")
             BackgroundTask.attach(existing.id, on_complete=_on_complete, on_progress=_on_progress)
         else:
-            _btn_primary("Generate Thumbnails", "auto_fix_high", _start)
+            house_button("Generate thumbnails", _start, kind="accent")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -611,12 +585,12 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
     view_opts = {"sort": "acquisition"}
 
     with ui.row().classes("w-full items-center gap-2 py-1 flex-wrap"):
-        _btn_primary("Save Labels", "save", lambda: _save())
-        _btn_flat("Set All Good", "check_circle_outline", lambda: _set_all_good())
+        house_button("Save labels", lambda: _save(), kind="accent")
+        house_button("Set all good", lambda: _set_all_good())
 
         ui.element("div").style("width: 1px; height: 16px; background: #e2e8f0; margin: 0 2px;")
-        _btn_flat("Expand All", "unfold_more", lambda: _expand_all(True))
-        _btn_flat("Collapse All", "unfold_less", lambda: _expand_all(False))
+        house_button("Expand all", lambda: _expand_all(True))
+        house_button("Collapse all", lambda: _expand_all(False))
 
         ui.element("div").style("width: 1px; height: 16px; background: #e2e8f0; margin: 0 2px;")
         with ui.column().classes("gap-0"):
@@ -716,10 +690,13 @@ def _render_gallery_content(ts_data, project_path, png_dir, gallery_c, stats_c, 
             # Persist labels and mark job complete
             if job_model is not None:
                 job_model.tilt_labels = dict(labels)
-                # Produce the real pipeline output (trimmed tomostar) + wire it so
-                # alignment consumes the manual cut, not just the display stars.
-                _notify_finalize(await finalize_pipeline_output(state, job_model, ts_data, project_path))
-                job_model.execution_status = JobStatus.SUCCEEDED
+                # Commit the verdict to the registry so alignment consumes the manual
+                # cut, not just the display stars. Only a recorded verdict may claim
+                # SUCCEEDED (see the DL path).
+                res = await finalize_pipeline_output(state, job_model, ts_data, project_path)
+                _notify_finalize(res)
+                if res.get("success"):
+                    job_model.execution_status = JobStatus.SUCCEEDED
             if state:
                 state.mark_dirty()
                 await get_backend().save_project(project_path)

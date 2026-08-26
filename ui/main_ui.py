@@ -6,8 +6,10 @@ from nicegui import ui, Client, app
 
 from backend import CryoBoostBackend
 from services.configs.user_prefs_service import get_prefs_service
+from ui.dashboard.css import ensure_assets_loaded
 from services.project_state import get_project_state_for
 from ui.ui_state import get_ui_state_manager
+from ui.components.buttons import house_button
 from ui.data_import_panel import build_data_import_panel
 from ui.workspace_page import build_workspace_page
 
@@ -77,31 +79,18 @@ def create_ui_router(backend: CryoBoostBackend):
                on the v-html-injected roster spans, most likely a cache-stale
                Python-injected stylesheet. SVG carries its own animation. */
 
-            /* ── Config + I/O dropdowns ──────────────────────────────────
-               Clean 1px slate-bordered box + themed popup, replacing the
-               default Quasar Material underline/float look. Applied via the
-               .cb-select class in ui/job_plugins/_field_styles.py (config
-               parameter selects) and ui/pipeline_builder/io_config_component.py
-               (I/O source menus + their popups). */
-            .cb-select .q-field__control {
-                min-height: 24px; padding: 0 6px;
-                border: 1px solid #e2e8f0; border-radius: 4px;
-                background: #fff; transition: border-color .12s ease;
-            }
-            .cb-select .q-field__control:hover { border-color: #cbd5e1; }
-            .cb-select.q-field--focused .q-field__control { border-color: #94a3b8; }
-            .cb-select .q-field__control:before,
-            .cb-select .q-field__control:after { display: none !important; }
-            .cb-select .q-field__native,
-            .cb-select .q-field__input {
-                font-family: 'IBM Plex Sans', sans-serif; font-size: 11px;
-                color: #1e293b; padding: 0; line-height: 22px;
-            }
-            .cb-select .q-field__marginal,
-            .cb-select .q-field__append { height: 22px; }
-            .cb-select .q-field__append .q-icon { font-size: 16px; color: #94a3b8; }
-            .cb-select.q-field--disabled .q-field__control { background: #f8fafc; }
+            /* The .cb-select / .cb-field control chrome lives in ui/dashboard/css.py
+               (_CB_CSS) ONLY — every page calls ensure_assets_loaded(). A duplicate
+               copy used to sit here; it existed only to drift (deleted 2026-08-21,
+               picking-UI roadmap 08 S1). */
 
+            /* NOTE (2026-08-21): do NOT add new app-wide rules to this block.
+               This <style> is baked into the page shell, and the shell is
+               served stale on this deployment — new rules here never reached
+               the browser (the .cb-btn / spinner-kill incident). App-wide
+               control chrome goes in ui/dashboard/css.py (_CB_CSS), which
+               ensure_assets_loaded() injects per client AFTER connect, over
+               the socket; structural styling goes inline on the elements. */
             .cb-select-popup {
                 border: 1px solid #e2e8f0; border-radius: 5px;
                 box-shadow: 0 6px 18px rgba(15,23,42,.10);
@@ -141,6 +130,7 @@ def create_ui_router(backend: CryoBoostBackend):
     @ui.page("/")
     async def landing_page(client: Client):
         await client.connected()
+        ensure_assets_loaded()
 
         ui_mgr = get_ui_state_manager()
         ui_mgr.reset()
@@ -205,6 +195,8 @@ def create_ui_router(backend: CryoBoostBackend):
     # --- AUX PAGES ---
     @ui.page("/cluster-info")
     async def cluster_info_page(client: Client):
+        await client.connected()
+        ensure_assets_loaded()
         with ui.column().classes("p-8"):
             ui.label("Cluster Info Stub")
-            ui.button("Back", on_click=lambda: ui.navigate.back())
+            house_button("Back", lambda: ui.navigate.back())

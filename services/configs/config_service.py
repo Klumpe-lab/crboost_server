@@ -183,9 +183,23 @@ class CurationConfig(BaseModel):
     geometry: str = "1920x1080"
     chimerax_bin: str = "chimerax"
     login_host: str | None = None
-    # Drive a running ChimeraX from crboost over its REST server (the worker starts
-    # `remotecontrol rest` on the node's loopback; crboost POSTs via `ssh <node> curl`).
-    # Enables the one-click "Load into running session" swap; off → copy-paste only.
+    # VNC auth. Default ON: the worker mints a one-time random password (VncAuth).
+    # True switches the desktop to `-SecurityTypes None` — no password at all, so ANYONE
+    # who can reach that node's rfb port drives the session. Opt-in per site; the control
+    # center states the risk beside the (empty) password field. Roadmap 10-S1.
+    passwordless_vnc: bool = False
+    # Open a block-binned display copy of the reconstruction instead of the full-res
+    # volume (roadmap 10-S3). ArtiaX spends ~20 s COMPUTING on a 1 GB / 268 M-voxel recon;
+    # 2 is ~8x fewer voxels, 4 is ~64x. Generated once, cached beside the recon. The
+    # (N-1)/2·px corner shift this introduces is recorded in the dir's manifest and undone
+    # exactly on ingest — see services/visualization/artiax_bridge.display_corner_offset.
+    # 1 = off (open the full-res volume, as before 10-S3).
+    display_bin: int = 2
+    # The REST command channel (the worker starts `remotecontrol rest` on the node's
+    # loopback; crboost reaches it via `ssh <node> curl`). QUARANTINED since roadmap 10-S1:
+    # nothing may drive a session after launch (Model B), and this now gates only a
+    # launch-time health check. It is NOT a switch for loading/saving from crboost — that
+    # path is deleted, deliberately.
     rest_enabled: bool = True
 
 
@@ -204,6 +218,13 @@ class Config(BaseModel):
     curation: CurationConfig = Field(default_factory=CurationConfig)
     tools: dict[str, ToolConfig] = Field(default_factory=dict)
     containers: dict[str, str] | None = None
+    # Lab-level species catalog root (roadmap 12). Cross-project species DEFINITIONS live
+    # here — name, diameter, symmetry, notes, templates + masks with their provenance;
+    # picks, filters, merges and extractions stay project-bound. Empty or absent = the
+    # feature is OFF: no catalog affordance is rendered anywhere, which is the state every
+    # existing install is in until someone points this at a shared directory.
+    species_catalog_root: str = ""
+
     # DEV TOGGLE (temporary): global override so every project uses the afterok orchestrator
     # (schemer-free submit + inline import) without per-project project_params.json edits. A
     # per-project `use_afterok_orchestrator: true` still wins on its own. Remove once validated.
@@ -272,6 +293,19 @@ class ConfigService:
     @property
     def curation(self) -> CurationConfig:
         return self._config.curation
+
+    @property
+    def species_catalog_root(self) -> Path | None:
+        """The lab species catalog directory, or None when the feature is off.
+
+        None is the normal state, not an error: an install that never set
+        `species_catalog_root` has no shared directory to publish to, and every catalog
+        affordance checks this before rendering. A configured-but-missing path still
+        returns the Path — the catalog service creates it on first publish, and a typo
+        should surface there (as a real OSError naming the path) rather than here as a
+        silent "feature off"."""
+        raw = (self._config.species_catalog_root or "").strip()
+        return Path(raw).expanduser() if raw else None
 
     @property
     def venv_path(self) -> Path | None:

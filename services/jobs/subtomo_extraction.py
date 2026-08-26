@@ -57,7 +57,7 @@ class SubtomoExtractionParams(AbstractJobParams):
             key="output_optimisation", produces=JobFileType.OPTIMISATION_SET_STAR, path_template="optimisation_set.star"
         ),
         # Curator-saved subset of the picks above. Written post-hoc by the
-        # dashboard's "Save picks" action (services/visualization/picks_filter.py);
+        # dashboard's "Save picks" action (services/particles/picks_filter.py);
         # the driver itself never touches this file. prefer_if_exists=True makes
         # the resolver admit this candidate only when the file is on disk and,
         # when admitted, rank it above the original within the same producer —

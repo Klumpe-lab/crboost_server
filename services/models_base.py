@@ -1,7 +1,7 @@
 # services/models_base.py
 from __future__ import annotations
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -80,6 +80,9 @@ class JobType(str, Enum):
     TEMPLATE_MATCH_PYTOM = "templatematching"
     TEMPLATE_EXTRACT_PYTOM = "tmextractcand"
     SUBTOMO_EXTRACTION = "subtomoExtraction"
+    # Per-pick-list extraction (roadmap 07). One instance per (species, tomogram,
+    # slug) triple; NOT a scheme/roster job -- see services/jobs/extract_pick_list.py.
+    EXTRACT_PICK_LIST = "extractPickList"
     RECONSTRUCT_PARTICLE = "reconstructParticle"
 
     CLASS3D = "class3d"
@@ -89,6 +92,14 @@ class JobType(str, Enum):
     # for input_optimisation slots in aggregation projects. Never appears in
     # state.jobs, jobtype_paramclass, or services.jobs.spec.JOB_SPECS.
     MERGED_SOURCES = "mergedSources"
+
+    # Synthetic source, same contract as MERGED_SOURCES: the PARTICLES-header tomogram
+    # import (services/tomogram_import.py) is a project-level artifact, not a job, but its
+    # committed Tomograms/tomograms.star has to be a resolver producer candidate. It used
+    # to borrow MERGED_SOURCES and be told apart by instance path, which made a dangling
+    # imported star report itself as a missing merged-sources optimisation set (de-novo
+    # roadmap D-8 / S5). Legacy `mergedSources:Tomograms` override keys still resolve.
+    IMPORTED_TOMOGRAMS = "importedTomograms"
 
     @classmethod
     def from_string(cls, value: str) -> JobType:
@@ -162,7 +173,7 @@ def resolve_species(state, job_model, instance_id: str | None = None):
 
     Returns (species or None, species_id or None). THE canonical chain —
     formerly triplicated across dashboard_data / template_metadata /
-    aggregation_authoritative."""
+    aggregation.extraction."""
     if instance_id:
         sid = split_species_id(instance_id)
         if sid:
@@ -192,6 +203,28 @@ class PickListType(str, Enum):
     MANUAL = "manual"  # placed in ArtiaX, ingested from .coords
     IMPORTED = "imported"  # user-supplied .coords/star, ingested
     MERGED = "merged"  # 2+ lists combined with radius dedup
+
+
+class SpeciesOrigin(StrEnum):
+    """How a ParticleSpecies came to exist (`ParticleSpecies.origin`). Stored as a
+    plain str — `""` on species that pre-date the field means WORKBENCH — and
+    validated at the write site (`ProjectState.add_species`)."""
+
+    WORKBENCH = "workbench"  # template-driven (the Species page "+", formerly the workbench "+")
+    MANUAL = "manual"  # created de novo for hand picking (roster "+", Journey empty state)
+    IMPORTED = "imported"
+
+
+class PickSourceKind(StrEnum):
+    """Where a pick list's coordinates came from (`PickList.source_kind`); the
+    matching `source_ref` names the source (CE instance id · .coords stem · imported
+    path · `"a+b+c"` parent slugs). Stored as a plain str, validated at the write
+    sites (`services.particles.ingest`, the dashboard merge)."""
+
+    TM = "tm"  # PyTOM candidates of a candidate-extract job (synthesized `auto` / `filtered` rows)
+    ARTIAX = "artiax"  # .coords saved from a ChimeraX/ArtiaX session into the curation dir
+    IMPORT = "import"  # user-supplied external .coords
+    MERGE = "merge"  # union of 2+ lists
 
 
 class ListExtractionState(str, Enum):

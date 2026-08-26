@@ -5,7 +5,7 @@ Extracted verbatim from ``ui/tomo_dashboard_dialog.py`` (R0 refactor). A single
 Pure presentation; no logic.
 """
 
-from nicegui import ui
+from nicegui import context, ui
 
 
 _CB_CSS = """
@@ -149,13 +149,6 @@ _CB_CSS = """
 }
 .cb-hover-card .cb-hover-val { color: #1f2937; }
 .cb-hover-card.cb-hover-empty { color: #9ca3af; font-style: italic; }
-/* Horizontal variant: hovered-pick stats as an inline strip at the top of the
- * gallery (key:value pairs in a wrapping flex row). */
-.cb-hover-horizontal {
-    display: flex; flex-wrap: wrap; gap: 3px 16px; align-items: baseline;
-    padding: 5px 9px; margin-bottom: 4px;
-}
-.cb-hover-horizontal .cb-hover-pair { display: flex; align-items: baseline; gap: 4px; }
 .cb-gallery-grid {
     display: grid; grid-template-columns: repeat(auto-fill, 96px);
     gap: 4px; padding: 6px 2px 6px 2px; justify-content: start;
@@ -167,9 +160,14 @@ _CB_CSS = """
     border: 2px solid transparent; transition: transform 0.06s ease;
 }
 .cb-gallery-tile:hover { transform: scale(1.04); border-color: #c7d2fe; }
+/* SELECTED tile (11-S4). Amber, matching .cb-pick-ghost.cb-ghost-selected on the slab,
+ * so the tile and its dot read as one thing. It stays until another tile is clicked or
+ * Esc/click-away clears it — unlike the transient .cb-tile-highlight hover brush. The
+ * class existed here since the gallery was written and nothing ever applied it; the
+ * click model that finally does is the point of 11-S4. */
 .cb-gallery-tile.selected {
-    border-color: #4338ca;
-    box-shadow: 0 0 0 1px #4338ca, 0 4px 10px rgba(67,56,202,0.25);
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 1px #f59e0b, 0 4px 10px rgba(245,158,11,0.3);
 }
 .cb-gallery-tile .cb-tile-score {
     position: absolute; bottom: 0; right: 0;
@@ -304,28 +302,18 @@ _CB_CSS = """
  * Wraps to stacked on narrow viewports. */
 .cb-particles-split { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
 /* Slab column is pinned to the slab's natural height-capped width: its WIDTH is set
- * INLINE per-tomo (_render_particles_section) to min(1080px, _SLAB_MAX_VH·x/y), and
- * it does NOT flex-grow — so the gallery/tabs column (flex-grow 1) claims ALL the
- * remaining width. The inline max-width is _SLAB_MAX_PCT% of the row (NOT 100%): the
- * vh·aspect width alone lands at ~half the row on a typical monitor, so this %
- * ceiling is what actually keeps the slab from eating half and starving the gallery
- * (lower _SLAB_MAX_PCT → wider gallery). On a very narrow viewport the tabs column
- * wraps below the slab. */
+ * INLINE per-tomo (render_particles_section) to min(1400px, slab_vh·x/y), and it does
+ * NOT flex-grow — so the gallery column (flex-grow 1) claims ALL the remaining width.
+ * The inline max-width is the mode's % of the row (NOT 100%): the vh·aspect width
+ * alone lands at ~half the row on a typical monitor, so this % ceiling is what
+ * actually keeps the slab from eating half and starving the gallery (see _SLAB_CAPS —
+ * 60vh/34% slim, 74vh/46% full). On a very narrow viewport the gallery wraps below. */
 .cb-particles-canvas-col { flex: 0 0 auto; }
-.cb-particles-tabs-col { flex: 1 1 360px; min-width: 360px; }
-/* List workbench inside a species tab: a horizontal pick-list chip rail ABOVE
- * the selected list's detail/gallery — stacked, not side-by-side, so the short
- * rail doesn't leave dead vertical space beside the tall gallery.
- * width:100% is REQUIRED: the q-tab-panel content area sizes its children to
- * their content (flex align, not stretch), so without an explicit width this
- * column shrink-wraps to the gallery/rail content (~half) instead of filling the
- * tabs column — that was the real "gallery is half-width" bug, NOT the slab. */
-.cb-workbench-split {
-    display: flex; flex-direction: column; gap: 8px; align-items: stretch;
-    width: 100%; min-width: 0;
-}
-.cb-list-rail-host { width: 100%; }
-.cb-list-detail-host { width: 100%; min-width: 0; }
+.cb-particles-detail-col { flex: 1 1 360px; min-width: 360px; }
+/* The LISTS STRIP (11-S2) runs full width ACROSS THE TOP, above the slabs/gallery row.
+ * It used to sit at the top of the right column, which pushed the gallery a
+ * strip's-height below the slabs — the misalignment the maintainer flagged. */
+.cb-lists-strip { min-width: 0; margin-bottom: 8px; }
 /* The pick-list workbench header sits ABOVE the selected list's gallery: a
  * compact aligned TABLE of lists (one row each) on the left + a vertical action
  * toolbox on the right. The table replaces the old free-floating pills, which
@@ -339,7 +327,11 @@ _CB_CSS = """
 }
 .cb-ltable-row {
     display: grid;
-    grid-template-columns: 16px 14px minmax(0, 1fr) 48px 30px 26px 22px 20px;
+    /* swatch · name · picks · ext · path · delete · eye. The Journey's merge-tick column went
+     * with 11-S3 and the authoritative radio with the concept itself; the Picks & curation
+     * table re-orders these and adds source / origin / job / actions through .cb-ptable-row's
+     * own template below. */
+    grid-template-columns: 14px minmax(0, 1fr) 48px 26px 22px 22px 20px;
     align-items: center; gap: 8px;
     padding: 3px 7px; border-radius: 5px; cursor: pointer;
     border: 1px solid transparent; transition: background 0.12s, border-color 0.12s;
@@ -367,38 +359,82 @@ _CB_CSS = """
     font-size: 11px; font-family: ui-monospace, monospace; color: #334155; justify-self: end;
 }
 .cb-ltable-badge { font-size: 12px; font-weight: 700; cursor: help; line-height: 1; }
-/* Authoritative-list radio (one per species,tomo): indigo when set, slate when not. */
-.cb-auth { cursor: pointer; transition: color 0.12s; }
-.cb-auth-on { color: #6366f1; }
-.cb-auth-off { color: #cbd5e1; }
-.cb-auth-off:hover { color: #94a3b8; }
-/* Vertical action toolbox beside the table — the per-(species,tomo) curation
- * actions (Curate in ArtiaX / Load into session / Import), pulled OUT of the row
- * so the list table stays clean and the actions read as one toolbox. */
+/* Vertical toolbox beside the table — since 09-S2 the Journey neither starts nor swaps an
+ * ArtiaX session, so this holds the `curate ↗` ROUTE to the Particles registry's Picks &
+ * curation tab. Kept OUT of the row so the list table stays clean. */
 .cb-list-toolbox {
     flex: 0 0 auto;
-    display: flex; flex-direction: column; align-items: center; gap: 2px;
-    padding: 3px; background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    padding: 3px 6px; background: #fafbfc; border: 1px solid #eef1f6; border-radius: 8px;
 }
-/* 'Curate in ArtiaX' button state: muted gray when no ChimeraX session is running,
- * a soft green pill when one is live (so the toolbox signals session state at a glance). */
-.cb-curate-off { color: #94a3b8 !important; }
-.cb-curate-off:hover { color: #6366f1 !important; }
-.cb-curate-live { color: #15803d !important; background: #dcfce7 !important; }
-.cb-curate-live:hover { background: #bbf7d0 !important; }
-/* Inline merge bar (shown when 2+ rows are ticked): a contained indigo strip below
- * the table, matching the table/toolbox chrome. display:flex/none is toggled inline
- * by _update_merge_bar; width/chrome live here so they survive that style rewrite. */
-.cb-merge-bar {
-    width: 100%; padding: 5px 8px;
-    background: #eef2ff; border: 1px solid #c7d2fe; border-radius: 8px;
+.cb-toolbox-link {
+    font-size: 10px; color: #6366f1; cursor: pointer;
+    text-decoration: underline; text-decoration-style: dotted; white-space: nowrap;
 }
+.cb-toolbox-link:hover { color: #4338ca; }
 .cb-badge-ok { color: #059669; }
 .cb-badge-todo { color: #94a3b8; }
 .cb-badge-stale { color: #d97706; }
+/* The per-list extraction JOB glyph (roadmap 07-S4), in the `job` column next to `ext`:
+ * queued/failed take the same two hues the roster's status dot uses for those states
+ * (ui/status_indicator._DOT_COLORS), so one job state reads the same colour everywhere. */
+.cb-badge-queued { color: #a855f7; }
+.cb-badge-err { color: #dc2626; }
+/* That mark opens the job's logs, so the whole cell (and the glyph inside it, which
+ * .cb-ltable-badge otherwise gives a help cursor) has to read as clickable. */
+.cb-ptable-job, .cb-ptable-job .cb-ltable-badge { cursor: pointer; }
+/* Species page · Picks & curation (roadmap 11-S2, merged surface 09-S1): the rail table's
+ * chrome (.cb-ltable*), one grid per row: swatch · name · source · origin · kept/total ·
+ * ext · job · actions (`job` = the live per-list extraction instance, roadmap 07-S4;
+ * `origin` = the template+mask the picks came out of, 09-S4). The merge tick went with
+ * 09-S3 — creating a merge is the Aggregate-candidates flow's job, not this surface's.
+ * Rows are not selectable here (no detail pane), so no pointer cursor / selected state.
+ *
+ * Every track is fixed or `fr`, and the last one is fixed rather than `auto`: one table is
+ * rendered PER TOMOGRAM GROUP, and a content-sized track (`minmax(a,b)` / `auto`) lets each
+ * group settle on its own column widths — which is exactly the staggering between groups.
+ * `fr` depends only on the container width, which every group shares, so the columns line
+ * up across groups and the row always spans the full line. */
+/* The table CLAIMS THE LINE. `.cb-ltable`'s `flex: 1 1 auto` only sizes it inside the pick
+ * viewer's ROW (.cb-list-top); here it is a direct child of a ui.column, and NiceGUI's
+ * .nicegui-column sets `align-items: flex-start` — so without an explicit width the box
+ * shrinks to fit, the `fr` tracks resolve against max-content, and every tomogram group ends
+ * at its own x. That is the staggering; the grid template below cannot fix it alone. */
+.cb-ptable { width: 100%; }
+/* The `ext` track is 60px because its header spells `Extracted` out — a 3-letter
+ * abbreviation over a column whose whole content is one glyph told nobody what the glyph
+ * meant. */
+.cb-ptable-row {
+    grid-template-columns: 14px minmax(0, 2fr) 72px minmax(0, 1.4fr) 56px 60px 24px 96px;
+    cursor: default;
+}
+/* Actions hug the right edge, so a row visibly ends AT the end of the line. */
+.cb-ptable-actions { justify-self: end; }
+/* The import affordance, one per tomogram group and present whether or not the group holds
+ * lists (a tomogram with no picks is exactly where a de-novo .coords import starts). It sits
+ * inside the table box, in the rows' own padding/radius, but deliberately OUT of the
+ * 8-column grid: it is one action, not a row of data. Dashed and dim so it reads as the
+ * empty slot it is until hovered. */
+.cb-ptable-import {
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 7px; border-radius: 5px; cursor: pointer;
+    border: 1px dashed #e1e7f0; background: transparent;
+    font-size: 10px; color: #b6c0cf;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.cb-ptable-import:hover { background: #ffffff; border-color: #c7d2fe; color: #6366f1; }
+.cb-ptable-group {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 4px 6px 2px; margin-top: 4px;
+}
+.cb-ptable-group-name { font-size: 11px; font-weight: 700; color: #334155; font-family: ui-monospace, monospace; }
+.cb-ptable-source {
+    font-size: 10px; color: #64748b; cursor: help;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* Shared small metadata text in the per-list detail chrome (provenance, pick
  * counts, sub-labels) — one slate tone + size instead of ad-hoc inline font
- * styles, so the list header / extraction bar / status rows read as one block. */
+ * styles, so the list header / provenance / status rows read as one block. */
 .cb-detail-meta { font-size: 10px; color: #94a3b8; line-height: 1.2; }
 /* Rich pytom-chip info tooltip: a light card (overrides Quasar's dark default)
  * with an auto-pick-stats section + a template-match section. */
@@ -451,16 +487,62 @@ _CB_CSS = """
     padding: 2px 0 4px 0;
 }
 .cb-gallery-scroll { overflow-y: auto; max-height: 68vh; padding-right: 4px; position: relative; }
-.cb-cutouts-actions { flex-shrink: 0; }
-/* Cutouts on top, controls compacted underneath. */
-.cb-cutouts-head { padding: 0 0 2px 0; }
-.cb-gallery-controls-box {
-    display: flex; flex-direction: column; gap: 4px;
-    margin-top: 6px; padding-top: 6px; border-top: 1px solid #eef2f6;
-    font-size: 11px;
+/* Gallery header: title · count on the left, the toolbelt on the right. Everything
+ * that used to sit UNDER the grid — sort select, filter selects, a per-tomogram 3dmod
+ * block, a per-pick 3dmod block, the hovered-pick info row, the filtered-set path —
+ * is a toolbelt icon with a popover now (11-S3). */
+.cb-gallery-head { padding: 0 0 2px 0; }
+.cb-gallery-count { font-size: 10px; color: #94a3b8; font-family: ui-monospace, monospace; }
+.cb-toolbelt { flex-shrink: 0; }
+.cb-tb-btn { color: #94a3b8; }
+.cb-tb-btn:hover { color: #4338ca; }
+/* An armed stateful toolbelt toggle (curation mode) is LOUD: while it is on, clicking
+ * a cutout changes what downstream consumes, so the icon must not read like the rest
+ * of the row. */
+.cb-tb-btn.cb-tb-on {
+    color: #ffffff; background: #4338ca;
+    box-shadow: 0 0 0 2px rgba(67,56,202,0.22);
 }
-.cb-gallery-controls-box .cb-filter-toolbar { padding: 0; }
-.cb-gallery-controls-box .cb-hover-card { margin: 0; }
+.cb-tb-btn.cb-tb-on:hover { color: #ffffff; background: #3730a3; }
+/* The curation bar appears under the header only while curation mode is armed. */
+.cb-curation-bar {
+    padding: 3px 0 5px 0; margin-bottom: 2px;
+    border-bottom: 1px dashed #e5e7eb;
+}
+/* Wider popover for the 3dmod commands — they are long absolute paths. */
+.cb-3dmod-card { min-width: 460px; max-width: 70vw; }
+/* Narrow popover for the sort / display-filter controls — .cb-info-card's 300px floor
+ * is sized for path rows, and a lone select rattling around in it reads as broken. */
+.cb-tb-card { min-width: auto; padding: 6px 8px; }
+/* The reference strip's collapse line (closed by default). */
+.cb-ref-toggle {
+    font-size: 9px; color: #6b7280; text-transform: uppercase;
+    font-weight: 700; letter-spacing: 0.4px;
+    cursor: pointer; padding: 3px 2px; user-select: none; width: max-content;
+}
+.cb-ref-toggle:hover { color: #4338ca; }
+/* The full-page viewer (11-S5): fills the workspace main area and scrolls as one. */
+.cb-viewer-page {
+    display: flex; flex-direction: column; gap: 6px;
+    width: 100%; height: 100%; min-height: 0;
+    overflow-y: auto; padding: 8px 10px;
+}
+.cb-viewer-page-head { padding: 2px 2px 4px 2px; }
+/* Slab lightbox: a full-viewport overlay holding a CLONE of the clicked slab (image +
+ * its pick dots), wheel-zoomed and drag-panned via an inline transform. */
+.cb-slab-lightbox {
+    position: fixed; inset: 0; z-index: 3000;
+    background: rgba(2,6,23,0.92);
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; cursor: grab;
+}
+.cb-slab-lightbox:active { cursor: grabbing; }
+.cb-slab-lightbox-inner {
+    width: min(96vw, 1800px) !important;
+    max-height: 94vh;
+    transform-origin: center center;
+    will-change: transform;
+}
 /* Box-select (lasso) marquee + active state. */
 /* While a box-select drag is in progress: crosshair + suppress text selection.
    Tiles keep pointer-events (clicks must work); the post-drag synthetic click is
@@ -745,6 +827,15 @@ _CB_CSS = """
                 0 0 11px 4px var(--sp-color, #00e5ff) !important;
     z-index: 8;
 }
+/* SELECTED pick (11-S4): a persistent amber ring that survives the pointer leaving,
+ * so the dot you clicked stays findable on the slab while you read its tile. Distinct
+ * from the transient .cb-ghost-active hover glow, and it wins over it (later rule). */
+.cb-pick-ghost.cb-ghost-selected {
+    width: 9px !important; height: 9px !important;
+    box-shadow: 0 0 0 1px rgba(0,0,0,1), 0 0 0 3px #f59e0b,
+                0 0 12px 3px rgba(245,158,11,0.75) !important;
+    z-index: 9;
+}
 /* Dropped/excluded pick: grey the dot so the slab agrees with the gallery
  * (filtered cutouts → greyed dots). Overrides the species color + glow. */
 .cb-pick-ghost.cb-pick-ghost-dropped {
@@ -821,12 +912,9 @@ _CB_CSS = """
     outline-offset: 1px;
     box-shadow: 0 0 0 1px #22d3ee, 0 0 8px rgba(34,211,238,0.6);
 }
-.cb-filter-toolbar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 4px 0; flex-wrap: wrap;
-}
-/* Saved filtered-set path line (under the toolbar); reuses .cb-info-* styling. */
-.cb-filter-path { gap: 6px; padding: 0 0 4px 0; }
+/* The kept-counter chip, in the gallery's curation bar. (The filter toolbar and the
+ * filtered-set path line it used to sit between are gone since 11-S3: the toolbar
+ * folded into the curation bar, the path into the 3dmod popover's outputs block.) */
 .cb-filter-counter {
     font-family: ui-monospace, monospace; font-size: 10px;
     color: #475569;
@@ -909,8 +997,285 @@ _CB_CSS = """
 .cb-strip-pickcell.zero { background: rgba(148, 163, 184, 0.14); color: #94a3b8; }
 .cb-strip-pickcell.fail { background: rgba(220, 38, 38, 0.12); color: #b91c1c; }
 .cb-strip-pickcell.pending { color: #cbd5e1; }
+/* ── Species page (roadmap 10) ─────────────────────────────────────────────── */
+/* Segmented control (`ui/components/segmented.py`): the job tab's flat dense
+ * switcher as one bordered strip; the active segment is tinted, never a Quasar tab. */
+.cb-seg {
+    display: inline-flex; align-items: stretch; flex-shrink: 0;
+    border: 1px solid #e2e8f0; border-radius: 4px; overflow: hidden; background: #ffffff;
+}
+.cb-seg-btn {
+    font-size: 9px; font-weight: 500; line-height: 16px; padding: 2px 8px;
+    color: #64748b; background: #ffffff; cursor: pointer; user-select: none;
+    border-right: 1px solid #e2e8f0; white-space: nowrap;
+}
+.cb-seg-btn { display: inline-flex; align-items: baseline; gap: 5px; }
+.cb-seg-btn:last-child { border-right: none; }
+.cb-seg-badge { font-size: 10px; font-variant-numeric: tabular-nums; color: #94a3b8; }
+.cb-seg-btn.active .cb-seg-badge { color: #64748b; }
+.cb-seg-btn:hover { background: #f8fafc; }
+.cb-seg-btn.active { background: #f1f5f9; color: #1e293b; font-weight: 600; }
+/* Template workbench lists (picking-UI roadmap 05): cards became table rows, so the
+ * per-row facts (apix / box / lp, sigma stats, size, polarity) sit in columns sized to
+ * their content instead of truncating inside a 260 px card. Only the FILE column flexes.
+ * The accent is a custom property set per list on the container (indigo for templates,
+ * purple for masks), so one rule serves both. Selection is a class flip — never a
+ * rebuild of the list the user just clicked. */
+.cb-tw-table { width: 100%; min-width: 0; overflow-x: auto; }
+.cb-tw-head, .cb-tw-row {
+    display: grid; align-items: center; column-gap: 6px;
+    grid-template-columns: var(--cb-tw-cols);
+}
+.cb-tw-head { padding: 1px 5px 2px 5px; border-bottom: 1px solid #e5e7eb; }
+.cb-tw-row {
+    padding: 1px 5px; border-bottom: 1px solid #f1f5f9; cursor: pointer; background: #ffffff;
+    border-left: 2px solid transparent; min-height: 22px;
+}
+.cb-tw-row:last-child { border-bottom: none; }
+.cb-tw-row:hover { background: #f8fafc; }
+.cb-tw-row.selected { background: var(--cb-accent-tint); border-left-color: var(--cb-accent); }
+.cb-tw-cell { min-width: 0; display: flex; align-items: center; gap: 3px; }
+.cb-tw-cell > * { min-width: 0; }
+/* Tight leading everywhere in the table: at 9-10 px the default 1.5 was adding more
+ * height per row than the text itself. */
+.cb-tw-head > *, .cb-tw-row .cb-tw-cell { line-height: 1.25; }
+/* Row action buttons: the eye and the X used to set the row's height on their own. */
+.cb-tw-row .q-btn { min-height: 16px; min-width: 16px; padding: 0 2px; }
+.cb-tw-row .q-btn .q-icon { font-size: 13px; }
+/* Both radios are rendered; the row's `selected` class decides which one shows, so a
+ * selection change costs one class attribute and no server render. */
+.cb-tw-sel-on { display: none; color: var(--cb-accent); }
+.cb-tw-sel-off { color: #cbd5e1; }
+.cb-tw-row.selected .cb-tw-sel-on { display: inline-flex; }
+.cb-tw-row.selected .cb-tw-sel-off { display: none; }
+/* By-path import at the foot of BOTH lists — the same dim dashed affordance the Picks &
+ * curation table ends with (.cb-ptable-import), in this table's tighter scale. It is a
+ * single action, so it sits outside the grid the rows share; `--cb-accent` is the table's
+ * own (indigo for templates, purple for masks), so each column's row hovers to its colour. */
+.cb-tw-import {
+    display: flex; align-items: center; gap: 5px;
+    margin: 3px 5px; padding: 2px 5px; min-height: 18px;
+    border: 1px dashed #e5e7eb; border-radius: 4px; cursor: pointer;
+    font-size: 9px; color: #b6c0cf;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.cb-tw-import:hover { background: #f8fafc; border-color: var(--cb-accent); color: var(--cb-accent); }
+/* Species header row: active pill left, segmented tabs right. */
+.cb-species-header {
+    display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+    padding: 5px 10px; border-bottom: 1px solid #e5e7eb; background: #fafbfc; min-height: 30px;
+}
+/* Species rail: 200 px column, one row per species (pill + counts), "+" at the
+ * bottom. Selected row = tinted + a left border in the species color. */
+.cb-srail {
+    width: 200px; min-width: 200px; flex-shrink: 0; height: 100%; overflow-y: auto; overflow-x: hidden;
+    display: flex; flex-direction: column; border-right: 1px solid #e5e7eb; background: #fafafa;
+}
+.cb-srail-row {
+    display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 7px;
+    border-bottom: 1px solid #f1f5f9; border-left: 3px solid transparent; cursor: pointer;
+    min-width: 0;
+}
+.cb-srail-row:hover { background: #f8fafc; }
+.cb-srail-row.selected { background: #ffffff; }
+.cb-srail-meta {
+    margin-left: auto; font-size: 9px; color: #94a3b8; white-space: nowrap; flex-shrink: 0;
+    font-family: ui-monospace, monospace;
+}
+.cb-srail-add {
+    display: flex; align-items: center; gap: 4px; padding: 7px 10px; cursor: pointer;
+    font-size: 10px; color: #6366f1; border-bottom: 1px solid #f1f5f9;
+}
+.cb-srail-add:hover { background: #eef2ff; }
+
+/* ── App-wide control chrome ───────────────────────────────────────────────── */
+/* Lives HERE, not in main_ui's add_head_html: that block is baked into the page
+ * shell, which is served stale on this deployment (2026-08-21 incident — new
+ * shell CSS never reached the browser). ensure_assets_loaded() injects per
+ * client AFTER connect, over the socket, so these rules always arrive fresh.
+ * Structural styling stays INLINE on the elements (house_button, _stacked_panels);
+ * this file only carries what inline styles cannot express. */
+
+/* Native <input type=number> spin arrows OFF: every numeric field is a typed
+ * value, not a click-to-increment counter, and the browser arrows were the
+ * loudest, least stylable chrome on any form. Pseudo-elements — CSS-only. */
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; appearance: none; margin: 0; }
+input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+
+/* House button hover states (ui/components/buttons.py — the base look is inline
+ * on the element, so hover needs !important to override it). */
+.q-btn.cb-btn:hover { background: #f1f5f9 !important; border-color: #94a3b8 !important; }
+.q-btn.cb-btn--accent:hover { background: #1e293b !important; border-color: #1e293b !important; }
+.q-btn.cb-btn--danger:hover { background: #fef2f2 !important; border-color: #f87171 !important; }
+
+/* THE .cb-select / .cb-field control chrome — single source since the shell copy
+ * in ui/main_ui.py was retired (2026-08-21, picking-UI roadmap 08 S1). Every page
+ * calls ensure_assets_loaded(). Builders: ui/components/fields.py (house_*) at the
+ * .cb-field scale; ui/job_plugins/_field_styles.py at the .cb-select scale. */
+/* `height`, not just min-height: Quasar pins dense controls at a FIXED height of
+ * 40px (.q-field--dense .q-field__control) — min-height alone never shrank them. */
+.cb-select .q-field__control,
+.cb-field .q-field__control {
+    height: 20px; min-height: 20px; padding: 0 5px;
+    border: 1px solid #e2e8f0; border-radius: 4px;
+    background: #fff; transition: border-color .12s ease;
+}
+.cb-select .q-field__control:hover,
+.cb-field .q-field__control:hover { border-color: #cbd5e1; }
+.cb-select.q-field--focused .q-field__control,
+.cb-field.q-field--focused .q-field__control { border-color: #94a3b8; }
+.cb-select .q-field__control:before,
+.cb-select .q-field__control:after,
+.cb-field .q-field__control:before,
+.cb-field .q-field__control:after { display: none !important; }
+.cb-select .q-field__native,
+.cb-select .q-field__input,
+.cb-field .q-field__native,
+.cb-field .q-field__input {
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 11px;
+    color: #1e293b; padding: 0; line-height: 18px; min-height: 0;
+}
+.cb-select .q-field__marginal,
+.cb-select .q-field__append,
+.cb-field .q-field__marginal,
+.cb-field .q-field__append { height: 18px; }
+.cb-select .q-field__append .q-icon,
+.cb-field .q-field__append .q-icon { font-size: 14px; color: #94a3b8; }
+.cb-select.q-field--disabled .q-field__control,
+.cb-field.q-field--disabled .q-field__control { background: #f8fafc; }
+.cb-field .q-field__control { height: 16px; min-height: 16px; padding: 0 4px; }
+.cb-field .q-field__native,
+.cb-field .q-field__input { font-size: 10px; line-height: 14px; }
+.cb-field .q-field__marginal,
+.cb-field .q-field__append { height: 14px; }
+.cb-field .q-field__append .q-icon { font-size: 12px; }
+.cb-field.q-textarea .q-field__control,
+.cb-select.q-textarea .q-field__control { height: auto; }
+.cb-field textarea.q-field__native { line-height: 1.4; padding: 2px 0; }
+.cb-select-popup {
+    border: 1px solid #e2e8f0; border-radius: 5px;
+    box-shadow: 0 6px 18px rgba(15,23,42,.10);
+}
+.cb-select-popup .q-item {
+    min-height: 26px; padding: 3px 10px;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; color: #334155;
+}
+.cb-select-popup .q-item:hover { background: #f1f5f9; }
+.cb-select-popup .q-item.q-manual-focusable--focused,
+.cb-select-popup .q-item--active { background: #eef2f6; color: #1e293b; }
+/* ── Tomogram gallery (ui/tomo_gallery.py) ─────────────────────────────────── */
+/* The birds-eye wall: a grid of reconstruction tiles, each an image box with the
+ * species' picks projected onto it as one inline-SVG layer per species. The frame
+ * IS the image box (aspect-ratio from the tomogram's own X/Y extent, object-fit
+ * fill), which is what lets a dot layer position in plain percentages and stay
+ * registered with the slice at every tile size. */
+.cb-gal-page { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; }
+.cb-gal-toolbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 6px 10px; border-bottom: 1px solid #e5e7eb; background: #f8fafc; flex-shrink: 0;
+}
+.cb-gal-title {
+    font-size: 10px; text-transform: uppercase; font-weight: 600;
+    color: #64748b; letter-spacing: 0.3px;
+}
+.cb-gal-count {
+    font-family: ui-monospace, monospace; font-size: 10px; color: #1e40af;
+    background: #eef2ff; border-radius: 3px; padding: 0 5px;
+}
+.cb-gal-toolbar-label {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: #94a3b8; margin-left: 6px;
+}
+.cb-gal-sp {
+    display: inline-flex; align-items: center; gap: 4px; cursor: pointer; user-select: none;
+    border: 1px solid #e2e8f0; border-radius: 999px; background: #ffffff; padding: 1px 8px 1px 5px;
+}
+.cb-gal-sp:hover { background: #f1f5f9; }
+.cb-gal-sp.off { opacity: 0.45; }
+.cb-gal-sp.off .cb-gal-sp-dot { background: #cbd5e1 !important; }
+.cb-gal-sp-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.cb-gal-sp-name { font-size: 10px; color: #475569; white-space: nowrap; }
+.cb-gal-body { flex: 1 1 0; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.cb-gal-grid { display: grid; gap: 10px; padding: 10px; align-items: start; }
+.cb-gal-tile {
+    display: flex; flex-direction: column; min-width: 0;
+    border: 1px solid #e5e7eb; border-radius: 5px; overflow: hidden; background: #ffffff;
+}
+.cb-gal-tile:hover { border-color: #c7d2fe; box-shadow: 0 2px 8px rgba(15,23,42,0.08); }
+.cb-gal-frame {
+    position: relative; width: 100%; min-height: 60px;
+    background: #0f172a; cursor: zoom-in; overflow: hidden;
+}
+.cb-gal-frame > img { width: 100%; height: 100%; object-fit: fill; display: block; }
+/* Unknown tomogram extent: no aspect-ratio to give the frame a height, so the image
+ * sizes itself and the tile is as tall as it is. No dots are drawn in this state
+ * (nothing to normalize against), so letterboxing can't desynchronize anything. */
+.cb-gal-frame-auto { aspect-ratio: auto; max-height: 78vh; }
+.cb-gal-frame-auto > img { height: auto; object-fit: contain; }
+.cb-gal-dotlayer { position: absolute; inset: 0; pointer-events: none; }
+.cb-gal-dotlayer svg { width: 100%; height: 100%; display: block; }
+.cb-gal-note {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px;
+    font-size: 10px; color: #94a3b8; text-align: center; padding: 6px;
+}
+.cb-gal-badge {
+    position: absolute; top: 0; right: 0; padding: 1px 5px;
+    background: rgba(15,23,42,0.72); color: #f8fafc;
+    font-family: ui-monospace, monospace; font-size: 9px; border-bottom-left-radius: 3px;
+}
+/* Picks counted but not placeable (unresolved tomogram extent) — amber, so the
+ * count can't be read as "these dots are the picks". */
+.cb-gal-badge-warn { background: rgba(180, 83, 9, 0.88); }
+.cb-gal-cap {
+    display: flex; align-items: center; gap: 4px; padding: 3px 6px;
+    border-top: 1px solid #f1f5f9; cursor: pointer; min-width: 0;
+}
+.cb-gal-cap:hover { background: #eef2ff; }
+.cb-gal-cap:hover .cb-gal-go { color: #4f46e5; }
+.cb-gal-name {
+    font-size: 10px; color: #334155; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1;
+}
+.cb-gal-go { font-size: 10px; color: #cbd5e1; flex: 0 0 auto; }
+/* Zoom: one tile at viewport scale. Sized here (not maximized) so the tomogram keeps
+ * its aspect and the wall behind stays visible as context. */
+.cb-gal-zoom {
+    background: #ffffff; border-radius: 6px; padding: 8px;
+    display: flex; flex-direction: column; gap: 6px;
+    width: 92vw; max-width: 1500px;
+}
+.cb-gal-zoom-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cb-gal-zoom-title { font-size: 12px; font-weight: 600; color: #0f172a; }
+.cb-gal-zoom-ts { font-family: ui-monospace, monospace; font-size: 10px; color: #64748b; }
+.cb-gal-zoom-src { font-family: ui-monospace, monospace; font-size: 10px; color: #94a3b8; }
+/* Height is bounded by capping the WIDTH against the aspect (inline, where the dims
+ * are known) — a max-height would clamp the box out of ratio and object-fit:fill
+ * would then squash the slice. */
+.cb-gal-zoom-frame { cursor: default; border-radius: 4px; margin: 0 auto; }
+.cb-gal-zoom-path {
+    font-family: ui-monospace, monospace; font-size: 9px; color: #94a3b8;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* ── Curation-session indicator (bottom of the primary sidebar) ─────────────── */
+/* Dim by default; when a ChimeraX + ArtiaX session of this user is up it goes green and
+ * breathes. The pulse is a CSS animation, never a server tick (CLAUDE.md), and it is
+ * deliberately shallow — a rail icon that flashes is noise, one that breathes is status. */
+@keyframes cb-artiax-breathe {
+    0%, 100% { opacity: 0.62; }
+    50%      { opacity: 1; }
+}
+.cb-artiax-live { animation: cb-artiax-breathe 2.6s ease-in-out infinite; }
 """
 
 
 def ensure_assets_loaded() -> None:
+    """Inject the stylesheet once per client. The Species page (built with the workspace)
+    and the Journey / tomogram-import dialog (built later, lazily) share it, so a second
+    caller on the same page must not append a second copy to the head."""
+    client = context.client
+    if getattr(client, "_cb_assets_loaded", False):
+        return
+    client._cb_assets_loaded = True
     ui.add_head_html(f"<style>{_CB_CSS}</style>")

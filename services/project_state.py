@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, SerializeAsAny, ValidationError, field_validator
 
 from services.models_base import (
     InstanceId,
@@ -22,16 +22,14 @@ from services.models_base import (
     JobCategory as JobCategory,
     JobStatus as JobStatus,
     PickListType,
+    SpeciesOrigin,
     ListExtractionState,
     MicroscopeParams,
     AcquisitionParams,
     species_palette_color,
 )
 from services.computing.slurm_service import SlurmConfig
-from services.job_models import (
-    AbstractJobParams,
-    jobtype_paramclass,
-)
+from services.job_models import AbstractJobParams, jobtype_paramclass
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +43,10 @@ logger = logging.getLogger(__name__)
 # load.  A major mismatch emits a loud warning; a missing version (pre-versioning
 # files) is treated as (0, 0).
 
-SCHEMA_VERSION: tuple[int, int] = (3, 2)  # 3.2: +use_afterok_orchestrator + job_dir_counter (P1.A)
+# 3.3: +PickList.source_kind/source_ref + ParticleSpecies.catalog_id (09-S2); 3.4: +created_at (10-S3);
+# 3.5: +ParticleSpecies.catalog_version + ImportedTomograms.batches, -is_aggregation (denovo S5/S6, 12);
+# 3.6: -authoritative_pick_lists (the per-tomogram nomination is gone; merges name their own sources)
+SCHEMA_VERSION: tuple[int, int] = (3, 6)
 
 
 def _afterok_global_default() -> bool:
@@ -209,6 +210,17 @@ class ParticleSpecies(BaseModel):
     # (created de novo for hand picking), "imported". Empty on species that
     # pre-date the field — treat as "workbench".
     origin: str = ""
+
+    # The lab-catalog entry this species came from or was published to, and which version
+    # of it (roadmap 12). None/None = project-local, which stays the common case. A BACKLINK
+    # only: import and publish both copy, so nothing here is ever re-read to sync — see
+    # services/particles/catalog.py.
+    catalog_id: str | None = None
+    catalog_version: int | None = None
+
+    # When the species was registered (stamped by `add_species`); None on species that
+    # pre-date the field. Provenance only — nothing branches on it.
+    created_at: datetime | None = None
 
     # Set once the user commits extraction geometry for a de-novo species.
     # None means undecided, never "use some default" — see ExtractionParams.
@@ -518,11 +530,18 @@ class PickList(BaseModel):
     tomo_name: str = ""
     path: str = ""  # the .star/.coords file backing this list
     count: int = 0  # cached pick count, for display
-    color: str = "#3b82f6"  # per-list overlay color
+    color: str = "#3b82f6"  # LEGACY (roadmap 09-S2): lists render in species.color; kept so old JSON loads
     visible: bool = True  # persisted so the toggle survives reloads
     parent_slugs: list[str] = Field(default_factory=list)  # provenance for derived lists
     created_at: datetime = Field(default_factory=datetime.now)
     created_by: str = ""
+
+    # Provenance (roadmap 09-S2): where the coordinates came from. `source_kind` is a
+    # PickSourceKind value ("tm" | "artiax" | "import" | "merge"; "" on lists that
+    # pre-date the field), `source_ref` names the source (CE instance id · .coords
+    # stem · imported path · "a+b+c" parent slugs).
+    source_kind: str = ""
+    source_ref: str = ""
 
     # ── Per-list subtomo extraction tracking ─────────────────────────────────
     # Manual/imported/merged lists are raw COORDINATES (never extracted), so they
@@ -533,7 +552,7 @@ class PickList(BaseModel):
     # DERIVE the state (extraction_state()) so no stored boolean can drift from disk
     # truth (cf. the stuck-yellow stale-flag bug). `extracted_path` is the
     # optimisation_set.star produced by extracting THIS list — the per-list handle
-    # the (future) authoritative-list resolver forwards downstream.
+    # a merge source can point at.
     extracted_path: str = ""  # optimisation_set.star from extracting THIS list ("" = never extracted)
     extracted_count: int = 0  # picks covered by that extraction (≠ count ⇒ picks added/removed ⇒ stale)
     extracted_at: datetime | None = None  # when the extraction ran (vs source mtime ⇒ in-place edits ⇒ stale)
@@ -567,7 +586,7 @@ class PickList(BaseModel):
                 base = Path(self.path)
                 consumed = base.with_name(f"{base.stem}_filtered.star")
                 src = consumed if consumed.exists() else base
-                if src.exists() and src.stat().st_mtime > self.extracted_at.timestamp() + 1.0:
+                if src.stat().st_mtime > self.extracted_at.timestamp() + 1.0:  # missing -> OSError below
                     return ListExtractionState.STALE
             except OSError:
                 pass
@@ -580,22 +599,82 @@ class PickList(BaseModel):
         self.extracted_at = datetime.now()
 
 
+class ImportBatch(BaseModel):
+    """ONE import action: what the user selected, once. The committed
+    ``Tomograms/tomograms.star`` is rebuilt from the whole batch list on every commit, so a
+    batch is the unit of provenance AND the unit of removal — nothing is edited in place.
+
+    ``renamed`` / ``skipped`` are that rebuild's report FOR THIS BATCH: a tomogram name that
+    collided with an earlier batch's was renamed (the earlier one keeps its name, and its
+    picks with it), and a recon file already imported by an earlier batch was skipped rather
+    than duplicated. Both are recorded, never silent — the same rule
+    ``drivers/subtomo_merge.py`` follows for cross-project collisions."""
+
+    source_mode: str = "synthesize"  # "synthesize" | "reference"
+    source_paths: list[str] = Field(default_factory=list)  # selected recon files (synthesize)
+    reference_star: str = ""  # an existing tomograms.star (reference mode)
+    pixel_size_angstrom: float = 0.0  # user override (0 ⇒ derived from MRC header)
+    tomogram_binning: float = 1.0
+    optics_group_name: str = "opticsGroup1"
+    count: int = 0  # rows this batch contributed at its last rebuild
+    imported_at: datetime = Field(default_factory=datetime.now)
+    renamed: list[dict] = Field(default_factory=list)  # [{name, renamed_to, path}]
+    skipped: list[dict] = Field(default_factory=list)  # [{name, path, reason}]
+
+    @property
+    def label(self) -> str:
+        """Short provenance line for the dialog's batch list."""
+        if self.source_mode == "reference":
+            return Path(self.reference_star).name or "reference star"
+        if not self.source_paths:
+            return "no files"
+        parent = Path(self.source_paths[0]).parent
+        return f"{parent.name or parent}/ ({len(self.source_paths)} file(s))"
+
+
 class ImportedTomograms(BaseModel):
     """Tomograms injected into a project via the PARTICLES-header import utility — a
     project-level artifact, NOT a pipeline job. The committed ``tomograms.star`` lives at
-    ``star_path`` (``Tomograms/tomograms.star``, project-relative); the source fields are
-    provenance + let the import dialog reopen with the prior selection. See
-    services/tomogram_import.py + PARTICLE_PROJECT_ROADMAP.md (P1, un-job-ified)."""
+    ``star_path`` (``Tomograms/tomograms.star``, project-relative). See
+    services/tomogram_import.py + PARTICLE_PROJECT_ROADMAP.md (P1, un-job-ified).
+
+    ``batches`` is the source of truth since de-novo S5; the scalar source fields below it
+    are the LAST batch, kept so the dialog reopens on the prior selection and so records
+    written before S5 still load. They are never read for the rebuild — ``effective_batches``
+    is what does that, and it folds a pre-S5 record into a single synthetic batch so one
+    additional import does not silently drop what was already there."""
 
     star_path: str = ""  # project-relative (or absolute) path to the committed tomograms.star
+    batches: list[ImportBatch] = Field(default_factory=list)
     source_mode: str = "synthesize"  # "synthesize" | "reference"
     source_paths: list[str] = Field(default_factory=list)  # selected .mrc files (synthesize)
     reference_star: str = ""  # an existing tomograms.star (reference mode)
     pixel_size_angstrom: float = 0.0  # user override (0 ⇒ derived from MRC header)
     tomogram_binning: float = 1.0
     optics_group_name: str = "opticsGroup1"
-    count: int = 0  # cached tomogram count, for display
+    count: int = 0  # cached tomogram count (the whole merged star), for display
     imported_at: datetime = Field(default_factory=datetime.now)
+
+    def effective_batches(self) -> list[ImportBatch]:
+        """The batch list to rebuild from. A record written before S5 has none, so its
+        scalar fields ARE its one batch — reconstructed here rather than migrated on load,
+        so a project that is only ever read keeps its file untouched."""
+        if self.batches:
+            return list(self.batches)
+        if not (self.source_paths or self.reference_star):
+            return []
+        return [
+            ImportBatch(
+                source_mode=self.source_mode,
+                source_paths=list(self.source_paths),
+                reference_star=self.reference_star,
+                pixel_size_angstrom=self.pixel_size_angstrom,
+                tomogram_binning=self.tomogram_binning,
+                optics_group_name=self.optics_group_name,
+                count=self.count,
+                imported_at=self.imported_at,
+            )
+        ]
 
 
 class ProjectState(BaseModel):
@@ -628,11 +707,12 @@ class ProjectState(BaseModel):
     movies_glob: str = ""
     mdocs_glob: str = ""
 
-    # Aggregation projects skip raw-data import. Particles arrive via merging
-    # optimisation_set.star files from existing projects; the merge step is a
-    # standalone workspace card (not a pipeline job). Sources persist here so
-    # the user can re-merge after adding more datasets.
-    is_aggregation: bool = False
+    # Cross-project merge: particles from several projects, merged into
+    # MergedSources/<slug>/ and consumed downstream through the synthetic
+    # `mergedSources` producer. NOT a project type — the `is_aggregation` flag that used
+    # to mark one was deleted by de-novo S6 (any project can merge; an old project's
+    # persisted `true` is simply ignored on load). Sources persist here so the user can
+    # re-merge after adding more datasets.
     aggregation_sources: list[AggregationSource] = Field(default_factory=list)
     aggregation_merges: list[AggregationMerge] = Field(default_factory=list)
     active_merge_slug: str = ""
@@ -655,11 +735,11 @@ class ProjectState(BaseModel):
     # against the files the resolver owns. See ARTIAX_BRIDGE_PLAN.md
     # "## Curation workbench — the multi-list model".
     pick_lists: list[PickList] = Field(default_factory=list)
-    # Per-(species, tomo) AUTHORITATIVE pick list: which list downstream tools
-    # (per-list extraction / aggregation) consume. Keyed by `_auth_key(species, tomo)`
-    # → slug ("auto" or a workbench-list slug). Absent ⇒ "auto" (the candidate set,
-    # the historical default). Exactly one list is authoritative per (species, tomo).
-    authoritative_pick_lists: dict[str, str] = Field(default_factory=dict)
+    # A per-(species, tomo) `authoritative_pick_lists` dict used to live here: which ONE list
+    # downstream extraction / aggregation consumed. It is gone — what feeds a refinement is
+    # the source set the user selects in the Aggregate-candidates flow, in front of the merge
+    # it produces, so there is nothing left for a stored nomination to decide. Old
+    # project_params.json files may still carry the key; it is simply not read.
     # Tomograms injected via the PARTICLES-header import utility (particle-only projects
     # with no upstream recon). A project-level artifact, not a job — see ImportedTomograms
     # / services/tomogram_import.py. None ⇒ no import committed.
@@ -693,6 +773,10 @@ class ProjectState(BaseModel):
     tilt_filter_png_dir: str | None = None
 
     _dirty: bool = PrivateAttr(default=False)
+    # Non-persisted change counter for species / templates / masks / pick lists
+    # (roadmap 08 §1). Wake-up input for poll gates only;
+    # DOM gates use precise tuples (species_identity). Never bumped by mark_dirty.
+    _registry_rev: int = PrivateAttr(default=0)
 
     @field_validator("aggregation_sources", mode="before")
     @classmethod
@@ -709,6 +793,34 @@ class ProjectState(BaseModel):
     @property
     def is_dirty(self) -> bool:
         return self._dirty
+
+    @property
+    def registry_rev(self) -> int:
+        return self._registry_rev
+
+    def bump_registry_rev(self) -> None:
+        """Non-persisted change counter for species / templates / masks / pick lists.
+        Wake-up input for poll gates (the journey's 4 s outer
+        gate, the workbench panel's 3 s observe); DOM gates use precise tuples
+        (species_identity) so a bump alone never rebuilds a pane."""
+        self._registry_rev += 1
+
+    def species_identity(self) -> tuple:
+        """Precise fingerprint of what species pills / tabs / dots draw (id, name,
+        color per species) — the DOM-gate input for those renders."""
+        return tuple((s.id, s.name, s.color) for s in self.species_registry)
+
+    def mutate_species(self, species_id: str, fn) -> bool:
+        """The one way to edit a species in place (workbench header, swatch, template
+        / mask appends, selects). Marks dirty + bumps the rev; caller persists.
+        Returns False when the species is unknown."""
+        sp = self.get_species(species_id)
+        if sp is None:
+            return False
+        fn(sp)
+        self.mark_dirty()
+        self.bump_registry_rev()
+        return True
 
     @property
     def effective_owner(self) -> str | None:
@@ -774,7 +886,7 @@ class ProjectState(BaseModel):
     def get_species(self, species_id: str) -> ParticleSpecies | None:
         return next((s for s in self.species_registry if s.id == species_id), None)
 
-    def add_species(self, name: str, *, origin: str = "workbench", color: str = "") -> ParticleSpecies:
+    def add_species(self, name: str, *, origin: str = SpeciesOrigin.WORKBENCH, color: str = "") -> ParticleSpecies:
         """Create a new species entry from a display name. Caller is responsible
         for ensuring the name is not blank before calling.
 
@@ -782,6 +894,7 @@ class ProjectState(BaseModel):
         every species is visually distinct on the shared tomogram canvas instead of
         all sharing one blue. Pass an explicit color to override.
         """
+        origin = SpeciesOrigin(origin).value  # validate at the write site; the field stays a plain str
         sid = slugify(name)
         # Avoid id collisions by appending a counter if needed
         existing_ids = {s.id for s in self.species_registry}
@@ -790,9 +903,15 @@ class ProjectState(BaseModel):
         while sid in existing_ids:
             sid = f"{base}_{n}"
             n += 1
-        species = ParticleSpecies(id=sid, name=name, color=color or species_palette_color(sid), origin=origin)
+        species = ParticleSpecies(
+            id=sid, name=name, color=color or species_palette_color(sid), origin=origin, created_at=datetime.now()
+        )
         self.species_registry.append(species)
         self.update_modified()
+        # mark_dirty: StateService.save_project writes only when dirty (or forced) —
+        # without this a created species was silently not persisted (roadmap 08 H1).
+        self.mark_dirty()
+        self.bump_registry_rev()
         return species
 
     def species_references(self, species_id: str) -> dict[str, list[str]]:
@@ -803,7 +922,6 @@ class ProjectState(BaseModel):
         about what a species owns.
         """
         pick_lists = [f"{pl.tomo_name}/{pl.slug}" for pl in self.pick_lists if pl.species_id == species_id]
-        authoritative = [k for k in self.authoritative_pick_lists if k.split("\x1f", 1)[0] == species_id]
         # A per-particle job names its species EITHER on the model (`species_id`) or in
         # its instance-id suffix (`templatematching__ribosome`) — both are explicit, and
         # a delete that misses one leaves an orphan job in the roster. Deliberately NOT
@@ -819,8 +937,8 @@ class ProjectState(BaseModel):
         # key is "<jobtype>:<instance_path>" and a per-list producer's instance path is
         # `pick_list__<species>__<tomo>__<slug>` (path_resolution_service.
         # pick_list_producer_id). Match on the SPECIES-scoped prefix, never on slug:
-        # every hand-picked list is slugged "manual", so a slug match would purge other
-        # species' overrides too.
+        # hand-picked lists are slugged after their .coords file and the same name recurs
+        # across species, so a slug match would purge other species' overrides too.
         from services.path_resolution_service import pick_list_producer_prefix_for_species
 
         prefix = pick_list_producer_prefix_for_species(species_id)
@@ -829,12 +947,7 @@ class ProjectState(BaseModel):
             for slot, value in (getattr(jm, "source_overrides", None) or {}).items():
                 if prefix in str(value):
                     overrides.append(f"{iid}:{slot}")
-        return {
-            "pick_lists": pick_lists,
-            "authoritative_pick_lists": authoritative,
-            "jobs": jobs,
-            "source_overrides": overrides,
-        }
+        return {"pick_lists": pick_lists, "jobs": jobs, "source_overrides": overrides}
 
     def remove_species(self, species_id: str) -> bool:
         """Drop a species from the registry AND purge everything referencing it.
@@ -842,10 +955,9 @@ class ProjectState(BaseModel):
         Returns True if removed. File cleanup (templates/<sid>/, Curation/<sid>/)
         is the caller's responsibility — this method only mutates in-memory state.
 
-        Previously this dropped only the registry entry, leaving pick lists,
-        authoritative-list choices and resolver overrides pointing at a species
-        that no longer exists; those dangling refs then resolved to nothing at
-        deploy time, far from the delete that caused them.
+        Previously this dropped only the registry entry, leaving pick lists and
+        resolver overrides pointing at a species that no longer exists; those dangling
+        refs then resolved to nothing at deploy time, far from the delete that caused them.
         """
         before = len(self.species_registry)
         self.species_registry = [s for s in self.species_registry if s.id != species_id]
@@ -855,8 +967,6 @@ class ProjectState(BaseModel):
 
         refs = self.species_references(species_id)
         self.pick_lists = [pl for pl in self.pick_lists if pl.species_id != species_id]
-        for key in refs["authoritative_pick_lists"]:
-            self.authoritative_pick_lists.pop(key, None)
         for ref in refs["source_overrides"]:
             iid, _, slot = ref.rpartition(":")
             overrides = getattr(self.jobs.get(iid), "source_overrides", None)
@@ -864,6 +974,8 @@ class ProjectState(BaseModel):
                 overrides.pop(slot, None)
 
         self.update_modified()
+        self.mark_dirty()
+        self.bump_registry_rev()
         return removed
 
     # ── Curation workbench: per-(species, tomo) pick-list registry ───────────
@@ -885,6 +997,7 @@ class ProjectState(BaseModel):
         self.remove_pick_list(pick_list.slug, pick_list.species_id, pick_list.tomo_name)
         self.pick_lists.append(pick_list)
         self.mark_dirty()
+        self.bump_registry_rev()
         return pick_list
 
     def remove_pick_list(self, slug: str, species_id: str, tomo_name: str) -> bool:
@@ -896,23 +1009,8 @@ class ProjectState(BaseModel):
         removed = len(self.pick_lists) != before
         if removed:
             self.mark_dirty()
+            self.bump_registry_rev()
         return removed
-
-    @staticmethod
-    def _auth_key(species_id: str, tomo_name: str) -> str:
-        return f"{species_id}\x1f{tomo_name}"
-
-    def get_authoritative_slug(self, species_id: str, tomo_name: str) -> str:
-        """Slug of the list downstream tools consume for this (species, tomo).
-        Defaults to 'auto' (the candidate set) when nothing was chosen."""
-        return self.authoritative_pick_lists.get(self._auth_key(species_id, tomo_name), "auto")
-
-    def set_authoritative_slug(self, species_id: str, tomo_name: str, slug: str) -> None:
-        """Choose the authoritative list for this (species, tomo) — the one downstream
-        per-list extraction / aggregation consume. Marks dirty; caller persists.
-        'auto' is stored explicitly so a switch back from a workbench list persists."""
-        self.authoritative_pick_lists[self._auth_key(species_id, tomo_name)] = slug
-        self.mark_dirty()
 
     def set_imported_tomograms(self, record: ImportedTomograms) -> None:
         """Record the committed tomogram-import artifact (replaces any prior import).
@@ -993,6 +1091,39 @@ class ProjectState(BaseModel):
             raise
 
         self._dirty = False
+
+    @staticmethod
+    def _build_job_params(param_class, job_data: dict) -> tuple[Any, list[str]]:
+        """Instantiate one job's param model. If individual STORED fields are invalid,
+        drop those keys (so they fall back to their declared defaults) and report which,
+        instead of losing the whole instance.
+
+        Why the retry exists: params are written back with `model_dump()` and
+        `AbstractJobParams` does not validate on assignment, so a bad value assigned at
+        runtime (e.g. a UI number widget putting `0.05` into an `int` field) is persisted
+        happily and only rejected on the NEXT load. Dropping the instance there is a
+        cliff: it vanishes from `jobs`, and the driver then dies with
+        `FATAL: Instance '<id>' not found in project_params.json` — one bad number takes
+        out the run, the species binding, the I/O overrides and the recorded job dir.
+
+        The replacement value is the field's own declared default, never a guess, and
+        every repair is surfaced through `load_warnings` (CLAUDE.md: never fail silently).
+        A model that is still invalid without the offending keys raises — the caller
+        reports and skips, which is the old behavior.
+        """
+        try:
+            return param_class(**job_data), []
+        except ValidationError as first:
+            bad = {str(e["loc"][0]) for e in first.errors() if e.get("loc")} & set(job_data)
+            if not bad:
+                raise
+            model = param_class(**{k: v for k, v in job_data.items() if k not in bad})
+            repairs = [
+                f"stored value {job_data[name]!r} for '{name}' is invalid; using the default "
+                f"{getattr(model, name, None)!r} for this session"
+                for name in sorted(bad)
+            ]
+            return model, repairs
 
     @classmethod
     def load(cls, path: Path):
@@ -1092,9 +1223,9 @@ class ProjectState(BaseModel):
         # so these MUST be restored explicitly -- otherwise a reloaded project (a UI
         # restart OR a SLURM driver loading from disk) silently loses its merge
         # registry, the synthetic `mergedSources` resolver candidate vanishes, and
-        # consumers fail to resolve input_optimisation at drive time. is_aggregation
-        # gates the merge-card UI + override self-heal, so it must survive too.
-        project_state.is_aggregation = data.get("is_aggregation", False)
+        # consumers fail to resolve input_optimisation at drive time. A legacy
+        # `is_aggregation` key is TOLERATED AND IGNORED (de-novo S6 deleted the flag and
+        # opened merging to every project); it is simply not read back.
         project_state.active_merge_slug = data.get("active_merge_slug", "")
         try:
             # Mirror the _migrate_aggregation_sources validator (direct construction
@@ -1121,7 +1252,6 @@ class ProjectState(BaseModel):
             logger.exception("Could not load pick_lists")
             project_state.load_warnings.append(f"Curation pick lists could not be loaded and were reset ({e})")
             project_state.pick_lists = []
-        project_state.authoritative_pick_lists = data.get("authoritative_pick_lists", {})
 
         # Restore dataset import summary
         project_state.import_total_positions = data.get("import_total_positions", 0)
@@ -1144,9 +1274,12 @@ class ProjectState(BaseModel):
                 job_type = JobType.from_string(job_type_value)
                 param_class = param_class_map.get(job_type)
                 if param_class:
-                    job_params = param_class(**job_data)
+                    job_params, repairs = cls._build_job_params(param_class, job_data)
                     job_params._project_state = project_state
                     project_state.jobs[instance_id] = job_params
+                    for repair in repairs:
+                        logger.warning("Job '%s': %s", instance_id, repair)
+                        project_state.load_warnings.append(f"Job '{instance_id}': {repair}")
                 else:
                     logger.warning(
                         "No param class for job type '%s' (instance '%s'), skipping", job_type_value, instance_id
@@ -1157,6 +1290,21 @@ class ProjectState(BaseModel):
             except Exception as e:
                 logger.exception("Skipping job instance '%s' - failed to deserialize", instance_id)
                 project_state.load_warnings.append(f"Job '{instance_id}' could not be loaded and was skipped ({e})")
+
+        # One list per saved .coords (picking-UI roadmap 10-S2): rename pre-10 lists that
+        # all shared the slug "manual", re-keying their per-list extraction job instance and
+        # any override onto their producer. Placed HERE — after the jobs load (it moves job
+        # entries) and before pipeline_order is derived from `jobs.keys()` for legacy
+        # projects that predate that field, which would otherwise keep the pre-rename id.
+        # Local import: services.particles pulls the job-spec/dashboard chain, which must
+        # not become a module-level dependency of ProjectState.
+        from services.particles.ingest import migrate_legacy_manual_slugs
+
+        renamed = migrate_legacy_manual_slugs(project_state)
+        for species_id, tomo, old, new in renamed:
+            logger.info("Migrated pick list %s/%s: %s -> %s", species_id, tomo, old, new)
+        if renamed:
+            project_state.mark_dirty()
 
         # pipeline_order (P1.0): use the persisted value; for legacy projects that
         # predate the field, backfill from the loaded job set in file order -- every
