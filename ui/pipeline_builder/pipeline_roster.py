@@ -7,7 +7,13 @@ from services.models_base import JobStatus
 from services.project_state import JobType
 from ui.current_project import current_project_state
 
+from ui.components.buttons import house_button
+from ui.components.dialogs import dialog_host
 from ui.components.reactive import FingerprintedView
+from ui.components.species_pill import render_species_pill
+from ui.components.svg_icon import load_icon_svg
+from ui.curation_session_dialog import open_curation_control_center
+from ui.particles import session_status
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -30,19 +36,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Rail curation-session indicator: how often it ASKS `session_status`. That module keeps its
+# own ~16 s throttle on the actual `squeue`, so a tick inside the window is a dict read —
+# this cadence only decides how fast the icon reacts once the answer changes.
+_CURATION_TICK_S = 6.0
+
 
 def _ts_cell(text: str, color: str, extra: str = ""):
     """Tiny monospace cell for the tilt-series table in the metadata popup."""
     ui.label(text).style(f"font-size: 9px; font-family: 'IBM Plex Mono', monospace; color: {color}; {extra}")
 
 
+# Journey nav glyph: three ascending bars — the surface carries per-TS progress and
+# statistics across the whole pipeline, which the previous ringed-lines circle said
+# nothing about. No axis: at 18 px the bars alone are the legible read.
 _TOMO_DASHBOARD_SVG = (
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '
-    'stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
-    '<circle cx="12" cy="12" r="8"/>'
-    '<line x1="4.5" y1="9" x2="19.5" y2="9"/>'
-    '<line x1="4" y1="12" x2="20" y2="12"/>'
-    '<line x1="4.5" y1="15" x2="19.5" y2="15"/>'
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<line x1="5.5" y1="19" x2="5.5" y2="14"/>'
+    '<line x1="12" y1="19" x2="12" y2="9.5"/>'
+    '<line x1="18.5" y1="19" x2="18.5" y2="5"/>'
     "</svg>"
 )
 _SB_INFO = "#c0cad4"
@@ -148,6 +161,9 @@ class RosterWidget(FingerprintedView):
         # Drives the nav-icon highlight; set by workspace _switch_to via
         # set_active_mode. Starts "pipeline" (the default view at load).
         self._active_mode: str = "pipeline"
+        # Last (status, scope, error) painted onto the rail's curation-session indicator, so
+        # its timer only touches the DOM when the session state actually moved.
+        self._curation_paint: tuple[str, str, str] | None = None
         self._refs: dict = {}
         # Per-instance expansion state for per-TS sub-rows, persisted across
         # roster refreshes (status_poller refreshes the roster every few seconds
@@ -239,6 +255,9 @@ class RosterWidget(FingerprintedView):
             ui_mgr.is_running,
             per_job,
             array_state,
+            # Species pill draws name + color: a rename / recolor in the workbench
+            # must repaint the row (roadmap 08 S0.3).
+            current_project_state().species_identity(),
         )
 
     def refresh(self):
@@ -280,6 +299,7 @@ class RosterWidget(FingerprintedView):
                     ui.space()
                     self._build_new_species_btn()
                     self._build_import_tomograms_btn()
+                    self._build_aggregation_merge_btn()
 
             for job_type in jobs:
                 instances = panel.ui_mgr.get_instances_for_type(job_type)
@@ -398,14 +418,7 @@ class RosterWidget(FingerprintedView):
                 )
             # Species badge
             if species:
-                with ui.element("div").style(
-                    f"display: inline-flex; align-items: center; flex-shrink: 0; "
-                    f"background: {species.color}18; border: 1px solid {species.color}55; "
-                    f"border-radius: 999px; padding: 1px 6px;"
-                ):
-                    ui.label(species.name).style(
-                        f"font-size: 8px; color: {species.color}; font-weight: 600; white-space: nowrap;"
-                    )
+                render_species_pill(species, compact=True)
             # Inline array progress (e.g., "17/18" green, or "17/18 1!" red).
             # Read from the per-tick cache populated by signature() so render and
             # signature can't disagree on what's being painted.
@@ -668,7 +681,10 @@ class RosterWidget(FingerprintedView):
                 project_path, job_model.relion_job_name, job_resolver=panel.backend.pipeline_orchestrator.job_resolver
             )
 
-        with ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
+        # Page-slot parented: the roster is a FingerprintedView whose poll rebuilds these
+        # rows, and a confirm dialog parented in a row that gets torn down takes the delete
+        # with it. See ui/components/dialogs.py.
+        with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
             ui.label(f"Delete {get_instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
             ui.label("This will move the job files to Trash/ and remove it from the pipeline.").classes(
                 "text-sm text-gray-600 mb-2"
@@ -698,7 +714,7 @@ class RosterWidget(FingerprintedView):
                 )
 
             with ui.row().classes("w-full justify-end mt-4 gap-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
+                house_button("Cancel", dialog.close)
 
                 async def confirm():
                     dialog.close()
@@ -722,9 +738,7 @@ class RosterWidget(FingerprintedView):
                     except Exception as e:
                         ui.notify(f"Error: {e}", type="negative")
 
-                delete_btn = ui.button("Delete", color="red", on_click=confirm)
-                if preview and preview.get("downstream_count", 0) > 0:
-                    delete_btn.props('icon="delete_forever"')
+                house_button("Delete", confirm, kind="danger")
 
         dialog.open()
 
@@ -743,7 +757,7 @@ class RosterWidget(FingerprintedView):
                             downstream.append(iid)
                             break
 
-        with ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
+        with dialog_host(), ui.dialog() as dialog, ui.card().classes("w-[28rem]"):
             ui.label(f"Remove {get_instance_display_name(instance_id, job_model)}?").classes("text-lg font-bold")
             ui.label("Your labels and thumbnails will be preserved and restored if you re-add this job.").classes(
                 "text-sm text-gray-600 mb-2"
@@ -768,7 +782,7 @@ class RosterWidget(FingerprintedView):
                     ).classes("text-xs text-orange-700 mt-2")
 
             with ui.row().classes("w-full justify-end mt-4 gap-2"):
-                ui.button("Cancel", on_click=dialog.close).props("flat")
+                house_button("Cancel", dialog.close)
 
                 def confirm():
                     dialog.close()
@@ -778,7 +792,7 @@ class RosterWidget(FingerprintedView):
                     panel.remove_instance_from_pipeline(instance_id)
                     ui.notify("Tilt filter removed. Labels preserved.", type="info")
 
-                ui.button("Remove", color="red", on_click=confirm)
+                house_button("Remove", confirm, kind="danger")
 
         dialog.open()
 
@@ -796,6 +810,12 @@ class RosterWidget(FingerprintedView):
         self.refresh()
 
     def _update_pipeline_btn_style(self):
+        """Repaint the layers icon for the current roster visibility.
+
+        Updates the icon element IN PLACE. It used to `container.clear()` + rebuild, which
+        also destroyed the Quasar tooltip parented to the container — so the Pipeline button
+        silently lost its hover text after the first mode switch.
+        """
         container = self._refs.get("pipeline_btn")
         if container is None:
             return
@@ -807,31 +827,36 @@ class RosterWidget(FingerprintedView):
             f"display: flex; align-items: center; justify-content: center; "
             f"cursor: pointer; flex-shrink: 0;"
         )
-        svg = self._load_svg("layers.svg").replace("currentColor", color)
-        container.clear()
-        with container:
-            ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
+        icon = self._refs.get("pipeline_btn_icon")
+        if icon is not None:
+            icon.content = self._load_svg("layers.svg").replace("currentColor", color)
 
     def set_active_mode(self, mode: str):
-        """Highlight the nav icon for the active view (exactly one lit) and hide
-        the 300px job roster while the journey is up — restoring the user's prior
-        visibility on the way out. Driven by the workspace's _switch_to."""
+        """Highlight the nav icon for the active view (exactly one lit) and hide the job
+        roster everywhere except the pipeline view. Driven by the workspace's _switch_to.
+
+        The roster is the pipeline view's OWN navigation, so it goes away with that view
+        rather than half-following it: Particles / Journey / Tomograms / the pick viewer
+        each get the full width, and collapse-expand is what it always was — a choice about
+        how much room the open job page gets, only meaningful while one is open. Anything
+        else is a second, invisible state variable ("am I on Particles WITH the roster?")
+        that nothing on screen explains.
+        """
         self._active_mode = mode
         if self.panel.roster_panel is not None:
-            if mode == "journey":
+            if mode != "pipeline":
                 self.panel.roster_panel.style("display: none;")
             else:
                 self.panel.roster_panel.style(f"display: {'flex' if self._roster_visible else 'none'};")
         # Pipeline icon keeps its roster-aware styling when it's the active view;
-        # otherwise it dims. Workbench/journey are a plain background highlight
-        # (no clear()+rebuild, so the journey "previews rendered" dot survives).
+        # otherwise it dims. The other views are a plain background highlight.
         if mode == "pipeline":
             self._update_pipeline_btn_style()
         else:
             pc = self._refs.get("pipeline_btn")
             if pc is not None:
                 pc.style("background: transparent;")
-        for ref_key, m in (("wb_btn", "workbench"), ("dashboard_btn", "journey")):
+        for ref_key, m in (("wb_btn", "workbench"), ("dashboard_btn", "journey"), ("gallery_btn", "gallery")):
             c = self._refs.get(ref_key)
             if c is not None:
                 c.style(f"background: {SB_ABG if mode == m else 'transparent'};")
@@ -853,6 +878,12 @@ class RosterWidget(FingerprintedView):
         if tj is not None:
             await tj()
 
+    async def _open_gallery(self):
+        """Switch to (or toggle off) the tomogram gallery. Lazily built like the journey."""
+        tg = self.panel.toggle_gallery
+        if tg is not None:
+            await tg()
+
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
     def build_sidebar(self):
@@ -871,22 +902,43 @@ class RosterWidget(FingerprintedView):
             self._sb_sep()
             ui.element("div").style("height: 4px;")
 
-            self._sb_svg_btn("layers.svg", "Pipeline", self._on_pipeline_icon, ref_key="pipeline_btn", active=True)
+            self._sb_svg_btn(
+                "layers.svg",
+                "Jobs — the pipeline roster. Click it while you are already here to collapse the "
+                "roster and give an open job page the full width.",
+                self._on_pipeline_icon,
+                ref_key="pipeline_btn",
+                active=True,
+            )
 
             if panel.toggle_workbench is not None:
                 ui.element("div").style("height: 1px;")
-                wb_btn = self._sb_svg_btn("vial.svg", "Template Workbench", panel.toggle_workbench, ref_key="wb_btn")
+                wb_btn = self._sb_svg_btn(
+                    "particle.svg",
+                    "Particles registry — species, templates, picks & curation",
+                    panel.toggle_workbench,
+                    ref_key="wb_btn",
+                )
                 panel.callbacks["wb_btn"] = wb_btn
 
-            # Tomogram Dashboard — unified per-TS inspection surface that replaces
-            # the old "Tomogram Previews" grid, "Tilt Series Journey" matrix, and
-            # standalone "Candidate Previews" dialog. See services/visualization/
-            # ROADMAP.md for the consolidation plan.
+            # Tomograms — the birds-eye wall of reconstructions (ui/tomo_gallery.py).
+            # The "Tomogram Previews" grid the dashboard consolidation folded away,
+            # back as its own view: the Journey answers "how did THIS tilt-series go",
+            # the wall answers "how do they all look".
+            if panel.toggle_gallery is not None:
+                ui.element("div").style("height: 1px;")
+                self._sb_svg_btn(
+                    "tomo_preview.svg",
+                    "Tomograms — the wall of reconstructions, all of them at once",
+                    self._open_gallery,
+                    ref_key="gallery_btn",
+                )
+
+            # Journey — unified per-TS inspection surface that replaces the old
+            # "Tilt Series Journey" matrix and standalone "Candidate Previews"
+            # dialog. See services/visualization/ROADMAP.md for the consolidation plan.
             ui.element("div").style("height: 1px;")
             self._build_dashboard_btn()
-
-            ui.element("div").style("height: 1px;")
-            self._build_curation_btn()
 
             # SLURM defaults / resource profiles live inside the project overview popup now.
 
@@ -899,14 +951,14 @@ class RosterWidget(FingerprintedView):
             )
             self._refs["run_slot"] = run_slot
 
-            # Aggregation projects: open the merge-sources dialog from the
-            # sidebar instead of taking up half the workspace inline.
-            if getattr(state, "is_aggregation", False):
-                self._build_aggregation_merge_btn()
-
             self._sb_svg_btn("cross.svg", "Close project", lambda: ui.navigate.to("/"))
 
             ui.element("div").style("flex: 1;")
+
+            # Pinned to the FOOT of the rail: the curation-session indicator is not a place
+            # to navigate to, it is the answer to "is ArtiaX up, and on what". Keeping it out
+            # of the view stack above says so without a separator.
+            self._build_curation_session_btn()
             ui.element("div").style("height: 6px;")
 
         self.rebuild_run_slot()
@@ -1142,9 +1194,7 @@ class RosterWidget(FingerprintedView):
                 with ui.element("div").style(
                     "display: flex; justify-content: flex-end; padding: 4px 10px; border-top: 1px solid #f1f5f9;"
                 ):
-                    ui.button("Clear all", on_click=_clear_history).props("flat dense no-caps").style(
-                        f"{FONT} font-size: 10px; color: #94a3b8;"
-                    )
+                    house_button("Clear all", _clear_history)
 
         def _toggle_history():
             dd = history_refs.get("dropdown")
@@ -1419,22 +1469,17 @@ class RosterWidget(FingerprintedView):
     def _load_svg(self, name: str) -> str:
         if name.startswith("<svg"):
             return name
-        p = Path("static/icons") / name
-        try:
-            return p.read_text()
-        except FileNotFoundError:
-            return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"/>'
+        return load_icon_svg(name)
 
     def _build_new_species_btn(self):
         """PARTICLES-header utility: create a label-only species de novo.
 
         The de-novo path: no template, no template-matching job, possibly zero
         parameters — the species exists so the user can start hand-picking in
-        ArtiaX immediately. The template workbench's "+" remains the
-        template-driven entry point; this one is for species that never have one.
+        ArtiaX immediately. The Species page's "+" remains the template-driven
+        entry point (`origin="workbench"`); this one is for species that never have one.
         """
-        from services.project_state import get_project_state_for
-        from ui.species_workbench_panel import _prompt_species_name
+        from ui.species.prompt import create_species
 
         project_path = self.panel.ui_mgr.project_path
 
@@ -1445,14 +1490,10 @@ class RosterWidget(FingerprintedView):
             async with self.panel.flight("new_species") as acquired:
                 if not acquired:
                     return
-                name = await _prompt_species_name()
-                if not name:
+                # origin="manual": a de-novo species may never have a template.
+                species = await create_species(self.panel.backend, project_path, origin="manual")
+                if species is None:
                     return
-                state = get_project_state_for(project_path)
-                # origin="manual": no template dir is created here, unlike the
-                # workbench "+" — a de-novo species may never have a template.
-                species = state.add_species(name, origin="manual")
-                await self.panel.backend.save_project(project_path)
                 ui.notify(f"Created species '{species.name}'", type="positive")
                 self.panel.rebuild_pipeline_ui()
 
@@ -1493,7 +1534,7 @@ class RosterWidget(FingerprintedView):
         tip = (
             "Tomograms already come from the pipeline above"
             if has_upstream
-            else ("Re-import tomograms" if already else "Import tomograms")
+            else ("Import more tomograms" if already else "Import tomograms")
         )
 
         def _open():
@@ -1524,25 +1565,41 @@ class RosterWidget(FingerprintedView):
         return container
 
     def _build_aggregation_merge_btn(self):
-        """Sidebar button that opens the merge-sources dialog. Shows a small
-        green dot when MergedSources/optimisation_set.star already exists so
-        you can see at a glance whether the merge has been done."""
-        from ui.aggregation_merge_card import has_merged_outputs, open_aggregation_merge_dialog
+        """PARTICLES-header utility: open the Aggregate dialog on the coordinate grade (its
+        header switch reaches the extracted grade). Shows a small green dot when a merged
+        optimisation_set already exists, so you can see at a glance whether
+        the merge has been done.
 
-        merged = has_merged_outputs()
+        Was a sidebar button gated on `state.is_aggregation` (de-novo S6 deleted that flag):
+        it belongs beside the other two PARTICLES-header utilities — new species, import
+        tomograms — because all three answer "where do this project's particles come from",
+        and it is now available in every project rather than only in ones whose creator
+        happened to tick a box."""
+        from services.project_state import get_project_state_for
+        from ui.aggregation.aggregate_dialog import open_aggregate_dialog
+        from ui.aggregation.merge_card import has_merged_outputs
+
+        project_path = self.panel.ui_mgr.project_path
+        merged = False
+        try:
+            merged = has_merged_outputs(get_project_state_for(project_path))
+        except Exception as e:
+            logger.debug("merge-sources header button: could not read project state: %s", e)
         container = (
             ui.element("div")
             .style(
-                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                "background: transparent; "
+                "width: 22px; height: 22px; border-radius: 4px; "
                 "display: flex; align-items: center; justify-content: center; "
                 "cursor: pointer; flex-shrink: 0; position: relative;"
             )
-            .on("click", lambda: open_aggregation_merge_dialog())
-            .tooltip("Merge sources" + (" (merged)" if merged else ""))
+            .on("click", lambda: open_aggregate_dialog(project_path))
+            .tooltip(
+                "Aggregate — unite one species' picks across lists, tomograms and projects; "
+                "coordinates or extracted particles" + (" (aggregated)" if merged else "")
+            )
         )
         with container:
-            ui.icon("merge_type", size="18px").style(
+            ui.icon("merge_type", size="14px").style(
                 "color: #9333ea; pointer-events: none;"  # purple-600
             )
             if merged:
@@ -1560,53 +1617,113 @@ class RosterWidget(FingerprintedView):
         when the project has no array-job data yet, so this is a stable
         anchor in the sidebar instead of a button that pops in and out as
         jobs run.
+
+        It used to carry a green dot whenever ANY preview had ever been rendered. That is
+        true for the whole life of a project after the first reconstruction, so it read as a
+        permanent "something is new" badge pointing at nothing in particular — removed.
         """
-        from services.dashboard_data import has_any_previews_rendered
+        return self._sb_svg_btn(
+            _TOMO_DASHBOARD_SVG,
+            "Journey — one tilt-series end to end: motion, CTF, alignment, reconstruction, picks",
+            self._open_journey,
+            ref_key="dashboard_btn",
+        )
 
-        rendered = has_any_previews_rendered(current_project_state())
-        svg = self._load_svg(_TOMO_DASHBOARD_SVG).replace("currentColor", SB_MUTE)
+    # A ChimeraX + ArtiaX launcher used to sit here. It went with picking-UI roadmap 09-S2:
+    # a session is always started ON a tomogram, from the Particles registry's
+    # "Picks & curation" tab ('curate' on a tomogram group), so the app has exactly one
+    # launch affordance. What sits at the bottom of the rail now is an INDICATOR of that
+    # session (_build_curation_session_btn) whose click opens the control center — it never
+    # launches, so there is still exactly one launch affordance.
 
+    def _build_curation_session_btn(self):
+        """Bottom-of-rail ChimeraX + ArtiaX control-session indicator.
+
+        Ever-present like the other rail entries, and dim while nothing is running. When a
+        session of this user IS up it turns green and breathes (CSS keyframes — see
+        `.cb-artiax-live`), and its hover says WHICH species and tomogram that session was
+        launched on, read from the session's own recorded scope. Clicking always opens the
+        control center: connect details while one is up, and the start panel otherwise.
+
+        `unknown` (a `squeue` that raised) is its own amber state — never painted as "no
+        session", which is the reading that gets a user to start a second ChimeraX.
+        """
         container = (
             ui.element("div")
             .style(
                 "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
                 "background: transparent; "
                 "display: flex; align-items: center; justify-content: center; "
-                "cursor: pointer; flex-shrink: 0; position: relative;"
+                "cursor: pointer; flex-shrink: 0;"
             )
-            .on("click", self._open_journey)
-            .tooltip("Journey" + (" · previews rendered" if rendered else ""))
+            .on("click", self._open_control_center)
         )
         with container:
-            ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
-            if rendered:
-                ui.element("div").style(
-                    "position: absolute; top: 4px; right: 4px; width: 6px; height: 6px; "
-                    "border-radius: 50%; background: #16a34a; pointer-events: none;"
-                )
-        self._refs["dashboard_btn"] = container
-        return container
-
-    def _build_curation_btn(self):
-        """Sidebar button → launch a ChimeraX+ArtiaX VNC curation session as a
-        SLURM job, then show the user the tunnel/viewer/password to connect.
-        See ui/curation_session_dialog.py and containers/chimerax_artiax/."""
-        panel = self.panel
-        container = (
-            ui.element("div")
-            .style(
-                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                "background: transparent; "
-                "display: flex; align-items: center; justify-content: center; "
-                "cursor: pointer; flex-shrink: 0; position: relative;"
-            )
-            .on("click", lambda: panel.launch_curation_session())
-            .tooltip("Launch ChimeraX + ArtiaX (manual picking)")
-        )
-        with container:
-            ui.icon("view_in_ar", size="18px").style(f"color: {SB_MUTE}; pointer-events: none;")
+            icon = ui.icon("view_in_ar", size="18px").style(f"color: {SB_MUTE}; pointer-events: none;")
+            tip = ui.tooltip("")
         self._refs["curation_btn"] = container
+        self._refs["curation_icon"] = icon
+        self._refs["curation_tip"] = tip
+        self._paint_curation_session()
+        # The status itself is the shared, throttled session_status cache (one `squeue` per
+        # POLL_S across every observer), so this tick is nearly free and only repaints when
+        # the rendered state actually moved.
+        ui.timer(_CURATION_TICK_S, self._tick_curation_session)
         return container
+
+    async def _tick_curation_session(self):
+        await session_status.poll(self.panel.backend)
+        self._paint_curation_session()
+
+    def _paint_curation_session(self):
+        """Reflect the cached session state onto the rail icon. Gated on the (status, scope)
+        it last painted: this runs on a timer, and re-sending identical style/class strings
+        every tick is churn the client has to process for nothing.
+
+        Four states, not three. `unknown` splits by WHY: a `squeue` that raised is amber and
+        says so, while "not asked yet" (the first seconds after a page load) is just dim —
+        painting that one amber would cry wolf on every single load.
+        """
+        st = session_status.status()
+        scope = session_status.scope_text()
+        error = session_status.last_error()
+        if (st, scope, error) == self._curation_paint:
+            return
+        self._curation_paint = (st, scope, error)
+
+        icon = self._refs.get("curation_icon")
+        tip = self._refs.get("curation_tip")
+        if icon is None or tip is None:
+            return
+        if st == session_status.LIVE:
+            color, live = "#16a34a", True
+            text = (
+                f"Picking {scope or 'a scope this session did not record'} — ChimeraX + ArtiaX is up. "
+                "Click for the control center."
+            )
+        elif st == session_status.UNKNOWN and error:
+            color, live = "#d97706", False
+            text = f"Could not ask SLURM whether a curation session is running — {error}. Click for the control center."
+        elif st == session_status.UNKNOWN:
+            color, live = SB_MUTE, False
+            text = "Checking for a running curation session… Click for the control center."
+        else:
+            color, live = SB_MUTE, False
+            text = (
+                "No curation session. Start one with 'curate' on a tomogram in Picks & curation, "
+                "or click here for the control center."
+            )
+        icon.style(f"color: {color}; pointer-events: none;")
+        icon.classes(add="cb-artiax-live" if live else "", remove="" if live else "cb-artiax-live")
+        tip.set_text(text)
+
+    async def _open_control_center(self):
+        """The rail indicator's click. Opens the SAME control center the Picks & curation
+        session chip does — SingleFlight-guarded, since it owns a dialog."""
+        async with self.panel.flight("rail_control_center") as acquired:
+            if not acquired:
+                return
+            await open_curation_control_center(self.panel.backend, self.panel.ui_mgr.project_path)
 
     def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None):
         bg = SB_ABG if active else "transparent"
@@ -1626,9 +1743,12 @@ class RosterWidget(FingerprintedView):
             .tooltip(tooltip)
         )
         with container:
-            ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
+            icon = ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
         if ref_key:
             self._refs[ref_key] = container
+            # The icon separately, so a re-colour can set its markup in place instead of
+            # clearing the container — which would take the tooltip with it.
+            self._refs[f"{ref_key}_icon"] = icon
         return container
 
     def _info_popup_btn(self, icon_name: str, title: str, rows: list, icon_color: str | None = None):

@@ -23,6 +23,7 @@ from services.jobs.candidate_extract import CandidateExtractPytomParams
 from services.jobs.class3d import Class3DParams
 from services.jobs.denoise_predict import DenoisePredictParams
 from services.jobs.denoise_train import DenoiseTrainParams
+from services.jobs.extract_pick_list import ExtractPickListParams
 from services.jobs.fs_motion_ctf import FsMotionCtfParams
 from services.jobs.import_movies import ImportMoviesParams
 from services.jobs.miss_align import MissAlignParams
@@ -179,7 +180,7 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
     JobSpec(
         JobType.TEMPLATE_EXTRACT_PYTOM,
         CandidateExtractPytomParams,
-        "Template Extract",
+        "Pick candidates",
         PHASE_PARTICLES,
         dependencies=(JobType.TEMPLATE_MATCH_PYTOM,),
         driver="extract_candidates_pytom.py",
@@ -194,6 +195,12 @@ JOB_SPECS: Final[tuple[JobSpec, ...]] = (
         driver="subtomo_extraction.py",
         plugins=("subtomo_extraction",),
     ),
+    # Per-pick-list extraction (roadmap 07). phase=None: this is NOT a roster job --
+    # one instance exists per pick list and its home is the Species page's Picks tab,
+    # not the pipeline. The row itself is mandatory even so, because jobtype_paramclass()
+    # is derived from JOB_SPECS and ProjectState.load drops instances of a type with no
+    # param class. Keeping it out of the sweeps is the param class's IS_INTERACTIVE.
+    JobSpec(JobType.EXTRACT_PICK_LIST, ExtractPickListParams, "Extract Pick List", None, driver="extract_pick_list.py"),
     JobSpec(
         JobType.RECONSTRUCT_PARTICLE,
         ReconstructParticleParams,
@@ -222,7 +229,9 @@ PIPELINE_ORDER: Final[tuple[JobType, ...]] = tuple(s.job_type for s in JOB_SPECS
 
 # Synthetic sources that are not pipeline jobs (no JobSpec row) but still need
 # a human-readable name (e.g. MergedSources appears as a producer candidate).
-_SYNTHETIC_DISPLAY_NAMES: Final[Mapping[JobType, str]] = MappingProxyType({JobType.MERGED_SOURCES: "Merged Sources"})
+_SYNTHETIC_DISPLAY_NAMES: Final[Mapping[JobType, str]] = MappingProxyType(
+    {JobType.MERGED_SOURCES: "Merged Sources", JobType.IMPORTED_TOMOGRAMS: "Imported Tomograms"}
+)
 
 
 def display_name(job_type: JobType) -> str:
@@ -237,10 +246,11 @@ def driver_launch_prefix(*, server_dir: Path, driver_script: Path) -> str:
     before its arguments.
 
     Lives next to `JobSpec.driver` because this module already owns *which* script
-    runs a job type; this is *how* it gets started. Three callers need it and must not
-    drift on the interpreter choice or the PYTHONPATH export: the two pipeline entry
-    points below, plus `backend.extract_pick_list`, which launches a driver that is
-    not a pipeline job and so passes its own argument set instead of `--instance_id`.
+    runs a job type; this is *how* it gets started. Both callers must not drift on the
+    interpreter choice or the PYTHONPATH export; both are the pipeline entry points in
+    `driver_invocation` below. (`backend.extract_pick_list` used to be a third, passing
+    its own argument set instead of `--instance_id`; roadmap 07-S2 gave that job a real
+    instance, so it goes through `driver_invocation` like everything else.)
 
     The venv interpreter is used when the repo has one, else bare `python3` from PATH.
     """

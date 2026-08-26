@@ -117,10 +117,12 @@ def setup_app():
     @app.on_event("startup")
     async def _start_pipeline_monitor():
         await backend.pipeline_monitor.start()
+        await backend.curation_watcher.start()
 
     @app.on_event("shutdown")
     async def _stop_pipeline_monitor():
         await backend.pipeline_monitor.stop()
+        await backend.curation_watcher.stop()
 
     storage_secret = os.environ.get("CRBOOST_STORAGE_SECRET", "crboost-change-me")
 

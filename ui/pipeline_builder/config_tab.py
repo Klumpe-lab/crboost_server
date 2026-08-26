@@ -24,6 +24,7 @@ def render_config_tab(
     backend,
     save_handler: Callable,
     instance_id: str | None = None,
+    callbacks: dict[str, Callable] | None = None,
 ):
     # array_throttle is rendered in the SLURM section, not here
     exclude = {"array_throttle"} if "array_throttle" in getattr(job_model, "USER_PARAMS", set()) else None
@@ -38,6 +39,9 @@ def render_config_tab(
             backend=backend,
             exclude=exclude,
             instance_id=instance_id,
+            callbacks=callbacks,
         )
     else:
-        render_default_params_card(job_type, job_model, is_frozen, save_handler, exclude=exclude, ui_mgr=ui_mgr)
+        render_default_params_card(
+            job_type, job_model, is_frozen, save_handler, exclude=exclude, ui_mgr=ui_mgr, callbacks=callbacks
+        )

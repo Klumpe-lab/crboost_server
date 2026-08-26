@@ -6,7 +6,7 @@ from typing import ClassVar
 from pydantic import Field
 
 from services.jobs._base import AbstractJobParams
-from services.models_base import JobStatus, JobType, JobCategory
+from services.models_base import JobType, JobCategory
 from services.io_slots import InputSlot, OutputSlot, JobFileType
 from services.result import err, ok
 
@@ -22,20 +22,25 @@ class TiltFilterParams(AbstractJobParams):
 
     USER_PARAMS: ClassVar[set[str]] = {"model_name", "image_size", "dl_batch_size", "prob_threshold", "prob_action"}
 
-    # Runs after tsImport, before alignment, so the cut actually filters
-    # alignment/CTF/reconstruct instead of only the display copy. The DL reads
-    # the motion-corrected averages via the fs-motion star; the verdict is applied
-    # by trimming the tomostar (drivers/tilt_filter.py), which every downstream
-    # WarpTools step reads. When this job is absent, alignment's tomostar_dir slot
-    # falls back to tsImport's tomostar and the pipeline is unchanged.
+    # The DL reads the motion-corrected averages via the fs-motion star; that is this
+    # job's only input. The verdict is a per-frame `is_filtered_out` stamp in the
+    # TiltSeries registry, NOT a file this job produces: alignment applies the cut when
+    # it snapshots the tomostar dir (drivers/ts_alignment.py), and CTF/reconstruct
+    # inherit it from that snapshot.
+    #
+    # Deliberately NOT a TOMOSTAR_DIR producer. It used to consume tsImport's tomostar
+    # and emit a trimmed copy, which forced an ordering this interactive job cannot
+    # honour -- the user reaches the gallery as soon as fsMotion's PNGs exist, which is
+    # routinely before tsImport has run -- and it put a phantom `pending_tiltFilter`
+    # entry in alignment's tomostar source menu that a pending filter resolved to
+    # silently, running alignment on the unfiltered tilt set. With the verdict in the
+    # registry, tsImport is the sole tomostar producer, the commit has no upstream
+    # dependency at all, and filter-off vs filter-on differ only by the drop set.
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
-        InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf"),
-        InputSlot(key="input_tomostar", accepts=[JobFileType.TOMOSTAR_DIR], preferred_source="tsImport"),
+        InputSlot(key="input_star", accepts=[JobFileType.FS_MOTION_CTF_STAR], preferred_source="fsMotionAndCtf")
     ]
 
-    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = [
-        OutputSlot(key="output_tomostar", produces=JobFileType.TOMOSTAR_DIR, path_template="tomostar/", is_dir=True)
-    ]
+    OUTPUT_SCHEMA: ClassVar[list[OutputSlot]] = []
 
     model_name: str = Field(default="default", description="DL model name for tilt quality classification")
     image_size: int = Field(default=384, ge=128, le=1024, description="Target image size for DL inference")
@@ -66,74 +71,73 @@ class TiltFilterParams(AbstractJobParams):
         return {"ctf": "tsCtf"}
 
 
-# ── commit-time output production (shared by the DL and manual-label paths) ──
-
-
-def _find_tsimport_tomostar_dir(state, project_path: Path) -> Path | None:
-    """Locate the tsImport job's `tomostar/` directory — the source the tilt filter
-    trims (dropping bad-tilt rows) so alignment/CTF/reconstruct inherit the cut."""
-    for _iid, jm in state.jobs.items():
-        if jm.job_type and jm.job_type.value == "tsImport" and jm.execution_status == JobStatus.SUCCEEDED:
-            d = jm.paths.get("tomostar_dir")
-            if d:
-                p = Path(d) if Path(d).is_absolute() else project_path / d
-                if p.is_dir():
-                    return p
-            if jm.relion_job_name:
-                p = project_path / jm.relion_job_name.rstrip("/") / "tomostar"
-                if p.is_dir():
-                    return p
-    return None
+# ── commit-time verdict (shared by the DL and manual-label paths) ──
 
 
 async def finalize_pipeline_output(state, job_model, ts_data, project_path: Path) -> dict:
-    """Produce the tilt filter's real pipeline output — a trimmed tomostar with the
-    dropped tilts removed — that alignment/CTF/reconstruct consume. Runs at commit for
-    BOTH the DL-assisted and manual-labelling paths (the SLURM driver only runs for the
-    DL pass; manual labelling never dispatches it, so the trim must live here too).
+    """Commit the tilt-filter verdict: stamp every tilt's keep/drop decision into the
+    TiltSeries registry, which is what alignment reads when it snapshots the tomostar
+    dir. Runs at commit for BOTH the DL-assisted and manual-labelling paths (the SLURM
+    driver only runs for the DL pass; manual labelling never dispatches it).
 
-    Sets `job_model.paths['output_tomostar']` so the path resolver wires alignment to
-    it even though this interactive job has no deployed job dir (the resolver falls back
-    to the producer's cached paths for SUCCEEDED interactive jobs). Also stamps the
-    per-tilt verdict into the registry (authoritative record). Returns
-    ok(kept=..., dropped=...) or err(...); the UI caller surfaces the outcome."""
-    from services.tilt_series_service import drop_tilts_from_tomostar
+    Deliberately has no upstream dependency: the registry exists from import onward, so
+    the user can commit before, after, or without tsImport having run. Re-stamps in both
+    directions on every commit, so un-labelling a tilt restores it. Downstream jobs pick
+    the new verdict up when they are (re)queued -- the forward-only staleness convention.
 
-    src_tomostar = _find_tsimport_tomostar_dir(state, project_path)
-    if src_tomostar is None:
-        return err("Cannot finalize: tsImport tomostar not found (run Import + TS Import first).")
+    Returns ok(kept=..., dropped=...) or err(...); the UI caller surfaces the outcome.
+    A failure here means the cut was NOT recorded, so the caller must not mark the job
+    succeeded."""
+    from services.tilt_series import get_registry_for
 
     df = ts_data.all_tilts_df
-    has_labels = "cryoBoostDlLabel" in df.columns and "cryoBoostKey" in df.columns
-    bad_stems = set(df.loc[df["cryoBoostDlLabel"] != "good", "cryoBoostKey"].tolist()) if has_labels else set()
+    if "cryoBoostDlLabel" not in df.columns or "cryoBoostKey" not in df.columns:
+        return err("Cannot commit: the tilt table has no labels (expected cryoBoostKey + cryoBoostDlLabel columns).")
 
-    out_tomostar = project_path / "TiltFilter" / "tomostar"
-    kept, dropped = await asyncio.to_thread(drop_tilts_from_tomostar, src_tomostar, out_tomostar, bad_stems)
-
-    job_model.paths["output_tomostar"] = str(out_tomostar)
-    # Drop stale slots from the pre-move design so the resolver never wires them.
-    job_model.paths.pop("output_star", None)
-    job_model.paths.pop("output_processing", None)
-
-    # Registry stamp — authoritative record; best-effort, never blocks the commit.
     try:
-        from services.tilt_series import get_registry_for
-
         registry = get_registry_for(project_path)
-        if registry.tilt_series_ids() and has_labels:
-            probs = df["cryoBoostDlProbability"] if "cryoBoostDlProbability" in df.columns else [None] * len(df)
-            for stem, is_filt, prob in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), probs, strict=False):
-                try:
-                    registry.set_frame_filtered(
-                        str(stem),
-                        bool(is_filt),
-                        reason="tilt-filter" if is_filt else None,
-                        probability=float(prob) if prob is not None else None,
-                    )
-                except KeyError:
-                    pass
-            await asyncio.to_thread(registry.save)
-    except Exception as e:
-        logger.warning("tilt-filter registry stamp skipped: %s", e)
+    except Exception:
+        logger.exception("tilt-filter commit: registry unavailable")
+        return err("Cannot commit: the TiltSeries registry could not be loaded. Reload the project and retry.")
+
+    if not registry.tilt_series_ids():
+        return err("Cannot commit: the TiltSeries registry is empty. Reload the project to backfill it from mdocs.")
+
+    probs = df["cryoBoostDlProbability"] if "cryoBoostDlProbability" in df.columns else [None] * len(df)
+    kept = dropped = 0
+    unknown: list[str] = []
+    for stem, is_filt, prob in zip(df["cryoBoostKey"], (df["cryoBoostDlLabel"] != "good"), probs, strict=False):
+        try:
+            registry.set_frame_filtered(
+                str(stem),
+                bool(is_filt),
+                reason="tilt-filter" if is_filt else None,
+                probability=float(prob) if prob is not None else None,
+            )
+        except KeyError:
+            # A labelled tilt the registry has never heard of means the verdict for it
+            # would be lost silently -- report it rather than quietly under-filtering.
+            unknown.append(str(stem))
+            continue
+        if is_filt:
+            dropped += 1
+        else:
+            kept += 1
+
+    if unknown:
+        shown = ", ".join(unknown[:3]) + (f" (+{len(unknown) - 3} more)" if len(unknown) > 3 else "")
+        return err(
+            f"Cannot commit: {len(unknown)} labelled tilts are not in the registry ({shown}). Reload the project."
+        )
+
+    try:
+        await asyncio.to_thread(registry.save)
+    except Exception:
+        logger.exception("tilt-filter commit: registry save failed")
+        return err("Cannot commit: writing the tilt verdict to the registry failed. See the server log.")
+
+    # Stale slots from the pre-registry design, when this job produced its own tomostar.
+    for dead in ("output_tomostar", "output_star", "output_processing"):
+        job_model.paths.pop(dead, None)
 
     return ok(kept=kept, dropped=dropped)

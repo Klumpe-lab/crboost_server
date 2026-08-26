@@ -6,15 +6,15 @@ the edge cases that still need handling.
 
 ## What's built (2026-05-21)
 
-- **Hierarchical merge selector** (`ui/aggregation_merge_card.py`): Project → Species →
+- **Hierarchical merge selector** (`ui/aggregation/merge_card.py`): Project → Species →
   Tomogram tree replacing the old flat checkbox list. Project rows reuse the
   projects-overview avatar/look; tomogram leaves show per-TS `kept/total` picks + a
-  reviewed marker (curation from `aggregation_discovery.load_tomo_curation`, lazy per
+  reviewed marker (curation from `aggregation.discovery.load_tomo_curation`, lazy per
   expanded species).
 - **Per-tomogram fine selection**: `ProjectState.aggregation_sources` is now
   `List[AggregationSource]` (`optset_path` + optional `tomo_names`; `None` = all). Legacy
   `List[str]` is migrated by a field validator. The merge driver
-  (`drivers/subtomo_merge.py`) subsets particles + tomograms by `rlnTomoName` per source.
+  (`services/subtomo_merge.py`) subsets particles + tomograms by `rlnTomoName` per source.
 - **Filtered-or-original is factored out**: `picks_filter.resolve_canonical_optset()` is the
   single definition, used by the merge build so a curation done *after* selection is honored.
 - **Per-tomo curated/original override**: each curated tomogram has a mutually-exclusive
@@ -34,7 +34,7 @@ metadata-preserving concatenation + tomogram dedup; the box/apix/binning warning
 
 ## Where we are (2026-05-21)
 
-`services/visualization/picks_filter.py` curates one SUBTOMO_EXTRACTION job at a time:
+`services/particles/picks_filter.py` curates one SUBTOMO_EXTRACTION job at a time:
 
 - Writes a sibling pair next to the job's canonical outputs — `particles_filtered.star`
   + `optimisation_set_filtered.star` (originals never touched).
@@ -168,7 +168,7 @@ concatenate" mode; superseded by the standalone merge card writing `MergedSource
 `OPTIMISATION_SET_STAR` producer **only if `project_root/MergedSources/optimisation_set.star` exists**
 (the LEGACY *flat* path). But every merge since the slug refactor writes
 `MergedSources/<slug>/optimisation_set.star` (`project_state.py:490`, `MERGED_DIR_NAME`), and
-`active_merged_optset()` (`ui/aggregation_merge_card.py:77`) resolves the slug path. So for **every
+`active_merged_optset()` (`ui/aggregation/merge_card.py:77`) resolves the slug path. So for **every
 current merge the flat file doesn't exist → the candidate is never registered → consumers never see
 "Merged Sources" in their input dropdown** and rely entirely on the invisible `manual:<path>` override
 written by `apply_aggregation_overrides` (rendered as an anonymous "Manual path…" in io_config).
@@ -176,7 +176,7 @@ written by `apply_aggregation_overrides` (rendered as an anonymous "Manual path�
 **Fix (the keystone — do this first):** point `_add_merged_sources_candidates` at the slug-resolved
 **active** merged optset and give it a meaningful label ("Merged sources — <name>"). This requires
 moving the active-merge resolution (`_active_merge` / `active_merged_optset`,
-`ui/aggregation_merge_card.py:64-89`) OUT of the UI layer into `ProjectState` (or a service) so
+`ui/aggregation/merge_card.py:64-89`) OUT of the UI layer into `ProjectState` (or a service) so
 `path_resolution_service` can call it without a `ui.` import — a clean relocation that also serves
 PARTICLE_PROJECT_ROADMAP P3. Once the merged optset is a first-class resolver candidate, a
 ReconstructParticle job lists it like any normal producer; the `apply_aggregation_overrides` band-aid
@@ -201,23 +201,23 @@ can wire via that candidate's `source_key` instead of a bare `manual:` path (or 
 ### Real correctness bugs found (not just polish)
 
 - **Cross-tab state leak:** `_DIALOG_REFS`, `_registry_expanded`, `_pending_save_task` are **module
-  globals** in `ui/aggregation_merge_card.py` (761, 955, 105) — shared across all NiceGUI clients/tabs;
+  globals** in `ui/aggregation/merge_card.py` (761, 955, 105) — shared across all NiceGUI clients/tabs;
   opening the dialog in tab B corrupts tab A's refs (same class of bug as
   [[feedback_background_task_no_client_context]]). Move to per-dialog/per-client state.
 - **No SingleFlight** on the open handler (`pipeline_roster.py:1604`) or the async expanders
-  (`aggregation_merge_card.py:472/522`) → stacked dialogs + racing curation loads (CLAUDE.md requires it).
+  (`merge_card.py:472/522`) → stacked dialogs + racing curation loads (CLAUDE.md requires it).
 - **Non-reactive UI:** the selector tree, footer, and registry all `container.clear()`+full-rebuild on
   every click (no `FingerprintedView`), dropping in-flight clicks + :hover. Event-driven (not
   timer-driven) so lower severity, but violates the documented convention.
 
 ### Dead / debug code to remove
 
-- **`ui/pipeline_builder/merge_panel_component.py` (24KB) is fully built but UNREACHABLE** — zero runtime
+- ~~`ui/pipeline_builder/merge_panel_component.py` (24KB), unreachable~~ — **DELETED** (see the P1 log below). Was: zero runtime
   callers (grep-confirmed); only a comment ref in `ui/job_plugins/subtomo_extraction.py:7`. Reimplements
   the merge call + a source-picker dialog. Delete it (also on the P5 removal list).
-- `services/aggregation_authoritative.py` (+ `backend.py:296-533` gate report) is **built-but-unwired**
+- `services/aggregation/authoritative.py` (+ the gate report on `backend`) — was **built-but-unwired**; de-novo S6 wired it as the merge pre-flight (`_MergeDialog.preflight_blockers`), so this item is CLOSED. Original note:
   (zero `ui/` consumers) — the cleaner per-species authoritative-list→optset model; wire into P3 or delete.
-- `drivers/subtomo_merge.py:415` ships a `[MERGE DEBUG]` print + `# <-- add this` editing note; lines
+- `services/subtomo_merge.py:415` ships a `[MERGE DEBUG]` print + `# <-- add this` editing note; lines
   397/491/524/581-583 use bare `print()` instead of logging.
 
 ### The plan (sequenced; ①–③ = the priority path, ④ deprioritized)
@@ -247,12 +247,12 @@ disambiguation) that P5 deletes.
 ### Key file anchors (for fast pickup)
 
 - `services/path_resolution_service.py:523-547` — `_add_merged_sources_candidates` (the keystone bug; flat path).
-- `ui/aggregation_merge_card.py:64-89` — `_active_merge`/`active_merged_optset` (relocate to ProjectState); `:134-198` `apply_aggregation_overrides`; `:306-673` `_MergeSelector` (P3 reuses); `:680-758` `open_aggregation_merge_dialog`; `:908-948` `_run_merge`; `:761` `_DIALOG_REFS` global.
+- `ui/aggregation/merge_card.py:64-89` — `_active_merge`/`active_merged_optset` (relocate to ProjectState); `:134-198` `apply_aggregation_overrides`; `:306-673` `_MergeSelector` (P3 reuses); `:680-758` `open_aggregation_merge_dialog`; `:908-948` `_run_merge`; `:761` `_DIALOG_REFS` global.
 - `services/jobs/reconstruct_particle.py:51-55` — `INPUT = OPTIMISATION_SET_STAR` (preferred_source `subtomoExtraction`); `services/jobs/subtomo_extraction.py:48-82` (`additional_sources`/`merge_only`); `services/jobs/class3d.py:47`.
-- `services/aggregation_discovery.py:74-179` — `_scan_project` (extracted-only) + `discover_subtomo_optimisation_sets`; `load_tomo_curation`.
-- `drivers/subtomo_merge.py:348-585` — `merge_optimisation_sets_into_jobdir` (concat + dedup + strict optics check; debug prints).
-- `ui/pipeline_builder/pipeline_roster.py:1589-1617` — sidebar merge button (stale badge); `pipeline_builder_panel.py:335-340,594-603` — override self-heal call sites.
-- `ui/pipeline_builder/merge_panel_component.py` — DEAD, delete.
+- `services/aggregation/discovery.py:74-179` — `_scan_project` (extracted-only) + `discover_subtomo_optimisation_sets`; `load_tomo_curation`.
+- `services/subtomo_merge.py:348-585` — `merge_optimisation_sets_into_jobdir` (concat + dedup + strict optics check; debug prints).
+- `ui/pipeline_builder/pipeline_roster.py` — the merge button, moved by de-novo S6 from the sidebar to the PARTICLES phase header (`_build_aggregation_merge_btn`); `pipeline_builder_panel.py` — the add-a-consumer override hook (the render-scoped self-heal beside it was removed by S6).
+- ~~`ui/pipeline_builder/merge_panel_component.py`~~ — deleted already; the citations above are historical.
 
 ---
 
@@ -266,7 +266,7 @@ disambiguation) that P5 deletes.
 - `services/path_resolution_service.py`: `_add_merged_sources_candidates` now points at
   `state.active_merged_optset()` (the slug optset, was the dead flat path); `OutputCandidate` gained a
   `label` field → candidate shows **"Merged sources — <name>"**.
-- `ui/aggregation_merge_card.py`: `_active_merge`/`active_merged_optset` delegate to ProjectState;
+- `ui/aggregation/merge_card.py`: `_active_merge`/`active_merged_optset` delegate to ProjectState;
   `apply_aggregation_overrides` wires consumers via the producer **`source_key`**
   (`mergedSources:MergedSources/<slug>`), not a bare `manual:` path → the IO-config dropdown shows the
   named producer **selected**, not an anonymous "Manual path…".
@@ -284,11 +284,11 @@ the codebase had pre-wired the exclusion for exactly this producer. Addressed th
 - Fixed the false "paths[k] is what the driver reads" docstring (paths is fully rebuilt at deploy by
   `resolve_all_paths`; the source_key override is the single source of truth).
 - Updated 3 stale comments still describing the old `manual:` wiring (project_service.py:408,
-  pipeline_builder_panel.py:335, aggregation_merge_card module docstring).
+  pipeline_builder_panel.py:335, ui/aggregation/merge_card module docstring).
 
 **Ride-alongs done:** deleted dead `ui/pipeline_builder/merge_panel_component.py` (zero importers) + fixed
 its stale docstring pointer in `ui/job_plugins/subtomo_extraction.py`; stripped the `[MERGE DEBUG]` print +
-`# <-- add this` note in `drivers/subtomo_merge.py`.
+`# <-- add this` note in `services/subtomo_merge.py`.
 
 **Not done (deferred ride-alongs — UI, want runtime):** SingleFlight on the dialog open handler; the
 `_DIALOG_REFS`/`_registry_expanded`/`_pending_save_task` cross-tab module-global leak; route the merge

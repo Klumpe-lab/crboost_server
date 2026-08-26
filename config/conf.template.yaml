@@ -163,6 +163,19 @@ curation:
   geometry: "1920x1080"
   chimerax_bin: "chimerax"
   login_host: ""
+  display_bin: 2          # open a block-binned copy of the recon (cached beside it) so ArtiaX loads in
+                          # seconds instead of ~20 s. Picks stay exact — crboost records and undoes the
+                          # (N-1)/2*px corner shift. 1 = off (open the full-resolution volume).
+  passwordless_vnc: false # true starts the desktop with SecurityTypes None — NO password, so anyone who
+                          # can reach that node's VNC port can drive the session. Leave false if shared.
+
+# Lab-level species catalog (roadmap 12). A shared directory holding species DEFINITIONS —
+# name, diameter, symmetry, notes, templates and masks with their provenance — so the same
+# particle can be started from in any project instead of being re-registered by hand. Picks,
+# keep/drop filters, merges and extractions are NEVER shared: they are project-bound.
+# Import and publish both COPY (a snapshot, like species values on a job); there is no live
+# sync in either direction. Leave empty to switch the feature off entirely.
+species_catalog_root: ""
 
 # Tool execution configuration
 # exec_mode: 'container' or 'binary'

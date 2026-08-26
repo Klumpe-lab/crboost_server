@@ -8,10 +8,12 @@ the toolbar / pipeline roster.
 """
 
 from collections.abc import Callable
+from pathlib import Path
 
 from nicegui import ui
 
 from services.models_base import JobType
+from ui.components.species_pill import render_species_line, species_opener
 from ui.job_plugins._field_styles import (
     field_grid,
     toggle_row,
@@ -82,49 +84,32 @@ def _classify_fields(job_model, field_names: set[str]) -> dict[str, list[str]]:
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def render_species_badge(job_model, project_path: str | None):
-    """Read-only species pill shown at the top of any particle-phase job config."""
+def render_species_badge(job_model, project_path: Path | None, *, callbacks: dict | None = None):
+    """Species line at the top of a particle-phase job config on the DEFAULT render
+    path (reconstruct / class3d / …): the shared pill + "open in Species" link.
+    No-op for jobs without a `species_id`. The TM / pick-candidates / subtomo
+    plugins render the same line themselves (via `resolve_species`)."""
     species_id = getattr(job_model, "species_id", None)
     if not species_id or not project_path:
         return
+    from services.project_state import get_project_state_for
 
-    try:
-        from services.project_state import get_project_state_for
-
-        state = get_project_state_for(project_path)
-        species = state.get_species(species_id)
-    except Exception:
-        return
-
+    species = get_project_state_for(project_path).get_species(species_id)
     if species is None:
         return
-
-    with ui.row().classes("items-center gap-2").style("margin-bottom: 6px;"):
-        ui.label("Particle").style(
-            f"{SANS} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
-            "letter-spacing: 0.06em; text-transform: uppercase;"
-        )
-        with ui.element("div").style(
-            f"display: inline-flex; align-items: center; "
-            f"background: {species.color}18; border: 1px solid {species.color}55; "
-            f"border-radius: 999px; padding: 1px 8px;"
-        ):
-            ui.label(species.name).style(f"font-size: 10px; color: {species.color}; font-weight: 600;")
+    render_species_line(species, on_open=species_opener(callbacks, species.id))
 
 
-def render_denoise_inheritance(job_model, project_path: str | None):
+def render_denoise_inheritance(job_model, project_path: Path | None):
     """Read-only row for denoise-predict: the denoiser (cryoCARE / IsoNet) and its deconv
     setting are inherited from the denoise-train job — predict has no independent setting,
     so a train/predict mismatch is impossible. Shows the resolved method when available."""
     method = None
     if project_path:
-        try:
-            from services.project_state import get_project_state_for
+        from services.project_state import get_project_state_for
 
-            state = get_project_state_for(project_path)
-            method, _ = job_model.inherited_from_train(state)
-        except Exception:
-            method = None
+        # inherited_from_train returns (None, None) when it can't resolve — no except needed.
+        method, _ = job_model.inherited_from_train(get_project_state_for(project_path))
 
     label = method.value if method is not None else "set in denoise-train"
     with ui.row().classes("items-center gap-2").style("margin-bottom: 8px;"):
@@ -244,9 +229,13 @@ def render_default_params_card(
 ):
     """render_default_params with an optional species badge prefix."""
     ui_mgr = _ctx.get("ui_mgr")
-    project_path = str(ui_mgr.project_path) if ui_mgr and ui_mgr.project_path else None
+    # A Path, not str: get_project_state_for() calls .resolve() on it. The old str
+    # here made both helpers below raise AttributeError inside their (since removed)
+    # blanket excepts — the species badge never rendered on this path and the
+    # denoiser row always read "set in denoise-train".
+    project_path = ui_mgr.project_path if ui_mgr and ui_mgr.project_path else None
 
-    render_species_badge(job_model, project_path)
+    render_species_badge(job_model, project_path, callbacks=_ctx.get("callbacks"))
     render_config_preamble(job_model)
     if job_type == JobType.DENOISE_PREDICT:
         render_denoise_inheritance(job_model, project_path)

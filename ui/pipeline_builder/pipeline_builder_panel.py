@@ -11,9 +11,10 @@ from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobStatus
 from services.project_state import JobType
 
+from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.current_project import current_project_state
-from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, next_instance_id
+from ui.pipeline_builder.pipeline_constants import PHASE_JOBS, PHASE_PARTICLES, missing_deps, next_instance_id
 from ui.pipeline_builder.pipeline_roster import RosterWidget
 from ui.pipeline_builder.status_poller import StatusPoller
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -44,6 +45,7 @@ class PipelineBuilderPanel:
         toggle_workbench: Callable | None = None,
         ensure_pipeline_mode: Callable | None = None,
         toggle_journey: Callable | None = None,
+        toggle_gallery: Callable | None = None,
     ):
         self.backend = backend
         self.callbacks = callbacks
@@ -52,6 +54,7 @@ class PipelineBuilderPanel:
         self.toggle_workbench = toggle_workbench
         self.ensure_pipeline_mode = ensure_pipeline_mode
         self.toggle_journey = toggle_journey
+        self.toggle_gallery = toggle_gallery
 
         self.ui_mgr = get_ui_state_manager()
 
@@ -79,6 +82,9 @@ class PipelineBuilderPanel:
         self.callbacks["remove_instance_from_pipeline"] = self.remove_instance_from_pipeline
         self.callbacks["invalidate_tm_tabs"] = self.invalidate_tm_tabs
         self.callbacks["set_active_mode"] = self.roster.set_active_mode
+        # Species page (roadmap 10 S4): open a job in the pipeline view / add one for a species.
+        self.callbacks["open_job"] = self.switch_tab
+        self.callbacks["add_instance_for_species"] = self.add_instance_for_species
 
         self.rebuild_pipeline_ui()
 
@@ -88,20 +94,6 @@ class PipelineBuilderPanel:
             ui.timer(0.2, self.poller.safe_status_check, once=True)
 
     # ── Curation session ──────────────────────────────────────────────────────
-
-    async def launch_curation_session(self):
-        # SingleFlight: guard the submit window so a double-click doesn't queue
-        # two SLURM sessions. The dialog's own poll timer outlives this guard.
-        async with self.flight("curation_session") as acquired:
-            if not acquired:
-                return
-            from ui.curation_session_dialog import open_curation_control_center
-
-            # One control center: it checks liveness itself and shows status →
-            # connect (tunnel+password) when live, or a Start button when off.
-            # No bundle here (no specific tomo) — preload comes from the gallery's
-            # per-tomo "Curate in ArtiaX" button.
-            await open_curation_control_center(self.backend, self.ui_mgr.project_path)
 
     # ── Species gate ──────────────────────────────────────────────────────────
 
@@ -133,7 +125,7 @@ class PipelineBuilderPanel:
             if not state.species_registry:
                 ui.notify(
                     "No particle species yet — use “+” on the PARTICLES header to create one "
-                    "(no template needed), or build a template in the Template Workbench.",
+                    "(no template needed), or create one in the Particles registry.",
                     type="warning",
                     timeout=4000,
                 )
@@ -156,15 +148,35 @@ class PipelineBuilderPanel:
                 sel.on_value_change(_on_change)
 
                 with ui.row().classes("w-full justify-end gap-2 mt-4"):
-                    ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
-                    ui.button("Add", on_click=lambda: dialog.submit(True)).props("dense no-caps").style(
-                        "background: #3b82f6; color: white; padding: 4px 16px; border-radius: 3px;"
-                    )
+                    house_button("Cancel", lambda: dialog.submit(False))
+                    house_button("Add", lambda: dialog.submit(True), kind="accent")
 
             confirmed = await dialog
             if not confirmed:
                 return
             self.add_instance_to_pipeline(job_type, species_id=chosen["id"])
+
+    async def add_instance_for_species(self, job_type: JobType, species_id: str) -> None:
+        """One-click add from the Species page's Jobs tab: the species is known, so no
+        chooser dialog — straight to `add_instance_to_pipeline(job_type, species_id=)`.
+        SingleFlight-guarded like `prompt_species_and_add`; the roster's missing-
+        dependency warning is repeated here since that surface isn't visible."""
+        async with self.flight(f"add_for_species:{job_type.value}:{species_id}") as acquired:
+            if not acquired:
+                return
+            if self.ui_mgr.is_running:
+                ui.notify("Pipeline is running — stop it before adding jobs.", type="warning")
+                return
+            missing = missing_deps(job_type, set(self.ui_mgr.selected_jobs))
+            if missing:
+                ui.notify(
+                    f"{get_job_display_name(job_type)} typically requires: "
+                    + ", ".join(get_job_display_name(d) for d in missing),
+                    type="warning",
+                    timeout=3000,
+                )
+            self.add_instance_to_pipeline(job_type, species_id=species_id)
+            ui.notify(f"Added {get_job_display_name(job_type)} for species '{species_id}'", type="positive")
 
     # ── Tab management ────────────────────────────────────────────────────────
 
@@ -275,6 +287,26 @@ class PipelineBuilderPanel:
         if instance_id is None:
             instance_id = next_instance_id(job_type, self.ui_mgr.selected_jobs, list(state.jobs.keys()))
 
+        # A NEW per-particle job must name its species. Unattributable ones are not a
+        # display wart: `species_render_plan` still emits them (parity contract), so they
+        # draw a full Journey species tab, while the Species page's universe IS the
+        # registry — which means every action 11-S3 moved there is unreachable for exactly
+        # those instances. `prompt_species_and_add` asks for the species, but it is only
+        # ONE caller; the invariant belongs here, where the two registered callbacks
+        # (`add_job_to_pipeline`, `add_instance_to_pipeline`) also arrive. Re-selecting an
+        # EXISTING instance is untouched — it already has one. `_ensure_prerequisites` does
+        # NOT pass through here, so it would bypass this; today it cannot produce a particle
+        # job, because no PARTICLES-phase spec declares a `prerequisite` (all point at
+        # tsImport). Give one a particle prerequisite and it needs the same gate.
+        if job_type in PHASE_JOBS[PHASE_PARTICLES] and species_id is None and instance_id not in state.jobs:
+            ui.notify(
+                f"{get_job_display_name(job_type)} needs a particle species — add it from the "
+                "PARTICLES header “+” or the Particles registry's Jobs tab, which ask for one.",
+                type="warning",
+                timeout=4000,
+            )
+            return
+
         # Auto-add prerequisite jobs that this job type depends on.
         # e.g. alignment requires tsImport to exist in the pipeline.
         self._ensure_prerequisites(job_type, state)
@@ -334,12 +366,24 @@ class PipelineBuilderPanel:
                         elif job_type == JobType.TEMPLATE_EXTRACT_PYTOM:
                             if getattr(sp, "diameter_ang", None):
                                 job_model.particle_diameter_ang = float(sp.diameter_ang)
+                        # Extraction geometry the user committed once for this species
+                        # (Species page → Overview, or the first per-list extract). Only
+                        # when SET: the job's own box/bin/crop defaults are a legitimate
+                        # job default, a species answer is not one to invent. Same
+                        # snapshot-at-creation semantics as the two branches above —
+                        # nothing propagates into existing jobs.
+                        elif job_type == JobType.SUBTOMO_EXTRACTION:
+                            ep = getattr(sp, "extraction_params", None)
+                            if ep is not None:
+                                job_model.box_size = ep.box_size
+                                job_model.binning = ep.binning
+                                job_model.crop_size = ep.crop_size
 
-        # Aggregation projects: if the merge has been done, wire any new
-        # consumer's input_optimisation slot to the active merge's synthetic
-        # `mergedSources` producer (source_overrides key) so the user doesn't
-        # need to manually configure the override.
-        from services.aggregation_authoritative import apply_aggregation_overrides
+        # If a merge is active, wire this new consumer's input_optimisation slot to the
+        # active merge's synthetic `mergedSources` producer (source_overrides key) so the
+        # user doesn't have to configure the override by hand. No-ops when there is no
+        # active merged optset, which is every project that has never merged.
+        from services.aggregation.extraction import apply_aggregation_overrides
 
         apply_aggregation_overrides(state)
 
@@ -370,6 +414,24 @@ class PipelineBuilderPanel:
                 del overrides[k]
 
     def remove_instance_from_pipeline(self, instance_id: str):
+        """Drop an instance from the pipeline and PERSIST that.
+
+        The save is `force=True` and the state is marked dirty, both on purpose. A
+        deletion mutates `jobs` / `job_path_mapping` / `pipeline_order` / other jobs'
+        `source_overrides` directly, and none of those writes go through the USER_PARAMS
+        setter that maintains `is_dirty` — `ensure_job_initialized` only calls
+        `update_modified()`, which merely stamps `modified_at` (see `merge_card.persist`,
+        which documents the same trap). A plain `save_project()` is gated on
+        `force or state.is_dirty` (`StateService.save_project`), so before this the delete
+        lived in memory only: the job vanished from the roster and came straight back on
+        the next server restart, because `project_params.json` had never been rewritten.
+        An ADD survived that only by accident — editing any parameter afterwards marks the
+        state dirty and writes the whole thing out, the new job included.
+
+        The state is resolved by EXPLICIT path when we have one, not `current_project_state()`:
+        the save targets `ui_mgr.project_path`, and deleting out of one state while saving
+        another is exactly how a deletion goes missing.
+        """
         if self.ui_mgr.is_running:
             return
         if not self.ui_mgr.remove_instance(instance_id):
@@ -377,14 +439,27 @@ class PipelineBuilderPanel:
         self._cleanup_stale_overrides_for_instance(instance_id)
         self._job_content_containers.pop(instance_id, None)
 
-        state = current_project_state()
+        project_path = self.ui_mgr.project_path
+        if project_path is not None:
+            from services.project_state import get_project_state_for
+
+            state = get_project_state_for(project_path)
+        else:
+            state = current_project_state()
+
         job_model = state.jobs.get(instance_id)
         if job_model and job_model.execution_status != JobStatus.SUCCEEDED:
             del state.jobs[instance_id]
             state.job_path_mapping.pop(instance_id, None)
+            # Persisted run membership must not keep naming a job that no longer exists.
+            # Load filters it out (`project_state.py` builds pipeline_order from the ids
+            # still in `jobs`), so this is belt-and-braces — but it keeps the file honest
+            # between the delete and the next load.
+            state.pipeline_order = [iid for iid in state.pipeline_order if iid != instance_id]
+        state.mark_dirty()
 
         if self.ui_mgr.is_project_created:
-            asyncio.create_task(self.backend.save_project(self.ui_mgr.project_path))
+            asyncio.create_task(self.backend.save_project(project_path, force=True))
         self.rebuild_pipeline_ui()
 
     def _ensure_prerequisites(self, job_type: JobType, state):
@@ -446,16 +521,13 @@ class PipelineBuilderPanel:
         }
         if labels:
             job_model.tilt_labels = labels
-            # Restore the committed pipeline output — the trimmed tomostar dir.
-            # `output_tomostar` is the key the resolver wires into downstream jobs
-            # (finalize_pipeline_output's contract; the legacy `output_star` key is
-            # dead — restoring it leaves the producer resolving to an
-            # External/pending_tiltFilter placeholder that nothing creates).
-            # Only a job whose committed output exists on disk may claim SUCCEEDED;
-            # otherwise the user must re-commit from the panel.
-            out_tomostar = state.project_path / "TiltFilter" / "tomostar"
-            if out_tomostar.is_dir() and any(out_tomostar.iterdir()):
-                job_model.paths["output_tomostar"] = str(out_tomostar)
+            # The registry stamps ARE the committed output (the filter produces no
+            # files of its own; alignment applies the cut when it snapshots the
+            # tomostars). Frames carrying a verdict therefore mean the user has
+            # committed, so the restored job may claim SUCCEEDED. Probability-only
+            # stamps come from a DL pass the user never approved, so require at
+            # least one actual drop before calling it committed.
+            if any(f.is_filtered_out for ts in reg.all_tilt_series() for f in ts.frames):
                 job_model.execution_status = JobStatus.SUCCEEDED
 
     # ── Full rebuild ──────────────────────────────────────────────────────────
@@ -568,10 +640,8 @@ class PipelineBuilderPanel:
                 ui.label("No active SLURM jobs found for this project.").classes("text-sm text-gray-500 mt-2")
             ui.label("Running and queued jobs will be marked Failed.").classes("text-xs text-amber-600 mt-3")
             with ui.row().classes("mt-4 gap-2 justify-end w-full"):
-                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat dense no-caps")
-                ui.button("Stop Pipeline", on_click=lambda: dialog.submit(True)).props("dense no-caps").style(
-                    "background: #ef4444; color: white; padding: 4px 16px; border-radius: 3px;"
-                )
+                house_button("Cancel", lambda: dialog.submit(False))
+                house_button("Stop pipeline", lambda: dialog.submit(True), kind="accent")
 
         confirmed = await dialog
         if not confirmed:
@@ -598,6 +668,7 @@ def build_pipeline_builder_panel(
     toggle_workbench: Callable | None = None,
     ensure_pipeline_mode: Callable | None = None,
     toggle_journey: Callable | None = None,
+    toggle_gallery: Callable | None = None,
 ) -> None:
     panel = PipelineBuilderPanel(
         backend=backend,
@@ -607,22 +678,16 @@ def build_pipeline_builder_panel(
         toggle_workbench=toggle_workbench,
         ensure_pipeline_mode=ensure_pipeline_mode,
         toggle_journey=toggle_journey,
+        toggle_gallery=toggle_gallery,
     )
 
-    # Idempotent: for aggregation projects with a completed merge, retroactively
-    # wire any consumer jobs (Class3D/Refine3D/...) that were added before the
-    # merge happened or before the auto-override hook was wired. Cheap to call
-    # on every workspace render — only writes when a value would actually change.
-    from services.aggregation_authoritative import apply_aggregation_overrides
-
-    n_wired = apply_aggregation_overrides(current_project_state())
-    if n_wired and panel.ui_mgr.is_project_created:
-        # Persist so the wiring survives reload — otherwise we'd self-heal in
-        # memory but the next reload starts cold and the user sees the same
-        # "empty input" symptom.
-        import asyncio as _asyncio
-
-        _asyncio.create_task(panel.backend.save_project(panel.ui_mgr.project_path))
+    # The render-scoped self-heal of `apply_aggregation_overrides` was REMOVED here by
+    # de-novo S6. It existed to retro-wire consumer jobs added before the merge hook was
+    # wired, and it was safe only because `is_aggregation` kept it to a handful of projects.
+    # With that flag deleted it would have become a mutator running on every workspace render
+    # of every project — a behaviour change smuggled in as a cleanup. The wiring now happens
+    # where the user acts: adding a consumer job (above), finishing a merge, and switching
+    # the active merge (both in ui/aggregation/merge_card.py).
 
     # Must be created in the current NiceGUI rendering context before
     # panel.build() is called, since rebuild_pipeline_ui writes into it.

@@ -1,11 +1,16 @@
 """PARTICLES-header tomogram-import dialog — a project-level utility, NOT a pipeline job.
 
 Two modes, both with a metadata preview the user confirms BEFORE committing:
-- **mrcs** — browse/scan a directory of reconstructed ``.mrc`` files, multi-select which
-  to import; each row shows dims + pixel size, or a red chip when the MRC header has no
-  voxel size (so apix is never silently defaulted to 1.0 — CLAUDE.md 'Surfacing uncertainty').
+- **mrcs** — browse/scan a directory of reconstructed tomograms (``.mrc`` or etomo ``.rec``),
+  multi-select which to import; each row shows dims + pixel size, or a red chip when the MRC
+  header has no voxel size (so apix is never silently defaulted to 1.0 — CLAUDE.md
+  'Surfacing uncertainty').
 - **reference** — point at an existing ``tomograms.star``; its rows are read back into the
   same review table so the user sees what they're referencing instead of ingesting blind.
+
+Imports ACCUMULATE (de-novo S5): each commit is a batch, the committed star is rebuilt from
+all of them, and the prior batches are listed at the top with their collision report.
+"Replace all" is still available — as a choice, not as the silent default it used to be.
 
 Browsing reuses the shared ``local_file_picker`` (multi-select + glob-filtered). Styling
 follows the Journey/dashboard ``cb-*`` chrome (ui/dashboard/css.py). See services/tomogram_import.py.
@@ -18,23 +23,21 @@ from collections.abc import Callable
 
 from nicegui import ui
 
+from services.project_state import get_project_state_for
+from ui.components.buttons import house_button
+from ui.components.chip import render_chip
+from ui.components.fields import house_number
 from ui.dashboard.css import ensure_assets_loaded
 from ui.glob_directory_input import GlobDirectoryInput
 from ui.local_file_picker import local_file_picker
 
 _MONO = "font-family: ui-monospace, monospace;"
-_ACT = "color: #4f46e5;"  # indigo, for flat text actions
-
-
-def _chip(label: str, value: str, *, status: str = "neutral", tooltip: str | None = None) -> None:
-    """One compact status chip (mirrors the dashboard ``_render_chip``; kept local so this
-    dialog doesn't pull in the heavy tomo_dashboard_dialog module). ``status`` ∈
-    {ok, warn, error, info, neutral}."""
-    with ui.element("span").classes(f"cb-chip cb-chip-{status}") as chip:
-        ui.label(label).classes("cb-chip-label")
-        ui.label(value).classes("cb-chip-value")
-        if tooltip:
-            chip.tooltip(tooltip)
+_PICKER_GLOB = "*.mrc,*.rec"
+# Display cap only — every scanned file stays selected and gets imported. A Lustre recon
+# directory can hold thousands of tomograms, and one DOM row each is what made this dialog
+# "laggy, terrible"; the table says how many it is not showing rather than quietly eliding them.
+_MAX_PREVIEW_ROWS = 300
+_PROBE_CHUNK = 100  # header probes per await, so the status line moves during a long scan
 
 
 def _start_dir(glob_or_path: str) -> str | None:
@@ -96,13 +99,13 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                 ui.label("—").classes("cb-ltable-cell").style(f"{_MONO} font-size: 11px; color: #cbd5e1;")
             with ui.element("div").classes("cb-ltable-cell"):
                 if is_err:
-                    _chip("file", "unreadable", status="error", tooltip=f.get("error") or "Not a readable MRC.")
+                    render_chip("file", "unreadable", status="error", tooltip=f.get("error") or "Not a readable MRC.")
                 elif f.get("has_voxel_size"):
                     # Pixel size is independent of dims — a reference star may carry apix but
                     # no rlnTomoSize* columns, so don't gate this on has_dims.
                     ui.label(f"{f['voxel_size']:.3g} Å/px").style(f"{_MONO} font-size: 11px; color: #64748b;")
                 elif has_dims or f.get("path"):
-                    _chip(
+                    render_chip(
                         "apix",
                         "missing",
                         status="warn",
@@ -134,8 +137,14 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                 ui.label("Tomogram").classes("cb-ltable-h-name")
                 ui.label("Dims (px)").classes("cb-ltable-h-cell")
                 ui.label("Å/px").classes("cb-ltable-h-cell")
-            for f in items:
+            for f in items[:_MAX_PREVIEW_ROWS]:
                 _row(f, selectable)
+            if len(items) > _MAX_PREVIEW_ROWS:
+                ui.label(
+                    f"… and {len(items) - _MAX_PREVIEW_ROWS} more, not drawn. They are still "
+                    f"{'selected and will be imported' if selectable else 'part of this star'} — "
+                    "only the table is capped. Narrow the directory/glob to review them individually."
+                ).style("font-size: 11px; color: #b45309; padding: 6px 10px;")
 
     def _update_counts() -> None:
         n_sel = sum(1 for v in selected.values() if v)
@@ -166,15 +175,22 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
         files.clear()
         selected.clear()
         row_checkboxes.clear()
+        paths = list(paths)
         if not paths:
-            mrcs_status.text = "No .mrc files found for that path."
+            mrcs_status.text = "No .mrc / .rec files found for that path."
             _render_table(mrcs_table, files, True)
             return
-        mrcs_status.text = "Probing…"
-        meta = await backend.probe_tomogram_metadata(list(paths))
-        files.extend(meta)
-        for f in meta:
-            selected[f["path"]] = True
+        # Probed in chunks, not one 3000-file await: each probe opens an MRC header off the
+        # event loop, and on Lustre that is seconds — a single await left the dialog showing
+        # a bare "Probing…" with no sign of progress (the "laggy, terrible" report). The
+        # table is drawn ONCE at the end; drawing per chunk would rebuild it O(n²) times.
+        mrcs_status.text = f"Probing… 0/{len(paths)}"
+        for start in range(0, len(paths), _PROBE_CHUNK):
+            meta = await backend.probe_tomogram_metadata(paths[start : start + _PROBE_CHUNK])
+            files.extend(meta)
+            for f in meta:
+                selected[f["path"]] = True
+            mrcs_status.text = f"Probing… {len(files)}/{len(paths)}"
         _render_table(mrcs_table, files, True)
         _update_counts()
 
@@ -189,7 +205,7 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
 
     async def _browse_mrcs() -> None:
         start = _start_dir(glob_in.value) or str(project_path)
-        result = await local_file_picker(start, upper_limit=None, mode="file", multiple=True, glob="*.mrc")
+        result = await local_file_picker(start, upper_limit=None, mode="file", multiple=True, glob=_PICKER_GLOB)
         if result:
             glob_in.set_directory(str(Path(result[0]).parent))
             await _ingest(result)
@@ -224,15 +240,44 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
 
     # ── commit ──────────────────────────────────────────────────────────────────
 
+    def _report_collisions(res: dict) -> None:
+        """Say out loud what the rebuild changed: a renamed tomogram and a skipped duplicate
+        are both decisions the user has to know about — a rename means downstream picks made
+        under that name belong to the OTHER tomogram, and a skip means a file they selected
+        is not in the star. Never folded into the success count."""
+        for entry in res.get("renamed") or []:
+            ui.notify(
+                f"'{entry['name']}' already existed in this project — imported as '{entry['renamed_to']}'",
+                type="warning",
+                timeout=8000,
+            )
+        skipped = res.get("skipped") or []
+        if skipped:
+            ui.notify(
+                f"{len(skipped)} file(s) skipped — already imported by an earlier batch (e.g. {skipped[0]['name']})",
+                type="warning",
+                timeout=8000,
+            )
+        for entry in res.get("batch_errors") or []:
+            ui.notify(
+                f"An earlier import batch ({entry['batch']}) could not be re-read and contributed "
+                f"nothing: {entry['error']}",
+                type="warning",
+                timeout=10000,
+            )
+
     async def _do_import() -> None:
         import_btn.props("loading")
         try:
+            replace = mode_radio is not None and mode_radio.value == "replace"
             if tabs.value == "reference":
                 ref = (ref_in.value or "").strip()
                 if not ref:
                     ui.notify("Enter a path to an existing tomograms.star", type="warning")
                     return
-                res = await backend.commit_imported_tomograms(project_path, mode="reference", reference_star=ref)
+                res = await backend.commit_imported_tomograms(
+                    project_path, mode="reference", reference_star=ref, replace=replace
+                )
             else:
                 chosen = [p for p, v in selected.items() if v]
                 if not chosen:
@@ -244,8 +289,13 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                     mrc_paths=chosen,
                     pixel_size_angstrom=float(apix_in.value or 0.0),
                     tomogram_binning=float(bin_in.value or 1.0),
+                    replace=replace,
                 )
-            ui.notify(f"Imported {res['count']} tomogram(s)", type="positive")
+            ui.notify(
+                f"Imported {res.get('added', res['count'])} tomogram(s) — {res['count']} in the project",
+                type="positive",
+            )
+            _report_collisions(res)
             dialog.close()
             if on_done:
                 on_done()
@@ -257,13 +307,57 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
 
     # ── build ───────────────────────────────────────────────────────────────────
 
+    rec = get_project_state_for(project_path).imported_tomograms
+    prior_batches = rec.effective_batches() if rec else []
+    mode_radio = None
+
     dialog = ui.dialog().props("persistent")
     with dialog, ui.card().style("min-width: 700px; max-width: 880px; gap: 8px; padding: 14px;"):
         ui.label("Import tomograms").style("font-size: 14px; font-weight: 600; color: #1e293b;")
         ui.label(
             "Supply reconstructed tomograms directly — synthesize a tomograms.star from recon "
-            "MRCs, or reference an existing one."
+            "MRC/REC files, or reference an existing one."
         ).classes("cb-detail-meta")
+
+        if prior_batches:
+            with ui.element("div").classes("cb-section-card w-full"):
+                with ui.element("div").classes("cb-section-card-header"):
+                    ui.label("Already imported").classes("cb-section-title")
+                    ui.label(f"{rec.count} tomogram(s) · {len(prior_batches)} batch(es)").classes(
+                        "cb-detail-meta"
+                    ).style("margin-left: auto;")
+                for b in prior_batches:
+                    with ui.row().classes("items-center w-full gap-2 no-wrap").style("padding: 2px 8px;"):
+                        ui.label(b.imported_at.strftime("%Y-%m-%d %H:%M")).classes("cb-detail-meta")
+                        ui.label(b.label).style(f"{_MONO} font-size: 11px; color: #475569;").tooltip(
+                            b.reference_star or "\n".join(b.source_paths[:12]) or "—"
+                        )
+                        ui.space()
+                        ui.label(f"{b.count} tomo").classes("cb-detail-meta")
+                        if b.renamed:
+                            render_chip(
+                                "renamed",
+                                str(len(b.renamed)),
+                                status="warn",
+                                tooltip="\n".join(f"{e['name']} → {e['renamed_to']}" for e in b.renamed[:12]),
+                            )
+                        if b.skipped:
+                            render_chip(
+                                "skipped",
+                                str(len(b.skipped)),
+                                status="warn",
+                                tooltip="Already imported by an earlier batch:\n"
+                                + "\n".join(e["name"] for e in b.skipped[:12]),
+                            )
+                mode_radio = ui.radio({"add": "Add to these", "replace": "Replace all"}, value="add").props(
+                    "inline dense"
+                )
+                mode_radio.tooltip(
+                    "Add: the committed tomograms.star is rebuilt from every batch, with name "
+                    "collisions renamed and already-imported files skipped (both reported). "
+                    "Replace: the earlier batches are dropped — picks made on tomograms only they "
+                    "described lose the tomogram they refer to."
+                )
 
         tabs = ui.tabs().props("dense align=left indicator-color=indigo").classes("cb-species-tabs w-full")
         with tabs:
@@ -275,11 +369,12 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                     with ui.element("div").classes("cb-section-card-header"):
                         ui.label("Source").classes("cb-section-title")
                     with ui.row().classes("items-center w-full gap-2 no-wrap"):
-                        glob_in = GlobDirectoryInput(extension="*.mrc", placeholder="/path/to/reconstructions")
-                        ui.button("Scan", on_click=_scan).props("flat dense no-caps size=sm").style(_ACT)
-                        ui.button("Browse…", icon="folder_open", on_click=_browse_mrcs).props(
-                            "flat dense no-caps size=sm"
-                        ).style(_ACT)
+                        # extension "*" (not "*.mrc"): the backend filters the expansion to
+                        # TOMOGRAM_SUFFIXES, so one field finds .mrc AND etomo .rec — a glob
+                        # can express only one suffix, and a .rec directory used to read empty.
+                        glob_in = GlobDirectoryInput(extension="*", placeholder="/path/to/reconstructions")
+                        house_button("Scan", _scan)
+                        house_button("Browse…", _browse_mrcs)
                 with ui.element("div").classes("cb-section-card w-full"):
                     with ui.element("div").classes("cb-section-card-header"):
                         ui.label("Tomograms").classes("cb-section-title")
@@ -288,14 +383,15 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                         ui.element("div").classes("cb-ltable w-full").style("max-height: 240px; overflow-y: auto;")
                     )
                 with ui.row().classes("items-center w-full gap-3"):
-                    apix_in = (
-                        ui.number("Pixel size (Å)", value=None, format="%.4g").props("dense").style("width: 150px;")
+                    apix_in = house_number(
+                        "Pixel size (Å)",
+                        value=None,
+                        format="%.4g",
+                        width="w-24",
+                        hint="Unbinned tilt-series pixel size — an OVERRIDE. Leave blank to use each file's own "
+                        "header voxel size (the default); required only for files flagged 'apix missing'.",
                     )
-                    apix_in.tooltip(
-                        "Unbinned tilt-series pixel size — an OVERRIDE. Leave blank to use each file's own "
-                        "header voxel size (the default); required only for files flagged 'apix missing'."
-                    )
-                    bin_in = ui.number("Binning", value=1.0, format="%g").props("dense").style("width: 110px;")
+                    bin_in = house_number("Binning", value=1.0, format="%g", width="w-20")
             with ui.tab_panel(t_ref).classes("p-0"):
                 with ui.element("div").classes("cb-section-card w-full"):
                     with ui.element("div").classes("cb-section-card-header"):
@@ -304,15 +400,10 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                         ref_in = (
                             ui.input(placeholder="/path/to/existing/tomograms.star")
                             .props("dense")
-                            .classes("flex-1")
-                            .style(f"{_MONO} font-size: 12px;")
+                            .classes("cb-field flex-1")
                         )
-                        ui.button("Load", on_click=lambda: _load_reference()).props("flat dense no-caps size=sm").style(
-                            _ACT
-                        )
-                        ui.button("Browse…", icon="folder_open", on_click=_browse_reference).props(
-                            "flat dense no-caps size=sm"
-                        ).style(_ACT)
+                        house_button("Load", lambda: _load_reference())
+                        house_button("Browse…", _browse_reference)
                     ui.label("Its tomogram paths are absolutized; nothing is copied or recomputed.").classes(
                         "cb-detail-meta"
                     )
@@ -325,8 +416,8 @@ def open_tomogram_import_dialog(backend, project_path, on_done: Callable[[], Non
                     )
 
         with ui.row().classes("w-full justify-end gap-2"):
-            ui.button("Cancel", on_click=dialog.close).props("flat dense no-caps")
-            import_btn = ui.button("Import", on_click=_do_import).props("dense no-caps unelevated color=indigo")
+            house_button("Cancel", dialog.close)
+            import_btn = house_button("Import", _do_import, kind="accent")
 
     _render_table(mrcs_table, files, True)
     _render_table(ref_table, ref_files, False)

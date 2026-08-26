@@ -20,6 +20,7 @@ from services.jobs.denoise_predict import DenoisePredictParams
 from services.jobs.template_match import TemplateMatchPytomParams
 from services.jobs.candidate_extract import CandidateExtractPytomParams
 from services.jobs.subtomo_extraction import SubtomoExtractionParams
+from services.jobs.extract_pick_list import ExtractPickListParams
 from services.jobs.reconstruct_particle import ReconstructParticleParams
 from services.jobs.class3d import Class3DParams
 
@@ -40,6 +41,7 @@ __all__ = [
     "Class3DParams",
     "DenoisePredictParams",
     "DenoiseTrainParams",
+    "ExtractPickListParams",
     "ExtractionCutoffMethod",
     "FsMotionCtfParams",
     "ImportMoviesParams",

@@ -79,20 +79,23 @@ class PathResolutionError(ValueError):
     pass
 
 
-# Instance-path markers for the three synthetic (non-job) producers. None of them has a
-# real JobType, so all three borrow MERGED_SOURCES and are told apart by instance path.
+# Instance-path markers for the synthetic (non-job) producers. The merge and the pick-list
+# extractions have no JobType of their own and borrow MERGED_SOURCES, told apart by instance
+# path; imported tomograms got their own (JobType.IMPORTED_TOMOGRAMS, de-novo roadmap D-8/S5),
+# so only their LEGACY override keys still carry the mergedSources prefix.
 PICK_LIST_PRODUCER_PREFIX = "pick_list__"
 IMPORTED_TOMOGRAMS_INSTANCE_PATH = "Tomograms"
+IMPORTED_TOMOGRAMS_PRODUCER_ID = "importedTomograms"
 
 
 def pick_list_producer_id(pick_list) -> str:
     """Stable synthetic producer id for one curation pick list.
 
     Keyed on (species, tomo, slug), NOT slug alone: ``PickList.slug`` is only unique
-    WITHIN a (species, tomo), and the dashboard names every hand-picked list "manual"
-    (`ui/tomo_dashboard_dialog.py`), so a slug-only id would alias every species' and
-    every tomogram's manual list onto one producer — and make `remove_species` purge
-    another species' overrides.
+    WITHIN a (species, tomo), and a hand-picked list is slugged after its ``.coords``
+    file (``manual__<stem>``, `services/particles/ingest.py`), a name that recurs on
+    every tomogram the user saves it on — so a slug-only id would alias those onto one
+    producer, and make `remove_species` purge another species' overrides.
     """
     return f"{PICK_LIST_PRODUCER_PREFIX}{pick_list.species_id}__{pick_list.tomo_name}__{pick_list.slug}"
 
@@ -106,7 +109,7 @@ def is_synthetic_producer(producer_instance_id: str) -> bool:
     """True for a producer that has no SLURM job — so it can never be an afterok
     dependency. The aggregation merge, imported tomograms, and per-pick-list
     extractions (which run as their own one-off job, outside the pipeline graph)."""
-    return producer_instance_id in ("mergedSources", "importedTomograms") or producer_instance_id.startswith(
+    return producer_instance_id in ("mergedSources", IMPORTED_TOMOGRAMS_PRODUCER_ID) or producer_instance_id.startswith(
         PICK_LIST_PRODUCER_PREFIX
     )
 
@@ -114,12 +117,14 @@ def is_synthetic_producer(producer_instance_id: str) -> bool:
 def _synthetic_override_target(override_key: str) -> str:
     """Which synthetic producer an override names: "merged" | "pick_list" | "imported" | "".
 
-    All three share the ``mergedSources:`` job-type prefix because none has its own
-    JobType; the instance path is what actually discriminates them. Routing a dangling
+    The merge and the per-pick-list extractions have no JobType of their own, so both wear
+    the ``mergedSources:`` prefix and are told apart by instance path — routing a dangling
     pick-list override through the merged-sources branch would tell the user
-    "merged-sources optimisation_set not found" about a list that simply needs
-    re-extracting. (Dedicated sentinels: denovo roadmap D-8; imported tomograms in S5.)
-    """
+    "merged-sources optimisation_set not found" about a list that simply needs re-extracting.
+    Imported tomograms now have their own JobType (D-8/S5); the old ``mergedSources:Tomograms``
+    form is still recognised so overrides persisted before that keep resolving."""
+    if override_key.startswith(f"{JobType.IMPORTED_TOMOGRAMS.value}:"):
+        return "imported"
     prefix = f"{JobType.MERGED_SOURCES.value}:"
     if not override_key.startswith(prefix):
         return ""
@@ -127,7 +132,7 @@ def _synthetic_override_target(override_key: str) -> str:
     if instance_path.startswith(PICK_LIST_PRODUCER_PREFIX):
         return "pick_list"
     if instance_path == IMPORTED_TOMOGRAMS_INSTANCE_PATH:
-        return "imported"
+        return "imported"  # legacy key, minted before IMPORTED_TOMOGRAMS existed
     return "merged"
 
 
@@ -233,6 +238,10 @@ class PathResolutionService:
                     if target == "pick_list":
                         if slot.required:
                             missing_required.append(f"{slot.key}: {self._dangling_pick_list_message(override_key)}")
+                        continue
+                    if target == "imported":
+                        if slot.required:
+                            missing_required.append(f"{slot.key}: {self._dangling_imported_message()}")
                         continue
                     if target:
                         if slot.required:
@@ -473,6 +482,8 @@ class PathResolutionService:
                         error_message=(
                             self._dangling_pick_list_message(override_key)
                             if target == "pick_list"
+                            else self._dangling_imported_message()
+                            if target == "imported"
                             else "Merged-sources optimisation_set not found (merge deleted or active merge switched?)"
                         ),
                     )
@@ -560,6 +571,18 @@ class PathResolutionService:
                 )
         return f"the pick list behind '{producer_id}' no longer exists — re-extract, or repoint this input"
 
+    def _dangling_imported_message(self) -> str:
+        """Why an imported-tomograms override stopped resolving. Its own message since D-8/S5:
+        before that it borrowed MERGED_SOURCES and reported itself as a missing merged-sources
+        optimisation set, which named the wrong artifact AND the wrong file type."""
+        rec = getattr(self.state, "imported_tomograms", None)
+        if not rec or not rec.star_path:
+            return "the tomogram import this input points at was removed — re-import, or repoint this input"
+        return (
+            f"the imported tomograms.star is missing from disk ({rec.star_path}) — "
+            "re-import those tomograms, or repoint this input"
+        )
+
     def _resolve_override(
         self, slot: InputSlot, override_key: str, index: dict[JobFileType, list[OutputCandidate]]
     ) -> OutputCandidate | None:
@@ -577,6 +600,12 @@ class PathResolutionService:
             return None
 
         job_type_str, instance_path = override_key.split(":", 1)
+        if job_type_str == JobType.MERGED_SOURCES.value and instance_path == IMPORTED_TOMOGRAMS_INSTANCE_PATH:
+            # Legacy key: imported tomograms borrowed MERGED_SOURCES until D-8/S5 gave them
+            # their own JobType, so an override persisted before that names the old producer.
+            # Rewritten rather than migrated on load — the override lives on every job model
+            # that carries one, and a read-time rewrite cannot miss a project.
+            job_type_str = JobType.IMPORTED_TOMOGRAMS.value
 
         matches = [
             candidate
@@ -725,14 +754,15 @@ class PathResolutionService:
         index[JobFileType.TOMOGRAMS_STAR].append(
             OutputCandidate(
                 produces=JobFileType.TOMOGRAMS_STAR,
-                producer_job_type=JobType.MERGED_SOURCES,  # synthetic non-job marker (no IMPORT_TOMOGRAMS type)
+                producer_job_type=JobType.IMPORTED_TOMOGRAMS,  # its own sentinel since D-8/S5
                 producer_output_key="output_star",
                 path=str(star),
                 instance_path=IMPORTED_TOMOGRAMS_INSTANCE_PATH,
-                producer_instance_id="importedTomograms",
+                producer_instance_id=IMPORTED_TOMOGRAMS_PRODUCER_ID,
                 execution_status=JobStatus.SUCCEEDED,
                 relion_job_number=0,
                 species_id=None,
+                label=f"Imported tomograms — {rec.count} tomogram(s)" if rec.count else "Imported tomograms",
             )
         )
 
@@ -749,9 +779,11 @@ class PathResolutionService:
         Multiple EXTRACTED lists can exist for one (species, tomo). All are injected so
         the user can override to any of them, but auto-selection must be deterministic:
         `relion_job_number` — a free integer for synthetic producers, and already the
-        scorer's preference rank — is assigned so the authoritative slug outranks the
-        rest, then newer extractions outrank older. The winner says so in its label, which
-        the UI dropdown renders verbatim, so the choice is never silent.
+        scorer's preference rank — is assigned so the most recent extraction outranks the
+        older ones. The winner says so in its label, which the UI dropdown renders verbatim,
+        so the choice is never silent. (An authoritative-slug tiebreak used to come first;
+        that per-tomogram nomination is gone — a specific list is chosen by overriding the
+        slot here, or by naming it as a source in the Aggregate-candidates flow.)
         """
         from services.models_base import ListExtractionState
 
@@ -767,24 +799,16 @@ class PathResolutionService:
         for pl in extracted:
             by_tomo.setdefault((pl.species_id, pl.tomo_name), []).append(pl)
 
-        for (species_id, tomo_name), group in by_tomo.items():
-            authoritative = self.state.get_authoritative_slug(species_id, tomo_name)
+        for (_species_id, tomo_name), group in by_tomo.items():
             # Ascending, so the LAST entry is the winner and rank == list position.
             # Ranks start at 0 so a lone pick list ties the other synthetic producers
             # (mergedSources / importedTomograms) exactly as before; only a genuine
             # multi-list tie spends rank to break itself.
-            ranked = sorted(
-                group,
-                key=lambda pl: (
-                    pl.slug == authoritative,
-                    pl.extracted_at.timestamp() if pl.extracted_at is not None else 0.0,
-                ),
-            )
+            ranked = sorted(group, key=lambda pl: pl.extracted_at.timestamp() if pl.extracted_at is not None else 0.0)
             for rank, pl in enumerate(ranked):
                 label = f"Pick list — {pl.label or pl.slug} · {tomo_name}"
                 if len(ranked) > 1 and rank == len(ranked) - 1:
-                    why = "authoritative" if pl.slug == authoritative else "most recently extracted"
-                    label = f"{label} [auto-selected: {why}]"
+                    label = f"{label} [auto-selected: most recently extracted]"
                 producer_id = pick_list_producer_id(pl)
                 index[JobFileType.OPTIMISATION_SET_STAR].append(
                     OutputCandidate(

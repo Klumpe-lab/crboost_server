@@ -1,0 +1,293 @@
+"""
+Cross-project discovery for aggregation projects.
+
+Walks user-known project base paths, finds completed SubtomoExtraction jobs
+(those whose RELION job dir contains an optimisation_set.star), and returns
+candidates the merge panel can offer the user as one-click sources.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from collections.abc import Iterable
+
+from services.models_base import JobType, split_species_id
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SubtomoCandidate:
+    project_name: str
+    project_path: str
+    instance_id: str
+    job_dir: str
+    optset_path: str
+    species_label: str | None  # e.g. "copia" or "Copia (viral)"; None for default instance
+    n_tomograms: int | None  # None if we couldn't read tomograms.star
+    species_id: str | None = None
+    species_color: str | None = None
+    mnemonic: str = ""
+    has_filter: bool = False  # True if a curated particles_filtered.star exists
+    # The lab-catalog entry this project's species was instantiated from (roadmap 12), when
+    # any. It is what makes "the same species in another project" a fact rather than a guess:
+    # every project mints its own local species id, so matching on THAT finds nothing.
+    catalog_id: str | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class TomoCuration:
+    """Per-tomogram pick accounting for one SubtomoExtraction source, used to
+    drive the fine (per-tomogram) merge selector."""
+
+    ts_name: str
+    total: int  # picks in the original particles.star for this tomo
+    kept: int | None  # picks in particles_filtered.star; None = no curation (all kept)
+    reviewed: bool  # user explicitly reviewed this TS in the curator
+
+
+def _count_tomograms(job_dir: Path) -> int | None:
+    """Best-effort tomogram count from tomograms.star. None on any failure."""
+    tomos = job_dir / "tomograms.star"
+    if not tomos.exists():
+        return None
+    try:
+        # starfile is already a hard dep of subtomo_merge; safe to import here.
+        import starfile
+
+        d = starfile.read(tomos, always_dict=True)
+        for v in d.values():
+            try:
+                cols = list(v.columns)
+            except AttributeError:
+                continue
+            if "rlnTomoName" in cols:
+                return len(v)
+    except Exception as e:
+        logger.debug("tomogram count failed for %s: %s", tomos, e)
+    return None
+
+
+def _scan_project(proj_dir: Path, seen_optsets: set) -> list[SubtomoCandidate]:
+    params_file = proj_dir / "project_params.json"
+    if not params_file.exists():
+        return []
+
+    try:
+        with open(params_file) as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.debug("skip %s: cannot parse project_params.json: %s", proj_dir, e)
+        return []
+
+    project_name = data.get("project_name") or proj_dir.name
+    mnemonic = data.get("mnemonic") or ""
+    jobs = data.get("jobs") or {}
+    species_list = [s for s in (data.get("species_registry") or []) if isinstance(s, dict) and s.get("id")]
+    species_by_id = {s["id"]: s for s in species_list}
+
+    out: list[SubtomoCandidate] = []
+    for instance_id, job_data in jobs.items():
+        if not isinstance(job_data, dict):
+            continue
+        if job_data.get("job_type") != JobType.SUBTOMO_EXTRACTION.value:
+            continue
+        relion_job_name = (job_data.get("relion_job_name") or "").strip()
+        if not relion_job_name:
+            continue
+        job_dir = proj_dir / relion_job_name.rstrip("/")
+        optset = job_dir / "optimisation_set.star"
+        if not optset.exists():
+            continue
+
+        key = str(optset.resolve())
+        if key in seen_optsets:
+            continue
+        seen_optsets.add(key)
+
+        # Resolve the species this subtomo job belongs to, mirroring
+        # services.models_base.resolve_species (dict-based here because jobs are
+        # raw JSON dicts, not models): instance_id "__" suffix → job's
+        # species_id field → single-species fallback. A bare/numbered instance
+        # (e.g. "subtomoExtraction__2") has no real species in the suffix, so we
+        # fall through rather than show "2".
+        sp = None
+        sid = split_species_id(instance_id)
+        if sid and sid in species_by_id:
+            sp = species_by_id[sid]
+        if sp is None:
+            sid2 = job_data.get("species_id")
+            if sid2 and sid2 in species_by_id:
+                sp, sid = species_by_id[sid2], sid2
+            elif sid2:
+                sid = sid2
+        if sp is None and len(species_list) == 1:
+            sp = species_list[0]
+            sid = sp["id"]
+
+        species_id = sp["id"] if sp else (sid if (sid and not sid.isdigit()) else None)
+        species_label = (sp.get("name") if sp else None) or species_id
+        species_color = sp.get("color") if sp else None
+        catalog_id = sp.get("catalog_id") if sp else None
+
+        out.append(
+            SubtomoCandidate(
+                project_name=project_name,
+                project_path=str(proj_dir),
+                instance_id=instance_id,
+                job_dir=str(job_dir),
+                optset_path=key,
+                species_label=species_label,
+                n_tomograms=_count_tomograms(job_dir),
+                species_id=species_id,
+                species_color=species_color,
+                mnemonic=mnemonic,
+                has_filter=(job_dir / "particles_filtered.star").exists(),
+                catalog_id=catalog_id,
+            )
+        )
+    return out
+
+
+def discover_subtomo_optimisation_sets(base_paths: Iterable[str]) -> list[SubtomoCandidate]:
+    """Walk each base_path's project subdirs and return SubtomoExtraction candidates.
+
+    De-duplicates by absolute optimisation_set.star path, so overlapping base
+    paths don't double-list the same job. Sorted by (project_name, instance_id)
+    for stable display.
+    """
+    seen: set = set()
+    candidates: list[SubtomoCandidate] = []
+
+    for base_path in base_paths:
+        if not base_path:
+            continue
+        base = Path(base_path).expanduser()
+        if not base.is_dir():
+            continue
+        try:
+            proj_dirs = [p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        except Exception as e:
+            logger.debug("cannot list %s: %s", base, e)
+            continue
+        for proj_dir in proj_dirs:
+            candidates.extend(_scan_project(proj_dir, seen))
+
+    candidates.sort(key=lambda c: (c.project_name.lower(), c.instance_id))
+    return candidates
+
+
+def counts_by_tomo(star_path: Path) -> dict:
+    """{rlnTomoName: row_count} from a particles .star. Empty on any failure."""
+    if not star_path.exists():
+        return {}
+    try:
+        import starfile
+
+        d = starfile.read(star_path, always_dict=True)
+    except Exception as e:
+        logger.debug("count-by-tomo failed for %s: %s", star_path, e)
+        return {}
+    for v in d.values():
+        try:
+            cols = list(v.columns)
+        except AttributeError:
+            continue
+        if "rlnTomoName" in cols:
+            return {str(k): int(n) for k, n in v["rlnTomoName"].astype(str).value_counts().items()}
+    return {}
+
+
+def load_tomo_curation(job_dir: str) -> list[TomoCuration]:
+    """Per-tomogram pick accounting for one SubtomoExtraction job dir.
+
+    Lazy (called when the user expands a species node), not part of the
+    cross-project scan — reading every particles.star up front would not scale.
+    Tomogram universe comes from tomograms.star so tomos with zero kept picks
+    still appear; totals from the original particles.star, kept from the
+    curated `particles_filtered.star` (None when no curation exists)."""
+    from services.particles.picks_filter import read_reviewed_counts
+
+    jd = Path(job_dir)
+    totals = counts_by_tomo(jd / "particles.star")
+
+    filtered_path = jd / "particles_filtered.star"
+    has_filter = filtered_path.exists()
+    kept_counts = counts_by_tomo(filtered_path) if has_filter else {}
+    reviewed = set(read_reviewed_counts(jd).keys())
+
+    # Universe of tomo names: prefer tomograms.star, fall back to particles.
+    tomo_names: list[str] = []
+    tomos_star = jd / "tomograms.star"
+    if tomos_star.exists():
+        try:
+            import starfile
+
+            d = starfile.read(tomos_star, always_dict=True)
+            for v in d.values():
+                try:
+                    if "rlnTomoName" in list(v.columns):
+                        tomo_names = [str(x) for x in v["rlnTomoName"].tolist()]
+                        break
+                except AttributeError:
+                    continue
+        except Exception as e:
+            logger.debug("tomo list read failed for %s: %s", tomos_star, e)
+    if not tomo_names:
+        tomo_names = sorted(totals.keys())
+
+    out: list[TomoCuration] = []
+    for tn in tomo_names:
+        out.append(
+            TomoCuration(
+                ts_name=tn,
+                total=int(totals.get(tn, 0)),
+                kept=(int(kept_counts.get(tn, 0)) if has_filter else None),
+                reviewed=tn in reviewed,
+            )
+        )
+    return out
+
+
+def discover_pick_list_projects(base_paths: Iterable[str]) -> list[Path]:
+    """Every project directory under `base_paths`, as absolute paths, de-duplicated.
+
+    Distinct from `discover_subtomo_optimisation_sets` on purpose: that one surfaces
+    projects that have EXTRACTED something, which is the wrong filter one stage earlier. A
+    de-novo project whose only particles are hand-placed coordinates has no optimisation
+    set at all and would be invisible to it, yet it is exactly the kind of project the
+    coordinate-grade aggregation exists to pull from (roadmap picking_ui/12-S4).
+
+    Membership is `project_params.json` — the ProjectState serialization — because that is
+    the one file every crboost project has and no other directory does.
+    """
+    seen: set[str] = set()
+    out: list[Path] = []
+    for base_path in base_paths:
+        if not base_path:
+            continue
+        base = Path(base_path).expanduser()
+        if not base.is_dir():
+            continue
+        try:
+            children = [p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")]
+        except OSError as e:
+            # Expected-and-ignorable: an unmounted or unreadable root is "no projects here".
+            logger.debug("cannot list %s: %s", base, e)
+            continue
+        for proj_dir in [base, *children]:
+            if not (proj_dir / "project_params.json").exists():
+                continue
+            key = str(proj_dir.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(proj_dir.resolve())
+    out.sort(key=lambda p: p.name.lower())
+    return out

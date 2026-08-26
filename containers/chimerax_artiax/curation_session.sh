@@ -11,8 +11,9 @@
 #
 # Required env: CX_SIF (path to chimerax_artiax.sif).
 # Optional env: CX_BIN (chimerax|ChimeraX), CX_DISPLAY, CX_GEOMETRY,
-#               CX_LOGIN_HOST, CB_SESSION_DIR, CX_VGL, CB_CXC (startup .cxc that
-#               preloads a tomogram + picks; see services/visualization/artiax_bridge.py).
+#               CX_LOGIN_HOST, CB_SESSION_DIR, CX_VGL, CX_VNC_NOPASS (start the
+#               desktop with SecurityTypes None — NO password), CB_CXC (startup .cxc
+#               that preloads a tomogram + picks; see services/visualization/artiax_bridge.py).
 set -euo pipefail
 
 # Make a pre-banner failure DIAGNOSABLE. A couple of early apptainer calls below send
@@ -113,16 +114,28 @@ module load Apptainer 2>/dev/null || module load apptainer 2>/dev/null || true
 CXCFG="$(mktemp -d /tmp/cx-config.XXXXXX)"
 CXCACHE="$(mktemp -d /tmp/cx-cache.XXXXXX)"
 
-# One-time VNC password for this session. TigerVNC 1.12 here ships the server but
-# no vncpasswd, and there's no python in the image — so mint the standard 8-byte
-# VncAuth file with x11vnc -storepasswd (added by chimerax_artiax_patch.def).
-VNC_PASS="$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 8)"
-mkdir -p "$HOME/.vnc"
-# Keep stderr (only stdout → /dev/null): this is the FIRST apptainer call, so if the
-# container can't start on this node (image/overlay lock, bind race) its error must reach
-# slurm.log rather than vanish and leave a 0-byte log. See the ERR trap above.
-apptainer exec "${BINDS[@]}" "$SIF" x11vnc -storepasswd "$VNC_PASS" "$HOME/.vnc/passwd" >/dev/null
-chmod 600 "$HOME/.vnc/passwd"
+# VNC auth. Default: a one-time password for this session. TigerVNC 1.12 here ships the
+# server but no vncpasswd, and there's no python in the image — so mint the standard
+# 8-byte VncAuth file with x11vnc -storepasswd (added by chimerax_artiax_patch.def).
+#
+# CB_VNC_SECURITY selects what the server is started with further down. CX_VNC_NOPASS=1
+# (conf.yaml curation.passwordless_vnc) drops auth ENTIRELY: the rfb port then accepts
+# anyone who can reach it on that node. Opt-in per site; crboost states the risk in the
+# control center. The password file is not even created in that mode.
+if [ -n "${CX_VNC_NOPASS:-}" ]; then
+  VNC_PASS=""
+  VNC_SECURITY="None"
+  echo "NOTE: CX_VNC_NOPASS set — starting the VNC desktop with SecurityTypes None (NO password)." >&2
+else
+  VNC_PASS="$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 8)"
+  VNC_SECURITY="VncAuth"
+  mkdir -p "$HOME/.vnc"
+  # Keep stderr (only stdout → /dev/null): this is the FIRST apptainer call, so if the
+  # container can't start on this node (image/overlay lock, bind race) its error must reach
+  # slurm.log rather than vanish and leave a 0-byte log. See the ERR trap above.
+  apptainer exec "${BINDS[@]}" "$SIF" x11vnc -storepasswd "$VNC_PASS" "$HOME/.vnc/passwd" >/dev/null
+  chmod 600 "$HOME/.vnc/passwd"
+fi
 
 # -f -N: open the forward and hand the terminal back (no remote shell), so it
 # doesn't tie up a Terminal window — the user can close it. ExitOnForwardFailure=yes
@@ -149,7 +162,7 @@ cat <<EOF
  CHIMERAX + ARTIAX CURATION SESSION
    node:      $NODE
    display:   :$DISPLAY_NUM   (VNC rfb port $VNC_PORT)
-   password:  $VNC_PASS
+   password:  ${VNC_PASS:-<none — SecurityTypes None>}
    rest:      127.0.0.1:$REST_PORT  (command channel — ssh-hop from headnode)
  On your Mac, open ONE tunnel (reuses your ControlMaster auth):
    $TUNNEL_CMD
@@ -181,7 +194,7 @@ trap cleanup EXIT
 apptainer exec ${NV_FLAG} --writable-tmpfs "${BINDS[@]}" "$SIF" bash -lc "
   VS=\"\$(command -v vncserver || command -v tigervncserver)\"
   \"\$VS\" -kill :$DISPLAY_NUM >/dev/null 2>&1 || true
-  \"\$VS\" :$DISPLAY_NUM -geometry $GEOMETRY -depth 24 -localhost no -rfbport $VNC_PORT -SecurityTypes VncAuth >/dev/null 2>&1
+  \"\$VS\" :$DISPLAY_NUM -geometry $GEOMETRY -depth 24 -localhost no -rfbport $VNC_PORT -SecurityTypes $VNC_SECURITY >/dev/null 2>&1
   export XDG_CONFIG_HOME='$CXCFG' XDG_CACHE_HOME='$CXCACHE'
   export DISPLAY=:$DISPLAY_NUM
   $GL_ENV

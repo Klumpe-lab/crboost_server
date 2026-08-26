@@ -15,6 +15,7 @@ from nicegui import ui, app
 from backend import CryoBoostBackend
 from services.configs.user_prefs_service import get_prefs_service
 
+from ui.components.buttons import house_button
 from ui.ui_state import get_ui_state_manager
 from ui.local_file_picker import local_file_picker
 from ui.glob_directory_input import GlobDirectoryInput
@@ -43,6 +44,11 @@ CLR_META = "#64748b"  # slate-500 -- readable metadata
 CLR_SUCCESS = "#0d9488"  # teal-600: academic, not shouty green
 CLR_ERROR = "#be4343"  # muted red, not aggressive
 CLR_RUNNING = "#3b82f6"  # blue-500: active pipeline badge
+
+# Shown on both raw-data fields while they are BOTH empty — the data-less project
+# (tomograms / picks imported into the workspace later). Empty globs are the only
+# way to ask for one, so they must not read as a validation failure.
+_DATALESS_HINT = "empty — project without raw data"
 
 # Shared palette with pipeline_roster avatars — keeps per-project/per-user
 # color identity consistent across the app.
@@ -77,8 +83,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         "parsing_spinner": None,
         "parse_progress_timer": None,
         "data_history_container": None,
-        "raw_data_section": None,  # whole frames+mdocs+overview block; hidden in aggregation mode
-        "aggregation_hint": None,  # inline hint shown when aggregation mode is on
+        "raw_data_section": None,  # whole frames+mdocs+overview block
         "gain_input": None,  # optional project-wide gain-reference path input
     }
 
@@ -157,9 +162,17 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         quick_ok, quick_msg = _validate_glob_quick(pattern)
         if not quick_ok:
             ui_mgr.update_data_import(movies_valid=False)
-            _set_hint(ui_mgr.panel_refs.movies_hint_label, quick_msg, CLR_ERROR)
+            # Empty on BOTH globs is the data-less request, not a mistake — say so in
+            # the neutral voice and clear the field error, or the one legitimate way to
+            # create a project without raw data reads as a broken form.
+            neutral = is_dataless()
+            _set_hint(
+                ui_mgr.panel_refs.movies_hint_label,
+                _DATALESS_HINT if neutral else quick_msg,
+                CLR_SUBLABEL if neutral else CLR_ERROR,
+            )
             if ui_mgr.panel_refs.movies_input:
-                update_input_validation(ui_mgr.panel_refs.movies_input, False, quick_msg)
+                update_input_validation(ui_mgr.panel_refs.movies_input, neutral, quick_msg)
             update_create_button_state()
             return
 
@@ -192,9 +205,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         quick_ok, quick_msg = _validate_glob_quick(pattern)
         if not quick_ok:
             ui_mgr.update_data_import(mdocs_valid=False)
-            _set_hint(ui_mgr.panel_refs.mdocs_hint_label, quick_msg, CLR_ERROR)
+            neutral = is_dataless()  # see update_movies_validation
+            _set_hint(
+                ui_mgr.panel_refs.mdocs_hint_label,
+                _DATALESS_HINT if neutral else quick_msg,
+                CLR_SUBLABEL if neutral else CLR_ERROR,
+            )
             if ui_mgr.panel_refs.mdocs_input:
-                update_input_validation(ui_mgr.panel_refs.mdocs_input, False, quick_msg)
+                update_input_validation(ui_mgr.panel_refs.mdocs_input, neutral, quick_msg)
             update_create_button_state()
             return
 
@@ -245,7 +263,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         # rather than a mode flag: leaving both empty IS the request for a project with
         # no raw data (tomograms/picks arrive later from the Particles section). The
         # legacy aggregation toggle is still an explicit flag until S6 retires it.
-        if di.is_aggregation or is_dataless():
+        if is_dataless():
             return missing
         # A half-filled form is a mistake, not a data-less project — ask for the rest.
         if not di.movies_glob:
@@ -270,15 +288,10 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         if len(missing) == 0 and not ui_mgr.is_project_created:
             btn.enable()
             btn.classes(remove="opacity-50 cursor-not-allowed")
-            btn.style(
-                f"{FONT} font-size: 11px; font-weight: 500; padding: 4px 16px; "
-                f"border-radius: 6px; background: {CLR_ACCENT}; color: white; "
-                "letter-spacing: 0.01em;"
-            )
             if status_label:
                 # Say it out loud when there is no raw data, so a data-less project is
                 # always a choice rather than an unnoticed consequence of empty globs.
-                if is_dataless() and not ui_mgr.data_import.is_aggregation:
+                if is_dataless():
                     status_label.set_text("Ready to create — without raw data")
                     status_label.style(f"{FONT} font-size: 10px; color: {CLR_ACCENT_TEXT};")
                 else:
@@ -287,11 +300,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         else:
             btn.disable()
             btn.classes("opacity-50 cursor-not-allowed")
-            btn.style(
-                f"{FONT} font-size: 11px; font-weight: 500; padding: 4px 16px; "
-                "border-radius: 6px; background: #93c5fd; color: white; "
-                "letter-spacing: 0.01em;"
-            )
             if status_label:
                 if ui_mgr.is_project_created:
                     status_label.set_text("Project created")
@@ -401,9 +409,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                         )
             if roots:
                 with ui.row().classes("w-full justify-end px-3 py-1 border-t border-slate-100"):
-                    ui.button("Clear all", on_click=clear_all_history).props("flat dense no-caps").style(
-                        f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
-                    )
+                    house_button("Clear all", clear_all_history)
 
     def use_history_path(path: str):
         _close_history_dropdown()
@@ -467,9 +473,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                         )
             if paths:
                 with ui.row().classes("w-full justify-end px-3 py-1 border-t border-slate-100"):
-                    ui.button("Clear", on_click=clear_data_history).props("flat dense no-caps").style(
-                        f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
-                    )
+                    house_button("Clear", clear_data_history)
 
     def use_data_path(path: str):
         if ui_mgr.panel_refs.movies_input:
@@ -610,10 +614,17 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         update_movies_validation()
         prefs_service.update_fields(movies_glob=glob_str)
         debounced_save()
-        # When mdocs are co-located, auto-derive mdocs_glob from the same directory
-        if not local_refs["mdocs_separate"] and glob_str:
-            parent = str(Path(glob_str).parent) if "*" in glob_str else glob_str
-            derived_mdocs = str(Path(parent) / local_refs["default_mdocs_ext"])
+        # When mdocs are co-located, mdocs_glob is DERIVED from this directory — so it
+        # has to follow the field all the way down to empty. Deriving only on a
+        # non-empty value stranded the last derived pattern in state, and the mdocs
+        # input is hidden in co-located mode, so clearing the frames path could never
+        # reach is_dataless() and "Create" stayed disabled on "Missing: Data Path".
+        if not local_refs["mdocs_separate"]:
+            if glob_str:
+                parent = str(Path(glob_str).parent) if "*" in glob_str else glob_str
+                derived_mdocs = str(Path(parent) / local_refs["default_mdocs_ext"])
+            else:
+                derived_mdocs = ""
             ui_mgr.update_data_import(mdocs_glob=derived_mdocs)
             prefs_service.update_fields(mdocs_glob=derived_mdocs)
             if ui_mgr.panel_refs.mdocs_input:
@@ -625,6 +636,25 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         update_mdocs_validation()
         prefs_service.update_fields(mdocs_glob=glob_str)
         debounced_save()
+
+    def clear_raw_data():
+        """Empty both raw-data globs in one click — the data-less project.
+
+        Discoverability, not new mechanics: creation has always been glob-gated, but
+        the fields are pre-filled from prefs/config on every load, so asking for a
+        project with no raw data meant knowing to blank a field whose partner is
+        hidden. See is_dataless()."""
+        if ui_mgr.panel_refs.movies_input:
+            ui_mgr.panel_refs.movies_input.set_from_glob("")  # cascades to mdocs when co-located
+        if local_refs["mdocs_separate"] and ui_mgr.panel_refs.mdocs_input:
+            ui_mgr.panel_refs.mdocs_input.set_from_glob("")
+        ui_mgr.update_data_import(movies_glob="", mdocs_glob="")
+        update_movies_validation()
+        update_mdocs_validation()
+        container = local_refs.get("dataset_overview_container")
+        if container:
+            container.clear()
+        local_refs["current_dataset_overview"] = None
 
     # =========================================================================
     # ACTION HANDLERS
@@ -693,7 +723,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         selected_mdoc_paths = None
         import_summary = None
         detected_params = None
-        if overview and not (di.is_aggregation or is_dataless()):
+        if overview and not is_dataless():
             selected_ts = overview.get_selected_tilt_series()
             selected_mdoc_paths = [str(ts.mdoc_path) for ts in selected_ts]
             # Scalar counts only — per-position/per-TS details and per-tilt mdoc
@@ -740,12 +770,11 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 project_name=di.project_name,
                 project_base_path=di.project_base_path,
                 selected_jobs=[j.value for j in ui_mgr.selected_jobs],
-                movies_glob="" if di.is_aggregation else di.movies_glob,
-                mdocs_glob="" if di.is_aggregation else di.mdocs_glob,
+                movies_glob=di.movies_glob,
+                mdocs_glob=di.mdocs_glob,
                 selected_mdoc_paths=selected_mdoc_paths,
                 import_summary=import_summary,
                 detected_params=detected_params,
-                is_aggregation=di.is_aggregation,
                 shared=di.is_shared,
             )
             if result.get("success"):
@@ -1072,9 +1101,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                             save_selections(mg, ov)
                             ui.notify("Selection saved", type="positive")
 
-                    ui.button("Save selection", on_click=_do_save_selection).props("flat dense no-caps").style(
-                        f"{FONT} font-size: 10px; color: {CLR_LABEL}; padding: 2px 8px;"
-                    )
+                    house_button("Save selection", _do_save_selection)
 
                 build_dataset_overview_panel(overview, on_change=update_create_button_state)
         except Exception as e:
@@ -1096,7 +1123,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         with ui.dialog() as dialog, ui.card().classes("w-[540px]"):
             build_dry_run_summary(overview)
             with ui.row().classes("w-full justify-end mt-3"):
-                ui.button("Close", on_click=dialog.close).props("flat no-caps").style(f"{FONT} font-size: 12px;")
+                house_button("Close", dialog.close)
         dialog.open()
 
     # NOTE: autodetect + dataset parsing is triggered from within
@@ -1175,51 +1202,13 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                     f"{FONT} font-size: 10px;"
                                 )
 
-                # There is no "particle-only" toggle any more: leaving the raw-data
-                # globs empty IS the request for a data-less project (see
-                # is_dataless()). The dataless_hint below tells the user that is what
-                # they are about to create, so it can't happen by accident.
-                def _sync_dataless_visibility():
-                    di = ui_mgr.data_import
-                    section = local_refs.get("raw_data_section")
-                    if section:
-                        section.set_visibility(not di.is_aggregation)
-                    update_create_button_state()
-
-                # Aggregation mode toggle (LEGACY): when on, this project skips raw
-                # frames/mdocs and starts at SubtomoExtraction (used to merge
-                # particles across multiple upstream projects).
-                def on_aggregation_toggle(e):
-                    enabled = bool(e.value)
-                    ui_mgr.update_data_import(is_aggregation=enabled)
-                    hint = local_refs.get("aggregation_hint")
-                    if hint:
-                        hint.set_visibility(enabled)
-                    _sync_dataless_visibility()
-
-                with ui.row().classes("w-full items-center justify-between mb-2"):
-                    with ui.row().classes("items-center gap-1"):
-                        ui.label("Aggregation project").style(field_label_style)
-                        with ui.icon("help_outline", size="12px").style(f"color: {CLR_GHOST}; cursor: help;"):
-                            ui.tooltip(
-                                "Skip raw-data import. Project starts at SubtomoExtraction "
-                                "and merges optimisation_set.star files from existing projects."
-                            ).style(f"{FONT} font-size: 10px;")
-                    local_refs["aggregation_switch"] = (
-                        ui.switch(value=ui_mgr.data_import.is_aggregation, on_change=on_aggregation_toggle)
-                        .props("dense")
-                        .style("transform: scale(0.75);")
-                    )
-
-                aggregation_hint = ui.label(
-                    "Aggregation mode: this project will start at SubtomoExtraction. "
-                    "Add upstream optimisation_set.star sources from the merge panel after creation."
-                ).style(
-                    f"{FONT} font-size: 10px; color: {CLR_ACCENT_TEXT}; "
-                    f"background: {CLR_ACCENT_LIGHT}; padding: 6px 10px; border-radius: 6px; margin-bottom: 8px;"
-                )
-                aggregation_hint.set_visibility(ui_mgr.data_import.is_aggregation)
-                local_refs["aggregation_hint"] = aggregation_hint
+                # Project creation has NO type switches left. The particle-only toggle went
+                # with roadmap 08-S1 and the aggregation toggle with de-novo S6: leaving the
+                # raw-data globs empty IS the request for a data-less project (see
+                # is_dataless()), and merging particles across projects is a capability every
+                # project has, reachable from the PARTICLES header of the roster. The
+                # dataless_hint below says what is about to be created, so neither can happen
+                # by accident.
 
                 # Shared/lab ownership toggle: when on, the project is created
                 # with owner = SHARED_OWNER (grouped under "Lab / Shared" in the
@@ -1243,7 +1232,7 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
                 raw_data_section = ui.column().classes("w-full gap-1")
                 local_refs["raw_data_section"] = raw_data_section
-                raw_data_section.set_visibility(not ui_mgr.data_import.is_aggregation)
+
                 with raw_data_section, ui.column().classes("w-full gap-2").style(section_style):
                     # Raw Frames & Mdocs (combined input)
                     with ui.column().classes("w-full gap-0"):
@@ -1338,6 +1327,19 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                 "text-slate-400 hover:text-slate-600"
                             )
 
+                    # The data-less project, stated where the raw-data fields are (the
+                    # only place the question comes up). Action sits WITH its hint.
+                    with ui.row().classes("w-full items-center gap-2").style("margin-top: 4px;"):
+                        house_button(
+                            "No raw data",
+                            clear_raw_data,
+                            tooltip="Clear both patterns and create the project empty — "
+                            "import reconstructed tomograms or pick coordinates from the workspace afterwards.",
+                        )
+                        ui.label("start empty, import tomograms or picks later").style(
+                            f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
+                        )
+
                 # Dataset overview (populated when mdocs are validated). Lives
                 # inside raw_data_section so the aggregation toggle hides it too.
                 with raw_data_section:
@@ -1351,21 +1353,8 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     ui_mgr.panel_refs.status_indicator = status_indicator
 
                     with ui.row().classes("items-center gap-2"):
-                        (
-                            ui.button("Preview Import", on_click=show_dry_run_dialog)
-                            .props("no-caps flat")
-                            .style(f"{FONT} font-size: 11px; font-weight: 500; padding: 4px 12px; color: {CLR_LABEL};")
-                        )
-                        create_btn = (
-                            ui.button("Create Project", on_click=handle_create_project)
-                            .props("no-caps unelevated")
-                            .style(
-                                f"{FONT} font-size: 11px; font-weight: 500; "
-                                "padding: 4px 16px; border-radius: 6px; "
-                                "background: #93c5fd; color: white; "
-                                "letter-spacing: 0.01em;"
-                            )
-                        )
+                        house_button("Preview import", show_dry_run_dialog)
+                        create_btn = house_button("Create project", handle_create_project, kind="accent")
                         ui_mgr.panel_refs.create_button = create_btn
 
         # =================================================================

@@ -482,7 +482,20 @@ class PipelineRunnerService:
         # Pass 4 -- pipeline_active follows live-job presence; tracked excludes terminal jobs, so an
         # all-resolved tracked set means the chain is done. (is_active is meaningless here: an
         # afterok run owns no headnode process.)
-        any_live = any(jm.execution_status in (JobStatus.QUEUED, JobStatus.RUNNING) for jm in tracked.values())
+        # INTERACTIVE jobs are excluded from that vote: they are never part of the chain (the
+        # orchestrator refuses to dispatch them, pipeline_orchestrator_service.py) -- their
+        # slurm_job_id comes from their own one-off submit. A live per-list extraction
+        # (roadmap 07) would otherwise hold `pipeline_active` open, i.e. make the roster read as
+        # a live run, and one that dies with the server would pin it there for good. They stay
+        # in `tracked`, so passes 1-3 keep reconciling them off the disk sentinels -- but only
+        # for as long as a REAL pipeline job is live: the moment this vote clears
+        # `pipeline_active`, PipelineMonitor drops the project and this reconciler stops running
+        # for it. An interactive job left non-terminal after that is settled by its own owner
+        # (`backend.reconcile_pick_list_extractions` for per-list extractions), not here.
+        any_live = any(
+            jm.execution_status in (JobStatus.QUEUED, JobStatus.RUNNING) and not getattr(jm, "IS_INTERACTIVE", False)
+            for jm in tracked.values()
+        )
         if any_live and not state.pipeline_active:
             state.pipeline_active = True
             changes["__pipeline_active__"] = True
@@ -1153,10 +1166,15 @@ class PipelineRunnerService:
         # manifest), mark the live jobs FAILED, and clear pipeline_active. No schemer process, no star.
         afterok_state = self.backend.state_service.state_for(project_dir)
         if getattr(afterok_state, "use_afterok_orchestrator", False):
+            # Interactive jobs are not part of the run being stopped -- they manage their
+            # own status and were never deployed by the orchestrator (a per-list extraction
+            # submitted from the Species page, a DL tilt filter). Cancelling them here would
+            # scancel unrelated live work and leave it reading Failed forever.
             live = [
                 jm
                 for jm in afterok_state.jobs.values()
                 if getattr(jm, "slurm_job_id", None)
+                and not getattr(jm, "IS_INTERACTIVE", False)
                 and jm.execution_status in (JobStatus.RUNNING, JobStatus.QUEUED, JobStatus.SCHEDULED)
             ]
             cancelled = normalize_slurm_ids([str(jm.slurm_job_id) for jm in live])
@@ -1251,6 +1269,10 @@ class PipelineRunnerService:
 
         state = self.backend.state_service.state_for(project_dir)
         for job_model in state.jobs.values():
+            # Same rule as the afterok branch above: an interactive job (per-list
+            # extraction, DL tilt filter) is not part of the pipeline run being stopped.
+            if getattr(job_model, "IS_INTERACTIVE", False):
+                continue
             if job_model.execution_status in (JobStatus.RUNNING, JobStatus.SCHEDULED):
                 job_model.execution_status = JobStatus.FAILED
 

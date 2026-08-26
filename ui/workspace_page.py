@@ -4,16 +4,17 @@ from nicegui import ui
 
 from backend import CryoBoostBackend
 from ui.background_task_tray import mount_background_task_tray
+from ui.components.buttons import house_button
 from ui.components.reactive import SingleFlight
 from ui.pipeline_builder.pipeline_builder_panel import build_pipeline_builder_panel
-from ui.species_workbench_panel import build_species_workbench_panel
+from ui.species.page import build_species_page
 from ui.ui_state import get_ui_state_manager
 
 
 # Client-side resize for the job-roster panel: drag the divider, clamp to a
 # sane range, and persist the width in localStorage so it survives reloads. A
 # MutationObserver mirrors the roster's display onto the handle so the divider
-# hides with the roster in journey mode. Idempotent (guarded by data-wired).
+# hides with the roster outside the pipeline view. Idempotent (guarded by data-wired).
 _ROSTER_RESIZER_JS = """
 (function(){
   const roster = document.getElementById('cb-roster-panel');
@@ -59,7 +60,7 @@ def build_workspace_page(backend: CryoBoostBackend):
         with ui.column().classes("w-full h-screen items-center justify-center gap-4"):
             ui.icon("error_outline", size="64px").classes("text-red-400")
             ui.label("No project loaded").classes("text-xl text-gray-600")
-            ui.button("Return to Start", icon="home", on_click=lambda: ui.navigate.to("/"))
+            house_button("Return to start", lambda: ui.navigate.to("/"))
         return
 
     if not ui_mgr.project_path or not ui_mgr.project_path.exists():
@@ -67,7 +68,7 @@ def build_workspace_page(backend: CryoBoostBackend):
             ui.icon("folder_off", size="64px").classes("text-orange-400")
             ui.label("Project path is invalid").classes("text-xl text-gray-600")
             ui.label(str(ui_mgr.project_path)).classes("text-sm text-gray-400 font-mono")
-            ui.button("Return to Start", icon="home", on_click=lambda: ui.navigate.to("/"))
+            house_button("Return to start", lambda: ui.navigate.to("/"))
         return
 
     callbacks = {}
@@ -75,15 +76,17 @@ def build_workspace_page(backend: CryoBoostBackend):
     _refs = {}
 
     def _switch_to(mode_name: str):
-        """Swap the visible view in main_area: pipeline / workbench / journey.
-        Each is a sibling container toggled via CSS display. Journey also hides
-        the 300px job roster for full width and pauses its live-refresh timer
-        when not visible (handled by the roster's set_active_mode and the
-        journey panel's on_journey_active)."""
+        """Swap the visible view in main_area: pipeline / workbench / journey / viewer.
+        Each is a sibling container toggled via CSS display. EVERY view but the pipeline
+        hides the 340px job roster (the roster is the pipeline view's own navigation —
+        see the roster's set_active_mode) and pauses its refresh timers when not visible
+        (the journey panel's on_journey_active / the viewer page's set_active)."""
         containers = {
             "pipeline": _refs.get("pipeline_container"),
             "workbench": _refs.get("workbench_container"),
             "journey": _refs.get("journey_container"),
+            "gallery": _refs.get("gallery_container"),
+            "viewer": _refs.get("viewer_container"),
         }
         # If already on this mode, toggle back to pipeline.
         if _mode["current"] == mode_name and mode_name != "pipeline":
@@ -113,8 +116,33 @@ def build_workspace_page(backend: CryoBoostBackend):
         if on_journey:
             on_journey(_mode["current"] == "journey")
 
+        # Instant registry observe when the Species page is shown (species created
+        # from the roster / another tab appear without waiting for its 3 s poll).
+        on_wb = callbacks.get("on_workbench_active")
+        if on_wb:
+            on_wb(_mode["current"] == "workbench")
+
+        # Same for the pick viewer's coalesced-rebuild timer.
+        page = _refs.get("viewer_page")
+        if page is not None:
+            page.set_active(_mode["current"] == "viewer")
+
+        # And the gallery's pending-preview poll.
+        gallery = _refs.get("gallery_page")
+        if gallery is not None:
+            gallery.set_active(_mode["current"] == "gallery")
+
     def _toggle_workbench():
         _switch_to("workbench")
+
+    def _open_species(species_id: str):
+        """The 'open in Species' link of a job's Config tab: show the Species page ON
+        that species (the view keeps its internal mode name "workbench")."""
+        if _mode["current"] != "workbench":
+            _switch_to("workbench")
+        select = callbacks.get("workbench_select_species")
+        if select:
+            select(species_id)
 
     def ensure_pipeline_mode():
         if _mode["current"] != "pipeline":
@@ -155,9 +183,61 @@ def build_workspace_page(backend: CryoBoostBackend):
 
             build_journey_panel(jc, callbacks)
 
+    _gallery_flight = SingleFlight()
+
+    async def _show_gallery():
+        """The Tomograms icon: the birds-eye wall of reconstructions. Built lazily on
+        first use like the journey (its first pass stats every tomogram's previews),
+        and toggles back to the pipeline on a second click of the same icon."""
+        async with _gallery_flight("toggle") as acquired:
+            if not acquired:
+                return
+            _switch_to("gallery")
+            if _mode["current"] != "gallery":
+                return
+            gc = _refs.get("gallery_container")
+            if gc is None:
+                return
+            page = _refs.get("gallery_page")
+            if page is None:
+                from ui.tomo_gallery import TomoGalleryPage
+
+                with gc:
+                    page = TomoGalleryPage(gc, ui_mgr.project_path, callbacks)
+                _refs["gallery_page"] = page
+                page.set_active(True)
+            await page.show()
+
+    _viewer_flight = SingleFlight()
+
+    async def _open_pick_viewer(species_id: str | None, tomo_name: str | None) -> None:
+        """The Picks & curation row's `viewer ↗` (and the Journey's `full viewer ↗`):
+        show the full-page pick viewer on this (species, tomogram), building it on first
+        use like the Journey. Unlike `_show_journey` this never toggles back — the link
+        names a target, so landing on it is the only sensible outcome."""
+        async with _viewer_flight("open") as acquired:
+            if not acquired:
+                return
+            vc = _refs.get("viewer_container")
+            if vc is None:
+                return
+            page = _refs.get("viewer_page")
+            if page is None:
+                from ui.particles.pick_viewer import PickViewerPage
+
+                with vc:
+                    page = PickViewerPage(vc, ui_mgr.project_path, callbacks)
+                _refs["viewer_page"] = page
+            if _mode["current"] != "viewer":
+                _switch_to("viewer")
+            await page.show(species_id, tomo_name)
+
     callbacks["toggle_workbench"] = _toggle_workbench
+    callbacks["open_species"] = _open_species
     callbacks["ensure_pipeline_mode"] = ensure_pipeline_mode
     callbacks["toggle_journey"] = _show_journey
+    callbacks["toggle_gallery"] = _show_gallery
+    callbacks["open_pick_viewer"] = _open_pick_viewer
 
     with ui.element("div").style(
         "position: fixed; inset: 0; display: flex; flex-direction: row; "
@@ -204,6 +284,7 @@ def build_workspace_page(backend: CryoBoostBackend):
                     toggle_workbench=_toggle_workbench,
                     ensure_pipeline_mode=ensure_pipeline_mode,
                     toggle_journey=_show_journey,
+                    toggle_gallery=_show_gallery,
                 )
 
             workbench_container = ui.element("div").style(
@@ -211,7 +292,7 @@ def build_workspace_page(backend: CryoBoostBackend):
             )
             _refs["workbench_container"] = workbench_container
             with workbench_container:
-                build_species_workbench_panel(backend)
+                build_species_page(backend, callbacks)
 
             # Journey: built lazily on first switch (see _show_journey) so the
             # heavy per-TS render doesn't tax every workspace load. Starts hidden.
@@ -220,13 +301,27 @@ def build_workspace_page(backend: CryoBoostBackend):
             )
             _refs["journey_container"] = journey_container
 
+            # Tomogram gallery: the birds-eye wall of reconstructions. Lazily built
+            # like the journey — its first pass stats every tomogram's previews.
+            gallery_container = ui.element("div").style(
+                "width: 100%; height: 100%; display: none; flex-direction: column;"
+            )
+            _refs["gallery_container"] = gallery_container
+
+            # Pick viewer (picking-UI 11-S5): the full-page mount of the slabs + lists +
+            # gallery component, opened from a tomogram row of the Particles registry's
+            # Picks & curation tab. Lazily built on first use, like the journey; it has
+            # no nav icon of its own — its own header carries the routes back.
+            viewer_container = ui.element("div").style(
+                "width: 100%; height: 100%; display: none; flex-direction: column;"
+            )
+            _refs["viewer_container"] = viewer_container
+
     # Floating background-tasks tray at workspace scope so spun-off
     # renders/builds remain visible across dialog open/close and view
     # toggles. Survives the entire workspace session; teardown happens
     # when the page rebuilds.
-    mount_background_task_tray(
-        project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None
-    )
+    mount_background_task_tray(project_path_provider=lambda: str(ui_mgr.project_path) if ui_mgr.project_path else None)
 
     # Wire the roster resizer once the DOM for this page exists on the client.
     ui.timer(0.1, lambda: ui.run_javascript(_ROSTER_RESIZER_JS), once=True)
