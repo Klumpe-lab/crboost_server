@@ -1,7 +1,6 @@
 import asyncio
 import logging
 from datetime import datetime
-from pathlib import Path
 from collections.abc import Callable
 
 from nicegui import ui
@@ -315,11 +314,7 @@ class PipelineBuilderPanel:
             return
 
         if instance_id not in state.jobs:
-            template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
-            star = template_base / job_type.value / "job.star"
-            state.ensure_job_initialized(
-                job_type, instance_id=instance_id, template_path=star if star.exists() else None
-            )
+            state.ensure_job_initialized(job_type, instance_id=instance_id)
             # Restore saved labels for interactive filter jobs.
             self._restore_interactive_state(job_type, instance_id, state)
 
@@ -479,9 +474,7 @@ class PipelineBuilderPanel:
 
         # Auto-add the prerequisite
         self.ui_mgr.add_instance(prereq_id, prereq)
-        template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
-        star = template_base / prereq.value / "job.star"
-        state.ensure_job_initialized(prereq, instance_id=prereq_id, template_path=star if star.exists() else None)
+        state.ensure_job_initialized(prereq, instance_id=prereq_id)
 
     @staticmethod
     def _find_existing_interactive(job_type: JobType, state) -> str | None:

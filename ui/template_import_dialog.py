@@ -15,13 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import shutil
 from datetime import datetime
 from pathlib import Path
 
 from nicegui import ui
 
 from services.project_state import ParticleTemplate, ParticleSpecies, sidecar_ensure
+from services.species_admin import ingest_template_file
 from services.templating.mrc_inspection import MrcInspection, inspect_mrc_for_import
 from ui.components.buttons import house_button
 from ui.local_file_picker import local_file_picker
@@ -307,23 +307,8 @@ def _ingest(project_path: str, species_id: str, ins: MrcInspection, state: dict)
     """Copy the inspected file into templates/<species_id>/, build a
     ParticleTemplate from the inspection + user-edited form. Caller writes
     the result to species.template."""
-    project_root = Path(project_path)
-    species_dir = project_root / "templates" / species_id
-    species_dir.mkdir(parents=True, exist_ok=True)
-
     src = Path(ins.path)
-    dst = species_dir / src.name
-    # Avoid clobbering an existing file with the same name. _2.mrc, _3.mrc, ...
-    if dst.exists() and dst.resolve() != src.resolve():
-        stem = dst.stem
-        suffix = dst.suffix
-        n = 2
-        while (species_dir / f"{stem}_{n}{suffix}").exists():
-            n += 1
-        dst = species_dir / f"{stem}_{n}{suffix}"
-
-    if dst.resolve() != src.resolve():
-        shutil.copy2(src, dst)
+    dst = ingest_template_file(project_path, species_id, src)
 
     # Parse user-supplied lowpass (free-form input — accept "30", "30.0", "30 Å", "")
     lowpass_str = (state.get("lowpass_ang") or "").strip().rstrip("Å").strip()

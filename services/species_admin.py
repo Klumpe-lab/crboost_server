@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -102,6 +103,27 @@ async def delete_species(backend, project_path: Path, species_id: str) -> dict:
 # the caller keeps owning persistence (the workbench saves + refreshes per register,
 # the creation dialog force-saves once at the end).
 # ══════════════════════════════════════════════════════════════════════════════
+
+
+def ingest_template_file(project_path: Path | str, species_id: str, src: Path | str) -> Path:
+    """Copy a template / mask volume into `templates/<species_id>/` and return the
+    destination. Never clobbers: a different file already under that name gets `_2`, `_3`, …
+    appended; a source that already IS the destination is returned untouched. Lifted from
+    the template import dialog so the protocol apply engine (roadmap 14) copies assets the
+    same way the UI does."""
+    species_dir = Path(project_path) / "templates" / species_id
+    species_dir.mkdir(parents=True, exist_ok=True)
+    src = Path(src)
+    dst = species_dir / src.name
+    if dst.exists() and dst.resolve() != src.resolve():
+        stem, suffix = dst.stem, dst.suffix
+        n = 2
+        while (species_dir / f"{stem}_{n}{suffix}").exists():
+            n += 1
+        dst = species_dir / f"{stem}_{n}{suffix}"
+    if dst.resolve() != src.resolve():
+        shutil.copy2(src, dst)
+    return dst
 
 
 def register_template(

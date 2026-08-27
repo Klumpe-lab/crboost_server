@@ -232,6 +232,14 @@ def build_workspace_page(backend: CryoBoostBackend):
                 _switch_to("viewer")
             await page.show(species_id, tomo_name)
 
+    def _invalidate_gallery():
+        """Something added tomograms to the project — make the wall re-collect on its next
+        visit instead of showing what it cached before the import."""
+        page = _refs.get("gallery_page")
+        if page is not None:
+            page.invalidate()
+
+    callbacks["invalidate_gallery"] = _invalidate_gallery
     callbacks["toggle_workbench"] = _toggle_workbench
     callbacks["open_species"] = _open_species
     callbacks["ensure_pipeline_mode"] = ensure_pipeline_mode

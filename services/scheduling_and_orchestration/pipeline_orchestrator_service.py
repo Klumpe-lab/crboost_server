@@ -12,6 +12,7 @@ from services.job_models import ImportMoviesParams
 from services.jobs.spec import JOB_SPEC_BY_TYPE, JOB_SPECS, driver_invocation
 from services.path_resolution_service import PathResolutionError, PathResolutionService, get_context_paths
 from services.models_base import InstanceId
+from services.event_log import events
 from services.result import err, ok
 from services.project_state import AbstractJobParams, JobCategory, JobType, JobStatus
 from typing import TYPE_CHECKING
@@ -60,6 +61,75 @@ def _toposort_submit_order(nodes: list[str], edges: list[tuple]) -> tuple:
     return order, preds
 
 
+def write_scheme_star(star_handler: StarfileService, scheme_dir: Path, scheme_name: str, job_names: list[str]) -> None:
+    """A linear RELION scheme: `job_names` in order, WAIT/EXIT operators, one edge per
+    hop. Shared by the schemer deploy path and the protocol scheme export
+    (services/protocols/scheme_export.py), so both emit the identical artifact."""
+    general_df = pd.DataFrame(
+        {"rlnSchemeName": [f"Schemes/{scheme_name}/"], "rlnSchemeCurrentNodeName": [job_names[0]]}
+    )
+
+    jobs_df = pd.DataFrame(
+        [
+            {
+                "rlnSchemeJobNameOriginal": name,
+                "rlnSchemeJobName": name,
+                "rlnSchemeJobMode": "new",
+                "rlnSchemeJobHasStarted": 0,
+            }
+            for name in job_names
+        ]
+    )
+
+    edges_data = [
+        {
+            "rlnSchemeEdgeInputNodeName": job_names[i],
+            "rlnSchemeEdgeOutputNodeName": job_names[i + 1],
+            "rlnSchemeEdgeIsFork": 0,
+            "rlnSchemeEdgeOutputNodeNameIfTrue": "undefined",
+            "rlnSchemeEdgeBooleanVariable": "undefined",
+        }
+        for i in range(len(job_names) - 1)
+    ]
+    if job_names:
+        edges_data.append(
+            {
+                "rlnSchemeEdgeInputNodeName": job_names[-1],
+                "rlnSchemeEdgeOutputNodeName": "EXIT",
+                "rlnSchemeEdgeIsFork": 0,
+                "rlnSchemeEdgeOutputNodeNameIfTrue": "undefined",
+                "rlnSchemeEdgeBooleanVariable": "undefined",
+            }
+        )
+    edges_df = pd.DataFrame(edges_data)
+
+    floats_df = pd.DataFrame(
+        {
+            "rlnSchemeFloatVariableName": ["do_at_most", "wait_sec"],
+            "rlnSchemeFloatVariableValue": [500.0, 10.0],
+            "rlnSchemeFloatVariableResetValue": [500.0, 10.0],
+        }
+    )
+    ops_df = pd.DataFrame(
+        {
+            "rlnSchemeOperatorName": ["EXIT", "WAIT"],
+            "rlnSchemeOperatorType": ["exit", "wait"],
+            "rlnSchemeOperatorOutput": ["undefined", "undefined"],
+            "rlnSchemeOperatorInput1": ["undefined", "wait_sec"],
+            "rlnSchemeOperatorInput2": ["undefined", "undefined"],
+        }
+    )
+
+    data = {
+        "scheme_general": general_df,
+        "scheme_jobs": jobs_df,
+        "scheme_edges": edges_df,
+        "scheme_floats": floats_df,
+        "scheme_operators": ops_df,
+    }
+    star_handler.write(data, scheme_dir / "scheme.star")
+
+
 class PipelineOrchestratorService:
     def __init__(self, backend_instance: "CryoBoostBackend"):
         self.backend = backend_instance
@@ -99,6 +169,8 @@ class PipelineOrchestratorService:
 
         if not instances_to_run:
             return ok(already_complete=True, message="All selected jobs are already finished.", pid=0)
+
+        events.info("Pipeline started: %s — %s", project_dir.name, ", ".join(instances_to_run))
 
         # Orchestrator rework (P1.A): when the project opts into the afterok DAG, submit the WHOLE
         # remaining set (FAILED + fresh) directly via SLURM dependencies. _submit_chain allocates
@@ -152,8 +224,7 @@ class PipelineOrchestratorService:
                 except ValueError:
                     report_lines.append(f"[{instance_id}] UNKNOWN JOB TYPE, skipping")
                     continue
-                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
-                state.ensure_job_initialized(job_type, instance_id=instance_id, template_path=template_base)
+                state.ensure_job_initialized(job_type, instance_id=instance_id)
                 job_model = state.jobs.get(instance_id)
 
             job_type = job_model.job_type
@@ -281,8 +352,7 @@ class PipelineOrchestratorService:
                     job_type = InstanceId.parse(instance_id).job_type
                 except ValueError:
                     return err(f"Unknown job type for instance '{instance_id}'")
-                template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep" / job_type.value / "job.star"
-                state.ensure_job_initialized(job_type, instance_id=instance_id, template_path=template_base)
+                state.ensure_job_initialized(job_type, instance_id=instance_id)
                 job_model = state.jobs.get(instance_id)
 
             job_type = job_model.job_type
@@ -413,7 +483,7 @@ class PipelineOrchestratorService:
             job_model.slurm_job_id = slurm_id
             job_model.execution_status = JobStatus.QUEUED
             submitted.append({"instance_id": instance_id, "slurm_job_id": slurm_id, "afterok": after_ids})
-            logger.info("submit_chain: %s -> slurm %s (afterok=%s)", instance_id, slurm_id, after_ids)
+            events.info("Queued %s -> SLURM %s (afterok=%s)", instance_id, slurm_id, after_ids)
 
         # Mark the run active (so the monitor ticks it -> reconcile_afterok) and persist the
         # committed counter + every submitted handle (on success OR partial failure) so no live
@@ -614,73 +684,7 @@ class PipelineOrchestratorService:
         return "true  # crboost writes Import/tilt_series.star inline; relion import is not run"
 
     def _write_scheme_star(self, scheme_dir: Path, scheme_name: str, job_names: list[str]):
-        general_df = pd.DataFrame(
-            {"rlnSchemeName": [f"Schemes/{scheme_name}/"], "rlnSchemeCurrentNodeName": [job_names[0]]}
-        )
-
-        jobs_data = []
-        for name in job_names:
-            jobs_data.append(
-                {
-                    "rlnSchemeJobNameOriginal": name,
-                    "rlnSchemeJobName": name,
-                    "rlnSchemeJobMode": "new",
-                    "rlnSchemeJobHasStarted": 0,
-                }
-            )
-        jobs_df = pd.DataFrame(jobs_data)
-
-        edges_data = []
-        for i in range(len(job_names) - 1):
-            edges_data.append(
-                {
-                    "rlnSchemeEdgeInputNodeName": job_names[i],
-                    "rlnSchemeEdgeOutputNodeName": job_names[i + 1],
-                    "rlnSchemeEdgeIsFork": 0,
-                    "rlnSchemeEdgeOutputNodeNameIfTrue": "undefined",
-                    "rlnSchemeEdgeBooleanVariable": "undefined",
-                }
-            )
-
-        if job_names:
-            edges_data.append(
-                {
-                    "rlnSchemeEdgeInputNodeName": job_names[-1],
-                    "rlnSchemeEdgeOutputNodeName": "EXIT",
-                    "rlnSchemeEdgeIsFork": 0,
-                    "rlnSchemeEdgeOutputNodeNameIfTrue": "undefined",
-                    "rlnSchemeEdgeBooleanVariable": "undefined",
-                }
-            )
-
-        edges_df = pd.DataFrame(edges_data)
-
-        floats_df = pd.DataFrame(
-            {
-                "rlnSchemeFloatVariableName": ["do_at_most", "wait_sec"],
-                "rlnSchemeFloatVariableValue": [500.0, 10.0],
-                "rlnSchemeFloatVariableResetValue": [500.0, 10.0],
-            }
-        )
-        ops_df = pd.DataFrame(
-            {
-                "rlnSchemeOperatorName": ["EXIT", "WAIT"],
-                "rlnSchemeOperatorType": ["exit", "wait"],
-                "rlnSchemeOperatorOutput": ["undefined", "undefined"],
-                "rlnSchemeOperatorInput1": ["undefined", "wait_sec"],
-                "rlnSchemeOperatorInput2": ["undefined", "undefined"],
-            }
-        )
-
-        data = {
-            "scheme_general": general_df,
-            "scheme_jobs": jobs_df,
-            "scheme_edges": edges_df,
-            "scheme_floats": floats_df,
-            "scheme_operators": ops_df,
-        }
-
-        self.star_handler.write(data, scheme_dir / "scheme.star")
+        write_scheme_star(self.star_handler, scheme_dir, scheme_name, job_names)
 
     async def delete_job(self, project_dir: Path, job_type: JobType, harsh: bool = False) -> dict[str, Any]:
         job_numbers = self._get_all_job_numbers_for_type(project_dir, job_type)

@@ -68,23 +68,22 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
     local_refs = {
         "projects_overview": None,
-        "history_container": None,
-        "history_dropdown_el": None,
-        "history_dropdown_visible": False,
-        "projects_path_label": None,
         "default_movies_ext": "*.eer",
         "default_mdocs_ext": "*.mdoc",
         "save_timer": None,
-        "scan_timer": None,
         "dataset_overview_container": None,
         "current_dataset_overview": None,
+        "overview_glob": None,  # mdocs glob the displayed overview was parsed for
+        "parse_gen": 0,  # bumps per dataset scan; stale scans never touch the DOM
         "mdocs_separate": False,
         "mdocs_separate_container": None,
-        "parsing_spinner": None,
         "parse_progress_timer": None,
-        "data_history_container": None,
         "raw_data_section": None,  # whole frames+mdocs+overview block
         "gain_input": None,  # optional project-wide gain-reference path input
+        "scan_button": None,
+        "committed_base_path": None,  # last base path a roster scan ran for
+        "client": ui.context.client,  # detached tasks check this before touching the DOM
+        "form_errors": set(),  # field keys reddened by a failed Create attempt
     }
 
     # =========================================================================
@@ -101,23 +100,19 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
         local_refs["save_timer"] = ui.timer(0.5, do_save, once=True)
 
-    def debounced_scan(path: str):
-        if local_refs["scan_timer"]:
-            local_refs["scan_timer"].cancel()
-
-        def do_scan():
-            asyncio.create_task(scan_and_display_projects(path))
-            local_refs["scan_timer"] = None
-
-        local_refs["scan_timer"] = ui.timer(0.8, do_scan, once=True)
-
     # =========================================================================
     # VALIDATION
     # =========================================================================
 
     # -- Async glob validation (never blocks the event loop) ----------------
+    #
+    # Staged on purpose. Typing only ever costs a debounced, threaded glob count
+    # (one readdir). Everything expensive — mdoc parsing, frame location,
+    # parameter autodetect — waits for an explicit commit: Enter in the field,
+    # picking a recent entry / the folder picker, or the Scan button.
 
     _glob_tasks: dict[str, asyncio.Task] = {}
+    _VALIDATE_DEBOUNCE_SEC = 0.4
 
     def _validate_glob_quick(pattern: str) -> tuple[bool, str]:
         """Instant syntax-only check — no filesystem I/O."""
@@ -177,13 +172,13 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             return
 
         _set_hint(ui_mgr.panel_refs.movies_hint_label, quick_msg, CLR_SUBLABEL)
-        _show_validating_progress()
         # Cancel previous check for this field
         prev = _glob_tasks.get("movies")
         if prev and not prev.done():
             prev.cancel()
 
         async def _finish():
+            await asyncio.sleep(_VALIDATE_DEBOUNCE_SEC)
             is_valid, _count, msg = await _validate_glob_full(pattern)
             if ui_mgr.data_import.movies_glob != pattern:
                 return  # pattern changed while we were checking
@@ -191,11 +186,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             if ui_mgr.panel_refs.movies_input:
                 update_input_validation(ui_mgr.panel_refs.movies_input, is_valid, msg)
             _set_hint(ui_mgr.panel_refs.movies_hint_label, msg, CLR_SUCCESS if is_valid else CLR_ERROR)
-            if is_valid and pattern:
-                data_dir = str(Path(pattern).parent) if "*" in pattern else pattern
-                prefs_service.prefs.add_recent_data_path(data_dir)
-                prefs_service.save_to_app_storage(app.storage.user)
-                refresh_data_history_ui()
             update_create_button_state()
 
         _glob_tasks["movies"] = asyncio.create_task(_finish())
@@ -214,16 +204,18 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             if ui_mgr.panel_refs.mdocs_input:
                 update_input_validation(ui_mgr.panel_refs.mdocs_input, neutral, quick_msg)
             update_create_button_state()
+            _render_scan_affordance("", CLR_SUBLABEL, can_scan=False)
             return
 
         _set_hint(ui_mgr.panel_refs.mdocs_hint_label, quick_msg, CLR_SUBLABEL)
-        _show_validating_progress()
+        _render_scan_affordance("Checking mdocs…", CLR_SUBLABEL, can_scan=False)
         prev = _glob_tasks.get("mdocs")
         if prev and not prev.done():
             prev.cancel()
 
         async def _finish():
-            is_valid, _count, msg = await _validate_glob_full(pattern)
+            await asyncio.sleep(_VALIDATE_DEBOUNCE_SEC)
+            is_valid, count, msg = await _validate_glob_full(pattern)
             if ui_mgr.data_import.mdocs_glob != pattern:
                 return
             ui_mgr.update_data_import(mdocs_valid=is_valid)
@@ -231,15 +223,22 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 update_input_validation(ui_mgr.panel_refs.mdocs_input, is_valid, msg)
             _set_hint(ui_mgr.panel_refs.mdocs_hint_label, msg, CLR_SUCCESS if is_valid else CLR_ERROR)
             update_create_button_state()
-            # Trigger autodetect now that validation is confirmed. Always run
-            # parse_and_display_dataset -- it clears the (now-stale) progress
-            # overlay when the pattern is invalid, and renders the panel when
-            # it's valid.
             if is_valid:
-                await _auto_detect_if_ready()
-            await parse_and_display_dataset()
+                _render_scan_affordance(f"{count} mdocs found", CLR_SUCCESS, can_scan=True)
+            else:
+                _render_scan_affordance(f"mdocs: {msg}", CLR_ERROR, can_scan=False)
 
         _glob_tasks["mdocs"] = asyncio.create_task(_finish())
+
+    async def _await_validations():
+        """Let in-flight glob checks settle so a commit sees final *_valid flags."""
+        for key in ("movies", "mdocs"):
+            task = _glob_tasks.get(key)
+            if task and not task.done():
+                try:
+                    await task
+                except asyncio.CancelledError:  # superseded by a newer keystroke; its result is moot
+                    pass
 
     def is_dataless() -> bool:
         """True when the user asked for a project with no raw data.
@@ -276,37 +275,66 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             missing.append("Valid Mdocs")
         return missing
 
-    def can_create_project() -> bool:
-        return len(get_missing_requirements()) == 0
+    # Form behaviour: Create is always clickable; a click with gaps reddens the
+    # gap fields (like any form) instead of listing them in a status line. A
+    # reddened field clears itself the moment it stops being missing.
+    _FIELD_FOR_REQUIREMENT = {
+        "Project Name": "project_name_input",
+        "Project Path": "project_path_input",
+        "Data Path": "movies_input",
+        "Valid Frames": "movies_input",
+        "Mdocs Pattern": "mdocs_input",
+        "Valid Mdocs": "mdocs_input",
+    }
+
+    def _field_el(req: str):
+        return getattr(ui_mgr.panel_refs, _FIELD_FOR_REQUIREMENT[req], None)
+
+    def _mark_missing(missing: list[str]):
+        for req in missing:
+            el = _field_el(req)
+            if el is None:
+                continue
+            if req.startswith("Valid"):
+                el.props("error=true")  # keep the validation message already on it
+            else:
+                el.props("error=true error-message='required'")
+            local_refs["form_errors"].add(req)
 
     def update_create_button_state():
         btn = ui_mgr.panel_refs.create_button
         status_label = ui_mgr.panel_refs.status_indicator
         missing = get_missing_requirements()
+        for req in list(local_refs["form_errors"]):
+            if req not in missing:
+                el = _field_el(req)
+                if el is not None and not req.startswith("Valid"):
+                    el.props("error=false error-message=''")
+                local_refs["form_errors"].discard(req)
         if not btn:
             return
-        if len(missing) == 0 and not ui_mgr.is_project_created:
-            btn.enable()
-            btn.classes(remove="opacity-50 cursor-not-allowed")
-            if status_label:
-                # Say it out loud when there is no raw data, so a data-less project is
-                # always a choice rather than an unnoticed consequence of empty globs.
-                if is_dataless():
-                    status_label.set_text("Ready to create — without raw data")
-                    status_label.style(f"{FONT} font-size: 10px; color: {CLR_ACCENT_TEXT};")
-                else:
-                    status_label.set_text("Ready to create")
-                    status_label.style(f"{FONT} font-size: 10px; color: {CLR_SUCCESS};")
-        else:
+        if ui_mgr.is_project_created:
             btn.disable()
             btn.classes("opacity-50 cursor-not-allowed")
             if status_label:
-                if ui_mgr.is_project_created:
-                    status_label.set_text("Project created")
-                    status_label.style(f"{FONT} font-size: 10px; color: {CLR_SUCCESS};")
-                else:
-                    status_label.set_text(f"Missing: {', '.join(missing)}")
-                    status_label.style(f"{FONT} font-size: 10px; color: {CLR_ERROR};")
+                status_label.set_text("Project created")
+                status_label.style(f"{FONT} font-size: 10px; color: {CLR_SUCCESS};")
+            return
+        btn.enable()
+        btn.classes(remove="opacity-50 cursor-not-allowed")
+        if not status_label:
+            return
+        if missing:
+            status_label.set_text("Enter details to begin…")
+            status_label.style(f"{FONT} font-size: 10px; color: {CLR_SUBLABEL};")
+        elif is_dataless():
+            # Say it out loud when there is no raw data, so a data-less project is
+            # always a choice rather than an unnoticed consequence of empty globs.
+            status_label.set_text("Ready to create — without raw data")
+            status_label.style(f"{FONT} font-size: 10px; color: {CLR_ACCENT_TEXT};")
+        else:
+            status_label.set_text("Ready to create")
+            status_label.style(f"{FONT} font-size: 10px; color: {CLR_SUCCESS};")
 
     def update_locking_state():
         is_running = ui_mgr.is_running
@@ -349,159 +377,30 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             _syncing = False
 
     # =========================================================================
-    # HISTORY DROPDOWN
+    # RECENT PATHS — suggestions inside the inputs, not panels of their own
     # =========================================================================
 
-    def toggle_history_dropdown():
-        el = local_refs["history_dropdown_el"]
-        if el is None:
-            return
-        if local_refs["history_dropdown_visible"]:
-            _close_history_dropdown()
-        else:
-            refresh_history_ui()
-            el.style(remove="display: none;")
-            el.style("display: block;")
-            local_refs["history_dropdown_visible"] = True
+    def _recent_roots() -> list[str]:
+        return [r.path for r in prefs_service.prefs.recent_project_roots[:10]]
 
-    def _close_history_dropdown():
-        el = local_refs["history_dropdown_el"]
-        if el:
-            el.style(remove="display: block;")
-            el.style("display: none;")
-        local_refs["history_dropdown_visible"] = False
+    def _recent_data() -> list[str]:
+        return [r.path for r in prefs_service.prefs.recent_data_paths[:10]]
 
-    def refresh_history_ui():
-        container = local_refs["history_container"]
-        if not container:
-            return
-        container.clear()
-        roots = prefs_service.prefs.recent_project_roots
-        with container:
-            if not roots:
-                ui.label("No saved locations").style(
-                    f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic; padding: 8px 12px;"
-                )
-            else:
-                for root in roots[:10]:
-                    with (
-                        ui.row()
-                        .classes(
-                            "w-full items-center gap-1 py-1.5 px-3 hover:bg-slate-50 transition-colors cursor-pointer"
-                        )
-                        .on("click", lambda p=root.path: use_history_path(p))
-                    ):
-                        with ui.column().classes("flex-1 gap-0 min-w-0"):
-                            if root.label:
-                                ui.label(root.label).style(
-                                    f"{FONT} font-size: 10px; font-weight: 500; color: {CLR_HEADING};"
-                                ).classes("truncate")
-                            short = Path(root.path).name or root.path
-                            ui.label(short).style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL};").classes("truncate")
-                        ui.button(
-                            icon="close",
-                            on_click=lambda e, p=root.path: (
-                                e.sender.parent_slot.parent.set_visibility(False),
-                                remove_history_path(p),
-                            ),
-                        ).props("flat dense round size=xs").classes(
-                            "text-slate-200 hover:text-red-400 shrink-0 opacity-0 group-hover:opacity-100"
-                        )
-            if roots:
-                with ui.row().classes("w-full justify-end px-3 py-1 border-t border-slate-100"):
-                    house_button("Clear all", clear_all_history)
-
-    def use_history_path(path: str):
-        _close_history_dropdown()
-        ui_mgr.update_data_import(project_base_path=path)
-        if ui_mgr.panel_refs.project_path_input:
-            ui_mgr.panel_refs.project_path_input.value = path
-        if local_refs["projects_path_label"]:
-            local_refs["projects_path_label"].set_text(path or "no location set")
-        prefs_service.update_fields(project_base_path=path)
-        debounced_save()
-        asyncio.create_task(scan_and_display_projects(path))
-
-    def remove_history_path(path: str):
+    def forget_root(path: str):
         prefs_service.prefs.remove_recent_root(path)
         prefs_service.save_to_app_storage(app.storage.user)
-        refresh_history_ui()
 
-    def clear_all_history():
-        prefs_service.prefs.clear_recent_roots()
-        prefs_service.save_to_app_storage(app.storage.user)
-        refresh_history_ui()
-
-    # =========================================================================
-    # DATA PATH HISTORY
-    # =========================================================================
-
-    def refresh_data_history_ui():
-        container = local_refs["data_history_container"]
-        if not container:
-            return
-        container.clear()
-        paths = prefs_service.prefs.recent_data_paths
-        with container:
-            if not paths:
-                ui.label("No recent data directories").style(
-                    f"{FONT} font-size: 9px; color: {CLR_GHOST}; font-style: italic; padding: 6px 12px;"
-                )
-            else:
-                for entry in paths[:10]:
-                    short = Path(entry.path).name or entry.path
-                    with (
-                        ui.row()
-                        .classes(
-                            "w-full items-center gap-1 py-1 px-3 "
-                            "hover:bg-slate-50 transition-colors "
-                            "cursor-pointer group"
-                        )
-                        .on("click", lambda p=entry.path: use_data_path(p))
-                    ):
-                        ui.icon("science", size="12px").style(f"color: {CLR_GHOST}; flex-shrink: 0;")
-                        with ui.column().classes("flex-1 gap-0 min-w-0"):
-                            ui.label(short).style(f"{MONO} font-size: 10px; color: {CLR_LABEL};").classes("truncate")
-                            if entry.path != short:
-                                ui.label(entry.path).style(f"{MONO} font-size: 8px; color: {CLR_GHOST};").classes(
-                                    "truncate"
-                                )
-                        ui.button(icon="close", on_click=lambda e, p=entry.path: remove_data_path(p)).props(
-                            "flat dense round size=xs"
-                        ).classes("text-slate-200 hover:text-red-400 shrink-0 opacity-0 group-hover:opacity-100").on(
-                            "click.stop", lambda: None
-                        )
-            if paths:
-                with ui.row().classes("w-full justify-end px-3 py-1 border-t border-slate-100"):
-                    house_button("Clear", clear_data_history)
-
-    def use_data_path(path: str):
-        if ui_mgr.panel_refs.movies_input:
-            ui_mgr.panel_refs.movies_input.set_directory(path)
-
-    def remove_data_path(path: str):
+    def forget_data(path: str):
         prefs_service.prefs.remove_recent_data_path(path)
         prefs_service.save_to_app_storage(app.storage.user)
-        refresh_data_history_ui()
-
-    def clear_data_history():
-        prefs_service.prefs.clear_recent_data_paths()
-        prefs_service.save_to_app_storage(app.storage.user)
-        refresh_data_history_ui()
 
     # =========================================================================
     # PROJECT SCANNING
     # =========================================================================
 
     async def scan_and_display_projects(base_path: str):
-        # Sync the path label (legacy hidden ref) and trigger a refresh on
-        # the ProjectsOverview component. The component itself reads the
-        # base path each refresh via base_path_provider, so we just need to
-        # make sure it's the latest value.
-        if local_refs["projects_path_label"]:
-            local_refs["projects_path_label"].set_text(
-                base_path if base_path and base_path.strip() else "no location set"
-            )
+        # The ProjectsOverview component reads the base path each refresh via
+        # base_path_provider, so we just need to trigger it.
         overview = local_refs.get("projects_overview")
         if overview is not None:
             await overview.refresh()
@@ -562,17 +461,25 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         result = await local_file_picker(directory=start, mode="directory")
         if result and len(result) > 0:
             dir_path = result[0]
-            ui_mgr.update_data_import(project_base_path=dir_path)
             if ui_mgr.panel_refs.project_path_input:
                 ui_mgr.panel_refs.project_path_input.value = dir_path
             update_locking_state()
-            prefs_service.update_fields(project_base_path=dir_path)
-            projects = await backend.scan_for_projects(dir_path)
+            await commit_project_path(dir_path)
+
+    async def commit_project_path(path: str):
+        """The user settled on a base location: persist it, remember it if it
+        holds projects, and refresh the roster. Typing alone never scans."""
+        path = (path or "").strip()
+        local_refs["committed_base_path"] = path
+        ui_mgr.update_data_import(project_base_path=path)
+        update_create_button_state()
+        prefs_service.update_fields(project_base_path=path)
+        if path and Path(path).is_absolute():
+            projects = await backend.scan_for_projects(path)
             if projects:
-                prefs_service.prefs.add_recent_root(dir_path)
-            prefs_service.save_to_app_storage(app.storage.user)
-            refresh_history_ui()
-            await scan_and_display_projects(dir_path)
+                prefs_service.prefs.add_recent_root(path)
+        prefs_service.save_to_app_storage(app.storage.user)
+        await scan_and_display_projects(path)
 
     # =========================================================================
     # INPUT HANDLERS
@@ -583,31 +490,23 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         ui_mgr.update_data_import(project_name=value or "")
         update_create_button_state()
 
-    def on_project_path_change(e):
-        value = e.value if hasattr(e, "value") else str(e) if e else ""
-        value = value or ""
-        ui_mgr.update_data_import(project_base_path=value)
+    def on_project_path_change(value: str):
+        ui_mgr.update_data_import(project_base_path=value or "")
         update_create_button_state()
-        prefs_service.update_fields(project_base_path=value)
+        prefs_service.update_fields(project_base_path=value or "")
         debounced_save()
-        debounced_scan(value)
+
+    def on_project_path_commit(value: str):
+        asyncio.create_task(commit_project_path(value))
 
     def on_project_path_blur(e):
-        value = ui_mgr.data_import.project_base_path
-        if not value or not value.strip():
-            return
-        path = Path(value)
-        if not path.is_absolute() or not path.exists() or not path.is_dir():
-            return
-
-        async def check_and_add():
-            projects = await backend.scan_for_projects(value)
-            if projects:
-                prefs_service.prefs.add_recent_root(value)
-                prefs_service.save_to_app_storage(app.storage.user)
-                refresh_history_ui()
-
-        asyncio.create_task(check_and_add())
+        # Blur also fires when the page is being torn down (open project, navigate
+        # away) — only a path that actually changed since the last commit is worth
+        # a scan, and never against a client that is already gone.
+        value = (ui_mgr.data_import.project_base_path or "").strip()
+        client_alive = not getattr(local_refs["client"], "_deleted", False)
+        if value and value != local_refs["committed_base_path"] and client_alive:
+            asyncio.create_task(commit_project_path(value))
 
     def on_movies_change(glob_str: str):
         ui_mgr.update_data_import(movies_glob=glob_str)
@@ -694,8 +593,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
     async def handle_create_project():
         sync_state_from_inputs()
         di = ui_mgr.data_import
-        if not can_create_project():
-            ui.notify(f"Cannot create: Missing {get_missing_requirements()}", type="warning")
+        missing = get_missing_requirements()
+        if missing:
+            _mark_missing(missing)
             return
         btn = ui_mgr.panel_refs.create_button
         # mdocs_valid is set True the instant the glob count passes, but the
@@ -827,14 +727,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         if not result or len(result) == 0:
             return
         dir_path = result[0]
-        ui_mgr.update_data_import(project_base_path=dir_path)
         if ui_mgr.panel_refs.project_path_input:
             ui_mgr.panel_refs.project_path_input.value = dir_path
-        if local_refs["projects_path_label"]:
-            local_refs["projects_path_label"].set_text(dir_path)
-        prefs_service.update_fields(project_base_path=dir_path)
-        debounced_save()
-        await scan_and_display_projects(dir_path)
+        await commit_project_path(dir_path)
 
     async def handle_load_project(project_dir: Path):
         params_file = project_dir / "project_params.json"
@@ -951,8 +846,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                 ui_mgr.update_data_import(mdocs_glob=derived)
                 update_mdocs_validation()
 
-        refresh_history_ui()
-        refresh_data_history_ui()
         await scan_and_display_projects(ui_mgr.data_import.project_base_path)
 
     # =========================================================================
@@ -989,26 +882,54 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
     _PROGRESS_BOX = f"border: 1px solid {CLR_BORDER}; border-radius: 6px; padding: 8px 10px; background: #f8fafc;"
 
-    def _show_validating_progress():
-        """Immediate, indeterminate feedback shown the moment a data path is
-        entered -- covers the otherwise-silent glob-validation window before
-        the dataset scan even starts."""
+    def _render_scan_affordance(msg: str, color: str, *, can_scan: bool):
+        """Stage-1 feedback under the path fields: the mdoc count and the Scan
+        button. Replaces a stale overview whenever the glob moves away from the
+        one it was parsed for; leaves a matching overview alone."""
         container = local_refs["dataset_overview_container"]
+        btn = local_refs["scan_button"]
+        if btn:
+            btn.enable() if can_scan else btn.disable()
         if not container:
             return
-        # A scan is already in flight / rendering -- don't stomp its bar.
-        if local_refs["parse_progress_timer"] is not None:
-            return
-        local_refs["current_dataset_overview"] = None
+        if local_refs["current_dataset_overview"] is not None:
+            if local_refs["overview_glob"] == ui_mgr.data_import.mdocs_glob:
+                return
+            local_refs["current_dataset_overview"] = None
+        local_refs["parse_gen"] += 1  # any in-flight scan is for an old glob
+        _stop_parse_timer()
         container.clear()
+        if not msg:
+            return
         with container:
-            with ui.column().classes("w-full gap-1 mt-1").style(_PROGRESS_BOX):
-                with ui.row().classes("items-center gap-2"):
-                    ui.spinner("dots", size="sm").style(f"color: {CLR_ACCENT};")
-                    ui.label("Validating data path…").style(f"{FONT} font-size: 10px; color: {CLR_LABEL};")
-                ui.linear_progress(show_value=False, size="4px").props("indeterminate rounded").style(
-                    f"color: {CLR_ACCENT};"
-                )
+            with ui.row().classes("w-full items-center gap-2 mt-1"):
+                ui.label(msg).style(f"{FONT} font-size: 9px; color: {color};")
+                if can_scan:
+                    ui.label("— press Enter or Scan dataset to parse mdocs & locate frames").style(
+                        f"{FONT} font-size: 9px; color: {CLR_SUBLABEL};"
+                    )
+
+    def _stop_parse_timer():
+        timer = local_refs["parse_progress_timer"]
+        if timer is not None:
+            timer.cancel()
+            local_refs["parse_progress_timer"] = None
+
+    def on_data_commit(_glob: str):
+        """Enter / picker / recent entry on a data field: the user chose a
+        directory — remember it and run the expensive stage."""
+        asyncio.create_task(scan_dataset())
+
+    async def scan_dataset():
+        await _await_validations()
+        di = ui_mgr.data_import
+        if not di.mdocs_glob or not di.mdocs_valid:
+            return
+        if di.movies_valid and di.movies_glob:
+            prefs_service.prefs.add_recent_data_path(str(Path(di.movies_glob).parent))
+            prefs_service.save_to_app_storage(app.storage.user)
+        await _auto_detect_if_ready()
+        await parse_and_display_dataset()
 
     async def parse_and_display_dataset():
         """Parse dataset structure from mdocs and display the overview panel."""
@@ -1016,22 +937,23 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
         if not container:
             return
 
-        # Tear down any in-flight progress timer from a previous scan.
-        if local_refs["parse_progress_timer"] is not None:
-            try:
-                local_refs["parse_progress_timer"].cancel()
-            except Exception:
-                pass
-            local_refs["parse_progress_timer"] = None
-
         mdocs_glob = ui_mgr.data_import.mdocs_glob
         if not mdocs_glob or not ui_mgr.data_import.mdocs_valid:
+            _stop_parse_timer()
             container.clear()
             local_refs["current_dataset_overview"] = None
             return
 
         movies_glob = ui_mgr.data_import.movies_glob
         frames_dir = str(Path(movies_glob).parent) if movies_glob and "*" in movies_glob else None
+
+        # One generation per scan. The worker thread can't be cancelled, so a
+        # superseded scan simply stops being allowed to touch the DOM — this is
+        # what used to make the bar fill up and yank back: two overlapping
+        # parses of different globs reporting into one progress dict.
+        local_refs["parse_gen"] += 1
+        gen = local_refs["parse_gen"]
+        _stop_parse_timer()
 
         # Determinate progress bar driven by a worker-thread callback. The
         # callback only mutates a plain dict (cheap int writes); a ui.timer
@@ -1049,21 +971,23 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     progress_bar.props(remove="indeterminate")
                     progress["det"] = True
                 progress_bar.set_value(min(1.0, progress["cur"] / total))
-                count_lbl.set_text(f"{progress['cur']}/{total} tilt-series")
+                count_lbl.set_text(f"{progress['cur']}/{total} mdocs")
+                if progress["cur"] >= total:
+                    phase_lbl.set_text("Aggregating positions…")
+            else:
+                phase_lbl.set_text("Locating frames directory…")
 
-        # NOTE: this coroutine runs as a detached task (asyncio.create_task in
-        # update_mdocs_validation), so it has no ambient NiceGUI slot. Every
-        # element -- including ui.timer -- must be created inside an explicit
-        # `with container:` block or NiceGUI raises "slot stack is empty".
+        # NOTE: this coroutine runs as a detached task, so it has no ambient
+        # NiceGUI slot. Every element -- including ui.timer -- must be created
+        # inside an explicit `with container:` block or NiceGUI raises "slot
+        # stack is empty".
         container.clear()
         with container:
             with ui.column().classes("w-full gap-1 mt-1").style(_PROGRESS_BOX):
                 with ui.row().classes("w-full items-center justify-between"):
                     with ui.row().classes("items-center gap-2"):
                         ui.spinner("dots", size="sm").style(f"color: {CLR_ACCENT};")
-                        ui.label("Scanning dataset — parsing mdocs & locating frames…").style(
-                            f"{FONT} font-size: 10px; color: {CLR_LABEL};"
-                        )
+                        phase_lbl = ui.label("Scanning dataset…").style(f"{FONT} font-size: 10px; color: {CLR_LABEL};")
                     count_lbl = ui.label("").style(f"{MONO} font-size: 9px; color: {CLR_SUBLABEL};")
                 progress_bar = (
                     ui.linear_progress(value=0, show_value=False, size="4px")
@@ -1076,13 +1000,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
             from services.configs.dataset_selection_cache import apply_selections, save_selections
 
             overview = await backend.parse_dataset_overview(mdocs_glob, frames_dir, progress_cb=_on_progress)
+            if gen != local_refs["parse_gen"]:
+                return  # superseded — a newer scan owns the container now
             # Restore previously saved selections for this dataset
             restored = apply_selections(mdocs_glob, overview)
 
             local_refs["current_dataset_overview"] = overview
-            if local_refs["parse_progress_timer"] is not None:
-                local_refs["parse_progress_timer"].cancel()
-                local_refs["parse_progress_timer"] = None
+            local_refs["overview_glob"] = mdocs_glob
+            _stop_parse_timer()
             container.clear()
             with container:
                 # "Save Selection" button row
@@ -1105,15 +1030,14 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
 
                 build_dataset_overview_panel(overview, on_change=update_create_button_state)
         except Exception as e:
-            logger.info("Dataset parsing failed: %s", e)
-            if local_refs["parse_progress_timer"] is not None:
-                try:
-                    local_refs["parse_progress_timer"].cancel()
-                except Exception:
-                    pass
-                local_refs["parse_progress_timer"] = None
+            logger.exception("Dataset parsing failed for %s", mdocs_glob)
+            if gen != local_refs["parse_gen"]:
+                return
+            _stop_parse_timer()
             container.clear()
             local_refs["current_dataset_overview"] = None
+            with container:
+                ui.label(f"Dataset scan failed: {e}").style(f"{FONT} font-size: 9px; color: {CLR_ERROR};")
 
     async def show_dry_run_dialog():
         overview = local_refs.get("current_dataset_overview")
@@ -1187,12 +1111,16 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                     "Processing artifacts and results are stored here."
                                 ).style(f"{FONT} font-size: 10px;")
                         with ui.row().classes("w-full items-center gap-1"):
-                            project_path_input = (
-                                ui.input(value=ui_mgr.data_import.project_base_path, on_change=on_project_path_change)
-                                .props("dense borderless hide-bottom-space")
-                                .style(input_mono_style)
+                            project_path_input = GlobDirectoryInput(
+                                extension="",
+                                initial_glob=ui_mgr.data_import.project_base_path,
+                                on_change=on_project_path_change,
+                                on_commit=on_project_path_commit,
+                                recent_provider=_recent_roots,
+                                on_forget_recent=forget_root,
+                                placeholder="/path/to/projects",
                             )
-                            project_path_input.on("blur", on_project_path_blur)
+                            project_path_input.input_el.on("blur", on_project_path_blur)
                             ui_mgr.panel_refs.project_path_input = project_path_input
                             with ui.element("div").style("position: relative;"):
                                 ui.button(icon="folder", on_click=pick_project_path).props(
@@ -1265,15 +1193,26 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                 extension=local_refs["default_movies_ext"],
                                 initial_glob=ui_mgr.data_import.movies_glob,
                                 on_change=on_movies_change,
+                                on_commit=on_data_commit,
+                                recent_provider=_recent_data,
+                                on_forget_recent=forget_data,
                                 placeholder="/path/to/frames",
                             )
                             ui_mgr.panel_refs.movies_input = movies_input
                             ui.button(icon="folder", on_click=pick_movies_path).props(
                                 "flat dense round size=xs"
                             ).classes("text-slate-400 hover:text-slate-600")
-                        movies_hint = ui.label("No pattern").style(
-                            f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; padding-left: 2px; margin-top: 1px;"
-                        )
+                        with ui.row().classes("w-full items-center gap-2").style("margin-top: 2px;"):
+                            local_refs["scan_button"] = house_button(
+                                "Scan dataset",
+                                scan_dataset,
+                                tooltip="Parse the mdocs, locate frames and detect acquisition parameters. "
+                                "Typing only counts files; nothing is indexed until you press Enter or this.",
+                            )
+                            local_refs["scan_button"].disable()
+                            movies_hint = ui.label("No pattern").style(
+                                f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; padding-left: 2px;"
+                            )
                         ui_mgr.panel_refs.movies_hint_label = movies_hint
 
                     # Separate mdocs input (hidden by default)
@@ -1287,6 +1226,9 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                                 extension=local_refs["default_mdocs_ext"],
                                 initial_glob=ui_mgr.data_import.mdocs_glob,
                                 on_change=on_mdocs_change,
+                                on_commit=on_data_commit,
+                                recent_provider=_recent_data,
+                                on_forget_recent=forget_data,
                                 placeholder="/path/to/mdocs",
                             )
                             ui_mgr.panel_refs.mdocs_input = mdocs_input
@@ -1389,32 +1331,6 @@ def build_data_import_panel(backend: CryoBoostBackend, callbacks: dict[str, Call
                     with ui.row().classes("items-center gap-1"):
                         ui.icon("folder_open", size="12px")
                         ui.label("Browse for another base location").style(f"{FONT} font-size: 10px; font-weight: 500;")
-
-            # ----- Recent Project Locations -----
-            with ui.column().classes("w-full gap-0").style(card_style):
-                with ui.row().classes("w-full items-center px-4 pt-3 pb-1"):
-                    ui.icon("folder_special", size="14px").style(f"color: {CLR_SUBLABEL};")
-                    ui.label("Recent Locations").style(
-                        f"{FONT} font-size: 11px; font-weight: 600; color: {CLR_HEADING}; margin-left: 4px;"
-                    )
-                with ui.scroll_area().classes("w-full").style("min-height: 32px; max-height: 160px;"):
-                    local_refs["history_container"] = ui.column().classes("w-full p-0 gap-0")
-
-            # ----- Recent Data Paths -----
-            with ui.column().classes("w-full gap-0").style(card_style):
-                with ui.row().classes("w-full items-center px-4 pt-3 pb-1"):
-                    ui.icon("science", size="14px").style(f"color: {CLR_SUBLABEL};")
-                    ui.label("Recent Data").style(
-                        f"{FONT} font-size: 11px; font-weight: 600; color: {CLR_HEADING}; margin-left: 4px;"
-                    )
-                with ui.scroll_area().classes("w-full").style("min-height: 32px; max-height: 160px;"):
-                    local_refs["data_history_container"] = ui.column().classes("w-full p-0 gap-0")
-
-            # Hidden refs for legacy code
-            history_dropdown_el = ui.element("div").style("display: none;")
-            local_refs["history_dropdown_el"] = history_dropdown_el
-            path_label_inline = ui.label("").style("display: none;")
-            local_refs["projects_path_label"] = path_label_inline
 
     # =========================================================================
     # WIRING

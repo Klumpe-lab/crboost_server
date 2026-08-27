@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from nicegui import ui
 
 from backend import CryoBoostBackend
+from services.event_log import EVENTS_LOGGER_NAME
 import logging
 
 import sys
@@ -26,13 +27,17 @@ warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
 
 
 def setup_logging(debug: bool = False):
-    level = logging.DEBUG if debug else logging.INFO
+    # Terminal contract: only warnings/errors and the handful of pipeline events
+    # routed through `services.event_log` (pipeline started / finished / failed,
+    # jobs queued, job status changes) reach the console. Module-level
+    # logger.info() is diagnostic and stays hidden unless --debug.
     logging.basicConfig(
-        level=level,
+        level=logging.DEBUG if debug else logging.WARNING,
         # name:lineno makes every record trackable to its file (roadmap 03 stage 2)
         format="%(asctime)s %(levelname).1s %(name)s:%(lineno)d %(message)s",
         datefmt="%H:%M:%S",
     )
+    logging.getLogger(EVENTS_LOGGER_NAME).setLevel(logging.INFO)
     # Quiet down noisy third-party loggers
     logging.getLogger("nicegui").setLevel(logging.WARNING)
     logging.getLogger("nicegui").addFilter(SuppressPruneStorageError())
@@ -40,6 +45,42 @@ def setup_logging(debug: bool = False):
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+_BOLD, _CYAN, _RESET = "\x1b[1m", "\x1b[1;36m", "\x1b[0m"
+
+
+def banner_lines(port: int, hostname: str) -> list[str]:
+    return [
+        f"{_BOLD}CryoBoost running on{_RESET} {_CYAN}http://localhost:{port}{_RESET}",
+        f"{_BOLD}Tunnel from your local machine:{_RESET} "
+        f"{_CYAN}ssh -f -N -L {port}:localhost:{port} $USER@{hostname}{_RESET}",
+    ]
+
+
+def install_sticky_banner(lines: list[str]) -> None:
+    """Pin `lines` to the top of the terminal (DECSTBM scroll region) so log
+    output scrolls underneath. Plain print when stdout isn't a TTY (redirected
+    to a file, systemd, ...) or CRBOOST_PLAIN_LOG is set."""
+    import atexit
+    import shutil
+
+    if not sys.stdout.isatty() or os.environ.get("CRBOOST_PLAIN_LOG"):
+        print("\n".join(lines) + "\n")
+        return
+    rows = shutil.get_terminal_size().lines
+    top = len(lines) + 1
+    out = sys.stdout
+    out.write("\x1b[2J\x1b[H")  # clear screen, cursor home
+    out.write("\n".join(lines) + "\n")
+    out.write(f"\x1b[{top};{rows}r\x1b[{top};1H")  # scroll region below the banner, cursor into it
+    out.flush()
+
+    def _restore():
+        out.write(f"\x1b[r\x1b[{rows};1H\n")
+        out.flush()
+
+    atexit.register(_restore)
 
 
 def _is_under(child: Path, parent) -> bool:
@@ -114,15 +155,17 @@ def setup_app():
     # startup scans the configured project base for projects that were
     # mid-pipeline when uvicorn last died — re-deploys their remaining
     # jobs from a fresh scheme. See docs/architecture.md.
-    @app.on_event("startup")
     async def _start_pipeline_monitor():
         await backend.pipeline_monitor.start()
         await backend.curation_watcher.start()
 
-    @app.on_event("shutdown")
     async def _stop_pipeline_monitor():
         await backend.pipeline_monitor.stop()
         await backend.curation_watcher.stop()
+
+    # add_event_handler is the non-deprecated spelling of @app.on_event.
+    app.add_event_handler("startup", _start_pipeline_monitor)
+    app.add_event_handler("shutdown", _stop_pipeline_monitor)
 
     storage_secret = os.environ.get("CRBOOST_STORAGE_SECRET", "crboost-change-me")
 
@@ -139,16 +182,6 @@ def setup_app():
     )
     return app
 
-def get_local_ip():
-    """Get the local IP address"""
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "localhost"
 
 if __name__ in {"__main__", "__mp_main__"}:
     
@@ -164,24 +197,9 @@ if __name__ in {"__main__", "__mp_main__"}:
     # simplest single source of truth.
     os.environ["CRBOOST_PORT"] = str(args.port)
     app      = setup_app()
-    local_ip = get_local_ip()
-    hostname = socket.gethostname()
-    
-    print("\n" + "="*60)
-    print("CryoBoost Server Starting")
-    print("Access URLs:")
-    print(f"  Local:   http://localhost:{args.port}")
-    print(f"  Network: http://{local_ip}:{args.port}")
-    print(
-        "\nTo access in the browser from your local machine, "
-        "establish port-forwarding from remote to your local terminal."
-    )
-    print("\nRun this in a local terminal:")
-    print(f"ssh -f -N -L {args.port}:localhost:{args.port} $USER@{hostname}")
-    print("="*60 + "\n")
+    install_sticky_banner(banner_lines(args.port, socket.gethostname()))
 
-    uvicorn.run(
-        app, 
-        host=args.host, 
-        port=args.port,
-    )
+    # log_config=None: uvicorn otherwise reinstalls its own logging config at
+    # run() time, undoing setup_logging() and re-enabling the per-request
+    # access log ("GET / 200 OK", "connection open", ...).
+    uvicorn.run(app, host=args.host, port=args.port, log_config=None)

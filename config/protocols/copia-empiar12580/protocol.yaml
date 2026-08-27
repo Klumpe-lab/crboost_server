@@ -1,0 +1,202 @@
+# Protocol: the CryoBoost v1 copia tutorial (EMPIAR-12580, one tilt series), importmovies -> class3d.
+# Authored 2026-08-27 from the completed reference run `Copia_Aaron_Tutorial` (crboost_server, 11
+# stages), hand-edited to the tutorial's values where the reference run deviated:
+#   templatematching.angular_search 12.0 -> "90.0" (tutorial; sphere template, orientation is moot)
+#   species diameter 500 -> 550 A (tutorial), class3d.random_seed 1 (new field; RELION default is time)
+#   denoise train/predict added (tutorial-faithful; the reference run skipped them; decision O2)
+# Dataset facts (apix 2.95, 300 kV, dose ~2.1/tilt, 28 tilts -32..+49, no gain ref) come from the
+# mdoc at apply time; `expects` only warns. Stage params are FULL USER_PARAMS snapshots by design.
+name: copia-empiar12580
+version: 1
+schema_version: 1
+description: CryoBoost v1 tutorial on copia (EMPIAR-12580) - 1 TS, sphere template, I1, through Class3D
+provenance:
+  empiar: EMPIAR-12580
+  empiar_path: data/Copia_TiltSeries
+  doi: 10.1101/2024.02.21.581285
+  tutorial: https://cryoboost.readthedocs.io/en/latest/extdocs/tutorial/tutorial.html
+  reference_run: Copia_Aaron_Tutorial (crboost_server, 2026-06-16..07-16)
+expects:
+  pixel_size_angstrom: {about: 2.95, tol: 0.05}
+  tilt_series_count: {about: 1, tol: 0}
+species:
+  - id: copia
+    name: Copia
+    diameter_ang: 550.0
+    symmetry: I1
+    notes: copia retrotransposon capsid; sphere template 550 A at 11.80 A/px (box 96, lp 45)
+    template:
+      asset: assets/copia_template.mrc
+      polarity: black
+      source: basic_shape:550:550:550
+      lowpass_ang: 45.0
+      notes: ellipsoid_550_550_550_apix11.80_box96_lp45_black.mrc from the reference run
+    mask:
+      asset: assets/copia_mask.mrc
+      method: relion
+      threshold: 1.85
+      extend_pixels: 5.0
+      soft_edge_pixels: 5.0
+      lowpass_ang: 20.0
+      notes: ellipsoid_550_550_550_apix11.80_box96_lp45_mask_t1.850_e5_s5.mrc from the reference run
+    extraction: {box_size: 384, crop_size: 224, binning: 1.0}
+stages:
+  - job: importmovies
+    schema_fingerprint: ad7f9073a097
+    params: {optics_group_name: opticsGroup1, do_at_most: -1}
+  - job: fsMotionAndCtf
+    schema_fingerprint: 5149c7bbf9e2
+    params:
+      do_phase: false
+      m_range_min_max: "500:10"
+      m_bfac: -500
+      m_grid: 1x1x3
+      c_range_min_max: "30:6.0"
+      c_defocus_min_max: "1.1:8"
+      c_grid: 2x2x1
+      c_use_sum: false
+      c_window: 512
+      out_average_halves: true
+      out_skip_first: 0
+      out_skip_last: 0
+      perdevice: 2
+      do_at_most: -1
+      gain_operations: null
+      array_throttle: 20
+  - job: tsImport
+    schema_fingerprint: 09778c2424ec
+    params: {mdoc_pattern: "*.mdoc", min_intensity: 0.0, do_at_most: -1, tomo_dimensions: 4096x4096x2048}
+  - job: aligntiltsWarp
+    schema_fingerprint: c06b17f287fc
+    params:
+      alignment_method: AreTomo
+      rescale_angpixs: 11.8
+      tomo_dimensions: 4096x4096x2048
+      sample_thickness_nm: 180.0
+      do_at_most: -1
+      perdevice: 1
+      patch_x: 0
+      patch_y: 0
+      axis_iter: 0          # tutorial: tilt-axis refinement OFF
+      axis_batch: 0
+      imod_patch_size: 200
+      imod_overlap: 50
+      array_throttle: 20
+  - job: tsCtf
+    schema_fingerprint: 4ad55ec793bf
+    params:
+      do_phase: false
+      window: 512
+      range_min_max: "30:6.0"
+      defocus_hand: set_flip   # tutorial: "Invert Defocus Hand = Yes"
+      defocus_min_max: "1.1:8"
+      perdevice: 1
+      array_throttle: 20
+  - job: tsReconstruct
+    schema_fingerprint: 21f5633a64d5
+    params: {rescale_angpixs: 11.8, halfmap_frames: 1, deconv: 1, perdevice: 1, array_throttle: 20}
+  - job: denoisetrain
+    schema_fingerprint: 69ecb2647547
+    params:
+      denoise_method: cryoCARE
+      tomograms_for_training: ""
+      number_training_subvolumes: 600
+      subvolume_dimensions: 64
+      perdevice: 1
+      isonet_method: auto
+      isonet_deconv: false
+  - job: denoisepredict
+    schema_fingerprint: 179357a2628c
+    params: {ntiles_x: 4, ntiles_y: 4, ntiles_z: 4, denoising_tomo_name: "", perdevice: 1, array_throttle: 20}
+  - job: templatematching
+    species: copia
+    schema_fingerprint: f6bcdf8a5c39
+    # template_path / mask_path are filled from the species assets at apply
+    params:
+      angular_search: "90.0"
+      symmetry: C1
+      defocus_weight: true
+      dose_weight: true
+      spectral_whitening: false
+      random_phase_correction: false
+      non_spherical_mask: false
+      bandpass_filter: "None"
+      gpu_split: auto
+      perdevice: 1
+      array_throttle: 4
+  - job: tmextractcand
+    species: copia
+    schema_fingerprint: 421187f5f81f
+    params:
+      particle_diameter_ang: 550.0
+      max_num_particles: 1500
+      cutoff_method: NumberOfFalsePositives
+      cc_threshold: 0.1
+      expected_false_positives: 1.0
+      apix_score_map: auto
+      score_filter_method: "None"
+      score_filter_value: "None"
+      array_throttle: 16
+  - job: subtomoExtraction
+    species: copia
+    schema_fingerprint: 9c9464a23b55
+    params:
+      binning: 1.0
+      box_size: 384
+      crop_size: 224
+      do_float16: true
+      do_stack2d: true
+      max_dose: -1.0
+      min_frames: 1
+      array_throttle: 16
+  - job: reconstructParticle
+    species: copia
+    schema_fingerprint: 9742dc4168a9
+    params:
+      box_size: 384
+      crop_size: 224
+      symmetry: I1
+      binning: 1
+      snr: 0.0
+      theme: default
+      whiten: false
+      no_ctf: false
+      do_helix: false
+      helical_twist: -1.0
+      helical_rise: 0.0
+      helical_z_percentage: 30.0
+      helical_tube_outer_diameter: -1.0
+      helical_nr_asu: 1
+      threads: 24
+      threads_in: 3
+      threads_out: 2
+      other_args: ""
+  - job: class3d
+    species: copia
+    schema_fingerprint: 6875b7a0fe00
+    params:
+      n_classes: 1
+      n_iterations: 15
+      tau_fudge: 1.0
+      healpix_order: 4        # 3.75 deg
+      offset_range: 5
+      offset_step: 2
+      sigma_ang: -1.0
+      oversampling: 1
+      symmetry: I1
+      ini_high: 45.0
+      particle_diameter: 575.0
+      solvent_mask_path: ""
+      flatten_solvent: true
+      zero_mask: true
+      firstiter_cc: true
+      do_ctf: true
+      do_norm: true
+      do_scale: true
+      dont_combine_weights_via_disc: true
+      pad: 2
+      use_gpu: true
+      preread_images: true
+      threads: 4
+      pool: 30
+      random_seed: 1

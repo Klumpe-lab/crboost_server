@@ -1,0 +1,35 @@
+# Frozen input of copia-empiar12580: written by `crboost_regress.py freeze-input`; the file list is
+# hand-authored, sizes + sha256 are measured. Lives under <local_data.root>/input/<protocol>/.
+version: 1
+movies_glob: '*.eer'
+mdocs_glob: '*.mdoc'
+files:
+- {name: Position_1.mdoc, size: 19133, sha256: 8c664022131262c68a1b3ef0d3067c93af5939b8d873e27f7661aa6b099087ad}
+- {name: 'Position_1_001[10.00]_EER.eer', size: 429462242, sha256: 346eb53ab339b8b93e1401ef2b52adc2e1958cdca297036c7bec2ac053e9846c}
+- {name: 'Position_1_002[13.00]_EER.eer', size: 430062162, sha256: 27fceb41af0478a23c849033a375cea69189832de2fd27cb736e19fe8b5c544d}
+- {name: 'Position_1_003[7.00]_EER.eer', size: 428860690, sha256: e227ebad5c90b3158543859d3901ab11afe0a3597a26be748a4ba28ef9383115}
+- {name: 'Position_1_004[4.00]_EER.eer', size: 427507026, sha256: e5e72f3e6f7f03eff77e54f94d0ef6bb76eea010bd61d910569d9ad1e76fd163}
+- {name: 'Position_1_005[16.00]_EER.eer', size: 430767666, sha256: 3e47415238e51845238468a6f62b864820b8332c9457c41e302451725b20ec1f}
+- {name: 'Position_1_006[19.00]_EER.eer', size: 430088610, sha256: 236316542e878153aaba55e06474c6420e44dcd70c9171ff947c6aa69383f2f0}
+- {name: 'Position_1_007[1.00]_EER.eer', size: 426056978, sha256: 21dd5e981f3c73b6f87bc105c342ca4248aa339356ef8a877b5382628520e3b9}
+- {name: 'Position_1_008[-2.00]_EER.eer', size: 423401330, sha256: ea3127f5f8841eba1f09195bc8aaa9c1c78179c9104d992641c420b0af106d87}
+- {name: 'Position_1_009[22.00]_EER.eer', size: 429294610, sha256: 27a54dae3cee571ea28528285090aa8a9a10523c8721779edc5e1ec291343975}
+- {name: 'Position_1_010[25.00]_EER.eer', size: 427422210, sha256: e6463d5fb17a323e22d2b62c30ed709a00c6fbf4b0b6fde6abe4d466e49a273a}
+- {name: 'Position_1_011[-5.00]_EER.eer', size: 420672434, sha256: b6cb649d54c9a65dbffbcc26baad6c8a9da5bf623eeecf29d166dc19551ed290}
+- {name: 'Position_1_012[-8.00]_EER.eer', size: 416534338, sha256: 27cd0b2dc24aa2583e5c9fa8ad7fa2c022f724f83889b93bd3e9e11522161aea}
+- {name: 'Position_1_013[28.00]_EER.eer', size: 425246066, sha256: d7427e5b4ff8447d2b09ab8c00c5311cd8fc41ec235497ec420fb3b706289549}
+- {name: 'Position_1_014[31.00]_EER.eer', size: 422036642, sha256: 3915d30024f05e3992efda3e5c4c7235cf3d4215757ce487253ef9cfee6934d2}
+- {name: 'Position_1_015[-11.00]_EER.eer', size: 412310178, sha256: 4aa052d381113adcb78619671e219f5bbd70a123cc358baac4ac5b418bc0daa8}
+- {name: 'Position_1_016[-14.00]_EER.eer', size: 406639058, sha256: 4875751192984a4dc7eaee8b248f1547d3505a119473f1940ad38da27714eff7}
+- {name: 'Position_1_017[34.00]_EER.eer', size: 418410658, sha256: 542fa7c5bda9c2837023679216aefe465514d6cef58a5de7c876a87fbf93d03f}
+- {name: 'Position_1_018[37.00]_EER.eer', size: 413763874, sha256: aa791435cdf19b10d788e1a845ef82f240fe3ea131b19c242d80e0e5e5affc80}
+- {name: 'Position_1_019[-17.00]_EER.eer', size: 400752562, sha256: 19e0f9eee7ab74eaf79d24c15ddd4ef8e070059e24b7e65df296f3719dc20859}
+- {name: 'Position_1_020[-20.00]_EER.eer', size: 393013250, sha256: a22763a6fdf15956fe0b5f7dba31c068c0266a5c4239cc49c2ad0171cd804f92}
+- {name: 'Position_1_021[40.00]_EER.eer', size: 408513458, sha256: 9a30733c88ebbe8ff7b96cd35be7d9a489ccf7496daf05bbbf8542ec0c4b99d9}
+- {name: 'Position_1_022[43.00]_EER.eer', size: 402235794, sha256: d320d88a64f4964c09ab4d58ee015a2b7d51aeb536519e91bd7783f2b371683d}
+- {name: 'Position_1_023[-23.00]_EER.eer', size: 385058946, sha256: 7b7c0ffc77eabedfe525cffcafd7cf525bfab0ab52c7176b8e7bf1630e204886}
+- {name: 'Position_1_024[-26.00]_EER.eer', size: 375427250, sha256: c23e543fb7b4e9d22bb85cb5d9cb1fb763cd63bf410859b07be40df07230485b}
+- {name: 'Position_1_025[46.00]_EER.eer', size: 395243458, sha256: 3e07550fbc3e0f3222130360617c309729cfc1ec2517d7441981d4c9bb86169e}
+- {name: 'Position_1_026[49.00]_EER.eer', size: 386628418, sha256: 3d514217364c5f82b8a86b11e99035184dcdded8b77fc36ca62ec5445244d1e2}
+- {name: 'Position_1_027[-29.00]_EER.eer', size: 364812178, sha256: 25d409bbcad98be928da21d88c825fe087b5ef8d3a938f3ce07bd10f1ac38274}
+- {name: 'Position_1_028[-32.00]_EER.eer', size: 352339858, sha256: c10c480de9e192f92260a8fac58f4d91857ac846487e59c76c6ff74a2a3ade1d}

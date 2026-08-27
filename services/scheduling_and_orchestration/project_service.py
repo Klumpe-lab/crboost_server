@@ -439,16 +439,12 @@ class ProjectService:
             if not structure_result["success"]:
                 return structure_result
 
-            # 2. Load Defaults into Memory (Blueprints)
-            template_base = Path.cwd() / "config" / "Schemes" / "warp_tomo_prep"
-
+            # 2. Instantiate the selected jobs with their code defaults.
             if selected_jobs:
-                logger.info("Loading default parameters for: %s", selected_jobs)
+                logger.info("Initializing jobs: %s", selected_jobs)
                 for job_str in selected_jobs:
                     try:
-                        job_type = JobType(job_str)
-                        job_star_path = template_base / job_type.value / "job.star"
-                        state.ensure_job_initialized(job_type, job_star_path if job_star_path.exists() else None)
+                        state.ensure_job_initialized(JobType(job_str))
                     except ValueError:
                         logger.warning("Skipping unknown job '%s'", job_str)
 

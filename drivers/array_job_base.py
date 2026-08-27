@@ -35,7 +35,7 @@ from pathlib import Path
 server_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(server_dir))
 
-from drivers.driver_base import DriverContext, run_tool
+from drivers.driver_base import PRINT_CMD_ENV, DriverContext, print_cmd_only, run_tool
 from services.computing.slurm_service import SlurmConfig
 from services.configs.starfile_service import StarfileService
 from services.jobs.spec import driver_invocation
@@ -891,6 +891,16 @@ class ArrayDriver(ABC):
 
             preflight_registry(ctx.project_path, self.preflight_scope(ctx, items), job_name=self.job_name)
             self.pre_dispatch(ctx, items)
+
+            if print_cmd_only():
+                # CRBOOST_PRINT_CMD (roadmap 14 Tier A): render every per-item command through
+                # the normal run_command echo — which prints instead of executing — and stop
+                # before anything reaches SLURM. Without this gate the supervisor honoured the
+                # flag only in its tasks and still sbatched a real array.
+                for item in items:
+                    self.execute(ctx, item, self.stage(ctx, item))
+                print(f"[SUPERVISOR] {PRINT_CMD_ENV} set: {len(items)} command(s) printed, nothing submitted")
+                sys.exit(0)
 
             # Honor user "exclude from processing": pre-skip excluded items so they are
             # never dispatched and count as settled (not failures) in aggregation.

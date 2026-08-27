@@ -42,6 +42,21 @@ CLR_BAD = "#ef4444"
 
 _JOB_LABELS = {jt.value: jt.name.replace("_", " ").title() for jt in JobType}
 
+# One label column for every row of the editor, so the inputs start at the same x
+# in every section and run to the right edge.
+_LABEL_W = 132
+# Every container row is a plain div inside a ui.column (align-items: flex-start):
+# without an explicit width it shrink-wraps, which is what squeezed the editor left.
+_ROW_BOX = "width: 100%; box-sizing: border-box;"
+# Label-plus-input cells that flow into as many columns as the row allows. The cell
+# is `minmax(200px, 1fr)` and the input takes what the label leaves — so every input
+# in a grid has the same length and the last column reaches the right edge.
+_FIELD_GRID = (
+    "display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); "
+    "gap: 4px 18px; width: 100%; align-items: center;"
+)
+_FIELD_LABELS = {"cpus_per_task": "cpus / task", "ntasks_per_node": "tasks / node", "mem": "memory"}
+
 # Which value-kind each path field is checked as. "glob" checks the parent
 # directory exists (the pattern itself rarely matches at config time).
 _TOOLS_HINT = "SIF image (container) or executable (binary). Green dot = the file resolves on disk."
@@ -90,7 +105,10 @@ def open_config_settings(on_saved: Callable[[], None] | None = None) -> None:
         "border-radius: 8px; box-shadow: 0 12px 32px rgba(15,23,42,0.18);"
     ):
         _build_header(dialog, cs, on_saved)
-        with ui.scroll_area().classes("w-full").style("height: 66vh; padding: 0;"):
+        # cb-scroll-tight: NiceGUI's scroll-area content is a flex column with
+        # align-items: flex-start, so anything without an explicit width shrink-wraps
+        # to the left edge — every row below claims the full width instead.
+        with ui.scroll_area().classes("w-full cb-scroll-tight").style("height: 66vh; padding: 0;"):
             body = ui.column().classes("w-full").style("gap: 0; padding: 0 0 10px;")
             with body:
                 _section_environment(nv)
@@ -213,7 +231,7 @@ async def _confirm_revert(cs) -> bool:
 
 def _section_header(title: str, subtitle: str = "") -> None:
     with ui.element("div").style(
-        "padding: 9px 16px 6px; background: #f8fafc; border-top: 1px solid #e2e8f0; "
+        f"{_ROW_BOX} padding: 9px 16px 6px; background: #f8fafc; border-top: 1px solid #e2e8f0; "
         "border-bottom: 1px solid #e2e8f0;"
     ):
         ui.label(title).style(
@@ -235,10 +253,10 @@ def _path_field(label: str, initial: str, setter: Callable[[str], None], kind: s
             return bool(v) and Path(v).is_dir()
         return check_path_exists(v)  # tool: file-or-PATH
 
-    with ui.element("div").style("padding: 5px 16px;"):
+    with ui.element("div").style(f"{_ROW_BOX} padding: 5px 16px;"):
         with ui.row().classes("w-full items-center").style("gap: 8px; flex-wrap: nowrap;"):
             ui.label(label).style(
-                f"{FONT} font-size: 11px; color: {CLR_LABEL}; width: 128px; flex-shrink: 0; text-align: right;"
+                f"{FONT} font-size: 11px; color: {CLR_LABEL}; width: {_LABEL_W}px; flex-shrink: 0; text-align: right;"
             )
             dot = ui.element("div").style(_dot_style(_exists(initial)))
 
@@ -257,7 +275,7 @@ def _path_field(label: str, initial: str, setter: Callable[[str], None], kind: s
             )
             inp.tooltip("Resolves on disk" if _exists(initial) else "Not found on disk")
         if note:
-            with ui.row().classes("w-full").style("padding-left: 136px; margin-top: 1px;"):
+            with ui.row().classes("w-full").style(f"padding-left: {_LABEL_W + 24}px; margin-top: 1px;"):
                 ui.label(note).style(f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; font-style: italic;")
 
 
@@ -287,7 +305,7 @@ def _section_containers(nv: dict[str, Any]) -> None:
     _section_header("Containers & tools", _TOOLS_HINT)
     tools: dict[str, Any] = nv["tools"]
     if not tools:
-        with ui.element("div").style("padding: 8px 16px;"):
+        with ui.element("div").style(f"{_ROW_BOX} padding: 8px 16px;"):
             ui.label("No tools configured.").style(
                 f"{FONT} font-size: 11px; color: {CLR_SUBLABEL}; font-style: italic;"
             )
@@ -308,11 +326,11 @@ def _tool_row(name: str, tc: dict[str, Any]) -> None:
     def active_key() -> str:
         return "container_path" if tc.get("exec_mode") == "container" else "bin_path"
 
-    with ui.element("div").style("padding: 5px 16px; border-bottom: 1px solid #f8fafc;"):
+    with ui.element("div").style(f"{_ROW_BOX} padding: 5px 16px; border-bottom: 1px solid #f8fafc;"):
         with ui.row().classes("w-full items-center").style("gap: 8px; flex-wrap: nowrap;"):
             ui.label(name).style(
                 f"{MONO} font-size: 10px; font-weight: 600; color: {CLR_HEADING}; "
-                "width: 128px; flex-shrink: 0; text-align: right; overflow: hidden; text-overflow: ellipsis;"
+                f"width: {_LABEL_W}px; flex-shrink: 0; text-align: right; overflow: hidden; text-overflow: ellipsis;"
             )
             dot = ui.element("div").style(_dot_style(check_path_exists(tc.get(active_key()))))
 
@@ -352,27 +370,18 @@ def _section_slurm(nv: dict[str, Any]) -> None:
     _section_header("SLURM defaults", "Applied when submitting jobs — takes effect on the next run")
     sd: dict[str, Any] = nv["slurm_defaults"]
 
-    # Global defaults — a compact 2-per-row grid of the common fields.
-    fields = [
-        ("partition", "partition"),
-        ("constraint", "constraint"),
-        ("gres", "gres"),
-        ("mem", "mem"),
-        ("cpus_per_task", "cpus"),
-        ("time", "time"),
-        ("nodes", "nodes"),
-        ("ntasks_per_node", "ntasks/node"),
-    ]
-    with ui.element("div").style(
-        "display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; padding: 8px 16px 4px;"
-    ):
-        for key, label in fields:
-            _grid_text(sd, key, label)
+    # Global defaults — the common fields in a grid that fills the row; every cell
+    # is the same label-plus-input shape, so the inputs line up and end together.
+    fields = ["partition", "constraint", "gres", "mem", "cpus_per_task", "time", "nodes", "ntasks_per_node"]
+    with ui.element("div").style(f"{_ROW_BOX} padding: 8px 16px 4px;"):
+        with ui.element("div").style(_FIELD_GRID):
+            for key in fields:
+                _grid_text(sd, key, _FIELD_LABELS.get(key, key))
 
     # Per-job overrides — only the fields actually present per profile.
     profiles: dict[str, Any] = nv["job_resource_profiles"]
     if profiles:
-        with ui.element("div").style("padding: 4px 16px 2px;"):
+        with ui.element("div").style(f"{_ROW_BOX} padding: 6px 16px 2px;"):
             ui.label("Per-job overrides").style(
                 f"{FONT} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; letter-spacing: 0.06em;"
             )
@@ -381,7 +390,7 @@ def _section_slurm(nv: dict[str, Any]) -> None:
 
 
 def _grid_text(store: dict[str, Any], key: str, label: str) -> None:
-    with ui.row().classes("items-center").style("gap: 6px; flex-wrap: nowrap;"):
+    with ui.row().classes("items-center w-full").style("gap: 6px; flex-wrap: nowrap;"):
         ui.label(label).style(
             f"{FONT} font-size: 10px; color: {CLR_SUBLABEL}; width: 74px; flex-shrink: 0; text-align: right;"
         )
@@ -401,32 +410,16 @@ def _grid_text(store: dict[str, Any], key: str, label: str) -> None:
 def _profile_row(job_key: str, profile: dict[str, Any]) -> None:
     display = _JOB_LABELS.get(job_key, job_key)
     with ui.element("div").style(
-        "display: grid; grid-template-columns: 132px 1fr; gap: 8px; align-items: center; "
-        "padding: 3px 16px; border-bottom: 1px solid #f8fafc;"
+        f"{_ROW_BOX} display: grid; grid-template-columns: {_LABEL_W}px minmax(0, 1fr); gap: 8px; "
+        "align-items: start; padding: 4px 16px; border-bottom: 1px solid #f8fafc;"
     ):
         ui.label(display).style(
-            f"{MONO} font-size: 10px; color: #374151; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+            f"{MONO} font-size: 10px; color: #374151; text-align: right; overflow: hidden; text-overflow: ellipsis; "
+            "white-space: nowrap; line-height: 16px;"
         )
-        with ui.row().classes("w-full items-center").style("gap: 6px; flex-wrap: wrap;"):
+        with ui.element("div").style(_FIELD_GRID):
             for key in profile:
-                _mini_field(profile, key)
-
-
-def _mini_field(store: dict[str, Any], key: str) -> None:
-    short = {"cpus_per_task": "cpu", "ntasks_per_node": "ntask", "constraint": "constr"}.get(key, key)
-    with ui.row().classes("items-center").style("gap: 3px; flex-wrap: nowrap;"):
-        ui.label(short).style(f"{FONT} font-size: 8px; color: {CLR_SUBLABEL}; flex-shrink: 0;")
-
-        def _on_change(e, k=key):
-            v = (e.value or "").strip()
-            store[k] = _coerce_like(store.get(k), v)
-
-        (
-            ui.input(value=str(store.get(key, "")), on_change=_on_change)
-            .props("dense")
-            .classes("cb-field")
-            .style("width: 76px;")
-        )
+                _grid_text(profile, key, _FIELD_LABELS.get(key, key))
 
 
 def _section_local(nv: dict[str, Any]) -> None:

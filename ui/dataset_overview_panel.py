@@ -38,15 +38,44 @@ CELL = "padding: 3px 5px;"
 COL_WIDTHS = "24px 44px 40px 40px 110px 58px 50px 50px 50px 1fr"
 
 
+_WARNINGS_SHOWN = 3
+
+
+def _render_parse_warnings(warnings: list[str]) -> None:
+    """Three lines, then a count that unfolds into a scroll box. A wrong directory
+    yields one warning per mdoc — hundreds of red lines are a wall, not a message."""
+    if not warnings:
+        return
+    with ui.column().classes("w-full gap-0 mt-2"):
+        for w in warnings[:_WARNINGS_SHOWN]:
+            ui.label(w).style(f"{FONT} font-size: 9px; color: {CLR_ERROR}; padding-left: 2px;")
+        rest = warnings[_WARNINGS_SHOWN:]
+        if not rest:
+            return
+        box = ui.column().classes("w-full gap-0").style("max-height: 120px; overflow-y: auto;")
+        box.set_visibility(False)
+        with box:
+            for w in rest:
+                ui.label(w).style(f"{FONT} font-size: 9px; color: {CLR_ERROR}; padding-left: 2px;")
+
+        def _toggle():
+            box.set_visibility(not box.visible)
+            more.set_text(f"hide {len(rest)} more" if box.visible else f"+{len(rest)} more…")
+
+        more = ui.label(f"+{len(rest)} more…").style(
+            f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; font-style: italic; padding-left: 2px; cursor: pointer;"
+        )
+        more.on("click", _toggle)
+
+
 def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[[], None] | None = None) -> None:
     """Render the dataset overview with collapsible positions and selection."""
 
     if not overview.positions:
-        if overview.parse_warnings:
-            for w in overview.parse_warnings:
-                ui.label(w).style(f"{FONT} font-size: 10px; color: {CLR_ERROR};")
-        else:
-            ui.label("No positions found").style(f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic;")
+        ui.label("No tilt-series recognised in this directory").style(
+            f"{FONT} font-size: 10px; color: {CLR_GHOST}; font-style: italic;"
+        )
+        _render_parse_warnings(overview.parse_warnings)
         return
 
     # Registry: ts_label -> row element (for scroll-to-highlight)
@@ -139,15 +168,7 @@ def build_dataset_overview_panel(overview: DatasetOverview, on_change: Callable[
             all_pos_cbs.append((pos, pos_cb))
 
     # --- Parse warnings ---
-    if overview.parse_warnings:
-        with ui.column().classes("w-full gap-0 mt-2"):
-            for w in overview.parse_warnings[:3]:
-                ui.label(w).style(f"{FONT} font-size: 9px; color: {CLR_ERROR}; padding-left: 2px;")
-            rest = len(overview.parse_warnings) - 3
-            if rest > 0:
-                ui.label(f"... +{rest} more").style(
-                    f"{FONT} font-size: 9px; color: {CLR_SUBLABEL}; font-style: italic; padding-left: 2px;"
-                )
+    _render_parse_warnings(overview.parse_warnings)
 
 
 def _flash_row(row_el: ui.element, highlight_color: str):

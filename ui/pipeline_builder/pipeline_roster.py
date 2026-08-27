@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -60,6 +61,54 @@ _TOMO_DASHBOARD_SVG = (
 )
 _SB_INFO = "#c0cad4"
 _AVATAR_PALETTE = ["#3b82f6", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b", "#ec4899"]
+
+# Rail count badges: how much data is behind an icon, without opening it. Recomputed off
+# the event loop on this cadence (disk — star rows + a stat per volume, memoized on the
+# stars' mtimes, so an unchanged project costs two stats a tick), and repainted only when
+# a number actually moves. Load-bearing chrome, so the look is inline on the element —
+# ui/main_ui.py's shell stylesheet is served stale on this deployment.
+_COUNTS_TICK_S = 15.0
+_SB_BADGE_STYLE = (
+    "position: absolute; right: -2px; bottom: -2px; min-width: 14px; height: 13px; "
+    "padding: 0 3px; border-radius: 7px; background: #e2e8f0; color: #475569; "
+    f"{FONT} font-size: 8px; font-weight: 700; line-height: 13px; text-align: center; "
+    "pointer-events: none; box-shadow: 0 0 0 1.5px #f8fafc; display: none;"
+)
+
+_JOBS_TIP = (
+    "Jobs — the pipeline roster. Click it while you are already here to collapse the "
+    "roster and give an open job page the full width."
+)
+_GALLERY_TIP = "Tomograms — the wall of reconstructions, all of them at once"
+
+
+def _tomo_badge_tip(counts) -> str:
+    """The Tomograms icon's hover: the badge number, spelled out by where it came from.
+    A row whose volume is not on disk is called out rather than folded into the total —
+    the count is of what the project's stars DESCRIBE, and that is not always what exists."""
+    if counts.total == 0:
+        return f"{_GALLERY_TIP}\nNothing reconstructed or imported yet."
+    parts = []
+    if counts.reconstructed:
+        parts.append(f"{counts.reconstructed} reconstructed")
+    if counts.imported:
+        parts.append(f"{counts.imported} imported")
+    text = f"{_GALLERY_TIP}\n{counts.total} tomogram(s) — {' · '.join(parts)}"
+    if counts.missing:
+        text += f"\n⚠ {counts.missing} volume(s) are not on disk at the path their star records"
+    if counts.unreadable:
+        text += f"\n⚠ {len(counts.unreadable)} tomograms.star could not be read"
+    return text
+
+
+def _ts_badge_tip(counts) -> str:
+    """The Jobs icon's hover: how many tilt-series the pipeline has to work with."""
+    if counts.total == 0:
+        return f"{_JOBS_TIP}\nNo tilt-series imported yet."
+    text = f"{_JOBS_TIP}\n{counts.total} tilt-series"
+    if counts.excluded:
+        text += f" — {counts.selected} selected for processing, {counts.excluded} excluded"
+    return text
 
 
 def _avatar_color(name: str) -> str:
@@ -164,6 +213,9 @@ class RosterWidget(FingerprintedView):
         # Last (status, scope, error) painted onto the rail's curation-session indicator, so
         # its timer only touches the DOM when the session state actually moved.
         self._curation_paint: tuple[str, str, str] | None = None
+        # Last (tomogram, tilt-series) counts painted onto the rail badges, so their timer
+        # only touches the DOM when a number actually moved.
+        self._counts_paint: tuple | None = None
         self._refs: dict = {}
         # Per-instance expansion state for per-TS sub-rows, persisted across
         # roster refreshes (status_poller refreshes the roster every few seconds
@@ -258,7 +310,18 @@ class RosterWidget(FingerprintedView):
             # Species pill draws name + color: a rename / recolor in the workbench
             # must repaint the row (roadmap 08 S0.3).
             current_project_state().species_identity(),
+            # The PARTICLES header's import button carries a green dot once tomograms have
+            # been imported. Without this input the dot only appeared on the NEXT unrelated
+            # change, so a successful import looked like it had done nothing.
+            self._imported_tomograms_fingerprint(),
         )
+
+    @staticmethod
+    def _imported_tomograms_fingerprint() -> tuple:
+        rec = current_project_state().imported_tomograms
+        if rec is None:
+            return ()
+        return (bool(rec.star_path), int(rec.count or 0), len(rec.batches or []))
 
     def refresh(self):
         """Render the roster if its signature changed since last paint.
@@ -823,7 +886,7 @@ class RosterWidget(FingerprintedView):
         color = SB_ACT if self._roster_visible else SB_MUTE
         container.style(
             f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-            f"background: {bg}; "
+            f"background: {bg}; position: relative; "  # relative: the count badge anchors to it
             f"display: flex; align-items: center; justify-content: center; "
             f"cursor: pointer; flex-shrink: 0;"
         )
@@ -903,12 +966,7 @@ class RosterWidget(FingerprintedView):
             ui.element("div").style("height: 4px;")
 
             self._sb_svg_btn(
-                "layers.svg",
-                "Jobs — the pipeline roster. Click it while you are already here to collapse the "
-                "roster and give an open job page the full width.",
-                self._on_pipeline_icon,
-                ref_key="pipeline_btn",
-                active=True,
+                "layers.svg", _JOBS_TIP, self._on_pipeline_icon, ref_key="pipeline_btn", active=True, badge=True
             )
 
             if panel.toggle_workbench is not None:
@@ -928,10 +986,7 @@ class RosterWidget(FingerprintedView):
             if panel.toggle_gallery is not None:
                 ui.element("div").style("height: 1px;")
                 self._sb_svg_btn(
-                    "tomo_preview.svg",
-                    "Tomograms — the wall of reconstructions, all of them at once",
-                    self._open_gallery,
-                    ref_key="gallery_btn",
+                    "tomo_preview.svg", _GALLERY_TIP, self._open_gallery, ref_key="gallery_btn", badge=True
                 )
 
             # Journey — unified per-TS inspection surface that replaces the old
@@ -962,6 +1017,60 @@ class RosterWidget(FingerprintedView):
             ui.element("div").style("height: 6px;")
 
         self.rebuild_run_slot()
+        # How much data is behind the Jobs and Tomograms icons. Painted once now (so a
+        # reload lands on real numbers rather than blank badges that fill in 15 s later)
+        # and then on the poll; an import repaints immediately via refresh_counts().
+        ui.timer(0.2, self._tick_counts, once=True)
+        ui.timer(_COUNTS_TICK_S, self._tick_counts)
+
+    # ── Rail count badges ─────────────────────────────────────────────────────
+
+    async def _tick_counts(self):
+        """Recount the project's tilt-series and tomograms off the event loop and paint
+        the badges. Explicit-path state resolution, not the tab accessor: this runs from a
+        timer, where a bare lookup can hand back a blank throwaway state."""
+        from services.project_counts import tilt_series_counts, tomogram_counts
+        from services.project_state import get_project_state_for
+
+        project_path = self.panel.ui_mgr.project_path
+        if project_path is None:
+            return
+
+        def _read():
+            state = get_project_state_for(project_path)
+            return tomogram_counts(state, project_path), tilt_series_counts(state, project_path)
+
+        try:
+            tomo, ts = await asyncio.to_thread(_read)
+        except Exception:
+            # Reported, not swallowed — a badge that silently stops moving is worse than
+            # one that never appeared, and the traceback names which reader broke.
+            logger.exception("Could not recount project data for the rail badges")
+            return
+        self._paint_counts(tomo, ts)
+
+    def refresh_counts(self):
+        """Repaint the rail badges NOW rather than at the next tick — for the moments the
+        user is watching for the number to move (an import just committed)."""
+        asyncio.create_task(self._tick_counts())
+
+    def _paint_counts(self, tomo, ts):
+        """Gated on the counts it last painted: this runs on a timer, and re-sending
+        identical text every 15 s is churn the client processes for nothing."""
+        if (tomo, ts) == self._counts_paint:
+            return
+        self._counts_paint = (tomo, ts)
+        self._set_badge("pipeline_btn", ts.total, _ts_badge_tip(ts))
+        self._set_badge("gallery_btn", tomo.total, _tomo_badge_tip(tomo))
+
+    def _set_badge(self, ref_key: str, n: int, tooltip: str):
+        badge = self._refs.get(f"{ref_key}_badge")
+        if badge is not None:
+            badge.set_text("999+" if n > 999 else str(n))
+            badge.style("display: block;" if n > 0 else "display: none;")
+        tip = self._refs.get(f"{ref_key}_tip")
+        if tip is not None:
+            tip.set_text(tooltip)
 
     def _build_project_avatar(self, state):
         name = state.project_name or "---"
@@ -986,12 +1095,17 @@ class RosterWidget(FingerprintedView):
             )
         return avatar
 
-    def _render_project_params(self, state) -> None:
+    def _render_project_params(self, state, tomo_counts=None) -> None:
         """Render a project's parameter sections (Project / Acquisition /
         Dataset) into the current container. Used by the left pane of the
         project hub; works for any loaded-or-detached ProjectState. SLURM
         defaults intentionally NOT shown here — they live in the landing-page
-        settings editor now."""
+        settings editor now.
+
+        ``tomo_counts`` is a ``services.project_counts.TomogramCounts`` read off the event
+        loop by the caller — the same number the rail badge shows, so the pane and the
+        badge cannot disagree. Omitted (None) means "not counted", which renders as no
+        Tomograms row rather than as zero."""
         if state is None:
             with ui.element("div").style("padding: 40px 16px; text-align: center;"):
                 ui.icon("touch_app", size="22px").style("color: #cbd5e1;")
@@ -1030,40 +1144,60 @@ class RosterWidget(FingerprintedView):
             ],
         )
 
-        if state.import_total_positions or state.import_total_tilt_series:
-            ds_rows = []
-            if state.import_source_directory:
-                ds_rows.append(("Source", state.import_source_directory))
-            if state.import_frame_extension:
-                ds_rows.append(("Format", state.import_frame_extension))
-            self._render_overview_section("Dataset", ds_rows, bottom_border=False)
+        # Dataset. Rendered whenever there is ANYTHING to say — a particle-only project
+        # has no frames and no tilt-series but can have imported tomograms, and gating the
+        # whole section on the frame import is what made those projects read as empty.
+        ds_rows: list[tuple] = []
+        if tomo_counts is not None and tomo_counts.total:
+            split = " · ".join(
+                p
+                for p in (
+                    f"{tomo_counts.reconstructed} reconstructed" if tomo_counts.reconstructed else "",
+                    f"{tomo_counts.imported} imported" if tomo_counts.imported else "",
+                )
+                if p
+            )
+            ds_rows.append(("Tomograms", f"{tomo_counts.total}  ({split})" if split else str(tomo_counts.total)))
+            if tomo_counts.missing:
+                # Stated, never folded into the count — the star describes a volume that
+                # is not where it says it is, and that is the user's decision to make.
+                ds_rows.append(("Not on disk", str(tomo_counts.missing), "#b45309"))
+        if state.import_source_directory:
+            ds_rows.append(("Source", state.import_source_directory))
+        if state.import_frame_extension:
+            ds_rows.append(("Format", state.import_frame_extension))
+        if ds_rows or state.import_total_positions or state.import_total_tilt_series:
+            self._render_overview_section("Dataset", ds_rows)
             self._render_dataset_ts_expansion(state)
 
-        ui.element("div").style("height: 6px;")
+        ui.element("div").style("height: 10px;")
 
     # ── Overview helpers (denser layout, no nested scroll) ────────────────────
 
     def _overview_section_header(self, title: str) -> None:
-        ui.element("div").style("height: 6px;")  # small gap between categories
-        with ui.element("div").style(
-            "padding: 4px 11px 3px; font-size: 9px; font-weight: 700; "
-            "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase; "
-            "background: #f8fafc; border-top: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0;"
-        ):
-            ui.label(title)
+        """Category head. Whitespace above it is the separation — no banded background and
+        no rules: with a hairline under every row as well, the pane read as a stack of
+        boxes with the values pushed to the far margin."""
+        ui.element("div").style("height: 14px;")
+        ui.label(title).style(
+            f"{FONT} padding: 0 12px 4px; font-size: 9px; font-weight: 700; "
+            "color: #94a3b8; letter-spacing: 0.09em; text-transform: uppercase;"
+        )
 
-    def _render_overview_section(self, title: str, rows: list, bottom_border: bool = True) -> None:
+    def _render_overview_section(self, title: str, rows: list) -> None:
+        """Label · value pairs on one grid. The label column is fixed, so values line up
+        and sit NEXT to what names them instead of across a 380 px gulf from it.
+        A row may carry a third element: an explicit value colour (warnings)."""
         self._overview_section_header(title)
-        for row_lbl, row_val in rows:
-            divider = "1px solid #f8fafc" if bottom_border else "none"
+        for row in rows:
+            row_lbl, row_val = row[0], row[1]
+            color = row[2] if len(row) > 2 else "#1e40af"
             with ui.element("div").style(
-                f"display: flex; justify-content: space-between; align-items: baseline; "
-                f"padding: 3px 11px; border-bottom: {divider}; gap: 10px;"
+                "display: grid; grid-template-columns: 68px minmax(0, 1fr); "
+                "align-items: baseline; padding: 1px 12px; gap: 8px;"
             ):
-                ui.label(row_lbl).style("font-size: 10px; color: #94a3b8; flex-shrink: 0;")
-                ui.label(str(row_val)).style(
-                    f"{MONO} font-size: 10px; color: #1e40af; text-align: right; word-break: break-all;"
-                )
+                ui.label(row_lbl).style(f"{FONT} font-size: 10px; color: #94a3b8;")
+                ui.label(str(row_val)).style(f"{MONO} font-size: 10px; color: {color}; word-break: break-all;")
 
     def _render_dataset_ts_expansion(self, state) -> None:
         """Collapsible per-tilt-series table living on the Dataset row.
@@ -1086,16 +1220,16 @@ class RosterWidget(FingerprintedView):
         tot = state.import_total_tilt_series
         header_text = f"{sel} of {tot} tilt-series"
 
-        exp = (
-            ui.expansion()
-            .props("dense header-class=q-px-none")
-            .style("width: 100%; border-bottom: 1px solid #f8fafc; background: transparent;")
-        )
+        exp = ui.expansion().props("dense header-class=q-px-none").style("width: 100%; background: transparent;")
 
         with exp.add_slot("header"):
-            with ui.row().classes("w-full items-center").style("gap: 10px; padding: 0 11px;"):
-                ui.label("Selected").style("font-size: 10px; color: #94a3b8; flex-shrink: 0;")
-                ui.space()
+            # Same label column as _render_overview_section — this IS one of its rows, it
+            # just happens to open.
+            with ui.element("div").style(
+                "display: grid; grid-template-columns: 68px minmax(0, 1fr); "
+                "align-items: baseline; padding: 1px 12px; gap: 8px; width: 100%;"
+            ):
+                ui.label("Selected").style(f"{FONT} font-size: 10px; color: #94a3b8;")
                 ui.label(header_text).style(f"{MONO} font-size: 10px; color: #1e40af;")
 
         with exp:
@@ -1252,6 +1386,8 @@ class RosterWidget(FingerprintedView):
         left_refs: dict = {"container": None}
 
         async def _load_left(path_str):
+            from services.project_counts import tomogram_counts
+
             left = left_refs.get("container")
             if left is None:
                 return
@@ -1262,9 +1398,16 @@ class RosterWidget(FingerprintedView):
                 except Exception as e:
                     logger.info("Preview load failed for %s: %s", path_str, e)
                     state = None
+            counts = None
+            if state is not None:
+                try:
+                    counts = await asyncio.to_thread(tomogram_counts, state, Path(path_str))
+                except Exception:
+                    # Reported, not swallowed; the pane still renders, minus the row.
+                    logger.exception("Could not count tomograms for %s", path_str)
             left.clear()
             with left:
-                self._render_project_params(state)
+                self._render_project_params(state, counts)
 
         async def _on_select(target: Path):
             selected_ref["path"] = str(target)
@@ -1537,10 +1680,21 @@ class RosterWidget(FingerprintedView):
             else ("Import more tomograms" if already else "Import tomograms")
         )
 
+        def _committed():
+            # Three surfaces answer "did that land": this header's green dot (roster
+            # render), the Tomograms rail badge, and the wall itself. The first two are
+            # repainted here so the confirmation is on screen the moment the dialog
+            # closes; the wall is only invalidated, since it re-collects when visited.
+            self.panel.rebuild_pipeline_ui()
+            self.refresh_counts()
+            invalidate = self.panel.callbacks.get("invalidate_gallery")
+            if invalidate:
+                invalidate()
+
         def _open():
             if disabled:
                 return
-            open_tomogram_import_dialog(self.panel.backend, project_path, on_done=self.panel.rebuild_pipeline_ui)
+            open_tomogram_import_dialog(self.panel.backend, project_path, on_done=_committed)
 
         container = (
             ui.element("div")
@@ -1725,7 +1879,7 @@ class RosterWidget(FingerprintedView):
                 return
             await open_curation_control_center(self.panel.backend, self.panel.ui_mgr.project_path)
 
-    def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None):
+    def _sb_svg_btn(self, svg_name, tooltip, on_click, active=False, ref_key=None, color_override=None, badge=False):
         bg = SB_ABG if active else "transparent"
         color = color_override or (SB_ACT if active else SB_MUTE)
 
@@ -1735,20 +1889,28 @@ class RosterWidget(FingerprintedView):
             ui.element("div")
             .style(
                 f"width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
-                f"background: {bg}; "
+                f"background: {bg}; position: relative; "
                 f"display: flex; align-items: center; justify-content: center; "
                 f"cursor: pointer; flex-shrink: 0;"
             )
             .on("click", on_click)
-            .tooltip(tooltip)
         )
         with container:
             icon = ui.html(svg, sanitize=False).style("width: 18px; height: 18px; display: flex; pointer-events: none;")
+            # Built as an explicit child rather than `.tooltip(...)` on the chain so the
+            # count line can be re-set in place (same reason as the curation indicator).
+            # pre-line: these carry a count line under the description, and QTooltip's
+            # default `white-space: normal` collapses the newline into a run-on sentence.
+            tip = ui.tooltip(tooltip).style("white-space: pre-line;")
+            badge_el = ui.label("").style(_SB_BADGE_STYLE) if badge else None
         if ref_key:
             self._refs[ref_key] = container
             # The icon separately, so a re-colour can set its markup in place instead of
             # clearing the container — which would take the tooltip with it.
             self._refs[f"{ref_key}_icon"] = icon
+            self._refs[f"{ref_key}_tip"] = tip
+            if badge_el is not None:
+                self._refs[f"{ref_key}_badge"] = badge_el
         return container
 
     def _info_popup_btn(self, icon_name: str, title: str, rows: list, icon_color: str | None = None):

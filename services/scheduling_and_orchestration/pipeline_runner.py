@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from services.array_tasks import any_task_started, manifest_array_job_id, mark_stopped_tasks_failed
 from services.models_base import InstanceId, JobType
 from services.project_state import JobStatus
+from services.event_log import events
 from services.result import err, ok
 from services.scheduling_and_orchestration.pipeline_orchestrator_service import JobTypeResolver
 
@@ -305,6 +306,7 @@ class PipelineRunnerService:
 
             if old_status != new_status:
                 changes[instance_id] = True
+                events.info("%s: %s -> %s", instance_id, getattr(old_status, "value", old_status), new_status.value)
                 if (
                     new_status == JobStatus.SUCCEEDED
                     and job_model.job_type is not None
@@ -466,6 +468,7 @@ class PipelineRunnerService:
                             expired = (now - first) >= _AFTEROK_ABSENT_GRACE_SEC
                             new = JobStatus.FAILED if expired else jm.execution_status
                         if new != JobStatus.UNKNOWN and jm.execution_status != new:
+                            events.info("%s: %s -> %s", iid, jm.execution_status.value, new.value)
                             jm.execution_status = new
                             changes[iid] = True
         # Drop grace timers for ids no longer pending this tick (resolved / left tracked / none pending).
@@ -1054,9 +1057,9 @@ class PipelineRunnerService:
             logger.info("Schemer PID %s exited with code: %s", pid, return_code)
 
             if return_code == 0:
-                logger.info("Pipeline completed successfully")
+                events.info("Pipeline finished: %s", project_dir.name)
             else:
-                logger.info("Pipeline failed or was interrupted (code %s)", return_code)
+                events.info("Pipeline FAILED or interrupted: %s (schemer exit code %s)", project_dir.name, return_code)
                 try:
                     if stderr_log.exists():
                         with open(stderr_log) as f:

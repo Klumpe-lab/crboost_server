@@ -41,6 +41,7 @@ class Class3DParams(AbstractJobParams):
         "zero_mask",
         "pad",
         "dont_combine_weights_via_disc",
+        "random_seed",
     }
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(
@@ -103,6 +104,9 @@ class Class3DParams(AbstractJobParams):
     preread_images: bool = Field(default=True, description="Pre-read all particles into RAM")
     threads       : int  = Field(default=4, ge=1, description="Number of threads")
     pool          : int  = Field(default=30, ge=1, description="Number of particles to pool per thread")
+    # Reproducibility (roadmap 14): -1 = RELION's own time-based seed (the historical
+    # behaviour); >= 0 is passed as --random_seed so a regression run repeats itself.
+    random_seed   : int  = Field(default=-1, ge=-1, description="relion_refine --random_seed (-1 = time-based)")
 
     def __init__(self, **data):
         super().__init__(**data)

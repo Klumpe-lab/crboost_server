@@ -39,10 +39,11 @@ class UserPreferences(BaseModel):
     recent_project_roots: list[RecentPath] = Field(default_factory=list)
     recent_data_paths: list[RecentPath] = Field(default_factory=list)
 
-    # Journey dashboard prefs (R2/R3) — user-level, persist across projects + TS.
-    # Hidden (not visible) panel keys; absence ⇒ visible, so panels added later
-    # default to shown. Dataset section starts collapsed (header + metrics only).
-    dashboard_hidden_panels: list[str] = Field(default_factory=list)
+    # Journey dashboard prefs — user-level, persist across projects + TS.
+    # `dashboard_panel` is the ONE section the Journey shows ("all" = every section);
+    # a single-select replaced the per-panel hidden set (2026-08-27). Dataset section
+    # starts collapsed (header + metrics only).
+    dashboard_panel: str = "all"
     dashboard_dataset_collapsed: bool = True
 
     # --- shared helpers for both MRU lists ---
