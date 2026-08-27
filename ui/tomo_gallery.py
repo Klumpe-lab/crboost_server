@@ -315,6 +315,15 @@ class TomoGalleryPage:
         if self._grid_signature() != before:
             self.render()
 
+    def invalidate(self) -> None:
+        """Drop the cached rows so the next visit re-collects.
+
+        ``show()`` is a no-op once the wall has been collected — which is right for a
+        view swap, and wrong after something ADDS tomograms to the project. A tomogram
+        import while the wall was already built would otherwise leave the user staring
+        at the pre-import wall with no hint that it is stale."""
+        self._collected = False
+
     def set_active(self, on: bool) -> None:
         """The workspace's _switch_to hook: the pending-preview poll runs only while
         the wall is the visible view."""

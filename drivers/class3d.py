@@ -71,6 +71,8 @@ def main():
             cmd.opt("--tau2_fudge", params.tau_fudge)
         if params.sigma_ang > 0:
             cmd.opt("--sigma_ang", params.sigma_ang)
+        if params.random_seed >= 0:
+            cmd.opt("--random_seed", params.random_seed)
 
         if params.do_ctf:
             cmd.flag("--ctf")

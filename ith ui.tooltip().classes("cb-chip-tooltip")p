@@ -1671,6 +1671,7 @@ def render_imported_particles_section(
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "particles"
         with ui.element("div").classes("cb-section-card-header"):
+            ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
             ui.label("Particles").classes("cb-section-title")
             ui.label("imported tomogram").classes("text-[10px] font-mono text-gray-500")
             ui.space()
@@ -1826,6 +1827,7 @@ def render_particles_section(
         with ui.element("div").classes("cb-section-card w-full") as empty_card:
             empty_card._props["data-section"] = "particles"
             with ui.element("div").classes("cb-section-card-header"):
+                ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
                 ui.label("Particles").classes("cb-section-title")
                 _render_geometry_chip(geom)
             _render_no_species_empty_state(project_path, refresh)
@@ -1837,6 +1839,7 @@ def render_particles_section(
     with ui.element("div").classes(root_cls) as card:
         card._props["data-section"] = "particles"
         with ui.element("div").classes("cb-section-card-header"):
+            ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
             ui.label("Particles").classes("cb-section-title")
             ui.label(f"{len(species_data)} species").classes("text-[10px] font-mono text-gray-500")
             _render_geometry_chip(geom)
@@ -3697,6 +3700,7 @@ def _render_picks_scatter_section(row: dict, entry: dict, manifest: dict, has_su
 
     with ui.element("div").classes("cb-section-card w-full"):
         with ui.element("div").classes("cb-section-card-header"):
+            ui.icon("scatter_plot", size="14px").classes("text-indigo-600")
             ui.label("Pick distribution").classes("cb-section-title")
             ui.label(f"  ({row['n_picks']} picks)").classes("text-[10px] text-gray-400")
             ui.space()
@@ -4258,6 +4262,7 @@ class PickViewerPage:
         a leaf view with no nav icon of its own, so both routes out live here."""
         species = state.get_species(self.species_id) if self.species_id else None
         with ui.row().classes("cb-viewer-page-head w-full items-center gap-3 no-wrap"):
+            ui.icon("scatter_plot", size="16px").classes("text-indigo-600")
             ui.label("Pick viewer").classes("cb-section-title")
             if self.tomo_name:
                 ui.label(self.tomo_name).classes("text-[11px] font-mono text-gray-700")

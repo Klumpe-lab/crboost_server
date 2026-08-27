@@ -102,14 +102,27 @@ _CB_CSS = """
     color: #9ca3af; font-size: 13px; padding: 40px; flex-direction: column; gap: 8px;
 }
 .cb-section-title {
-    font-size: 10px; text-transform: uppercase; font-weight: 600;
-    color: #64748b; letter-spacing: 0.3px;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 11px; font-weight: 600;
+    color: #1e293b; letter-spacing: 0;
 }
 .cb-section-card {
     background: #ffffff; border: 1px solid #e5e7eb; border-radius: 6px;
-    padding: 6px 9px; margin-bottom: 5px;
+    padding: 10px 12px 8px; margin-bottom: 8px;
 }
-.cb-section-card-header { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+/* Title line: title · (params ⓘ) · (status). Real air between it and the content. */
+.cb-section-card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.cb-section-status { font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #b45309; }
+/* Job-parameter ⓘ beside a section title: the parameters live in its tooltip. */
+.cb-params-icon { color: #cbd5e1; cursor: help; font-size: 13px !important; }
+.cb-params-icon:hover { color: #6366f1; }
+.cb-params-tt {
+    background: #ffffff !important; color: #334155 !important; border: 1px solid #e2e8f0;
+    border-radius: 6px; padding: 6px 9px; box-shadow: 0 6px 20px rgba(15, 23, 42, 0.14);
+    display: grid; grid-template-columns: max-content max-content; gap: 2px 12px;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 10px;
+}
+.cb-params-tt .cb-params-k { color: #94a3b8; }
+.cb-params-tt .cb-params-v { font-family: 'IBM Plex Mono', monospace; color: #1e293b; }
 /* R3 — collapsible Dataset section: clickable header + rotating caret; the body
  * (chips + key/val grid + pixel-sanity table) hides when collapsed. Default
  * collapsed (pref dashboard_dataset_collapsed). */
@@ -117,17 +130,6 @@ _CB_CSS = """
 .cb-collapse-caret { color: #94a3b8; transition: transform 0.15s ease; margin-left: 2px; }
 .cb-collapse-caret.rot { transform: rotate(180deg); }
 .cb-collapsible-body.cb-collapsed { display: none; }
-/* R2 — per-panel visibility toggle row: dense checkboxes picking which detail
- * sections render. Sits between the heatmap strip and the detail pane; a
- * user-level pref persisted across projects + TS. */
-.cb-panel-toggle-row {
-    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-    padding: 2px 8px 3px 10px; border-bottom: 1px solid #eef2f7; background: #fafbfc;
-}
-.cb-panel-toggle-label {
-    font-size: 10px; text-transform: uppercase; font-weight: 700;
-    color: #94a3b8; letter-spacing: 0.03em;
-}
 .cb-aspect { width: 100%; }
 .cb-picks-right { border-left: 1px solid #eef2f7; padding-left: 14px; }
 @media (max-width: 900px) {
@@ -582,34 +584,36 @@ _CB_CSS = """
     align-self: baseline;
 }
 .cb-datadump-val { color: #1f2937; align-self: baseline; word-break: break-all; }
-.cb-metric-strip {
-    font-family: ui-monospace, monospace; font-size: 10px;
-    color: #475569;
-}
 .cb-section-placeholder {
     font-size: 10px; color: #9ca3af; font-style: italic;
     padding: 4px 0 2px 0;
 }
 .cb-plot-row {
-    display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 4px 0;
+    display: flex; gap: 12px; flex-wrap: wrap; margin: 0 0 6px 0;
 }
 .cb-plot-cell {
-    flex: 1 1 320px; min-width: 260px;
+    flex: 1 1 340px; min-width: 280px;
     background: #ffffff; border: 1px solid #f1f5f9; border-radius: 4px;
-    padding: 2px 4px;
+    padding: 6px 6px 2px;
 }
 .cb-plot-cell-wide { flex: 1 1 100%; min-width: 280px; }
+/* One short regular-weight title per chart (the explainer tooltip hangs on it);
+ * the only bold text in a tile is the axis names. */
 .cb-plot-label {
-    font-size: 9px; color: #64748b; font-weight: 600;
-    padding: 1px 4px 0; text-transform: uppercase; letter-spacing: 0.3px;
+    font-family: 'IBM Plex Sans', sans-serif; font-size: 10px; color: #64748b;
+    font-weight: 400; padding: 0 2px 2px; cursor: help;
 }
-.cb-stat-strip {
-    display: flex; gap: 14px; flex-wrap: wrap;
-    font-family: ui-monospace, monospace; font-size: 10px;
-    color: #475569; padding: 2px 0 4px 0;
-}
-.cb-stat-strip .cb-stat-key { color: #94a3b8; margin-right: 3px; }
-.cb-stat-strip .cb-stat-val { color: #1e293b; font-weight: 600; }
+/* Summary statistics as tiles — a small label over a mono value, generous gaps —
+ * never a `key val · key val` line crammed into 20 px. */
+.cb-stats { display: flex; gap: 26px; flex-wrap: wrap; margin: 0 2px 14px; }
+.cb-stat { display: flex; flex-direction: column; gap: 1px; }
+.cb-stat-label { font-family: 'IBM Plex Sans', sans-serif; font-size: 9px; color: #94a3b8; white-space: nowrap; }
+.cb-stat-value { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #1e293b; white-space: nowrap; }
+/* The Dataset title carries its headline facts inline (it is collapsed by default). */
+.cb-stats-inline { margin: 0 0 0 6px; gap: 16px; }
+.cb-stats-inline .cb-stat-value { font-size: 10px; color: #475569; }
+/* A collapsed section's title line keeps no air below it. */
+.cb-section-card-header:has(+ .cb-collapsed) { margin-bottom: 0; }
 .cb-drop-list {
     font-family: ui-monospace, monospace; font-size: 10px; color: #6b7280;
     background: #fef3c7; border: 1px solid #fde68a; border-radius: 3px;
@@ -925,78 +929,91 @@ _CB_CSS = """
     color: #b45309; background: #fef3c7; border-color: #fde68a;
 }
 
-/* ── Journey heatmap strip (the de-dialoged panel's header) ─────────────────
-   Two-block flex: frozen-left row labels + a horizontally-scrolling matrix of
-   TS columns. Row heights match across both blocks so the rows line up without
-   sticky positioning. box-sizing keeps the 1px row borders out of the height. */
-.cb-strip { flex: 0 0 auto; background: #ffffff; border-bottom: 1px solid #e5e7eb; overflow: hidden; }
-.cb-strip-wrap { display: flex; flex-direction: row; align-items: stretch; }
-.cb-strip-corner, .cb-strip-rowlabel, .cb-strip-colhead, .cb-strip-cell { box-sizing: border-box; }
-.cb-strip-left {
-    flex: 0 0 auto; min-width: 168px; max-width: 220px;
-    display: flex; flex-direction: column; border-right: 1px solid #e5e7eb; background: #fafbfc;
+/* ── Journey header line (ui/dashboard/strip.py) ────────────────────────────
+   One thin line about the selected tilt series: [▾ position · i/N] · four
+   labelled stage dots · per-species pick counts · ⓘ · exclude — and, at the far
+   right (mounted by the journey), the section selector. The name block drops
+   down the tomogram switcher table; the overview lives there, not on screen. */
+.cb-jhead {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 10px; min-height: 30px;
+    padding: 0 12px; background: #ffffff; border-bottom: 1px solid #e5e7eb;
+    font-family: 'IBM Plex Sans', sans-serif;
 }
-.cb-strip-corner {
-    height: 26px; display: flex; align-items: center; gap: 4px;
-    padding: 0 6px 0 9px; border-bottom: 1px solid #eef2f7;
+.cb-jhead-left { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cb-jhead-right { flex: 0 0 auto; display: flex; align-items: center; }
+.cb-jhead-empty { font-size: 10px; color: #94a3b8; }
+.cb-jsep { width: 1px; height: 14px; background: #e5e7eb; flex: 0 0 auto; }
+.cb-jswitch {
+    display: flex; align-items: baseline; gap: 6px; cursor: pointer; user-select: none;
+    padding: 3px 6px; margin-left: -6px; border-radius: 4px;
 }
-.cb-strip-corner-count { font-size: 10px; font-weight: 700; color: #64748b; font-family: ui-monospace, monospace; }
-.cb-strip-rowlabel {
-    height: 22px; display: flex; align-items: center; gap: 5px;
-    padding: 0 8px 0 9px; border-bottom: 1px solid #f8fafc;
+.cb-jswitch:hover { background: #f1f5f9; }
+.cb-jswitch-caret { font-size: 9px; color: #94a3b8; }
+.cb-jswitch-pos { font-size: 12px; font-weight: 600; color: #0f172a; white-space: nowrap; }
+.cb-jswitch-pos.excluded { text-decoration: line-through; color: #94a3b8; }
+.cb-jswitch-idx { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #64748b; white-space: nowrap; }
+.cb-jstage { display: flex; align-items: center; gap: 4px; }
+.cb-jstage-name { font-size: 10px; color: #475569; white-space: nowrap; }
+.cb-jdot { width: 7px; height: 7px; border-radius: 50%; background: #e5e7eb; flex: 0 0 auto; }
+.cb-jdot.ok { background: #10b981; }
+.cb-jdot.fail { background: #dc2626; }
+.cb-jdot.running { background: #f59e0b; }
+.cb-jdot.zero { background: #9ca3af; }
+.cb-jdot.pending { background: #e5e7eb; }
+.cb-jdot.skip { background: repeating-linear-gradient(45deg, #cbd5e1, #cbd5e1 2px, #e5e7eb 2px, #e5e7eb 4px); }
+.cb-jhead-species { display: flex; align-items: center; gap: 5px; }
+.cb-jsp-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.cb-jsp-name { font-size: 10px; color: #475569; white-space: nowrap; }
+.cb-jsp {
+    display: inline-flex; align-items: baseline; gap: 5px; padding: 0 4px;
+    border-radius: 3px; white-space: nowrap;
 }
-.cb-strip-prep { height: 20px; }
-.cb-strip-rl-name {
-    font-size: 11px; color: #374151; font-weight: 600;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.cb-jsp-n { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: #1e293b; }
+.cb-jsp-kept { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #059669; }
+.cb-jsp.running { background: rgba(245, 158, 11, 0.16); }
+.cb-jsp.running .cb-jsp-n { color: #92400e; }
+.cb-jsp.fail { background: rgba(220, 38, 38, 0.12); }
+.cb-jsp.fail .cb-jsp-n { color: #b91c1c; }
+.cb-jsp.zero .cb-jsp-n { color: #94a3b8; }
+.cb-jsp.pending .cb-jsp-n { color: #cbd5e1; }
+.cb-jexcl { font-size: 14px; color: #cbd5e1; cursor: pointer; }
+.cb-jexcl:hover { color: #dc2626; }
+.cb-jexcl.on { color: #b45309; }
+/* The switcher dropdown: a full table of tilt series — as wide and tall as it needs
+   to be (the menu caps it at the viewport), one row per tomogram, totals at the foot. */
+.cb-jmenu {
+    display: flex; flex-direction: column; min-width: 480px;
+    padding: 4px 0; background: #ffffff; font-family: 'IBM Plex Sans', sans-serif;
 }
-.cb-strip-rl-sub { font-size: 8px; color: #94a3b8; letter-spacing: 0.3px; margin-left: auto; }
-.cb-strip-rl-sum { font-size: 10px; color: #475569; font-family: ui-monospace, monospace; flex: 0 0 auto; }
-.cb-strip-sp-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
-.cb-strip-scroll { flex: 1 1 0; min-width: 0; overflow-x: auto; overflow-y: hidden; }
-.cb-strip-cols { display: flex; flex-direction: row; width: max-content; }
-.cb-strip-col {
-    flex: 0 0 62px; display: flex; flex-direction: column; position: relative;
-    border-right: 1px solid #f1f5f9; cursor: pointer;
+.cb-jrow {
+    display: grid; grid-template-columns: var(--cb-jcols); align-items: center; column-gap: 8px;
+    padding: 4px 12px; cursor: pointer; border-bottom: 1px solid #f8fafc;
 }
-.cb-strip-col:hover { background: #f8fafc; }
-.cb-strip-col.selected { background: #eef2ff; box-shadow: inset 0 0 0 1.5px #6366f1; }
-/* Excluded-from-processing TS: muted, but header + restore toggle stay crisp so
-   the undo is always reachable (dim the data cells, not the whole column). */
-.cb-strip-col.excluded { background: repeating-linear-gradient(45deg, #f8fafc, #f8fafc 4px, #eef1f4 4px, #eef1f4 8px); }
-.cb-strip-col.excluded .cb-strip-colhead { text-decoration: line-through; color: #94a3b8; }
-.cb-strip-col.excluded .cb-strip-cell { opacity: 0.3; }
-.cb-strip-excl {
-    position: absolute; top: 0; right: 0; font-size: 12px; line-height: 1;
-    color: #94a3b8; cursor: pointer; opacity: 0; transition: opacity .12s; z-index: 3;
+.cb-jrow:hover { background: #f8fafc; }
+.cb-jrow.selected { background: #eef2ff; box-shadow: inset 2px 0 0 #6366f1; }
+.cb-jrow.excluded .cb-jname { text-decoration: line-through; color: #94a3b8; }
+.cb-jrow.excluded .cb-jsp, .cb-jrow.excluded .cb-jstage { opacity: 0.35; }
+.cb-jrow-head, .cb-jrow-total { cursor: default; }
+.cb-jrow-head:hover, .cb-jrow-total:hover { background: transparent; }
+.cb-jrow-head { border-bottom: 1px solid #e5e7eb; padding-bottom: 5px; }
+.cb-jrow-total { border-top: 1px solid #e5e7eb; border-bottom: none; margin-top: 2px; padding-top: 6px; }
+.cb-jh { font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #94a3b8; }
+.cb-jh-c { text-align: center; }
+.cb-jh-sp { display: flex; align-items: center; gap: 5px; min-width: 0; text-transform: none; letter-spacing: 0; }
+.cb-jh-spname {
+    font-size: 10px; font-weight: 600; color: #475569;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.cb-strip-col:hover .cb-strip-excl { opacity: 0.6; }
-.cb-strip-excl:hover { color: #dc2626; opacity: 1; }
-.cb-strip-excl.on { opacity: 1; color: #b45309; }
-.cb-strip-colhead {
-    height: 26px; display: flex; align-items: center; justify-content: center;
-    font-size: 9px; color: #475569; font-weight: 600; white-space: nowrap; overflow: hidden;
-    padding: 0 2px; border-bottom: 1px solid #eef2f7;
+.cb-jcell { min-width: 0; }
+.cb-jcell-idx { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: #94a3b8; }
+.cb-jcell-name { display: flex; flex-direction: column; gap: 0; }
+.cb-jname { font-size: 11px; font-weight: 600; color: #1e293b; white-space: nowrap; }
+.cb-jname-full {
+    font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #94a3b8;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.cb-strip-col.selected .cb-strip-colhead { color: #4338ca; }
-.cb-strip-cell { display: flex; align-items: center; justify-content: center; border-bottom: 1px solid #f8fafc; }
-.cb-strip-prepcell { height: 20px; gap: 2px; }
-.cb-strip-pickcell { height: 22px; gap: 3px; font-family: ui-monospace, monospace; }
-.cb-strip-n { font-size: 10px; line-height: 1; }
-/* kept-after-curation count — green carries the auto-vs-curated distinction (the
-   one place green means a real completed step), so the cell needs no fill. */
-.cb-strip-filt { font-size: 9px; color: #059669; line-height: 1; font-weight: 700; }
-.cb-strip-dot { width: 6px; height: 6px; border-radius: 50%; background: #d1d5db; }
-.cb-strip-dot.ok { background: #10b981; }
-.cb-strip-dot.fail { background: #dc2626; }
-.cb-strip-dot.running { background: #f59e0b; }
-.cb-strip-dot.zero { background: #9ca3af; }
-.cb-strip-dot.pending { background: #e5e7eb; }
-.cb-strip-pickcell.has { color: #334155; }
-.cb-strip-pickcell.running { background: rgba(245, 158, 11, 0.16); color: #92400e; }
-.cb-strip-pickcell.zero { background: rgba(148, 163, 184, 0.14); color: #94a3b8; }
-.cb-strip-pickcell.fail { background: rgba(220, 38, 38, 0.12); color: #b91c1c; }
-.cb-strip-pickcell.pending { color: #cbd5e1; }
+.cb-jrow .cb-jstage { justify-content: center; }
+.cb-jtotal-name { font-size: 10px; color: #64748b; }
 /* ── Species page (roadmap 10) ─────────────────────────────────────────────── */
 /* Segmented control (`ui/components/segmented.py`): the job tab's flat dense
  * switcher as one bordered strip; the active segment is tinted, never a Quasar tab. */
@@ -1267,6 +1284,23 @@ input[type=number] { -moz-appearance: textfield; appearance: textfield; }
     50%      { opacity: 1; }
 }
 .cb-artiax-live { animation: cb-artiax-breathe 2.6s ease-in-out infinite; }
+
+/* ── Scrollbars: invisible everywhere, scrolling untouched ─────────────────── */
+/* Dense panels lost their edges under a 15 px native bar; wheel / trackpad /
+ * keyboard scrolling keeps working. Quasar's scroll-area draws its own thumb —
+ * hidden too. */
+* { scrollbar-width: none; }
+*::-webkit-scrollbar { width: 0 !important; height: 0 !important; display: none; }
+.q-scrollarea__bar, .q-scrollarea__thumb { display: none !important; }
+/* NiceGUI lays a scroll-area's / an expansion's content out as a flex column with
+ * `align-items: flex-start` + 1 rem padding + 1 rem gap (nicegui.css), so anything
+ * inside without an explicit width shrink-wraps to the left edge. `cb-scroll-tight`
+ * makes the content stretch and drops that padding — for dialogs and trackers that
+ * own their own spacing. */
+.cb-scroll-tight .q-scrollarea__content,
+.cb-scroll-tight .q-expansion-item__content { align-items: stretch; padding: 0; gap: 0; }
+/* Log views (job Logs tab): wrap long lines instead of scrolling sideways. */
+.cb-log .q-scrollarea__content { white-space: pre-wrap; overflow-wrap: anywhere; }
 """
 
 

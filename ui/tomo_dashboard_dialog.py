@@ -54,9 +54,10 @@ from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
 from services.visualization.preview_orchestrator import _find_warp_tomo_preview
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview
 from ui.components.chip import render_chip
+from ui.components.segmented import Segmented
 from ui.current_project import current_project_state
 from ui.dashboard.css import ensure_assets_loaded
-from ui.dashboard.figures import _build_per_tilt_chart, _is_meaningful_series, _safe_floats, _stats
+from ui.dashboard.figures import SERIES_PALETTE, _is_meaningful_series, _safe_floats, _stats, build_per_tilt_chart
 from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.dashboard.strip import build_strip
 from ui.particles.pick_viewer import render_imported_particles_section, render_particles_section, reset_auto_kick_state
@@ -69,27 +70,34 @@ logger = logging.getLogger(__name__)
 # via the shared user_prefs_service (app.storage.user + ~/.crboost/prefs.json).
 # ---------------------------------------------------------------------------
 
-# (key, label) for every toggleable detail panel, in render order. The label
-# shows in the Panels toggle row; the key is the stable pref id AND the gate key
-# used in _render_main_pane_for_ts.
+# (key, label) for every detail section, in render order. The label shows in the
+# section selector at the right end of the header line; the key is the stable pref
+# id AND the gate key used in _render_main_pane_for_ts.
 _DASHBOARD_PANEL_KEYS: list[tuple[str, str]] = [
     ("dataset", "Dataset"),
-    ("fs_ctf", "FS·CTF"),
-    ("tilt_filter", "Tilt-filter"),
-    ("ts_align", "TS-align"),
-    ("ts_ctf", "TS-CTF"),
-    ("tilt_qc", "Tilt-QC"),
-    ("reconstruct", "Reconstruct"),
+    ("fs_ctf", "Motion & CTF"),
+    ("tilt_filter", "Tilt filter"),
+    ("ts_align", "Alignment"),
+    ("ts_ctf", "CTF"),
+    ("tilt_qc", "Tilt QC"),
+    ("reconstruct", "Reconstruction"),
     ("particles", "Particles"),
 ]
+_ALL_PANELS = "all"
 
 
-def _hidden_dashboard_panels() -> set[str]:
-    """Panel keys the user toggled OFF. Stored as a list (absence ⇒ visible)."""
-    try:
-        return set(get_prefs_service().prefs.dashboard_hidden_panels)
-    except Exception:
-        return set()
+def _selected_panel() -> str:
+    """The ONE section the Journey shows, or "all". An unknown stored key (a section
+    renamed or removed) falls back to "all" rather than to an empty page."""
+    key = str(get_prefs_service().prefs.dashboard_panel or _ALL_PANELS)
+    if key == _ALL_PANELS or any(key == k for k, _ in _DASHBOARD_PANEL_KEYS):
+        return key
+    return _ALL_PANELS
+
+
+def _visible_panels() -> set[str]:
+    sel = _selected_panel()
+    return {k for k, _ in _DASHBOARD_PANEL_KEYS} if sel == _ALL_PANELS else {sel}
 
 
 def _dataset_collapsed() -> bool:
@@ -107,30 +115,26 @@ def _save_dashboard_prefs() -> None:
         pass
 
 
-def _toggle_panel(key: str, visible: bool, on_change) -> None:
-    svc = get_prefs_service()
-    hidden = set(svc.prefs.dashboard_hidden_panels)
-    if visible:
-        hidden.discard(key)
-    else:
-        hidden.add(key)
-    svc.prefs.dashboard_hidden_panels = sorted(hidden)
+def _select_panel(key: str, on_change) -> None:
+    get_prefs_service().prefs.dashboard_panel = key
     _save_dashboard_prefs()
     on_change()
 
 
-def _build_panel_toggle_row(host, on_change) -> None:
-    """Dense-checkbox row (one per detail panel) gating which sections render.
-    Built once as journey chrome — toggling updates the user pref, persists it,
-    and re-renders the detail pane via on_change."""
+def _build_panel_selector(host, on_change) -> Segmented:
+    """Single-select section switch (radio semantics: "All" or exactly one section)
+    at the right end of the header line, in the house segmented chrome. Built once
+    as journey chrome — a click updates the user pref, persists it, and re-renders
+    the detail pane via on_change."""
     host.clear()
-    hidden = _hidden_dashboard_panels()
+
+    def _switch(key: str) -> None:
+        seg.set_active(key)
+        _select_panel(key, on_change)
+
     with host:
-        ui.label("Panels").classes("cb-panel-toggle-label")
-        for key, label in _DASHBOARD_PANEL_KEYS:
-            ui.checkbox(label, value=(key not in hidden)).props("dense").classes(
-                "text-[11px] cb-panel-cb"
-            ).on_value_change(lambda e, k=key: _toggle_panel(k, e.value, on_change))
+        seg = Segmented([(_ALL_PANELS, "All"), *_DASHBOARD_PANEL_KEYS], _selected_panel(), _switch)
+    return seg
 
 
 # ---------------------------------------------------------------------------
@@ -189,12 +193,12 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
 
     container.clear()
     with container:
-        # Column layout: heatmap status strip (the per-TS nav) on top, the
-        # selected TS's detail pane below. Replaces the old 300px left sidebar.
-        strip_container = ui.element("div").classes("cb-strip")
-        # R2: per-panel visibility toggle row (which detail sections render).
-        # Populated below once render_main exists; persists across TS + projects.
-        panel_toggle_container = ui.element("div").classes("cb-panel-toggle-row")
+        # Column layout: ONE thin header line about the selected tilt series (its
+        # dropdown holds the whole-project overview) with the section selector at
+        # its right end, and the selected TS's detail pane below.
+        with ui.element("div").classes("cb-jhead"):
+            strip_container = ui.element("div").classes("cb-jhead-left")
+            panel_toggle_container = ui.element("div").classes("cb-jhead-right")
         main_area = (
             ui.element("div")
             .classes("cb-main")
@@ -266,7 +270,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             journey_signature(journey, species_journey, [ts]),
             job_states,
             _registry_sig(),
-            tuple(sorted(_hidden_dashboard_panels())),
+            _selected_panel(),
             # A fresh species with no rows yet must still surface as a species tab.
             state.species_identity(),
             pick_lists_sig,
@@ -421,7 +425,7 @@ def build_journey_panel(container, callbacks: dict | None = None) -> None:
             _refresh_req["force_main"] = True
         _refresh_req["quiet"] = 0
 
-    _build_panel_toggle_row(panel_toggle_container, render_main)
+    _build_panel_selector(panel_toggle_container, render_main)
     refresh_all()
 
     # Live refresh while the journey is the active view: re-render every 4 s if
@@ -656,11 +660,11 @@ def _render_main_pane_for_ts(
     `manage_species(species_id)` is the workspace's route to the Species page's Picks
     tab — threaded (not stashed module-level) because it closes over ONE client's page."""
     rendered_any = False
-    hidden = _hidden_dashboard_panels()
+    visible = _visible_panels()
 
-    # Project-wide / per-TS analytics — primitive datadumps for now (Slice C).
-    # Each panel is gated on the user's visibility pref (R2); keys match
-    # _DASHBOARD_PANEL_KEYS so the Panels toggle row drives what renders here.
+    # Project-wide / per-TS analytics. Each section is gated on the user's section
+    # selection; keys match _DASHBOARD_PANEL_KEYS so the header's selector drives
+    # what renders here.
     section_emitters = (
         ("dataset", _render_dataset_section),
         ("fs_ctf", _render_fs_motion_ctf_section),
@@ -671,7 +675,7 @@ def _render_main_pane_for_ts(
         ("reconstruct", _render_reconstruct_section),
     )
     for key, emit in section_emitters:
-        if key in hidden:
+        if key not in visible:
             continue
         if emit(ts_name, project_state, project_path, refresh):
             rendered_any = True
@@ -680,7 +684,7 @@ def _render_main_pane_for_ts(
     # species' picks overlaid (toggleable), plus a per-species tab carrying
     # that species' TM sanity strip + gallery / scatter. Replaces both the
     # old per-species Template Match cards and the candidate-extract cards.
-    if "particles" not in hidden:
+    if "particles" in visible:
         # Candidate-extract path first; if it renders nothing (no TEMPLATE_EXTRACT
         # jobs — e.g. a particle-only project), fall back to the imported-tomogram
         # manual-picking section so the imported tomos still surface.
@@ -698,20 +702,15 @@ def _render_main_pane_for_ts(
             rendered_any = True
 
     if not rendered_any:
-        if len(hidden) >= len(_DASHBOARD_PANEL_KEYS):
-            with ui.element("div").classes("cb-empty"):
-                ui.icon("visibility_off", size="36px").classes("text-gray-400")
-                ui.label("All panels hidden.").classes("text-xs")
-                ui.label("Re-enable sections in the Panels row above.").classes("text-[11px] italic text-center").style(
-                    "max-width: 420px;"
-                )
-        else:
-            with ui.element("div").classes("cb-empty"):
-                ui.icon("hourglass_empty", size="36px")
+        with ui.element("div").classes("cb-empty"):
+            ui.icon("hourglass_empty", size="36px")
+            if _selected_panel() == _ALL_PANELS:
                 ui.label(f"No section data yet for {ts_name}.").classes("text-xs")
-                ui.label("Section cards appear once the matching pipeline jobs have run.").classes(
+                ui.label("Sections appear once the matching pipeline jobs have run.").classes(
                     "text-[11px] italic text-center"
                 ).style("max-width: 420px;")
+            else:
+                ui.label(f"Nothing to show in this section for {ts_name} yet.").classes("text-xs")
 
 
 # ---------------------------------------------------------------------------
@@ -722,35 +721,19 @@ def _render_main_pane_for_ts(
 
 def _render_datadump_card(
     section_key: str,
-    icon: str,
     title: str,
-    metric_strip: str,
     instance_id: str | None,
     job_status_label: str | None,
     rows: list[tuple[str, str]],
     note: str | None = None,
 ) -> None:
-    """Slice-C primitive section card: header + 1-line metric strip + key/value
-    grid. Reused by every analytics emitter."""
+    """Section card for a job with no outputs yet: the title line (parameters in
+    its ⓘ tooltip, status word) + one note."""
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = section_key
         if instance_id:
             card._props["data-instance"] = instance_id
-        with ui.element("div").classes("cb-section-card-header"):
-            ui.icon(icon, size="14px").classes("text-indigo-600")
-            ui.label(title).classes("cb-section-title")
-            if instance_id:
-                ui.label(instance_id).classes("text-[10px] font-mono text-gray-500")
-            ui.space()
-            if metric_strip:
-                ui.label(metric_strip).classes("cb-metric-strip")
-            if job_status_label and job_status_label.lower() != "succeeded":
-                ui.label(job_status_label).classes("text-[10px] text-amber-600 font-mono")
-        if rows:
-            with ui.element("div").classes("cb-datadump-grid"):
-                for k, v in rows:
-                    ui.label(k).classes("cb-datadump-key")
-                    ui.label("—" if v is None or v == "" else str(v)).classes("cb-datadump-val")
+        _section_header(title, params=rows, status_label=job_status_label, instance_id=instance_id)
         if note:
             ui.label(note).classes("cb-section-placeholder")
 
@@ -882,7 +865,7 @@ def _render_stage0_chips(project_state, project_path: Path) -> None:
             tooltip += f" Registry: Warp applied ts_defocus_hand {warp_hand:+d}."
 
     with ui.element("div").classes("cb-chip-strip"):
-        render_chip("TomoHand", value, status=status, tooltip=tooltip, icon="compare_arrows")
+        render_chip("TomoHand", value, status=status, tooltip=tooltip)
 
 
 def _render_dataset_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
@@ -933,10 +916,11 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
         # the pixel/binning sanity table. State persists across projects + TS.
         header = ui.element("div").classes("cb-section-card-header cb-collapsible-header")
         with header:
-            ui.icon("memory", size="14px").classes("text-indigo-600")
             ui.label("Dataset").classes("cb-section-title")
+            with ui.element("div").classes("cb-stats cb-stats-inline"):
+                for part in metric_parts:
+                    ui.label(part).classes("cb-stat-value")
             ui.space()
-            ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
             caret = ui.icon("expand_less", size="18px").classes("cb-collapse-caret")
         if collapsed:
             caret.classes(add="rot")
@@ -969,48 +953,63 @@ def _render_dataset_section(ts_name: str, project_state, project_path: Path, ref
     return True
 
 
-# --- Plot helpers that run inside an existing card body ----------------------
+# --- Section chrome + plot helpers that run inside an existing card body ------
 
 
-_DEFOCUS_U_COLOR = "#4338ca"  # indigo-700
-_DEFOCUS_V_COLOR = "#a855f7"  # purple-500
-_CTF_RES_COLOR = "#059669"  # emerald-600
-_CTF_FOM_COLOR = "#0ea5e9"  # sky-500
-_MOTION_TOTAL_COLOR = "#d97706"  # amber-600
-_MOTION_EARLY_COLOR = "#fb923c"  # orange-400
-_MOTION_LATE_COLOR = "#ea580c"  # orange-600
-_X_SHIFT_COLOR = "#0891b2"  # cyan-600
-_Y_SHIFT_COLOR = "#7c3aed"  # violet-600
+_ACCENT, _INK, _MUTED = SERIES_PALETTE
 
 
-def _stat_strip(rows: list[tuple[str, str]]) -> None:
-    """Tiny inline stats line: `key val · key val ...`"""
+def _section_header(
+    title: str,
+    *,
+    params: list[tuple[str, str]] | None = None,
+    status_label: str | None = None,
+    instance_id: str | None = None,
+) -> None:
+    """The one section title line: title · ⓘ (the job's parameters in its tooltip) ·
+    a status word when the job isn't succeeded. No decorative icon, no instance id,
+    no metric strip — the parameters are one hover away instead of a line of
+    abbreviations under every title."""
+    with ui.element("div").classes("cb-section-card-header"):
+        ui.label(title).classes("cb-section-title")
+        if params:
+            with ui.icon("info_outline").classes("cb-params-icon"), ui.tooltip().classes("cb-params-tt"):
+                if instance_id:
+                    ui.label("job").classes("cb-params-k")
+                    ui.label(instance_id).classes("cb-params-v")
+                for k, v in params:
+                    ui.label(k).classes("cb-params-k")
+                    ui.label("—" if v is None or v == "" else str(v)).classes("cb-params-v")
+        if status_label and status_label.lower() != "succeeded":
+            ui.label(status_label).classes("cb-section-status")
+
+
+def _stat_tiles(rows: list[tuple]) -> None:
+    """Summary numbers as tiles — a small label over a mono value. Each row is
+    ``(label, value)`` or ``(label, value, tooltip)``."""
     if not rows:
         return
-    with ui.element("div").classes("cb-stat-strip"):
-        for k, v in rows:
-            with ui.element("span"):
-                ui.html(f"<span class='cb-stat-key'>{k}</span><span class='cb-stat-val'>{v}</span>", sanitize=False)
+    with ui.element("div").classes("cb-stats"):
+        for row in rows:
+            with ui.element("div").classes("cb-stat") as tile:
+                ui.label(row[0]).classes("cb-stat-label")
+                ui.label(str(row[1])).classes("cb-stat-value")
+            if len(row) > 2 and row[2]:
+                tile.tooltip(row[2])
 
 
-def _plot_cell(label: str, fig: dict, *, height_px: int = 220, wide: bool = False, hint: str | None = None) -> None:
-    """One plot tile inside a `.cb-plot-row` parent. `hint` is a short tooltip
-    explainer attached to the title (helps newcomers parse the metric).
-
-    Default height bumped to 220px (from 150) to give the markers vertical
-    breathing room — at 150 the dots crowd together and small spreads vanish.
-    """
+def _plot_cell(label: str, options: dict, *, height_px: int = 220, wide: bool = False, hint: str | None = None) -> None:
+    """One chart tile inside a `.cb-plot-row`: a short regular-weight title (the
+    explainer `hint` is its tooltip) over an ECharts plot that fills the tile."""
     cls = "cb-plot-cell cb-plot-cell-wide" if wide else "cb-plot-cell"
     with ui.element("div").classes(cls):
-        with ui.row().classes("items-center gap-1").style("padding: 1px 4px 0;"):
-            lbl = ui.label(label).classes("cb-plot-label").style("padding: 0;")
-            if hint:
-                lbl.tooltip(hint)
-                ui.icon("info_outline", size="11px").classes("text-gray-400 cursor-help").tooltip(hint)
-        ui.plotly(fig).style(f"width: 100%; height: {height_px}px;")
+        lbl = ui.label(label).classes("cb-plot-label")
+        if hint:
+            lbl.tooltip(hint)
+        ui.echart(options).style(f"width: 100%; height: {height_px}px;")
 
 
-def _render_registry_gap(ts_name: str, status_label: str, param_rows: list[tuple[str, str]] | None = None) -> None:
+def _render_registry_gap(ts_name: str, status_label: str) -> None:
     """Loud, honest placeholder when the registry has no data for a job+TS.
     Stage-0 decision: consumers are registry-only — a run that predates registry
     ingest shows this marker and re-earns its dashboard data by re-running;
@@ -1025,11 +1024,6 @@ def _render_registry_gap(ts_name: str, status_label: str, param_rows: list[tuple
             f"No registry data for {ts_name} — this run predates registry ingest. "
             "Re-run the job to populate it (per-tilt stars are no longer read)."
         ).classes("cb-section-placeholder text-amber-700")
-    if param_rows:
-        with ui.element("div").classes("cb-datadump-grid"):
-            for k, v in param_rows:
-                ui.label(k).classes("cb-datadump-key")
-                ui.label(str(v)).classes("cb-datadump-val")
 
 
 def _per_tilt_customdata(df: pd.DataFrame) -> list[list]:
@@ -1043,19 +1037,18 @@ def _per_tilt_customdata(df: pd.DataFrame) -> list[list]:
     return [[i + 1, bases[i]] for i in range(n)]
 
 
-# One-line explainers attached to plot titles. Defocus / astig / shifts are
-# domain-jargon; quick tooltips let newcomers parse the dashboard without
-# leaving the page.
+# One-line explainers behind each chart title. Defocus / astigmatism / shifts are
+# domain jargon; a hover lets newcomers parse the dashboard without leaving the page.
 _HINT_DEFOCUS = (
-    "Per-tilt astigmatic CTF defocus. Defocus U = long-axis (more underfocus), "
-    "V = short-axis. Mean ≈ (U+V)/2 is the conventionally reported defocus; "
-    "spread between U and V is astigmatism."
+    "Per-tilt astigmatic CTF defocus. Defocus U = long axis (more underfocus), "
+    "V = short axis. Their mean is the conventionally reported defocus; "
+    "the spread between U and V is the astigmatism."
 )
 _HINT_ASTIG = (
-    "Magnitude of CTF astigmatism (|U − V|, Å). Large astig widens CTF zeros and reduces achievable resolution."
+    "Magnitude of CTF astigmatism (|U − V|, Å). Large astigmatism widens CTF zeros and reduces achievable resolution."
 )
 _HINT_CTF_RES = "Best resolution (Å) at which CTF zeros could be fit. Lower = better fit / more usable signal."
-_HINT_CTF_FOM = "CTF fit figure-of-merit, dimensionless 0..1. Higher = more confident fit."
+_HINT_CTF_FOM = "CTF fit figure of merit, dimensionless 0..1. Higher = more confident fit."
 _HINT_MOTION = (
     "Per-tilt beam-induced motion (WarpTools MeanFrameMovement; units per Warp convention, ≈ Å). "
     "Higher = more drift/charging, and it typically rises toward high tilt. Read from the frameseries XML, "
@@ -1067,12 +1060,12 @@ _HINT_SHIFT = (
 )
 _HINT_ALIGN_ANGLES = (
     "Refined per-tilt rotational corrections. X tilt − nominal = how far the refit moved the stage tilt; "
-    "Y tilt and Z rot are the secondary tilt-axis and in-plane rotation."
+    "Y tilt and Z rotation are the secondary tilt-axis and in-plane rotation."
 )
 _HINT_THROUGHFOCUS = (
     "Mean per-tilt CTF defocus ((U+V)/2) vs stage tilt, sorted by angle — the through-focus curve. "
-    "A clean tilt-series traces a smooth trend; scatter or a kink at high tilt flags bad CTF fits. "
-    "The dotted line is a linear fit; its slope sign is a handedness cue (ties to the TomoHand / 412 "
+    "A clean tilt series traces a smooth trend; scatter or a kink at high tilt flags bad CTF fits. "
+    "The dashed line is a linear fit; its slope sign is a handedness cue (ties to the TomoHand / 412 "
     "defocus-sign issue)."
 )
 
@@ -1085,144 +1078,110 @@ def _render_ctf_motion_plots(
     motion: list | None = None,
     dl_by_frame: dict | None = None,
 ) -> None:
-    """Defocus + astigmatism (always plotted as scatter, since each tilt is an
-    independent estimate). CTF max-resolution / FOM / motion are gated on
-    `_is_meaningful_series` because WarpTools-exported RELION stars often
-    write `1e-6` placeholders for those columns — see
-    `project_warp_relion_star_placeholders.md`.
+    """Defocus + astigmatism (always scatter — each tilt is an independent estimate).
+    CTF fit resolution / figure of merit / motion are gated on `_is_meaningful_series`:
+    WarpTools-exported RELION stars carry `1e-6` placeholders in those columns, and a
+    placeholder column is simply not drawn (see `project_warp_relion_star_placeholders.md`).
 
-    `ctf_res` / `motion` are the REAL per-tilt series (registry QC fields,
-    XML-sourced at ingest) — the star fallback columns only render for
-    non-WarpTools exports that populate them for real."""
+    `ctf_res` / `motion` are the REAL per-tilt series (registry QC fields, XML-sourced
+    at ingest); the star fallback columns only render for non-WarpTools exports that
+    populate them for real."""
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
     cd = _per_tilt_customdata(df)
     if dl_by_frame:
-        # Append the tilt-filter verdict (keep/drop + prob) as customdata[2] so each
-        # per-tilt point's hover shows what the tilt-filter thought of that tilt.
+        # The tilt-filter verdict (keep/drop + prob) rides along as customdata[2] so each
+        # point's hover shows what the filter thought of that tilt.
         cd = [[*row, dl_by_frame.get(row[1], "—")] for row in cd]
-
-    xml_res: list | None = ctf_res
-    xml_motion: list | None = motion
 
     has_def = "rlnDefocusU" in df.columns and "rlnDefocusV" in df.columns
     has_astig = "rlnCtfAstigmatism" in df.columns
-    has_res = "rlnCtfMaxResolution" in df.columns
-    has_fom = "rlnCtfFigureOfMerit" in df.columns
-    has_motion_total = "rlnAccumMotionTotal" in df.columns
-
-    skipped: list[str] = []
 
     with ui.element("div").classes("cb-plot-row"):
         if has_def:
             du = [None if v is None else v / 1.0e4 for v in _safe_floats(df["rlnDefocusU"])]
             dv = [None if v is None else v / 1.0e4 for v in _safe_floats(df["rlnDefocusV"])]
-            fig = _build_per_tilt_chart(
+            fig = build_per_tilt_chart(
                 tilts,
-                [
-                    {"name": "Defocus U", "y": du, "color": _DEFOCUS_U_COLOR, "marker_size": 7},
-                    {"name": "Defocus V", "y": dv, "color": _DEFOCUS_V_COLOR, "marker_size": 7},
-                ],
-                y_label="defocus (µm)",
+                [{"name": "Defocus U", "y": du, "marker_size": 7}, {"name": "Defocus V", "y": dv, "marker_size": 7}],
+                y_label="Defocus (µm)",
                 customdata=cd,
                 y_unit=" µm",
                 y_range=(0.0, 10.0),
             )
-            _plot_cell("Defocus U / V per tilt", fig, hint=_HINT_DEFOCUS)
+            _plot_cell("Defocus", fig, hint=_HINT_DEFOCUS)
         if has_astig:
             astig = _safe_floats(df["rlnCtfAstigmatism"])
             if _is_meaningful_series(astig):
-                fig = _build_per_tilt_chart(
+                fig = build_per_tilt_chart(
                     tilts,
-                    [{"name": "astig", "y": astig, "color": "#ec4899", "marker_size": 7}],
-                    y_label="astigmatism (Å)",
+                    [{"name": "Astigmatism", "y": astig, "marker_size": 7}],
+                    y_label="Astigmatism (Å)",
                     customdata=cd,
                     y_unit=" Å",
                     y_range=(0.0, 1500.0),
                 )
-                _plot_cell("Astigmatism per tilt", fig, hint=_HINT_ASTIG)
+                _plot_cell("Astigmatism", fig, hint=_HINT_ASTIG)
 
-    # CTF fit resolution: prefer the real per-tilt CTFResolutionEstimate from the
-    # XML; fall back to the star column only for non-WarpTools exports that
-    # populate it for real (WarpTools writes a 1e-6 placeholder there).
-    res = xml_res if (xml_res is not None and _is_meaningful_series(xml_res)) else None
-    if res is None and has_res:
+    # CTF fit resolution: the real per-tilt estimate from the XML first; the star
+    # column only when it carries real values (non-WarpTools exports).
+    res = ctf_res if (ctf_res is not None and _is_meaningful_series(ctf_res)) else None
+    if res is None and "rlnCtfMaxResolution" in df.columns:
         star_res = _safe_floats(df["rlnCtfMaxResolution"])
         res = star_res if _is_meaningful_series(star_res) else None
-    if res is not None:
+    fom = _safe_floats(df["rlnCtfFigureOfMerit"]) if "rlnCtfFigureOfMerit" in df.columns else None
+    if fom is not None and not _is_meaningful_series(fom, threshold=1e-4):
+        fom = None
+    if res is not None or fom is not None:
         with ui.element("div").classes("cb-plot-row"):
-            fig = _build_per_tilt_chart(
-                tilts,
-                [{"name": "CTF fit res", "y": res, "color": _CTF_RES_COLOR, "marker_size": 6}],
-                y_label="resolution (Å)",
-                customdata=cd,
-                y_unit=" Å",
-                y_range=(0.0, 30.0),
-            )
-            _plot_cell("CTF fit resolution per tilt", fig, hint=_HINT_CTF_RES)
-    elif has_res:
-        skipped.append("CTF max-res")
-    if has_fom:
-        fom = _safe_floats(df["rlnCtfFigureOfMerit"])
-        if _is_meaningful_series(fom, threshold=1e-4):
-            with ui.element("div").classes("cb-plot-row"):
-                fig = _build_per_tilt_chart(
+            if res is not None:
+                fig = build_per_tilt_chart(
                     tilts,
-                    [{"name": "FOM", "y": fom, "color": _CTF_FOM_COLOR, "marker_size": 6}],
-                    y_label="FOM",
+                    [{"name": "CTF fit resolution", "y": res}],
+                    y_label="CTF fit resolution (Å)",
+                    customdata=cd,
+                    y_unit=" Å",
+                    y_range=(0.0, 30.0),
+                )
+                _plot_cell("CTF fit resolution", fig, hint=_HINT_CTF_RES)
+            if fom is not None:
+                fig = build_per_tilt_chart(
+                    tilts,
+                    [{"name": "Figure of merit", "y": fom}],
+                    y_label="CTF figure of merit",
                     customdata=cd,
                     y_range=(0.0, 1.0),
                 )
-                _plot_cell("CTF figure of merit per tilt", fig, hint=_HINT_CTF_FOM)
-        else:
-            skipped.append("CTF FOM")
+                _plot_cell("CTF figure of merit", fig, hint=_HINT_CTF_FOM)
 
-    # Motion: prefer the real per-tilt MeanFrameMovement from the XML (single
-    # series). Fall back to the star's AccumMotion total/early/late only when
-    # those are real (non-WarpTools exports) — WarpTools writes 1e-6 there.
-    if show_motion:
-        if xml_motion is not None and _is_meaningful_series(xml_motion, threshold=1e-4):
-            with ui.element("div").classes("cb-plot-row"):
-                series = [{"name": "motion", "y": xml_motion, "color": _MOTION_TOTAL_COLOR, "mode": "lines+markers"}]
-                fig = _build_per_tilt_chart(tilts, series, y_label="mean frame motion", customdata=cd)
-                _plot_cell("Beam-induced motion per tilt", fig, wide=True, hint=_HINT_MOTION)
-        elif has_motion_total and _is_meaningful_series(_safe_floats(df["rlnAccumMotionTotal"]), threshold=0.05):
-            mt = _safe_floats(df["rlnAccumMotionTotal"])
-            with ui.element("div").classes("cb-plot-row"):
-                series = [{"name": "total", "y": mt, "color": _MOTION_TOTAL_COLOR, "mode": "lines+markers"}]
-                if "rlnAccumMotionEarly" in df.columns:
-                    series.append(
-                        {
-                            "name": "early",
-                            "y": _safe_floats(df["rlnAccumMotionEarly"]),
-                            "color": _MOTION_EARLY_COLOR,
-                            "dash": "dot",
-                            "mode": "lines+markers",
-                        }
-                    )
-                if "rlnAccumMotionLate" in df.columns:
-                    series.append(
-                        {
-                            "name": "late",
-                            "y": _safe_floats(df["rlnAccumMotionLate"]),
-                            "color": _MOTION_LATE_COLOR,
-                            "dash": "dash",
-                            "mode": "lines+markers",
-                        }
-                    )
-                fig = _build_per_tilt_chart(tilts, series, y_label="accum. motion (Å)", customdata=cd, y_unit=" Å")
-                _plot_cell("Beam-induced motion per tilt", fig, wide=True, hint=_HINT_MOTION)
-        else:
-            skipped.append("motion")
-
-    if skipped:
-        ui.label(
-            f"Not shown: {', '.join(skipped)} — no real value in this export "
-            "(WarpTools leaves these star columns as placeholders and exports no CTF figure-of-merit)."
-        ).classes("cb-section-placeholder")
+    # Motion: the real per-tilt MeanFrameMovement from the XML (one series); the
+    # star's AccumMotion total/early/late only when those are real (non-WarpTools
+    # exports) — WarpTools writes 1e-6 there.
+    if not show_motion:
+        return
+    if motion is not None and _is_meaningful_series(motion, threshold=1e-4):
+        with ui.element("div").classes("cb-plot-row"):
+            series = [{"name": "Mean frame motion", "y": motion, "mode": "lines+markers"}]
+            fig = build_per_tilt_chart(tilts, series, y_label="Mean frame motion", customdata=cd)
+            _plot_cell("Beam-induced motion", fig, wide=True, hint=_HINT_MOTION)
+    elif "rlnAccumMotionTotal" in df.columns and _is_meaningful_series(
+        _safe_floats(df["rlnAccumMotionTotal"]), threshold=0.05
+    ):
+        series = [{"name": "Total", "y": _safe_floats(df["rlnAccumMotionTotal"]), "mode": "lines+markers"}]
+        if "rlnAccumMotionEarly" in df.columns:
+            series.append(
+                {"name": "Early", "y": _safe_floats(df["rlnAccumMotionEarly"]), "dash": "dot", "mode": "lines+markers"}
+            )
+        if "rlnAccumMotionLate" in df.columns:
+            series.append(
+                {"name": "Late", "y": _safe_floats(df["rlnAccumMotionLate"]), "dash": "dash", "mode": "lines+markers"}
+            )
+        with ui.element("div").classes("cb-plot-row"):
+            fig = build_per_tilt_chart(tilts, series, y_label="Accumulated motion (Å)", customdata=cd, y_unit=" Å")
+            _plot_cell("Beam-induced motion", fig, wide=True, hint=_HINT_MOTION)
 
 
 def _render_alignment_plots(df: pd.DataFrame) -> None:
-    """Per-tilt shift magnitude, X/Y/Z angle deltas relative to nominal.
+    """Per-tilt shift (magnitude + X/Y) and refined angle deltas relative to nominal.
 
     Markers only — even for smoothly-varying metrics, connecting per-tilt
     estimates with lines turns outliers into zigzag and obscures the actual
@@ -1230,13 +1189,9 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
     """
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
     cd = _per_tilt_customdata(df)
-    has_shift = "rlnTomoXShiftAngst" in df.columns and "rlnTomoYShiftAngst" in df.columns
-    has_xtilt = "rlnTomoXTilt" in df.columns
-    has_ytilt = "rlnTomoYTilt" in df.columns
-    has_zrot = "rlnTomoZRot" in df.columns
 
     with ui.element("div").classes("cb-plot-row"):
-        if has_shift:
+        if "rlnTomoXShiftAngst" in df.columns and "rlnTomoYShiftAngst" in df.columns:
             xs = _safe_floats(df["rlnTomoXShiftAngst"])
             ys = _safe_floats(df["rlnTomoYShiftAngst"])
             mag = [
@@ -1244,39 +1199,33 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
                 for x, y in zip(xs, ys, strict=False)
             ]
             if _is_meaningful_series(mag):
-                fig = _build_per_tilt_chart(
+                fig = build_per_tilt_chart(
                     tilts,
-                    [
-                        {"name": "|shift|", "y": mag, "color": "#1d4ed8"},
-                        {"name": "X shift", "y": xs, "color": _X_SHIFT_COLOR},
-                        {"name": "Y shift", "y": ys, "color": _Y_SHIFT_COLOR},
-                    ],
-                    y_label="shift (Å)",
+                    [{"name": "Shift magnitude", "y": mag}, {"name": "X shift", "y": xs}, {"name": "Y shift", "y": ys}],
+                    y_label="Shift (Å)",
                     customdata=cd,
                     y_unit=" Å",
                 )
-                _plot_cell("Refined shift per tilt", fig, hint=_HINT_SHIFT)
-        if has_xtilt or has_ytilt or has_zrot:
-            series = []
-            if has_xtilt:
-                xt = _safe_floats(df["rlnTomoXTilt"])
-                resid = [
-                    val - nt if nt is not None and val is not None else None
-                    for nt, val in zip(tilts, xt, strict=False)
-                ]
-                if _is_meaningful_series(resid):
-                    series.append({"name": "X tilt − nom", "y": resid, "color": "#dc2626"})
-            if has_ytilt:
-                yt = _safe_floats(df["rlnTomoYTilt"])
-                if _is_meaningful_series(yt):
-                    series.append({"name": "Y tilt", "y": yt, "color": "#f97316"})
-            if has_zrot:
-                zr = _safe_floats(df["rlnTomoZRot"])
-                if _is_meaningful_series(zr):
-                    series.append({"name": "Z rot", "y": zr, "color": "#0ea5e9"})
-            if series:
-                fig = _build_per_tilt_chart(tilts, series, y_label="angle (°)", customdata=cd, y_unit="°")
-                _plot_cell("Refined alignment angles", fig, hint=_HINT_ALIGN_ANGLES)
+                _plot_cell("Refined shift", fig, hint=_HINT_SHIFT)
+        series = []
+        if "rlnTomoXTilt" in df.columns:
+            xt = _safe_floats(df["rlnTomoXTilt"])
+            resid = [
+                val - nt if nt is not None and val is not None else None for nt, val in zip(tilts, xt, strict=False)
+            ]
+            if _is_meaningful_series(resid):
+                series.append({"name": "X tilt − nominal", "y": resid})
+        if "rlnTomoYTilt" in df.columns:
+            yt = _safe_floats(df["rlnTomoYTilt"])
+            if _is_meaningful_series(yt):
+                series.append({"name": "Y tilt", "y": yt})
+        if "rlnTomoZRot" in df.columns:
+            zr = _safe_floats(df["rlnTomoZRot"])
+            if _is_meaningful_series(zr):
+                series.append({"name": "Z rotation", "y": zr})
+        if series:
+            fig = build_per_tilt_chart(tilts, series, y_label="Angle (°)", customdata=cd, y_unit="°")
+            _plot_cell("Refined alignment angles", fig, hint=_HINT_ALIGN_ANGLES)
 
 
 def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
@@ -1286,27 +1235,25 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
     instance_id, jm = found
     job_dir = job_dir_for(project_state, instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
-    metric_parts = [f"motion {jm.m_grid}", f"bfac {jm.m_bfac}", f"ctf {jm.c_range_min_max} Å", f"win {jm.c_window}"]
     param_rows = [
         ("motion range", jm.m_range_min_max),
         ("motion grid", jm.m_grid),
-        ("motion bfac", str(jm.m_bfac)),
-        ("ctf range", jm.c_range_min_max),
-        ("ctf grid", jm.c_grid),
-        ("ctf window", str(jm.c_window)),
+        ("motion B-factor", str(jm.m_bfac)),
+        ("CTF range", jm.c_range_min_max),
+        ("CTF grid", jm.c_grid),
+        ("CTF window", str(jm.c_window)),
         ("defocus search", f"{jm.c_defocus_min_max} µm"),
         ("phase shift", "yes" if jm.do_phase else "no"),
-        ("avg halves", "yes" if jm.out_average_halves else "no"),
+        ("average halves", "yes" if jm.out_average_halves else "no"),
         ("skip first / last", f"{jm.out_skip_first} / {jm.out_skip_last}"),
-        ("perdevice", str(jm.perdevice)),
+        ("per device", str(jm.perdevice)),
     ]
+    title = "Motion & CTF"
 
     if job_dir is None:
         _render_datadump_card(
             "fs_motion_ctf",
-            "speed",
-            "FS Motion / CTF",
-            " · ".join(metric_parts),
+            title,
             instance_id,
             status_label,
             param_rows,
@@ -1318,17 +1265,10 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "fs_motion_ctf"
         card._props["data-instance"] = instance_id
-        with ui.element("div").classes("cb-section-card-header"):
-            ui.icon("speed", size="14px").classes("text-indigo-600")
-            ui.label("FS Motion / CTF").classes("cb-section-title")
-            ui.label(instance_id).classes("text-[10px] font-mono text-gray-500")
-            ui.space()
-            ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
-            if status_label.lower() != "succeeded":
-                ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
+        _section_header(title, params=param_rows, status_label=status_label, instance_id=instance_id)
 
         if df is None:
-            _render_registry_gap(ts_name, status_label, param_rows)
+            _render_registry_gap(ts_name, status_label)
             return True
 
         # Real CTF-fit resolution + motion: registry QC fields (XML-sourced at
@@ -1340,24 +1280,24 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         d_stats = _stats(defocus_um)
         r_stats = _stats([v for v in ctf_res_series if v is not None])
         m_stats = _stats([v for v in motion_series if v is not None])
-        strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
+        tiles: list[tuple] = []
         if d_stats["n"]:
-            strip_rows.append(
-                ("defocus", f"{d_stats['median']:.2f} µm (Q1 {d_stats['q1']:.2f} · Q3 {d_stats['q3']:.2f})")
+            tiles.append(("Median defocus", f"{d_stats['median']:.2f} µm", f"Over {d_stats['n']} tilts"))
+            tiles.append(
+                (
+                    "Defocus, middle half",
+                    f"{d_stats['q1']:.2f} – {d_stats['q3']:.2f} µm",
+                    "First to third quartile of the per-tilt defocus",
+                )
             )
         if r_stats["n"]:
-            strip_rows.append(("CTF res", f"{r_stats['median']:.1f} Å (worst {r_stats['max']:.1f})"))
+            tiles.append(("Median CTF fit resolution", f"{r_stats['median']:.1f} Å"))
+            tiles.append(("Worst CTF fit", f"{r_stats['max']:.1f} Å"))
         if m_stats["n"]:
-            strip_rows.append(("motion (max)", f"{m_stats['max']:.2f}"))
-        _stat_strip(strip_rows)
+            tiles.append(("Largest frame motion", f"{m_stats['max']:.2f}", "WarpTools mean frame movement, worst tilt"))
+        _stat_tiles(tiles)
 
         _render_ctf_motion_plots(df, show_motion=True, ctf_res=ctf_res_series, motion=motion_series)
-
-        with ui.expansion("Job parameters").classes("w-full text-[10px]").props("dense"):
-            with ui.element("div").classes("cb-datadump-grid"):
-                for k, v in param_rows:
-                    ui.label(k).classes("cb-datadump-key")
-                    ui.label(str(v)).classes("cb-datadump-val")
     return True
 
 
@@ -1369,29 +1309,22 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
     job_dir = job_dir_for(project_state, instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
     method = getattr(jm.alignment_method, "value", str(jm.alignment_method))
-    metric_parts = [
-        f"{method}",
-        f"{jm.rescale_angpixs:g} Å/px",
-        jm.tomo_dimensions,
-        f"thick {jm.sample_thickness_nm:g} nm",
-    ]
     param_rows = [
         ("method", method),
-        ("rescale", f"{jm.rescale_angpixs:g} Å/px"),
-        ("tomo dims", jm.tomo_dimensions),
+        ("pixel size", f"{jm.rescale_angpixs:g} Å/px"),
+        ("tomogram dimensions", jm.tomo_dimensions),
         ("sample thickness", f"{jm.sample_thickness_nm:g} nm"),
-        ("patch X / Y", f"{jm.patch_x} / {jm.patch_y}"),
-        ("axis iter / batch", f"{jm.axis_iter} / {jm.axis_batch}"),
-        ("imod patch / overlap", f"{jm.imod_patch_size} / {jm.imod_overlap}"),
-        ("perdevice", str(jm.perdevice)),
+        ("patches X / Y", f"{jm.patch_x} / {jm.patch_y}"),
+        ("axis iterations / batch", f"{jm.axis_iter} / {jm.axis_batch}"),
+        ("IMOD patch size / overlap", f"{jm.imod_patch_size} / {jm.imod_overlap}"),
+        ("per device", str(jm.perdevice)),
     ]
+    title = "Alignment"
 
     if job_dir is None:
         _render_datadump_card(
             "ts_alignment",
-            "straighten",
-            "TS Alignment",
-            " · ".join(metric_parts),
+            title,
             instance_id,
             status_label,
             param_rows,
@@ -1403,43 +1336,30 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "ts_alignment"
         card._props["data-instance"] = instance_id
-        with ui.element("div").classes("cb-section-card-header"):
-            ui.icon("straighten", size="14px").classes("text-indigo-600")
-            ui.label("TS Alignment").classes("cb-section-title")
-            ui.label(instance_id).classes("text-[10px] font-mono text-gray-500")
-            ui.space()
-            ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
-            if status_label.lower() != "succeeded":
-                ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
+        _section_header(title, params=param_rows, status_label=status_label, instance_id=instance_id)
 
         if df is None:
-            _render_registry_gap(ts_name, status_label, param_rows)
+            _render_registry_gap(ts_name, status_label)
             return True
 
-        # Stat strip: max shift magnitude + tilt-axis residual range
         x_shift = _safe_floats(df.get("rlnTomoXShiftAngst", [])) if "rlnTomoXShiftAngst" in df.columns else []
         y_shift = _safe_floats(df.get("rlnTomoYShiftAngst", [])) if "rlnTomoYShiftAngst" in df.columns else []
         mag = [
             (x * x + y * y) ** 0.5 for x, y in zip(x_shift, y_shift, strict=False) if x is not None and y is not None
         ]
         m_stats = _stats(mag)
-        strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
+        tiles: list[tuple] = []
         if m_stats["n"]:
-            strip_rows.append(("|shift| max / median", f"{m_stats['max']:.1f} / {m_stats['median']:.1f} Å"))
+            tiles.append(("Largest shift", f"{m_stats['max']:.1f} Å", "The tilt that moved most during alignment"))
+            tiles.append(("Median shift", f"{m_stats['median']:.1f} Å"))
         if "rlnTomoYTilt" in df.columns:
             yt = [v for v in _safe_floats(df["rlnTomoYTilt"]) if v is not None]
             if yt:
                 yt_stats = _stats(yt)
-                strip_rows.append(("Y tilt range", f"{yt_stats['min']:.2f}° → {yt_stats['max']:.2f}°"))
-        _stat_strip(strip_rows)
+                tiles.append(("Y tilt range", f"{yt_stats['min']:.2f}° to {yt_stats['max']:.2f}°"))
+        _stat_tiles(tiles)
 
         _render_alignment_plots(df)
-
-        with ui.expansion("Job parameters").classes("w-full text-[10px]").props("dense"):
-            with ui.element("div").classes("cb-datadump-grid"):
-                for k, v in param_rows:
-                    ui.label(k).classes("cb-datadump-key")
-                    ui.label(str(v)).classes("cb-datadump-val")
     return True
 
 
@@ -1450,31 +1370,19 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
     instance_id, jm = found
     job_dir = job_dir_for(project_state, instance_id, jm, project_path)
     status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
-    metric_parts = [
-        f"defocus {jm.defocus_min_max} µm",
-        f"range {jm.range_min_max} Å",
-        f"win {jm.window}",
-        f"hand {jm.defocus_hand}",
-    ]
     param_rows = [
-        ("range", f"{jm.range_min_max} Å"),
+        ("resolution range", f"{jm.range_min_max} Å"),
         ("defocus search", f"{jm.defocus_min_max} µm"),
         ("defocus hand", jm.defocus_hand),
         ("window", str(jm.window)),
         ("phase shift", "yes" if jm.do_phase else "no"),
-        ("perdevice", str(jm.perdevice)),
+        ("per device", str(jm.perdevice)),
     ]
+    title = "CTF after alignment"
 
     if job_dir is None:
         _render_datadump_card(
-            "ts_ctf",
-            "blur_on",
-            "TS CTF (post-alignment)",
-            " · ".join(metric_parts),
-            instance_id,
-            status_label,
-            param_rows,
-            note="Job hasn't started — outputs not on disk yet.",
+            "ts_ctf", title, instance_id, status_label, param_rows, note="Job hasn't started — outputs not on disk yet."
         )
         return True
 
@@ -1482,45 +1390,31 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "ts_ctf"
         card._props["data-instance"] = instance_id
-        with ui.element("div").classes("cb-section-card-header"):
-            ui.icon("blur_on", size="14px").classes("text-indigo-600")
-            ui.label("TS CTF (post-alignment)").classes("cb-section-title")
-            ui.label(instance_id).classes("text-[10px] font-mono text-gray-500")
-            ui.space()
-            ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
-            if status_label.lower() != "succeeded":
-                ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
+        _section_header(title, params=param_rows, status_label=status_label, instance_id=instance_id)
 
         if df is None:
-            _render_registry_gap(ts_name, status_label, param_rows)
+            _render_registry_gap(ts_name, status_label)
             return True
 
         defocus_um = [v / 1.0e4 for v in _safe_floats(df.get("rlnDefocusU", [])) if v is not None]
         d_stats = _stats(defocus_um)
-        strip_rows: list[tuple[str, str]] = [("tilts", str(len(df)))]
+        tiles: list[tuple] = []
         if d_stats["n"]:
-            strip_rows.append(
-                ("defocus", f"{d_stats['median']:.2f} µm (range {d_stats['min']:.2f}–{d_stats['max']:.2f})")
-            )
+            tiles.append(("Median defocus", f"{d_stats['median']:.2f} µm", f"Over {d_stats['n']} tilts"))
+            tiles.append(("Defocus range", f"{d_stats['min']:.2f} – {d_stats['max']:.2f} µm"))
 
-        # Tilt-filter per-tilt verdict (keep/drop + DL probability): summarised in the
-        # strip and surfaced on each plot point's hover below. Silent no-op if the
-        # tilt-filter job hasn't stamped this TS.
+        # Tilt-filter per-tilt verdict (keep/drop + DL probability): summarised as a tile
+        # and surfaced on each plot point's hover below. Silent no-op if the tilt-filter
+        # job hasn't stamped this TS.
         dl_by_frame = filter_verdicts_from_registry(project_path, ts_name)
         if dl_by_frame:
             n_keep = sum(1 for v in dl_by_frame.values() if v.startswith("keep"))
-            strip_rows.append(("DL keep", f"{n_keep}/{len(dl_by_frame)}"))
-        _stat_strip(strip_rows)
+            tiles.append(("Tilts kept by the filter", f"{n_keep} of {len(dl_by_frame)}"))
+        _stat_tiles(tiles)
 
-        # Skip the motion plot here — TS CTF doesn't change per-tilt motion;
-        # that's already shown in the FS Motion/CTF section above.
+        # No motion plot here — CTF after alignment doesn't change per-tilt motion;
+        # the Motion & CTF section above already shows it.
         _render_ctf_motion_plots(df, show_motion=False, dl_by_frame=dl_by_frame or None)
-
-        with ui.expansion("Job parameters").classes("w-full text-[10px]").props("dense"):
-            with ui.element("div").classes("cb-datadump-grid"):
-                for k, v in param_rows:
-                    ui.label(k).classes("cb-datadump-key")
-                    ui.label(str(v)).classes("cb-datadump-val")
     return True
 
 
@@ -1549,8 +1443,8 @@ def _defocus_source_df(project_state, project_path: Path, ts_name: str):
     refined), fall back to FS Motion/CTF. Registry reads. Returns
     (df, source_label) or (None, None)."""
     for jt, label, reader in (
-        (JobType.TS_CTF, "tsCtf", tsctf_registry_df),
-        (JobType.FS_MOTION_CTF, "fsMotion", fsm_registry_df),
+        (JobType.TS_CTF, "CTF after alignment", tsctf_registry_df),
+        (JobType.FS_MOTION_CTF, "Motion & CTF", fsm_registry_df),
     ):
         found = find_job_by_type(project_state, jt)
         if not found:
@@ -1583,8 +1477,7 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
         du = _safe_floats(def_df["rlnDefocusU"])
         dv = _safe_floats(def_df["rlnDefocusV"]) if "rlnDefocusV" in def_df.columns else du
         mean_um = [
-            ((u + v) / 2.0) / 1.0e4 if u is not None and v is not None else None
-            for u, v in zip(du, dv, strict=False)
+            ((u + v) / 2.0) / 1.0e4 if u is not None and v is not None else None for u, v in zip(du, dv, strict=False)
         ]
         pairs = sorted(
             [(t, m) for t, m in zip(raw_t, mean_um, strict=False) if t is not None and m is not None],
@@ -1614,40 +1507,42 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
 
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "tilt_qc"
-        with ui.element("div").classes("cb-section-card-header"):
-            ui.icon("insights", size="14px").classes("text-indigo-600")
-            ui.label("Tilt QC").classes("cb-section-title")
-            ui.space()
-            ui.label("through-focus + alignment difficulty").classes("cb-metric-strip")
+        _section_header("Tilt QC")
 
-        strip_rows: list[tuple[str, str]] = []
+        tiles: list[tuple] = []
         if def_mean is not None:
             d_stats = _stats(def_mean)
-            strip_rows.append(("defocus median", f"{d_stats['median']:.2f} µm ({def_src})"))
+            tiles.append(("Median defocus", f"{d_stats['median']:.2f} µm", f"Mean of U and V, from {def_src}"))
             if slope is not None:
-                trend = "rises" if slope > 0 else "falls" if slope < 0 else "flat"
-                strip_rows.append(("defocus trend", f"{slope:+.3f} µm/° ({trend} with +tilt)"))
+                trend = "rises" if slope > 0 else "falls" if slope < 0 else "is flat"
+                tiles.append(
+                    (
+                        "Defocus trend",
+                        f"{slope:+.3f} µm per degree ({trend} with tilt)",
+                        "Slope of the linear fit through the through-focus curve; its sign is a handedness cue",
+                    )
+                )
         if sh_mag is not None:
             m_stats = _stats([v for v in sh_mag if v is not None])
-            strip_rows.append(("|shift| max / median", f"{m_stats['max']:.1f} / {m_stats['median']:.1f} Å"))
-        if strip_rows:
-            _stat_strip(strip_rows)
+            tiles.append(("Largest shift", f"{m_stats['max']:.1f} Å"))
+            tiles.append(("Median shift", f"{m_stats['median']:.1f} Å"))
+        _stat_tiles(tiles)
 
         with ui.element("div").classes("cb-plot-row"):
             if def_mean is not None:
-                series = [{"name": "mean defocus", "y": def_mean, "color": _DEFOCUS_U_COLOR, "marker_size": 7}]
+                series = [{"name": "Mean defocus", "y": def_mean, "marker_size": 7}]
                 if def_fit is not None:
-                    series.append({"name": "trend", "y": def_fit, "color": "#94a3b8", "mode": "lines", "dash": "dot"})
-                fig = _build_per_tilt_chart(def_tilts, series, y_label="defocus (µm)", y_unit=" µm")
-                _plot_cell("Defocus vs tilt (through-focus)", fig, hint=_HINT_THROUGHFOCUS)
+                    series.append({"name": "Linear fit", "y": def_fit, "color": _MUTED, "mode": "lines", "dash": "dot"})
+                fig = build_per_tilt_chart(def_tilts, series, y_label="Defocus (µm)", y_unit=" µm")
+                _plot_cell("Through-focus", fig, hint=_HINT_THROUGHFOCUS)
             if sh_mag is not None:
-                fig = _build_per_tilt_chart(
+                fig = build_per_tilt_chart(
                     sh_tilts,
-                    [{"name": "|shift|", "y": sh_mag, "color": "#1d4ed8", "marker_size": 7}],
-                    y_label="shift (Å)",
+                    [{"name": "Shift magnitude", "y": sh_mag, "marker_size": 7}],
+                    y_label="Shift (Å)",
                     y_unit=" Å",
                 )
-                _plot_cell("Shift magnitude vs tilt", fig, hint=_HINT_SHIFT)
+                _plot_cell("Shift magnitude", fig, hint=_HINT_SHIFT)
     return True
 
 
@@ -1667,27 +1562,24 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
     instance_id = job_found[0] if job_found else "TiltFilter (standalone)"
     jm = job_found[1] if job_found else None
 
-    metric_parts = []
+    param_rows: list[tuple[str, str]] = []
+    status_label = ""
     if jm is not None:
-        metric_parts = [f"model {jm.model_name}", f"thresh {jm.prob_threshold:g}", f"action {jm.prob_action}"]
+        status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
+        param_rows = [
+            ("model", jm.model_name),
+            ("image size", str(jm.image_size)),
+            ("batch size", str(jm.dl_batch_size)),
+            ("probability threshold", f"{jm.prob_threshold:g}"),
+            ("action", jm.prob_action),
+        ]
 
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "tilt_filter"
         card._props["data-instance"] = instance_id
-        with ui.element("div").classes("cb-section-card-header"):
-            ui.icon("tune", size="14px").classes("text-indigo-600")
-            ui.label("Tilt Filter").classes("cb-section-title")
-            ui.label(instance_id).classes("text-[10px] font-mono text-gray-500")
-            ui.space()
-            if metric_parts:
-                ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
-            if jm is not None:
-                status_label = getattr(jm.execution_status, "value", str(jm.execution_status))
-                if status_label.lower() != "succeeded":
-                    ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
+        _section_header("Tilt filter", params=param_rows, status_label=status_label, instance_id=instance_id)
 
         if info is None:
-            status_label = getattr(jm.execution_status, "value", str(jm.execution_status)) if jm is not None else ""
             _render_registry_gap(ts_name, status_label)
             return True
 
@@ -1695,10 +1587,10 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
         n_kept = info["n_kept"]
         n_dropped = len(info["dropped"])
         kept_pct = (100.0 * n_kept / n_labeled) if n_labeled else 0.0
-        strip_rows = [("kept", f"{n_kept}/{n_labeled}  ({kept_pct:.0f}%)"), ("dropped", str(n_dropped))]
+        tiles: list[tuple] = [("Kept", f"{n_kept} of {n_labeled} ({kept_pct:.0f}%)"), ("Dropped", str(n_dropped))]
         if jm is not None:
-            strip_rows.append(("manual labels", str(len(jm.tilt_labels))))
-        _stat_strip(strip_rows)
+            tiles.append(("Manual labels", str(len(jm.tilt_labels))))
+        _stat_tiles(tiles)
 
         if info["dropped"]:
             with ui.expansion(f"{n_dropped} dropped tilt(s)", value=True).classes("w-full text-[10px]").props("dense"):
@@ -1708,20 +1600,6 @@ def _render_tilt_filter_section(ts_name: str, project_state, project_path: Path,
                             tilt_str = f"{d['tilt_angle']:+.2f}°" if d["tilt_angle"] is not None else "?°"
                             ui.label(tilt_str).classes("cb-drop-tilt")
                             ui.label(d["frame"])
-
-        if jm is not None:
-            param_rows = [
-                ("model", jm.model_name),
-                ("image size", str(jm.image_size)),
-                ("dl batch size", str(jm.dl_batch_size)),
-                ("prob threshold", f"{jm.prob_threshold:g}"),
-                ("prob action", jm.prob_action),
-            ]
-            with ui.expansion("Filter parameters").classes("w-full text-[10px]").props("dense"):
-                with ui.element("div").classes("cb-datadump-grid"):
-                    for k, v in param_rows:
-                        ui.label(k).classes("cb-datadump-key")
-                        ui.label(str(v)).classes("cb-datadump-val")
 
     return True
 
@@ -1855,29 +1733,21 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
     tomo_row = row.iloc[0]
     mrc_path = resolve_volume_for_3dmod(tomo_row, project_path)
 
-    metric_parts: list[str] = []
+    param_rows: list[tuple[str, str]] = []
     rescale = float(getattr(rec_jm, "rescale_angpixs", 0.0) or 0.0)
     if rescale:
-        metric_parts.append(f"{rescale:g} Å/px")
+        param_rows.append(("pixel size", f"{rescale:g} Å/px"))
     if "rlnTomoTomogramBinning" in tomo_row.index:
         try:
-            metric_parts.append(f"bin {float(tomo_row['rlnTomoTomogramBinning']):g}")
+            param_rows.append(("binning", f"{float(tomo_row['rlnTomoTomogramBinning']):g}"))
         except (TypeError, ValueError):
             pass
 
     with ui.element("div").classes("cb-section-card w-full") as card:
         card._props["data-section"] = "reconstruct"
         card._props["data-instance"] = rec_iid
-        with ui.element("div").classes("cb-section-card-header"):
-            ui.icon("view_in_ar", size="14px").classes("text-indigo-600")
-            ui.label("Reconstruct").classes("cb-section-title")
-            ui.label(rec_iid).classes("text-[10px] font-mono text-gray-500")
-            ui.space()
-            if metric_parts:
-                ui.label(" · ".join(metric_parts)).classes("cb-metric-strip")
-            status_label = getattr(rec_jm.execution_status, "value", str(rec_jm.execution_status))
-            if status_label.lower() != "succeeded":
-                ui.label(status_label).classes("text-[10px] text-amber-600 font-mono")
+        status_label = getattr(rec_jm.execution_status, "value", str(rec_jm.execution_status))
+        _section_header("Reconstruction", params=param_rows, status_label=status_label, instance_id=rec_iid)
 
         if mrc_path is None or not Path(mrc_path).exists():
             with ui.element("div").classes("cb-chip-strip"):
@@ -1886,7 +1756,6 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
                     "no MRC",
                     status="neutral",
                     tooltip="Reconstructed tomogram MRC not on disk for this TS — can't sample for polarity.",
-                    icon="brightness_medium",
                 )
             _render_recon_big_preview(ts_name, project_state, project_path, None, refresh)
             return True
@@ -1899,7 +1768,6 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
                     "read error",
                     status="warn",
                     tooltip=f"Could not sample center Z slice of {mrc_path} (see server logs).",
-                    icon="brightness_medium",
                 )
             else:
                 expected = _expected_polarity_from_templates(project_state)
@@ -1914,7 +1782,6 @@ def _render_reconstruct_section(ts_name: str, project_state, project_path: Path,
                         f"dark voxels in a center {polarity['slab_shape'][0]}×{polarity['slab_shape'][1]} "
                         f"Z slice). {hint}"
                     ),
-                    icon="brightness_medium",
                 )
                 render_chip(
                     "bright %",

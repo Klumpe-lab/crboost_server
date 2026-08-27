@@ -203,6 +203,15 @@ class CurationConfig(BaseModel):
     rest_enabled: bool = True
 
 
+class LocalDataConfig(BaseModel):
+    """Local data of the protocol regression harness (roadmap 14). `root` holds the frozen dataset
+    inputs (`input/<protocol>/`), the per-run throwaway projects (`runs/`) and the recorded
+    baselines (`baseline/`). Empty = `<DefaultProjectBase>/local_data` — deliberately OUTSIDE
+    the project base itself so the server's PipelineMonitor never adopts a CLI-driven run."""
+
+    root: str = ""
+
+
 class Config(BaseModel):
     """Root configuration model"""
 
@@ -224,6 +233,7 @@ class Config(BaseModel):
     # feature is OFF: no catalog affordance is rendered anywhere, which is the state every
     # existing install is in until someone points this at a shared directory.
     species_catalog_root: str = ""
+    local_data: LocalDataConfig = Field(default_factory=LocalDataConfig)
 
     # DEV TOGGLE (temporary): global override so every project uses the afterok orchestrator
     # (schemer-free submit + inline import) without per-project project_params.json edits. A
@@ -308,6 +318,17 @@ class ConfigService:
         return Path(raw).expanduser() if raw else None
 
     @property
+    def local_data_root(self) -> Path | None:
+        """Root of the regression harness's on-disk area (roadmap 14): the configured
+        `local_data.root`, else `<DefaultProjectBase>/local_data`, else None when neither
+        is set (the harness then refuses to run and names the missing key)."""
+        raw = (self._config.local_data.root or "").strip()
+        if raw:
+            return Path(raw).expanduser()
+        base = (self._config.local.DefaultProjectBase or "").strip()
+        return Path(base).expanduser() / "local_data" if base else None
+
+    @property
     def venv_path(self) -> Path | None:
         if self._config.venv_path:
             return Path(self._config.venv_path)
@@ -363,6 +384,22 @@ class ConfigService:
             return ToolConfig(exec_mode="container", container_path=self._config.containers[lookup_name])
 
         return ToolConfig(exec_mode="binary", bin_path=tool_name)
+
+    def is_tool_configured(self, tool_name: str) -> bool:
+        """True when `tool_name` (or its legacy alias) has an entry under `tools:` /
+        `containers:`. `get_tool_config`'s last fallback — a bare-binary guess named after
+        the tool — is deliberately NOT counted: a protocol pinning a tool must find it
+        configured, not assumed (roadmap 14)."""
+        legacy_mapping = {
+            "warptools": "warp_aretomo",
+            "aretomo": "warp_aretomo",
+            "relion_import": "relion",
+            "relion_schemer": "relion",
+        }
+        name = legacy_mapping.get(tool_name, tool_name)
+        if tool_name in self._config.tools or name in self._config.tools:
+            return True
+        return bool(self._config.containers and name in self._config.containers)
 
     def get_tool_path(self, tool_name: str) -> str | None:
         config = self.get_tool_config(tool_name)

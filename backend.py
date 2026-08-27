@@ -20,6 +20,7 @@ from services.jobs.spec import driver_invocation
 from services.models_base import JobStatus, JobType
 from services.particles.list_ref import extract_pick_list_instance_id
 from services.project_state import get_state_service
+from services.event_log import events
 from services.result import err, ok
 from services.computing.slurm_service import SlurmService
 from services.configs.config_service import get_config_service
@@ -260,7 +261,7 @@ class CryoBoostBackend:
             state.mark_dirty()
             await self.state_service.save_project(project_path=project_path, force=True)
 
-            logger.info("Tilt filter DL submitted: SLURM job %s", slurm_job_id)
+            events.info("Tilt filter DL queued: SLURM job %s", slurm_job_id)
             return ok(slurm_job_id=slurm_job_id, job_dir=str(job_dir))
 
         except Exception as e:
@@ -421,7 +422,7 @@ class CryoBoostBackend:
                 return err(msg)
             output = stdout.decode().strip()
             slurm_job_id = output.split()[-1] if output else None
-            logger.info("Per-list extraction submitted: SLURM job %s (%s/%s)", slurm_job_id, species_id, slug)
+            events.info("Per-list extraction queued: SLURM job %s (%s/%s)", slurm_job_id, species_id, slug)
             jm.slurm_job_id = slurm_job_id
             jm.execution_status = JobStatus.QUEUED
             await self.state_service.save_project(project_path=project_path, force=True)
@@ -1357,14 +1358,6 @@ class CryoBoostBackend:
             out["live_status"] = "idle"
 
         return out
-
-    async def get_available_jobs(self) -> list[str]:
-        # --- FIX: Use config root instead of cwd ---
-        template_path = self.config_service.crboost_root / "config" / "Schemes" / "warp_tomo_prep"
-        if not template_path.is_dir():
-            return []
-        jobs = sorted([p.name for p in template_path.iterdir() if p.is_dir()])
-        return jobs
 
     async def create_project_and_scheme(
         self,

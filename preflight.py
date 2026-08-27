@@ -503,13 +503,6 @@ def step_validate_directories(config: dict) -> list:
                     fail(f"Could not create: {e}")
                     issues.append("DefaultProjectBase")
 
-    schemes = SCRIPT_DIR / "config" / "Schemes" / "warp_tomo_prep"
-    if schemes.exists():
-        ok(f"Schemes: {schemes}")
-    else:
-        warn(f"Schemes missing: {schemes}")
-        issues.append("Schemes directory")
-
     return issues
 
 

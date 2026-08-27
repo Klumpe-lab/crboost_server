@@ -20,6 +20,7 @@ Register as an extra tab via the plugin system:
         render_array_task_tracker(instance_id, job_model, ui_mgr)
 """
 
+import asyncio
 from pathlib import Path
 
 from nicegui import ui
@@ -96,7 +97,10 @@ def render_array_task_tracker(instance_id: str, job_model, ui_mgr) -> None:
     display_order = sort_ts_by_position(items)
     item_to_task_idx = {name: i for i, name in enumerate(items)}
 
-    with ui.column().classes("w-full h-full overflow-hidden").style("gap: 0;"):
+    # cb-scroll-tight: NiceGUI lays scroll-area / expansion content out as a flex
+    # column with align-items: flex-start + 1 rem padding, which squeezed every
+    # task's log pane to the left; the rows own their spacing and fill the width.
+    with ui.column().classes("w-full h-full overflow-hidden cb-scroll-tight").style("gap: 0;"):
         # ── Summary bar ──
         summary_container = ui.row().classes("w-full items-center px-4 py-2 bg-gray-50 border-b border-gray-100")
         summary_container.style("gap: 12px; flex-shrink: 0;")
@@ -252,32 +256,63 @@ def _render_inline_log(job_dir: Path, task_idx: int) -> None:
     stdout_text = _read_tail(stdout_path, max_lines=200)
     stderr_text = _read_tail(stderr_path, max_lines=100)
 
-    with ui.column().classes("w-full").style("padding: 4px 12px 8px; gap: 6px;"):
+    with ui.column().classes("w-full").style("padding: 4px 12px 10px; gap: 6px;"):
         if not stdout_text and not stderr_text:
             ui.label("No log output yet.").style(f"{MONO} font-size: 10px; color: #94a3b8;")
             return
-
         if stdout_text:
-            ui.label("stdout").style(f"{MONO} font-size: 9px; color: #64748b; font-weight: 600; margin: 0;")
-            ui.html(
-                f'<pre style="{MONO} font-size: 10px; line-height: 1.4; color: #334155; '
-                f"white-space: pre-wrap; word-break: break-all; margin: 0; "
-                f"max-height: 300px; overflow-y: auto; background: #f8fafc; "
-                f'padding: 6px 8px; border-radius: 4px; border: 1px solid #e2e8f0;">'
-                f"{_escape_html(stdout_text)}</pre>",
-                sanitize=False,
-            )
-
+            _log_pane("stdout", stdout_text, stdout_path, color="#334155", bg="#f8fafc", border="#e2e8f0", max_h="60vh")
         if stderr_text:
-            ui.label("stderr").style(f"{MONO} font-size: 9px; color: #dc2626; font-weight: 600; margin: 0;")
-            ui.html(
-                f'<pre style="{MONO} font-size: 10px; line-height: 1.4; color: #b91c1c; '
-                f"white-space: pre-wrap; word-break: break-all; margin: 0; "
-                f"max-height: 200px; overflow-y: auto; background: #fef2f2; "
-                f'padding: 6px 8px; border-radius: 4px; border: 1px solid #fecaca;">'
-                f"{_escape_html(stderr_text)}</pre>",
-                sanitize=False,
-            )
+            _log_pane("stderr", stderr_text, stderr_path, color="#b91c1c", bg="#fef2f2", border="#fecaca", max_h="40vh")
+
+
+def _log_pane(title: str, text: str, path: Path, *, color: str, bg: str, border: str, max_h: str) -> None:
+    """A log pane that claims the row's full width: title + file name + a copy button
+    (copies the WHOLE file — the pane shows the tail), over a wrapped <pre> so long
+    lines fold instead of scrolling sideways."""
+    with ui.row().classes("w-full items-center no-wrap").style("gap: 6px;"):
+        ui.label(title).style(
+            f"{MONO} font-size: 9px; color: {'#dc2626' if title == 'stderr' else '#64748b'}; font-weight: 600;"
+        )
+        ui.label(path.name).style(f"{MONO} font-size: 9px; color: #94a3b8;")
+        ui.space()
+        (
+            ui.button(icon="content_copy", on_click=lambda p=path: _copy_full_log(p))
+            .props("flat dense round size=xs")
+            .style("color: #94a3b8;")
+            .tooltip(f"Copy the full {title} to the clipboard")
+        )
+    ui.html(
+        f'<pre style="{MONO} font-size: 10px; line-height: 1.45; color: {color}; '
+        f"white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; width: 100%; box-sizing: border-box; "
+        f"max-height: {max_h}; overflow-y: auto; background: {bg}; "
+        f'padding: 6px 8px; border-radius: 4px; border: 1px solid {border};">'
+        f"{_escape_html(text)}</pre>",
+        sanitize=False,
+    ).classes("w-full")
+
+
+# Clipboard payload cap: a runaway log can be hundreds of MB, and the text travels
+# over the socket. Keep the tail, say so at the top.
+_COPY_CAP_BYTES = 8 * 2**20
+
+
+def _read_full(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    text = path.read_text(errors="replace")
+    if len(text) > _COPY_CAP_BYTES:
+        text = f"[... truncated to the last {_COPY_CAP_BYTES // 2**20} MB ...]\n" + text[-_COPY_CAP_BYTES:]
+    return text
+
+
+async def _copy_full_log(path: Path) -> None:
+    text = await asyncio.to_thread(_read_full, path)
+    if text is None:
+        ui.notify(f"{path.name} not found", type="warning")
+        return
+    ui.clipboard.write(text)
+    ui.notify(f"Copied {path.name} ({len(text.splitlines())} lines)", type="positive", timeout=1500)
 
 
 def _render_placeholder(message: str) -> None:

@@ -52,11 +52,20 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
                 .style("color: #ef4444; margin-left: -4px; display: none;")
                 .tooltip("stderr has output")
             )
+            ui.space()
+            # Copies the WHOLE current log (the panel shows the last 500 lines).
+            (
+                ui.button(icon="content_copy", on_click=lambda: _copy_active_log(monitor))
+                .props("flat dense round size=xs")
+                .style("color: #94a3b8;")
+                .tooltip("Copy the full log to the clipboard")
+            )
 
-        # ── Log panels (stacked, toggle visibility) ──
+        # ── Log panels (stacked, toggle visibility). `cb-log` wraps long lines
+        # (ui.log's default is `white-space: pre`, i.e. sideways scrolling). ──
         stdout_log = (
             ui.log(max_lines=1000)
-            .classes("w-full p-2")
+            .classes("w-full p-2 cb-log")
             .style(
                 f"flex: 1; overflow-y: auto; {MONO} font-size: 10px; "
                 "line-height: 1.4; background: #fafafa; min-height: 0;"
@@ -64,7 +73,7 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
         )
         stderr_log = (
             ui.log(max_lines=1000)
-            .classes("w-full p-2")
+            .classes("w-full p-2 cb-log")
             .style(
                 f"flex: 1; overflow-y: auto; {MONO} font-size: 10px; "
                 "line-height: 1.4; color: #b91c1c; background: #fefafa; min-height: 0;"
@@ -72,8 +81,17 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
         )
         stderr_log.set_visibility(False)
 
+    monitor = {
+        "stdout": stdout_log,
+        "stderr": stderr_log,
+        "_stderr_dot": stderr_dot,
+        "_active": "stdout",
+        "_full": {"stdout": "", "stderr": ""},
+    }
+
     def switch_log(tab):
         is_stdout = tab == "stdout"
+        monitor["_active"] = tab
         stdout_log.set_visibility(is_stdout)
         stderr_log.set_visibility(not is_stdout)
         stdout_btn.style(_TAB_ACTIVE if is_stdout else _TAB_INACTIVE)
@@ -82,7 +100,7 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
     stdout_btn.on_click(lambda: switch_log("stdout"))
     stderr_btn.on_click(lambda: switch_log("stderr"))
 
-    widget_refs.monitor_logs = {"stdout": stdout_log, "stderr": stderr_log, "_stderr_dot": stderr_dot}
+    widget_refs.monitor_logs = monitor
 
     asyncio.create_task(_refresh_job_logs(instance_id, backend, ui_mgr))
 
@@ -90,6 +108,16 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
         widget_refs.logs_timer = ui.timer(
             3.0, lambda: asyncio.create_task(_refresh_job_logs(instance_id, backend, ui_mgr))
         )
+
+
+def _copy_active_log(monitor: dict) -> None:
+    tab = monitor.get("_active", "stdout")
+    text = (monitor.get("_full") or {}).get(tab, "")
+    if not text:
+        ui.notify(f"No {tab} to copy yet", type="warning")
+        return
+    ui.clipboard.write(text)
+    ui.notify(f"Copied {tab} ({len(text.splitlines())} lines)", type="positive", timeout=1500)
 
 
 async def _refresh_job_logs_with_placeholder_swap(instance_id: str, backend, ui_mgr: UIStateManager):
@@ -149,6 +177,8 @@ async def _refresh_job_logs(instance_id: str, backend, ui_mgr: UIStateManager):
 
     stdout = logs.get("stdout", "No output") or "No output yet"
     stderr = logs.get("stderr", "No errors") or "No errors yet"
+    # Untruncated text for the copy button; the panels below show a tail.
+    monitor["_full"] = {"stdout": stdout, "stderr": stderr}
 
     stdout_lines = stdout.split("\n")
     stderr_lines = stderr.split("\n")

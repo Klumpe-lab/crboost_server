@@ -1032,9 +1032,7 @@ class ProjectState(BaseModel):
             p = Path(self.project_path) / p
         return str(p)
 
-    def ensure_job_initialized(
-        self, job_type: JobType, instance_id: str | None = None, template_path: Path | None = None
-    ):
+    def ensure_job_initialized(self, job_type: JobType, instance_id: str | None = None):
         if instance_id is None:
             instance_id = job_type.value
 

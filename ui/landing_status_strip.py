@@ -26,9 +26,11 @@ from typing import Any
 from nicegui import ui
 
 from services.configs.config_service import get_config_service
+from ui.components.buttons import house_button
 from ui.components.copyable import copy_button
 from ui.components.reactive import FingerprintedView
 from ui.config_settings_dialog import open_config_settings
+from ui.protocols_dialog import open_protocols_dialog
 from ui.styles import MONO, SANS as FONT
 
 logger = logging.getLogger(__name__)
@@ -283,6 +285,12 @@ class LandingStatusStrip(FingerprintedView):
                 ).tooltip("Your personal config override is active (~/.crboost/conf.yaml)"):
                     ui.element("div").style(f"width: 5px; height: 5px; border-radius: 50%; background: {CLR_ACCENT};")
                     ui.label("custom").style(f"{FONT} font-size: 9px; font-weight: 600; color: #1e40af;")
+
+            house_button(
+                "Protocols",
+                lambda: open_protocols_dialog(self.backend),
+                tooltip="Protocol bundles + the regression harness (run the copia case from here)",
+            )
 
             (
                 ui.button(icon="settings", on_click=lambda: open_config_settings(on_saved=self._on_config_saved))
