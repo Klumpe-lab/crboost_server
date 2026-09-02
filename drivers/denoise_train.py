@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import os
+import subprocess
 from pathlib import Path
 import traceback
 import json
@@ -21,7 +22,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 try:
-    from drivers.driver_base import ToolCommand, get_driver_context, run_command, run_tool
+    from drivers.driver_base import ToolCommand, derive_watchdog_timeout, get_driver_context, run_command, run_tool
     from services.job_models import DenoiseTrainParams
     from services.models_base import DenoiseMethod, IsoNetRefineMethod
 except ImportError:
@@ -66,8 +67,13 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     odd_dir = job_dir / "isonet_input" / "odd"
     for d in (full_dir, even_dir, odd_dir):
         d.mkdir(parents=True, exist_ok=True)
+    # Cap the training set. IsoNet's epoch cost is linear in tomogram count, so an uncapped
+    # "train on everything" is unallocatable on any real dataset (see isonet_work_minutes).
+    cap = params.isonet_max_training_tomograms
     n = 0
     for _, row in tomo_df.iterrows():
+        if cap and n >= cap:
+            break
         if filter_str not in str(row["rlnTomoReconstructedTomogram"]):
             continue
         full = resolve_tomo_path(project_path, input_star, str(row["rlnTomoReconstructedTomogram"]))
@@ -84,7 +90,8 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
         n += 1
     if n == 0:
         raise ValueError(f"No tomograms matched tomograms_for_training={filter_str!r} for IsoNet training.")
-    print(f"[ISONET] Staged {n} even/odd pair(s) for training", flush=True)
+    capped = " (isonet_max_training_tomograms cap reached)" if cap and n >= cap else ""
+    print(f"[ISONET] Staged {n} even/odd pair(s) for training{capped}", flush=True)
 
     first = tomo_df.iloc[0]
     cs = float(first.get("rlnSphericalAberration", 2.7))
@@ -128,20 +135,72 @@ def run_isonet_train(params, paths, job_dir, project_path, additional_binds):
     refine_method = params.isonet_method.value
     if params.isonet_method == IsoNetRefineMethod.AUTO:
         refine_method = IsoNetRefineMethod.ISONET2_N2N.value
-    isonet(
+
+    # --epochs MUST be explicit: the container defaults to 50, which no walltime we request
+    # covers past a couple of tomograms. --ncpus MUST be explicit too -- it defaults to a flat
+    # 16 regardless of the allocation, so a 4-core job spawns 16 dataloader workers and thrashes
+    # (torch itself warns "suggested max worker in current system is 8").
+    refine = (
         ToolCommand("isonet.py refine")
         .opt("--star_file", prep)
         .opt("--output_dir", "isonet_maps")
         .opt("--method", refine_method)
         .opt("--input_column", input_col)
+        .opt("--epochs", params.isonet_epochs)
     )
+    ncpus = int(os.environ.get("SLURM_CPUS_PER_TASK", "0") or 0)
+    if ncpus > 0:
+        refine.opt("--ncpus", ncpus)
+
+    # Say up front whether the budget covers what we asked for, so an under-allocated run says
+    # so at minute 3 instead of at hour 3 (CLAUDE.md: surface the gap, don't fail silently).
+    # `n` is the REAL staged count, post tomograms_for_training — the deploy-time estimate had
+    # to guess it from the project's tilt-series count.
+    need_min = params.isonet_work_minutes(n)
+    have_min = int(derive_watchdog_timeout() / 60)
+    print(
+        f"[ISONET] {params.isonet_epochs} epochs x {n} tomogram(s) ≈ {need_min} min; budget {have_min} min", flush=True
+    )
+    if need_min > have_min:
+        print(
+            f"[ISONET] WARNING: budget is short. Training will stop around epoch "
+            f"{max(1, int(params.isonet_epochs * have_min / need_min))} and the last checkpoint "
+            f"will be archived instead. Raise this job's SLURM time, or lower isonet_epochs / "
+            f"isonet_max_training_tomograms.",
+            flush=True,
+        )
 
     model_dir = job_dir / "isonet_maps"
+    try:
+        isonet(refine)
+        truncated = ""
+    except subprocess.CalledProcessError as e:
+        # Cut short by the watchdog, SLURM, or the OOM killer. IsoNet2 checkpoints every
+        # save_interval epochs and keeps a rolling network_*_full.pt, so there is nearly always a
+        # usable (under-trained) model on disk — ship it rather than failing the whole pipeline.
+        # Nothing on disk means it died before the first checkpoint: a real failure, re-raise.
+        if not list(model_dir.glob("**/*.pt")):
+            raise
+        # The full command is already in the log; the marker only needs the signal/exit code.
+        truncated = f"isonet.py refine exited {e.returncode} (negative = killed by that signal)"
+        print(f"[ISONET] WARNING: refine did not finish — {truncated}", flush=True)
+        print("[ISONET] Archiving the last checkpoint — this model is UNDER-TRAINED.", flush=True)
+
     pts = list(model_dir.glob("**/*.pt"))  # ISONET-ASSUMPTION: refine emits .pt under output_dir
     if not pts:
         raise RuntimeError(f"IsoNet refine produced no .pt model under {model_dir}")
     newest = max(pts, key=lambda p: p.stat().st_mtime)
     print(f"[ISONET] refine produced {len(pts)} checkpoint(s); newest={newest.name}", flush=True)
+
+    # A marker, not a silent success: the job dir has to say which of the two it was.
+    incomplete = job_dir / "TRAINING_INCOMPLETE.txt"
+    if truncated:
+        incomplete.write_text(
+            f"IsoNet training stopped before the requested {params.isonet_epochs} epochs.\n"
+            f"Archived checkpoint: {newest.name}\nReason: {truncated}\n"
+        )
+    elif incomplete.exists():
+        incomplete.unlink()  # a clean re-run must not inherit the previous run's marker
 
     # 5. Archive to the model slot (denoising_model.tar.gz; inner 'isonet_maps/').
     run_command("tar -czf denoising_model.tar.gz isonet_maps", cwd=job_dir)
@@ -321,7 +380,6 @@ def main():
 
         if found_count == 0:
             raise ValueError(f"No valid tomograms found for filter '{filter_str}'")
-
 
         # ==========================================
         # CONFIGURATION & EXTRACTION

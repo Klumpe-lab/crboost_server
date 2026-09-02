@@ -20,13 +20,14 @@ from __future__ import annotations
 
 import logging
 import shutil
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from collections.abc import Iterable
 
 import pandas as pd
 
 from services.configs.metadata_service import WarpXmlParser
-from services.tilt_series.adapters._base import BaseIngestAdapter
+from services.tilt_series.adapters._base import BaseIngestAdapter, pos_float
 from services.tilt_series.models import (
     TiltSeries,
     TsCtfPerFrameCtf,
@@ -230,11 +231,19 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
         if dups:
             raise RuntimeError(f"tsCtf ingest: frames with multiple CTF rows in {ts.id}: {dups}")
 
+        # TS-level fit facts live on the XML root, which WarpXmlParser doesn't
+        # surface: the whole-TS CTF fit resolution and the fitted plane normal.
+        root = ET.parse(xml_path).getroot()
+        ctf_resolution = pos_float(root.get("CTFResolutionEstimate"))
+        plane_normal = _parse_unit_vec3(root.get("PlaneNormal"))
+
         return TsCtfTiltSeriesOutput(
             job_instance_id=self.job_instance_id,
             job_dir=self.job_dir,
             warp_xml_path=xml_path,
             are_angles_inverted=are_inverted,
+            ctf_resolution=ctf_resolution,
+            plane_normal=plane_normal,
             per_frame=per_frame,
         )
 
@@ -304,6 +313,20 @@ class TsCtfIngestAdapter(BaseIngestAdapter):
             )
 
         return tilt_df, errors
+
+
+def _parse_unit_vec3(text: str | None) -> tuple[float, float, float] | None:
+    """Warp's "x, y, z" vector attribute → tuple; None when absent, malformed, or
+    the zero vector (Warp's "not fit" value for PlaneNormal)."""
+    if not text:
+        return None
+    try:
+        parts = [float(p) for p in text.split(",")]
+    except ValueError:
+        return None
+    if len(parts) != 3 or all(p == 0.0 for p in parts):
+        return None
+    return parts[0], parts[1], parts[2]
 
 
 def legacy_copy_per_ts_stars(

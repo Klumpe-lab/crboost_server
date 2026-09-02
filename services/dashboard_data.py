@@ -222,9 +222,74 @@ def fsm_registry_df(project_path: Path, instance_id: str, ts_name: str) -> pd.Da
                 "rlnCtfAstigmatism": out.ctf_astigmatism,
                 "cbCtfResolution": out.ctf_resolution,
                 "cbMeanFrameMovement": out.mean_frame_movement,
+                "cbDefocusSpread": out.defocus_spread_um,
+                "cbWarpXml": str(out.warp_xml_path),
             }
         )
     return pd.DataFrame(rows) if rows else None
+
+
+def fsm_motion_tracks(project_path: Path, instance_id: str, ts_name: str) -> list[dict]:
+    """Per-tilt beam-induced motion tracks from the fsMotion registry outputs:
+    [{tilt, index, frame, x, y, source}] for the frames that carry one. `index`
+    counts frames WITH an fsMotion output, so it matches the row numbers of
+    `fsm_registry_df`. Empty when this run predates track ingest (re-ingest to
+    earn them — `crboost_reingest.py`)."""
+    ts = registry_ts_for(project_path, ts_name)
+    if ts is None:
+        return []
+    tracks: list[dict] = []
+    index = 0
+    for f in ts.frames:
+        out = f.outputs.get(instance_id)
+        if out is None:
+            continue
+        index += 1
+        xs = getattr(out, "motion_track_x", None)
+        if not xs:
+            continue
+        tracks.append(
+            {
+                "tilt": f.nominal_tilt_angle_deg,
+                "index": index,
+                "frame": f.raw_filename,
+                "x": list(xs),
+                "y": list(out.motion_track_y),
+                "source": out.motion_track_source,
+            }
+        )
+    return tracks
+
+
+def ts_output_from_registry(project_path: Path, instance_id: str, ts_name: str, output_type: str):
+    """The TS-scoped registry output of one job for one TS (e.g. the tsCtf output
+    with its TS-level fit facts + XML path), or None."""
+    ts = registry_ts_for(project_path, ts_name)
+    if ts is None:
+        return None
+    out = ts.outputs.get(instance_id)
+    return out if out is not None and getattr(out, "output_type", "") == output_type else None
+
+
+def tilt_thumb_dir(state, project_path: Path) -> Path:
+    """Where the per-tilt PNGs of the motion-corrected averages live — the tilt
+    filter's thumbnails, auto-generated when fsMotion completes (pipeline_runner)."""
+    d = getattr(state, "tilt_filter_png_dir", None) if state is not None else None
+    return Path(d) if d else Path(project_path) / "TiltFilter" / "png"
+
+
+def tilt_thumb_urls(state, project_path: Path, frame_names) -> dict[str, str]:
+    """{frame basename: /api/tilt-thumb URL} for the frames whose thumbnail PNG
+    exists (PNG stem == frame id == the averaged MRC's stem). A frame without a
+    PNG has no entry — its hover card simply shows no image."""
+    png_dir = tilt_thumb_dir(state, project_path)
+    urls: dict[str, str] = {}
+    for name in frame_names:
+        base = Path(str(name)).name
+        png = png_dir / f"{Path(base).stem}.png"
+        if png.is_file():
+            urls[base] = f"/api/tilt-thumb?path={urllib.parse.quote(str(png), safe='')}"
+    return urls
 
 
 def _per_frame_entries_df(ts, instance_id: str, output_type: str, attr_cols: dict[str, str]) -> pd.DataFrame | None:
@@ -261,6 +326,7 @@ def tsctf_registry_df(project_path: Path, instance_id: str, ts_name: str) -> pd.
             "rlnDefocusU": "defocus_u_angstrom",
             "rlnDefocusV": "defocus_v_angstrom",
             "rlnCtfAstigmatism": "ctf_astigmatism",
+            "cbZ": "z_index",
         },
     )
 
@@ -280,6 +346,9 @@ def alignment_registry_df(project_path: Path, instance_id: str, ts_name: str) ->
             "rlnTomoZRot": "z_rot_deg",
             "rlnTomoXShiftAngst": "x_shift_angstrom",
             "rlnTomoYShiftAngst": "y_shift_angstrom",
+            "cbAverageIntensity": "average_intensity",
+            "cbMaskedFraction": "masked_fraction",
+            "cbFovFraction": "fov_fraction",
         },
     )
 

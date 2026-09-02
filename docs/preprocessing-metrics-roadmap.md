@@ -20,8 +20,43 @@ who explicitly wanted honesty about what each number means and what's real vs pl
 | ① | **Fix 3 dead panels** — CTF-res + motion sourced from frameseries XML, not placeholders | ✅ code-clean (ruff E+F), **runtime-pending** |
 | ② | **Tilt-filter preview overlay** — real CTF-res + motion chips (replaced the `0.0px` placeholder) | ✅ code-clean, **runtime-pending** |
 | ③ | Defocus-vs-tilt + shift-magnitude panel | ✅ code-clean (ruff E+F, format), **runtime-pending** (2026-08-03) |
-| ④ | PS1D CTF-fit overlay + tilt scrubber | ⬜ next |
+| ④ | PS1D CTF-fit overlay + tilt scrubber | ✅ code-clean, **runtime-pending** (2026-08-27) — see below |
+| ⑥ | Everything else Warp/AreTomo log per tilt (motion tracks, defocus spread, intensity, FOV, tilt offset, TS fit-res, plane tilt) + tilt image in every hover | ✅ code-clean, **runtime-pending** (2026-08-27) — see below |
 | ⑤ | Exposure-curation scatter across tilt-series (the declutter centerpiece) | ⬜ (needs multi-TS data) |
+
+**2026-08-27 — ④ + ⑥ landed (registry schema 1.4; no back-compat shims, per user):**
+- **Registry** (`services/tilt_series/models.py`, adapters): fsMotion frames now carry `defocus_spread_um`
+  (GridCTF tiles max−min) + `motion_track_x/y/source` (Warp's `average/<frame>_motion.json`, else the
+  `<GridMovementX/Y>` nodes); alignment per-frame `average_intensity` / `masked_fraction` (tomostar) +
+  `fov_fraction` (per-TS XML `<FOVFraction>`, joined by `<MoviePath>`); tsCtf TS output `ctf_resolution`
+  (root `CTFResolutionEstimate`) + `plane_normal`. **Existing projects re-earn these without recompute:**
+  `venv/bin/python3 crboost_reingest.py <project> [--job tsCtf]` (re-runs the adapters' `ingest()` over the
+  job dirs' `.ok` items, saves the registry).
+- **Curves** (`services/tilt_series/warp_curves.py`, new, pure Python, memoized by mtime): frameseries
+  `PS1D` / `SimulatedScale` / `SimulatedBackground` and tiltseries `TiltPS1D` / `TiltSimulatedScale` per Z,
+  plus the CTF² model computed from the same XML's `<CTF>` (Defocus, Cs, kV, amplitude, phase) — Warp's
+  radial PS ÷ envelope vs CTF², so rings read on a 0…1 scale out to Nyquist. Not stored in the registry
+  (39 × 256 pts per TS) — read lazily from the `warp_xml_path` the registry already records.
+- **Journey** (`ui/tomo_dashboard_dialog.py`, `ui/dashboard/figures.py`):
+  - *Motion & CTF*: + **Motion trajectories** (one polyline per tilt, indigo/amber diverging by signed tilt),
+    + **Defocus spread across image**, + **CTF fit** panel (PS1D vs model, dashed fit-resolution line, shaded
+    beyond the fitted window, tilt slider; hover/click on any chart in the section jumps it to that tilt).
+    The never-populated CTF-FoM chart and the star-fallback motion/CTF-res branches are gone (registry-only).
+  - *Alignment*: **Tilt offset** (refined − nominal; replaces the bogus "X tilt − nominal" series, which was
+    −nominal since X tilt ≡ 0), **Tilt-axis rotation** (only when it varies), **Mean tilt intensity**,
+    **Field-of-view fraction** (raw; semantics flagged in the hint), **Masked fraction** (only when non-zero);
+    tiles: stage tilt offset, tilt axis, darkest tilt.
+  - *CTF after alignment*: tiles **CTF fit resolution (TS)** + **Specimen plane tilt**. (A second CTF-fit panel
+    over `TiltPS1D` was built and then dropped as redundant — user review; the per-Z reader
+    `warp_curves.read_tiltseries_fit` stays.)
+  - **Hover cards on every per-tilt chart** (all sections incl. Tilt QC) now end with the tilt's
+    motion-corrected image (`TiltFilter/png/<frame>.png` via `/api/tilt-thumb`, 336 px) when it exists; the
+    frame filename is deliberately not shown (it would set the card width); the card is `appendToBody` +
+    custom-positioned so the image isn't clipped by the scroll area.
+- **Thumbnails** now auto-generate on **fsMotion** completion (was tsCtf — too late for the upstream tilt
+  filter and for the hover image "if fsMotion ran"); same dedup key as the manual button.
+- **Still not built / open:** AreTomo patch-tracking residuals (needs `patch_x/y > 0` runs), `AxisOffsetX/Y`
+  (semantics unconfirmed — held), ice thickness (`<CTF> Thickness` = 0 unless fitting is enabled), ⑤.
 
 **Landed code (① + ②):**
 - `services/tilt_series/frameseries_quality.py` *(new, pandas-free)* — `read_frame_quality` / `quality_series`,

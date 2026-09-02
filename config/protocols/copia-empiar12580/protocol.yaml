@@ -106,8 +106,18 @@ stages:
       isonet_method: auto
       isonet_deconv: false
   - job: denoisepredict
-    schema_fingerprint: 179357a2628c
-    params: {ntiles_x: 4, ntiles_y: 4, ntiles_z: 4, denoising_tomo_name: "", perdevice: 1, array_throttle: 20}
+    schema_fingerprint: d1d9440627a6
+    params:
+      ntiles_x: 4
+      ntiles_y: 4
+      ntiles_z: 4
+      denoising_tomo_name: ""
+      perdevice: 1
+      array_throttle: 20
+      # Both are inherited from denoisetrain at run time; captured so the stage covers
+      # its full USER_PARAMS set and they must agree with the train stage above.
+      denoise_method: cryoCARE
+      isonet_deconv: false
   - job: templatematching
     species: copia
     schema_fingerprint: f6bcdf8a5c39

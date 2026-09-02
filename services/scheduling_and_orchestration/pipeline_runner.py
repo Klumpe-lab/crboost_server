@@ -13,6 +13,7 @@ from services.project_state import JobStatus
 from services.event_log import events
 from services.result import err, ok
 from services.scheduling_and_orchestration.pipeline_orchestrator_service import JobTypeResolver
+from services.tilt_series_service import ensure_tilt_thumbnails
 
 if TYPE_CHECKING:
     from backend import CryoBoostBackend
@@ -40,6 +41,27 @@ def _afterok_state_to_status(slurm_state: str) -> JobStatus:
 # when a SIGKILL/NODE_FAIL/scancel bypassed the qsub trailer AND sacct is unavailable. Kept well
 # under SLURM's MinJobAge (~300s) so the job leaves the tracked set before it could be purged.
 _AFTEROK_ABSENT_GRACE_SEC = 90.0
+
+# How much of a job log get_job_logs returns by default. The panels show the last 500 lines, so
+# this only has to be comfortably more than that; the point is that a multi-megabyte run.err
+# costs a fixed 256 KB per poll instead of its whole size.
+LOG_TAIL_BYTES = 256 * 1024
+
+
+def _read_tail(path: Path, tail_bytes: int) -> str:
+    """Last ``tail_bytes`` of a log file as text, cut at a line boundary. 0 = whole file."""
+    size = path.stat().st_size
+    with open(path, "rb") as f:
+        if tail_bytes and size > tail_bytes:
+            f.seek(size - tail_bytes)
+            raw = f.read()
+            # Drop the partial first line the seek landed mid-way through.
+            nl = raw.find(b"\n")
+            raw = raw[nl + 1 :] if nl != -1 else raw
+            skipped = size - len(raw)
+            head = f"[... {skipped:,} earlier bytes not shown — use the copy button for the full log ...]\n"
+            return head + raw.decode("utf-8", errors="replace")
+        return f.read().decode("utf-8", errors="replace")
 
 
 class PipelineRunnerService:
@@ -307,12 +329,8 @@ class PipelineRunnerService:
             if old_status != new_status:
                 changes[instance_id] = True
                 events.info("%s: %s -> %s", instance_id, getattr(old_status, "value", old_status), new_status.value)
-                if (
-                    new_status == JobStatus.SUCCEEDED
-                    and job_model.job_type is not None
-                    and job_model.job_type.value == "tsCtf"
-                ):
-                    self._kickoff_tilt_thumbnails(project_path, state, job_model)
+                if new_status == JobStatus.SUCCEEDED and job_model.job_type == JobType.FS_MOTION_CTF:
+                    self._kickoff_tilt_thumbnails(project_path, state)
 
             found_instances.add(instance_id)
 
@@ -512,6 +530,15 @@ class PipelineRunnerService:
             except Exception as e:
                 logger.error("reconcile_afterok[%s]: failed to persist status changes: %s", proj.name, e)
 
+        # Pass 5 -- the same fsMotion-SUCCEEDED side effect sync_all_jobs has. Afterok projects
+        # never reach that reconciler, so without this no run on this orchestrator ever gets its
+        # tilt thumbnails unless a tilt-filter job exists and someone opens its panel.
+        for iid in changes:
+            jm = tracked.get(iid)
+            if jm is not None and jm.execution_status == JobStatus.SUCCEEDED and jm.job_type == JobType.FS_MOTION_CTF:
+                self._kickoff_tilt_thumbnails(proj, state)
+                break
+
         return {k: v for k, v in changes.items() if not k.startswith("__")}
 
     def _extract_job_number(self, job_path: str) -> int:
@@ -520,64 +547,16 @@ class PipelineRunnerService:
         except Exception:
             return 0
 
-    def _kickoff_tilt_thumbnails(self, project_path: str, state, job_model) -> None:
-        """When tsCtf flips to SUCCEEDED, render PNG previews for the
-        tilt-filter panel in the background so the user doesn't have to
-        click 'Generate Thumbnails' on first visit. No-op if PNGs already
-        exist on disk. dedup_key matches ui/tilt_filter_panel.py so a
-        manual click cannot double up with this auto-trigger."""
+    def _kickoff_tilt_thumbnails(self, project_path, state) -> None:
+        """fsMotionAndCtf just landed → render PNG previews of its motion-corrected
+        averages in the background (the tilt-filter gallery needs them on first visit,
+        and the Journey's per-tilt hover cards show them). Both reconcilers call this
+        on their own SUCCEEDED edge; the work itself is a no-op when the PNGs already
+        exist. Kickoff failures must never break a status-sync loop."""
         try:
-            from services.background_tasks import get_background_task_registry
-            from services.tilt_series_service import generate_tilt_thumbnails
-
-            proj_path = Path(project_path)
-            pd_str = getattr(state, "tilt_filter_png_dir", None) if state is not None else None
-            png_dir = Path(pd_str) if pd_str else proj_path / "TiltFilter" / "png"
-
-            if png_dir.exists() and any(png_dir.glob("*.png")):
-                return
-
-            star_rel = (getattr(job_model, "paths", {}) or {}).get("output_star")
-            ts_ctf_star: Path | None = None
-            if star_rel:
-                p = Path(star_rel) if Path(star_rel).is_absolute() else proj_path / star_rel
-                if p.exists():
-                    ts_ctf_star = p
-            if ts_ctf_star is None and getattr(job_model, "relion_job_name", None):
-                p = proj_path / job_model.relion_job_name / "ts_ctf_tilt_series.star"
-                if p.exists():
-                    ts_ctf_star = p
-            if ts_ctf_star is None:
-                logger.info("tsCtf auto-thumbnail: no output star found, skipping")
-                return
-
-            dedup_key = f"tilt-filter-thumbnails:{proj_path}:{png_dir}"
-            registry = get_background_task_registry()
-            backend = self.backend
-
-            async def _run(progress_cb):
-                n = await asyncio.to_thread(generate_tilt_thumbnails, ts_ctf_star, proj_path, png_dir, progress_cb)
-                st = backend.state_service.state_for(proj_path)
-                if st is not None:
-                    st.tilt_filter_png_dir = str(png_dir)
-                    st.mark_dirty()
-                    try:
-                        await backend.state_service.save_project(project_path=proj_path)
-                    except Exception as e:
-                        logger.info("tsCtf auto-thumbnail: save_project failed: %s", e)
-                return f"{n} thumbnails generated"
-
-            registry.submit(
-                _run,
-                title="Tilt thumbnails (auto)",
-                subtitle=f"Triggered by tsCtf completion · {png_dir.name}",
-                project_path=str(proj_path),
-                dedup_key=dedup_key,
-            )
-            logger.info("tsCtf auto-thumbnail: kicked off for %s", proj_path)
+            ensure_tilt_thumbnails(project_path, state)
         except Exception:
-            # Auto-trigger failures must never break the status-sync loop.
-            logger.exception("tsCtf auto-thumbnail kickoff failed")
+            logger.exception("fsMotion auto-thumbnail kickoff failed")
 
     # -------------------------------------------------------------------------
     # Pipeline overview / logs
@@ -666,37 +645,37 @@ class PipelineRunnerService:
         for key in [k for k in self._queued_since if k.startswith(prefix) and k not in live_keys]:
             self._queued_since.pop(key, None)
 
-    async def get_job_logs(self, project_path: str, job_name: str) -> dict[str, str]:
-        job_path = Path(project_path) / job_name.rstrip("/")
-        logs = {"stdout": "", "stderr": "", "exists": False, "path": str(job_path)}
+    async def get_job_logs(
+        self, project_path: str, job_name: str, *, tail_bytes: int = LOG_TAIL_BYTES
+    ) -> dict[str, str]:
+        """run.out / run.err for a job dir, TAIL ONLY by default.
 
-        if not job_path.exists():
-            logs["stdout"] = f"Job directory not found:\n{job_path}"
+        Every consumer of this renders a tail (the logs tab shows the last 500 lines) on a 3 s
+        timer, while a supervisor's run.err can reach megabytes — a driver dumping a pydantic
+        error per tilt-series produced a 5.3 MB stderr on a 114-TS project. Reading those in
+        full, on the event loop, stalled every other client for seconds per tick. Pass
+        ``tail_bytes=0`` for the whole file (the logs tab's copy button, on demand).
+        """
+        job_path = Path(project_path) / job_name.rstrip("/")
+
+        def _read() -> dict[str, str]:
+            logs = {"stdout": "", "stderr": "", "exists": False, "path": str(job_path)}
+            if not job_path.exists():
+                logs["stdout"] = f"Job directory not found:\n{job_path}"
+                return logs
+            logs["exists"] = True
+            for key, name in (("stdout", "run.out"), ("stderr", "run.err")):
+                f = job_path / name
+                if not f.exists():
+                    logs[key] = f"{name} not found."
+                    continue
+                try:
+                    logs[key] = _read_tail(f, tail_bytes)
+                except Exception as e:
+                    logs[key] = f"Error reading {name}: {e}"
             return logs
 
-        logs["exists"] = True
-
-        out_file = job_path / "run.out"
-        if out_file.exists():
-            try:
-                with open(out_file, encoding="utf-8") as f:
-                    logs["stdout"] = f.read()
-            except Exception as e:
-                logs["stdout"] = f"Error reading run.out: {e}"
-        else:
-            logs["stdout"] = "run.out not found."
-
-        err_file = job_path / "run.err"
-        if err_file.exists():
-            try:
-                with open(err_file, encoding="utf-8") as f:
-                    logs["stderr"] = f.read()
-            except Exception as e:
-                logs["stderr"] = f"Error reading run.err: {e}"
-        else:
-            logs["stderr"] = "run.err not found."
-
-        return logs
+        return await asyncio.to_thread(_read)
 
     def get_schemer_logs(self, project_path: Path) -> dict[str, str]:
         resolved = project_path.resolve()

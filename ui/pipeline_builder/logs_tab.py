@@ -55,7 +55,7 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
             ui.space()
             # Copies the WHOLE current log (the panel shows the last 500 lines).
             (
-                ui.button(icon="content_copy", on_click=lambda: _copy_active_log(monitor))
+                ui.button(icon="content_copy", on_click=lambda: _copy_active_log(monitor, backend, ui_mgr))
                 .props("flat dense round size=xs")
                 .style("color: #94a3b8;")
                 .tooltip("Copy the full log to the clipboard")
@@ -86,7 +86,8 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
         "stderr": stderr_log,
         "_stderr_dot": stderr_dot,
         "_active": "stdout",
-        "_full": {"stdout": "", "stderr": ""},
+        # Set here as well as on refresh so the copy button has a target before the first tick.
+        "_job_path": job_model.relion_job_name,
     }
 
     def switch_log(tab):
@@ -110,9 +111,17 @@ def render_logs_tab(job_type: JobType, instance_id: str, job_model, backend, ui_
         )
 
 
-def _copy_active_log(monitor: dict) -> None:
+async def _copy_active_log(monitor: dict, backend, ui_mgr: UIStateManager) -> None:
+    """Copy the WHOLE log. The panel is fed a tail (the poll must stay cheap — a supervisor's
+    run.err reaches megabytes), so the full text is read here, once, on demand."""
     tab = monitor.get("_active", "stdout")
-    text = (monitor.get("_full") or {}).get(tab, "")
+    job_path = monitor.get("_job_path")
+    project_path = ui_mgr.project_path
+    if not job_path or not project_path:
+        ui.notify(f"No {tab} to copy yet", type="warning")
+        return
+    logs = await backend.get_job_logs(str(project_path), job_path, tail_bytes=0)
+    text = logs.get(tab, "")
     if not text:
         ui.notify(f"No {tab} to copy yet", type="warning")
         return
@@ -177,8 +186,6 @@ async def _refresh_job_logs(instance_id: str, backend, ui_mgr: UIStateManager):
 
     stdout = logs.get("stdout", "No output") or "No output yet"
     stderr = logs.get("stderr", "No errors") or "No errors yet"
-    # Untruncated text for the copy button; the panels below show a tail.
-    monitor["_full"] = {"stdout": stdout, "stderr": stderr}
 
     stdout_lines = stdout.split("\n")
     stderr_lines = stderr.split("\n")

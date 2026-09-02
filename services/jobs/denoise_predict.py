@@ -15,10 +15,14 @@ class DenoisePredictParams(AbstractJobParams):
     RELION_JOB_TYPE: ClassVar[str] = "relion.external"
     IS_TOMO_JOB: ClassVar[bool] = True
 
-    # denoise_method and isonet_deconv are intentionally NOT user-editable here: they are
-    # inherited from the denoisetrain job that produced this job's model (see
-    # inherited_from_train). Predict must run whatever the model was trained as, so exposing
-    # an independent setting only invites a train/predict mismatch that fails deep in the run.
+    # denoise_method and isonet_deconv are in USER_PARAMS for the dirty-marking and the
+    # freeze-once-scheduled that entails, but they are NOT rendered by the generic grid —
+    # render_denoise_inheritance owns them, and shows them as a read-only chip whenever a
+    # denoisetrain job produced this job's model (see inherited_from_train). Predict must
+    # run whatever the model was trained as, so an independent setting would only invite a
+    # mismatch that fails deep in the run. The one case where the chip cannot answer is a
+    # manual `model_path` with no train job behind it — there the row becomes a real select,
+    # since the alternative is being pinned to the cryoCARE default with no way out.
     USER_PARAMS: ClassVar[set[str]] = {
         "ntiles_x",
         "ntiles_y",
@@ -26,7 +30,11 @@ class DenoisePredictParams(AbstractJobParams):
         "denoising_tomo_name",
         "perdevice",
         "array_throttle",
+        "denoise_method",
+        "isonet_deconv",
     }
+    # Owned by render_denoise_inheritance, not the generic parameter grid.
+    INHERITANCE_FIELDS: ClassVar[set[str]] = {"denoise_method", "isonet_deconv"}
 
     INPUT_SCHEMA: ClassVar[list[InputSlot]] = [
         InputSlot(key="model_path", accepts=[JobFileType.DENOISE_MODEL_TAR], preferred_source="denoisetrain"),
@@ -121,6 +129,16 @@ class DenoisePredictParams(AbstractJobParams):
             train = train or jm  # single-train fallback when model_path isn't resolved yet
         if train is None:
             return (None, None)
+        # Coerce, don't isinstance-check: a str-Enum job param that was last written by a
+        # `ui.select` binding holds the bare value ("IsoNet"), not the member, and an
+        # isinstance test on that reads as "no train method found" — which is how predict
+        # ended up silently running cryoCARE against an IsoNet model. `enum_forward`
+        # (ui/job_plugins/_field_styles.py) stops it at the source; this keeps a state
+        # mutated before that fix from lying too.
         m = getattr(train, "denoise_method", None)
         d = getattr(train, "isonet_deconv", None)
-        return (m if isinstance(m, DenoiseMethod) else None, d if isinstance(d, bool) else None)
+        try:
+            method = DenoiseMethod(m) if m is not None else None
+        except ValueError:
+            method = None
+        return (method, d if isinstance(d, bool) else None)

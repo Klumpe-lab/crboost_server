@@ -83,6 +83,17 @@ class FsMotionCtfFrameOutput(_OutputBase):
     ctf_resolution: float | None = None       # CTFResolutionEstimate (Å; lower = better)
     mean_frame_movement: float | None = None  # MeanFrameMovement (beam-induced motion; Warp units)
 
+    # (1.4) More of the per-movie fit, for the Journey's per-tilt QC charts: the
+    # defocus spread across the frame's CTF tiles (<GridCTF> max − min, µm — the
+    # tilted specimen's defocus ramp) and the global beam-induced motion track
+    # (x/y per time step, Warp units ≈ Å; from Warp's per-movie `_motion.json`
+    # when it wrote one, else the <GridMovementX/Y> spline nodes — `source`
+    # records which). None / empty = not in this run's XML.
+    defocus_spread_um: float | None = None
+    motion_track_x: list[float] = Field(default_factory=list)
+    motion_track_y: list[float] = Field(default_factory=list)
+    motion_track_source: Literal["motion_json", "xml_grid"] | None = None
+
     warp_xml_path: Path
 
 
@@ -113,6 +124,14 @@ class TsCtfTiltSeriesOutput(_OutputBase):
     are_angles_inverted: bool  # maps to rlnTomoHand = -1 (True) or +1 (False)
     per_frame: list[TsCtfPerFrameCtf] = Field(default_factory=list)
 
+    # (1.4) TS-level facts from the same XML's root: the resolution Warp fit the
+    # whole tilt-series' CTF to (CTFResolutionEstimate, Å — the real analog of the
+    # star's placeholder rlnCtfMaxResolution) and the fitted specimen plane normal
+    # (PlaneNormal unit vector; its angle from z = how far the sample sits off the
+    # stage plane). None when not fit (Warp writes 0 / "0, 0, 0").
+    ctf_resolution: float | None = None
+    plane_normal: tuple[float, float, float] | None = None
+
 
 class TsAlignmentPerFrame(BaseModel):
     """Per-frame alignment result (shifts + rotation) from AreTomo/IMOD."""
@@ -125,6 +144,15 @@ class TsAlignmentPerFrame(BaseModel):
     z_rot_deg: float
     x_shift_angstrom: float
     y_shift_angstrom: float
+
+    # (1.4) Per-tilt facts recorded next to the solution: the tomostar's mean
+    # image intensity (a.u.; one tilt far below its neighbours = dark/obstructed)
+    # and masked-pixel fraction (0–1), and the per-TS XML's FOVFraction (Warp's
+    # usable field-of-view fraction after shifts; exact definition undocumented —
+    # metrics inventory §8). None when the run didn't record them.
+    average_intensity: float | None = None
+    masked_fraction: float | None = None
+    fov_fraction: float | None = None
 
 
 class TsAlignmentTiltSeriesOutput(_OutputBase):

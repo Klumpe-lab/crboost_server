@@ -25,6 +25,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 
 import pandas as pd
@@ -39,17 +42,22 @@ from services.dashboard_data import (
     filter_kept_dropped_from_registry,
     filter_verdicts_from_registry,
     find_job_by_type,
+    fsm_motion_tracks,
     fsm_registry_df,
     job_dir_for,
     journey_signature,
     read_tomograms_table,
     recon_mrc_map,
     resolve_volume_for_3dmod,
+    tilt_thumb_urls,
+    ts_output_from_registry,
     tsctf_registry_df,
     vis_asset_url,
     warp_hand_from_registry,
 )
 from services.models_base import InstanceId, JobType
+from services.tilt_series.warp_curves import CtfFit1D, fit_window_inv_a, normalized_overlay, read_frameseries_fit
+from services.tilt_series_service import ensure_tilt_thumbnails
 from services.pixel_chain import apply_sanity_rules, compute_pixel_chain
 from services.visualization.preview_orchestrator import _find_warp_tomo_preview
 from services.visualization.preview_render import is_output_stale, render_xy_slab_preview
@@ -57,7 +65,16 @@ from ui.components.chip import render_chip
 from ui.components.segmented import Segmented
 from ui.current_project import current_project_state
 from ui.dashboard.css import ensure_assets_loaded
-from ui.dashboard.figures import SERIES_PALETTE, _is_meaningful_series, _safe_floats, _stats, build_per_tilt_chart
+from ui.dashboard.figures import (
+    SERIES_PALETTE,
+    _is_meaningful_series,
+    _safe_floats,
+    _stats,
+    build_ctf_fit_chart,
+    build_empty_chart,
+    build_motion_track_chart,
+    build_per_tilt_chart,
+)
 from ui.dashboard.pixel_sanity import render_pixel_sanity_table
 from ui.dashboard.strip import build_strip
 from ui.particles.pick_viewer import render_imported_particles_section, render_particles_section, reset_auto_kick_state
@@ -998,15 +1015,35 @@ def _stat_tiles(rows: list[tuple]) -> None:
                 tile.tooltip(row[2])
 
 
-def _plot_cell(label: str, options: dict, *, height_px: int = 220, wide: bool = False, hint: str | None = None) -> None:
+def _plot_cell(
+    label: str,
+    options: dict,
+    *,
+    height_px: int = 240,
+    wide: bool = False,
+    hint: str | None = None,
+    on_select: Callable[[str], None] | None = None,
+) -> ui.echart:
     """One chart tile inside a `.cb-plot-row`: a short regular-weight title (the
-    explainer `hint` is its tooltip) over an ECharts plot that fills the tile."""
+    explainer `hint` is its tooltip) over an ECharts plot that fills the tile.
+    `on_select(frame_basename)` fires when a point is clicked or hovered (throttled;
+    chart data rows carry the frame at slot 3 — see figures.py) so a companion
+    tile (the CTF-fit panel) can follow the tilt under the cursor."""
     cls = "cb-plot-cell cb-plot-cell-wide" if wide else "cb-plot-cell"
     with ui.element("div").classes(cls):
         lbl = ui.label(label).classes("cb-plot-label")
         if hint:
             lbl.tooltip(hint)
-        ui.echart(options).style(f"width: 100%; height: {height_px}px;")
+        chart = ui.echart(options).style(f"width: 100%; height: {height_px}px;")
+        if on_select is not None:
+
+            def _pick(data) -> None:
+                if isinstance(data, list) and len(data) > 3 and data[3]:
+                    on_select(str(data[3]))
+
+            chart.on_point_click(lambda e: _pick(e.data))
+            chart.on("chart:mouseover", lambda e: _pick(e.args.get("data")), ["data"], throttle=0.15)
+    return chart
 
 
 def _render_registry_gap(ts_name: str, status_label: str) -> None:
@@ -1026,15 +1063,37 @@ def _render_registry_gap(ts_name: str, status_label: str) -> None:
         ).classes("cb-section-placeholder text-amber-700")
 
 
-def _per_tilt_customdata(df: pd.DataFrame) -> list[list]:
-    """Build [[tilt_index, frame_basename], ...] customdata so plot hovers
-    can name the specific tilt instead of just its angle."""
-    n = len(df)
+def _tilt_thumbs(project_state, project_path: Path, names: list) -> dict[str, str]:
+    """{frame basename: thumbnail url} for the hover cards, asking for the PNGs when
+    the project has none. They are normally rendered on the fsMotion → SUCCEEDED edge,
+    but a run that finished while no server was watching leaves none behind, and only
+    the tilt-filter panel would ever ask — so a pipeline without a tilt-filter job used
+    to lose its hover images for good. The pass shows in the background-task tray; the
+    cards pick the images up on the next render."""
+    thumbs = tilt_thumb_urls(project_state, project_path, names)
+    if not thumbs and names:
+        ensure_tilt_thumbnails(project_path, project_state)
+    return thumbs
+
+
+def _per_tilt_customdata(
+    df: pd.DataFrame, *, verdicts: dict[str, str] | None = None, thumbs: dict[str, str] | None = None
+) -> list[list]:
+    """[[tilt_index, frame_basename, verdict, thumb_url], …] — the hover card's slots
+    (the chart prepends x, y). `verdicts` {frame basename: "keep (p=…)"} from the
+    tilt filter, `thumbs` {frame basename: url} of the motion-corrected tilt images
+    (`tilt_thumb_urls`) — "" where absent, and the card skips the line."""
     if "rlnMicrographMovieName" in df.columns:
         bases = [Path(str(v)).name for v in df["rlnMicrographMovieName"].tolist()]
     else:
-        bases = [""] * n
-    return [[i + 1, bases[i]] for i in range(n)]
+        bases = [""] * len(df)
+    verdicts = verdicts or {}
+    thumbs = thumbs or {}
+    return [[i + 1, b, verdicts.get(b, ""), thumbs.get(b, "")] for i, b in enumerate(bases)]
+
+
+def _frame_names(df: pd.DataFrame) -> list[str]:
+    return df["rlnMicrographMovieName"].tolist() if "rlnMicrographMovieName" in df.columns else []
 
 
 # One-line explainers behind each chart title. Defocus / astigmatism / shifts are
@@ -1048,19 +1107,54 @@ _HINT_ASTIG = (
     "Magnitude of CTF astigmatism (|U − V|, Å). Large astigmatism widens CTF zeros and reduces achievable resolution."
 )
 _HINT_CTF_RES = "Best resolution (Å) at which CTF zeros could be fit. Lower = better fit / more usable signal."
-_HINT_CTF_FOM = "CTF fit figure of merit, dimensionless 0..1. Higher = more confident fit."
 _HINT_MOTION = (
     "Per-tilt beam-induced motion (WarpTools MeanFrameMovement; units per Warp convention, ≈ Å). "
     "Higher = more drift/charging, and it typically rises toward high tilt. Read from the frameseries XML, "
     "not the star (whose motion columns are placeholders)."
 )
+_HINT_MOTION_TRACK = (
+    "Beam-induced drift path of every tilt's exposure (x/y shift per frame group of the movie, Warp units ≈ Å), "
+    "all starting at the origin. Indigo = negative stage tilts, amber = positive, darker = higher |tilt|. "
+    "A shared direction across tilts is stage/beam drift; a long, wandering path is charging or unstable ice. "
+    "Source: Warp's per-movie motion.json (or the XML motion-grid nodes when Warp wrote no json)."
+)
+_HINT_DEFOCUS_SPREAD = (
+    "Spread of the fitted defocus across the frame's CTF tiles (max − min of Warp's GridCTF, µm) — the defocus "
+    "ramp of the tilted specimen. It should grow roughly with |sin(tilt)| × field width; a spread that ignores "
+    "the tilt means the per-tile fit is shaky."
+)
+_HINT_CTF_FIT = (
+    "Warp's rotationally averaged power spectrum of one tilt (Thon rings, divided by the fitted envelope) against "
+    "the CTF² model computed from the defocus, Cs, voltage and amplitude contrast fitted in the same XML. Rings "
+    "should follow the model out to the dashed fit-resolution line; the shaded band is beyond the fitted frequency "
+    "window. Scrub tilts with the slider, or click / hover a tilt in the charts above."
+)
 _HINT_SHIFT = (
     "Per-tilt translation in Å applied during alignment to register each tilt to a common reference. "
     "A spike means a tilt is hard to align (often: contamination, charging, or ice motion)."
 )
-_HINT_ALIGN_ANGLES = (
-    "Refined per-tilt rotational corrections. X tilt − nominal = how far the refit moved the stage tilt; "
-    "Y tilt and Z rotation are the secondary tilt-axis and in-plane rotation."
+_HINT_TILT_OFFSET = (
+    "AreTomo-refined tilt angle minus the nominal stage tilt (°). A flat, non-zero line is the tilt-series-wide "
+    "stage-tilt offset (zero-point / pretilt) the aligner fitted; scatter within the series means individual "
+    "tilts were moved."
+)
+_HINT_TILT_AXIS = (
+    "In-plane tilt-axis rotation per tilt (°) as refined by the aligner — drawn only when it varies within the "
+    "tilt-series (a constant axis is a tile above)."
+)
+_HINT_INTENSITY = (
+    "Mean image intensity per tilt (Warp tomostar AverageIntensity, a.u.). It should fall off smoothly with "
+    "|tilt| as the beam path thickens; one tilt far below its neighbours is dark or obstructed — a practical "
+    "dark-tilt detector."
+)
+_HINT_FOV = (
+    "Warp's FOVFraction per tilt from the tilt-series XML — read as the fraction of the field of view still "
+    "usable after the alignment shifts. Its exact definition is not documented by Warp (metrics inventory §8); "
+    "plotted raw, unscaled."
+)
+_HINT_MASKED = (
+    "Fraction of masked pixels per tilt (Warp tomostar MaskedFraction: detector defects, obstructions, beam "
+    "edge). Drawn only when some tilt has masked pixels."
 )
 _HINT_THROUGHFOCUS = (
     "Mean per-tilt CTF defocus ((U+V)/2) vs stage tilt, sorted by angle — the through-focus curve. "
@@ -1073,28 +1167,20 @@ _HINT_THROUGHFOCUS = (
 def _render_ctf_motion_plots(
     df: pd.DataFrame,
     *,
-    show_motion: bool = True,
+    cd: list[list],
     ctf_res: list | None = None,
-    motion: list | None = None,
-    dl_by_frame: dict | None = None,
+    on_select_tilt: Callable[[str], None] | None = None,
 ) -> None:
-    """Defocus + astigmatism (always scatter — each tilt is an independent estimate).
-    CTF fit resolution / figure of merit / motion are gated on `_is_meaningful_series`:
-    WarpTools-exported RELION stars carry `1e-6` placeholders in those columns, and a
-    placeholder column is simply not drawn (see `project_warp_relion_star_placeholders.md`).
-
-    `ctf_res` / `motion` are the REAL per-tilt series (registry QC fields, XML-sourced
-    at ingest); the star fallback columns only render for non-WarpTools exports that
-    populate them for real."""
+    """Defocus + astigmatism (always scatter — each tilt is an independent estimate)
+    and, when the caller has the REAL per-tilt values (registry QC fields, XML-sourced
+    at ingest — the star's rlnCtfMaxResolution was a 1e-6 placeholder), the CTF fit
+    resolution. `cd` is the section's hover-card customdata (`_per_tilt_customdata`),
+    shared by every chart so hover / click select the same frame; `on_select_tilt`
+    is the CTF-fit panel's hook."""
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
-    cd = _per_tilt_customdata(df)
-    if dl_by_frame:
-        # The tilt-filter verdict (keep/drop + prob) rides along as customdata[2] so each
-        # point's hover shows what the filter thought of that tilt.
-        cd = [[*row, dl_by_frame.get(row[1], "—")] for row in cd]
-
     has_def = "rlnDefocusU" in df.columns and "rlnDefocusV" in df.columns
     has_astig = "rlnCtfAstigmatism" in df.columns
+    res = ctf_res if (ctf_res is not None and _is_meaningful_series(ctf_res)) else None
 
     with ui.element("div").classes("cb-plot-row"):
         if has_def:
@@ -1108,7 +1194,7 @@ def _render_ctf_motion_plots(
                 y_unit=" µm",
                 y_range=(0.0, 10.0),
             )
-            _plot_cell("Defocus", fig, hint=_HINT_DEFOCUS)
+            _plot_cell("Defocus", fig, hint=_HINT_DEFOCUS, on_select=on_select_tilt)
         if has_astig:
             astig = _safe_floats(df["rlnCtfAstigmatism"])
             if _is_meaningful_series(astig):
@@ -1120,75 +1206,38 @@ def _render_ctf_motion_plots(
                     y_unit=" Å",
                     y_range=(0.0, 1500.0),
                 )
-                _plot_cell("Astigmatism", fig, hint=_HINT_ASTIG)
-
-    # CTF fit resolution: the real per-tilt estimate from the XML first; the star
-    # column only when it carries real values (non-WarpTools exports).
-    res = ctf_res if (ctf_res is not None and _is_meaningful_series(ctf_res)) else None
-    if res is None and "rlnCtfMaxResolution" in df.columns:
-        star_res = _safe_floats(df["rlnCtfMaxResolution"])
-        res = star_res if _is_meaningful_series(star_res) else None
-    fom = _safe_floats(df["rlnCtfFigureOfMerit"]) if "rlnCtfFigureOfMerit" in df.columns else None
-    if fom is not None and not _is_meaningful_series(fom, threshold=1e-4):
-        fom = None
-    if res is not None or fom is not None:
-        with ui.element("div").classes("cb-plot-row"):
-            if res is not None:
-                fig = build_per_tilt_chart(
-                    tilts,
-                    [{"name": "CTF fit resolution", "y": res}],
-                    y_label="CTF fit resolution (Å)",
-                    customdata=cd,
-                    y_unit=" Å",
-                    y_range=(0.0, 30.0),
-                )
-                _plot_cell("CTF fit resolution", fig, hint=_HINT_CTF_RES)
-            if fom is not None:
-                fig = build_per_tilt_chart(
-                    tilts,
-                    [{"name": "Figure of merit", "y": fom}],
-                    y_label="CTF figure of merit",
-                    customdata=cd,
-                    y_range=(0.0, 1.0),
-                )
-                _plot_cell("CTF figure of merit", fig, hint=_HINT_CTF_FOM)
-
-    # Motion: the real per-tilt MeanFrameMovement from the XML (one series); the
-    # star's AccumMotion total/early/late only when those are real (non-WarpTools
-    # exports) — WarpTools writes 1e-6 there.
-    if not show_motion:
-        return
-    if motion is not None and _is_meaningful_series(motion, threshold=1e-4):
-        with ui.element("div").classes("cb-plot-row"):
-            series = [{"name": "Mean frame motion", "y": motion, "mode": "lines+markers"}]
-            fig = build_per_tilt_chart(tilts, series, y_label="Mean frame motion", customdata=cd)
-            _plot_cell("Beam-induced motion", fig, wide=True, hint=_HINT_MOTION)
-    elif "rlnAccumMotionTotal" in df.columns and _is_meaningful_series(
-        _safe_floats(df["rlnAccumMotionTotal"]), threshold=0.05
-    ):
-        series = [{"name": "Total", "y": _safe_floats(df["rlnAccumMotionTotal"]), "mode": "lines+markers"}]
-        if "rlnAccumMotionEarly" in df.columns:
-            series.append(
-                {"name": "Early", "y": _safe_floats(df["rlnAccumMotionEarly"]), "dash": "dot", "mode": "lines+markers"}
+                _plot_cell("Astigmatism", fig, hint=_HINT_ASTIG, on_select=on_select_tilt)
+        if res is not None:
+            fig = build_per_tilt_chart(
+                tilts,
+                [{"name": "CTF fit resolution", "y": res}],
+                y_label="CTF fit resolution (Å)",
+                customdata=cd,
+                y_unit=" Å",
+                y_range=(0.0, 30.0),
             )
-        if "rlnAccumMotionLate" in df.columns:
-            series.append(
-                {"name": "Late", "y": _safe_floats(df["rlnAccumMotionLate"]), "dash": "dash", "mode": "lines+markers"}
-            )
-        with ui.element("div").classes("cb-plot-row"):
-            fig = build_per_tilt_chart(tilts, series, y_label="Accumulated motion (Å)", customdata=cd, y_unit=" Å")
-            _plot_cell("Beam-induced motion", fig, wide=True, hint=_HINT_MOTION)
+            _plot_cell("CTF fit resolution", fig, hint=_HINT_CTF_RES, on_select=on_select_tilt)
 
 
-def _render_alignment_plots(df: pd.DataFrame) -> None:
-    """Per-tilt shift (magnitude + X/Y) and refined angle deltas relative to nominal.
+def _tilt_offsets(df: pd.DataFrame, tilts: list) -> list:
+    """Refined tilt − nominal stage tilt per row. The alignment adapter stores the
+    aligner's refined tilt negated in tilt_y_deg (rlnTomoYTilt), so refined = −Y."""
+    if "rlnTomoYTilt" not in df.columns:
+        return []
+    yt = _safe_floats(df["rlnTomoYTilt"])
+    return [(-v) - t if v is not None and t is not None else None for v, t in zip(yt, tilts, strict=False)]
+
+
+def _render_alignment_plots(df: pd.DataFrame, cd: list[list]) -> None:
+    """Per-tilt shift (magnitude + X/Y), the aligner's tilt offset, the tilt-axis
+    rotation when it varies, and the per-tilt facts Warp records beside the
+    solution (mean intensity, field-of-view fraction, masked fraction).
 
     Markers only — even for smoothly-varying metrics, connecting per-tilt
     estimates with lines turns outliers into zigzag and obscures the actual
     distribution (see `feedback_dashboard_plot_principles`).
     """
     tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
-    cd = _per_tilt_customdata(df)
 
     with ui.element("div").classes("cb-plot-row"):
         if "rlnTomoXShiftAngst" in df.columns and "rlnTomoYShiftAngst" in df.columns:
@@ -1207,25 +1256,122 @@ def _render_alignment_plots(df: pd.DataFrame) -> None:
                     y_unit=" Å",
                 )
                 _plot_cell("Refined shift", fig, hint=_HINT_SHIFT)
-        series = []
-        if "rlnTomoXTilt" in df.columns:
-            xt = _safe_floats(df["rlnTomoXTilt"])
-            resid = [
-                val - nt if nt is not None and val is not None else None for nt, val in zip(tilts, xt, strict=False)
-            ]
-            if _is_meaningful_series(resid):
-                series.append({"name": "X tilt − nominal", "y": resid})
-        if "rlnTomoYTilt" in df.columns:
-            yt = _safe_floats(df["rlnTomoYTilt"])
-            if _is_meaningful_series(yt):
-                series.append({"name": "Y tilt", "y": yt})
+        offsets = _tilt_offsets(df, tilts)
+        if any(v is not None for v in offsets):
+            fig = build_per_tilt_chart(
+                tilts,
+                [{"name": "Refined − nominal", "y": offsets, "marker_size": 7}],
+                y_label="Tilt offset (°)",
+                customdata=cd,
+                y_unit="°",
+            )
+            _plot_cell("Tilt offset", fig, hint=_HINT_TILT_OFFSET)
         if "rlnTomoZRot" in df.columns:
             zr = _safe_floats(df["rlnTomoZRot"])
-            if _is_meaningful_series(zr):
-                series.append({"name": "Z rotation", "y": zr})
-        if series:
-            fig = build_per_tilt_chart(tilts, series, y_label="Angle (°)", customdata=cd, y_unit="°")
-            _plot_cell("Refined alignment angles", fig, hint=_HINT_ALIGN_ANGLES)
+            finite = [v for v in zr if v is not None]
+            if finite and max(finite) - min(finite) > 0.01:
+                fig = build_per_tilt_chart(
+                    tilts,
+                    [{"name": "Tilt-axis rotation", "y": zr, "marker_size": 7}],
+                    y_label="Tilt axis (°)",
+                    customdata=cd,
+                    y_unit="°",
+                )
+                _plot_cell("Tilt-axis rotation", fig, hint=_HINT_TILT_AXIS)
+
+    # What Warp recorded beside the solution — each drawn only when the run has it.
+    intensity = _safe_floats(df["cbAverageIntensity"]) if "cbAverageIntensity" in df.columns else []
+    fov = _safe_floats(df["cbFovFraction"]) if "cbFovFraction" in df.columns else []
+    masked = _safe_floats(df["cbMaskedFraction"]) if "cbMaskedFraction" in df.columns else []
+    if not (_is_meaningful_series(intensity) or _is_meaningful_series(fov) or _is_meaningful_series(masked)):
+        return
+    with ui.element("div").classes("cb-plot-row"):
+        if _is_meaningful_series(intensity):
+            fig = build_per_tilt_chart(
+                tilts,
+                [{"name": "Mean intensity", "y": intensity, "marker_size": 7}],
+                y_label="Mean intensity (a.u.)",
+                customdata=cd,
+            )
+            _plot_cell("Mean tilt intensity", fig, hint=_HINT_INTENSITY)
+        if _is_meaningful_series(fov):
+            fig = build_per_tilt_chart(
+                tilts,
+                [{"name": "FOV fraction", "y": fov, "marker_size": 7}],
+                y_label="Field-of-view fraction",
+                customdata=cd,
+                y_range=(0.9, 1.0),
+            )
+            _plot_cell("Field-of-view fraction", fig, hint=_HINT_FOV)
+        if _is_meaningful_series(masked):
+            fig = build_per_tilt_chart(
+                tilts,
+                [{"name": "Masked fraction", "y": masked, "marker_size": 7}],
+                y_label="Masked fraction",
+                customdata=cd,
+                y_range=(0.0, 0.1),
+            )
+            _plot_cell("Masked fraction", fig, hint=_HINT_MASKED)
+
+
+class _CtfFitPanel:
+    """The "CTF fit" tile: Warp's measured 1-D power spectrum vs the CTF model for ONE
+    tilt, with a scrubber over the tilt-series (sorted by stage angle) and
+    `select_frame(frame)` for the section's other charts to call on click / hover,
+    so the fit follows the tilt under the cursor. `entries`: [(tilt_deg, tilt_index,
+    frame_basename, loader)] with loader() → CtfFit1D | None (memoized XML reads)."""
+
+    def __init__(self, entries: list[tuple[float, int, str, Callable[[], CtfFit1D | None]]], *, hint: str) -> None:
+        self._entries = sorted(entries, key=lambda e: e[0])
+        self._pos_by_frame = {frame: i for i, (_t, _i, frame, _l) in enumerate(self._entries)}
+        # Start at the tilt nearest 0° — the best-fit reference of the series.
+        self._pos = min(range(len(self._entries)), key=lambda i: abs(self._entries[i][0]))
+        with ui.element("div").classes("cb-plot-cell"):
+            with ui.element("div").style("display: flex; align-items: center; gap: 10px; padding: 0 2px 2px;"):
+                ui.label("CTF fit").classes("cb-plot-label").tooltip(hint)
+                self._slider = (
+                    ui.slider(
+                        min=0,
+                        max=len(self._entries) - 1,
+                        step=1,
+                        value=self._pos,
+                        on_change=lambda e: self._set(int(e.value)),
+                    )
+                    .props("dense")
+                    .style("width: 160px; margin: 0;")
+                )
+                self._readout = ui.label("").style(
+                    "font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: #64748b; white-space: nowrap;"
+                )
+            self._chart = ui.echart(self._options()).style("width: 100%; height: 240px;")
+
+    def select_frame(self, frame: str) -> None:
+        pos = self._pos_by_frame.get(frame)
+        if pos is not None and pos != self._pos:
+            self._set(pos)
+            self._slider.value = pos  # its on_change re-enters _set, which is a no-op now
+
+    def _set(self, pos: int) -> None:
+        if pos == self._pos:
+            return
+        self._pos = pos
+        opts = self._options()
+        self._chart.options.clear()
+        self._chart.options.update(opts)
+        self._chart.update()
+
+    def _options(self) -> dict:
+        tilt, index, _frame, load = self._entries[self._pos]
+        fit = load()
+        readout = f"{tilt:+.2f}° · tilt {index}"
+        if fit is None:
+            self._readout.text = readout
+            return build_empty_chart("No CTF-fit curves in the Warp XML for this tilt")
+        self._readout.text = f"{readout} · {fit.defocus_um:.2f} µm"
+        freq, measured, model = normalized_overlay(fit)
+        return build_ctf_fit_chart(
+            freq, measured, model, fit_res_a=fit.ctf_resolution_a, fit_window_inv_a=fit_window_inv_a(fit)
+        )
 
 
 def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Path, refresh) -> bool:
@@ -1274,12 +1420,15 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
         # Real CTF-fit resolution + motion: registry QC fields (XML-sourced at
         # ingest); the star's rlnCtfMaxResolution / rlnAccumMotion* were 1e-6
         # placeholders, which is why these never came from star columns.
+        tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
         ctf_res_series = _safe_floats(df["cbCtfResolution"])
         motion_series = _safe_floats(df["cbMeanFrameMovement"])
+        spread_series = _safe_floats(df["cbDefocusSpread"])
         defocus_um = [v / 1.0e4 for v in _safe_floats(df.get("rlnDefocusU", [])) if v is not None]
         d_stats = _stats(defocus_um)
         r_stats = _stats([v for v in ctf_res_series if v is not None])
         m_stats = _stats([v for v in motion_series if v is not None])
+        s_stats = _stats([v for v in spread_series if v is not None])
         tiles: list[tuple] = []
         if d_stats["n"]:
             tiles.append(("Median defocus", f"{d_stats['median']:.2f} µm", f"Over {d_stats['n']} tilts"))
@@ -1295,9 +1444,66 @@ def _render_fs_motion_ctf_section(ts_name: str, project_state, project_path: Pat
             tiles.append(("Worst CTF fit", f"{r_stats['max']:.1f} Å"))
         if m_stats["n"]:
             tiles.append(("Largest frame motion", f"{m_stats['max']:.2f}", "WarpTools mean frame movement, worst tilt"))
+        if s_stats["n"]:
+            tiles.append(
+                ("Largest defocus spread", f"{s_stats['max']:.2f} µm", "Across the frame's CTF tiles, worst tilt")
+            )
         _stat_tiles(tiles)
 
-        _render_ctf_motion_plots(df, show_motion=True, ctf_res=ctf_res_series, motion=motion_series)
+        # One hover card for every chart in the section: tilt, frame, and the
+        # motion-corrected tilt image when its thumbnail exists. Hover / click on
+        # any chart also drives the CTF-fit panel below (built after the charts,
+        # hence the indirection).
+        thumbs = _tilt_thumbs(project_state, project_path, _frame_names(df))
+        cd = _per_tilt_customdata(df, thumbs=thumbs)
+        fit_panel: dict[str, _CtfFitPanel] = {}
+
+        def _select(frame: str) -> None:
+            panel = fit_panel.get("panel")
+            if panel is not None:
+                panel.select_frame(frame)
+
+        _render_ctf_motion_plots(df, cd=cd, ctf_res=ctf_res_series, on_select_tilt=_select)
+
+        tracks = fsm_motion_tracks(project_path, instance_id, ts_name)
+        for t in tracks:
+            t["thumb"] = thumbs.get(Path(t["frame"]).name, "")
+        if _is_meaningful_series(motion_series, threshold=1e-4) or tracks:
+            with ui.element("div").classes("cb-plot-row"):
+                if _is_meaningful_series(motion_series, threshold=1e-4):
+                    series = [{"name": "Mean frame motion", "y": motion_series, "mode": "lines+markers"}]
+                    fig = build_per_tilt_chart(tilts, series, y_label="Mean frame motion", customdata=cd)
+                    _plot_cell("Beam-induced motion", fig, hint=_HINT_MOTION, on_select=_select)
+                if tracks:
+                    _plot_cell(
+                        "Motion trajectories",
+                        build_motion_track_chart(tracks),
+                        hint=_HINT_MOTION_TRACK,
+                        on_select=_select,
+                    )
+
+        # The per-movie CTF fit itself (PS1D vs model), scrubbed per tilt, beside
+        # the defocus ramp across the frame. Entries key on the XML the registry
+        # recorded for each frame; the curves are read lazily from it.
+        entries = [
+            (t, i + 1, Path(str(name)).name, partial(read_frameseries_fit, xml))
+            for i, (t, name, xml) in enumerate(zip(tilts, _frame_names(df), df["cbWarpXml"].tolist(), strict=True))
+            if t is not None and xml
+        ]
+        if _is_meaningful_series(spread_series, threshold=1e-4) or entries:
+            with ui.element("div").classes("cb-plot-row"):
+                if _is_meaningful_series(spread_series, threshold=1e-4):
+                    fig = build_per_tilt_chart(
+                        tilts,
+                        [{"name": "Defocus spread", "y": spread_series, "marker_size": 7}],
+                        y_label="Defocus spread (µm)",
+                        customdata=cd,
+                        y_unit=" µm",
+                        y_range=(0.0, 0.5),
+                    )
+                    _plot_cell("Defocus spread across image", fig, hint=_HINT_DEFOCUS_SPREAD, on_select=_select)
+                if entries:
+                    fit_panel["panel"] = _CtfFitPanel(entries, hint=_HINT_CTF_FIT)
     return True
 
 
@@ -1342,6 +1548,7 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
             _render_registry_gap(ts_name, status_label)
             return True
 
+        tilts = _safe_floats(df["rlnTomoNominalStageTiltAngle"])
         x_shift = _safe_floats(df.get("rlnTomoXShiftAngst", [])) if "rlnTomoXShiftAngst" in df.columns else []
         y_shift = _safe_floats(df.get("rlnTomoYShiftAngst", [])) if "rlnTomoYShiftAngst" in df.columns else []
         mag = [
@@ -1352,14 +1559,35 @@ def _render_ts_alignment_section(ts_name: str, project_state, project_path: Path
         if m_stats["n"]:
             tiles.append(("Largest shift", f"{m_stats['max']:.1f} Å", "The tilt that moved most during alignment"))
             tiles.append(("Median shift", f"{m_stats['median']:.1f} Å"))
-        if "rlnTomoYTilt" in df.columns:
-            yt = [v for v in _safe_floats(df["rlnTomoYTilt"]) if v is not None]
-            if yt:
-                yt_stats = _stats(yt)
-                tiles.append(("Y tilt range", f"{yt_stats['min']:.2f}° to {yt_stats['max']:.2f}°"))
+        o_stats = _stats(_tilt_offsets(df, tilts))
+        if o_stats["n"]:
+            tiles.append(
+                (
+                    "Stage tilt offset",
+                    f"{o_stats['median']:+.2f}°",
+                    "Median of (refined − nominal) tilt: the zero-point / pretilt correction the aligner fitted",
+                )
+            )
+        if "rlnTomoZRot" in df.columns:
+            z_stats = _stats(_safe_floats(df["rlnTomoZRot"]))
+            if z_stats["n"]:
+                tiles.append(("Tilt axis", f"{z_stats['median']:.2f}°", "Median refined in-plane tilt-axis rotation"))
+        if "cbAverageIntensity" in df.columns:
+            intensity = _safe_floats(df["cbAverageIntensity"])
+            lit = [(v, t) for v, t in zip(intensity, tilts, strict=False) if v is not None and t is not None]
+            if lit:
+                dark_v, dark_t = min(lit)
+                tiles.append(
+                    (
+                        "Darkest tilt",
+                        f"{dark_v:.2f} at {dark_t:+.0f}°",
+                        "Lowest mean image intensity (tomostar AverageIntensity) and the stage tilt it came from",
+                    )
+                )
         _stat_tiles(tiles)
 
-        _render_alignment_plots(df)
+        thumbs = _tilt_thumbs(project_state, project_path, _frame_names(df))
+        _render_alignment_plots(df, _per_tilt_customdata(df, thumbs=thumbs))
     return True
 
 
@@ -1403,6 +1631,29 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
             tiles.append(("Median defocus", f"{d_stats['median']:.2f} µm", f"Over {d_stats['n']} tilts"))
             tiles.append(("Defocus range", f"{d_stats['min']:.2f} – {d_stats['max']:.2f} µm"))
 
+        # TS-level facts of the same fit (XML root; None on runs that predate their ingest).
+        out = ts_output_from_registry(project_path, instance_id, ts_name, "ts_ctf")
+        ts_res = getattr(out, "ctf_resolution", None)
+        if ts_res:
+            tiles.append(
+                (
+                    "CTF fit resolution",
+                    f"{ts_res:.1f} Å",
+                    "Best resolution Warp fit the whole tilt-series' CTF to (lower = better); the star's "
+                    "rlnCtfMaxResolution is a placeholder for this",
+                )
+            )
+        normal = getattr(out, "plane_normal", None)
+        if normal:
+            nz = min(1.0, abs(float(normal[2])))
+            tiles.append(
+                (
+                    "Specimen plane tilt",
+                    f"{math.degrees(math.acos(nz)):.1f}°",
+                    "Angle between Warp's fitted specimen-plane normal and the beam axis (0° = flat on the stage)",
+                )
+            )
+
         # Tilt-filter per-tilt verdict (keep/drop + DL probability): summarised as a tile
         # and surfaced on each plot point's hover below. Silent no-op if the tilt-filter
         # job hasn't stamped this TS.
@@ -1412,9 +1663,13 @@ def _render_ts_ctf_section(ts_name: str, project_state, project_path: Path, refr
             tiles.append(("Tilts kept by the filter", f"{n_keep} of {len(dl_by_frame)}"))
         _stat_tiles(tiles)
 
-        # No motion plot here — CTF after alignment doesn't change per-tilt motion;
-        # the Motion & CTF section above already shows it.
-        _render_ctf_motion_plots(df, show_motion=False, dl_by_frame=dl_by_frame or None)
+        thumbs = _tilt_thumbs(project_state, project_path, _frame_names(df))
+        cd = _per_tilt_customdata(df, verdicts=dl_by_frame, thumbs=thumbs)
+
+        # No motion plot and no CTF-fit panel here — motion doesn't change after
+        # alignment, and the Motion & CTF section already carries the one PS1D-vs-model
+        # panel (the per-tilt TiltPS1D reader stays in warp_curves for the day it's wanted).
+        _render_ctf_motion_plots(df, cd=cd)
     return True
 
 
@@ -1468,9 +1723,18 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
     if align:
         align_df = alignment_registry_df(project_path, align[0], ts_name)
 
+    # Hover cards name the frame and show its motion-corrected image (when the
+    # fsMotion thumbnails exist) — same as the job sections above.
+    names: list = []
+    for d in (def_df, align_df):
+        if d is not None:
+            names.extend(_frame_names(d))
+    thumbs = _tilt_thumbs(project_state, project_path, names)
+
     # Defocus (µm) mean per tilt, sorted by tilt angle so the through-focus trend
-    # reads as a curve (the star is acquisition-ordered).
-    def_tilts = def_mean = def_fit = None
+    # reads as a curve (the star is acquisition-ordered); the hover rows travel
+    # with their points through the sort.
+    def_tilts = def_mean = def_fit = def_cd = None
     slope = None
     if def_df is not None and "rlnTomoNominalStageTiltAngle" in def_df.columns:
         raw_t = _safe_floats(def_df["rlnTomoNominalStageTiltAngle"])
@@ -1479,22 +1743,25 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
         mean_um = [
             ((u + v) / 2.0) / 1.0e4 if u is not None and v is not None else None for u, v in zip(du, dv, strict=False)
         ]
+        raw_cd = _per_tilt_customdata(def_df, thumbs=thumbs)
         pairs = sorted(
-            [(t, m) for t, m in zip(raw_t, mean_um, strict=False) if t is not None and m is not None],
+            [(t, m, c) for t, m, c in zip(raw_t, mean_um, raw_cd, strict=False) if t is not None and m is not None],
             key=lambda p: p[0],
         )
         if pairs:
             def_tilts = [p[0] for p in pairs]
             def_mean = [p[1] for p in pairs]
+            def_cd = [p[2] for p in pairs]
             slope, intercept = _linear_slope_intercept(def_tilts, def_mean)
             if slope is not None:
                 def_fit = [intercept + slope * t for t in def_tilts]
 
     # Shift magnitude (Å) per tilt (same math as the alignment section; surfaced
     # here as the headline alignment-difficulty number alongside defocus).
-    sh_tilts = sh_mag = None
+    sh_tilts = sh_mag = sh_cd = None
     if align_df is not None and {"rlnTomoXShiftAngst", "rlnTomoYShiftAngst"}.issubset(align_df.columns):
         sh_tilts = _safe_floats(align_df["rlnTomoNominalStageTiltAngle"])
+        sh_cd = _per_tilt_customdata(align_df, thumbs=thumbs)
         xs = _safe_floats(align_df["rlnTomoXShiftAngst"])
         ys = _safe_floats(align_df["rlnTomoYShiftAngst"])
         mag = [
@@ -1533,13 +1800,14 @@ def _render_tilt_qc_section(ts_name: str, project_state, project_path: Path, ref
                 series = [{"name": "Mean defocus", "y": def_mean, "marker_size": 7}]
                 if def_fit is not None:
                     series.append({"name": "Linear fit", "y": def_fit, "color": _MUTED, "mode": "lines", "dash": "dot"})
-                fig = build_per_tilt_chart(def_tilts, series, y_label="Defocus (µm)", y_unit=" µm")
+                fig = build_per_tilt_chart(def_tilts, series, y_label="Defocus (µm)", customdata=def_cd, y_unit=" µm")
                 _plot_cell("Through-focus", fig, hint=_HINT_THROUGHFOCUS)
             if sh_mag is not None:
                 fig = build_per_tilt_chart(
                     sh_tilts,
                     [{"name": "Shift magnitude", "y": sh_mag, "marker_size": 7}],
                     y_label="Shift (Å)",
+                    customdata=sh_cd,
                     y_unit=" Å",
                 )
                 _plot_cell("Shift magnitude", fig, hint=_HINT_SHIFT)

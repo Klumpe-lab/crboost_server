@@ -8,6 +8,7 @@ built on the patterns already established in MetadataTranslator.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
@@ -331,3 +332,92 @@ def generate_tilt_thumbnails(
     proc = ImageProcessor(target_size=target_size, max_workers=min(16, max(1, n)))
     proc.batch_convert(paths, n, str(png_dir), False, progress_cb)
     return n
+
+
+# One kickoff attempt per (project, png_dir) per process: the background registry's
+# dedup_key only covers a task that is still RUNNING, so without this a failed pass
+# would be resubmitted on every Journey render.
+_thumb_kickoffs: set[str] = set()
+
+
+def _fs_motion_output_star(project_path: Path, job_model) -> Path | None:
+    """The fsMotionAndCtf output star (`paths['output_star']`, else the job dir's
+    fs_motion_and_ctf.star), or None when neither is on disk."""
+    star_rel = (getattr(job_model, "paths", {}) or {}).get("output_star")
+    if star_rel:
+        p = Path(star_rel) if Path(star_rel).is_absolute() else project_path / star_rel
+        if p.exists():
+            return p
+    rjn = getattr(job_model, "relion_job_name", None)
+    if rjn:
+        p = project_path / rjn / "fs_motion_and_ctf.star"
+        if p.exists():
+            return p
+    return None
+
+
+def ensure_tilt_thumbnails(project_path: str | Path, state) -> bool:
+    """Render the PNG previews of fsMotion's motion-corrected averages in the
+    background if this project has none yet. Returns True when a task was submitted.
+
+    The PNGs back BOTH the tilt-filter gallery and the Journey's per-tilt hover
+    cards, so every project that ran fsMotionAndCtf needs them — with or without a
+    tilt-filter job in the pipeline. Callers: both status reconcilers, on the
+    fsMotion -> SUCCEEDED edge, and the Journey, which self-heals a run whose edge
+    no server was around to observe. No-op when the PNGs already exist, when
+    fsMotion hasn't succeeded, or when its output star isn't on disk. dedup_key
+    matches ui/tilt_filter_panel.py so a manual click cannot double up with this.
+    """
+    from services.background_tasks import get_background_task_registry
+    from services.models_base import JobStatus, JobType
+    from services.project_state import get_state_service
+
+    proj = Path(project_path)
+    pd_str = getattr(state, "tilt_filter_png_dir", None) if state is not None else None
+    png_dir = Path(pd_str) if pd_str else proj / "TiltFilter" / "png"
+    if png_dir.exists() and any(png_dir.glob("*.png")):
+        return False
+
+    guard = f"{proj}:{png_dir}"
+    if guard in _thumb_kickoffs:
+        return False
+
+    job_model = next(
+        (
+            jm
+            for jm in (getattr(state, "jobs", None) or {}).values()
+            if getattr(jm, "job_type", None) == JobType.FS_MOTION_CTF
+        ),
+        None,
+    )
+    if job_model is None or getattr(job_model, "execution_status", None) != JobStatus.SUCCEEDED:
+        return False
+
+    source_star = _fs_motion_output_star(proj, job_model)
+    if source_star is None:
+        logger.info("Tilt thumbnails: fsMotion succeeded but no output star under %s — skipping", proj)
+        return False
+
+    _thumb_kickoffs.add(guard)
+
+    async def _run(progress_cb):
+        n = await asyncio.to_thread(generate_tilt_thumbnails, source_star, proj, png_dir, progress_cb)
+        # Resolve by explicit path: this runs with no client/tab context, where a bare
+        # current_project_state() would hand back a blank throwaway and the assignment
+        # would silently no-op.
+        st = get_state_service().state_for(proj)
+        if st is not None:
+            st.tilt_filter_png_dir = str(png_dir)
+            st.mark_dirty()
+            await get_state_service().save_project(project_path=proj, force=True)
+        return f"{n} thumbnails generated"
+
+    get_background_task_registry().submit(
+        _run,
+        title="Tilt thumbnails (auto)",
+        subtitle=f"Motion-corrected tilt previews · {png_dir.name}",
+        project_path=str(proj),
+        dedup_key=f"tilt-filter-thumbnails:{proj}:{png_dir}",
+    )
+    logger.info("Tilt thumbnails: kicked off for %s (source %s)", proj, source_star)
+    return True
