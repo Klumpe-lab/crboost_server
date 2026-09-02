@@ -100,10 +100,19 @@ def render_species_badge(job_model, project_path: Path | None, *, callbacks: dic
     render_species_line(species, on_open=species_opener(callbacks, species.id))
 
 
-def render_denoise_inheritance(job_model, project_path: Path | None):
-    """Read-only row for denoise-predict: the denoiser (cryoCARE / IsoNet) and its deconv
-    setting are inherited from the denoise-train job — predict has no independent setting,
-    so a train/predict mismatch is impossible. Shows the resolved method when available."""
+def render_denoise_inheritance(job_model, project_path: Path | None, *, is_frozen: bool, save_handler: Callable):
+    """The denoiser row on denoise-predict.
+
+    Normal case: the method and its deconv setting come from the denoise-train job that
+    produced the model — a chip, not a knob, because predict must run whatever the model
+    was trained as. But `model_path` also takes a manual path (an IsoNet tar from another
+    project, say), and then there is no train job to inherit from. Rather than pinning
+    those runs to the cryoCARE default with no way out, the row turns into a real select.
+    The driver's `_apply_inherited_method` no-ops on an unresolvable method, so the choice
+    made here survives to run time — and can still never contradict a train job that exists.
+    """
+    from services.models_base import DenoiseMethod
+
     method = None
     if project_path:
         from services.project_state import get_project_state_for
@@ -111,7 +120,30 @@ def render_denoise_inheritance(job_model, project_path: Path | None):
         # inherited_from_train returns (None, None) when it can't resolve — no except needed.
         method, _ = job_model.inherited_from_train(get_project_state_for(project_path))
 
-    label = method.value if method is not None else "set in denoise-train"
+    if method is None:
+        with field_grid():
+            enum_field(
+                "Denoiser",
+                job_model,
+                "denoise_method",
+                DenoiseMethod,
+                is_frozen=is_frozen,
+                save_handler=save_handler,
+                hint="No denoise-train job produced this model, so there is nothing to inherit from — "
+                "pick the denoiser the model at `model_path` was actually trained with. Add a "
+                "denoisetrain job and this becomes read-only again.",
+            )
+            if job_model.denoise_method == DenoiseMethod.ISONET:
+                toggle_field(
+                    "IsoNet deconv",
+                    job_model,
+                    "isonet_deconv",
+                    is_frozen=is_frozen,
+                    save_handler=save_handler,
+                    hint=type(job_model).model_fields["isonet_deconv"].description,
+                )
+        return
+
     with ui.row().classes("items-center gap-2").style("margin-bottom: 8px;"):
         ui.label("Denoiser").style(
             f"{SANS} font-size: 9px; font-weight: 700; color: {CLR_SUBLABEL}; "
@@ -125,7 +157,7 @@ def render_denoise_inheritance(job_model, project_path: Path | None):
             )
             .tooltip("Inherited from the denoise-train job — set the method there; predict follows it automatically.")
         ):
-            ui.label(label).style("font-size: 10px; color: #6b21a8; font-weight: 600;")
+            ui.label(method.value).style("font-size: 10px; color: #6b21a8; font-weight: 600;")
         ui.label("inherited from denoise-train").style(f"{SANS} font-size: 9px; color: {CLR_SUBLABEL};")
 
 
@@ -238,7 +270,9 @@ def render_default_params_card(
     render_species_badge(job_model, project_path, callbacks=_ctx.get("callbacks"))
     render_config_preamble(job_model)
     if job_type == JobType.DENOISE_PREDICT:
-        render_denoise_inheritance(job_model, project_path)
+        render_denoise_inheritance(job_model, project_path, is_frozen=is_frozen, save_handler=save_handler)
+        # The denoiser row above owns these; the generic grid must not render them twice.
+        exclude = (exclude or set()) | getattr(job_model, "INHERITANCE_FIELDS", set())
     render_default_params(job_type, job_model, is_frozen, save_handler, exclude=exclude)
 
 

@@ -44,7 +44,12 @@ class CandidateExtractPytomParams(AbstractJobParams):
 
     # Particle params
     particle_diameter_ang: float = Field(default=200.0)
-    max_num_particles: int = Field(default=1500)
+    # ge=1: PyTOM's `-n` is a required, strictly-positive cap ("error: -n must be larger
+    # than 0", argparse exit 2) — a stored 0 got all the way to a GPU node before saying so.
+    # There is no "0 = uncapped" spelling; leave the cap high instead.
+    max_num_particles: int = Field(
+        default=1500, ge=1, description="Hard cap on candidates per tilt-series after the cutoff is applied."
+    )
 
     # Thresholding strategy + per-strategy values.
     #

@@ -160,6 +160,12 @@ def scan_statuses(job_dir: Path, items: list[str]) -> dict[str, str]:
             elif p.suffix == ".skip":
                 skip_set.add(p.stem)
 
+    # One directory listing rather than one stat() per item: this runs on a 5 s UI timer over
+    # the shared filesystem, and a 114-tilt-series job made it 114 round-trips a tick.
+    started: set = set()
+    if job_dir.is_dir():
+        started = {e.name for e in os.scandir(job_dir) if e.name.startswith("task_") and e.name.endswith(".out")}
+
     statuses: dict[str, str] = {}
     for idx, name in enumerate(items):
         if name in ok_set:
@@ -168,7 +174,7 @@ def scan_statuses(job_dir: Path, items: list[str]) -> dict[str, str]:
             statuses[name] = "fail"
         elif name in skip_set:
             statuses[name] = "skip"
-        elif (job_dir / f"task_{idx}.out").exists():
+        elif f"task_{idx}.out" in started:
             statuses[name] = "running"
         else:
             statuses[name] = "pending"

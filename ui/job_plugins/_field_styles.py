@@ -184,6 +184,18 @@ def _numeric_kind(job_model, attr: str) -> tuple[bool, bool]:
     return len(concrete) == 1 and concrete[0] is int, allows_none
 
 
+def _numeric_bounds(job_model, attr: str) -> tuple[float | None, float | None]:
+    """The field's declared (ge, le), or (None, None). Only ge/le are modelled — no field
+    under services/jobs/ uses the open-interval gt/lt, and an open bound has no
+    representable widget minimum anyway."""
+    field = type(job_model).model_fields.get(attr)
+    lo = hi = None
+    for m in getattr(field, "metadata", None) or []:
+        lo = getattr(m, "ge", lo) if getattr(m, "ge", None) is not None else lo
+        hi = getattr(m, "le", hi) if getattr(m, "le", None) is not None else hi
+    return lo, hi
+
+
 def numeric_forward(job_model, attr: str) -> Callable:
     """element → model transform for `numeric_field`.
 
@@ -193,8 +205,16 @@ def numeric_forward(job_model, attr: str) -> Callable:
     NEXT load fails validation — which used to drop the whole job instance and leave the
     driver reporting `FATAL: Instance '<id>' not found`. Coerce at the point of entry
     instead of discovering it a restart later.
+
+    Out-of-range values are refused the same way garbage is: an int field declaring `ge=1`
+    that accepts a 0 writes a value pydantic would reject on the next load AND that the
+    tool downstream rejects harder — `max_num_particles: 0` reached PyTOM as `-n 0` and
+    died with "must be larger than 0" on a compute node. Refusing (rather than clamping)
+    is what keeps mid-typing safe: the prefixes of "1500" that fall below a bound leave
+    the last good value in place until a whole in-range number is typed.
     """
     is_int, allows_none = _numeric_kind(job_model, attr)
+    lo, hi = _numeric_bounds(job_model, attr)
 
     def _forward(value):
         if value is None or value == "":
@@ -206,7 +226,10 @@ def numeric_forward(job_model, attr: str) -> Callable:
             number = float(value)
         except (TypeError, ValueError):
             return getattr(job_model, attr)  # mid-typing garbage; the next valid value lands
-        return round(number) if is_int else number  # round() with no ndigits returns an int
+        number = round(number) if is_int else number  # round() with no ndigits returns an int
+        if (lo is not None and number < lo) or (hi is not None and number > hi):
+            return getattr(job_model, attr)
+        return number
 
     return _forward
 
@@ -231,7 +254,10 @@ def numeric_field(
         # precision=0 makes the widget itself snap to whole numbers on blur, so an integer
         # field LOOKS like one; numeric_forward is what guarantees the model never holds
         # a fractional value, blur or not.
-        inp = ui.number(value=val, format=fmt, precision=0 if is_int else None)
+        lo, hi = _numeric_bounds(job_model, attr)
+        # min/max are the widget's own affordance (spinner stops, browser validation);
+        # numeric_forward is what guarantees the model never takes an out-of-range value.
+        inp = ui.number(value=val, format=fmt, precision=0 if is_int else None, min=lo, max=hi)
         inp.bind_value(job_model, attr, forward=numeric_forward(job_model, attr))
         _attach_input(inp, is_frozen=is_frozen, narrow=narrow)
         if not is_frozen:
@@ -244,13 +270,35 @@ def numeric_field(
     return inp
 
 
+def enum_forward(job_model, attr: str, enum_type) -> Callable:
+    """element → model transform for `enum_field`, the enum sibling of `numeric_forward`.
+
+    `ui.select` hands back the raw option string and `AbstractJobParams` does not validate
+    on assignment, so a plain binding leaves e.g. the str `"IsoNet"` where a `DenoiseMethod`
+    member belongs. Comparisons still pass (these are str-Enums), which is why it hides —
+    but `isinstance(value, DenoiseMethod)` does not, and denoise-predict's
+    `inherited_from_train` used that to decide whether it could read the trained method.
+    It always said no, so predict silently fell back to its cryoCARE default.
+    """
+
+    def _forward(value):
+        try:
+            return enum_type(value)
+        except ValueError:
+            return getattr(job_model, attr)  # not a member; keep the last good value
+
+    return _forward
+
+
 def enum_field(
     label: str, job_model, attr: str, enum_type, *, is_frozen: bool, save_handler: Callable, hint: str | None = None
 ):
     with ui.element("div").style(ROW_STYLE):
         _label(label, hint)
         options = [e.value for e in enum_type]
-        sel = ui.select(options=options, value=getattr(job_model, attr)).bind_value(job_model, attr)
+        sel = ui.select(options=options, value=getattr(job_model, attr)).bind_value(
+            job_model, attr, forward=enum_forward(job_model, attr, enum_type)
+        )
         # `.cb-select` (themed in ui/main_ui.py) gives a clean 1px-bordered box and
         # a themed popup instead of the default Quasar Material underline/float.
         sel.props(_INPUT_PROPS_BASE)

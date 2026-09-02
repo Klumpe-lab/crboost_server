@@ -184,7 +184,7 @@ class DriverContext(Generic[T]):
 IDLE_TIMEOUT_DEFAULT = 45 * 60
 
 
-def _derive_watchdog_timeout() -> int:
+def derive_watchdog_timeout() -> int:
     """
     Seconds of wall-clock budget for run_command's watchdog.
 
@@ -273,7 +273,7 @@ def run_command(command: str, cwd: Path, timeout: int | None = None, idle_timeou
     and only one of them used to be caught:
 
       timeout (total wall-clock) -- derived from SLURM walltime at 90% (see
-        _derive_watchdog_timeout) when unset. This does NOT save the job: a run
+        derive_watchdog_timeout) when unset. This does NOT save the job: a run
         that trips it was going to exceed --time anyway. What it buys is that WE
         kill it rather than SLURM, so the driver still gets to write a .fail
         marker and log a reason instead of vanishing mid-line.
@@ -293,7 +293,7 @@ def run_command(command: str, cwd: Path, timeout: int | None = None, idle_timeou
     import threading
 
     if timeout is None:
-        timeout = _derive_watchdog_timeout()
+        timeout = derive_watchdog_timeout()
     idle_timeout = min(idle_timeout, timeout) if idle_timeout else 0
 
     # Echo the exact command into the job log: the one reliable record of what

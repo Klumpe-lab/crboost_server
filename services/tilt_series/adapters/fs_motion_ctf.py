@@ -24,6 +24,7 @@ is exactly `Frame.id`. So the lookup is a direct `job_dir/warp_frameseries/
 
 from __future__ import annotations
 
+import json
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -31,7 +32,7 @@ from collections.abc import Iterable
 
 import pandas as pd
 
-from services.tilt_series.adapters._base import BaseIngestAdapter
+from services.tilt_series.adapters._base import BaseIngestAdapter, pos_float
 from services.tilt_series.models import FsMotionCtfFrameOutput, TiltSeries
 
 logger = logging.getLogger(__name__)
@@ -43,14 +44,61 @@ logger = logging.getLogger(__name__)
 _LEGACY_MOTION_PLACEHOLDER = 0.000001
 
 
-def _pos_float(v: str | None) -> float | None:
-    """Coerce a WarpTools XML attribute to a positive float, else None. Matches
-    frameseries_quality._positive_float (non-positive/unparseable → not real)."""
-    try:
-        f = float(v)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+def _grid_spread(grid: ET.Element | None) -> float | None:
+    """max − min over a Warp <Grid…> element's <Node Value=…> entries — for
+    <GridCTF> (Width×Height tiles) that is the defocus ramp across the frame.
+    None for a missing or single-node grid (nothing to spread)."""
+    if grid is None:
         return None
-    return f if f > 0 else None
+    vals: list[float] = []
+    for n in grid.findall("Node"):
+        try:
+            vals.append(float(n.get("Value")))
+        except (TypeError, ValueError):
+            continue
+    return max(vals) - min(vals) if len(vals) >= 2 else None
+
+
+def _grid_nodes_by_z(grid: ET.Element | None) -> list[float]:
+    """<Node Z=…> values in Z order — the temporal axis of a Warp motion grid
+    (<GridMovementX/Y> is 1×1×Depth: the global motion spline's control points)."""
+    if grid is None:
+        return []
+    by_z: dict[int, float] = {}
+    for n in grid.findall("Node"):
+        try:
+            by_z[int(n.get("Z"))] = float(n.get("Value"))
+        except (TypeError, ValueError):
+            continue
+    return [by_z[z] for z in sorted(by_z)]
+
+
+def _motion_track(root: ET.Element, motion_json: Path) -> tuple[list[float], list[float], str | None]:
+    """The movie's global beam-induced motion track (x[], y[] per time step).
+
+    Warp writes the per-frame-group trajectory to `average/<frame>_motion.json`
+    as {"<x>_<y>": {"x": […], "y": […]}} — one cell per motion-grid position. A
+    single cell IS the global track (the usual 1×1×Z grid); with a local motion
+    grid the cells are local tracks, so the global one is taken from the XML's
+    <GridMovementX/Y> spline nodes instead (coarser: one value per control point).
+    Nothing is averaged or invented — each source is Warp's own global track.
+    Returns (xs, ys, source) with source "motion_json" | "xml_grid" | None."""
+    if motion_json.exists():
+        try:
+            cells = json.loads(motion_json.read_text())
+            if isinstance(cells, dict) and len(cells) == 1:
+                (cell,) = cells.values()
+                xs = [float(v) for v in cell["x"]]
+                ys = [float(v) for v in cell["y"]]
+                if xs and len(xs) == len(ys):
+                    return xs, ys, "motion_json"
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            logger.warning("fs_motion_and_ctf: could not read motion track %s: %s", motion_json, e)
+    xs = _grid_nodes_by_z(root.find("GridMovementX"))
+    ys = _grid_nodes_by_z(root.find("GridMovementY"))
+    if xs and len(xs) == len(ys):
+        return xs, ys, "xml_grid"
+    return [], [], None
 
 
 class FsMotionCtfIngestAdapter(BaseIngestAdapter):
@@ -176,8 +224,8 @@ class FsMotionCtfIngestAdapter(BaseIngestAdapter):
 
         # Real QC values — root <Movie> attributes, not in the <CTF> block. The
         # RELION star writes 1e-6 placeholders for these; the registry keeps the truth.
-        ctf_resolution = _pos_float(root.get("CTFResolutionEstimate"))
-        mean_frame_movement = _pos_float(root.get("MeanFrameMovement"))
+        ctf_resolution = pos_float(root.get("CTFResolutionEstimate"))
+        mean_frame_movement = pos_float(root.get("MeanFrameMovement"))
 
         # Legacy quirk: fs_motion writes U == V and stuffs delta into astigmatism.
         # Replicated exactly to preserve on-disk STAR layout (byte-for-byte
@@ -187,6 +235,10 @@ class FsMotionCtfIngestAdapter(BaseIngestAdapter):
         astig = defocus_delta * 10000.0
 
         base = self.warp_dir / "average"
+        # Per-tile defocus spread + the global motion track: more of the same
+        # fit, kept for the Journey's per-tilt QC. Both optional (None / empty).
+        defocus_spread = _grid_spread(root.find("GridCTF"))
+        track_x, track_y, track_source = _motion_track(root, base / f"{frame_id}_motion.json")
         return FsMotionCtfFrameOutput(
             job_instance_id=self.job_instance_id,
             job_dir=self.job_dir,
@@ -200,6 +252,10 @@ class FsMotionCtfIngestAdapter(BaseIngestAdapter):
             ctf_astigmatism=astig,
             ctf_resolution=ctf_resolution,
             mean_frame_movement=mean_frame_movement,
+            defocus_spread_um=defocus_spread,
+            motion_track_x=track_x,
+            motion_track_y=track_y,
+            motion_track_source=track_source,  # type: ignore[arg-type]
             warp_xml_path=xml_path,
         )
 

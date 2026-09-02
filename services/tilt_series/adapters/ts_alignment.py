@@ -24,6 +24,7 @@ adapter now.
 from __future__ import annotations
 
 import logging
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from collections.abc import Iterable
 
@@ -32,7 +33,7 @@ import pandas as pd
 
 from services.configs.starfile_service import StarfileService
 from services.models_base import AlignmentMethod
-from services.tilt_series.adapters._base import BaseIngestAdapter
+from services.tilt_series.adapters._base import BaseIngestAdapter, opt_float, xml_text_lines
 from services.tilt_series.models import (
     TiltSeries,
     TsAlignmentPerFrame,
@@ -301,6 +302,13 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
                 f"({len(aln_data)}) for TS {ts.id}"
             )
 
+        # Per-tilt QC recorded next to the solution: the tomostar's intensity /
+        # masked-fraction columns (same rows we iterate) and the per-TS XML's
+        # FOVFraction (keyed by movie basename). All optional.
+        has_intensity = "wrpAverageIntensity" in tomostar_df.columns
+        has_masked = "wrpMaskedFraction" in tomostar_df.columns
+        fov_by_movie = self._read_fov_fraction(ts.id)
+
         per_frame: list[TsAlignmentPerFrame] = []
         unresolved: list[str] = []
         for i, tomo_row in tomostar_df.iterrows():
@@ -320,6 +328,9 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
                     z_rot_deg=float(aln_data[i, _ALN_COL_ZROT]),
                     x_shift_angstrom=float(aln_data[i, _ALN_COL_XSHIFT]) * shift_angpix,
                     y_shift_angstrom=float(aln_data[i, _ALN_COL_YSHIFT]) * shift_angpix,
+                    average_intensity=opt_float(tomo_row["wrpAverageIntensity"]) if has_intensity else None,
+                    masked_fraction=opt_float(tomo_row["wrpMaskedFraction"]) if has_masked else None,
+                    fov_fraction=fov_by_movie.get(Path(movie_name).name),
                 )
             )
 
@@ -346,6 +357,31 @@ class TsAlignmentIngestAdapter(BaseIngestAdapter):
             tlt_file=tlt_file,
             per_frame=per_frame,
         )
+
+    def _read_fov_fraction(self, ts_id: str) -> dict[str, float]:
+        """{movie basename: FOVFraction} from the per-TS Warp XML, whose <MoviePath>
+        and <FOVFraction> are parallel newline lists. QC-only, so never fatal:
+        empty (with a warning) when the XML lacks either or their lengths differ."""
+        xml_path = self.warp_dir / f"{ts_id}.xml"
+        try:
+            root = ET.parse(xml_path).getroot()
+        except (OSError, ET.ParseError) as e:
+            logger.warning("tsAlignment: %s: FOVFraction not ingested, XML unreadable: %s", ts_id, e)
+            return {}
+        movies = xml_text_lines(root.find("MoviePath"))
+        fovs = xml_text_lines(root.find("FOVFraction"))
+        if not movies or len(movies) != len(fovs):
+            logger.warning(
+                "tsAlignment: %s: FOVFraction not ingested (%d values for %d MoviePath entries)",
+                ts_id, len(fovs), len(movies),
+            )
+            return {}
+        out: dict[str, float] = {}
+        for movie, fov in zip(movies, fovs, strict=True):
+            value = opt_float(fov)
+            if value is not None:
+                out[Path(movie).name] = value
+        return out
 
     def _parse_alignment_files(
         self, ts_tiltstack: Path, alignment_method: AlignmentMethod

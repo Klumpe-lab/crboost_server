@@ -23,6 +23,34 @@ from services.configs.starfile_service import StarfileService
 from services.tilt_series.registry import TiltSeriesRegistry
 
 
+def pos_float(v: object) -> float | None:
+    """Coerce a WarpTools XML attribute / Param to a positive float, else None.
+    Warp writes 0 / -1 for "not computed", and a resolution, motion or intensity
+    of 0 is never a real measurement — so non-positive is "absent", not a value."""
+    try:
+        f = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
+def opt_float(v: object) -> float | None:
+    """Coerce to float, None when unparseable / NaN (a real 0 stays 0)."""
+    try:
+        f = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
+
+
+def xml_text_lines(el) -> list[str]:
+    """The non-empty lines of a Warp XML element whose text is a newline list
+    (<MoviePath>, <FOVFraction>, <Angles>, …). Empty for a missing element."""
+    if el is None or not el.text:
+        return []
+    return [ln.strip() for ln in el.text.split("\n") if ln.strip()]
+
+
 class BaseIngestAdapter:
     """Identity + STAR plumbing shared by every ingest adapter.
 

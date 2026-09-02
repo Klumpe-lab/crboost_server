@@ -594,7 +594,7 @@ _CB_CSS = """
 .cb-plot-cell {
     flex: 1 1 340px; min-width: 280px;
     background: #ffffff; border: 1px solid #f1f5f9; border-radius: 4px;
-    padding: 6px 6px 2px;
+    padding: 6px 6px 6px;
 }
 .cb-plot-cell-wide { flex: 1 1 100%; min-width: 280px; }
 /* One short regular-weight title per chart (the explainer tooltip hangs on it);

@@ -1483,9 +1483,14 @@ class CryoBoostBackend:
         """Gets a high-level overview and detailed statuses of all jobs."""
         return await self.pipeline_runner.get_pipeline_overview(project_path)
 
-    async def get_job_logs(self, project_path: str, job_name: str) -> dict[str, str]:
-        """Gets logs for a specific job *path* (e.g., "External/job003/")."""
-        return await self.pipeline_runner.get_job_logs(project_path, job_name)
+    async def get_job_logs(self, project_path: str, job_name: str, *, tail_bytes: int | None = None) -> dict[str, str]:
+        """Gets logs for a specific job *path* (e.g., "External/job003/").
+
+        Tail-only by default (see PipelineRunnerService.get_job_logs); pass tail_bytes=0 for
+        the whole file."""
+        if tail_bytes is None:
+            return await self.pipeline_runner.get_job_logs(project_path, job_name)
+        return await self.pipeline_runner.get_job_logs(project_path, job_name, tail_bytes=tail_bytes)
 
     async def get_eer_frames_per_tilt(self, eer_file_path: str) -> int:
         try:

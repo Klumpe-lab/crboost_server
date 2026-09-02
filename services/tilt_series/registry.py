@@ -45,7 +45,12 @@ logger = logging.getLogger(__name__)
 #         (real QC values from the Warp XML, formerly star placeholders).
 # (1, 3): additive Frame.filter_probability (DL tilt-filter score alongside the
 #         boolean verdict); additive DenoisePredictTomogramOutput tomogram output.
-REGISTRY_SCHEMA_VERSION = (1, 3)
+# (1, 4): additive per-tilt QC the Journey charts: FsMotionCtfFrameOutput
+#         defocus_spread_um + motion_track_x/y/source; TsAlignmentPerFrame
+#         average_intensity / masked_fraction / fov_fraction; TsCtfTiltSeriesOutput
+#         ctf_resolution / plane_normal. Older registries read fine (fields
+#         default to None) and re-earn them via `crboost_reingest.py`.
+REGISTRY_SCHEMA_VERSION = (1, 4)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -68,6 +73,9 @@ class TiltSeriesRegistry:
         self._filename_index: dict[str, Frame] = {}         # raw_filename → Frame
         self._dirty_ts: set[str] = set()
         self._dirty_index: bool = False
+        # Sidecar mtime observed when each TS was last parsed, so refresh_from_disk() can
+        # re-parse only what a driver actually rewrote instead of the whole project.
+        self._ts_mtime_ns: dict[str, int] = {}
         self._save_lock = asyncio.Lock()
         # index.json mtime observed at load time. Drivers ingest on compute
         # nodes and save to disk; the server's cached instance detects that via
@@ -145,12 +153,9 @@ class TiltSeriesRegistry:
         self._dirty_index = True
 
     def remove_tilt_series(self, ts_id: str) -> None:
-        ts = self._tilt_series.pop(ts_id, None)
-        if ts is None:
+        if ts_id not in self._tilt_series:
             return
-        for f in ts.frames:
-            self._frame_index.pop(f.id, None)
-            self._filename_index.pop(f.raw_filename, None)
+        self._forget_tilt_series(ts_id)
         self._dirty_index = True
         path = self._ts_path(ts_id)
         if path.exists():
@@ -290,11 +295,7 @@ class TiltSeriesRegistry:
                 logger.warning("Registry index references missing TS file: %s", ts_path)
                 continue
             try:
-                with open(ts_path) as f:
-                    data = json.load(f)
-                ts = TiltSeries.model_validate(data)
-                self._tilt_series[ts.id] = ts
-                self._reindex_ts(ts)
+                self._load_sidecar(ts_id, ts_path, replacing=False)
                 loaded += 1
             except Exception as e:
                 logger.warning("Failed to load TS sidecar %s: %s", ts_path, e)
@@ -307,6 +308,52 @@ class TiltSeriesRegistry:
         self._dirty_ts.clear()
         self._dirty_index = False
 
+    def refresh_from_disk(self) -> None:
+        """Re-sync with the on-disk registry, re-parsing ONLY the sidecars that changed.
+
+        A driver ingesting on a compute node rewrites a handful of sidecars and touches the
+        index; the previous behaviour (throw the instance away and `load()` a fresh one) then
+        re-validated every sidecar in the project. On a 114-tilt-series project that is ~19 MB
+        of pydantic per poll, on the event loop. Only sidecars whose own mtime moved are
+        re-read here; the rest keep their parsed objects.
+
+        Caller must ensure there are no unsaved in-memory changes (see get_registry_for).
+        """
+        if not self.index_path.exists():
+            return
+        try:
+            with open(self.index_path) as f:
+                index = json.load(f)
+        except Exception as e:
+            logger.warning("Failed to re-read registry index %s: %s", self.index_path, e)
+            return
+
+        ts_ids = index.get("tilt_series", [])
+        reparsed = 0
+        for ts_id in ts_ids:
+            ts_path = self._ts_path(ts_id)
+            try:
+                mtime = ts_path.stat().st_mtime_ns
+            except OSError:
+                logger.warning("Registry index references missing TS file: %s", ts_path)
+                continue
+            if ts_id in self._tilt_series and self._ts_mtime_ns.get(ts_id) == mtime:
+                continue
+            try:
+                self._load_sidecar(ts_id, ts_path, replacing=ts_id in self._tilt_series, mtime_ns=mtime)
+                reparsed += 1
+            except Exception as e:
+                logger.warning("Failed to load TS sidecar %s: %s", ts_path, e)
+
+        for gone in set(self._tilt_series) - set(ts_ids):
+            self._forget_tilt_series(gone)
+
+        logger.info("Registry refresh: %d of %d tilt-series re-parsed", reparsed, len(ts_ids))
+        try:
+            self._loaded_index_mtime_ns = self.index_path.stat().st_mtime_ns
+        except FileNotFoundError:
+            self._loaded_index_mtime_ns = None
+
     def save(self, *, force: bool = False) -> None:
         """Flush dirty TS + index to disk atomically (per-file rename)."""
         self.registry_dir.mkdir(parents=True, exist_ok=True)
@@ -317,7 +364,13 @@ class TiltSeriesRegistry:
             ts = self._tilt_series.get(ts_id)
             if ts is None:
                 continue
-            self._atomic_write(self._ts_path(ts_id), ts.model_dump_json(indent=2))
+            ts_path = self._ts_path(ts_id)
+            self._atomic_write(ts_path, ts.model_dump_json(indent=2))
+            # Our own write is not a change to re-parse on the next refresh.
+            try:
+                self._ts_mtime_ns[ts_id] = ts_path.stat().st_mtime_ns
+            except OSError:
+                self._ts_mtime_ns.pop(ts_id, None)
 
         if dirty or self._dirty_index or force:
             index = {
@@ -341,14 +394,39 @@ class TiltSeriesRegistry:
 
     # ── Internals ──────────────────────────────────────────────────────────
 
-    def _reindex_ts(self, ts: TiltSeries) -> None:
-        # Wipe any stale entries for this TS, then rebuild.
-        stale_frame_ids = [fid for fid, t in self._frame_index.items() if t.id == ts.id]
-        for fid in stale_frame_ids:
-            self._frame_index.pop(fid, None)
-        stale_names = [name for name, f in self._filename_index.items() if f.tilt_series_id == ts.id]
-        for name in stale_names:
-            self._filename_index.pop(name, None)
+    def _load_sidecar(self, ts_id: str, ts_path: Path, *, replacing: bool, mtime_ns: int | None = None) -> None:
+        """Parse one TS sidecar into the registry and record its mtime. Raises on bad JSON."""
+        if mtime_ns is None:
+            mtime_ns = ts_path.stat().st_mtime_ns
+        with open(ts_path) as f:
+            data = json.load(f)
+        ts = TiltSeries.model_validate(data)
+        self._tilt_series[ts.id] = ts
+        self._reindex_ts(ts, replacing=replacing)
+        self._ts_mtime_ns[ts.id] = mtime_ns
+
+    def _forget_tilt_series(self, ts_id: str) -> None:
+        """Drop a TS from memory WITHOUT deleting its sidecar — the disk copy is already gone
+        or was removed by another process. `remove_tilt_series` is the user-facing delete."""
+        ts = self._tilt_series.pop(ts_id, None)
+        self._ts_mtime_ns.pop(ts_id, None)
+        if ts is None:
+            return
+        for f in ts.frames:
+            self._frame_index.pop(f.id, None)
+            self._filename_index.pop(f.raw_filename, None)
+
+    def _reindex_ts(self, ts: TiltSeries, *, replacing: bool = True) -> None:
+        # Wipe any stale entries for this TS, then rebuild. The wipe scans every frame in the
+        # project, so it is skipped when this TS is being indexed for the first time (a fresh
+        # load) — otherwise a full load is quadratic in total frame count.
+        if replacing:
+            stale_frame_ids = [fid for fid, t in self._frame_index.items() if t.id == ts.id]
+            for fid in stale_frame_ids:
+                self._frame_index.pop(fid, None)
+            stale_names = [name for name, f in self._filename_index.items() if f.tilt_series_id == ts.id]
+            for name in stale_names:
+                self._filename_index.pop(name, None)
 
         seen_ids: set[str] = set()
         for f in ts.frames:
@@ -417,9 +495,10 @@ def get_registry_for(project_path: Path) -> TiltSeriesRegistry:
     First access triggers a disk load (if registry/ exists) or returns an
     empty registry. Subsequent calls return the same in-memory instance —
     unless the on-disk index changed under it (a driver's supervisor ingested
-    outputs on a compute node), in which case a fresh instance is loaded and
-    cached. A cached instance with unsaved in-memory changes is never
-    discarded (its own save() lands first; the next call picks up both)."""
+    outputs on a compute node), in which case the cached instance re-syncs in
+    place, re-parsing only the sidecars whose own mtime moved. A cached instance
+    with unsaved in-memory changes is never re-synced (its own save() lands
+    first; the next call picks up both)."""
     resolved = project_path.resolve()
     reg = _registries.get(resolved)
     if reg is None:
@@ -427,10 +506,7 @@ def get_registry_for(project_path: Path) -> TiltSeriesRegistry:
         reg.load()
         _registries[resolved] = reg
     elif reg.is_stale_on_disk() and not reg.has_unsaved_changes():
-        fresh = TiltSeriesRegistry(resolved)
-        fresh.load()
-        _registries[resolved] = fresh
-        return fresh
+        reg.refresh_from_disk()
     return reg
 
 

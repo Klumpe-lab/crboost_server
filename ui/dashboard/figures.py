@@ -311,8 +311,9 @@ def _stats(values: list[float]) -> dict:
 # ── Per-tilt metric charts: ECharts ──────────────────────────────────────────
 # The Journey's per-tilt charts render with ``ui.echart`` (bundled with NiceGUI, no
 # CDN): one typographic system — bold axis names, regular everything else, legend
-# under the plot, `containLabel` so the plot area fills the tile instead of leaving
-# Plotly's default margins empty. The pick scatter/histogram builders above stay on
+# under the plot, and an ECharts-computed plot rect (see `_grid`) so the plot area
+# fills the tile instead of leaving Plotly's default margins empty. The pick
+# scatter/histogram builders above stay on
 # Plotly (image underlays + colorbars) and are the pick viewer's, not the Journey's.
 
 # One palette for every chart on the page: accent, ink, and a muted slate for the
@@ -321,17 +322,57 @@ SERIES_PALETTE = ("#4f46e5", "#0f172a", "#94a3b8")
 _SANS = "IBM Plex Sans, sans-serif"
 _MONO = "IBM Plex Mono, monospace"
 
-# Hover card: tilt index + stage angle, the frame it came from, the tilt-filter verdict
-# when the caller supplied one (customdata[2]), then one line per series at that x.
-# `__UNIT__` is substituted with the y unit. Under a ':' key NiceGUI evals it client-side.
-_TOOLTIP_FORMATTER_JS = """
+# Do NOT set `grid.containLabel`. It looks like the option that keeps axis decorations
+# inside the canvas, and it is the option that crops the axis NAME. In the bundled
+# ECharts 6 the grid layout branches on it (`Grid2.prototype.updateGridRect`):
+#
+#   if (optionContainLabel) layOutGridByOuterBounds(..., "axisLabel", ...)   // labels ONLY
+#   else                    layOutGridByOuterBounds(..., outerBoundsContain, ...)
+#
+# — i.e. containLabel hard-codes the contain mode to "axisLabel", so the x-axis name is
+# laid out relative to the axis line and whatever falls past the canvas edge is cropped.
+# Omitting it takes the else branch, where `outerBoundsMode: "auto"` (outerBounds = the
+# whole canvas) and `outerBoundsContain: "all"` make ECharts shrink the plot rect until
+# labels AND names fit. That is exact, so grid left/top/right/bottom below are only a
+# starting rect — no hand-computed margin arithmetic, which is what failed here before.
+#
+# nameGap is still ours: outerBounds prevents cropping, not collision, and the tick
+# labels end ~20 px under the axis line (8 px margin + a 9 px line).
+_X_NAME_GAP = 28
+# The bottom legend is laid out independently of the grid and outerBounds knows nothing
+# about it, so when one is shown the axis name is fenced above it via `outerBounds`.
+_LEGEND_EXTENT = 22
+
+
+def _grid(show_legend: bool) -> dict:
+    """Starting plot rect. ECharts shrinks it as needed to fit labels + axis names."""
+    grid: dict = {"left": 6, "right": 12, "top": 30, "bottom": 8}
+    if show_legend:
+        grid["outerBounds"] = {"left": 0, "right": 0, "top": 0, "bottom": _LEGEND_EXTENT}
+    return grid
+
+
+# Hover card for the per-tilt charts. Every data row is [x, y, tilt_index, frame_basename,
+# verdict, thumb_url] (see tomo_dashboard_dialog._per_tilt_customdata): tilt index + stage
+# angle (the frame name is carried for the select hook, not shown — it would set the card's
+# width), the tilt-filter verdict when stamped, one line per series at that x,
+# and — when fsMotion has run and its thumbnails exist — the motion-corrected tilt image
+# itself. `__UNIT__` is substituted with the y unit. Under a ':' key NiceGUI evals it
+# client-side. Raw string: the JS carries backslash escapes.
+_TOOLTIP_CARD_OPEN = (
+    "'<div style=\"font-family:IBM Plex Sans,sans-serif;font-size:10px;line-height:1.5;color:#334155\">'"
+)
+_TOOLTIP_IMG_JS = (
+    "'<img src=\"' + __SRC__ + '\" style=\"display:block;width:336px;height:336px;margin-top:5px;"
+    "border-radius:3px;background:#f1f5f9;object-fit:contain\" onerror=\"this.style.display=\\'none\\'\">'"
+)
+_TOOLTIP_FORMATTER_JS = r"""
 (ps) => {
   if (!Array.isArray(ps)) ps = [ps];
   const d = ps[0].data || [];
   const deg = (typeof d[0] === 'number') ? d[0].toFixed(2) + '°' : '';
-  let h = '<div style="font-family:IBM Plex Sans,sans-serif;font-size:10px;line-height:1.5;color:#334155">';
+  let h = __OPEN__;
   h += '<div style="font-weight:600">' + (d[2] ? 'Tilt ' + d[2] + ' · ' : '') + deg + '</div>';
-  if (d[3]) h += '<div style="color:#94a3b8;font-family:IBM Plex Mono,monospace">' + d[3] + '</div>';
   if (d[4]) h += '<div style="color:#6366f1">tilt filter: ' + d[4] + '</div>';
   for (const p of ps) {
     const v = p.data ? p.data[1] : null;
@@ -340,9 +381,160 @@ _TOOLTIP_FORMATTER_JS = """
       + ' <span style="font-family:IBM Plex Mono,monospace;font-weight:600">'
       + Number(v).toPrecision(3) + '__UNIT__</span></div>';
   }
+  if (d[5]) h += __IMG__;
   return h + '</div>';
 }
+""".replace("__OPEN__", _TOOLTIP_CARD_OPEN).replace("__IMG__", _TOOLTIP_IMG_JS.replace("__SRC__", "d[5]"))
+
+# Motion-track hover: rows are [x, y, tilt_index, frame_basename, tilt_deg, thumb_url]
+# (frame at slot 3 like the per-tilt charts, so one select hook serves both).
+_TRACK_TOOLTIP_JS = r"""
+(p) => {
+  const d = p.data || [];
+  let h = __OPEN__;
+  h += '<div style="font-weight:600">Tilt ' + d[2] + ' · ' + Number(d[4]).toFixed(2) + '° · step '
+    + (p.dataIndex + 1) + '</div>';
+  h += '<div>x <span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + Number(d[0]).toFixed(2)
+    + '</span> · y <span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + Number(d[1]).toFixed(2)
+    + '</span></div>';
+  if (d[5]) h += __IMG__;
+  return h + '</div>';
+}
+""".replace("__OPEN__", _TOOLTIP_CARD_OPEN).replace("__IMG__", _TOOLTIP_IMG_JS.replace("__SRC__", "d[5]"))
+
+# CTF-fit hover: the hovered spatial frequency as a resolution, then measured vs model.
+_FIT_TOOLTIP_JS = r"""
+(ps) => {
+  if (!Array.isArray(ps)) ps = [ps];
+  const f = ps[0].data ? ps[0].data[0] : null;
+  let h = __OPEN__;
+  if (typeof f === 'number' && f > 0) h += '<div style="font-weight:600">' + (1 / f).toFixed(1)
+    + ' Å <span style="color:#94a3b8;font-weight:400">(' + f.toFixed(3) + ' 1/Å)</span></div>';
+  for (const p of ps) {
+    const v = p.data ? p.data[1] : null;
+    if (v === null || v === undefined) continue;
+    h += '<div>' + p.marker + p.seriesName
+      + ' <span style="font-family:IBM Plex Mono,monospace;font-weight:600">' + Number(v).toFixed(2) + '</span></div>';
+  }
+  return h + '</div>';
+}
+""".replace("__OPEN__", _TOOLTIP_CARD_OPEN)
+
+# The card can be taller than the 220 px tile once it carries an image: place it beside
+# the cursor, flip left near the right edge, clamp vertically to the tile. Paired with
+# appendToBody so the page's scroll area can't clip it.
+_TOOLTIP_POSITION_JS = """
+(point, params, dom, rect, size) => {
+  const w = size.contentSize[0], h = size.contentSize[1];
+  const vw = size.viewSize[0], vh = size.viewSize[1];
+  let x = point[0] + 16;
+  if (x + w > vw) x = point[0] - w - 16;
+  let y = point[1] - h / 2;
+  if (y + h > vh) y = vh - h;
+  if (y < 0) y = 0;
+  return [x, y];
+}
 """
+
+
+def _tooltip(formatter_js: str, *, trigger: str = "axis") -> dict:
+    """The house hover card (white, hairline border, soft shadow) with a JS formatter."""
+    out = {
+        "trigger": trigger,
+        "backgroundColor": "#ffffff",
+        "borderColor": "#e2e8f0",
+        "borderWidth": 1,
+        "padding": [6, 8],
+        "appendToBody": True,
+        "extraCssText": "box-shadow: 0 6px 18px rgba(15,23,42,0.10); border-radius: 5px;",
+        ":formatter": formatter_js,
+        ":position": _TOOLTIP_POSITION_JS,
+    }
+    if trigger == "axis":
+        out["axisPointer"] = {"type": "line", "snap": True, "lineStyle": {"color": "#cbd5e1", "type": "dashed"}}
+    return out
+
+
+def _legend(show: bool) -> dict:
+    return {
+        "show": show,
+        "bottom": 0,
+        "left": "center",
+        "icon": "circle",
+        "itemWidth": 8,
+        "itemHeight": 8,
+        "itemGap": 14,
+        "textStyle": {"fontFamily": _SANS, "fontSize": 9, "color": "#475569"},
+    }
+
+
+def _axis(name: str, *, horizontal: bool) -> dict:
+    """One value axis in the house style: bold name, mono labels, no ticks; the x axis
+    keeps its line and the y axis keeps faint grid lines."""
+    label = {"fontFamily": _MONO, "fontSize": 9, "color": "#64748b"}
+    if horizontal:
+        return {
+            "type": "value",
+            "name": name,
+            "nameLocation": "middle",
+            "nameGap": _X_NAME_GAP,
+            "nameTextStyle": {"fontFamily": _SANS, "fontSize": 10, "fontWeight": "bold", "color": "#334155"},
+            "axisLabel": label,
+            "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
+            "axisTick": {"show": False},
+            "splitLine": {"show": False},
+        }
+    return {
+        "type": "value",
+        "scale": True,
+        "name": name,
+        "nameLocation": "end",
+        "nameGap": 8,
+        "nameTextStyle": {
+            "fontFamily": _SANS,
+            "fontSize": 10,
+            "fontWeight": "bold",
+            "color": "#334155",
+            "align": "left",
+        },
+        "axisLabel": label,
+        "axisLine": {"show": False},
+        "axisTick": {"show": False},
+        "splitLine": {"lineStyle": {"color": "#f1f5f9"}},
+    }
+
+
+# Diverging scale for a signed stage tilt: indigo pole for negative tilts, amber pole for
+# positive (the canonical CVD-safe pair), a light neutral at 0°, darkening with |tilt|.
+_TILT_NEG, _TILT_MID, _TILT_POS = "#3730a3", "#cbd5e1", "#b45309"
+
+
+def _mix(a: str, b: str, t: float) -> str:
+    ra, ga, ba = (int(a[i : i + 2], 16) for i in (1, 3, 5))
+    rb, gb, bb = (int(b[i : i + 2], 16) for i in (1, 3, 5))
+    r, g, bl = round(ra + (rb - ra) * t), round(ga + (gb - ga) * t), round(ba + (bb - ba) * t)
+    return f"#{r:02x}{g:02x}{bl:02x}"
+
+
+def tilt_color(tilt_deg: float, max_abs_tilt: float) -> str:
+    t = 0.0 if max_abs_tilt <= 0 else min(1.0, abs(tilt_deg) / max_abs_tilt)
+    return _mix(_TILT_MID, _TILT_NEG if tilt_deg < 0 else _TILT_POS, t)
+
+
+def build_empty_chart(message: str) -> dict:
+    """A tile-sized chart that says why there is nothing to draw."""
+    return {
+        "animation": False,
+        "title": {
+            "text": message,
+            "left": "center",
+            "top": "middle",
+            "textStyle": {"fontFamily": _SANS, "fontSize": 10, "fontWeight": "normal", "color": "#9ca3af"},
+        },
+        "xAxis": {"show": False},
+        "yAxis": {"show": False},
+        "series": [],
+    }
 
 
 def build_per_tilt_chart(
@@ -443,12 +635,12 @@ def build_per_tilt_chart(
     return {
         "animation": False,
         "color": list(SERIES_PALETTE),
-        "grid": {"left": 6, "right": 12, "top": 30, "bottom": 30 if show_legend else 8, "containLabel": True},
+        "grid": _grid(show_legend),
         "xAxis": {
             "type": "value",
             "name": x_label,
             "nameLocation": "middle",
-            "nameGap": 20,
+            "nameGap": _X_NAME_GAP,
             "nameTextStyle": {"fontFamily": _SANS, "fontSize": 10, "fontWeight": "bold", "color": "#334155"},
             "axisLabel": {"fontFamily": _MONO, "fontSize": 9, "color": "#64748b"},
             "axisLine": {"lineStyle": {"color": "#cbd5e1"}},
@@ -456,25 +648,125 @@ def build_per_tilt_chart(
             "splitLine": {"show": False},
         },
         "yAxis": y_axis,
-        "legend": {
-            "show": show_legend,
-            "bottom": 0,
-            "left": "center",
-            "icon": "circle",
-            "itemWidth": 8,
-            "itemHeight": 8,
-            "itemGap": 14,
-            "textStyle": {"fontFamily": _SANS, "fontSize": 9, "color": "#475569"},
-        },
-        "tooltip": {
-            "trigger": "axis",
-            "axisPointer": {"type": "line", "snap": True, "lineStyle": {"color": "#cbd5e1", "type": "dashed"}},
-            "backgroundColor": "#ffffff",
-            "borderColor": "#e2e8f0",
-            "borderWidth": 1,
-            "padding": [6, 8],
-            "extraCssText": "box-shadow: 0 6px 18px rgba(15,23,42,0.10); border-radius: 5px;",
-            ":formatter": _TOOLTIP_FORMATTER_JS.replace("__UNIT__", y_unit),
-        },
+        "legend": _legend(show_legend),
+        "tooltip": _tooltip(_TOOLTIP_FORMATTER_JS.replace("__UNIT__", y_unit)),
         "series": out,
+    }
+
+
+def build_motion_track_chart(tracks: list[dict], *, unit_label: str = "Warp units, ≈ Å") -> dict:
+    """ECharts options for the beam-induced motion tracks of every tilt in a tilt
+    series: one thin polyline per tilt (x/y shift per time step of the movie, all
+    starting near the origin) on the signed-tilt diverging scale (`tilt_color`),
+    high tilts drawn last. `tracks`: [{tilt, index, frame, x, y, thumb?}]. Data rows
+    are [x, y, tilt_index, frame_basename, tilt_deg, thumb_url] — frame at slot 3,
+    like the per-tilt charts, so one select hook serves both. Both axes share one
+    symmetric range so a path's direction reads true."""
+    max_abs_tilt = max((abs(float(t["tilt"])) for t in tracks), default=0.0)
+    lim = 1.0
+    for t in tracks:
+        for v in [*t["x"], *t["y"]]:
+            lim = max(lim, abs(float(v)))
+    lim = round(lim * 1.08, 3)
+    series: list[dict] = []
+    for t in sorted(tracks, key=lambda t: abs(float(t["tilt"]))):
+        color = tilt_color(float(t["tilt"]), max_abs_tilt)
+        rows = [
+            [x, y, t["index"], t["frame"], t["tilt"], t.get("thumb", "")] for x, y in zip(t["x"], t["y"], strict=True)
+        ]
+        series.append(
+            {
+                "name": f"{float(t['tilt']):+.1f}°",
+                "type": "line",
+                "data": rows,
+                "symbol": "circle",
+                "symbolSize": 3,
+                "showSymbol": True,
+                "lineStyle": {"color": color, "width": 1.3},
+                "itemStyle": {"color": color},
+                "emphasis": {"focus": "series", "lineStyle": {"width": 2.4}},
+            }
+        )
+    x_axis = _axis(f"X shift ({unit_label})", horizontal=True)
+    y_axis = _axis("Y shift", horizontal=False)
+    x_axis.update({"min": -lim, "max": lim})
+    y_axis.update({"min": -lim, "max": lim, "scale": False})
+    return {
+        "animation": False,
+        "grid": _grid(False),
+        "xAxis": x_axis,
+        "yAxis": y_axis,
+        "legend": _legend(False),
+        "tooltip": _tooltip(_TRACK_TOOLTIP_JS, trigger="item"),
+        "series": series,
+    }
+
+
+def build_ctf_fit_chart(
+    freq_inv_a: list[float],
+    measured: list[float | None],
+    model: list[float],
+    *,
+    fit_res_a: float | None = None,
+    fit_window_inv_a: tuple[float, float] | None = None,
+) -> dict:
+    """ECharts options for the CTF-fit overlay of ONE tilt: Warp's measured 1-D power
+    spectrum (÷ its fitted envelope, ink) against the CTF² model (accent) over spatial
+    frequency in 1/Å, a dashed marker at Warp's fit-resolution estimate, and the band
+    beyond the fitted frequency window shaded. y auto-ranges to the data."""
+    ink, accent, muted = SERIES_PALETTE[1], SERIES_PALETTE[0], SERIES_PALETTE[2]
+    model_series: dict = {
+        "name": "CTF model",
+        "type": "line",
+        "data": [[f, v] for f, v in zip(freq_inv_a, model, strict=True)],
+        "showSymbol": False,
+        "lineStyle": {"color": accent, "width": 1.4},
+        "itemStyle": {"color": accent},
+    }
+    if fit_res_a:
+        model_series["markLine"] = {
+            "silent": True,
+            "symbol": "none",
+            "lineStyle": {"color": muted, "type": "dashed", "width": 1},
+            "label": {
+                "formatter": f"fit to {fit_res_a:.1f} Å",
+                "position": "insideEndTop",
+                "fontFamily": _SANS,
+                "fontSize": 9,
+                "color": "#64748b",
+            },
+            "data": [{"xAxis": 1.0 / fit_res_a}],
+        }
+    if fit_window_inv_a and freq_inv_a and fit_window_inv_a[1] < freq_inv_a[-1]:
+        model_series["markArea"] = {
+            "silent": True,
+            "itemStyle": {"color": "rgba(148, 163, 184, 0.12)"},
+            "data": [[{"xAxis": fit_window_inv_a[1]}, {"xAxis": freq_inv_a[-1]}]],
+        }
+    series = [
+        {
+            "name": "Measured",
+            "type": "line",
+            "data": [[f, v] for f, v in zip(freq_inv_a, measured, strict=True)],
+            "showSymbol": False,
+            "connectNulls": False,
+            "lineStyle": {"color": ink, "width": 1.1},
+            "itemStyle": {"color": ink},
+        },
+        model_series,
+    ]
+    x_axis = _axis("Spatial frequency (1/Å)", horizontal=True)
+    y_axis = _axis("Normalized power", horizontal=False)
+    if freq_inv_a:
+        x_axis.update({"min": round(freq_inv_a[0], 4), "max": round(freq_inv_a[-1], 4)})
+    # Auto-ranged on purpose: measured ÷ envelope overshoots 1 at the ring maxima and
+    # undershoots 0 between them, and a fixed 0…1 window cut the curves off.
+    return {
+        "animation": False,
+        "grid": _grid(True),
+        "xAxis": x_axis,
+        "yAxis": y_axis,
+        "legend": _legend(True),
+        "tooltip": _tooltip(_FIT_TOOLTIP_JS),
+        "series": series,
     }
