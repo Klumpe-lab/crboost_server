@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import glob
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +22,16 @@ from services import species_admin
 from services.configs.config_service import get_config_service
 from services.jobs.spec import JOB_SPEC_BY_TYPE
 from services.models_base import JobType, SpeciesOrigin
-from services.project_state import ExtractionParams, ProjectState, TemplateMask
-from services.protocols.schema import Protocol, ProtocolSpecies, ProtocolStage, schema_fingerprint
+from services.project_state import ExtractionParams, ProjectState, ProtocolOrigin, TemplateMask
+from services.protocols.schema import (
+    PROJECT_PROTOCOL_DIRNAME,
+    PROTOCOL_FILENAME,
+    Protocol,
+    ProtocolSpecies,
+    ProtocolStage,
+    protocol_to_yaml,
+    schema_fingerprint,
+)
 from services.result import err, ok
 from services.templating.template_metadata import read_template_header
 
@@ -172,6 +181,18 @@ async def apply_protocol(
     warnings += w
     warnings += instantiate_stages(state, protocol, assets)
     state.pipeline_order = protocol.stage_ids()
+    state.protocol_origin = ProtocolOrigin(
+        name=protocol.name,
+        version=protocol.version,
+        bundle_dir=str(protocol.bundle_dir or ""),
+        applied_at=datetime.now().isoformat(timespec="seconds"),
+        stage_fingerprints={iid: schema_fingerprint(type(state.jobs[iid])) for iid in protocol.stage_ids()},
+    )
+    # The frozen copy the Protocols view compares against later, whatever happens to the bundle.
+    # Written by hand: dump_protocol() would rebind the live object's bundle dir to the project.
+    frozen_dir = project_dir / PROJECT_PROTOCOL_DIRNAME
+    frozen_dir.mkdir(parents=True, exist_ok=True)
+    (frozen_dir / PROTOCOL_FILENAME).write_text(protocol_to_yaml(protocol))
     state.mark_dirty()
     await backend.save_project(project_dir, force=True)
     for line in warnings:
@@ -323,6 +344,33 @@ def instantiate_stages(state: ProjectState, protocol: Protocol, assets: dict[str
 def _coerce(jm, name: str, value: Any) -> Any:
     field = type(jm).model_fields[name]
     return TypeAdapter(field.annotation).validate_python(value)
+
+
+def stage_edits(state: ProjectState, protocol: Protocol) -> dict[str, list[tuple[str, Any, Any]]]:
+    """Per stage instance, the user parameters whose CURRENT value differs from what the
+    protocol pinned: `{instance_id: [(name, protocol_value, current_value)]}`. Compared after
+    the same coercion apply used, so `"3"` vs `3` is not an edit; a stage the project no
+    longer has is absent. Species-shaped defaults are not pins and are not compared. Read-only
+    — the Protocols view renders these as "edited" chips (roadmap 16 D7; never "drift")."""
+    out: dict[str, list[tuple[str, Any, Any]]] = {}
+    for st in protocol.stages:
+        jm = state.jobs.get(st.instance_id)
+        if jm is None:
+            continue
+        edits: list[tuple[str, Any, Any]] = []
+        for name, value in st.params.items():
+            if name not in jm.USER_PARAMS:
+                continue
+            try:
+                want = _coerce(jm, name, value)
+            except ValidationError:
+                continue  # rejected at apply and reported then — the job never held it, so not an edit
+            have = getattr(jm, name, None)
+            if want != have:
+                edits.append((name, want, have))
+        if edits:
+            out[st.instance_id] = edits
+    return out
 
 
 def _apply_species_defaults(jm, st: ProtocolStage, ps: ProtocolSpecies, entry: dict[str, str], warnings) -> set[str]:

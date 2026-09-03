@@ -34,6 +34,9 @@ from services.models_base import InstanceId, JobType
 PROTOCOL_FILENAME = "protocol.yaml"
 ASSETS_DIRNAME = "assets"
 TEST_DIRNAME = "test"
+# Inside a project created from a protocol: the frozen protocol.yaml + the harness's run
+# outputs (roadmap 16 D1). Sibling of External/, Import/, Schemes/ in the RELION project dir.
+PROJECT_PROTOCOL_DIRNAME = "protocol"
 PROTOCOL_SCHEMA_VERSION = 1
 
 
