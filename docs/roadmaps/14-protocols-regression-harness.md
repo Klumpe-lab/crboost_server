@@ -271,7 +271,12 @@ class3d `resolution_ang` (O4 of the design doc).
 
 ## 9. Deferred
 
-Mid-project protocol grafting · "create project from protocol" landing action + builder drift
-chips (FEATURE_recipes §7) · explicit `inputs` wiring at apply (needs instance-id override keys
+Mid-project protocol grafting · explicit `inputs` wiring at apply (needs instance-id override keys
 in the resolver) · native RELION job.stars / v1 wrapper form of the scheme export · 26S
 multi-species variant · driver transcripts in Tier A · cadence/cron.
+
+**Continued in roadmap 16 (2026-09-03):** the runner inversion (a run IS a project; `launch_run` /
+`evaluate_run` / CLI-only `wait_for_settle`), `ProjectState.protocol_origin`, the workspace
+Protocols view with the builder "edited" chips FEATURE_recipes §7 asked for, and the fixes for the
+second-observer, root-logger, cancel-orphans-chain and prune-deletes-project defects found in
+the S4–S6 code here.
