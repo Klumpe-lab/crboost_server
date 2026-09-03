@@ -87,6 +87,7 @@ def build_workspace_page(backend: CryoBoostBackend):
             "journey": _refs.get("journey_container"),
             "gallery": _refs.get("gallery_container"),
             "viewer": _refs.get("viewer_container"),
+            "protocols": _refs.get("protocols_container"),
         }
         # If already on this mode, toggle back to pipeline.
         if _mode["current"] == mode_name and mode_name != "pipeline":
@@ -131,6 +132,11 @@ def build_workspace_page(backend: CryoBoostBackend):
         gallery = _refs.get("gallery_page")
         if gallery is not None:
             gallery.set_active(_mode["current"] == "gallery")
+
+        # And the Protocols view's 15 s run.json / log-tail poll.
+        protocols = _refs.get("protocols_page")
+        if protocols is not None:
+            protocols.set_active(_mode["current"] == "protocols")
 
     def _toggle_workbench():
         _switch_to("workbench")
@@ -208,6 +214,31 @@ def build_workspace_page(backend: CryoBoostBackend):
                 page.set_active(True)
             await page.show()
 
+    _protocols_flight = SingleFlight()
+
+    async def _show_protocols():
+        """The foot-of-rail protocol light: the Protocols view (roadmap 16 D6) — this project's
+        protocol run as it stands, the protocol library and every run of a protocol. Built lazily
+        like the gallery; toggles back to the pipeline on a second click."""
+        async with _protocols_flight("toggle") as acquired:
+            if not acquired:
+                return
+            _switch_to("protocols")
+            if _mode["current"] != "protocols":
+                return
+            pc = _refs.get("protocols_container")
+            if pc is None:
+                return
+            page = _refs.get("protocols_page")
+            if page is None:
+                from ui.protocols_view import ProtocolsPage
+
+                with pc:
+                    page = ProtocolsPage(pc, backend, ui_mgr, callbacks)
+                _refs["protocols_page"] = page
+                page.set_active(True)
+            await page.show()
+
     _viewer_flight = SingleFlight()
 
     async def _open_pick_viewer(species_id: str | None, tomo_name: str | None) -> None:
@@ -245,6 +276,7 @@ def build_workspace_page(backend: CryoBoostBackend):
     callbacks["ensure_pipeline_mode"] = ensure_pipeline_mode
     callbacks["toggle_journey"] = _show_journey
     callbacks["toggle_gallery"] = _show_gallery
+    callbacks["toggle_protocols"] = _show_protocols
     callbacks["open_pick_viewer"] = _open_pick_viewer
 
     with ui.element("div").style(
@@ -293,6 +325,7 @@ def build_workspace_page(backend: CryoBoostBackend):
                     ensure_pipeline_mode=ensure_pipeline_mode,
                     toggle_journey=_show_journey,
                     toggle_gallery=_show_gallery,
+                    toggle_protocols=_show_protocols,
                 )
 
             workbench_container = ui.element("div").style(
@@ -324,6 +357,13 @@ def build_workspace_page(backend: CryoBoostBackend):
                 "width: 100%; height: 100%; display: none; flex-direction: column;"
             )
             _refs["viewer_container"] = viewer_container
+
+            # Protocols (roadmap 16): the run-as-a-project view. Lazily built on the first
+            # click of the foot-of-rail protocol light.
+            protocols_container = ui.element("div").style(
+                "width: 100%; height: 100%; display: none; flex-direction: column;"
+            )
+            _refs["protocols_container"] = protocols_container
 
     # Floating background-tasks tray at workspace scope so spun-off
     # renders/builds remain visible across dialog open/close and view

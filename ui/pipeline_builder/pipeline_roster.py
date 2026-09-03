@@ -15,6 +15,7 @@ from ui.components.species_pill import render_species_pill
 from ui.components.svg_icon import load_icon_svg
 from ui.curation_session_dialog import open_curation_control_center
 from ui.particles import session_status
+from ui.protocols_view import evaluate_if_settled, protocol_light
 from ui.styles import MONO, SANS as FONT
 from ui.status_indicator import BoundStatusDot, _running_spinner_html
 from services.models_base import InstanceId, instance_id_to_job_type
@@ -213,6 +214,8 @@ class RosterWidget(FingerprintedView):
         # Last (status, scope, error) painted onto the rail's curation-session indicator, so
         # its timer only touches the DOM when the session state actually moved.
         self._curation_paint: tuple[str, str, str] | None = None
+        # Same gate for the protocol light (kind, tooltip) — roadmap 16 D6.
+        self._protocol_paint: tuple[str, str] | None = None
         # Last (tomogram, tilt-series) counts painted onto the rail badges, so their timer
         # only touches the DOM when a number actually moved.
         self._counts_paint: tuple | None = None
@@ -919,7 +922,12 @@ class RosterWidget(FingerprintedView):
             pc = self._refs.get("pipeline_btn")
             if pc is not None:
                 pc.style("background: transparent;")
-        for ref_key, m in (("wb_btn", "workbench"), ("dashboard_btn", "journey"), ("gallery_btn", "gallery")):
+        for ref_key, m in (
+            ("wb_btn", "workbench"),
+            ("dashboard_btn", "journey"),
+            ("gallery_btn", "gallery"),
+            ("protocol_btn", "protocols"),
+        ):
             c = self._refs.get(ref_key)
             if c is not None:
                 c.style(f"background: {SB_ABG if mode == m else 'transparent'};")
@@ -946,6 +954,12 @@ class RosterWidget(FingerprintedView):
         tg = self.panel.toggle_gallery
         if tg is not None:
             await tg()
+
+    async def _open_protocols(self):
+        """The foot-of-rail protocol light's click: the Protocols view (roadmap 16 D6)."""
+        tp = self.panel.toggle_protocols
+        if tp is not None:
+            await tp()
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
@@ -1010,9 +1024,12 @@ class RosterWidget(FingerprintedView):
 
             ui.element("div").style("flex: 1;")
 
-            # Pinned to the FOOT of the rail: the curation-session indicator is not a place
-            # to navigate to, it is the answer to "is ArtiaX up, and on what". Keeping it out
-            # of the view stack above says so without a separator.
+            # Pinned to the FOOT of the rail, two status lights: the protocol light (is a
+            # protocol run up, and how did it do — it also opens the Protocols view, roadmap 16)
+            # above the curation-session indicator (is ArtiaX up, and on what). Neither is a
+            # place in the view stack above; they answer a question first, and say so by
+            # sitting apart without a separator.
+            self._build_protocol_btn()
             self._build_curation_session_btn()
             ui.element("div").style("height: 6px;")
 
@@ -1789,6 +1806,57 @@ class RosterWidget(FingerprintedView):
     # launch affordance. What sits at the bottom of the rail now is an INDICATOR of that
     # session (_build_curation_session_btn) whose click opens the control center — it never
     # launches, so there is still exactly one launch affordance.
+
+    def _build_protocol_btn(self):
+        """Foot-of-rail protocol light (roadmap 16 D6). Dim while the project was not created
+        from a protocol; blue and breathing while its chain is live; green / red once the
+        harness has a verdict; amber while a settled run still awaits evaluation (this tick
+        triggers it) or after an evaluation failed. The hover carries the protocol, the
+        verdict and what is running. Click → the Protocols view."""
+        container = (
+            ui.element("div")
+            .style(
+                "width: 30px; height: 30px; border-radius: 4px; margin: 1px 0; "
+                "background: transparent; "
+                "display: flex; align-items: center; justify-content: center; "
+                "cursor: pointer; flex-shrink: 0;"
+            )
+            .on("click", self._open_protocols)
+        )
+        with container:
+            icon = ui.icon("fact_check", size="18px").style(f"color: {SB_MUTE}; pointer-events: none;")
+            tip = ui.tooltip("").style("white-space: pre-line;")
+        self._refs["protocol_btn"] = container
+        self._refs["protocol_icon"] = icon
+        self._refs["protocol_tip"] = tip
+        self._paint_protocol()
+        ui.timer(_CURATION_TICK_S, self._tick_protocol)
+        return container
+
+    async def _tick_protocol(self):
+        project_path = self.panel.ui_mgr.project_path
+        if project_path is not None:
+            # Once per settled run: evaluate so the light turns green/red without the view open.
+            await evaluate_if_settled(self.panel.backend, project_path)
+        self._paint_protocol()
+
+    def _paint_protocol(self):
+        """In-memory state + one stat; gated on what it last painted (timer-driven)."""
+        kind, text = protocol_light(self.panel.ui_mgr.project_path)
+        if (kind, text) == self._protocol_paint:
+            return
+        self._protocol_paint = (kind, text)
+        icon = self._refs.get("protocol_icon")
+        tip = self._refs.get("protocol_tip")
+        if icon is None or tip is None:
+            return
+        color = {"live": "#2563eb", "ok": "#16a34a", "bad": "#dc2626", "pending": "#d97706", "applied": SB_ACT}.get(
+            kind, SB_MUTE
+        )
+        icon.style(f"color: {color}; pointer-events: none;")
+        live = kind == "live"
+        icon.classes(add="cb-protocol-live" if live else "", remove="" if live else "cb-protocol-live")
+        tip.set_text(text)
 
     def _build_curation_session_btn(self):
         """Bottom-of-rail ChimeraX + ArtiaX control-session indicator.

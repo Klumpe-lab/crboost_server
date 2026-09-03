@@ -45,6 +45,7 @@ class PipelineBuilderPanel:
         ensure_pipeline_mode: Callable | None = None,
         toggle_journey: Callable | None = None,
         toggle_gallery: Callable | None = None,
+        toggle_protocols: Callable | None = None,
     ):
         self.backend = backend
         self.callbacks = callbacks
@@ -54,6 +55,7 @@ class PipelineBuilderPanel:
         self.ensure_pipeline_mode = ensure_pipeline_mode
         self.toggle_journey = toggle_journey
         self.toggle_gallery = toggle_gallery
+        self.toggle_protocols = toggle_protocols
 
         self.ui_mgr = get_ui_state_manager()
 
@@ -662,6 +664,7 @@ def build_pipeline_builder_panel(
     ensure_pipeline_mode: Callable | None = None,
     toggle_journey: Callable | None = None,
     toggle_gallery: Callable | None = None,
+    toggle_protocols: Callable | None = None,
 ) -> None:
     panel = PipelineBuilderPanel(
         backend=backend,
@@ -672,6 +675,7 @@ def build_pipeline_builder_panel(
         ensure_pipeline_mode=ensure_pipeline_mode,
         toggle_journey=toggle_journey,
         toggle_gallery=toggle_gallery,
+        toggle_protocols=toggle_protocols,
     )
 
     # The render-scoped self-heal of `apply_aggregation_overrides` was REMOVED here by
