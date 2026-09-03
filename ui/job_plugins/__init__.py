@@ -88,26 +88,43 @@ def register_full_panel_renderer(job_type: JobType):
 
 
 def get_full_panel_renderer(job_type: JobType) -> Callable | None:
+    load_plugins()
     plugin = _REGISTRY.get(job_type)
     return plugin.render_full_panel if plugin else None
 
 
 def get_params_renderer(job_type: JobType) -> Callable | None:
+    load_plugins()
     plugin = _REGISTRY.get(job_type)
     return plugin.render_params if plugin else None
 
 
 def get_extra_tabs(job_type: JobType) -> list[ExtraTab]:
+    load_plugins()
     plugin = _REGISTRY.get(job_type)
     return plugin.extra_tabs if plugin else []
 
 
 # ---------------------------------------------------------------------------
-# Auto-import plugin modules so their decorators execute at import time.
+# Plugin modules are imported on the first registry query, NOT when this
+# package is imported. Importing them here at package-import time made the
+# registry an import side effect: `ui.components.fields` pulls
+# `ui.job_plugins._field_styles` (which initialises this package), and a plugin
+# panel pulls `ui.components.fields` back — whichever module happened to be
+# imported first was still half-initialised when the other reached it, and the
+# plugin was dropped with only a warning (roadmap 16 stage log).
 # The module list is derived from JobSpec.plugins — when you create a plugin
 # file, list its basename on the job type's row in services/jobs/spec.py.
 # ---------------------------------------------------------------------------
-def _load_plugins():
+_loaded = False
+
+
+def load_plugins() -> None:
+    """Import every plugin module once so its decorators register. Idempotent."""
+    global _loaded
+    if _loaded:
+        return
+    _loaded = True  # before the imports: a plugin querying the registry at import time must not recurse
     import importlib
 
     from services.jobs.spec import JOB_SPECS
@@ -124,6 +141,3 @@ def _load_plugins():
             # nightmare. Any failure here means the user sees the wrong UI.
             logger.warning("Plugin module %s failed to load: %s: %s", mod, type(e).__name__, e)
             logger.exception("Plugin load traceback:")
-
-
-_load_plugins()
