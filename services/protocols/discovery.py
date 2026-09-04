@@ -28,10 +28,6 @@ class ProtocolInfo:
     protocol: Protocol | None
     error: str | None = None  # load failure text; shown on the row instead of hiding the bundle
 
-    @property
-    def has_test_bundle(self) -> bool:
-        return (self.bundle_dir / "test").is_dir()
-
 
 def list_protocols() -> list[ProtocolInfo]:
     out: list[ProtocolInfo] = []

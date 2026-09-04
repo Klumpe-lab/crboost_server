@@ -6,11 +6,8 @@
     venv/bin/python3 crboost_protocol.py export   /path/to/project --name my-flow --out ~/.crboost/protocols/my-flow
     venv/bin/python3 crboost_protocol.py apply    copia-empiar12580 --name copia_test --base /path/to/projects \\
                                         --movies '/data/copia/*.eer' --mdocs '/data/copia/*.mdoc' [--gain gain.mrc]
-    venv/bin/python3 crboost_protocol.py scheme   copia-empiar12580 --project /path/to/projects/copia_test
 
-`scheme` derives a vanilla RELION `Schemes/<name>/` (scheme.star + per-stage job.star) from an
-APPLIED project — runnable with `relion_schemer`; see services/protocols/scheme_export.py for
-what does and does not survive the export. Run from the repo root.
+Run from the repo root.
 """
 
 from __future__ import annotations
@@ -37,10 +34,7 @@ def cmd_list(_args) -> int:
             print(f"{info.name:28s} BROKEN  {info.bundle_dir}: {info.error}")
             continue
         p = info.protocol
-        test = " +test" if info.has_test_bundle else ""
-        print(
-            f"{info.name:28s} v{p.version}  {len(p.stages)} stages  {len(p.species)} species{test}  {info.bundle_dir}"
-        )
+        print(f"{info.name:28s} v{p.version}  {len(p.stages)} stages  {len(p.species)} species  {info.bundle_dir}")
     return 0
 
 
@@ -100,20 +94,6 @@ def cmd_apply(args) -> int:
     return 0
 
 
-def cmd_scheme(args) -> int:
-    from services.protocols.discovery import load_named_protocol
-    from services.protocols.scheme_export import export_relion_scheme
-
-    res = export_relion_scheme(
-        load_named_protocol(args.protocol), project_dir=args.project, scheme_name=args.scheme_name
-    )
-    if not res["success"]:
-        print(res["error"], file=sys.stderr)
-        return 1
-    print(f"scheme: {res['scheme_dir']}  jobs: {', '.join(res['jobs'])}\nrun it with:\n  {res['command']}")
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -132,10 +112,6 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--mdocs", required=True, help="mdocs glob")
     s.add_argument("--gain", default=None, help="gain reference path (optional)")
     s.add_argument("--shared", action="store_true")
-    s = sub.add_parser("scheme")
-    s.add_argument("protocol")
-    s.add_argument("--project", required=True, help="an APPLIED project directory")
-    s.add_argument("--scheme-name", default=None, help="Schemes/<name>/ (default: the protocol name)")
     args = p.parse_args(argv)
 
     if Path.cwd().resolve() != REPO:
@@ -145,13 +121,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname).1s %(name)s:%(lineno)d %(message)s", datefmt="%H:%M:%S"
     )
     try:
-        return {
-            "list": cmd_list,
-            "validate": cmd_validate,
-            "export": cmd_export,
-            "apply": cmd_apply,
-            "scheme": cmd_scheme,
-        }[args.cmd](args)
+        return {"list": cmd_list, "validate": cmd_validate, "export": cmd_export, "apply": cmd_apply}[args.cmd](args)
     except (FileNotFoundError, RuntimeError, ValueError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 3

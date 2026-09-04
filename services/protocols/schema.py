@@ -1,28 +1,20 @@
-"""Protocol — a portable, declarative capture of a workflow that worked (roadmap 14).
+"""Protocol — the shape of a pipeline with its parameters, as a portable bundle (roadmap 16).
 
 A protocol is a bundle directory:
 
     <bundle>/protocol.yaml     this schema
-    <bundle>/assets/           frozen template / mask volumes the species entries point at
-    <bundle>/test/             OPTIONAL regression bundle: input.yaml, bands.yaml, site.yaml,
-                               snapshots/ — a protocol shares fine without it
+    <bundle>/assets/           the template / mask volumes the species entries point at
 
-Three parameter layers, and only the middle one lives here (FEATURE_recipes.md §1): dataset
-facts (apix, dose, tilt scheme, TS count) come from the mdocs at apply time and are only
-*expected* here; workflow decisions (stages, order, every USER_PARAM, species assets, IO
-wiring) are the payload; site/execution config (partitions, walltimes, container paths)
-never appears — the test bundle pins a site snapshot separately.
-
-Stage params are FULL `USER_PARAMS` snapshots, not diffs against defaults: a code-side
-default change silently altering a shared protocol is itself a regression class this exists
-to catch. `schema_fingerprint` (hash of the param class's USER_PARAMS names) lets apply say
-"captured against a different field set" instead of dropping fields silently. No absolute
+Only workflow decisions live here: the stages in order, every USER_PARAM of each, the species
+with their assets, the IO wiring. Dataset facts (apix, dose, tilt scheme) come from the mdocs
+of whatever data the project is created on; site/execution config (partitions, walltimes,
+container paths) never appears. Stage params are FULL `USER_PARAMS` snapshots, not diffs against
+defaults, so a code-side default change cannot silently alter a shared protocol. No absolute
 path may appear anywhere in a bundle.
 """
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any, Literal
 
@@ -33,24 +25,10 @@ from services.models_base import InstanceId, JobType
 
 PROTOCOL_FILENAME = "protocol.yaml"
 ASSETS_DIRNAME = "assets"
-TEST_DIRNAME = "test"
-# Inside a project created from a protocol: the frozen protocol.yaml + the harness's run
-# outputs (roadmap 16 D1). Sibling of External/, Import/, Schemes/ in the RELION project dir.
+# Inside a project created from a protocol: the frozen copy of the protocol.yaml it was created
+# from (what "protocol | current" compares against). Sibling of External/, Import/, Schemes/.
 PROJECT_PROTOCOL_DIRNAME = "protocol"
 PROTOCOL_SCHEMA_VERSION = 1
-
-
-class Expectation(BaseModel):
-    """A dataset fact the protocol was validated on. Checked at apply time and surfaced as a
-    warning, never a block — the facts come from the mdocs, the protocol only expects them."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    about: float
-    tol: float = 0.0
-
-    def holds(self, value: float) -> bool:
-        return abs(float(value) - self.about) <= self.tol + 1e-9
 
 
 class ProtocolTemplate(BaseModel):
@@ -106,7 +84,6 @@ class ProtocolStage(BaseModel):
     # Exported from `source_overrides`, whose stored form embeds job numbers and does not
     # travel; re-resolved against the producer's instance path at apply.
     inputs: dict[str, str] = Field(default_factory=dict)
-    schema_fingerprint: str | None = None
 
     @property
     def job_type(self) -> JobType:
@@ -125,7 +102,6 @@ class Protocol(BaseModel):
     schema_version: int = PROTOCOL_SCHEMA_VERSION
     description: str = ""
     provenance: dict[str, Any] = Field(default_factory=dict)
-    expects: dict[str, Expectation] = Field(default_factory=dict)
     species: list[ProtocolSpecies] = Field(default_factory=list)
     stages: list[ProtocolStage] = Field(default_factory=list)
 
@@ -135,10 +111,6 @@ class Protocol(BaseModel):
     @property
     def bundle_dir(self) -> Path | None:
         return self._bundle_dir
-
-    @property
-    def test_dir(self) -> Path | None:
-        return self._bundle_dir / TEST_DIRNAME if self._bundle_dir else None
 
     def asset_path(self, rel: str) -> Path:
         if self._bundle_dir is None:
@@ -153,13 +125,6 @@ class Protocol(BaseModel):
 
     def get_stage(self, instance_id: str) -> ProtocolStage | None:
         return next((s for s in self.stages if s.instance_id == instance_id), None)
-
-
-def schema_fingerprint(param_class: type) -> str:
-    """Stable id of a param class's USER_PARAMS name set (12 hex chars of sha1 over the
-    comma-joined sorted names). Written by export, compared at apply."""
-    names = ",".join(sorted(getattr(param_class, "USER_PARAMS", set())))
-    return hashlib.sha1(names.encode()).hexdigest()[:12]
 
 
 def protocol_to_yaml(protocol: Protocol) -> str:

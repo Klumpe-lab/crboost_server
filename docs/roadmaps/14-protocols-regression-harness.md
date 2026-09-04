@@ -1,5 +1,13 @@
 # Roadmap 14 — Protocols + the copia regression harness
 
+> **Superseded 2026-09-04 — see roadmap 16.** The harness described here (frozen input, run.json
+> verdicts, record / bless / bands, INFRA classification, site snapshots, Tier A snapshots,
+> `crboost_regress.py`, the RELION scheme export) was DELETED on 2026-09-04: a protocol is the shape of
+> a pipeline with its parameters, nothing about results. What survives from this roadmap is
+> `services/protocols/{schema,discovery,export,apply}.py`, `crboost_protocol.py` and the copia bundle.
+> Sections §3 "RELION scheme derivation" / "Runner + verdicts" / "Per-stage checks" / "Tier A", §4
+> S4–S5 / S7 and §8 describe deleted code and are kept as history only.
+
 **Status:** S0–S7 **CODE-COMPLETE 2026-08-27**, built back-to-back on code-review confidence
 (maintainer standing decision 2026-08-17: verify ONCE at the end). Design of record is
 `FEATURE_recipes.md` (2026-08-11); decisions of 2026-08-26/27 are folded in below. Runtime owed:

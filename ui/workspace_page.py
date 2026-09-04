@@ -133,7 +133,7 @@ def build_workspace_page(backend: CryoBoostBackend):
         if gallery is not None:
             gallery.set_active(_mode["current"] == "gallery")
 
-        # And the Protocols view's 15 s run.json / log-tail poll.
+        # And the Protocols view's 15 s poll.
         protocols = _refs.get("protocols_page")
         if protocols is not None:
             protocols.set_active(_mode["current"] == "protocols")
@@ -217,9 +217,9 @@ def build_workspace_page(backend: CryoBoostBackend):
     _protocols_flight = SingleFlight()
 
     async def _show_protocols():
-        """The foot-of-rail protocol light: the Protocols view (roadmap 16 D6) — this project's
-        protocol run as it stands, the protocol library and every run of a protocol. Built lazily
-        like the gallery; toggles back to the pipeline on a second click."""
+        """The foot-of-rail protocol light: the Protocols view (roadmap 16) — this project's parameters
+        beside the protocol it was created from, and the protocol library. Built lazily like the
+        gallery; toggles back to the pipeline on a second click."""
         async with _protocols_flight("toggle") as acquired:
             if not acquired:
                 return

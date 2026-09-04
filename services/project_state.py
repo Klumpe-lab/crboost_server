@@ -687,9 +687,7 @@ class ProtocolOrigin(BaseModel):
     name: str
     version: int = 1
     bundle_dir: str = ""
-    applied_at: str = ""  # ISO seconds; the harness derives its baseline-record stamp from it
-    mode: str | None = None  # "run" | "record" (harness launch) | None (plain create-from-protocol)
-    stage_fingerprints: dict[str, str] = Field(default_factory=dict)
+    applied_at: str = ""  # ISO seconds
 
 
 class ProjectState(BaseModel):

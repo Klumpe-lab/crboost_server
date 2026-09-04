@@ -1,11 +1,7 @@
 # Protocol: the CryoBoost v1 copia tutorial (EMPIAR-12580, one tilt series), importmovies -> class3d.
-# Authored 2026-08-27 from the completed reference run `Copia_Aaron_Tutorial` (crboost_server, 11
-# stages), hand-edited to the tutorial's values where the reference run deviated:
-#   templatematching.angular_search 12.0 -> "90.0" (tutorial; sphere template, orientation is moot)
-#   species diameter 500 -> 550 A (tutorial), class3d.random_seed 1 (new field; RELION default is time)
-#   denoise train/predict added (tutorial-faithful; the reference run skipped them; decision O2)
-# Dataset facts (apix 2.95, 300 kV, dose ~2.1/tilt, 28 tilts -32..+49, no gain ref) come from the
-# mdoc at apply time; `expects` only warns. Stage params are FULL USER_PARAMS snapshots by design.
+# Authored 2026-08-27 from the tutorial: sphere template 550 A, I1, angular_search 90, class3d.random_seed 1,
+# denoise train/predict included. Dataset facts (apix, dose, tilts) come from the mdocs at project creation.
+# Stage params are FULL USER_PARAMS snapshots by design.
 name: copia-empiar12580
 version: 1
 schema_version: 1
@@ -15,10 +11,6 @@ provenance:
   empiar_path: data/Copia_TiltSeries
   doi: 10.1101/2024.02.21.581285
   tutorial: https://cryoboost.readthedocs.io/en/latest/extdocs/tutorial/tutorial.html
-  reference_run: Copia_Aaron_Tutorial (crboost_server, 2026-06-16..07-16)
-expects:
-  pixel_size_angstrom: {about: 2.95, tol: 0.05}
-  tilt_series_count: {about: 1, tol: 0}
 species:
   - id: copia
     name: Copia
@@ -30,7 +22,7 @@ species:
       polarity: black
       source: basic_shape:550:550:550
       lowpass_ang: 45.0
-      notes: ellipsoid_550_550_550_apix11.80_box96_lp45_black.mrc from the reference run
+      notes: ellipsoid_550_550_550_apix11.80_box96_lp45_black.mrc
     mask:
       asset: assets/copia_mask.mrc
       method: relion
@@ -38,14 +30,12 @@ species:
       extend_pixels: 5.0
       soft_edge_pixels: 5.0
       lowpass_ang: 20.0
-      notes: ellipsoid_550_550_550_apix11.80_box96_lp45_mask_t1.850_e5_s5.mrc from the reference run
+      notes: ellipsoid_550_550_550_apix11.80_box96_lp45_mask_t1.850_e5_s5.mrc
     extraction: {box_size: 384, crop_size: 224, binning: 1.0}
 stages:
   - job: importmovies
-    schema_fingerprint: ad7f9073a097
     params: {optics_group_name: opticsGroup1, do_at_most: -1}
   - job: fsMotionAndCtf
-    schema_fingerprint: 5149c7bbf9e2
     params:
       do_phase: false
       m_range_min_max: "500:10"
@@ -64,10 +54,8 @@ stages:
       gain_operations: null
       array_throttle: 20
   - job: tsImport
-    schema_fingerprint: 09778c2424ec
     params: {mdoc_pattern: "*.mdoc", min_intensity: 0.0, do_at_most: -1, tomo_dimensions: 4096x4096x2048}
   - job: aligntiltsWarp
-    schema_fingerprint: c06b17f287fc
     params:
       alignment_method: AreTomo
       rescale_angpixs: 11.8
@@ -83,7 +71,6 @@ stages:
       imod_overlap: 50
       array_throttle: 20
   - job: tsCtf
-    schema_fingerprint: 4ad55ec793bf
     params:
       do_phase: false
       window: 512
@@ -93,10 +80,8 @@ stages:
       perdevice: 1
       array_throttle: 20
   - job: tsReconstruct
-    schema_fingerprint: 21f5633a64d5
     params: {rescale_angpixs: 11.8, halfmap_frames: 1, deconv: 1, perdevice: 1, array_throttle: 20}
   - job: denoisetrain
-    schema_fingerprint: 69ecb2647547
     params:
       denoise_method: cryoCARE
       tomograms_for_training: ""
@@ -106,7 +91,6 @@ stages:
       isonet_method: auto
       isonet_deconv: false
   - job: denoisepredict
-    schema_fingerprint: d1d9440627a6
     params:
       ntiles_x: 4
       ntiles_y: 4
@@ -120,7 +104,6 @@ stages:
       isonet_deconv: false
   - job: templatematching
     species: copia
-    schema_fingerprint: f6bcdf8a5c39
     # template_path / mask_path are filled from the species assets at apply
     params:
       angular_search: "90.0"
@@ -136,7 +119,6 @@ stages:
       array_throttle: 4
   - job: tmextractcand
     species: copia
-    schema_fingerprint: 421187f5f81f
     params:
       particle_diameter_ang: 550.0
       max_num_particles: 1500
@@ -149,7 +131,6 @@ stages:
       array_throttle: 16
   - job: subtomoExtraction
     species: copia
-    schema_fingerprint: 9c9464a23b55
     params:
       binning: 1.0
       box_size: 384
@@ -161,7 +142,6 @@ stages:
       array_throttle: 16
   - job: reconstructParticle
     species: copia
-    schema_fingerprint: 9742dc4168a9
     params:
       box_size: 384
       crop_size: 224
@@ -183,7 +163,6 @@ stages:
       other_args: ""
   - job: class3d
     species: copia
-    schema_fingerprint: 6875b7a0fe00
     params:
       n_classes: 1
       n_iterations: 15

@@ -203,15 +203,6 @@ class CurationConfig(BaseModel):
     rest_enabled: bool = True
 
 
-class LocalDataConfig(BaseModel):
-    """Local data of the protocol regression harness (roadmap 14). `root` holds the frozen dataset
-    inputs (`input/<protocol>/`), the per-run throwaway projects (`runs/`) and the recorded
-    baselines (`baseline/`). Empty = `<DefaultProjectBase>/local_data` — deliberately OUTSIDE
-    the project base itself so the server's PipelineMonitor never adopts a CLI-driven run."""
-
-    root: str = ""
-
-
 class Config(BaseModel):
     """Root configuration model"""
 
@@ -233,7 +224,6 @@ class Config(BaseModel):
     # feature is OFF: no catalog affordance is rendered anywhere, which is the state every
     # existing install is in until someone points this at a shared directory.
     species_catalog_root: str = ""
-    local_data: LocalDataConfig = Field(default_factory=LocalDataConfig)
 
     # DEV TOGGLE (temporary): global override so every project uses the afterok orchestrator
     # (schemer-free submit + inline import) without per-project project_params.json edits. A
@@ -316,17 +306,6 @@ class ConfigService:
         silent "feature off"."""
         raw = (self._config.species_catalog_root or "").strip()
         return Path(raw).expanduser() if raw else None
-
-    @property
-    def local_data_root(self) -> Path | None:
-        """Root of the regression harness's on-disk area (roadmap 14): the configured
-        `local_data.root`, else `<DefaultProjectBase>/local_data`, else None when neither
-        is set (the harness then refuses to run and names the missing key)."""
-        raw = (self._config.local_data.root or "").strip()
-        if raw:
-            return Path(raw).expanduser()
-        base = (self._config.local.DefaultProjectBase or "").strip()
-        return Path(base).expanduser() / "local_data" if base else None
 
     @property
     def venv_path(self) -> Path | None:
